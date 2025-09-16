@@ -1,47 +1,274 @@
 [build-system]
-requires = ["setuptools>=65.5.1", "setuptools-scm", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "running_process"
-readme = "README.md"
-description = "great subprocess.Popen metaphore"
-requires-python = ">=3.10"
-keywords = ["template-python-cmd"]
-license = { text = "BSD 3-Clause License" }
-classifiers = ["Programming Language :: Python :: 3"]
-dependencies = [
-
-]
-# Change this with the version number bump.
 version = "0.0.1"
-
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.ruff]
-line-length = 200
-
-[tool.pylint."MESSAGES CONTROL"]
-good-names = [
-    "c",
-    "i",
-    "ok",
-    "id",
-    "e",
-    "f"
+description = "A modern subprocess.Popen wrapper with improved process management"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD 3-Clause License" }
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
 ]
-disable = [
-    "missing-function-docstring",
-    "missing-module-docstring"
+keywords = ["subprocess", "process", "management", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: System Shells",
+    "Typing :: Typed",
+]
+dependencies = [
+    "typing-extensions>=4.8.0;python_version<'3.11'",
 ]
 
-[tool.isort]
-profile = "black"
-
-[tool.mypy]
-ignore_missing_imports = true
-disable_error_code = ["import-untyped"]
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8.0",
+    "black>=24.0.0",
+    "isort>=5.13.0",
+    "pyright>=1.1.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "pytest-xdist>=3.5.0",
+]
+test = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "pytest-xdist>=3.5.0",
+]
 
 [project.scripts]
 running_process = "running_process.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/running-process"
+Repository = "https://github.com/yourusername/running-process"
+Issues = "https://github.com/yourusername/running-process/issues"
+
+[tool.hatch.build]
+include = [
+    "src/",
+    "README.md",
+    "LICENSE",
+]
+exclude = [
+    "*.pyc",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/running_process"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+fix = true
+unsafe-fixes = false
+extend-include = ["*.pyi"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "N",    # pep8-naming
+    "SIM",  # flake8-simplify
+    "TID",  # flake8-tidy-imports
+    "RUF",  # Ruff-specific rules
+    "PTH",  # flake8-use-pathlib
+    "FA",   # flake8-future-annotations
+    "PIE",  # flake8-pie
+    "RET",  # flake8-return
+    "TD",   # flake8-todos
+    "FIX",  # flake8-fixme
+    "ERA",  # eradicate
+    "PD",   # pandas-vet
+    "PGH",  # pygrep-hooks
+    "PL",   # Pylint
+    "TCH",  # flake8-type-checking
+    "ASYNC", # flake8-async
+    "YTT",  # flake8-2020
+    "ANN",  # flake8-annotations
+    "S",    # flake8-bandit
+    "BLE",  # flake8-blind-except
+    "A",    # flake8-builtins
+    "COM",  # flake8-commas
+    "C90",  # mccabe
+    "DTZ",  # flake8-datetimez
+    "EM",   # flake8-errmsg
+    "EXE",  # flake8-executable
+    "ISC",  # flake8-implicit-str-concat
+    "ICN",  # flake8-import-conventions
+    "LOG",  # flake8-logging
+    "G",    # flake8-logging-format
+    "INP",  # flake8-no-pep420
+    "PT",   # flake8-pytest-style
+    "Q",    # flake8-quotes
+    "RSE",  # flake8-raise
+    "SLF",  # flake8-self
+    "SLOT", # flake8-slots
+    "T10",  # flake8-debugger
+    "T20",  # flake8-print
+    "ARG",  # flake8-unused-arguments
+    "PERF", # Perflint
+    "FURB", # refurb
+    "TRY",  # tryceratops
+    "FLY",  # flynt
+    "FAST", # FastAPI
+]
+ignore = [
+    "ANN101", # missing-type-self
+    "ANN102", # missing-type-cls
+    "ANN401", # any-type
+    "COM812", # missing-trailing-comma
+    "ISC001", # single-line-implicit-string-concatenation
+    "TD002",  # missing-todo-author
+    "TD003",  # missing-todo-link
+    "FIX002", # line-contains-todo
+    "S101",   # assert
+    "PD901",  # pandas-df-variable-name
+    "PLR0911", # too-many-return-statements
+    "PLR0912", # too-many-branches
+    "PLR0913", # too-many-arguments
+    "PLR0915", # too-many-statements
+    "PLR2004", # magic-value-comparison
+    "PLC0414", # useless-import-alias
+    "TRY003", # raise-vanilla-args
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",   # asserts allowed in tests
+    "ANN",    # no type hints in tests
+    "PLR2004", # Magic values allowed in tests
+    "D",      # no docstrings in tests
+]
+"__init__.py" = ["F401", "F403"] # unused imports in __init__ files
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.isort]
+known-first-party = ["running_process"]
+
+[tool.black]
+line-length = 120
+target-version = ["py310", "py311", "py312"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 120
+known_first_party = ["running_process"]
+skip_gitignore = true
+
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "strict"
+reportMissingImports = true
+reportMissingTypeStubs = false
+reportPrivateUsage = false
+reportUnknownParameterType = false
+reportUnknownArgumentType = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownLambdaType = false
+reportGeneralTypeIssues = true
+reportOptionalSubscript = true
+reportOptionalMemberAccess = true
+reportOptionalCall = true
+reportOptionalIterable = true
+reportOptionalContextManager = true
+reportOptionalOperand = true
+reportTypedDictNotRequiredAccess = true
+reportUntypedFunctionDecorator = true
+reportUntypedClassDecorator = true
+reportUntypedBaseClass = true
+reportUntypedNamedTuple = true
+reportPrivateImportUsage = false
+reportConstantRedefinition = true
+reportIncompatibleMethodOverride = true
+reportIncompatibleVariableOverride = true
+reportInconsistentConstructor = true
+reportOverlappingOverload = true
+reportMissingTypeArgument = true
+reportCallInDefaultInitializer = true
+reportUnnecessaryIsInstance = true
+reportUnnecessaryCast = true
+reportUnnecessaryComparison = true
+reportUnnecessaryContains = true
+reportAssertAlwaysTrue = true
+reportSelfClsParameterName = true
+reportUnusedVariable = true
+reportUnusedClass = true
+reportUnusedImport = true
+reportUnusedFunction = true
+reportUnusedExpression = true
+reportWildcardImportFromLibrary = true
+reportDuplicateImport = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+
+[tool.coverage.run]
+source = ["src/running_process"]
+branch = true
+parallel = true
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+precision = 2
+show_missing = true
+

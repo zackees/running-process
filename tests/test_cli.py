@@ -1,20 +1,20 @@
-"""
-Unit test file.
-"""
-import os
-import unittest
+"""Test command line interface (CLI)."""
 
-COMMAND = "running_process"
+import subprocess
+import sys
 
 
-class MainTester(unittest.TestCase):
-    """Main tester class."""
-
-    def test_imports(self) -> None:
-        """Test command line interface (CLI)."""
-        rtn = os.system(COMMAND)
-        self.assertEqual(0, rtn)
+def test_imports() -> None:
+    """Test command line interface (CLI)."""
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "running_process.cli"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_imports()
+    print("CLI test passed!")  # noqa: T201

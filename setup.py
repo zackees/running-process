@@ -2,14 +2,13 @@
 Setup file.
 """
 
-import os
-import re
+from pathlib import Path
 
 from setuptools import setup
 
 URL = "https://github.com/zackees/running-process"
 KEYWORDS = "suprocess running process"
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = Path(__file__).parent
 
 
 

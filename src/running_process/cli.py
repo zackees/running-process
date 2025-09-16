@@ -6,8 +6,8 @@ import sys
 
 
 def main() -> int:
-    """Main entry point for the template_python_cmd package."""
-    print("Replace with a CLI entry point.")
+    """Main entry point for the running_process package."""
+    # TODO: Implement actual CLI functionality
     return 0
 
 
