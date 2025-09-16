@@ -170,7 +170,7 @@ class ProcessWatcher:
     def start(self) -> None:
         name: str = "RPWatcher"
         with contextlib.suppress(AttributeError, TypeError):
-            if self._rp.proc is not None and self._rp.proc.pid is not None:
+            if self._rp.proc is not None:
                 name = f"RPWatcher-{self._rp.proc.pid}"
 
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
@@ -310,11 +310,9 @@ class RunningProcess:
             # Default: use shell only when given a string, or when a list includes shell metachars
             if isinstance(command, str):
                 shell = True
-            elif isinstance(command, list):
+            else:  # must be list[str] since command: str | list[str]
                 shell_meta = {"&&", "||", "|", ";", ">", "<", "2>", "&"}
                 shell = any(part in shell_meta for part in command)
-            else:
-                shell = False
         self.command = command
         self.shell: bool = shell
         self.cwd = str(cwd) if cwd is not None else None
@@ -407,7 +405,7 @@ class RunningProcess:
         if self.enable_stack_trace:
             logger.warning("\nProcess timeout after %s seconds, dumping stack trace...", timeout)
             logger.warning("Command: %s", cmd_str)
-            logger.warning("Process ID: %s", self.proc.pid)
+            logger.warning("Process ID: %s", self.proc.pid if self.proc else None)
 
             try:
                 stack_trace = self.dump_stack_trace()
@@ -694,7 +692,7 @@ class RunningProcess:
                 self._notify_terminated()
             except (AttributeError, TypeError, RuntimeError) as e:
                 poll_error_msg = f"RunningProcess termination notify (poll) failed: {e}"
-            warnings.warn(poll_error_msg, stacklevel=2)
+                warnings.warn(poll_error_msg, stacklevel=2)
         return rc
 
     @property
@@ -705,7 +703,7 @@ class RunningProcess:
         """Echo output lines to logger with proper flushing."""
         for line in lines:
             # Use print flush=True for Windows compatibility, avoid separate flush calls
-            logger.info(line, flush=(os.name == "nt"))  # Force flush only on Windows per-line
+            logger.info(line)
         # Additional flush for Unix systems for better performance
         if os.name != "nt":
             sys.stdout.flush()
@@ -734,12 +732,11 @@ class RunningProcess:
         # Process completed - drain any remaining output if echo is enabled
         remaining_lines = self.drain_stdout()
         for line in remaining_lines:
-            logger.info(line, flush=(os.name == "nt"))  # Force flush only on Windows per-line
+            logger.info(line)
         if remaining_lines:
             logger.info(
                 "[Drained %d final lines after completion]",
                 len(remaining_lines),
-                flush=(os.name == "nt"),
             )
 
     def _handle_keyboard_interrupt_detection(self, rtn: int) -> bool:
@@ -773,7 +770,7 @@ class RunningProcess:
         if echo:
             final_lines = self.drain_stdout()
             for line in final_lines:
-                logger.info(line, flush=(os.name == "nt"))  # Force flush only on Windows per-line
+                logger.info(line)
 
         # Execute completion callback if provided
         self._execute_completion_callback()
