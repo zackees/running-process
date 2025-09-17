@@ -153,7 +153,7 @@ class TestOutputStreaming(unittest.TestCase):
         process.wait()
 
         # Result should be string, None, or EndOfStream
-        self.assertTrue(result is None or isinstance(result, (str, EndOfStream)))
+        self.assertTrue(result is None or isinstance(result, str | EndOfStream))
 
 
 class TestProcessCompletion(unittest.TestCase):
