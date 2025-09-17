@@ -29,6 +29,7 @@ classifiers = [
 ]
 dependencies = [
     "typing-extensions>=4.8.0;python_version<'3.11'",
+    "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]
@@ -234,6 +235,7 @@ reportUnusedFunction = true
 reportUnusedExpression = true
 reportWildcardImportFromLibrary = true
 reportDuplicateImport = true
+reportMissingModuleSource = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

@@ -4,28 +4,13 @@
 from __future__ import annotations
 
 import contextlib
-import os
-import signal
-import subprocess
-import time
 import warnings
 
-try:
-    import psutil
-except ImportError:
-    psutil = None
-    warnings.warn(
-        "psutil not installed. Process tree operations will be limited.",
-        UserWarning,
-        stacklevel=2,
-    )
+import psutil
 
 
 def get_process_tree_info(pid: int) -> str:
     """Get information about a process and its children."""
-    if psutil is None:
-        return f"psutil not available - cannot get process info for PID {pid}"
-
     try:
         process = psutil.Process(pid)
         info = [f"Process {pid} ({process.name()})"]
@@ -48,24 +33,8 @@ def get_process_tree_info(pid: int) -> str:
         return f"Could not get process info for PID {pid}"
 
 
-def _kill_process_fallback(pid: int) -> None:
-    """Fallback process killing when psutil is not available."""
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        if os.name == "nt":
-            # Use subprocess.run with check for better security
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], check=False)  # noqa: S607, S603
-        else:
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(0.5)
-            os.kill(pid, signal.SIGKILL)
-
-
 def kill_process_tree(pid: int) -> None:
     """Kill a process and all its children."""
-    if psutil is None:
-        _kill_process_fallback(pid)
-        return
-
     try:
         parent = psutil.Process(pid)
         children = parent.children(recursive=True)
