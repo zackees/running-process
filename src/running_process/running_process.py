@@ -68,6 +68,20 @@ process = RunningProcess(
 )
 ```
 
+### PTY Support for Interactive Commands
+```python
+# Use pseudo-terminal for commands requiring interactive terminal
+process = RunningProcess(
+    command=["ssh", "user@host", "ls"],
+    use_pty=True,  # Enables PTY mode
+    timeout=30
+)
+exit_code = process.wait()
+
+# PTY automatically filters ANSI escape sequences
+# and handles commands that behave differently in terminals
+```
+
 ### Simple subprocess.run() Replacement
 ```python
 # Drop-in replacement for subprocess.run()
@@ -87,6 +101,8 @@ print(result.returncode)
 - **Timeout protection**: Global and per-operation timeouts with custom handlers
 - **Process tree management**: Automatically kills child processes to prevent orphans
 - **Output streaming**: Real-time line iteration and non-blocking access
+- **PTY support**: Pseudo-terminal support for interactive commands (requires winpty on Windows)
+- **ANSI filtering**: Automatic filtering of escape sequences in PTY mode
 - **Flexible callbacks**: Custom timeout and completion handlers
 - **Cross-platform**: Works on Windows, macOS, and Linux
 - **Thread-safe**: Safe for concurrent use with proper synchronization
@@ -98,6 +114,7 @@ import contextlib
 import logging
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -107,13 +124,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from running_process.pty import PtyProcessProtocol
+
 
 from running_process.line_iterator import _RunningProcessLineIterator
 from running_process.output_formatter import NullOutputFormatter, OutputFormatter
 from running_process.process_output_reader import EndOfStream, ProcessOutputReader
 from running_process.process_utils import kill_process_tree
 from running_process.process_watcher import ProcessWatcher
+from running_process.pty import Pty, PtyNotAvailableError
 from running_process.running_process_manager import RunningProcessManagerSingleton
 from running_process.subprocess_runner import execute_subprocess_run
 
@@ -192,6 +214,7 @@ class RunningProcess:
         on_timeout: Callable[[ProcessInfo], None] | None = None,  # Callback to execute on timeout
         on_complete: Callable[[], None] | None = None,  # Callback to execute when process completes
         output_formatter: OutputFormatter | None = None,
+        use_pty: bool = False,  # Use pseudo-terminal for process execution
     ) -> None:
         """
         Initialize the RunningProcess instance.
@@ -208,6 +231,7 @@ class RunningProcess:
             on_timeout: Callback function executed when process times out. Receives ProcessInfo.
             on_complete: Callback function executed when process completes normally.
             output_formatter: Optional formatter for transforming output lines.
+            use_pty: If True, use pseudo-terminal for process execution (supports interactive commands).
         """
         # Validate command/shell combination
         if isinstance(command, str) and shell is False:
@@ -237,7 +261,7 @@ class RunningProcess:
         self.cwd = str(cwd) if cwd is not None else None
         self.output_queue: Queue[str | EndOfStream] = Queue()
         self.accumulated_output: list[str] = []  # Store all output for later retrieval
-        self.proc: subprocess.Popen[Any] | None = None
+        self.proc: subprocess.Popen[Any] | PtyProcessProtocol | None = None
         self.check = check
         self.auto_run = auto_run
         self.timeout = timeout
@@ -252,8 +276,16 @@ class RunningProcess:
         self._end_time: float | None = None
         self._time_last_stdout_line: float | None = None
         self._termination_notified: bool = False
+        # PTY support fields
+        self.use_pty = use_pty and self._pty_available()
+        self._pty_proc: Any = None  # winpty.PtyProcess or None
+        self._pty_master_fd: int | None = None  # Unix PTY master file descriptor
         if auto_run:
             self.start()
+
+    def _pty_available(self) -> bool:
+        """Check PTY support for current platform."""
+        return Pty.is_available()
 
     def get_command_str(self) -> str:
         if isinstance(self.command, list):
@@ -348,6 +380,17 @@ class RunningProcess:
 
     def _create_process(self) -> None:
         """Create the subprocess with proper configuration."""
+        if self.use_pty:
+            self._create_process_with_pty()
+        else:
+            self._create_process_with_pipe()
+
+        # Track start time after process is successfully created
+        # This excludes process creation overhead from timing measurements
+        self._start_time = time.time()
+
+    def _create_process_with_pipe(self) -> None:
+        """Create subprocess with standard pipes."""
         popen_command = self._prepare_command()
 
         self.proc = subprocess.Popen(  # noqa: S603
@@ -361,9 +404,23 @@ class RunningProcess:
             errors="replace",  # Replace invalid chars instead of failing
         )
 
-        # Track start time after process is successfully created
-        # This excludes process creation overhead from timing measurements
-        self._start_time = time.time()
+    def _create_process_with_pty(self) -> None:
+        """Create subprocess with PTY allocation using unified PTY wrapper."""
+        try:
+            pty_wrapper = Pty()
+            pty_process = pty_wrapper.spawn_process(
+                command=self.command,
+                cwd=self.cwd,
+                env=os.environ.copy(),
+                shell=self.shell,
+            )
+            self.proc = pty_process  # type: ignore[assignment]
+            self._pty_proc = pty_process
+        except PtyNotAvailableError:
+            # Fall back to regular pipe-based process if PTY is not available
+            logger.warning("PTY requested but not available, falling back to pipes")
+            self.use_pty = False
+            self._create_process_with_pipe()
 
     def _register_with_manager(self) -> None:
         """Register this process with the global process manager."""
@@ -409,6 +466,9 @@ class RunningProcess:
             output_formatter=self.output_formatter,
             on_output=on_output,
             on_end=on_end,
+            use_pty=self.use_pty,
+            pty_proc=self._pty_proc,
+            pty_master_fd=self._pty_master_fd,
         )
 
         # Start output reader thread
@@ -738,7 +798,7 @@ class RunningProcess:
 
         return rtn
 
-    def kill(self) -> None:
+    def kill(self) -> None:  # noqa: C901
         """
         Immediately terminate the process and all child processes.
 
@@ -757,13 +817,33 @@ class RunningProcess:
         # Signal reader thread to stop
         self.shutdown.set()
 
+        # PTY-specific cleanup must happen before killing process tree
+        if self.use_pty:
+            logger.debug("Cleaning up PTY resources before process termination")
+            if sys.platform == "win32" and self._pty_proc:
+                try:
+                    self._pty_proc.kill(signal.SIGTERM)
+                    logger.debug("Killed winpty process")
+                except (OSError, ValueError, RuntimeError) as e:
+                    logger.warning("Failed to kill winpty process: %s", e)
+            elif self._pty_master_fd is not None:
+                try:
+                    os.close(self._pty_master_fd)
+                    self._pty_master_fd = None
+                    logger.debug("Closed Unix PTY master fd")
+                except (OSError, ValueError) as e:
+                    logger.warning("Failed to close PTY master fd: %s", e)
+
         # Kill the entire process tree (parent + all children)
         # This prevents orphaned clang++ processes from hanging the system
         try:
             kill_process_tree(self.proc.pid)
         except KeyboardInterrupt:
-            logger.info("Keyboard interrupt detected, interrupting main thread")
+            logger.info("Keyboard interrupt detected in kill(), interrupting main thread")
             _thread.interrupt_main()
+            # Extra cleanup for PTY on KeyboardInterrupt
+            if self.use_pty:
+                logger.warning("KeyboardInterrupt during PTY process kill - forcing cleanup")
             try:
                 self.proc.kill()
             except (ProcessLookupError, PermissionError, OSError, ValueError) as e:
