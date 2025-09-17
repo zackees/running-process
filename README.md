@@ -65,11 +65,10 @@ exit_code = process.wait()
 ### Output Formatting
 
 ```python
-from running_process import RunningProcess
-from running_process.output_formatter import create_sketch_path_formatter
+from running_process import RunningProcess, TimeDeltaFormatter
 
-# Use built-in path formatter
-formatter = create_sketch_path_formatter("MyProject")
+# Use built-in time delta formatter
+formatter = TimeDeltaFormatter()
 process = RunningProcess(
     ["gcc", "-v", "main.c"],
     output_formatter=formatter
@@ -107,17 +106,12 @@ manager.cleanup_finished_processes()
 ## Installation
 
 ```bash
-pip install running-process
+pip install running_process
 ```
 
-### Optional Dependencies
+### Dependencies
 
-For process tree termination support:
-```bash
-pip install running-process[psutil]
-# or
-pip install psutil
-```
+This package includes `psutil` as a required dependency for process tree management functionality.
 
 ## Architecture
 
@@ -126,8 +120,8 @@ The library follows a layered design with these core components:
 - **RunningProcess**: Main class wrapping subprocess.Popen with enhanced features
 - **ProcessOutputReader**: Dedicated threaded reader that drains process stdout/stderr
 - **RunningProcessManager**: Thread-safe singleton registry for tracking active processes
-- **OutputFormatter**: Protocol for transforming process output with built-in implementations
-- **process_utils**: Utilities for process tree operations (requires optional psutil dependency)
+- **OutputFormatter**: Protocol for transforming process output (with NullOutputFormatter and TimeDeltaFormatter implementations)
+- **process_utils**: Utilities for process tree operations
 
 ## Development
 
@@ -200,6 +194,24 @@ class RunningProcess:
 - `is_running()`: Check if process is still executing
 - `drain_stdout()`: Get all currently available output lines
 
+### ProcessOutputReader
+
+Internal threaded reader that drains process stdout/stderr:
+
+```python
+class ProcessOutputReader:
+    def __init__(
+        self,
+        proc: subprocess.Popen[Any],
+        shutdown: threading.Event,
+        output_formatter: OutputFormatter | None,
+        on_output: Callable[[str | EndOfStream], None],
+        on_end: Callable[[], None],
+    ) -> None: ...
+
+    def run(self) -> None: ...  # Thread entry point
+```
+
 ### OutputFormatter Protocol
 
 ```python
@@ -208,6 +220,10 @@ class OutputFormatter(Protocol):
     def transform(self, line: str) -> str: ...
     def end(self) -> None: ...
 ```
+
+Built-in implementations:
+- `NullOutputFormatter`: No-op formatter (default)
+- `TimeDeltaFormatter`: Adds elapsed time prefix to each line
 
 ## License
 
