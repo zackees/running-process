@@ -1,3 +1,97 @@
+"""Enhanced subprocess execution with timeout protection, output streaming, and process tree management.
+
+## Basic Usage
+
+### Simple Command Execution
+```python
+# List command - automatically starts execution
+process = RunningProcess(["echo", "Hello World"])
+exit_code = process.wait()
+print(process.stdout)  # "Hello World"
+
+# Manual start control
+process = RunningProcess(["ls", "-la"], auto_run=False)
+process.run()
+exit_code = process.wait()
+```
+
+### Shell Commands
+```python
+# String commands require shell=True
+process = RunningProcess("echo 'Hello World'", shell=True)
+exit_code = process.wait()
+```
+
+### Live Output Streaming
+```python
+# Line-by-line output processing
+process = RunningProcess(["python", "long_script.py"])
+for line in process.line_iter(timeout=1.0):
+    print(f"Output: {line}")
+
+# Non-blocking polling
+while not process.finished:
+    line = process.get_next_line_non_blocking()
+    if line:
+        handle_output(line)
+    time.sleep(0.1)
+
+# Echo output as it arrives
+process.wait(echo=True)  # Prints to console
+```
+
+### Timeout Protection with Custom Handlers
+```python
+def debug_timeout(process_info):
+    print(f"Process {process_info.pid} timed out after {process_info.duration}s")
+    # Custom debugging logic (GDB, pstack, profiling, etc.)
+    subprocess.run(["gdb", "-batch", "-ex", f"attach {process_info.pid}",
+                   "-ex", "bt", "-ex", "detach"])
+
+process = RunningProcess(
+    command=["make", "build"],
+    timeout=300,  # 5 minute timeout
+    on_timeout=debug_timeout,
+    on_complete=lambda: print("Build completed!")
+)
+```
+
+### Output Formatting
+```python
+from running_process import TimeDeltaFormatter
+
+# Add timestamps to output lines
+process = RunningProcess(
+    command=["pytest", "tests/"],
+    output_formatter=TimeDeltaFormatter(),  # "[1.23] test output"
+    timeout=300
+)
+```
+
+### Simple subprocess.run() Replacement
+```python
+# Drop-in replacement for subprocess.run()
+result = subprocess_run(
+    command=["git", "status"],
+    cwd=Path("/project"),
+    timeout=10,
+    check=True
+)
+print(result.stdout)
+print(result.returncode)
+```
+
+## Key Features
+
+- **Non-blocking output**: Threaded output reader prevents process hanging
+- **Timeout protection**: Global and per-operation timeouts with custom handlers
+- **Process tree management**: Automatically kills child processes to prevent orphans
+- **Output streaming**: Real-time line iteration and non-blocking access
+- **Flexible callbacks**: Custom timeout and completion handlers
+- **Cross-platform**: Works on Windows, macOS, and Linux
+- **Thread-safe**: Safe for concurrent use with proper synchronization
+"""
+
 # pyright: reportUnknownMemberType=false, reportMissingParameterType=false
 import _thread
 import contextlib
