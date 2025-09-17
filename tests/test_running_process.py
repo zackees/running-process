@@ -14,7 +14,8 @@ import time
 import unittest
 from pathlib import Path
 
-from running_process.running_process import EndOfStream, RunningProcess, subprocess_run
+from running_process import RunningProcess
+from running_process.running_process import EndOfStream, subprocess_run
 
 
 class TestBasicExecution(unittest.TestCase):
