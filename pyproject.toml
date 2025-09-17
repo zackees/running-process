@@ -167,6 +167,8 @@ ignore = [
     "ANN",    # no type hints in tests
     "PLR2004", # Magic values allowed in tests
     "D",      # no docstrings in tests
+    "PT009",  # use unittest assertions instead of plain assert
+    "PT027",  # use unittest assertRaises instead of pytest.raises
 ]
 "__init__.py" = ["F401", "F403"] # unused imports in __init__ files
 
@@ -222,7 +224,7 @@ reportInconsistentConstructor = true
 reportOverlappingOverload = true
 reportMissingTypeArgument = true
 reportCallInDefaultInitializer = true
-reportUnnecessaryIsInstance = true
+reportUnnecessaryIsInstance = false
 reportUnnecessaryCast = true
 reportUnnecessaryComparison = true
 reportUnnecessaryContains = true

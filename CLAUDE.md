@@ -51,6 +51,15 @@ uv run pyright src tests  # Type checking
 - Example: `subprocess.list2cmdline(command)` not `' '.join(command)`
 - This prevents command injection vulnerabilities and ensures cross-platform compatibility
 
+## Testing Framework Guidelines
+
+**Use unittest framework for all test code**:
+- Write tests using Python's standard `unittest` framework (TestCase, setUp, tearDown, etc.)
+- Use `unittest` assertions (assertEqual, assertTrue, assertRaises, etc.) instead of pytest-specific features
+- Pytest is used only as the test runner, not for test features
+- Avoid pytest-specific decorators, fixtures, and assertion styles
+- This ensures tests are portable and work with any test runner
+
 ## Code Quality Notes
 
 - **Complex Functions**: Three functions have high complexity and should be refactored if modified:

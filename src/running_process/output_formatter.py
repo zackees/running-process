@@ -67,4 +67,4 @@ class TimeDeltaFormatter:
 
     def end(self) -> None:
         """Finalize the formatter."""
-        return None
+        return
