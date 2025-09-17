@@ -38,20 +38,27 @@ class ProcessInfo:
 EchoCallback = Callable[[str], None]
 
 
-def _normalize_echo_callback(echo: bool | EchoCallback) -> EchoCallback | None:
-    """Normalize echo parameter to a callback function or None.
+class EchoCallbackNull:
+    """Null object implementation of EchoCallback that discards all output."""
+
+    def __call__(self, line: str) -> None:
+        """Discard the input line without doing anything."""
+
+
+def _normalize_echo_callback(echo: bool | EchoCallback) -> EchoCallback:
+    """Normalize echo parameter to a callback function.
 
     Args:
         echo: Either a boolean or a callback function.
-              True converts to print function, False to None.
+              True converts to print function, False to EchoCallbackNull.
 
     Returns:
-        Callback function or None if echo is False.
+        Callback function that handles output lines.
     """
     if echo is True:
         return print
     if echo is False:
-        return None
+        return EchoCallbackNull()
     if callable(echo):
         return echo
 
@@ -400,17 +407,16 @@ class RunningProcess:
     def time_last_stdout_line(self) -> float | None:
         return self._time_last_stdout_line
 
-    def _handle_timeout(self, timeout: float, echo_callback: EchoCallback | None = None) -> None:
+    def _handle_timeout(self, timeout: float, echo_callback: EchoCallback) -> None:
         """Handle process timeout with optional callback and cleanup."""
         cmd_str = self.get_command_str()
 
-        # Drain any remaining output before killing if echo is enabled
-        if echo_callback is not None:
-            remaining_lines = self.drain_stdout()
-            for line in remaining_lines:
-                echo_callback(line)
-            if remaining_lines:
-                echo_callback(f"[Drained {len(remaining_lines)} final lines before timeout]")
+        # Drain any remaining output before killing
+        remaining_lines = self.drain_stdout()
+        for line in remaining_lines:
+            echo_callback(line)
+        if remaining_lines:
+            echo_callback(f"[Drained {len(remaining_lines)} final lines before timeout]")
 
         # Execute user-provided timeout callback if available
         if self.on_timeout is not None:
@@ -719,17 +725,14 @@ class RunningProcess:
             sys.stdout.flush()
 
     def _check_process_timeout(
-        self, effective_timeout: float | None, start_time: float, echo_callback: EchoCallback | None
+        self, effective_timeout: float | None, start_time: float, echo_callback: EchoCallback
     ) -> None:
         """Check if process has timed out and handle it."""
         if effective_timeout is not None and (time.time() - start_time) > effective_timeout:
             self._handle_timeout(effective_timeout, echo_callback=echo_callback)
 
-    def _handle_echo_output(self, echo_callback: EchoCallback | None) -> bool:
-        """Handle echoing output if enabled. Returns True if output was found and echoed."""
-        if echo_callback is None:
-            return False
-
+    def _handle_echo_output(self, echo_callback: EchoCallback) -> bool:
+        """Handle echoing output. Returns True if output was found and echoed."""
         lines = self.drain_stdout()
         if lines:
             self._echo_output_lines(lines, echo_callback)
@@ -737,7 +740,7 @@ class RunningProcess:
         return False
 
     def _wait_for_process_completion(
-        self, effective_timeout: float | None, echo_callback: EchoCallback | None, start_time: float
+        self, effective_timeout: float | None, echo_callback: EchoCallback, start_time: float
     ) -> None:
         """Wait for process to complete with timeout and echo handling."""
         while self.poll() is None:
@@ -749,12 +752,9 @@ class RunningProcess:
 
             time.sleep(0.01)  # Check every 10ms
 
-    def _handle_process_completion_echo(self, echo_callback: EchoCallback | None) -> None:
+    def _handle_process_completion_echo(self, echo_callback: EchoCallback) -> None:
         """Handle echoing output after process completion."""
-        if echo_callback is None:
-            return
-
-        # Process completed - drain any remaining output if echo is enabled
+        # Process completed - drain any remaining output
         remaining_lines = self.drain_stdout()
         for line in remaining_lines:
             echo_callback(line)
@@ -786,13 +786,12 @@ class RunningProcess:
             except (AttributeError, TypeError, RuntimeError) as e:
                 logger.info("Warning: on_complete callback failed: %s", e)
 
-    def _finalize_wait(self, echo_callback: EchoCallback | None) -> None:
+    def _finalize_wait(self, echo_callback: EchoCallback) -> None:
         """Finalize the wait process with cleanup and notifications."""
         # Final drain after reader threads shut down - catch any remaining queued output
-        if echo_callback is not None:
-            final_lines = self.drain_stdout()
-            for line in final_lines:
-                echo_callback(line)
+        final_lines = self.drain_stdout()
+        for line in final_lines:
+            echo_callback(line)
 
         # Execute completion callback if provided
         self._execute_completion_callback()
