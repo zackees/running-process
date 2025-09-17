@@ -306,6 +306,11 @@ class RunningProcess:
             on_complete: Callback function executed when process completes normally.
             output_formatter: Optional formatter for transforming output lines.
         """
+        # Validate command/shell combination
+        if isinstance(command, str) and shell is False:
+            error_message = "String commands require shell=True. Use shell=True or provide command as list[str]."
+            raise ValueError(error_message)
+
         if shell is None:
             # Default: use shell only when given a string, or when a list includes shell metachars
             if isinstance(command, str):
