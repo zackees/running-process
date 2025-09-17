@@ -11,7 +11,7 @@ print(process.stdout)  # "Hello World"
 
 # Manual start control
 process = RunningProcess(["ls", "-la"], auto_run=False)
-process.run()
+process.start()
 exit_code = process.wait()
 ```
 
@@ -102,18 +102,20 @@ import subprocess
 import sys
 import threading
 import time
-import traceback
 import warnings
-from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
 from typing import Any
 
+from running_process.line_iterator import _RunningProcessLineIterator
 from running_process.output_formatter import NullOutputFormatter, OutputFormatter
+from running_process.process_output_reader import EndOfStream, ProcessOutputReader
 from running_process.process_utils import kill_process_tree
+from running_process.process_watcher import ProcessWatcher
 from running_process.running_process_manager import RunningProcessManagerSingleton
+from running_process.subprocess_runner import execute_subprocess_run
 
 # Create module-level logger
 logger = logging.getLogger(__name__)
@@ -160,246 +162,7 @@ def _normalize_echo_callback(echo: bool | EchoCallback) -> EchoCallback:
     raise TypeError(error_msg)
 
 
-class EndOfStream:
-    """Sentinel used to indicate end-of-stream from the reader."""
-
-
 # Console UTF-8 configuration is now handled globally in ci/__init__.py
-
-
-class ProcessOutputReader:
-    """Dedicated reader that drains a process's stdout and enqueues lines.
-
-    This keeps the stdout pipe drained to prevent blocking and forwards
-    transformed, non-empty lines to the provided output queue. It also invokes
-    lifecycle callbacks for timing/unregister behaviors.
-    """
-
-    def __init__(
-        self,
-        proc: subprocess.Popen[Any],
-        shutdown: threading.Event,
-        output_formatter: OutputFormatter | None,
-        on_output: Callable[[str | EndOfStream], None],
-        on_end: Callable[[], None],
-    ) -> None:
-        output_formatter = output_formatter or NullOutputFormatter()
-        self._proc = proc
-        self._shutdown = shutdown
-        self._output_formatter = output_formatter
-        self._on_output = on_output
-        self._on_end = on_end
-        self.last_stdout_ts: float | None = None
-        self._eos_emitted: bool = False
-
-    def _emit_eos_once(self) -> None:
-        """Ensure EndOfStream is only forwarded a single time."""
-        if not self._eos_emitted:
-            self._eos_emitted = True
-            self._on_output(EndOfStream())
-
-    def _initialize_formatter(self) -> None:
-        """Initialize the output formatter."""
-        try:
-            self._output_formatter.begin()
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            formatter_error_msg = f"Output formatter begin() failed: {e}"
-            warnings.warn(formatter_error_msg, stacklevel=2)
-
-    def _process_stdout_lines(self) -> None:
-        """Process stdout lines and forward them to output."""
-        assert self._proc.stdout is not None
-
-        for line in self._proc.stdout:
-            self.last_stdout_ts = time.time()
-            if self._shutdown.is_set():
-                break
-
-            line_stripped = line.rstrip()
-            if not line_stripped:
-                continue
-
-            transformed_line = self._output_formatter.transform(line_stripped)
-            self._on_output(transformed_line)
-
-    def _handle_keyboard_interrupt(self) -> None:
-        """Handle KeyboardInterrupt in reader thread."""
-        # Per project rules, handle interrupts in threads explicitly
-        thread_id = threading.current_thread().ident
-        thread_name = threading.current_thread().name
-        logger.warning("Thread %s (%s) caught KeyboardInterrupt", thread_id, thread_name)
-        logger.warning("Stack trace for thread %s:", thread_id)
-        traceback.print_exc()
-        # Try to ensure child process is terminated promptly
-        try:
-            self._proc.kill()
-        except (ProcessLookupError, PermissionError, OSError) as kill_error:
-            logger.warning("Failed to kill process: %s", kill_error)
-        # Propagate to main thread and re-raise
-        _thread.interrupt_main()
-        # EOF
-        self._emit_eos_once()
-
-    def _handle_io_error(self, e: ValueError | OSError) -> None:
-        """Handle IO errors during stdout reading."""
-        # Normal shutdown scenarios include closed file descriptors.
-        error_str = str(e)
-        if any(msg in error_str for msg in ["closed file", "Bad file descriptor"]):
-            closed_file_msg = f"Output reader encountered closed file: {e}"
-            warnings.warn(closed_file_msg, stacklevel=2)
-        else:
-            logger.warning("Output reader encountered error: %s", e)
-
-    def _cleanup_stdout(self) -> None:
-        """Close stdout stream safely."""
-        if self._proc.stdout and not self._proc.stdout.closed:
-            try:
-                self._proc.stdout.close()
-            except (ValueError, OSError) as err:
-                reader_error_msg = f"Output reader encountered error: {err}"
-                warnings.warn(reader_error_msg, stacklevel=2)
-
-    def _finalize_formatter(self) -> None:
-        """Finalize the output formatter."""
-        try:
-            self._output_formatter.end()
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            formatter_end_error_msg = f"Output formatter end() failed: {e}"
-            warnings.warn(formatter_end_error_msg, stacklevel=2)
-
-    def _run_with_error_handling(self) -> None:
-        """Run stdout processing with error handling."""
-        try:
-            self._process_stdout_lines()
-        except KeyboardInterrupt:
-            self._handle_keyboard_interrupt()
-            raise
-        except (ValueError, OSError) as e:
-            self._handle_io_error(e)
-        finally:
-            # Signal end-of-stream to consumers exactly once
-            self._emit_eos_once()
-
-    def _perform_final_cleanup(self) -> None:
-        """Perform final cleanup operations."""
-        # Cleanup stream and invoke completion callback
-        self._cleanup_stdout()
-
-        # Notify parent for timing/unregistration
-        try:
-            self._on_end()
-        finally:
-            # End formatter lifecycle within the reader context
-            self._finalize_formatter()
-
-    def run(self) -> None:
-        """Continuously read stdout lines and forward them until EOF or shutdown."""
-        try:
-            # Begin formatter lifecycle within the reader context
-            self._initialize_formatter()
-            self._run_with_error_handling()
-        finally:
-            self._perform_final_cleanup()
-
-
-class ProcessWatcher:
-    """Background watcher that polls a process until it terminates."""
-
-    def __init__(self, running_process: "RunningProcess") -> None:
-        self._rp = running_process
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        name: str = "RPWatcher"
-        with contextlib.suppress(AttributeError, TypeError):
-            if self._rp.proc is not None:
-                name = f"RPWatcher-{self._rp.proc.pid}"
-
-        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
-        self._thread.start()
-
-    def _run(self) -> None:
-        thread_id = threading.current_thread().ident
-        thread_name = threading.current_thread().name
-        try:
-            while not self._rp.shutdown.is_set():
-                # Enforce per-process timeout independently of wait()
-                if (
-                    self._rp.timeout is not None
-                    and self._rp.start_time is not None
-                    and (time.time() - self._rp.start_time) > self._rp.timeout
-                ):
-                    logger.warning(
-                        "Process timeout after %s seconds (watcher), killing: %s",
-                        self._rp.timeout,
-                        self._rp.command,
-                    )
-                    # Execute user-provided timeout callback if available
-                    if self._rp.on_timeout is not None:
-                        try:
-                            process_info = self._rp._create_process_info()  # noqa: SLF001
-                            self._rp.on_timeout(process_info)
-                        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-                            logger.warning("Watcher timeout callback failed: %s", e)
-                    self._rp.kill()
-                    break
-
-                rc: int | None = self._rp.poll()
-                if rc is not None:
-                    break
-                time.sleep(0.1)
-        except KeyboardInterrupt:
-            logger.warning("Thread %s (%s) caught KeyboardInterrupt", thread_id, thread_name)
-            logger.warning("Stack trace for thread %s:", thread_id)
-            traceback.print_exc()
-            _thread.interrupt_main()
-            raise
-        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
-            # Surface unexpected errors and keep behavior consistent
-            logger.warning("Watcher thread error in %s: %s", thread_name, e)
-            traceback.print_exc()
-
-    @property
-    def thread(self) -> threading.Thread | None:
-        return self._thread
-
-
-class _RunningProcessLineIterator(AbstractContextManager[Iterator[str]], Iterator[str]):
-    """Context-managed iterator over a RunningProcess's output lines.
-
-    Yields only strings (never None). Stops on EndOfStream or when a per-line
-    timeout elapses.
-    """
-
-    def __init__(self, rp: "RunningProcess", timeout: float | None) -> None:
-        self._rp = rp
-        self._timeout = timeout
-
-    # Context manager protocol
-    def __enter__(self) -> "_RunningProcessLineIterator":
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: Any | None,
-    ) -> bool:
-        # Do not suppress exceptions
-        return False
-
-    # Iterator protocol
-    def __iter__(self) -> Iterator[str]:
-        return self
-
-    def __next__(self) -> str:
-        next_item: str | EndOfStream = self._rp.get_next_line(timeout=self._timeout)
-
-        if isinstance(next_item, EndOfStream):
-            raise StopIteration
-
-        # Must be a string by contract
-        return next_item
 
 
 class RunningProcess:
@@ -458,6 +221,17 @@ class RunningProcess:
             else:  # must be list[str] since command: str | list[str]
                 shell_meta = {"&&", "||", "|", ";", ">", "<", "2>", "&"}
                 shell = any(part in shell_meta for part in command)
+
+        # Validate shell metacharacters when shell=False
+        if shell is False and isinstance(command, list):
+            shell_meta = {"&&", "||", "|", ";", ">", "<", "2>", "&"}
+            found_meta = [part for part in command if part in shell_meta]
+            if found_meta:
+                error_message = (
+                    f"Shell metacharacters {found_meta} found in command but shell=False. "
+                    f"Either set shell=True or remove shell metacharacters from the command."
+                )
+                raise ValueError(error_message)
         self.command = command
         self.shell: bool = shell
         self.cwd = str(cwd) if cwd is not None else None
@@ -465,8 +239,7 @@ class RunningProcess:
         self.accumulated_output: list[str] = []  # Store all output for later retrieval
         self.proc: subprocess.Popen[Any] | None = None
         self.check = check
-        # Force auto_run to False if NO_PARALLEL is set
-        self.auto_run = False if os.environ.get("NO_PARALLEL") else auto_run
+        self.auto_run = auto_run
         self.timeout = timeout
         self.on_timeout = on_timeout
         self.on_complete = on_complete
@@ -480,7 +253,7 @@ class RunningProcess:
         self._time_last_stdout_line: float | None = None
         self._termination_notified: bool = False
         if auto_run:
-            self.run()
+            self.start()
 
     def get_command_str(self) -> str:
         if isinstance(self.command, list):
@@ -648,7 +421,7 @@ class RunningProcess:
         self._watcher.start()
         self.watcher_thread = self._watcher.thread
 
-    def run(self) -> None:
+    def start(self) -> None:
         """
         Execute the command and stream its output to the queue.
 
@@ -1095,6 +868,41 @@ class RunningProcess:
         """
         return _RunningProcessLineIterator(self, timeout)
 
+    @staticmethod
+    def run(
+        command: str | list[str],
+        cwd: Path | None,
+        check: bool,
+        timeout: int,
+        on_timeout: Callable[[ProcessInfo], None] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Public static accessor for subprocess.run() replacement.
+
+        Execute a command with robust stdout handling, emulating subprocess.run().
+
+        Uses RunningProcess as the backend to provide:
+        - Continuous stdout streaming to prevent pipe blocking
+        - Merged stderr into stdout for unified output
+        - Timeout protection with optional stack trace dumping
+        - Standard subprocess.CompletedProcess return value
+
+        Args:
+            command: Command to execute as string or list of arguments.
+            cwd: Working directory for command execution. Required parameter.
+            check: If True, raise CalledProcessError for non-zero exit codes.
+            timeout: Maximum execution time in seconds.
+            on_timeout: Callback function executed when process times out.
+
+        Returns:
+            CompletedProcess with combined stdout and process return code.
+            stderr field is None since it's merged into stdout.
+
+        Raises:
+            RuntimeError: If process times out (wraps TimeoutError).
+            CalledProcessError: If check=True and process exits with non-zero code.
+        """
+        return execute_subprocess_run(command, cwd, check, timeout, on_timeout)
+
 
 # NOTE: RunningProcessManager and its singleton live in running_process_manager.py
 
@@ -1106,14 +914,9 @@ def subprocess_run(
     timeout: int,
     on_timeout: Callable[[ProcessInfo], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """
-    Execute a command with robust stdout handling, emulating subprocess.run().
+    """Execute a command with robust stdout handling, emulating subprocess.run().
 
-    Uses RunningProcess as the backend to provide:
-    - Continuous stdout streaming to prevent pipe blocking
-    - Merged stderr into stdout for unified output
-    - Timeout protection with optional stack trace dumping
-    - Standard subprocess.CompletedProcess return value
+    This is a backward compatibility wrapper for the static method RunningProcess.run().
 
     Args:
         command: Command to execute as string or list of arguments.
@@ -1130,46 +933,4 @@ def subprocess_run(
         RuntimeError: If process times out (wraps TimeoutError).
         CalledProcessError: If check=True and process exits with non-zero code.
     """
-    # Use RunningProcess for robust stdout pumping with merged stderr
-    proc = RunningProcess(
-        command=command,
-        cwd=cwd,
-        check=False,
-        auto_run=True,
-        timeout=timeout,
-        on_timeout=on_timeout,
-        on_complete=None,
-        output_formatter=None,
-    )
-
-    try:
-        return_code: int = proc.wait()
-    except KeyboardInterrupt:
-        # Propagate interrupt behavior consistent with subprocess.run
-        raise
-    except TimeoutError as e:
-        # Align with subprocess.TimeoutExpired semantics by raising a CalledProcessError-like
-        # error with available output. Using TimeoutError here is consistent with internal RP.
-        error_message = f"CRITICAL: Process timed out after {timeout} seconds: {command}"
-        raise RuntimeError(error_message) from e
-
-    combined_stdout: str = proc.stdout
-
-    # Construct CompletedProcess (stderr is merged into stdout by design)
-    completed = subprocess.CompletedProcess(
-        args=command,
-        returncode=return_code,
-        stdout=combined_stdout,
-        stderr=None,
-    )
-
-    if check and return_code != 0:
-        # Raise the standard exception with captured output
-        raise subprocess.CalledProcessError(
-            returncode=return_code,
-            cmd=command,
-            output=combined_stdout,
-            stderr=None,
-        )
-
-    return completed
+    return RunningProcess.run(command, cwd, check, timeout, on_timeout)

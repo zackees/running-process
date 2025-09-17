@@ -1,235 +1,170 @@
-# Running Process Refactoring Analysis
+# RunningProcess Class Refactoring Analysis
 
-## Current Implementation Analysis
+## Executive Summary
 
-### dump_stack_trace() - ✅ COMPLETED
-~~Currently implemented as a hardcoded GDB-based stack dump in `RunningProcess.dump_stack_trace()` at running_process.py:345. **This approach is too rigid** - different users need different debugging approaches (GDB, pstack, custom profilers, etc.).~~
+The `running_process.py` file contains 1,176 lines of code in a single monolithic class `RunningProcess` with 3 supporting classes. This analysis identifies 8 major functional clusters that can be extracted into separate classes to improve maintainability, testability, and adherence to single responsibility principle.
 
-✅ **REFACTORED**: Removed the hardcoded `dump_stack_trace()` method and replaced with flexible callback-based system.
+## Current Architecture Issues
 
-### _handle_timeout() - ✅ COMPLETED
-~~This function (running_process.py:393) currently has hardcoded stack trace dumping logic. **Should be refactored** to accept a user-provided timeout callback instead of the boolean `enable_stack_trace` flag.~~
+- **Single Responsibility Violation**: The `RunningProcess` class handles process creation, output management, timeout handling, lifecycle management, and more
+- **High Complexity**: Three methods exceed complexity thresholds:
+  - `ProcessOutputReader.run()` (complexity 12)
+  - `RunningProcess.get_next_line()` (complexity 16)
+  - `RunningProcess.wait()` (complexity 20)
+- **Large Class**: 1,176 lines with 35+ methods indicates over-responsibility
+- **Tight Coupling**: Multiple concerns mixed together making testing and modification difficult
 
-✅ **REFACTORED**: Now accepts user-provided `on_timeout` callback instead of boolean flag. Timeout handlers receive `ProcessInfo` context.
+## Major Functional Clusters Identified
 
-## Architecture Questions Answered
+### 1. Process Creation & Configuration (Lines 421-590)
+**Purpose**: Handle subprocess creation and initial setup
+**Key Methods**:
+- `__init__()` (lines 421-483)
+- `_prepare_command()` (lines 569-574)
+- `_create_process()` (lines 576-593)
+- `get_command_str()` (lines 485-488)
 
-### How does it enforce easy stdout reading?
-- **ProcessOutputReader**: Dedicated threaded reader (line 35) that drains stdout to prevent blocking
-- **Queue-based streaming**: Non-blocking `get_next_line()` and `get_next_line_non_blocking()` methods
-- **Iterator interface**: `line_iter()` provides context-managed iteration over output lines
-- **Accumulated output**: All output stored in `accumulated_output` list for later retrieval via `.stdout` property
+**Refactor Suggestion**: Extract to `ProcessBuilder` class
+- Handles command validation, shell detection, and subprocess.Popen creation
+- Cleaner separation of process configuration from execution
 
-### How does it enforce easy timeout protection?
-- **Dual timeout enforcement**: Both global process timeout and per-line timeout support
-- **ProcessWatcher**: Independent background watcher thread that enforces timeouts even if main thread is blocked
-- **Configurable timeouts**: Instance-level timeout + method-level timeout override in `wait()`
-- **Timeout actions**: Automatic process killing and optional stack trace dumping
+### 2. Output Queue Management (Lines 528-792)
+**Purpose**: Manage the output queue and line retrieval
+**Key Methods**:
+- `get_next_line()` (lines 734-772) - **HIGH COMPLEXITY (16)**
+- `get_next_line_non_blocking()` (lines 774-791)
+- `drain_stdout()` (lines 528-550)
+- `has_pending_output()` (lines 552-567)
+- All `_handle_immediate_timeout()`, `_peek_for_end_of_stream()`, etc. helper methods
 
-### How does it enforce easy stack trace dumping? - ✅ IMPLEMENTED
-✅ **Callback-based timeout handling implemented**: Users now provide their own debugging logic:
-- **Custom timeout handlers**: Users supply their own debugging callback (GDB, pstack, custom profilers)
-- **Flexible debugging**: Each user can implement debugging appropriate for their environment
-- **Process context provided**: Timeout callback receives `ProcessInfo` object with (PID, command, duration)
-- **Thread-safe**: Callback executed from timeout detection thread
-- **No hardcoded dependencies**: Removed rigid GDB-only approach
+**Refactor Suggestion**: Extract to `OutputQueue` class
+- Dedicated responsibility for queue operations and line retrieval
+- Would significantly reduce complexity of `get_next_line()`
 
-### How does it enforce easy process tree termination?
-- **process_utils.kill_process_tree()**: Uses psutil to recursively terminate all child processes
-- **Graceful then forceful**: First attempts SIGTERM, then SIGKILL after timeout
-- **Integrated into kill()**: Called automatically from `RunningProcess.kill()` method
+### 3. Timeout Management (Lines 504-526, 821-827)
+**Purpose**: Handle global and operation-specific timeouts
+**Key Methods**:
+- `_handle_timeout()` (lines 504-526)
+- `_check_process_timeout()` (lines 821-827)
+- `_create_process_info()` (lines 490-499)
+- `_check_timeout_expired()` (lines 721-725)
 
-### How does it enforce easy process tree killing?
-- **Built into kill() method**: Line 863 calls `kill_process_tree(self.proc.pid)`
-- **Prevents orphans**: Ensures no child processes remain after parent termination
-- **Exception handling**: Graceful fallback to simple kill if tree kill fails
+**Refactor Suggestion**: Extract to `TimeoutManager` class
+- Centralized timeout logic with callback execution
+- Would reduce complexity in wait operations
 
-### How does it prevent orphaned processes?
-- **Process tree killing**: `kill_process_tree()` kills all children recursively
-- **Registration system**: `RunningProcessManager` tracks all active processes
-- **Cleanup on exit**: Ensures all processes are terminated on shutdown
-- **Signal handling**: Keyboard interrupts propagate to kill process trees
+### 4. Thread Management (Lines 629-671, 866-873)
+**Purpose**: Coordinate reader and watcher threads
+**Key Methods**:
+- `_start_reader_thread()` (lines 629-643)
+- `_start_watcher_thread()` (lines 645-649)
+- `_cleanup_reader_thread()` (lines 866-873)
+- `_register_with_manager()` (lines 595-601)
 
-### How does it handle keyboard interrupts?
-- **Thread-safe interrupts**: `_thread.interrupt_main()` propagates interrupts from worker threads
-- **ProcessOutputReader**: Catches KeyboardInterrupt and terminates process (line 143)
-- **ProcessWatcher**: Handles interrupts in watcher thread (line 211)
-- **Graceful cleanup**: Interrupts trigger proper process termination
+**Refactor Suggestion**: Extract to `ThreadCoordinator` class
+- Manages thread lifecycle and coordination
+- Handles registration with process manager
 
-### How does it handle process completion?
-- **Multiple detection paths**: `poll()`, `wait()`, and reader thread all detect completion
-- **Callback system**: `on_complete` callback executed on normal completion
-- **Thread synchronization**: Reader thread signals completion via `_on_reader_end` callback
-- **Cleanup coordination**: `_notify_terminated()` ensures single cleanup execution
+### 5. Process Lifecycle & State (Lines 793-812, 1016-1071)
+**Purpose**: Track process state and handle termination
+**Key Methods**:
+- `poll()` (lines 793-807)
+- `finished` property (lines 810-811)
+- `_notify_terminated()` (lines 1016-1035)
+- `kill()` (lines 968-1014)
+- `terminate()` (lines 1037-1048)
+- Timing properties: `start_time`, `end_time`, `duration`
 
-### How does it prevent hanging?
-- **Non-blocking queues**: Output queue with timeout-based access prevents blocking
-- **Thread-based pumping**: ProcessOutputReader continuously drains stdout
-- **Timeout enforcement**: Multiple timeout mechanisms prevent indefinite waits
-- **Process watching**: Independent watcher thread ensures processes don't hang
+**Refactor Suggestion**: Extract to `ProcessLifecycle` class
+- Dedicated state tracking and termination handling
+- Cleaner separation of concerns
 
-### How does it allow deferred handling of printing of stdout streams?
-- **Output formatters**: `OutputFormatter` protocol allows custom output transformation
-- **Separated concerns**: Reading/queuing separate from printing/display
-- **Echo mode**: `wait(echo=True)` provides deferred printing during wait
-- **Accumulated storage**: All output stored for later access via `.stdout` property
+### 6. Wait Operations (Lines 922-966)
+**Purpose**: Core waiting logic with echo and timeout handling
+**Key Methods**:
+- `wait()` (lines 922-966) - **HIGH COMPLEXITY (20)**
+- Multiple helper methods for wait phases
+- Echo handling and completion callbacks
 
-## Ideal API Design
+**Refactor Suggestion**: Extract to `WaitManager` class
+- Would dramatically reduce `wait()` method complexity
+- Cleaner separation of waiting concerns
 
-Based on the analysis, the current API is well-designed but could benefit from these enhancements:
+### 7. Echo & Output Formatting (Lines 813-857)
+**Purpose**: Handle output echoing and formatting
+**Key Methods**:
+- `_echo_output_lines()` (lines 813-819)
+- `_handle_echo_output()` (lines 828-834)
+- Output formatting integration
+- Echo callback normalization (lines 135-161)
 
-```python
-# Custom timeout handler for GDB stack dumping
-def gdb_timeout_handler(process_info):
-    """Custom timeout handler that uses GDB for stack traces."""
-    pid = process_info.pid
-    command = process_info.command
-    duration = process_info.duration
+**Refactor Suggestion**: Extract to `OutputHandler` class
+- Centralized output processing and echoing
+- Better integration with formatters
 
-    print(f"Process {pid} ({command}) timed out after {duration}s")
-    # User implements their preferred debugging approach
-    gdb_output = subprocess.run([
-        "gdb", "-batch", "-ex", f"attach {pid}",
-        "-ex", "bt", "-ex", "detach"
-    ], capture_output=True, text=True)
-    print("Stack trace:", gdb_output.stdout)
+### 8. Line Iteration Interface (Lines 1087-1096)
+**Purpose**: Provide iterator interface for output consumption
+**Key Components**:
+- `line_iter()` method
+- `_RunningProcessLineIterator` class (lines 367-402)
 
-# Core process execution with callback-based timeout handling
-process = RunningProcess(
-    command=["python", "script.py"],
-    timeout=30,                    # Global timeout
-    on_timeout=gdb_timeout_handler, # User-provided timeout handler
-    on_complete=lambda: print("Done!")  # Completion callback
-)
+**Refactor Suggestion**: Could be integrated with `OutputQueue` class
+- Keep iterator close to queue management
 
-# Easy stdout consumption patterns
-for line in process.line_iter(timeout=1.0):  # Per-line timeout
-    print(f"Output: {line}")
+## Supporting Classes Analysis
 
-# Non-blocking polling
-while not process.finished:
-    line = process.get_next_line_non_blocking()
-    if line:
-        handle_output(line)
-    time.sleep(0.1)
+### ProcessOutputReader (Lines 170-302)
+- **Status**: Well-designed, single responsibility ✅
+- **Complexity**: Method `run()` has complexity 12 - could benefit from extraction
+- **Recommendation**: Minor refactoring to reduce `run()` complexity
 
-# Immediate access to all output
-process.wait()
-print(process.stdout)  # All accumulated output
+### ProcessWatcher (Lines 305-365)
+- **Status**: Well-designed, single responsibility ✅
+- **Recommendation**: No major changes needed
 
-# Advanced: Custom output formatting
-class JSONFormatter(OutputFormatter):
-    def transform(self, line: str) -> str:
-        return json.dumps({"timestamp": time.time(), "output": line})
+### ProcessInfo (Lines 122-129)
+- **Status**: Simple data class, well-designed ✅
+- **Recommendation**: No changes needed
 
-# Built-in time delta formatter for timing analysis
-from running_process import TimeDeltaFormatter
+## Recommended Refactoring Strategy
 
-process = RunningProcess(
-    command=["make", "build"],
-    output_formatter=TimeDeltaFormatter(),  # Prefixes lines with "[1.23] output"
-    timeout=300
-)
+### Phase 1: Extract Core Managers
+1. **ProcessBuilder** - Handle process creation and configuration
+2. **OutputQueue** - Manage output queue and line retrieval
+3. **TimeoutManager** - Centralize timeout handling
 
-# Custom formatter with JSON output
-process = RunningProcess(
-    command=["pytest", "tests/"],
-    output_formatter=JSONFormatter(),
-    timeout=300
-)
+### Phase 2: Extract Coordination Classes
+4. **ThreadCoordinator** - Manage thread lifecycle
+5. **ProcessLifecycle** - Handle state and termination
+6. **WaitManager** - Coordinate waiting operations
 
-# Alternative timeout handlers for different needs
-def pstack_timeout_handler(process_info):
-    """Alternative timeout handler using pstack (Solaris/Linux)."""
-    subprocess.run(["pstack", str(process_info.pid)])
+### Phase 3: Extract Interface Classes
+7. **OutputHandler** - Handle echoing and formatting
+8. Integrate line iteration with **OutputQueue**
 
-def custom_profiler_handler(process_info):
-    """Custom timeout handler with application-specific profiling."""
-    # Send SIGUSR1 to trigger application's built-in profiling
-    os.kill(process_info.pid, signal.SIGUSR1)
-    print(f"Sent profiling signal to {process_info.command}")
+### Phase 4: Refactor RunningProcess
+- Reduce to orchestrator role using composition
+- Delegate to specialized managers
+- Maintain public API compatibility
 
-# Simplified subprocess.run() replacement with callback support
-result = subprocess_run(
-    command=["git", "status"],
-    cwd=Path("/project"),
-    timeout=10,
-    check=True,
-    on_timeout=None  # No timeout debugging needed for simple commands
-)
-print(result.stdout)
+## Expected Benefits
 
-# The new API is now implemented and ready for use!
-```
+1. **Reduced Complexity**: Breaking down high-complexity methods
+2. **Better Testability**: Smaller, focused classes easier to unit test
+3. **Improved Maintainability**: Single responsibility per class
+4. **Enhanced Readability**: Clearer separation of concerns
+5. **Easier Extension**: New features can be added to specific managers
 
-## Recommended API Improvements
+## Risk Assessment
 
-1. ✅ **Replace hardcoded stack tracing with callback system**: ~~Remove `enable_stack_trace` boolean and `dump_stack_trace()` method. Add `on_timeout` callback parameter that receives process context.~~ **COMPLETED**
+- **Low Risk**: Extraction maintains existing public API
+- **High Test Coverage Needed**: Ensure behavioral compatibility
+- **Gradual Migration**: Can be done incrementally without breaking changes
 
-2. **Add process events system**: Observable events for start, output, timeout, completion
+## Complexity Reduction Targets
 
-3. **Enhance output formatters**: ✅ Added TimeDeltaFormatter for timing analysis. Consider additional built-in formatters (JSON, colored output)
+- `RunningProcess.wait()`: 20 → ~8 (extract to WaitManager)
+- `RunningProcess.get_next_line()`: 16 → ~6 (extract to OutputQueue)
+- `ProcessOutputReader.run()`: 12 → ~6 (extract error handling)
 
-4. **Process groups**: Manage multiple related processes as a unit
-
-5. **Streaming to files**: Direct output streaming to files without memory accumulation
-
-6. **Better keyboard interrupt handling**: More granular control over interrupt behavior
-
-## Refactoring Status
-
-✅ **COMPLETED**: The hardcoded GDB stack trace system has been successfully replaced with the callback-based approach. This removes inflexible debugging code and gives users full control over timeout handling while maintaining the robust timeout detection infrastructure.
-
-### Code Quality Improvements - ✅ COMPLETED
-
-**Method Complexity Reduction**: Successfully broke down high-complexity methods identified in CLAUDE.md:
-- ✅ **ProcessOutputReader.run()**: Split into `_run_with_error_handling()` and `_perform_final_cleanup()`
-- ✅ **RunningProcess.get_next_line()**: Extracted `_check_timeout_expired()` and `_wait_for_output_or_completion()`
-- ✅ **RunningProcess.wait()**: Extracted multiple helper methods (`_validate_process_started()`, `_determine_effective_timeout()`, etc.)
-
-## Implementation Notes
-
-### Command Validation
-✅ **Implemented**: RunningProcess now validates that string commands require `shell=True`. This prevents common errors where users pass string commands with `shell=False`.
-
-```python
-# This will raise ValueError
-RunningProcess("python script.py", shell=False)  # ERROR
-
-# These are valid
-RunningProcess("python script.py", shell=True)   # OK
-RunningProcess(["python", "script.py"])          # OK, shell auto-detected as False
-```
-
-### TimeDeltaFormatter
-✅ **Implemented**: New built-in formatter that prefixes each output line with elapsed time since process start in format `[1.23] output`. Useful for performance analysis and debugging timing issues.
-
-## Refactoring Results - ✅ COMPLETED (2025-09-16)
-
-### Changes Made:
-1. **API Changes**:
-   - Removed: `enable_stack_trace: bool` parameter
-   - Removed: `dump_stack_trace()` method
-   - Added: `on_timeout: Callable[[ProcessInfo], None]` parameter
-   - Added: `ProcessInfo` dataclass with `pid`, `command`, `duration` fields
-
-2. **Code Quality**:
-   - Reduced method complexity by extracting helper methods
-   - Improved modularity and maintainability
-   - All lint checks passing (ruff, black, isort, pyright)
-
-3. **Testing**:
-   - Updated all test cases to use new API
-   - All 31 tests passing
-   - Maintained backward compatibility for core functionality
-
-4. **Documentation**:
-   - Updated function signatures and docstrings
-   - Maintained example code compatibility
-
-### Benefits Achieved:
-- ✅ **Flexibility**: Users can now implement any debugging strategy (GDB, pstack, custom profilers)
-- ✅ **Clean Code**: Reduced method complexity and improved readability
-- ✅ **Maintainability**: Better separation of concerns and modular design
-- ✅ **Robustness**: All existing functionality preserved with enhanced flexibility
-
+This refactoring would transform a 1,176-line monolithic class into a clean, composable architecture while maintaining full backward compatibility.

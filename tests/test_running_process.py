@@ -15,7 +15,8 @@ import unittest
 from pathlib import Path
 
 from running_process import RunningProcess
-from running_process.running_process import EndOfStream, subprocess_run
+from running_process.process_output_reader import EndOfStream
+from running_process.running_process import subprocess_run
 
 
 class TestBasicExecution(unittest.TestCase):
@@ -24,7 +25,7 @@ class TestBasicExecution(unittest.TestCase):
     def test_simple_echo_command(self):
         """Test basic echo command execution."""
         process = RunningProcess(["echo", "Hello World"], auto_run=False)
-        process.run()
+        process.start()
         exit_code = process.wait()
 
         self.assertEqual(exit_code, 0)
