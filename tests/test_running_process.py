@@ -4,6 +4,8 @@ These tests cover the most common use cases without using mocks,
 testing real process execution and behavior.
 """
 
+import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -278,9 +280,7 @@ class TestSubprocessRun(unittest.TestCase):
 
     def test_subprocess_run_basic(self):
         """Test basic subprocess_run functionality."""
-        result = subprocess_run(
-            command=["echo", "subprocess_run test"], cwd=None, check=False, timeout=10, enable_stack_trace=False
-        )
+        result = subprocess_run(command=["echo", "subprocess_run test"], cwd=None, check=False, timeout=10)
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("subprocess_run test", result.stdout)
@@ -294,7 +294,6 @@ class TestSubprocessRun(unittest.TestCase):
                 cwd=Path(temp_dir),
                 check=False,
                 timeout=10,
-                enable_stack_trace=False,
             )
 
             self.assertEqual(result.returncode, 0)
@@ -308,7 +307,6 @@ class TestSubprocessRun(unittest.TestCase):
             cwd=None,
             check=True,
             timeout=10,
-            enable_stack_trace=False,
         )
 
         self.assertEqual(result.returncode, 0)
@@ -317,9 +315,7 @@ class TestSubprocessRun(unittest.TestCase):
     def test_subprocess_run_with_check_true_failure(self):
         """Test subprocess_run with check=True for failing command."""
         with self.assertRaises(subprocess.CalledProcessError) as cm:
-            subprocess_run(
-                command=[sys.executable, "-c", "exit(1)"], cwd=None, check=True, timeout=10, enable_stack_trace=False
-            )
+            subprocess_run(command=[sys.executable, "-c", "exit(1)"], cwd=None, check=True, timeout=10)
 
         self.assertEqual(cm.exception.returncode, 1)
 
@@ -331,7 +327,6 @@ class TestSubprocessRun(unittest.TestCase):
                 cwd=None,
                 check=False,
                 timeout=1,
-                enable_stack_trace=False,
             )
 
 
@@ -383,3 +378,58 @@ for i in range(100):
 
         exit_code = process.wait()
         self.assertEqual(exit_code, 0)
+
+
+class TestEchoCallback(unittest.TestCase):
+    """Test echo callback functionality."""
+
+    def test_echo_boolean_true(self):
+        """Test echo=True converts to print function."""
+        process = RunningProcess(["echo", "test output"])
+
+        # Capture stdout to verify print was called
+        captured_output = io.StringIO()
+        with contextlib.redirect_stdout(captured_output):
+            exit_code = process.wait(echo=True)
+
+        self.assertEqual(exit_code, 0)
+        output_lines = captured_output.getvalue().strip()
+        # Should contain the echoed output
+        self.assertIn("test output", output_lines)
+
+    def test_echo_boolean_false(self):
+        """Test echo=False produces no output."""
+        process = RunningProcess(["echo", "test output"])
+
+        captured_output = io.StringIO()
+        with contextlib.redirect_stdout(captured_output):
+            exit_code = process.wait(echo=False)
+
+        self.assertEqual(exit_code, 0)
+        output_lines = captured_output.getvalue().strip()
+        # Should not contain any echoed output
+        self.assertEqual(output_lines, "")
+
+    def test_echo_custom_callback(self):
+        """Test echo with custom callback function."""
+        captured_lines = []
+
+        def custom_callback(line: str):
+            captured_lines.append(f"CUSTOM: {line}")
+
+        process = RunningProcess(["echo", "test callback"])
+        exit_code = process.wait(echo=custom_callback)
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(len(captured_lines) > 0)
+        # Should have our custom prefix
+        self.assertTrue(any("CUSTOM: test callback" in line for line in captured_lines))
+
+    def test_echo_invalid_type(self):
+        """Test echo with invalid type raises TypeError."""
+        process = RunningProcess(["echo", "test"])
+
+        with self.assertRaises(TypeError) as cm:
+            process.wait(echo="invalid")  # type: ignore[arg-type]  # intentionally invalid
+
+        self.assertIn("echo must be bool or callable", str(cm.exception))

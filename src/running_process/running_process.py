@@ -6,13 +6,13 @@ import os
 import queue
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import traceback
 import warnings
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
 from typing import Any
@@ -23,6 +23,40 @@ from running_process.running_process_manager import RunningProcessManagerSinglet
 
 # Create module-level logger
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProcessInfo:
+    """Information about a process passed to timeout callbacks."""
+
+    pid: int
+    command: str | list[str]
+    duration: float
+
+
+# Type alias for echo callbacks
+EchoCallback = Callable[[str], None]
+
+
+def _normalize_echo_callback(echo: bool | EchoCallback) -> EchoCallback | None:
+    """Normalize echo parameter to a callback function or None.
+
+    Args:
+        echo: Either a boolean or a callback function.
+              True converts to print function, False to None.
+
+    Returns:
+        Callback function or None if echo is False.
+    """
+    if echo is True:
+        return print
+    if echo is False:
+        return None
+    if callable(echo):
+        return echo
+
+    error_msg = f"echo must be bool or callable, got {type(echo).__name__}"
+    raise TypeError(error_msg)
 
 
 class EndOfStream:
@@ -132,32 +166,39 @@ class ProcessOutputReader:
             formatter_end_error_msg = f"Output formatter end() failed: {e}"
             warnings.warn(formatter_end_error_msg, stacklevel=2)
 
+    def _run_with_error_handling(self) -> None:
+        """Run stdout processing with error handling."""
+        try:
+            self._process_stdout_lines()
+        except KeyboardInterrupt:
+            self._handle_keyboard_interrupt()
+            raise
+        except (ValueError, OSError) as e:
+            self._handle_io_error(e)
+        finally:
+            # Signal end-of-stream to consumers exactly once
+            self._emit_eos_once()
+
+    def _perform_final_cleanup(self) -> None:
+        """Perform final cleanup operations."""
+        # Cleanup stream and invoke completion callback
+        self._cleanup_stdout()
+
+        # Notify parent for timing/unregistration
+        try:
+            self._on_end()
+        finally:
+            # End formatter lifecycle within the reader context
+            self._finalize_formatter()
+
     def run(self) -> None:
         """Continuously read stdout lines and forward them until EOF or shutdown."""
         try:
             # Begin formatter lifecycle within the reader context
             self._initialize_formatter()
-
-            try:
-                self._process_stdout_lines()
-            except KeyboardInterrupt:
-                self._handle_keyboard_interrupt()
-                raise
-            except (ValueError, OSError) as e:
-                self._handle_io_error(e)
-            finally:
-                # Signal end-of-stream to consumers exactly once
-                self._emit_eos_once()
+            self._run_with_error_handling()
         finally:
-            # Cleanup stream and invoke completion callback
-            self._cleanup_stdout()
-
-            # Notify parent for timing/unregistration
-            try:
-                self._on_end()
-            finally:
-                # End formatter lifecycle within the reader context
-                self._finalize_formatter()
+            self._perform_final_cleanup()
 
 
 class ProcessWatcher:
@@ -192,15 +233,13 @@ class ProcessWatcher:
                         self._rp.timeout,
                         self._rp.command,
                     )
-                    if self._rp.enable_stack_trace:
+                    # Execute user-provided timeout callback if available
+                    if self._rp.on_timeout is not None:
                         try:
-                            logger.warning("\n%s", "=" * 80)
-                            logger.warning("STACK TRACE DUMP (GDB Output)")
-                            logger.warning("%s", "=" * 80)
-                            logger.warning(self._rp.dump_stack_trace())
-                            logger.warning("%s", "=" * 80)
-                        except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as e:
-                            logger.warning("Watcher stack trace dump failed: %s", e)
+                            process_info = self._rp._create_process_info()  # noqa: SLF001
+                            self._rp.on_timeout(process_info)
+                        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+                            logger.warning("Watcher timeout callback failed: %s", e)
                     self._rp.kill()
                     break
 
@@ -286,7 +325,7 @@ class RunningProcess:
         auto_run: bool = True,
         shell: bool | None = None,
         timeout: int | None = None,  # None means no global timeout
-        enable_stack_trace: bool = False,  # Enable stack trace dumping on timeout
+        on_timeout: Callable[[ProcessInfo], None] | None = None,  # Callback to execute on timeout
         on_complete: Callable[[], None] | None = None,  # Callback to execute when process completes
         output_formatter: OutputFormatter | None = None,
     ) -> None:
@@ -302,7 +341,7 @@ class RunningProcess:
             auto_run: If True, automatically start the command when instance is created.
             shell: Shell execution mode. None auto-detects based on command type.
             timeout: Global timeout in seconds for process execution. None disables timeout.
-            enable_stack_trace: If True, dump GDB stack trace when process times out.
+            on_timeout: Callback function executed when process times out. Receives ProcessInfo.
             on_complete: Callback function executed when process completes normally.
             output_formatter: Optional formatter for transforming output lines.
         """
@@ -328,7 +367,7 @@ class RunningProcess:
         # Force auto_run to False if NO_PARALLEL is set
         self.auto_run = False if os.environ.get("NO_PARALLEL") else auto_run
         self.timeout = timeout
-        self.enable_stack_trace = enable_stack_trace
+        self.on_timeout = on_timeout
         self.on_complete = on_complete
         # Always keep a non-None formatter
         self.output_formatter = output_formatter if output_formatter is not None else NullOutputFormatter()
@@ -347,80 +386,39 @@ class RunningProcess:
             return subprocess.list2cmdline(self.command)
         return self.command
 
-    def dump_stack_trace(self) -> str:
-        """
-        Dump stack trace of the running process using GDB.
-
-        Returns:
-            str: GDB output containing stack trace information.
-        """
-        if self.proc is None:
-            return "No process to dump stack trace for."
-
-        try:
-            # Get the process ID
+    def _create_process_info(self) -> ProcessInfo:
+        """Create ProcessInfo for timeout callbacks."""
+        if self.proc is None or self._start_time is None:
+            duration = 0.0
+            pid = 0
+        else:
+            duration = time.time() - self._start_time
             pid = self.proc.pid
 
-            # Create GDB script for attaching to running process
-            with tempfile.NamedTemporaryFile(mode="w+", delete=False) as gdb_script:
-                gdb_script.write("set pagination off\n")
-                gdb_script.write(f"attach {pid}\n")
-                gdb_script.write("bt full\n")
-                gdb_script.write("info registers\n")
-                gdb_script.write("x/16i $pc\n")
-                gdb_script.write("thread apply all bt full\n")
-                gdb_script.write("detach\n")
-                gdb_script.write("quit\n")
-
-            # Run GDB to get stack trace
-            gdb_command = f"gdb -batch -x {gdb_script.name}"
-            gdb_process = subprocess.Popen(  # noqa: S602
-                gdb_command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                shell=True,  # Required for GDB execution
-                text=True,
-            )
-
-            gdb_output, _ = gdb_process.communicate(timeout=30)  # 30 second timeout for GDB
-
-            # Clean up GDB script
-            Path(gdb_script.name).unlink()
-
-        except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-            return f"Failed to dump stack trace: {e}"
-        else:
-            return gdb_output
+        return ProcessInfo(pid=pid, command=self.command, duration=duration)
 
     def time_last_stdout_line(self) -> float | None:
         return self._time_last_stdout_line
 
-    def _handle_timeout(self, timeout: float, echo: bool = False) -> None:
-        """Handle process timeout with optional stack trace and cleanup."""
+    def _handle_timeout(self, timeout: float, echo_callback: EchoCallback | None = None) -> None:
+        """Handle process timeout with optional callback and cleanup."""
         cmd_str = self.get_command_str()
 
         # Drain any remaining output before killing if echo is enabled
-        if echo:
+        if echo_callback is not None:
             remaining_lines = self.drain_stdout()
             for line in remaining_lines:
-                logger.info(line)
+                echo_callback(line)
             if remaining_lines:
-                logger.info("[Drained %d final lines before timeout]", len(remaining_lines))
+                echo_callback(f"[Drained {len(remaining_lines)} final lines before timeout]")
 
-        if self.enable_stack_trace:
-            logger.warning("\nProcess timeout after %s seconds, dumping stack trace...", timeout)
-            logger.warning("Command: %s", cmd_str)
-            logger.warning("Process ID: %s", self.proc.pid if self.proc else None)
-
+        # Execute user-provided timeout callback if available
+        if self.on_timeout is not None:
             try:
-                stack_trace = self.dump_stack_trace()
-                logger.warning("\n%s", "=" * 80)
-                logger.warning("STACK TRACE DUMP (GDB Output)")
-                logger.warning("%s", "=" * 80)
-                logger.warning(stack_trace)
-                logger.warning("%s", "=" * 80)
-            except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as e:
-                logger.warning("Failed to dump stack trace: %s", e)
+                process_info = self._create_process_info()
+                self.on_timeout(process_info)
+            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+                logger.warning("Timeout callback failed: %s", e)
 
         logger.warning("Killing timed out process: %s", cmd_str)
         self.kill()
@@ -620,6 +618,19 @@ class RunningProcess:
         else:
             return item
 
+    def _check_timeout_expired(self, expired_time: float | None, timeout: float | None) -> None:
+        """Check if timeout has expired and raise TimeoutError if so."""
+        if expired_time is not None and time.time() > expired_time:
+            timeout_msg = f"Timeout after {timeout} seconds"
+            raise TimeoutError(timeout_msg)
+
+    def _wait_for_output_or_completion(self) -> bool:
+        """Wait briefly for output or process completion. Returns True if should continue waiting."""
+        if self.output_queue.empty():
+            time.sleep(0.01)
+            return not (self.finished and self.output_queue.empty())  # Stop waiting if process finished
+        return False  # Queue has items, stop waiting
+
     def get_next_line(self, timeout: float | None = None) -> str | EndOfStream:
         """
         Get the next line of output from the process.
@@ -644,19 +655,14 @@ class RunningProcess:
         expired_time = time.time() + timeout if timeout is not None else None
 
         while True:
-            if expired_time is not None and time.time() > expired_time:
-                timeout_msg = f"Timeout after {timeout} seconds"
-                raise TimeoutError(timeout_msg)
+            self._check_timeout_expired(expired_time, timeout)
 
             # Check if EndOfStream is at the front
             if self._peek_for_end_of_stream():
                 return EndOfStream()
 
-            # Nothing available yet; wait briefly in blocking mode
-            if self.output_queue.empty():
-                time.sleep(0.01)
-                if self.finished and self.output_queue.empty():
-                    return EndOfStream()
+            # Wait for output or completion
+            if self._wait_for_output_or_completion():
                 continue
 
             # Try to get an item from the queue
@@ -704,45 +710,56 @@ class RunningProcess:
     def finished(self) -> bool:
         return self.poll() is not None
 
-    def _echo_output_lines(self, lines: list[str]) -> None:
-        """Echo output lines to logger with proper flushing."""
+    def _echo_output_lines(self, lines: list[str], echo_callback: EchoCallback) -> None:
+        """Echo output lines using the provided callback."""
         for line in lines:
-            # Use print flush=True for Windows compatibility, avoid separate flush calls
-            logger.info(line)
-        # Additional flush for Unix systems for better performance
-        if os.name != "nt":
+            echo_callback(line)
+        # Additional flush for Unix systems for better performance when using print
+        if echo_callback is print and os.name != "nt":
             sys.stdout.flush()
 
-    def _wait_for_process_completion(self, effective_timeout: float | None, echo: bool, start_time: float) -> None:
+    def _check_process_timeout(
+        self, effective_timeout: float | None, start_time: float, echo_callback: EchoCallback | None
+    ) -> None:
+        """Check if process has timed out and handle it."""
+        if effective_timeout is not None and (time.time() - start_time) > effective_timeout:
+            self._handle_timeout(effective_timeout, echo_callback=echo_callback)
+
+    def _handle_echo_output(self, echo_callback: EchoCallback | None) -> bool:
+        """Handle echoing output if enabled. Returns True if output was found and echoed."""
+        if echo_callback is None:
+            return False
+
+        lines = self.drain_stdout()
+        if lines:
+            self._echo_output_lines(lines, echo_callback)
+            return True
+        return False
+
+    def _wait_for_process_completion(
+        self, effective_timeout: float | None, echo_callback: EchoCallback | None, start_time: float
+    ) -> None:
         """Wait for process to complete with timeout and echo handling."""
         while self.poll() is None:
-            # Check overall timeout
-            if effective_timeout is not None and (time.time() - start_time) > effective_timeout:
-                self._handle_timeout(effective_timeout, echo=echo)
+            self._check_process_timeout(effective_timeout, start_time, echo_callback)
 
             # Echo: drain all available output, then sleep
-            if echo:
-                lines = self.drain_stdout()
-                if lines:
-                    self._echo_output_lines(lines)
-                    continue  # Check for more output immediately
+            if self._handle_echo_output(echo_callback):
+                continue  # Check for more output immediately
 
             time.sleep(0.01)  # Check every 10ms
 
-    def _handle_process_completion_echo(self, echo: bool) -> None:
+    def _handle_process_completion_echo(self, echo_callback: EchoCallback | None) -> None:
         """Handle echoing output after process completion."""
-        if not echo:
+        if echo_callback is None:
             return
 
         # Process completed - drain any remaining output if echo is enabled
         remaining_lines = self.drain_stdout()
         for line in remaining_lines:
-            logger.info(line)
+            echo_callback(line)
         if remaining_lines:
-            logger.info(
-                "[Drained %d final lines after completion]",
-                len(remaining_lines),
-            )
+            echo_callback(f"[Drained {len(remaining_lines)} final lines after completion]")
 
     def _handle_keyboard_interrupt_detection(self, rtn: int) -> bool:
         """Check for keyboard interrupt and handle it. Returns True if was keyboard interrupt."""
@@ -769,13 +786,13 @@ class RunningProcess:
             except (AttributeError, TypeError, RuntimeError) as e:
                 logger.info("Warning: on_complete callback failed: %s", e)
 
-    def _finalize_wait(self, echo: bool) -> None:
+    def _finalize_wait(self, echo_callback: EchoCallback | None) -> None:
         """Finalize the wait process with cleanup and notifications."""
         # Final drain after reader threads shut down - catch any remaining queued output
-        if echo:
+        if echo_callback is not None:
             final_lines = self.drain_stdout()
             for line in final_lines:
-                logger.info(line)
+                echo_callback(line)
 
         # Execute completion callback if provided
         self._execute_completion_callback()
@@ -787,15 +804,40 @@ class RunningProcess:
             wait_error_msg = f"RunningProcess termination notify (wait) failed: {e}"
             warnings.warn(wait_error_msg, stacklevel=2)
 
-    def wait(self, echo: bool = False, timeout: float | None = None) -> int:
+    def _validate_process_started(self) -> None:
+        """Validate that the process has been started."""
+        if self.proc is None:
+            error_message = "Process is not running."
+            raise ValueError(error_message)
+
+    def _determine_effective_timeout(self, timeout: float | None) -> float | None:
+        """Determine the effective timeout to use."""
+        return timeout if timeout is not None else self.timeout
+
+    def _get_process_return_code(self) -> int:
+        """Get the process return code after completion."""
+        assert self.proc is not None  # For type checker
+        rtn = self.proc.returncode
+        assert rtn is not None  # Process has completed, so returncode exists
+        return rtn
+
+    def _finalize_process_timing(self) -> None:
+        """Record end time if not already set by output reader."""
+        if self._end_time is None:
+            self._end_time = time.time()
+
+    def wait(self, echo: bool | EchoCallback = False, timeout: float | None = None) -> int:
         """
         Wait for the process to complete with timeout protection.
 
         When echo=True, continuously drains and prints stdout lines while waiting.
+        When echo is a callback, uses that function to handle output lines.
         Performs final output drain after process completion and thread cleanup.
 
         Args:
             echo: If True, continuously print stdout lines as they become available.
+                  If callable, use that function to handle output lines.
+                  If False, no output echoing.
             timeout: Overall timeout in seconds. If None, uses instance timeout.
                     If both are None, waits indefinitely.
 
@@ -805,41 +847,28 @@ class RunningProcess:
         Raises:
             ValueError: If the process hasn't been started.
             TimeoutError: If the process exceeds the timeout duration.
+            TypeError: If echo is not bool or callable.
         """
-        if self.proc is None:
-            error_message = "Process is not running."
-            raise ValueError(error_message)
-
-        # Determine effective timeout: parameter > instance > none
-        effective_timeout = timeout if timeout is not None else self.timeout
-
-        # Use a timeout to prevent hanging
+        self._validate_process_started()
+        effective_timeout = self._determine_effective_timeout(timeout)
+        echo_callback = _normalize_echo_callback(echo)
         start_time = time.time()
 
         # Wait for process completion
-        self._wait_for_process_completion(effective_timeout, echo, start_time)
+        self._wait_for_process_completion(effective_timeout, echo_callback, start_time)
 
         # Handle post-completion echoing
-        self._handle_process_completion_echo(echo)
+        self._handle_process_completion_echo(echo_callback)
 
-        # Process has completed, get return code
-        assert self.proc is not None  # For type checker
-        rtn = self.proc.returncode
-        assert rtn is not None  # Process has completed, so returncode exists
-
-        # Check for keyboard interrupt
+        # Get return code and handle special cases
+        rtn = self._get_process_return_code()
         if self._handle_keyboard_interrupt_detection(rtn):
             return 1
-        # Record end time only if not already set by output reader
-        # The output reader sets end time when stdout pumper finishes, which is more accurate
-        if self._end_time is None:
-            self._end_time = time.time()
 
-        # Wait for reader thread to finish and cleanup
+        # Finalize timing and cleanup
+        self._finalize_process_timing()
         self._cleanup_reader_thread()
-
-        # Final cleanup and notifications
-        self._finalize_wait(echo)
+        self._finalize_wait(echo_callback)
 
         return rtn
 
@@ -982,7 +1011,7 @@ def subprocess_run(
     cwd: Path | None,
     check: bool,
     timeout: int,
-    enable_stack_trace: bool,
+    on_timeout: Callable[[ProcessInfo], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """
     Execute a command with robust stdout handling, emulating subprocess.run().
@@ -998,7 +1027,7 @@ def subprocess_run(
         cwd: Working directory for command execution. Required parameter.
         check: If True, raise CalledProcessError for non-zero exit codes.
         timeout: Maximum execution time in seconds.
-        enable_stack_trace: Enable GDB stack trace dumping on timeout.
+        on_timeout: Callback function executed when process times out.
 
     Returns:
         CompletedProcess with combined stdout and process return code.
@@ -1015,7 +1044,7 @@ def subprocess_run(
         check=False,
         auto_run=True,
         timeout=timeout,
-        enable_stack_trace=enable_stack_trace,
+        on_timeout=on_timeout,
         on_complete=None,
         output_formatter=None,
     )
