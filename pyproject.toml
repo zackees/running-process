@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "running_process"
-version = "1.0.1"
+version = "1.0.2"
 description = "A modern subprocess.Popen wrapper with improved process management"
 readme = "README.md"
 requires-python = ">=3.10"
