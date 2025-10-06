@@ -402,6 +402,7 @@ class RunningProcess:
             text=True,  # Use text mode
             encoding="utf-8",  # Explicitly use UTF-8
             errors="replace",  # Replace invalid chars instead of failing
+            bufsize=1,  # Line-buffered for real-time output
         )
 
     def _create_process_with_pty(self) -> None:
