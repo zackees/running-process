@@ -393,6 +393,11 @@ class RunningProcess:
         """Create subprocess with standard pipes."""
         popen_command = self._prepare_command()
 
+        # Force unbuffered output for Python subprocesses to prevent stdout buffering
+        # when output is piped to another process (prevents multi-second delays)
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
         self.proc = subprocess.Popen(  # noqa: S603
             popen_command,
             shell=self.shell,
@@ -403,16 +408,21 @@ class RunningProcess:
             encoding="utf-8",  # Explicitly use UTF-8
             errors="replace",  # Replace invalid chars instead of failing
             bufsize=1,  # Line-buffered for real-time output
+            env=env,
         )
 
     def _create_process_with_pty(self) -> None:
         """Create subprocess with PTY allocation using unified PTY wrapper."""
         try:
+            # Force unbuffered output for Python subprocesses
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+
             pty_wrapper = Pty()
             pty_process = pty_wrapper.spawn_process(
                 command=self.command,
                 cwd=self.cwd,
-                env=os.environ.copy(),
+                env=env,
                 shell=self.shell,
             )
             self.proc = pty_process  # type: ignore[assignment]

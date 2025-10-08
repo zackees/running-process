@@ -48,8 +48,14 @@ uv run pyright src tests  # Type checking
 **Never use str.join() to convert subprocess command lists to command strings**:
 - Use `subprocess.list2cmdline()` instead of `str.join()` for proper shell escaping
 - This ensures proper handling of arguments containing spaces, quotes, and special characters
-- Example: `subprocess.list2cmdline(command)` not `' '.join(command)`
-- This prevents command injection vulnerabilities and ensures cross-platform compatibility
+
+## Python Subprocess Output Buffering
+
+**PYTHONUNBUFFERED=1 is automatically set for all spawned processes**:
+- Python switches from line-buffered to fully-buffered mode when stdout is piped to another process
+- This causes multi-second delays (4-8KB buffer) before output appears when using tools like codeup
+- The fix is applied in `_create_process_with_pipe()` and `_create_process_with_pty()`
+- This ensures real-time output streaming regardless of how the process is invoked
 
 ## Testing Framework Guidelines
 
