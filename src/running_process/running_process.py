@@ -215,6 +215,7 @@ class RunningProcess:
         on_complete: Callable[[], None] | None = None,  # Callback to execute when process completes
         output_formatter: OutputFormatter | None = None,
         use_pty: bool = False,  # Use pseudo-terminal for process execution
+        env: dict[str, str] | None = None,  # Environment variables for the process
     ) -> None:
         """
         Initialize the RunningProcess instance.
@@ -232,6 +233,7 @@ class RunningProcess:
             on_complete: Callback function executed when process completes normally.
             output_formatter: Optional formatter for transforming output lines.
             use_pty: If True, use pseudo-terminal for process execution (supports interactive commands).
+            env: Environment variables for the process. If None, uses os.environ.copy().
         """
         # Validate command/shell combination
         if isinstance(command, str) and shell is False:
@@ -269,6 +271,7 @@ class RunningProcess:
         self.on_complete = on_complete
         # Always keep a non-None formatter
         self.output_formatter = output_formatter if output_formatter is not None else NullOutputFormatter()
+        self.env = env
         self.reader_thread: threading.Thread | None = None
         self.watcher_thread: threading.Thread | None = None
         self.shutdown: threading.Event = threading.Event()
@@ -395,7 +398,7 @@ class RunningProcess:
 
         # Force unbuffered output for Python subprocesses to prevent stdout buffering
         # when output is piped to another process (prevents multi-second delays)
-        env = os.environ.copy()
+        env = self.env.copy() if self.env is not None else os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
         self.proc = subprocess.Popen(  # noqa: S603
@@ -415,7 +418,7 @@ class RunningProcess:
         """Create subprocess with PTY allocation using unified PTY wrapper."""
         try:
             # Force unbuffered output for Python subprocesses
-            env = os.environ.copy()
+            env = self.env.copy() if self.env is not None else os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
 
             pty_wrapper = Pty()
