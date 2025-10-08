@@ -88,10 +88,15 @@ class ProcessOutputReader:
         """Process standard pipe output."""
         assert self._proc.stdout is not None
 
-        for line in self._proc.stdout:
-            self.last_stdout_ts = time.time()
+        while True:
             if self._shutdown.is_set():
                 break
+
+            line = self._proc.stdout.readline()
+            if not line:  # EOF reached
+                break
+
+            self.last_stdout_ts = time.time()
 
             line_stripped = line.rstrip()
             if not line_stripped:
