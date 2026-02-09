@@ -216,6 +216,8 @@ class RunningProcess:
         output_formatter: OutputFormatter | None = None,
         use_pty: bool = False,  # Use pseudo-terminal for process execution
         env: dict[str, str] | None = None,  # Environment variables for the process
+        creationflags: int | None = None,  # Windows-specific process creation flags
+        **popen_kwargs: Any,  # Additional kwargs to pass to subprocess.Popen
     ) -> None:
         """
         Initialize the RunningProcess instance.
@@ -234,6 +236,13 @@ class RunningProcess:
             output_formatter: Optional formatter for transforming output lines.
             use_pty: If True, use pseudo-terminal for process execution (supports interactive commands).
             env: Environment variables for the process. If None, uses os.environ.copy().
+            creationflags: Windows-specific process creation flags (e.g., subprocess.CREATE_NO_WINDOW).
+                          On Windows, defaults to CREATE_NO_WINDOW to suppress console popups.
+                          Pass 0 to disable default behavior.
+            **popen_kwargs: Additional keyword arguments to pass through to subprocess.Popen.
+                           These will be merged with internal kwargs, with warnings for conflicts.
+                           Some keys (stdout, stderr, text, encoding, errors, bufsize) cannot be
+                           overridden as they're required for RunningProcess functionality.
         """
         # Validate command/shell combination
         if isinstance(command, str) and shell is False:
@@ -272,6 +281,14 @@ class RunningProcess:
         # Always keep a non-None formatter
         self.output_formatter = output_formatter if output_formatter is not None else NullOutputFormatter()
         self.env = env
+        # Store creationflags, defaulting to CREATE_NO_WINDOW on Windows if not specified
+        # Users can pass 0 to explicitly disable this behavior
+        if creationflags is None and sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            self.creationflags = subprocess.CREATE_NO_WINDOW
+        else:
+            self.creationflags = creationflags
+        # Store user-provided popen kwargs for merging with internal kwargs
+        self.popen_kwargs = popen_kwargs
         self.reader_thread: threading.Thread | None = None
         self.watcher_thread: threading.Thread | None = None
         self.shutdown: threading.Event = threading.Event()
@@ -392,6 +409,45 @@ class RunningProcess:
         # This excludes process creation overhead from timing measurements
         self._start_time = time.time()
 
+    def _merge_popen_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
+        """
+        Merge user-provided popen_kwargs with internal base kwargs.
+
+        Protected keys (required for RunningProcess functionality) cannot be overridden.
+        Other conflicts will warn but allow user values to take precedence.
+
+        Args:
+            base_kwargs: Internal kwargs set by RunningProcess
+
+        Returns:
+            Merged kwargs dictionary with conflicts resolved
+        """
+        # Keys that are critical for RunningProcess and cannot be overridden
+        protected_keys = {"stdout", "stderr", "text", "encoding", "errors", "bufsize"}
+
+        merged = base_kwargs.copy()
+
+        for key, value in self.popen_kwargs.items():
+            if key in protected_keys:
+                logger.warning(
+                    "Cannot override protected subprocess.Popen argument '%s' "
+                    "(required for RunningProcess functionality). Ignoring user value.",
+                    key,
+                )
+                continue
+
+            if key in merged and merged[key] != value:
+                logger.warning(
+                    "User-provided popen_kwargs['%s']=%r conflicts with " "internal value %r. Using user value.",
+                    key,
+                    value,
+                    merged[key],
+                )
+
+            merged[key] = value
+
+        return merged
+
     def _create_process_with_pipe(self) -> None:
         """Create subprocess with standard pipes."""
         popen_command = self._prepare_command()
@@ -401,17 +457,29 @@ class RunningProcess:
         env = self.env.copy() if self.env is not None else os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
+        # Build subprocess.Popen arguments (internal/required)
+        base_popen_kwargs = {
+            "shell": self.shell,
+            "cwd": self.cwd,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,  # Merge stderr into stdout
+            "text": True,  # Use text mode
+            "encoding": "utf-8",  # Explicitly use UTF-8
+            "errors": "replace",  # Replace invalid chars instead of failing
+            "bufsize": 1,  # Line-buffered for real-time output
+            "env": env,
+        }
+
+        # Add creationflags if specified (e.g., CREATE_NO_WINDOW on Windows)
+        if self.creationflags is not None:
+            base_popen_kwargs["creationflags"] = self.creationflags
+
+        # Merge with user-provided kwargs, with conflict detection
+        final_popen_kwargs = self._merge_popen_kwargs(base_popen_kwargs)
+
         self.proc = subprocess.Popen(  # noqa: S603
             popen_command,
-            shell=self.shell,
-            cwd=self.cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # Merge stderr into stdout
-            text=True,  # Use text mode
-            encoding="utf-8",  # Explicitly use UTF-8
-            errors="replace",  # Replace invalid chars instead of failing
-            bufsize=1,  # Line-buffered for real-time output
-            env=env,
+            **final_popen_kwargs,
         )
 
     def _create_process_with_pty(self) -> None:
@@ -996,6 +1064,59 @@ class RunningProcess:
             CalledProcessError: If check=True and process exits with non-zero code.
         """
         return execute_subprocess_run(command, cwd, check, timeout, on_timeout)
+
+    @classmethod
+    def run_streaming(
+        cls,
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        stdout_callback: Callable[[str], None] | None = None,
+        _stderr_callback: Callable[[str], None] | None = None,
+        **_kwargs: Any,
+    ) -> int:
+        """Convenience classmethod for running a command with streaming output.
+
+        This method provides backwards compatibility for code that uses the clud-style
+        run_streaming API. It creates a RunningProcess instance and waits for completion
+        with an echo callback.
+
+        Note: stderr is automatically merged into stdout in RunningProcess, so stderr_callback
+        is accepted but ignored for API compatibility.
+
+        Args:
+            cmd: Command and arguments to execute as list of strings
+            env: Environment variables for the process (optional)
+            cwd: Working directory for the process (optional)
+            timeout: Optional timeout in seconds
+            stdout_callback: Optional callback for stdout lines (default: print to stdout)
+            _stderr_callback: Optional callback for stderr lines (IGNORED - for API compatibility only)
+            **_kwargs: Additional arguments (currently unused, for API compatibility)
+
+        Returns:
+            Process exit code
+
+        Raises:
+            TimeoutError: If timeout is exceeded
+        """
+        # Use stdout_callback if provided, otherwise print
+        echo_callback: EchoCallback = stdout_callback if stdout_callback is not None else print
+
+        # Convert cwd string to Path if provided
+        cwd_path = Path(cwd) if cwd is not None else None
+
+        # Create and run process
+        process = cls(
+            command=cmd,
+            cwd=cwd_path,
+            env=env,
+            timeout=int(timeout) if timeout is not None else None,
+            auto_run=False,  # Don't auto-run, we'll call start() explicitly
+        )
+
+        process.start()
+        return process.wait(echo=echo_callback, timeout=timeout)
 
 
 # NOTE: RunningProcessManager and its singleton live in running_process_manager.py
