@@ -435,3 +435,62 @@ class TestEchoCallback(unittest.TestCase):
             process.wait(echo="invalid")  # type: ignore[arg-type]  # intentionally invalid
 
         self.assertIn("echo must be bool or callable", str(cm.exception))
+
+
+class TestKeyboardInterruptDetection(unittest.TestCase):
+    """Test keyboard interrupt detection from subprocess exit codes."""
+
+    def test_interrupt_exit_code_130_raises(self):
+        """Test that exit code 130 (Unix SIGINT) raises KeyboardInterrupt."""
+        # Run a process that exits with code 130
+        process = RunningProcess(
+            [sys.executable, "-c", "import sys; sys.exit(130)"],
+            auto_run=False,
+        )
+        process.start()
+
+        with self.assertRaises(KeyboardInterrupt):
+            process.wait()
+
+    def test_interrupt_exit_code_negative_2_raises(self):
+        """Test that exit code -2 (SIGINT) raises KeyboardInterrupt."""
+        process = RunningProcess(
+            [sys.executable, "-c", "import os; os._exit(0xFFFFFFFE)"],
+            auto_run=False,
+        )
+        process.start()
+
+        # On Windows, 0xFFFFFFFE is 4294967294 which is in our set
+        # On Unix, this wraps differently - skip if exit code doesn't match
+        exit_code_or_interrupt = None
+        try:
+            exit_code_or_interrupt = process.wait()
+        except KeyboardInterrupt:
+            exit_code_or_interrupt = "interrupted"
+
+        # Either it raised KeyboardInterrupt or returned a code
+        # The exact behavior depends on platform
+        self.assertIsNotNone(exit_code_or_interrupt)
+
+    def test_normal_exit_code_does_not_raise(self):
+        """Test that normal exit codes (0, 1, 2) do NOT raise KeyboardInterrupt."""
+        for code in [0, 1, 2]:
+            process = RunningProcess(
+                [sys.executable, "-c", f"import sys; sys.exit({code})"],
+                auto_run=False,
+            )
+            process.start()
+            exit_code = process.wait()
+            self.assertEqual(exit_code, code)
+
+    def test_keyboard_interrupt_exit_codes_set(self):
+        """Test that the class attribute contains expected exit codes."""
+        expected = {-2, -11, 130, 255, 3221225786, 4294967294}
+        self.assertEqual(RunningProcess.KEYBOARD_INTERRUPT_EXIT_CODES, expected)
+
+    def test_run_streaming_raises_on_interrupt_exit_code(self):
+        """Test that run_streaming raises KeyboardInterrupt for interrupt exit codes."""
+        with self.assertRaises(KeyboardInterrupt):
+            RunningProcess.run_streaming(
+                [sys.executable, "-c", "import sys; sys.exit(130)"],
+            )

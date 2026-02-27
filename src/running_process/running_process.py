@@ -109,7 +109,7 @@ print(result.returncode)
 """
 
 # pyright: reportUnknownMemberType=false, reportMissingParameterType=false
-import _thread
+
 import contextlib
 import logging
 import os
@@ -124,7 +124,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from running_process.pty import PtyProcessProtocol
@@ -770,13 +770,31 @@ class RunningProcess:
         if remaining_lines:
             echo_callback(f"[Drained {len(remaining_lines)} final lines after completion]")
 
-    def _handle_keyboard_interrupt_detection(self, rtn: int) -> bool:
-        """Check for keyboard interrupt and handle it. Returns True if was keyboard interrupt."""
-        is_keyboard_interrupt = rtn in (-11, 3221225786)
-        if is_keyboard_interrupt:
-            logger.info("Keyboard interrupt detected, interrupting main thread")
-            _thread.interrupt_main()
-        return is_keyboard_interrupt
+    # Exit codes that indicate the subprocess was killed by keyboard interrupt.
+    # Checked after process completion to propagate the interrupt to the caller.
+    KEYBOARD_INTERRUPT_EXIT_CODES: ClassVar[set[int]] = {
+        -2,  # SIGINT as negative signal number (Python on Unix)
+        -11,  # SIGSEGV when Ctrl+C kills a shell child
+        130,  # 128 + SIGINT(2) — standard Unix Ctrl-C exit code
+        255,  # Generic interrupt code (some shells)
+        3221225786,  # Windows STATUS_CONTROL_C_EXIT (0xC000013A)
+        4294967294,  # -2 as unsigned 32-bit (Windows/MSYS representation)
+    }
+
+    def _handle_keyboard_interrupt_detection(self, rtn: int) -> None:
+        """Check for keyboard interrupt exit code and raise KeyboardInterrupt.
+
+        When the subprocess is killed by Ctrl-C, it exits with a platform-specific
+        exit code. This method detects those codes and raises KeyboardInterrupt so
+        callers can handle the interrupt consistently, rather than silently returning
+        a misleading exit code.
+
+        Raises:
+            KeyboardInterrupt: If the exit code indicates keyboard interrupt.
+        """
+        if rtn in self.KEYBOARD_INTERRUPT_EXIT_CODES:
+            logger.info("Keyboard interrupt detected (exit code %d), raising KeyboardInterrupt", rtn)
+            raise KeyboardInterrupt
 
     def _cleanup_reader_thread(self) -> None:
         """Clean up the reader thread with timeout."""
@@ -870,8 +888,7 @@ class RunningProcess:
 
         # Get return code and handle special cases
         rtn = self._get_process_return_code()
-        if self._handle_keyboard_interrupt_detection(rtn):
-            return 1
+        self._handle_keyboard_interrupt_detection(rtn)
 
         # Finalize timing and cleanup
         self._finalize_process_timing()
@@ -921,8 +938,7 @@ class RunningProcess:
         try:
             kill_process_tree(self.proc.pid)
         except KeyboardInterrupt:
-            logger.info("Keyboard interrupt detected in kill(), interrupting main thread")
-            _thread.interrupt_main()
+            logger.info("Keyboard interrupt detected in kill()")
             # Extra cleanup for PTY on KeyboardInterrupt
             if self.use_pty:
                 logger.warning("KeyboardInterrupt during PTY process kill - forcing cleanup")
