@@ -109,7 +109,6 @@ import contextlib
 import logging
 import os
 import queue
-import signal
 import subprocess
 import sys
 import threading
@@ -212,12 +211,13 @@ class RunningProcess:
         use_pty: bool = False,  # Use pseudo-terminal for process execution
         env: dict[str, str] | None = None,  # Environment variables for the process
         creationflags: int | None = None,  # Windows-specific process creation flags
+        capture: bool = True,  # If True, capture output; if False, stream to console
         **popen_kwargs: Any,  # Additional kwargs to pass to subprocess.Popen
     ) -> None:
         """
         Initialize the RunningProcess instance.
 
-        Note: stderr is automatically merged into stdout for unified output handling.
+        Note: When capture=True, stderr is automatically merged into stdout for unified output handling.
 
         Args:
             command: The command to execute as string or list of arguments.
@@ -234,10 +234,10 @@ class RunningProcess:
             creationflags: Windows-specific process creation flags (e.g., subprocess.CREATE_NO_WINDOW).
                           On Windows, defaults to CREATE_NO_WINDOW to suppress console popups.
                           Pass 0 to disable default behavior.
+            capture: If True, capture and buffer process output. If False, stream directly to console.
             **popen_kwargs: Additional keyword arguments to pass through to subprocess.Popen.
                            These will be merged with internal kwargs, with warnings for conflicts.
-                           Some keys (stdout, stderr, text, encoding, errors, bufsize) cannot be
-                           overridden as they're required for RunningProcess functionality.
+                           Protected keys: stdout, stderr, text, encoding, errors (when capture=True).
         """
         # Validate command/shell combination
         if isinstance(command, str) and shell is False:
@@ -265,6 +265,7 @@ class RunningProcess:
         self.command = command
         self.shell: bool = shell
         self.cwd = str(cwd) if cwd is not None else None
+        self.capture = capture
         self.output_queue: Queue[str | EndOfStream] = Queue()
         self.accumulated_output: list[str] = []  # Store all output for later retrieval
         self.proc: subprocess.Popen[Any] | PtyProcessProtocol | None = None
@@ -295,6 +296,8 @@ class RunningProcess:
         self.use_pty = use_pty and self._pty_available()
         self._pty_proc: Any = None  # winpty.PtyProcess or None
         self._pty_master_fd: int | None = None  # Unix PTY master file descriptor
+        # Text mode flag (set during process creation)
+        self._text_mode: bool = True  # Default to text mode
         if auto_run:
             self.start()
 
@@ -395,7 +398,9 @@ class RunningProcess:
 
     def _create_process(self) -> None:
         """Create the subprocess with proper configuration."""
-        if self.use_pty:
+        if not self.capture:
+            self._create_process_without_capture()
+        elif self.use_pty:
             self._create_process_with_pty()
         else:
             self._create_process_with_pipe()
@@ -409,6 +414,10 @@ class RunningProcess:
         Merge user-provided popen_kwargs with internal base kwargs.
 
         Protected keys (required for RunningProcess functionality) cannot be overridden.
+        Special handling:
+        - bufsize: if overridden with a non-1 value, PYTHONUNBUFFERED optimization is disabled
+        - text: can be overridden; if False, encoding/errors are ignored
+        - encoding/errors: cannot be overridden (only apply in text mode)
         Other conflicts will warn but allow user values to take precedence.
 
         Args:
@@ -418,7 +427,7 @@ class RunningProcess:
             Merged kwargs dictionary with conflicts resolved
         """
         # Keys that are critical for RunningProcess and cannot be overridden
-        protected_keys = {"stdout", "stderr", "text", "encoding", "errors", "bufsize"}
+        protected_keys = {"stdout", "stderr", "encoding", "errors"}
 
         merged = base_kwargs.copy()
 
@@ -443,14 +452,53 @@ class RunningProcess:
 
         return merged
 
+    def _create_process_without_capture(self) -> None:
+        """Create subprocess without output capture (streaming to console)."""
+        popen_command = self._prepare_command()
+
+        # Build minimal subprocess.Popen arguments
+        base_popen_kwargs: dict[str, Any] = {
+            "shell": self.shell,
+            "cwd": self.cwd,
+            # Don't specify stdout/stderr - let them inherit parent's
+        }
+
+        # Add creationflags if specified (e.g., CREATE_NO_WINDOW on Windows)
+        if self.creationflags is not None:
+            base_popen_kwargs["creationflags"] = self.creationflags
+
+        # Merge with user-provided kwargs (much less restricted when not capturing)
+        final_popen_kwargs = base_popen_kwargs.copy()
+        final_popen_kwargs.update(self.popen_kwargs)
+
+        self.proc = subprocess.Popen(  # noqa: S603, type: ignore[arg-type]
+            popen_command,
+            **final_popen_kwargs,
+        )
+
     def _create_process_with_pipe(self) -> None:
         """Create subprocess with standard pipes."""
         popen_command = self._prepare_command()
 
-        # Force unbuffered output for Python subprocesses to prevent stdout buffering
-        # when output is piped to another process (prevents multi-second delays)
+        # Prepare environment
         env = self.env.copy() if self.env is not None else os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
+
+        # Check if user provided bufsize override
+        user_bufsize = self.popen_kwargs.get("bufsize")
+        if user_bufsize is not None and user_bufsize != 1:
+            # User overrode bufsize to non-1 value, disable real-time streaming optimization
+            logger.warning(
+                "User-provided bufsize=%r disables real-time streaming optimization. PYTHONUNBUFFERED will not be set.",
+                user_bufsize,
+            )
+            # Don't set PYTHONUNBUFFERED when using custom bufsize
+        else:
+            # Use our real-time streaming optimization (bufsize=1 or no override)
+            env["PYTHONUNBUFFERED"] = "1"
+
+        # Check if user provided text mode override
+        user_text = self.popen_kwargs.get("text", True)
+        self._text_mode = user_text  # Store for later use in line iteration
 
         # Build subprocess.Popen arguments (internal/required)
         base_popen_kwargs = {
@@ -458,12 +506,15 @@ class RunningProcess:
             "cwd": self.cwd,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.STDOUT,  # Merge stderr into stdout
-            "text": True,  # Use text mode
-            "encoding": "utf-8",  # Explicitly use UTF-8
-            "errors": "replace",  # Replace invalid chars instead of failing
-            "bufsize": 1,  # Line-buffered for real-time output
+            "text": True,  # Default to text mode
+            "bufsize": 1,  # Line-buffered for real-time output (unless overridden)
             "env": env,
         }
+
+        # Only set encoding/errors in text mode
+        if user_text is not False:  # True or not specified (defaults to True)
+            base_popen_kwargs["encoding"] = "utf-8"  # Explicitly use UTF-8
+            base_popen_kwargs["errors"] = "replace"  # Replace invalid chars instead of failing
 
         # Add creationflags if specified (e.g., CREATE_NO_WINDOW on Windows)
         if self.creationflags is not None:
@@ -471,6 +522,11 @@ class RunningProcess:
 
         # Merge with user-provided kwargs, with conflict detection
         final_popen_kwargs = self._merge_popen_kwargs(base_popen_kwargs)
+
+        # If user explicitly set text=False, remove encoding/errors (they don't apply in binary mode)
+        if final_popen_kwargs.get("text") is False:
+            final_popen_kwargs.pop("encoding", None)
+            final_popen_kwargs.pop("errors", None)
 
         self.proc = subprocess.Popen(  # noqa: S603
             popen_command,
@@ -546,6 +602,7 @@ class RunningProcess:
             use_pty=self.use_pty,
             pty_proc=self._pty_proc,
             pty_master_fd=self._pty_master_fd,
+            text_mode=self._text_mode,
         )
 
         # Start output reader thread
@@ -560,7 +617,7 @@ class RunningProcess:
 
     def start(self) -> None:
         """
-        Execute the command and stream its output to the queue.
+        Execute the command and optionally stream its output to the queue.
 
         Raises:
             subprocess.CalledProcessError: If the command returns a non-zero exit code.
@@ -573,11 +630,15 @@ class RunningProcess:
         # Register with global process manager
         self._register_with_manager()
 
-        # Setup output handling
-        on_output, on_end = self._create_output_callbacks()
+        # Only setup output handling when capturing
+        if self.capture:
+            # Setup output handling
+            on_output, on_end = self._create_output_callbacks()
 
-        # Start monitoring threads
-        self._start_reader_thread(on_output, on_end)
+            # Start reader thread for output capture
+            self._start_reader_thread(on_output, on_end)
+
+        # Always start watcher thread for timeout/completion tracking
         self._start_watcher_thread()
 
     def _handle_immediate_timeout(self) -> str | EndOfStream:
@@ -1099,6 +1160,9 @@ class RunningProcess:
         """
         is_text = text or encoding is not None or universal_newlines
 
+        # Determine whether to capture output internally (matches subprocess.run semantics)
+        should_capture = capture_output or (stdout is subprocess.PIPE)
+
         # Forward Popen-level params that RunningProcess doesn't expose as top-level args
         extra_popen = {
             **other_popen_kwargs,
@@ -1118,6 +1182,7 @@ class RunningProcess:
             timeout=timeout,  # type: ignore[arg-type]
             auto_run=True,
             check=False,
+            capture=should_capture,
             env=env,
             on_timeout=on_timeout,
             **extra_popen,  # type: ignore[arg-type]

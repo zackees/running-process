@@ -48,9 +48,11 @@ class ProcessOutputReader:
         use_pty: bool = False,
         pty_proc: Any = None,
         pty_master_fd: int | None = None,
+        text_mode: bool = True,
     ) -> None:
         output_formatter = output_formatter or NullOutputFormatter()
         self._proc = proc
+        self._text_mode = text_mode
         self._shutdown = shutdown
         self._output_formatter = output_formatter
         self._on_output = on_output
@@ -85,7 +87,7 @@ class ProcessOutputReader:
             self._process_pipe_output()
 
     def _process_pipe_output(self) -> None:
-        """Process standard pipe output."""
+        """Process standard pipe output (text or binary mode)."""
         assert self._proc.stdout is not None
 
         while True:
@@ -98,19 +100,37 @@ class ProcessOutputReader:
 
             self.last_stdout_ts = time.time()
 
-            line_stripped = line.rstrip()
-            if not line_stripped:
-                continue
+            # Handle binary vs text mode
+            if self._text_mode:
+                # Text mode: work with strings
+                line_stripped = line.rstrip()
+                if not line_stripped:
+                    continue
+                transformed_line = self._output_formatter.transform(line_stripped)
+                self._on_output(transformed_line)
+            else:
+                # Binary mode: work with bytes, strip trailing whitespace
+                line_stripped = line.rstrip()
+                if not line_stripped:
+                    continue
+                # In binary mode, pass bytes directly (formatter should handle bytes or we skip it)
+                # Most formatters expect strings, so we just pass the raw bytes
+                self._on_output(line_stripped)  # type: ignore[arg-type]
 
-            transformed_line = self._output_formatter.transform(line_stripped)
-            self._on_output(transformed_line)
-
-    def _read_pty_chunk(self) -> str | None:
+    def _read_pty_chunk(self) -> str | bytes | None:
         """Read a chunk of data from PTY."""
         if sys.platform == "win32" and self._pty_proc:
             # Windows: read from winpty
             chunk = self._pty_proc.read()
-            return chunk if chunk else None
+            if not chunk:
+                return None
+            # Handle binary mode
+            if not self._text_mode and isinstance(chunk, str):
+                return chunk.encode("utf-8", errors="replace")
+            if self._text_mode:
+                return chunk
+            # Binary mode: encode if needed
+            return chunk.encode("utf-8", errors="replace") if isinstance(chunk, str) else chunk
         if self._pty_master_fd is not None:
             # Unix: read from PTY file descriptor
             import select  # noqa: PLC0415
@@ -118,45 +138,62 @@ class ProcessOutputReader:
             # Use select to check if data is available with timeout
             ready, _, _ = select.select([self._pty_master_fd], [], [], 0.1)
             if not ready:
-                return ""  # No data available, continue
+                return "" if self._text_mode else b""  # No data available, continue
             chunk_bytes = os.read(self._pty_master_fd, 4096)
             if not chunk_bytes:
                 return None  # EOF
-            return chunk_bytes.decode("utf-8", errors="replace")
+            # In text mode, decode; in binary mode, return bytes
+            return chunk_bytes.decode("utf-8", errors="replace") if self._text_mode else chunk_bytes
         return None  # No PTY available
 
-    def _process_pty_chunk(self, chunk: str, buffer: str) -> str:
+    def _process_pty_chunk(self, chunk: str | bytes, buffer: str | bytes) -> str | bytes:
         """Process a chunk of PTY data and return updated buffer."""
         self.last_stdout_ts = time.time()
 
-        # Filter ANSI escape sequences if regex is available
-        if self._ansi_escape:
-            chunk = self._ansi_escape.sub("", chunk)
-
-        # Normalize line endings and add to buffer
-        chunk = chunk.replace("\r\n", "\n").replace("\r", "\n")
-        buffer += chunk
-
-        # Process complete lines from buffer
-        while "\n" in buffer:
-            line, buffer = buffer.split("\n", 1)
-            line = line.rstrip()
-            if line:
-                transformed_line = self._output_formatter.transform(line)
-                self._on_output(transformed_line)
+        if self._text_mode:
+            # Text mode processing
+            assert isinstance(chunk, str)
+            assert isinstance(buffer, str)
+            # Filter ANSI escape sequences if regex is available
+            if self._ansi_escape:
+                chunk = self._ansi_escape.sub("", chunk)
+            # Normalize line endings and add to buffer
+            chunk = chunk.replace("\r\n", "\n").replace("\r", "\n")
+            buffer += chunk
+            # Process complete lines from buffer
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.rstrip()
+                if line:
+                    transformed_line = self._output_formatter.transform(line)
+                    self._on_output(transformed_line)
+        else:
+            # Binary mode processing
+            assert isinstance(chunk, bytes)
+            assert isinstance(buffer, bytes)
+            # Normalize line endings and add to buffer
+            chunk = chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            buffer += chunk
+            # Process complete lines from buffer
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                line = line.rstrip()
+                if line:
+                    self._on_output(line)  # type: ignore[arg-type]
 
         return buffer
 
     def _process_pty_output(self) -> None:  # noqa: C901
         """Process PTY output with ANSI filtering."""
-        buffer = ""
+        buffer: str | bytes = "" if self._text_mode else b""
 
         while not self._shutdown.is_set():
             try:
                 chunk = self._read_pty_chunk()
                 if chunk is None:
                     break  # EOF or no PTY
-                if chunk == "":
+                # Check for empty chunk (no data available)
+                if not chunk:
                     continue  # No data available, continue
                 if chunk:
                     buffer = self._process_pty_chunk(chunk, buffer)
@@ -184,11 +221,19 @@ class ProcessOutputReader:
         # Process any remaining data in buffer
         if buffer and buffer.strip():
             self.last_stdout_ts = time.time()
-            for raw_line in buffer.split("\n"):
-                line = raw_line.rstrip()
-                if line:
-                    transformed_line = self._output_formatter.transform(line)
-                    self._on_output(transformed_line)
+            if self._text_mode:
+                assert isinstance(buffer, str)
+                for raw_line in buffer.split("\n"):
+                    line = raw_line.rstrip()
+                    if line:
+                        transformed_line = self._output_formatter.transform(line)
+                        self._on_output(transformed_line)
+            else:
+                assert isinstance(buffer, bytes)
+                for raw_line in buffer.split(b"\n"):
+                    line = raw_line.rstrip()
+                    if line:
+                        self._on_output(line)  # type: ignore[arg-type]
 
     def _handle_keyboard_interrupt(self) -> None:
         """Handle KeyboardInterrupt in reader thread."""
