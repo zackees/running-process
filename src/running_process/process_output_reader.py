@@ -4,7 +4,6 @@ This module contains the ProcessOutputReader class for handling subprocess outpu
 in a dedicated thread to prevent blocking issues.
 """
 
-import _thread
 import logging
 import os
 import re
@@ -21,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Union
 if TYPE_CHECKING:
     from running_process.pty import PtyProcessProtocol
 
+from running_process.interrupt_handler import handle_keyboard_interrupt
 from running_process.output_formatter import NullOutputFormatter, OutputFormatter
 
 logger = logging.getLogger(__name__)
@@ -161,7 +161,7 @@ class ProcessOutputReader:
                 if chunk:
                     buffer = self._process_pty_chunk(chunk, buffer)
 
-            except KeyboardInterrupt:
+            except KeyboardInterrupt as ki:
                 # CRITICAL: Handle KeyboardInterrupt in PTY mode
                 logger.warning("KeyboardInterrupt in PTY output reader - cleaning up PTY process")
                 # Clean up PTY process immediately
@@ -171,7 +171,7 @@ class ProcessOutputReader:
                     except (OSError, ValueError, RuntimeError) as e:
                         logger.warning("Failed to kill winpty process on KeyboardInterrupt: %s", e)
                 # Re-raise to be handled by the main handler
-                raise
+                handle_keyboard_interrupt(ki)
             except (OSError, ValueError) as e:
                 # PTY closed or error reading
                 logger.debug("PTY read error (normal on close): %s", e)
@@ -203,8 +203,6 @@ class ProcessOutputReader:
             self._proc.kill()
         except (ProcessLookupError, PermissionError, OSError) as kill_error:
             logger.warning("Failed to kill process: %s", kill_error)
-        # Propagate to main thread and re-raise
-        _thread.interrupt_main()
         # EOF
         self._emit_eos_once()
 
@@ -254,9 +252,9 @@ class ProcessOutputReader:
         """Run stdout processing with error handling."""
         try:
             self._process_stdout_lines()
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as ki:
             self._handle_keyboard_interrupt()
-            raise
+            handle_keyboard_interrupt(ki)
         except (ValueError, OSError) as e:
             self._handle_io_error(e)
         finally:

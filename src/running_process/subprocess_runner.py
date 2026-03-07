@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from running_process.running_process import ProcessInfo
 
+from running_process.interrupt_handler import handle_keyboard_interrupt
+
 
 def execute_subprocess_run(
     command: str | list[str],
@@ -59,11 +61,12 @@ def execute_subprocess_run(
         output_formatter=None,
     )
 
+    return_code: int = 0  # Default value (should be overwritten by proc.wait())
     try:
-        return_code: int = proc.wait()
-    except KeyboardInterrupt:
+        return_code = proc.wait()
+    except KeyboardInterrupt as ki:
         # Propagate interrupt behavior consistent with subprocess.run
-        raise
+        handle_keyboard_interrupt(ki)
     except TimeoutError as e:
         # Align with subprocess.TimeoutExpired semantics by raising a CalledProcessError-like
         # error with available output. Using TimeoutError here is consistent with internal RP.

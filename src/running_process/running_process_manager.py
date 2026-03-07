@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from running_process.running_process import RunningProcess
 
+from running_process.interrupt_handler import handle_keyboard_interrupt
+
 
 class RunningProcessManager:
     """Thread-safe registry of currently running processes for diagnostics."""
@@ -54,6 +56,8 @@ class RunningProcessManager:
             try:
                 if p.proc is not None:
                     pid = p.proc.pid
+            except KeyboardInterrupt as ki:
+                handle_keyboard_interrupt(ki)
             except Exception:  # noqa: BLE001
                 pid = None
 

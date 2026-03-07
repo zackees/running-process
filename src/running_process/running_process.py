@@ -45,14 +45,14 @@ process.wait(echo=True)  # Prints to console
 def debug_timeout(process_info):
     print(f"Process {process_info.pid} timed out after {process_info.duration}s")
     # Custom debugging logic (GDB, pstack, profiling, etc.)
-    subprocess.run(["gdb", "-batch", "-ex", f"attach {process_info.pid}",
-                   "-ex", "bt", "-ex", "detach"])
+    subprocess.run(["gdb", "-batch", "-ex", f"attach {process_info.pid}", "-ex", "bt", "-ex", "detach"])
+
 
 process = RunningProcess(
     command=["make", "build"],
     timeout=300,  # 5 minute timeout
     on_timeout=debug_timeout,
-    on_complete=lambda: print("Build completed!")
+    on_complete=lambda: print("Build completed!"),
 )
 ```
 
@@ -64,7 +64,7 @@ from running_process import TimeDeltaFormatter
 process = RunningProcess(
     command=["pytest", "tests/"],
     output_formatter=TimeDeltaFormatter(),  # "[1.23] test output"
-    timeout=300
+    timeout=300,
 )
 ```
 
@@ -74,7 +74,7 @@ process = RunningProcess(
 process = RunningProcess(
     command=["ssh", "user@host", "ls"],
     use_pty=True,  # Enables PTY mode
-    timeout=30
+    timeout=30,
 )
 exit_code = process.wait()
 
@@ -85,12 +85,7 @@ exit_code = process.wait()
 ### Simple subprocess.run() Replacement
 ```python
 # Drop-in replacement for subprocess.run()
-result = subprocess_run(
-    command=["git", "status"],
-    cwd=Path("/project"),
-    timeout=10,
-    check=True
-)
+result = subprocess_run(command=["git", "status"], cwd=Path("/project"), timeout=10, check=True)
 print(result.stdout)
 print(result.returncode)
 ```
@@ -130,6 +125,7 @@ if TYPE_CHECKING:
     from running_process.pty import PtyProcessProtocol
 
 
+from running_process.interrupt_handler import handle_keyboard_interrupt
 from running_process.line_iterator import _RunningProcessLineIterator
 from running_process.output_formatter import NullOutputFormatter, OutputFormatter
 from running_process.process_output_reader import EndOfStream, ProcessOutputReader
@@ -437,7 +433,7 @@ class RunningProcess:
 
             if key in merged and merged[key] != value:
                 logger.warning(
-                    "User-provided popen_kwargs['%s']=%r conflicts with " "internal value %r. Using user value.",
+                    "User-provided popen_kwargs['%s']=%r conflicts with internal value %r. Using user value.",
                     key,
                     value,
                     merged[key],
@@ -936,7 +932,7 @@ class RunningProcess:
         # This prevents orphaned clang++ processes from hanging the system
         try:
             kill_process_tree(self.proc.pid)
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as ki:
             logger.info("Keyboard interrupt detected in kill()")
             # Extra cleanup for PTY on KeyboardInterrupt
             if self.use_pty:
@@ -945,7 +941,7 @@ class RunningProcess:
                 self.proc.kill()
             except (ProcessLookupError, PermissionError, OSError, ValueError) as e:
                 logger.info("Warning: Failed to kill process tree for %s: %s", self.proc.pid, e)
-            raise
+            handle_keyboard_interrupt(ki)
         except (OSError, subprocess.SubprocessError, AttributeError, ImportError) as e:
             # Fallback to simple kill if tree kill fails
             logger.info("Warning: Failed to kill process tree for %s: %s", self.proc.pid, e)

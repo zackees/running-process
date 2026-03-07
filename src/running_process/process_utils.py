@@ -8,8 +8,10 @@ import warnings
 
 import psutil
 
+from running_process.interrupt_handler import handle_keyboard_interrupt
 
-def get_process_tree_info(pid: int) -> str:
+
+def get_process_tree_info(pid: int) -> str:  # type: ignore[return-value]
     """Get information about a process and its children."""
     try:
         process = psutil.Process(pid)
@@ -29,6 +31,8 @@ def get_process_tree_info(pid: int) -> str:
                 info.append(f"    Memory: {child.memory_info()}")
 
         return "\n".join(info)
+    except KeyboardInterrupt as ki:
+        handle_keyboard_interrupt(ki)
     except Exception:  # noqa: BLE001
         return f"Could not get process info for PID {pid}"
 
