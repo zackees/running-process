@@ -756,6 +756,9 @@ class RunningProcess:
 
             time.sleep(0.01)  # Check every 10ms
 
+        # Check timeout one more time after process exits to catch watcher-initiated kills
+        self._check_process_timeout(effective_timeout, start_time, echo_callback)
+
     def _handle_process_completion_echo(self, echo_callback: EchoCallback) -> None:
         """Handle echoing output after process completion."""
         # Process completed - drain any remaining output
@@ -916,7 +919,7 @@ class RunningProcess:
             logger.debug("Cleaning up PTY resources before process termination")
             if sys.platform == "win32" and self._pty_proc:
                 try:
-                    self._pty_proc.kill(signal.SIGTERM)
+                    self._pty_proc.kill()
                     logger.debug("Killed winpty process")
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.warning("Failed to kill winpty process: %s", e)
