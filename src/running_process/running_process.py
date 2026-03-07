@@ -124,7 +124,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import IO, TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from running_process.pty import PtyProcessProtocol
@@ -137,7 +137,6 @@ from running_process.process_utils import kill_process_tree
 from running_process.process_watcher import ProcessWatcher
 from running_process.pty import Pty, PtyNotAvailableError
 from running_process.running_process_manager import RunningProcessManagerSingleton
-from running_process.subprocess_runner import execute_subprocess_run
 
 # Create module-level logger
 logger = logging.getLogger(__name__)
@@ -1048,38 +1047,105 @@ class RunningProcess:
 
     @staticmethod
     def run(
-        command: str | list[str],
-        cwd: Path | None,
-        check: bool,
-        timeout: int,
+        args: str | list[str],
+        *,
+        bufsize: int = -1,
+        executable: str | None = None,
+        stdin: int | IO[Any] | None = None,
+        stdout: int | IO[Any] | None = None,
+        stderr: int | IO[Any] | None = None,
+        capture_output: bool = False,
+        shell: bool = False,
+        cwd: str | Path | None = None,
+        timeout: int | float | None = None,
+        check: bool = False,
+        encoding: str | None = None,
+        errors: str | None = None,
+        text: bool = False,
+        env: dict[str, str] | None = None,
+        universal_newlines: bool = False,
         on_timeout: Callable[[ProcessInfo], None] | None = None,
+        **other_popen_kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
-        """Public static accessor for subprocess.run() replacement.
+        """Execute a subprocess with automatic pipe buffer overflow protection.
 
-        Execute a command with robust stdout handling, emulating subprocess.run().
-
-        Uses RunningProcess as the backend to provide:
-        - Continuous stdout streaming to prevent pipe blocking
-        - Merged stderr into stdout for unified output
-        - Timeout protection with optional stack trace dumping
-        - Standard subprocess.CompletedProcess return value
+        This is a drop-in replacement for subprocess.run() that prevents deadlocks
+        when capturing large amounts of output. It uses streaming internally to
+        continuously drain output buffers.
 
         Args:
-            command: Command to execute as string or list of arguments.
-            cwd: Working directory for command execution. Required parameter.
-            check: If True, raise CalledProcessError for non-zero exit codes.
-            timeout: Maximum execution time in seconds.
-            on_timeout: Callback function executed when process times out.
+            args: Command to run (str for shell=True, list[str] otherwise)
+            capture_output: Capture stdout and stderr (default: False)
+            text: Return stdout/stderr as strings (default: False)
+            timeout: Timeout in seconds (default: None)
+            check: Raise CalledProcessError if returncode != 0 (default: False)
+            shell: Use shell to execute command (default: False)
+            cwd: Working directory (default: None)
+            env: Environment variables (default: None)
+            encoding: Text encoding (default: None)
+            errors: Error handling strategy (default: None)
+            ... (other subprocess.run parameters)
 
         Returns:
-            CompletedProcess with combined stdout and process return code.
-            stderr field is None since it's merged into stdout.
+            subprocess.CompletedProcess with:
+            - args: The command that was run
+            - returncode: Exit code
+            - stdout: Captured stdout (str if text=True/capture_output=True, else None)
+            - stderr: None (merged into stdout; subprocess.run behavior with
+                      capture_output=True)
 
         Raises:
-            RuntimeError: If process times out (wraps TimeoutError).
-            CalledProcessError: If check=True and process exits with non-zero code.
+            subprocess.CalledProcessError: If check=True and returncode != 0
+            subprocess.TimeoutExpired: If timeout exceeded
         """
-        return execute_subprocess_run(command, cwd, check, timeout, on_timeout)
+        is_text = text or encoding is not None or universal_newlines
+
+        # Forward Popen-level params that RunningProcess doesn't expose as top-level args
+        extra_popen = {
+            **other_popen_kwargs,
+            "bufsize": bufsize,
+        }
+        if executable is not None:
+            extra_popen["executable"] = executable
+        if stdin is not None:
+            extra_popen["stdin"] = stdin
+        if stderr is not None:
+            extra_popen["stderr"] = stderr
+
+        proc = RunningProcess(
+            command=args,
+            cwd=cwd,  # type: ignore[arg-type]
+            shell=shell,
+            timeout=timeout,  # type: ignore[arg-type]
+            auto_run=True,
+            check=False,
+            env=env,
+            on_timeout=on_timeout,
+            **extra_popen,  # type: ignore[arg-type]
+        )
+
+        try:
+            returncode = proc.wait()
+        except TimeoutError as e:
+            raise subprocess.TimeoutExpired(args, timeout) from e  # type: ignore[arg-type]
+
+        stdout_data: str | None = None
+        if capture_output or stdout is subprocess.PIPE:
+            stdout_data = proc.stdout or ""
+            if is_text and isinstance(stdout_data, bytes):
+                stdout_data = stdout_data.decode(encoding or "utf-8", errors or "strict")
+
+        result = subprocess.CompletedProcess(
+            args=args,
+            returncode=returncode,
+            stdout=stdout_data,
+            stderr=None,
+        )
+
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, args, output=result.stdout, stderr=None)
+
+        return result
 
     @classmethod
     def run_streaming(
@@ -1164,4 +1230,17 @@ def subprocess_run(
         RuntimeError: If process times out (wraps TimeoutError).
         CalledProcessError: If check=True and process exits with non-zero code.
     """
-    return RunningProcess.run(command, cwd, check, timeout, on_timeout)
+    # Call the new RunningProcess.run() with keyword-only arguments
+    try:
+        return RunningProcess.run(
+            command,
+            cwd=cwd,
+            check=check,
+            timeout=timeout,
+            capture_output=True,
+            on_timeout=on_timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        # Convert TimeoutExpired to RuntimeError for backward compatibility
+        error_message = f"CRITICAL: Process timed out after {timeout} seconds: {command}"
+        raise RuntimeError(error_message) from e
