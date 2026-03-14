@@ -475,5 +475,58 @@ class TestRunStaticMethod(unittest.TestCase):
         self.assertEqual(initial_count, final_count)
 
 
+class TestRunStaticMethodBufsizeDeadlock(unittest.TestCase):
+    """Tests that RunningProcess.run() does not deadlock with capture_output=True."""
+
+    def test_run_capture_output_default_bufsize_no_deadlock(self):
+        """capture_output=True with default bufsize must not deadlock."""
+        result = RunningProcess.run(
+            ["python", "-c", "print('hello')"],
+            capture_output=True,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("hello", result.stdout)
+
+    def test_run_capture_output_explicit_bufsize_neg1_no_deadlock(self):
+        """capture_output=True with explicit bufsize=-1 must not deadlock (ignored with warning)."""
+        result = RunningProcess.run(
+            ["python", "-c", "print('world')"],
+            capture_output=True,
+            bufsize=-1,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("world", result.stdout)
+
+    def test_run_bufsize_neg1_warns_and_handles_large_output(self):
+        """bufsize=-1 should warn and complete without deadlock even with massive output."""
+        msg = "testing by filling up with buffer!!!!!!!!!!!!!!"
+        script = (
+            "import sys; "
+            f"msg = '{msg}\\n'; "
+            "[sys.stdout.write(msg) for _ in range(65536)]; "
+            "[sys.stderr.write(msg) for _ in range(65536)]"
+        )
+        with mock.patch("running_process.running_process.logger") as mock_logger:
+            result = RunningProcess.run(
+                ["python", "-c", script],
+                capture_output=True,
+                bufsize=-1,
+                timeout=30,
+            )
+
+        # Should have warned about bufsize=-1
+        warning_found = False
+        for call in mock_logger.warning.call_args_list:
+            if call and "bufsize" in str(call).lower():
+                warning_found = True
+        self.assertTrue(warning_found, "Should warn about bufsize=-1")
+
+        # Should complete without deadlock
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(msg, result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

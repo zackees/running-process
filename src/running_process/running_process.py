@@ -136,6 +136,8 @@ from running_process.running_process_manager import RunningProcessManagerSinglet
 # Create module-level logger
 logger = logging.getLogger(__name__)
 
+_BUFSIZE_NOT_SET = object()
+
 
 @dataclass
 class ProcessInfo:
@@ -483,16 +485,19 @@ class RunningProcess:
         # Prepare environment
         env = self.env.copy() if self.env is not None else os.environ.copy()
 
-        # Check if user provided bufsize override
+        # Check if user provided bufsize override — reject anything other than 1
         user_bufsize = self.popen_kwargs.get("bufsize")
         if user_bufsize is not None and user_bufsize != 1:
-            # User overrode bufsize to non-1 value, disable real-time streaming optimization
             logger.warning(
-                "User-provided bufsize=%r disables real-time streaming optimization. PYTHONUNBUFFERED will not be set.",
+                "\033[33mIgnoring bufsize=%r (custom bufsize causes pipe deadlocks). "
+                "Using internal bufsize=1 (line-buffered) for real-time streaming.\033[0m",
                 user_bufsize,
             )
-            # Don't set PYTHONUNBUFFERED when using custom bufsize
-        else:
+            if "bufsize" in self.popen_kwargs:
+                del self.popen_kwargs["bufsize"]
+            user_bufsize = None
+
+        if user_bufsize is None or user_bufsize == 1:
             # Use our real-time streaming optimization (bufsize=1 or no override)
             env["PYTHONUNBUFFERED"] = "1"
 
@@ -1111,7 +1116,7 @@ class RunningProcess:
     def run(
         args: str | list[str],
         *,
-        bufsize: int = -1,
+        bufsize: int | object = _BUFSIZE_NOT_SET,
         executable: str | None = None,
         stdin: int | IO[Any] | None = None,
         stdout: int | IO[Any] | None = None,
@@ -1166,10 +1171,13 @@ class RunningProcess:
         should_capture = capture_output or (stdout is subprocess.PIPE)
 
         # Forward Popen-level params that RunningProcess doesn't expose as top-level args
-        extra_popen = {
-            **other_popen_kwargs,
-            "bufsize": bufsize,
-        }
+        extra_popen = {**other_popen_kwargs}
+        if bufsize is not _BUFSIZE_NOT_SET:
+            logger.warning(
+                "\033[33mIgnoring bufsize=%r (custom bufsize causes pipe deadlocks). "
+                "Using internal bufsize=1 (line-buffered) for real-time streaming.\033[0m",
+                bufsize,
+            )
         if executable is not None:
             extra_popen["executable"] = executable
         if stdin is not None:
