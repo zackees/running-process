@@ -852,7 +852,9 @@ class RunningProcess:
             KeyboardInterrupt: If the exit code indicates keyboard interrupt.
         """
         if rtn in self.KEYBOARD_INTERRUPT_EXIT_CODES:
-            logger.info("Keyboard interrupt detected (exit code %d), raising KeyboardInterrupt", rtn)
+            msg = f"[running-process] Keyboard interrupt detected (exit code {rtn}), raising KeyboardInterrupt"
+            logger.info(msg)
+            print(msg)  # noqa: T201
             raise KeyboardInterrupt
 
     def _cleanup_reader_thread(self) -> None:
