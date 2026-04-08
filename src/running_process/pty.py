@@ -283,12 +283,19 @@ class PseudoTerminalProcess:
 
     def terminate(self) -> None:
         self._ensure_started()
+        if self.poll() is not None:
+            self._finalize("exit")
+            return
         if sys.platform == "win32":
             self._proc.terminate()
         else:
             pid = self.pid
             if pid is not None:
-                os.killpg(pid, signal.SIGTERM)
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    self._finalize("exit")
+                    return
         self._wait_for_reader()
         self._finalize("terminate")
 
@@ -302,7 +309,11 @@ class PseudoTerminalProcess:
         else:
             pid = self.pid
             if pid is not None:
-                os.killpg(pid, signal.SIGKILL)
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    self._finalize("exit")
+                    return
         self._wait_for_reader()
         self._finalize("kill")
 
