@@ -64,17 +64,29 @@ def detect_repo() -> str:
 
 
 def check_pypi_version(name: str, version: str) -> None:
+    existing = existing_pypi_files(name, version)
+    if existing is None:
+        return
+    if existing:
+        log(
+            f"{name} {version} already exists on PyPI with {len(existing)} file(s); "
+            "will upload only missing artifacts"
+        )
+
+
+def existing_pypi_files(name: str, version: str) -> set[str] | None:
     url = f"https://pypi.org/pypi/{name}/json"
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            return
+            return None
         raise
-    existing = set(data.get("releases", {}))
-    if version in existing:
-        raise SystemExit(f"{name} {version} already exists on PyPI")
+    release = data.get("releases", {}).get(version)
+    if release is None:
+        return None
+    return {file["filename"] for file in release}
 
 
 def ensure_clean_and_pushed() -> None:
@@ -252,6 +264,17 @@ def download_artifacts(repo: str, runs: dict[str, int]) -> list[Path]:
     return sorted(built)
 
 
+def filter_missing_artifacts(artifacts: list[Path], existing_files: set[str]) -> list[Path]:
+    missing = [path for path in artifacts if path.name not in existing_files]
+    if missing:
+        log("Artifacts missing from PyPI:")
+        for path in missing:
+            log(f"  {path.name}")
+    else:
+        log("All artifacts for this version are already present on PyPI")
+    return missing
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Publish running-process from remote GitHub builds"
@@ -266,8 +289,10 @@ def main() -> int:
 
     name, version = read_project_meta()
     ensure_clean_and_pushed()
+    existing_files: set[str] = set()
     if not args.dry_run:
         check_pypi_version(name, version)
+        existing_files = existing_pypi_files(name, version) or set()
 
     repo = detect_repo()
     log(f"Publishing {name} {version} via remote GitHub builds")
@@ -284,7 +309,10 @@ def main() -> int:
             log(f"  {artifact.name}")
         return 0
 
-    run(["uv", "publish", *[str(path) for path in artifacts]])
+    to_upload = filter_missing_artifacts(artifacts, existing_files)
+    if not to_upload:
+        return 0
+    run(["uv", "publish", *[str(path) for path in to_upload]])
     return 0
 
 
