@@ -13,6 +13,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ci.env import clean_env
 
 
+def _write_console_line(line: str) -> None:
+    try:
+        sys.stdout.write(line)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        rendered = line.encode(encoding, errors="replace")
+        if hasattr(sys.stdout, "buffer"):
+            sys.stdout.buffer.write(rendered)
+        else:
+            sys.stdout.write(rendered.decode(encoding, errors="replace"))
+    sys.stdout.flush()
+
+
 def main() -> int:
     if len(sys.argv) < 4 or sys.argv[2] != "--":
         print("usage: run_logged.py <log-path> -- <command...>", file=sys.stderr)
@@ -34,7 +47,7 @@ def main() -> int:
         )
         assert process.stdout is not None
         for line in process.stdout:
-            sys.stdout.write(line)
+            _write_console_line(line)
             handle.write(line)
         return process.wait()
 
