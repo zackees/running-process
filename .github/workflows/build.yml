@@ -1,0 +1,75 @@
+name: Build Distribution Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: false
+        default: main
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86
+            runs_on: ubuntu-24.04
+            artifact: wheels-linux-x86
+            build_sdist: true
+          - name: linux-arm
+            runs_on: ubuntu-24.04-arm
+            artifact: wheels-linux-arm
+            build_sdist: false
+          - name: windows-x86
+            runs_on: windows-2025
+            artifact: wheels-windows-x86
+            build_sdist: false
+          - name: windows-arm
+            runs_on: windows-11-arm
+            artifact: wheels-windows-arm
+            build_sdist: false
+          - name: macos-x86
+            runs_on: macos-13
+            artifact: wheels-macos-x86
+            build_sdist: false
+          - name: macos-arm
+            runs_on: macos-15
+            artifact: wheels-macos-arm
+            build_sdist: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build-${{ matrix.name }}
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - name: Build sdist
+        if: matrix.build_sdist
+        run: uv build --sdist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
