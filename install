@@ -120,10 +120,11 @@ def install_rustup(plat: str) -> None:
 
     if plat == "windows":
         tmp = make_tempfile("rustup-init.exe", plat)
-        download(RUSTUP_WIN_URL, native_path(tmp, plat))
-        subprocess.run([tmp, *args], check=True, env=env)
+        native_tmp = native_path(tmp, plat)
+        download(RUSTUP_WIN_URL, native_tmp)
+        subprocess.run([native_tmp, *args], check=True, env=env)
         try:
-            os.unlink(tmp)
+            os.unlink(native_tmp)
         except OSError:
             pass
         return
