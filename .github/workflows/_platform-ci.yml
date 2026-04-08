@@ -1,0 +1,49 @@
+name: Platform CI Template
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        required: true
+        type: string
+
+jobs:
+  test:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: running-process-${{ inputs.runs-on }}
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync
+        run: uv sync --group dev
+
+      - name: Rust Check
+        run: cargo check --workspace
+
+      - name: Install Extension
+        run: uv run maturin develop
+
+      - name: Rust Tests
+        run: cargo test --workspace
+
+      - name: Python Tests
+        run: uv run pytest -q
+
+      - name: Live Tests
+        env:
+          RUNNING_PROCESS_LIVE_TESTS: "1"
+        run: uv run pytest -m live -q

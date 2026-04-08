@@ -1,0 +1,11 @@
+name: Windows x86
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  call:
+    uses: ./.github/workflows/_platform-ci.yml
+    with:
+      runs-on: windows-2025

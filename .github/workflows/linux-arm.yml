@@ -1,0 +1,11 @@
+name: Linux ARM
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  call:
+    uses: ./.github/workflows/_platform-ci.yml
+    with:
+      runs-on: ubuntu-24.04-arm

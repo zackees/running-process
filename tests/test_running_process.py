@@ -1,496 +1,787 @@
-"""Unit tests for the RunningProcess class.
-
-These tests cover the most common use cases without using mocks,
-testing real process execution and behavior.
-"""
+from __future__ import annotations
 
 import contextlib
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
-import time
-import unittest
+import warnings
 from pathlib import Path
 
-from running_process import RunningProcess
-from running_process.process_output_reader import EndOfStream
-from running_process.running_process import subprocess_run
+import psutil
+import pytest
+
+from running_process import (
+    CpuPriority,
+    EndOfStream,
+    ProcessAbnormalExit,
+    ProcessInfo,
+    RunningProcess,
+    RunningProcessManagerSingleton,
+    subprocess_run,
+)
+from running_process.exit_status import classify_exit_status
+from running_process.output_formatter import TimeDeltaFormatter
+from running_process.process_utils import get_process_tree_info, kill_process_tree
 
 
-class TestBasicExecution(unittest.TestCase):
-    """Test basic RunningProcess creation and execution."""
+def test_basic_stdout_capture() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('hello')"])
+    code = process.wait()
 
-    def test_simple_echo_command(self):
-        """Test basic echo command execution."""
-        process = RunningProcess(["echo", "Hello World"], auto_run=False)
-        process.start()
-        exit_code = process.wait()
-
-        self.assertEqual(exit_code, 0)
-        self.assertIn("Hello World", process.stdout)
-
-    def test_simple_echo_command_with_auto_run(self):
-        """Test echo command with auto_run=True (default)."""
-        process = RunningProcess(["echo", "Hello World"])
-        exit_code = process.wait()
-
-        self.assertEqual(exit_code, 0)
-        self.assertIn("Hello World", process.stdout)
-
-    def test_shell_command_string(self):
-        """Test shell command execution with string command."""
-        if os.name == "nt":
-            process = RunningProcess("echo Hello World", shell=True)  # noqa: S604
-        else:
-            process = RunningProcess("echo 'Hello World'", shell=True)  # noqa: S604
-        exit_code = process.wait()
-
-        self.assertEqual(exit_code, 0)
-        self.assertIn("Hello World", process.stdout)
-
-    def test_command_with_working_directory(self):
-        """Test command execution with custom working directory."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-
-            # Create a test file
-            test_file = temp_path / "test.txt"
-            test_file.write_text("test content")
-
-            # List files in the directory
-            if os.name == "nt":
-                process = RunningProcess(["dir", "/b"], cwd=temp_path, shell=True)  # noqa: S604
-            else:
-                process = RunningProcess(["ls"], cwd=temp_path)
-            exit_code = process.wait()
-
-            self.assertEqual(exit_code, 0)
-            self.assertIn("test.txt", process.stdout)
-
-    def test_python_command_execution(self):
-        """Test Python script execution."""
-        python_code = "print('Python output'); print('Line 2')"
-        process = RunningProcess([sys.executable, "-c", python_code])
-        exit_code = process.wait()
-
-        self.assertEqual(exit_code, 0)
-        self.assertIn("Python output", process.stdout)
-        self.assertIn("Line 2", process.stdout)
+    assert code == 0
+    assert process.start_time is not None
+    assert process.end_time is not None
+    assert process.duration is not None
+    assert process.stdout.strip() == "hello"
+    assert process.stderr == ""
+    assert process.combined_output.strip() == "hello"
 
 
-class TestOutputStreaming(unittest.TestCase):
-    """Test output streaming and iteration functionality."""
+def test_split_stdout_and_stderr_capture() -> None:
+    script = "import sys; print('out'); print('err', file=sys.stderr)"
+    process = RunningProcess([sys.executable, "-c", script])
+    code = process.wait()
 
-    def test_get_next_line_basic(self):
-        """Test basic line-by-line output reading."""
-        process = RunningProcess([sys.executable, "-c", "print('line1'); print('line2')"])
+    assert code == 0
+    assert process.stdout.strip() == "out"
+    assert process.stderr.strip() == "err"
+    assert "out" in process.combined_output
+    assert "err" in process.combined_output
 
-        lines = []
-        while True:
-            try:
-                line = process.get_next_line(timeout=5.0)
-                if isinstance(line, EndOfStream):
-                    break
-                lines.append(line)
-            except TimeoutError:
-                break
 
-        process.wait()
-        self.assertGreaterEqual(len(lines), 2)
-        self.assertIn("line1", lines)
-        self.assertIn("line2", lines)
+def test_invalid_utf8_replaced_by_default_for_running_process() -> None:
+    script = (
+        "import sys; "
+        "sys.stdout.buffer.write(b'bad:\\xff\\n'); "
+        "sys.stderr.buffer.write(b'err:\\xfe\\n'); "
+        "sys.stdout.flush(); sys.stderr.flush()"
+    )
+    process = RunningProcess([sys.executable, "-c", script])
+    process.wait()
 
-    def test_line_iterator_context_manager(self):
-        """Test line iterator with context manager."""
-        process = RunningProcess([sys.executable, "-c", "print('iter1'); print('iter2')"])
+    assert process.stdout == "bad:\ufffd"
+    assert process.stderr == "err:\ufffd"
 
-        lines = []
-        with process.line_iter(timeout=5.0) as line_iter:
-            lines = list(line_iter)
 
-        process.wait()
-        self.assertGreaterEqual(len(lines), 2)
-        self.assertIn("iter1", lines)
-        self.assertIn("iter2", lines)
+def test_crlf_is_normalized_but_bare_cr_is_preserved() -> None:
+    script = (
+        "import sys; "
+        "sys.stdout.buffer.write(b'first\\r\\nsecond\\rthird\\n'); "
+        "sys.stdout.flush()"
+    )
+    process = RunningProcess([sys.executable, "-c", script])
+    process.wait()
 
-    def test_drain_stdout(self):
-        """Test draining all pending stdout."""
-        process = RunningProcess(
-            [sys.executable, "-c", "import time; print('fast'); time.sleep(0.1); print('delayed')"]
+    assert process.stdout == "first\nsecond\rthird"
+
+
+def test_get_next_line_preserves_combined_stream() -> None:
+    script = "import sys; print('out'); print('err', file=sys.stderr)"
+    process = RunningProcess([sys.executable, "-c", script])
+
+    seen = []
+    while True:
+        item = process.get_next_line(timeout=5)
+        if isinstance(item, EndOfStream):
+            break
+        seen.append(item)
+
+    process.wait()
+    assert "out" in seen
+    assert "err" in seen
+
+
+def test_stream_specific_reads_and_availability() -> None:
+    script = (
+        "import sys, time; "
+        "print('out-1'); sys.stdout.flush(); "
+        "time.sleep(0.2); "
+        "print('err-1', file=sys.stderr); sys.stderr.flush()"
+    )
+    process = RunningProcess([sys.executable, "-c", script])
+
+    stdout_line = process.get_next_stdout_line(timeout=2)
+    assert stdout_line == "out-1"
+    assert process.has_pending_stdout() is False
+
+    stderr_line = process.get_next_stderr_line(timeout=2)
+    assert stderr_line == "err-1"
+    assert process.has_pending_stderr() is False
+
+    process.wait()
+
+
+def test_stdout_and_stderr_stream_objects_report_availability() -> None:
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time; "
+                "print('stdout-ready'); sys.stdout.flush(); "
+                "time.sleep(0.2); "
+                "print('stderr-ready', file=sys.stderr); sys.stderr.flush()"
+            ),
+        ]
+    )
+
+    stdout_line = process.get_next_stdout_line(timeout=2)
+    assert stdout_line == "stdout-ready"
+    assert process.stdout_stream.available() is False
+
+    stderr_line = process.get_next_stderr_line(timeout=2)
+    assert stderr_line == "stderr-ready"
+    assert process.stderr_stream.available() is False
+    assert process.wait() == 0
+
+
+def test_line_iter_uses_combined_stream() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('a'); print('b')"])
+    with process.line_iter(timeout=5) as lines:
+        collected = list(lines)
+    process.wait()
+    assert collected == ["a", "b"]
+
+
+def test_get_next_line_non_blocking_returns_none_without_output() -> None:
+    process = RunningProcess([sys.executable, "-c", "import time; time.sleep(0.2); print('late')"])
+    assert process.get_next_line_non_blocking() is None
+    process.wait()
+
+
+def test_drain_combined_includes_stream_names() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
+    )
+    process.wait()
+    drained = process.drain_combined()
+    assert ("stdout", "out") in drained
+    assert ("stderr", "err") in drained
+
+
+def test_stream_values_are_plain_text_and_streams_are_separate() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('hello world')"])
+    process.wait()
+    assert process.stdout.strip() == "hello world"
+    assert "hello" in process.stdout
+    assert str(process.stdout) == "hello world"
+    assert process.stdout_stream.read() == "hello world"
+
+
+def test_run_rejects_unsupported_subprocess_kwargs() -> None:
+    with pytest.raises(NotImplementedError, match="executable="):
+        RunningProcess.run([sys.executable, "-c", "print('x')"], executable=sys.executable)
+    with pytest.raises(NotImplementedError, match="stdout=None or PIPE"):
+        RunningProcess.run([sys.executable, "-c", "print('x')"], stdout=subprocess.DEVNULL)
+    with pytest.raises(NotImplementedError, match="extra Popen kwargs"):
+        RunningProcess.run([sys.executable, "-c", "print('x')"], start_new_session=True)
+
+
+def test_run_can_raise_on_abnormal_exit() -> None:
+    with pytest.raises(ProcessAbnormalExit) as exc_info:
+        RunningProcess.run(
+            [sys.executable, "-c", "import sys; sys.exit(3)"],
+            capture_output=True,
+            raise_on_abnormal_exit=True,
+        )
+    assert exc_info.value.status.returncode == 3
+    assert exc_info.value.status.abnormal is True
+
+
+def test_expect_matches_string_and_writes_to_stdin() -> None:
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "print('prompt>'); sys.stdout.flush(); "
+                "line = sys.stdin.readline().strip(); "
+                "print('echo:' + line)"
+            ),
+        ],
+        stdin=subprocess.PIPE,
+    )
+    match = process.expect("prompt>", timeout=5, action="typed text\n")
+    assert match.matched == "prompt>"
+    process.expect("echo:typed text", timeout=5)
+    assert process.wait() == 0
+
+
+def test_expect_matches_regex_groups() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('value=42')"])
+    match = process.expect(re.compile(r"value=(\d+)"), timeout=5)
+    assert match.groups == ("42",)
+    process.wait()
+
+
+def test_expect_rejects_invalid_stream_name() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('value=42')"])
+    with pytest.raises(ValueError, match="stream must be"):
+        process.expect("value", stream="bad")
+    process.wait()
+
+
+def test_timeout_kills_process() -> None:
+    process = RunningProcess([sys.executable, "-c", "import time; time.sleep(10)"], timeout=1)
+    with pytest.raises(TimeoutError):
+        process.wait(timeout=1)
+    assert process.finished
+
+
+def test_terminate_finishes_process() -> None:
+    process = RunningProcess([sys.executable, "-c", "import time; time.sleep(10)"])
+    process.terminate()
+    assert process.finished
+
+
+def test_manager_unregisters_after_wait() -> None:
+    before = len(RunningProcessManagerSingleton.list_active())
+    RunningProcess.run([sys.executable, "-c", "print('manager')"], capture_output=True)
+    after = len(RunningProcessManagerSingleton.list_active())
+    assert before == after
+
+
+def test_run_matches_subprocess_contract() -> None:
+    result = RunningProcess.run(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout is not None
+    assert result.stdout.strip() == "out"
+    assert result.stderr is not None
+    assert result.stderr.strip() == "err"
+
+
+def test_run_without_capture_returns_none_streams() -> None:
+    result = RunningProcess.run([sys.executable, "-c", "print('out')"])
+    assert result.stdout is None
+    assert result.stderr is None
+
+
+def test_run_capture_output_defaults_to_bytes() -> None:
+    result = RunningProcess.run(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'bad:\\xff')"],
+        capture_output=True,
+        text=False,
+    )
+    assert result.stdout == b"bad:\xff"
+    assert result.stderr == b""
+
+
+def test_run_capture_output_text_mode_replaces_invalid_utf8() -> None:
+    result = RunningProcess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.buffer.write(b'bad:\\xff'); "
+                "sys.stderr.buffer.write(b'err:\\xfe')"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout == "bad:\ufffd"
+    assert result.stderr == "err:\ufffd"
+
+
+def test_run_preserves_bare_carriage_return_in_text_mode() -> None:
+    result = RunningProcess.run(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'a\\r\\nb\\rc\\n')"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout == "a\nb\rc"
+
+
+def test_run_timeout_raises_timeout_expired() -> None:
+    with pytest.raises(subprocess.TimeoutExpired):
+        RunningProcess.run(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            capture_output=True,
+            timeout=0.2,
         )
 
-        # Wait a bit for output to accumulate
-        time.sleep(0.5)
 
-        drained_lines = process.drain_stdout()
-        process.wait()
-
-        self.assertGreaterEqual(len(drained_lines), 1)
-        output_text = "\n".join(drained_lines)
-        self.assertIn("fast", output_text)
-
-    def test_has_pending_output(self):
-        """Test checking for pending output."""
-        process = RunningProcess([sys.executable, "-c", "print('check output')"])
-
-        # Wait for output to be available
-        time.sleep(0.2)
-
-        has_output = process.has_pending_output()
-        process.wait()
-
-        # Should have had output at some point
-        self.assertIsInstance(has_output, bool)
-
-    def test_get_next_line_non_blocking(self):
-        """Test non-blocking line retrieval."""
-        process = RunningProcess([sys.executable, "-c", "print('non-blocking test')"])
-
-        # Try to get a line without blocking
-        result = process.get_next_line_non_blocking()
-        process.wait()
-
-        # Result should be string, None, or EndOfStream
-        self.assertTrue(result is None or isinstance(result, str | EndOfStream))
+def test_run_with_text_input_capture_output() -> None:
+    script = (
+        "import sys; "
+        "data = sys.stdin.read(); "
+        "print(data.upper()); "
+        "print('err:' + data.lower(), file=sys.stderr)"
+    )
+    result = RunningProcess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+        ],
+        input="Hello\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout is not None
+    assert result.stdout.strip() == "HELLO"
+    assert result.stderr is not None
+    assert result.stderr.strip() == "err:hello"
 
 
-class TestProcessCompletion(unittest.TestCase):
-    """Test process completion and exit codes."""
-
-    def test_successful_exit_code(self):
-        """Test process with successful exit code."""
-        process = RunningProcess([sys.executable, "-c", "exit(0)"])
-        exit_code = process.wait()
-
-        self.assertEqual(exit_code, 0)
-        self.assertTrue(process.finished)
-        self.assertEqual(process.returncode, 0)
-
-    def test_non_zero_exit_code(self):
-        """Test process with non-zero exit code."""
-        process = RunningProcess([sys.executable, "-c", "exit(42)"])
-        exit_code = process.wait()
-
-        self.assertEqual(exit_code, 42)
-        self.assertTrue(process.finished)
-        self.assertEqual(process.returncode, 42)
-
-    def test_poll_before_completion(self):
-        """Test polling process status before completion."""
-        process = RunningProcess([sys.executable, "-c", "import time; time.sleep(0.1)"])
-
-        # Poll immediately - should be None (still running)
-        initial_poll = process.poll()
-
-        # Wait for completion
-        exit_code = process.wait()
-
-        # Poll after completion - should return exit code
-        final_poll = process.poll()
-
-        self.assertIsNone(initial_poll)
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(final_poll, 0)
-
-    def test_process_timing_properties(self):
-        """Test process timing properties."""
-        process = RunningProcess([sys.executable, "-c", "import time; time.sleep(0.1)"])
-        exit_code = process.wait()
-
-        self.assertIsNotNone(process.start_time)
-        self.assertIsNotNone(process.end_time)
-        self.assertIsNotNone(process.duration)
-        assert process.duration is not None  # for type checker
-        self.assertGreater(process.duration, 0)
-        self.assertEqual(exit_code, 0)
-
-    def test_accumulated_stdout_property(self):
-        """Test accumulated stdout property."""
-        process = RunningProcess([sys.executable, "-c", "print('line1'); print('line2')"])
-        exit_code = process.wait()
-
-        stdout_content = process.stdout
-        self.assertIn("line1", stdout_content)
-        self.assertIn("line2", stdout_content)
-        self.assertEqual(exit_code, 0)
+def test_run_with_bytes_input_capture_output() -> None:
+    result = RunningProcess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; data = sys.stdin.buffer.read(); sys.stdout.buffer.write(data[::-1])",
+        ],
+        input=b"abc",
+        capture_output=True,
+        text=False,
+    )
+    assert result.stdout == b"cba"
+    assert result.stderr == b""
 
 
-class TestTimeoutAndErrorHandling(unittest.TestCase):
-    """Test timeout and error handling scenarios."""
-
-    def test_timeout_error(self):
-        """Test process timeout handling."""
-        process = RunningProcess([sys.executable, "-c", "import time; time.sleep(10)"], timeout=1)
-
-        with self.assertRaises(TimeoutError):
-            process.wait()
-
-    def test_get_next_line_timeout(self):
-        """Test timeout when getting next line."""
-        process = RunningProcess([sys.executable, "-c", "import time; time.sleep(10)"])
-
-        with self.assertRaises(TimeoutError):
-            process.get_next_line(timeout=0.1)
-
-        process.kill()
-
-    def test_invalid_command_error(self):
-        """Test handling of invalid commands."""
-        with self.assertRaises((FileNotFoundError, OSError)):
-            RunningProcess(["this_command_does_not_exist_12345"])
-
-    def test_kill_process(self):
-        """Test killing a running process."""
-        process = RunningProcess([sys.executable, "-c", "import time; time.sleep(10)"])
-
-        # Let it start
-        time.sleep(0.1)
-
-        # Kill it
-        process.kill()
-
-        # Should be finished after kill
-        self.assertTrue(process.finished)
-
-    def test_terminate_process(self):
-        """Test gracefully terminating a process."""
-        process = RunningProcess([sys.executable, "-c", "import time; time.sleep(10)"])
-
-        # Let it start
-        time.sleep(0.1)
-
-        # Terminate it
-        process.terminate()
-
-        # Wait a bit for termination
-        time.sleep(0.2)
-
-        # Should be finished
-        poll_result = process.poll()
-        self.assertIsNotNone(poll_result)
-
-    def test_invalid_shell_command_combination(self):
-        """Test invalid shell/command combination."""
-        with self.assertRaisesRegex(ValueError, "String commands require shell=True"):
-            RunningProcess("echo test", shell=False)
+def test_running_process_binary_mode_returns_bytes() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'abc\\xff')"],
+        text=False,
+    )
+    process.wait()
+    assert process.stdout == b"abc\xff"
 
 
-class TestSubprocessRun(unittest.TestCase):
-    """Test the subprocess_run convenience function."""
+def test_run_input_and_stdin_conflict_raises() -> None:
+    with pytest.raises(ValueError, match="stdin and input arguments may not both be used"):
+        RunningProcess.run(
+            [sys.executable, "-c", "print('nope')"],
+            input="hello",
+            stdin=subprocess.PIPE,
+        )
 
-    def test_subprocess_run_basic(self):
-        """Test basic subprocess_run functionality."""
-        result = subprocess_run(command=["echo", "subprocess_run test"], cwd=None, check=False, timeout=10)
 
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("subprocess_run test", result.stdout)
-        self.assertIsNone(result.stderr)
+def test_write_requires_piped_stdin() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('hello')"])
+    with pytest.raises(RuntimeError, match="stdin is not available"):
+        process.write("ignored")
+    process.wait()
 
-    def test_subprocess_run_with_cwd(self):
-        """Test subprocess_run with working directory."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            result = subprocess_run(
-                command=[sys.executable, "-c", "import os; print(os.getcwd())"],
-                cwd=Path(temp_dir),
-                check=False,
-                timeout=10,
-            )
 
-            self.assertEqual(result.returncode, 0)
-            # The output should contain the temp directory path
-            self.assertIn(temp_dir.replace("\\", "/"), result.stdout.replace("\\", "/"))
+def test_exec_script_runs_uv_shebang_with_lf() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        script_path = Path(temp_dir) / "uv_script.py"
+        script_path.write_text(
+            "#!/usr/bin/env -S uv run --script\n"
+            "print('uv shebang works')\n",
+            encoding="utf-8",
+        )
 
-    def test_subprocess_run_with_check_true_success(self):
-        """Test subprocess_run with check=True for successful command."""
-        result = subprocess_run(
-            command=[sys.executable, "-c", "print('success')"],
+        result = RunningProcess.exec_script(script_path)
+        assert result.stdout is not None
+        assert result.stdout.strip() == "uv shebang works"
+
+
+def test_exec_script_runs_uv_shebang_with_crlf() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        script_path = Path(temp_dir) / "uv_script_crlf.py"
+        script_path.write_bytes(
+            b"#!/usr/bin/env -S uv run --script\r\n"
+            b"print('uv shebang crlf works')\r\n"
+        )
+
+        result = RunningProcess.exec_script(script_path)
+        assert result.stdout is not None
+        assert result.stdout.strip() == "uv shebang crlf works"
+
+
+def test_exec_script_without_shebang_raises() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        script_path = Path(temp_dir) / "plain.py"
+        script_path.write_text("print('no shebang')\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="does not start with a shebang"):
+            RunningProcess.exec_script(script_path)
+
+
+def test_run_filter_input_uses_native_path_for_text() -> None:
+    result = RunningProcess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "data = sys.stdin.read(); "
+                "print(data.upper()); "
+                "print('stderr:' + data.lower(), file=sys.stderr)"
+            ),
+        ],
+        input="AbC\n",
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.stdout == "ABC"
+    assert result.stderr == "stderr:abc"
+
+
+def test_run_filter_input_uses_native_path_for_bytes() -> None:
+    result = RunningProcess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "data = sys.stdin.buffer.read(); "
+                "sys.stdout.buffer.write(data[::-1]); "
+                "sys.stderr.buffer.write(data.upper())"
+            ),
+        ],
+        input=b"abc",
+        capture_output=True,
+        text=False,
+        timeout=5,
+    )
+    assert result.stdout == b"cba"
+    assert result.stderr == b"ABC"
+
+
+def test_run_supports_detached_stdin_with_devnull() -> None:
+    result = RunningProcess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "data = sys.stdin.read(); "
+                "print('stdin_closed' if data == '' else 'stdin_open'); "
+                "print('err-ok', file=sys.stderr)"
+            ),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.stdout == "stdin_closed"
+    assert result.stderr == "err-ok"
+
+
+def test_run_supports_shell_and_env() -> None:
+    result = RunningProcess.run(
+        "python -c \"import os; print(os.environ['RP_TEST_VALUE'])\"",
+        shell=True,
+        env={**os.environ, "RP_TEST_VALUE": "shell-ok"},
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.stdout == "shell-ok"
+
+
+def test_subprocess_run_capture_output() -> None:
+    result = subprocess_run(
+        command=[sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        cwd=None,
+        check=False,
+        timeout=5,
+    )
+    assert result.stdout is not None
+    assert result.stdout.strip() == "out"
+    assert result.stderr is not None
+    assert result.stderr.strip() == "err"
+
+
+def test_subprocess_run_timeout_raises_runtime_error() -> None:
+    with pytest.raises(RuntimeError, match="Process timed out"):
+        subprocess_run(
+            command=[sys.executable, "-c", "import time; time.sleep(5)"],
             cwd=None,
-            check=True,
-            timeout=10,
+            check=False,
+            timeout=0.1,  # type: ignore[arg-type]
         )
 
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("success", result.stdout)
 
-    def test_subprocess_run_with_check_true_failure(self):
-        """Test subprocess_run with check=True for failing command."""
-        with self.assertRaises(subprocess.CalledProcessError) as cm:
-            subprocess_run(command=[sys.executable, "-c", "exit(1)"], cwd=None, check=True, timeout=10)
+def test_run_streaming_calls_both_callbacks() -> None:
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    code = RunningProcess.run_streaming(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        stdout_callback=stdout_lines.append,
+        stderr_callback=stderr_lines.append,
+        timeout=5,
+    )
 
-        self.assertEqual(cm.exception.returncode, 1)
-
-    def test_subprocess_run_timeout(self):
-        """Test subprocess_run with timeout."""
-        with self.assertRaisesRegex(RuntimeError, "Process timed out"):
-            subprocess_run(
-                command=[sys.executable, "-c", "import time; time.sleep(10)"],
-                cwd=None,
-                check=False,
-                timeout=1,
-            )
+    assert code == 0
+    assert stdout_lines == ["out"]
+    assert stderr_lines == ["err"]
 
 
-class TestEdgeCases(unittest.TestCase):
-    """Test edge cases and special scenarios."""
+def test_capture_false_does_not_store_output() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('hidden')"], capture=False)
+    process.wait()
+    assert process.stdout == ""
+    assert process.stderr == ""
 
-    def test_empty_output_command(self):
-        """Test command that produces no output."""
-        process = RunningProcess([sys.executable, "-c", "pass"])
-        exit_code = process.wait()
 
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(process.stdout, "")
+def test_invalid_string_command_without_shell() -> None:
+    with pytest.raises(ValueError, match="String commands require shell=True"):
+        RunningProcess("echo nope", shell=False)
 
-    def test_multiline_output(self):
-        """Test command with multiline output."""
-        python_code = """
-for i in range(5):
-    print(f"Line {i}")
+
+def test_invalid_echo_type_raises() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('hello')"])
+    with pytest.raises(TypeError, match="echo must be bool or callable"):
+        process.wait(echo="bad")  # type: ignore[arg-type]
+
+
+def test_echo_true_writes_stdout_only(capsys: pytest.CaptureFixture[str]) -> None:
+    process = RunningProcess([sys.executable, "-c", "print('hello')"])
+    process.wait(echo=True)
+    captured = capsys.readouterr()
+    assert "hello" in captured.out
+
+
+def test_wait_uses_instance_timeout_and_callback() -> None:
+    seen: list[ProcessInfo] = []
+    process = RunningProcess(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        timeout=0.1,
+        on_timeout=seen.append,
+    )
+    with pytest.raises(TimeoutError):
+        process.wait()
+    assert len(seen) == 1
+    assert seen[0].pid != 0
+    assert seen[0].command == [sys.executable, "-c", "import time; time.sleep(10)"]
+
+
+def test_wait_raises_keyboard_interrupt_when_child_gets_sigint() -> None:
+    creationflags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if sys.platform == "win32" else None
+    )
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "print('ready', flush=True)\n"
+                "try:\n"
+                "    time.sleep(30)\n"
+                "except KeyboardInterrupt:\n"
+                "    print('child-interrupted', flush=True)\n"
+                "    raise\n"
+            ),
+        ],
+        creationflags=creationflags,
+        timeout=2,
+    )
+    assert process.get_next_stdout_line(timeout=5) == "ready"
+    process.send_interrupt()
+    with pytest.raises(KeyboardInterrupt):
+        process.wait()
+
+
+def test_exit_status_classifies_possible_oom_for_sigkill_on_unix() -> None:
+    status = classify_exit_status(-9, set(), platform="linux")
+    assert status.signal_number == 9
+    assert status.possible_oom is True
+    assert status.abnormal is True
+
+
+def test_exit_status_classifies_windows_no_memory_status() -> None:
+    status = classify_exit_status(-1073741801, set(), platform="win32")
+    assert status.possible_oom is True
+    assert status.abnormal is True
+
+
+def test_wait_echo_includes_stderr(capsys: pytest.CaptureFixture[str]) -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
+    )
+    process.wait(echo=True)
+    captured = capsys.readouterr()
+    assert "out" in captured.out
+    assert "err" in captured.out
+
+
+def test_echo_true_is_safe_for_ascii_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+    process = RunningProcess([sys.executable, "-c", "print('snowman: \\u2603')"])
+    process.wait(echo=True)
+    fake_stdout.flush()
+    assert b"snowman: ?" in fake_stdout.buffer.getvalue()
+
+
+def test_on_complete_callback_runs() -> None:
+    completed: list[str] = []
+    process = RunningProcess(
+        [sys.executable, "-c", "print('done')"],
+        on_complete=lambda: completed.append("done"),
+    )
+    process.wait()
+    assert completed == ["done"]
+
+
+def test_time_delta_formatter_applies_to_stream_reads() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "print('hello')"],
+        output_formatter=TimeDeltaFormatter(),
+    )
+    line = process.get_next_stdout_line(timeout=5)
+    process.wait()
+    assert line.startswith("[")
+    assert line.endswith(" hello")
+    TimeDeltaFormatter().end()
+
+
+def test_process_utils_handle_invalid_pid() -> None:
+    assert "Could not get process info" in get_process_tree_info(999999)
+    kill_process_tree(999999)
+
+
+def test_process_utils_describe_current_process() -> None:
+    info = get_process_tree_info(os.getpid())
+    assert f"Process {os.getpid()}" in info
+    assert "Status:" in info
+
+
+def test_child_python_env_defaults_to_utf8_replace() -> None:
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, sys; "
+                "print(os.environ.get('PYTHONUTF8', '')); "
+                "print(os.environ.get('PYTHONUNBUFFERED', '')); "
+                "print(sys.stdout.encoding)"
+            ),
+        ]
+    )
+    process.wait()
+    assert process.stdout.splitlines() == ["1", "1", "utf-8"]
+
+
+def test_running_process_can_set_positive_nice() -> None:
+    if sys.platform == "win32":
+        script = (
+            "import psutil; "
+            "print(psutil.Process().nice())"
+        )
+        process = RunningProcess([sys.executable, "-c", script], nice=5)
+        process.wait()
+        assert int(process.stdout) == psutil.BELOW_NORMAL_PRIORITY_CLASS
+        return
+
+    process = RunningProcess(
+        [sys.executable, "-c", "import os; print(os.nice(0))"],
+        nice=5,
+    )
+    process.wait()
+    assert int(process.stdout) >= 5
+
+
+def test_running_process_accepts_platform_neutral_priority_enum() -> None:
+    if sys.platform == "win32":
+        script = "import psutil; print(psutil.Process().nice())"
+        process = RunningProcess([sys.executable, "-c", script], nice=CpuPriority.LOW)
+        process.wait()
+        assert int(process.stdout) == psutil.BELOW_NORMAL_PRIORITY_CLASS
+        return
+
+    process = RunningProcess(
+        [sys.executable, "-c", "import os; print(os.nice(0))"],
+        nice=CpuPriority.LOW,
+    )
+    process.wait()
+    assert int(process.stdout) >= 5
+
+
+def test_running_process_rejects_invalid_nice_type() -> None:
+    with pytest.raises(TypeError, match="nice must be an int, CpuPriority, or None"):
+        RunningProcess([sys.executable, "-c", "print('x')"], auto_run=False, nice="low")  # type: ignore[arg-type]
+
+
+def test_process_utils_reports_child_processes() -> None:
+    script = """
+import subprocess
+import sys
+import time
+
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+print(child.pid, flush=True)
+time.sleep(10)
 """
-        process = RunningProcess([sys.executable, "-c", python_code])
-        exit_code = process.wait()
+    parent = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert parent.stdout is not None
+        child_pid_line = parent.stdout.readline().strip()
+        assert child_pid_line
+        child_pid = int(child_pid_line)
 
-        self.assertEqual(exit_code, 0)
-        stdout_lines = process.stdout.split("\n")
-        self.assertGreaterEqual(len([line for line in stdout_lines if line.strip()]), 5)
+        info = get_process_tree_info(parent.pid)
+        assert f"Process {parent.pid}" in info
+        assert f"Child {child_pid}" in info
+    finally:
+        kill_process_tree(parent.pid)
+        with contextlib.suppress(Exception):
+            parent.wait(timeout=2)
 
-    def test_process_with_large_output(self):
-        """Test process that generates substantial output."""
-        python_code = """
-for i in range(100):
-    print(f"Output line {i:03d}")
+
+def test_kill_process_tree_kills_parent_and_child() -> None:
+    script = """
+import subprocess
+import sys
+import time
+
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+print(child.pid, flush=True)
+time.sleep(10)
 """
-        process = RunningProcess([sys.executable, "-c", python_code])
-        exit_code = process.wait()
+    parent = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert parent.stdout is not None
+    child_pid_line = parent.stdout.readline().strip()
+    assert child_pid_line
+    child_pid = int(child_pid_line)
 
-        self.assertEqual(exit_code, 0)
-        stdout_lines = process.stdout.split("\n")
-        non_empty_lines = [line for line in stdout_lines if line.strip()]
-        self.assertGreaterEqual(len(non_empty_lines), 100)
+    kill_process_tree(parent.pid)
 
-    def test_command_list_to_string_conversion(self):
-        """Test command list to string conversion."""
-        process = RunningProcess(["echo", "test with spaces"])
-        command_str = process.get_command_str()
-
-        # Should properly quote arguments with spaces
-        self.assertTrue("test with spaces" in command_str or '"test with spaces"' in command_str)
-
-        exit_code = process.wait()
-        self.assertEqual(exit_code, 0)
+    parent.wait(timeout=3)
+    assert not psutil.pid_exists(parent.pid)
+    assert not psutil.pid_exists(child_pid)
 
 
-class TestEchoCallback(unittest.TestCase):
-    """Test echo callback functionality."""
-
-    def test_echo_boolean_true(self):
-        """Test echo=True converts to print function."""
-        process = RunningProcess(["echo", "test output"])
-
-        # Capture stdout to verify print was called
-        captured_output = io.StringIO()
-        with contextlib.redirect_stdout(captured_output):
-            exit_code = process.wait(echo=True)
-
-        self.assertEqual(exit_code, 0)
-        output_lines = captured_output.getvalue().strip()
-        # Should contain the echoed output
-        self.assertIn("test output", output_lines)
-
-    def test_echo_boolean_false(self):
-        """Test echo=False produces no output."""
-        process = RunningProcess(["echo", "test output"])
-
-        captured_output = io.StringIO()
-        with contextlib.redirect_stdout(captured_output):
-            exit_code = process.wait(echo=False)
-
-        self.assertEqual(exit_code, 0)
-        output_lines = captured_output.getvalue().strip()
-        # Should not contain any echoed output
-        self.assertEqual(output_lines, "")
-
-    def test_echo_custom_callback(self):
-        """Test echo with custom callback function."""
-        captured_lines = []
-
-        def custom_callback(line: str):
-            captured_lines.append(f"CUSTOM: {line}")
-
-        process = RunningProcess(["echo", "test callback"])
-        exit_code = process.wait(echo=custom_callback)
-
-        self.assertEqual(exit_code, 0)
-        self.assertTrue(len(captured_lines) > 0)
-        # Should have our custom prefix
-        self.assertTrue(any("CUSTOM: test callback" in line for line in captured_lines))
-
-    def test_echo_invalid_type(self):
-        """Test echo with invalid type raises TypeError."""
-        process = RunningProcess(["echo", "test"])
-
-        with self.assertRaises(TypeError) as cm:
-            process.wait(echo="invalid")  # type: ignore[arg-type]  # intentionally invalid
-
-        self.assertIn("echo must be bool or callable", str(cm.exception))
+def test_manager_dump_active_reports_process() -> None:
+    process = RunningProcess([sys.executable, "-c", "import time; time.sleep(1)"])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        RunningProcessManagerSingleton.dump_active()
+    process.kill()
+    assert any("STUCK SUBPROCESS COMMANDS" in str(item.message) for item in caught)
 
 
-class TestKeyboardInterruptDetection(unittest.TestCase):
-    """Test keyboard interrupt detection from subprocess exit codes."""
-
-    def test_interrupt_exit_code_130_raises(self):
-        """Test that exit code 130 (Unix SIGINT) raises KeyboardInterrupt."""
-        # Run a process that exits with code 130
-        process = RunningProcess(
-            [sys.executable, "-c", "import sys; sys.exit(130)"],
-            auto_run=False,
-        )
-        process.start()
-
-        with self.assertRaises(KeyboardInterrupt):
-            process.wait()
-
-    def test_interrupt_exit_code_negative_2_raises(self):
-        """Test that exit code -2 (SIGINT) raises KeyboardInterrupt."""
-        process = RunningProcess(
-            [sys.executable, "-c", "import os; os._exit(0xFFFFFFFE)"],
-            auto_run=False,
-        )
-        process.start()
-
-        # On Windows, 0xFFFFFFFE is 4294967294 which is in our set
-        # On Unix, this wraps differently - skip if exit code doesn't match
-        exit_code_or_interrupt = None
-        try:
-            exit_code_or_interrupt = process.wait()
-        except KeyboardInterrupt:
-            exit_code_or_interrupt = "interrupted"
-
-        # Either it raised KeyboardInterrupt or returned a code
-        # The exact behavior depends on platform
-        self.assertIsNotNone(exit_code_or_interrupt)
-
-    def test_normal_exit_code_does_not_raise(self):
-        """Test that normal exit codes (0, 1, 2) do NOT raise KeyboardInterrupt."""
-        for code in [0, 1, 2]:
-            process = RunningProcess(
-                [sys.executable, "-c", f"import sys; sys.exit({code})"],
-                auto_run=False,
-            )
-            process.start()
-            exit_code = process.wait()
-            self.assertEqual(exit_code, code)
-
-    def test_keyboard_interrupt_exit_codes_set(self):
-        """Test that the class attribute contains expected exit codes."""
-        expected = {-2, -11, 130, 255, 3221225786, 4294967294}
-        self.assertEqual(RunningProcess.KEYBOARD_INTERRUPT_EXIT_CODES, expected)
-
-    def test_run_streaming_raises_on_interrupt_exit_code(self):
-        """Test that run_streaming raises KeyboardInterrupt for interrupt exit codes."""
-        with self.assertRaises(KeyboardInterrupt):
-            RunningProcess.run_streaming(
-                [sys.executable, "-c", "import sys; sys.exit(130)"],
-            )
+def test_manager_dump_active_reports_empty_state() -> None:
+    for process in RunningProcessManagerSingleton.list_active():
+        process.kill()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        RunningProcessManagerSingleton.dump_active()
+    assert any("NO ACTIVE SUBPROCESSES DETECTED" in str(item.message) for item in caught)

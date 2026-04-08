@@ -1,0 +1,11 @@
+name: macOS ARM
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  call:
+    uses: ./.github/workflows/_platform-ci.yml
+    with:
+      runs-on: macos-15

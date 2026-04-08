@@ -1,0 +1,13 @@
+[package]
+name = "running-process-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Native process runtime for running-process"
+
+[dependencies]
+libc = "0.2"
+thiserror = { workspace = true }

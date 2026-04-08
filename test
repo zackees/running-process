@@ -1,5 +1,2 @@
-#!/bin/bash
-
-set -e
-echo "Running unittests"
-uv run pytest -n auto tests -v --durations=0
+#!/usr/bin/env bash
+exec uv run python -m ci.test "$@"

@@ -1,12 +1,2 @@
-#!/bin/bash
-set -e
-
-echo Running ruff check and format
-uv run ruff check --fix src tests
-uv run ruff format src tests
-echo Running keyboard interrupt checker
-uv run python -m ci.lint_python.keyboard_interrupt_checker src --exclude .venv venv dist .build
-echo Running pyright type checking
-uv run pyright src tests
-echo Linting complete!
-exit 0
+#!/usr/bin/env bash
+exec uv run python -m ci.lint "$@"

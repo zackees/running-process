@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/running-process-core",
+    "crates/running-process-py",
+]
+
+[workspace.package]
+version = "3.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "BSD-3-Clause"
+repository = "https://github.com/zackees/running-process"
+homepage = "https://github.com/zackees/running-process"
+
+[workspace.dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+thiserror = "2"

@@ -1,0 +1,11 @@
+name: Windows ARM
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  call:
+    uses: ./.github/workflows/_platform-ci.yml
+    with:
+      runs-on: windows-11-arm

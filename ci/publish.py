@@ -9,9 +9,7 @@ import sys
 
 
 def main() -> int:
-    if subprocess.run(["uv", "sync"]).returncode != 0:
-        return 1
-    return subprocess.run(["cargo", "check", "--workspace"]).returncode
+    return subprocess.run(["uv", "build"]).returncode
 
 
 if __name__ == "__main__":

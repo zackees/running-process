@@ -1,240 +1,235 @@
 # running-process
 
-[![Linting](../../actions/workflows/lint.yml/badge.svg)](../../actions/workflows/lint.yml)
-[![MacOS_Tests](../../actions/workflows/push_macos.yml/badge.svg)](../../actions/workflows/push_macos.yml)
-[![Ubuntu_Tests](../../actions/workflows/push_ubuntu.yml/badge.svg)](../../actions/workflows/push_ubuntu.yml)
-[![Win_Tests](../../actions/workflows/push_win.yml/badge.svg)](../../actions/workflows/push_win.yml)
+[![Linux x86](https://github.com/zackees/running-process/actions/workflows/linux-x86.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-x86.yml)
+[![Linux ARM](https://github.com/zackees/running-process/actions/workflows/linux-arm.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-arm.yml)
+[![Windows x86](https://github.com/zackees/running-process/actions/workflows/windows-x86.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/windows-x86.yml)
+[![Windows ARM](https://github.com/zackees/running-process/actions/workflows/windows-arm.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/windows-arm.yml)
+[![macOS x86](https://github.com/zackees/running-process/actions/workflows/macos-x86.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-x86.yml)
+[![macOS ARM](https://github.com/zackees/running-process/actions/workflows/macos-arm.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-arm.yml)
 
-A modern subprocess.Popen wrapper with improved process management, real-time output streaming, and enhanced lifecycle control.
+`running-process` is a Rust-backed subprocess runtime with a thin Python API.
 
-## Features
+The pipe-backed API keeps `stdout` and `stderr` separate, preserves raw bytes until decode time, and defaults to UTF-8 with `errors="replace"` when you ask for text. The PTY API is separate because terminal sessions are chunk-oriented and should not be forced through line normalization.
 
-- **Real-time Output Streaming**: Stream process output via queues with customizable formatting
-- **Thread-safe Process Management**: Centralized registry for tracking and debugging active processes
-- **Enhanced Timeout Handling**: Optional stack trace dumping for debugging hanging processes
-- **Process Tree Termination**: Kill entire process trees including child processes (requires psutil)
-- **Cross-platform Support**: Works on Windows (MSYS), macOS, and Linux
-- **Flexible Output Formatting**: Protocol-based output transformation with built-in formatters
-- **Iterator Interface**: Context-managed line-by-line iteration over process output
-
-## Quick Start
-
-### Basic Usage
+## Pipe-backed API
 
 ```python
 from running_process import RunningProcess
 
-# Simple command execution with real-time output
-process = RunningProcess(["echo", "Hello World"])
-for line in process:
-    print(f"Output: {line}")
+process = RunningProcess(
+    ["python", "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
+)
 
-# Check exit code
-if process.wait() != 0:
-    print("Command failed!")
+process.wait()
+
+print(process.stdout)          # stdout only
+print(process.stderr)          # stderr only
+print(process.combined_output) # combined compatibility view
 ```
 
-### Advanced Features
+Captured data values stay plain `str | bytes`. Live stream handles are exposed separately:
+
+```python
+if process.stdout_stream.available():
+    print(process.stdout_stream.drain())
+```
+
+Process priority is a first-class launch option:
+
+```python
+from running_process import CpuPriority, RunningProcess
+
+process = RunningProcess(
+    ["python", "-c", "import time; time.sleep(1)"],
+    nice=CpuPriority.LOW,
+)
+```
+
+`nice=` behavior:
+
+- accepts either a raw `int` niceness or a platform-neutral `CpuPriority`
+- on Unix, it maps directly to process niceness
+- on Windows, positive values map to below-normal or idle priority classes and negative values map to above-normal or high priority classes
+- `0` leaves the default scheduler priority unchanged
+- positive values are the portable default; negative values may require elevated privileges
+- the enum intentionally stops at `HIGH`; there is no realtime tier
+
+Available helpers:
+
+- `get_next_stdout_line(timeout)`
+- `get_next_stderr_line(timeout)`
+- `get_next_line(timeout)` for combined compatibility reads
+- `drain_stdout()`
+- `drain_stderr()`
+- `drain_combined()`
+- `stdout_stream.available()`
+- `stderr_stream.available()`
+- `combined_stream.available()`
+
+`RunningProcess.run(...)` supports common `subprocess.run(...)` style cases including:
+
+- `capture_output=True`
+- `text=True`
+- `encoding=...`
+- `errors=...`
+- `shell=True`
+- `env=...`
+- `nice=...`
+- `stdin=subprocess.DEVNULL`
+- `input=...` in text or bytes form
+
+Unsupported `subprocess.run(...)` kwargs now fail loudly instead of being silently ignored.
+
+## Expect API
+
+`expect(...)` is available on both the pipe-backed and PTY-backed process APIs.
+
+```python
+import re
+import subprocess
+from running_process import RunningProcess
+
+process = RunningProcess(
+    ["python", "-c", "print('prompt>'); import sys; print('echo:' + sys.stdin.readline().strip())"],
+    stdin=subprocess.PIPE,
+)
+
+process.expect("prompt>", timeout=5, action="hello\n")
+match = process.expect(re.compile(r"echo:(.+)"), timeout=5)
+print(match.groups)
+```
+
+Supported `action=` forms:
+
+- `str` or `bytes`: write to stdin
+- `"interrupt"`: send Ctrl-C style interrupt when supported
+- `"terminate"`
+- `"kill"`
+- `callable(match, process)`
+
+Pipe-backed `expect(...)` matches line-delimited output. If the child writes prompts without trailing newlines, use the PTY API instead.
+
+## PTY API
+
+Use `RunningProcess.pseudo_terminal(...)` for interactive terminal sessions. It is chunk-oriented by design and preserves carriage returns and terminal control flow instead of normalizing it away.
+
+```python
+from running_process import ExpectRule, RunningProcess
+
+pty = RunningProcess.pseudo_terminal(
+    ["python", "-c", "import sys; sys.stdout.write('name?'); sys.stdout.flush(); print('hello ' + sys.stdin.readline().strip())"],
+    text=True,
+    expect=[ExpectRule("name?", "world\n")],
+    expect_timeout=5,
+)
+
+print(pty.output)
+```
+
+PTY behavior:
+
+- accepts `str` and `list[str]` commands
+- auto-splits simple string commands into argv when shell syntax is not present
+- uses shell mode automatically when shell metacharacters are present
+- keeps output chunk-buffered by default
+- preserves `\r` for redraw-style terminal output
+- supports `write(...)`, `read(...)`, `drain()`, `available()`, `expect(...)`, `resize(...)`, and `send_interrupt()`
+- supports `nice=...` at launch
+- supports `restore_callback=` and `cleanup_callback=` so terminal restoration and cleanup paths are explicit and testable
+- supports `interrupt_and_wait(...)` for staged interrupt escalation
+- supports `wait_for_idle(...)` with activity filtering
+- exposes `exit_reason`, `interrupt_count`, `interrupted_by_caller`, and `exit_status`
+
+There is also a compatibility alias: `RunningProcess.psuedo_terminal(...)`.
+
+You can also inspect the intended interactive launch semantics without launching a child:
 
 ```python
 from running_process import RunningProcess
-from pathlib import Path
 
-# Advanced configuration
-process = RunningProcess(
-    command=["python", "long_script.py"],
-    cwd=Path("./scripts"),
-    timeout=300,  # 5 minute timeout
-    enable_stack_trace=True,  # Debug hanging processes
-    check=True,  # Raise exception on non-zero exit
-)
-
-# Process output as it arrives
-while process.is_running():
-    try:
-        line = process.get_next_line(timeout=1.0)
-        print(f"[{process.elapsed_time:.1f}s] {line}")
-    except TimeoutError:
-        print("No output for 1 second...")
-        continue
-
-# Wait for completion
-exit_code = process.wait()
+spec = RunningProcess.interactive_launch_spec("console_isolated")
+print(spec.ctrl_c_owner)
+print(spec.creationflags)
 ```
 
-### Output Formatting
+Supported launch specs:
+
+- `pseudo_terminal`
+- `console_shared`
+- `console_isolated`
+
+For an actual launch, use `RunningProcess.interactive(...)`:
 
 ```python
-from running_process import RunningProcess, TimeDeltaFormatter
-
-# Use built-in time delta formatter
-formatter = TimeDeltaFormatter()
-process = RunningProcess(
-    ["gcc", "-v", "main.c"],
-    output_formatter=formatter
+process = RunningProcess.interactive(
+    ["python", "-c", "print('hello from interactive mode')"],
+    mode="console_shared",
+    nice=5,
 )
-
-# Implement custom formatter
-class TimestampFormatter:
-    def begin(self): pass
-    def end(self): pass
-
-    def transform(self, line: str) -> str:
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        return f"[{timestamp}] {line}"
-
-process = RunningProcess(["make"], output_formatter=TimestampFormatter())
+process.wait()
 ```
 
-### Process Management
+## Abnormal Exits
+
+By default, nonzero exits stay subprocess-like: you get a return code and can inspect `exit_status`.
 
 ```python
-from running_process import RunningProcessManager
-
-# Access the global process registry
-manager = RunningProcessManager.get_instance()
-
-# List all active processes
-for proc_id, process in manager.get_all_processes():
-    print(f"Process {proc_id}: {process.command_str}")
-
-# Clean up finished processes
-manager.cleanup_finished_processes()
+process = RunningProcess(["python", "-c", "import sys; sys.exit(3)"])
+process.wait()
+print(process.exit_status)
 ```
 
-## Installation
+If you want abnormal exits to raise, opt in:
 
-```bash
-pip install running_process
+```python
+from running_process import ProcessAbnormalExit, RunningProcess
+
+try:
+    RunningProcess.run(
+        ["python", "-c", "import sys; sys.exit(3)"],
+        capture_output=True,
+        raise_on_abnormal_exit=True,
+    )
+except ProcessAbnormalExit as exc:
+    print(exc.status.summary)
 ```
 
-### Dependencies
+Notes:
 
-This package includes `psutil` as a required dependency for process tree management functionality.
+- keyboard interrupts still raise `KeyboardInterrupt`
+- `kill -9` / `SIGKILL` is classified as an abnormal signal exit
+- possible OOM conditions are exposed as a hint on `exit_status.possible_oom`
+- OOM cannot be identified perfectly across platforms from exit status alone, so it is best-effort rather than guaranteed
 
-## Architecture
+## Text and bytes
 
-The library follows a layered design with these core components:
+Pipe mode is byte-safe internally:
 
-- **RunningProcess**: Main class wrapping subprocess.Popen with enhanced features
-- **ProcessOutputReader**: Dedicated threaded reader that drains process stdout/stderr
-- **RunningProcessManager**: Thread-safe singleton registry for tracking active processes
-- **OutputFormatter**: Protocol for transforming process output (with NullOutputFormatter and TimeDeltaFormatter implementations)
-- **process_utils**: Utilities for process tree operations
+- invalid UTF-8 does not break capture
+- text mode decodes with UTF-8 and `errors="replace"` by default
+- binary mode returns bytes unchanged
+- `\r\n` is normalized as a line break in pipe mode
+- bare `\r` is preserved
+
+PTY mode is intentionally more conservative:
+
+- output is handled as chunks, not lines
+- redraw-oriented `\r` is preserved
+- no automatic terminal-output normalization is applied
 
 ## Development
 
-### Setup
-
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/running-process.git
-cd running-process
-
-# Activate development environment (requires git-bash on Windows)
-. ./activate.sh
-```
-
-### Testing
-
-```bash
-# Run all tests
-./test
-
-# Run with coverage
-uv run pytest --cov=running_process tests/
-```
-
-### Linting
-
-```bash
-# Run complete linting suite
+./install
 ./lint
-
-# Individual tools
-uv run ruff check --fix src tests
-uv run black src tests
-uv run pyright src tests
+./test
 ```
 
-## API Reference
+`./test` runs the Rust tests, rebuilds the native extension, and runs the Python tests.
 
-### RunningProcess
+## Notes
 
-The main class for managing subprocess execution:
-
-```python
-class RunningProcess:
-    def __init__(
-        self,
-        command: str | list[str],
-        cwd: Path | None = None,
-        check: bool = False,
-        auto_run: bool = True,
-        shell: bool | None = None,
-        timeout: int | None = None,
-        enable_stack_trace: bool = False,
-        on_complete: Callable[[], None] | None = None,
-        output_formatter: OutputFormatter | None = None,
-    ) -> None: ...
-
-    def get_next_line(self, timeout: float | None = None) -> str | EndOfStream: ...
-    def wait(self, timeout: float | None = None) -> int: ...
-    def kill(self) -> None: ...
-    def is_running(self) -> bool: ...
-    def drain_stdout(self) -> list[str]: ...
-```
-
-### Key Methods
-
-- `get_next_line(timeout)`: Get the next line of output with optional timeout
-- `wait(timeout)`: Wait for process completion, returns exit code
-- `kill()`: Terminate the process (and process tree if psutil available)
-- `is_running()`: Check if process is still executing
-- `drain_stdout()`: Get all currently available output lines
-
-### ProcessOutputReader
-
-Internal threaded reader that drains process stdout/stderr:
-
-```python
-class ProcessOutputReader:
-    def __init__(
-        self,
-        proc: subprocess.Popen[Any],
-        shutdown: threading.Event,
-        output_formatter: OutputFormatter | None,
-        on_output: Callable[[str | EndOfStream], None],
-        on_end: Callable[[], None],
-    ) -> None: ...
-
-    def run(self) -> None: ...  # Thread entry point
-```
-
-### OutputFormatter Protocol
-
-```python
-class OutputFormatter(Protocol):
-    def begin(self) -> None: ...
-    def transform(self, line: str) -> str: ...
-    def end(self) -> None: ...
-```
-
-Built-in implementations:
-- `NullOutputFormatter`: No-op formatter (default)
-- `TimeDeltaFormatter`: Adds elapsed time prefix to each line
-
-## License
-
-BSD 3-Clause License
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes following the existing code style
-4. Run tests and linting: `./test && ./lint`
-5. Submit a pull request
-
-For bug reports and feature requests, please use the [GitHub Issues](https://github.com/yourusername/running-process/issues) page.
+- `stdout` and `stderr` are no longer merged by default.
+- `combined_output` exists for compatibility when you need the merged view.
+- `RunningProcess(..., use_pty=True)` is no longer the preferred path; use `RunningProcess.pseudo_terminal(...)` for PTY sessions.
+- The test suite checks that `running_process.__version__`, package metadata, and manifest versions stay in sync.
