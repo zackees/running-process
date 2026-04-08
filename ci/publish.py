@@ -19,14 +19,13 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = ROOT / "dist"
-WORKFLOW_FILE = "build.yml"
-EXPECTED_ARTIFACTS = {
-    "wheels-linux-x86",
-    "wheels-linux-arm",
-    "wheels-windows-x86",
-    "wheels-windows-arm",
-    "wheels-macos-x86",
-    "wheels-macos-arm",
+WORKFLOWS = {
+    "linux-x86.yml": "wheels-linux-x86",
+    "linux-arm.yml": "wheels-linux-arm",
+    "windows-x86.yml": "wheels-windows-x86",
+    "windows-arm.yml": "wheels-windows-arm",
+    "macos-x86.yml": "wheels-macos-x86",
+    "macos-arm.yml": "wheels-macos-arm",
 }
 
 
@@ -87,7 +86,7 @@ def ensure_clean_and_pushed() -> None:
         )
 
 
-def trigger_and_wait(repo: str) -> int:
+def trigger_and_wait(repo: str, workflow_file: str) -> int:
     branch = run_capture(["git", "rev-parse", "--abbrev-ref", "HEAD"])
     existing_raw = run_capture(
         [
@@ -97,7 +96,7 @@ def trigger_and_wait(repo: str) -> int:
             "--repo",
             repo,
             "--workflow",
-            WORKFLOW_FILE,
+            workflow_file,
             "--limit",
             "5",
             "--json",
@@ -106,7 +105,20 @@ def trigger_and_wait(repo: str) -> int:
     )
     existing = {row["databaseId"] for row in json.loads(existing_raw or "[]")}
 
-    run(["gh", "workflow", "run", WORKFLOW_FILE, "--repo", repo, "--ref", branch])
+    run(
+        [
+            "gh",
+            "workflow",
+            "run",
+            workflow_file,
+            "--repo",
+            repo,
+            "--ref",
+            branch,
+            "-f",
+            "build_dist=true",
+        ]
+    )
 
     run_id: int | None = None
     for _ in range(30):
@@ -119,7 +131,7 @@ def trigger_and_wait(repo: str) -> int:
                 "--repo",
                 repo,
                 "--workflow",
-                WORKFLOW_FILE,
+                workflow_file,
                 "--limit",
                 "10",
                 "--json",
@@ -161,17 +173,18 @@ def trigger_and_wait(repo: str) -> int:
         time.sleep(15)
 
 
-def download_artifacts(repo: str, run_id: int) -> list[Path]:
+def download_artifacts(repo: str, runs: dict[str, int]) -> list[Path]:
     if DIST_DIR.exists():
         shutil.rmtree(DIST_DIR)
     DIST_DIR.mkdir(parents=True)
     temp = DIST_DIR / "_tmp"
     temp.mkdir()
 
-    run(["gh", "run", "download", str(run_id), "--repo", repo, "--dir", str(temp)])
+    for _workflow_file, run_id in runs.items():
+        run(["gh", "run", "download", str(run_id), "--repo", repo, "--dir", str(temp)])
 
     artifact_dirs = {path.name for path in temp.iterdir() if path.is_dir()}
-    missing = sorted(EXPECTED_ARTIFACTS - artifact_dirs)
+    missing = sorted(set(WORKFLOWS.values()) - artifact_dirs)
     if missing:
         raise SystemExit(f"missing expected artifacts: {', '.join(missing)}")
 
@@ -189,8 +202,8 @@ def download_artifacts(repo: str, run_id: int) -> list[Path]:
 
     wheels = [path for path in built if path.suffix == ".whl"]
     sdists = [path for path in built if path.name.endswith(".tar.gz")]
-    if len(wheels) < len(EXPECTED_ARTIFACTS):
-        raise SystemExit(f"expected at least {len(EXPECTED_ARTIFACTS)} wheels, found {len(wheels)}")
+    if len(wheels) < len(WORKFLOWS):
+        raise SystemExit(f"expected at least {len(WORKFLOWS)} wheels, found {len(wheels)}")
     if len(sdists) != 1:
         raise SystemExit(f"expected exactly one sdist, found {len(sdists)}")
     return sorted(built)
@@ -214,9 +227,12 @@ def main() -> int:
         check_pypi_version(name, version)
 
     repo = detect_repo()
-    log(f"Publishing {name} {version} via remote workflow {WORKFLOW_FILE}")
-    run_id = trigger_and_wait(repo)
-    artifacts = download_artifacts(repo, run_id)
+    log(f"Publishing {name} {version} via remote GitHub builds")
+    runs = {
+        workflow_file: trigger_and_wait(repo, workflow_file)
+        for workflow_file in WORKFLOWS
+    }
+    artifacts = download_artifacts(repo, runs)
 
     if args.dry_run:
         log("Dry run artifacts:")

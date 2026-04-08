@@ -3,9 +3,17 @@ name: macOS ARM
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      build_dist:
+        description: Build and upload distribution artifacts
+        required: false
+        default: "false"
 
 jobs:
   call:
     uses: ./.github/workflows/_platform-ci.yml
     with:
       runs-on: macos-15
+      artifact-name: wheels-macos-arm
+      build-dist: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.build_dist == 'true' }}

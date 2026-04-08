@@ -6,6 +6,18 @@ on:
       runs-on:
         required: true
         type: string
+      artifact-name:
+        required: false
+        type: string
+        default: ""
+      build-dist:
+        required: false
+        type: boolean
+        default: false
+      build-sdist:
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   test:
@@ -47,3 +59,19 @@ jobs:
         env:
           RUNNING_PROCESS_LIVE_TESTS: "1"
         run: uv run pytest -m live -q
+
+      - name: Build wheel
+        if: ${{ inputs.build-dist }}
+        run: uv build --wheel
+
+      - name: Build sdist
+        if: ${{ inputs.build-sdist }}
+        run: uv build --sdist
+
+      - name: Upload dist artifacts
+        if: ${{ inputs.build-dist }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/*
+          if-no-files-found: error
