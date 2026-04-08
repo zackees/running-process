@@ -13,13 +13,21 @@ def run(cmd: list[str]) -> int:
     return subprocess.run(cmd, cwd=ROOT, env=clean_env()).returncode
 
 
+def run_live(cmd: list[str]) -> int:
+    env = clean_env()
+    env["RUNNING_PROCESS_LIVE_TESTS"] = "1"
+    return subprocess.run(cmd, cwd=ROOT, env=env).returncode
+
+
 def main() -> int:
     activate()
     if run(["uv", "run", "maturin", "develop", "--uv", "--profile", "dev"]) != 0:
         return 1
     if run(["cargo", "test", "--workspace"]) != 0:
         return 1
-    if run(["uv", "run", "pytest"]) != 0:
+    if run(["uv", "run", "pytest", "-m", "not live"]) != 0:
+        return 1
+    if run_live(["uv", "run", "pytest", "-m", "live"]) != 0:
         return 1
     return 0
 

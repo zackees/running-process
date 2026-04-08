@@ -90,7 +90,7 @@ def ensure_clean_and_pushed() -> None:
         )
 
 
-def trigger_and_wait(repo: str, workflow_file: str) -> int:
+def trigger(repo: str, workflow_file: str) -> int:
     branch = run_capture(["git", "rev-parse", "--abbrev-ref", "HEAD"])
     existing_raw = run_capture(
         [
@@ -147,10 +147,11 @@ def trigger_and_wait(repo: str, workflow_file: str) -> int:
                 run_id = row["databaseId"]
                 break
         if run_id is not None:
-            break
-    if run_id is None:
-        raise SystemExit("timed out waiting for remote build workflow to start")
+            return run_id
+    raise SystemExit(f"timed out waiting for {workflow_file} to start")
 
+
+def wait_for_run(repo: str, workflow_file: str, run_id: int) -> int:
     started = time.time()
     while True:
         result = run_capture(
@@ -173,7 +174,7 @@ def trigger_and_wait(repo: str, workflow_file: str) -> int:
                     f"remote build failed: {state.get('conclusion')} "
                     f"https://github.com/{repo}/actions/runs/{run_id}"
                 )
-            log(f"  Build completed in {int(time.time() - started)}s")
+            log(f"  {workflow_file} completed in {int(time.time() - started)}s")
             return run_id
         time.sleep(15)
 
@@ -270,9 +271,10 @@ def main() -> int:
 
     repo = detect_repo()
     log(f"Publishing {name} {version} via remote GitHub builds")
+    triggered = {workflow_file: trigger(repo, workflow_file) for workflow_file in WORKFLOWS}
     runs = {
-        workflow_file: trigger_and_wait(repo, workflow_file)
-        for workflow_file in WORKFLOWS
+        workflow_file: wait_for_run(repo, workflow_file, run_id)
+        for workflow_file, run_id in triggered.items()
     }
     artifacts = download_artifacts(repo, runs)
 

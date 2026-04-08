@@ -227,7 +227,9 @@ PTY mode is intentionally more conservative:
 
 `./install` bootstraps the repo-local Rust toolchain into `./.cargo` and `./.rustup`.
 
-`./test` runs the Rust tests, rebuilds the native extension with the unoptimized `dev` profile, and runs the Python tests.
+`./test` runs the Rust tests, rebuilds the native extension with the unoptimized `dev` profile, runs the non-live Python tests, and then runs the `@pytest.mark.live` coverage that exercises real OS process and signal behavior.
+
+If you want to invoke pytest directly, set `RUNNING_PROCESS_LIVE_TESTS=1` and run `uv run pytest -m live`.
 
 For direct Rust commands, prefer the repo-local trampolines:
 

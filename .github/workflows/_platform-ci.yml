@@ -66,7 +66,7 @@ jobs:
 
       - name: Build wheel
         if: ${{ inputs.build-dist }}
-        run: uv run python ci/run_logged.py logs/build-wheel.log -- uv build --wheel
+        run: uv run python ci/run_logged.py logs/build-wheel.log -- python ci/build_wheel.py
 
       - name: Build sdist
         if: ${{ inputs.build-sdist }}
