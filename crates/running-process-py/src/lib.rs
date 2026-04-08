@@ -1,15 +1,644 @@
+use std::collections::{HashMap, VecDeque};
+use std::ffi::OsString;
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::thread;
 use std::time::Duration;
+use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
+use regex::Regex;
+use rusqlite::{params, Connection};
 use running_process_core::{
     CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StdinMode, StreamEvent, StreamKind,
 };
+use sysinfo::{Pid, ProcessRefreshKind, Signal, System, UpdateKind};
 
 fn to_py_err(err: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(err.to_string())
+}
+
+fn system_pid(pid: u32) -> Pid {
+    Pid::from_u32(pid)
+}
+
+fn descendant_pids(system: &System, pid: Pid) -> Vec<Pid> {
+    let mut descendants = Vec::new();
+    let mut stack = vec![pid];
+    while let Some(current) = stack.pop() {
+        for (child_pid, process) in system.processes() {
+            if process.parent() == Some(current) {
+                descendants.push(*child_pid);
+                stack.push(*child_pid);
+            }
+        }
+    }
+    descendants
+}
+
+#[derive(Clone)]
+struct ActiveProcessRecord {
+    pid: u32,
+    kind: String,
+    command: String,
+    cwd: Option<String>,
+    started_at: f64,
+}
+
+fn active_process_registry() -> &'static Mutex<HashMap<u32, ActiveProcessRecord>> {
+    static ACTIVE_PROCESSES: OnceLock<Mutex<HashMap<u32, ActiveProcessRecord>>> = OnceLock::new();
+    ACTIVE_PROCESSES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn unix_now_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+fn register_active_process(
+    pid: u32,
+    kind: &str,
+    command: &str,
+    cwd: Option<String>,
+    started_at: f64,
+) {
+    let mut registry = active_process_registry()
+        .lock()
+        .expect("active process registry mutex poisoned");
+    registry.insert(
+        pid,
+        ActiveProcessRecord {
+            pid,
+            kind: kind.to_string(),
+            command: command.to_string(),
+            cwd,
+            started_at,
+        },
+    );
+}
+
+fn unregister_active_process(pid: u32) {
+    let mut registry = active_process_registry()
+        .lock()
+        .expect("active process registry mutex poisoned");
+    registry.remove(&pid);
+}
+
+fn process_created_at(pid: u32) -> Option<f64> {
+    let pid = system_pid(pid);
+    let mut system = System::new();
+    system.refresh_process_specifics(
+        pid,
+        ProcessRefreshKind::new()
+            .with_cpu()
+            .with_disk_usage()
+            .with_memory()
+            .with_exe(UpdateKind::Never),
+    );
+    system.process(pid).map(|process| process.start_time() as f64)
+}
+
+fn same_process_identity(pid: u32, created_at: f64, tolerance_seconds: f64) -> bool {
+    let Some(actual) = process_created_at(pid) else {
+        return false;
+    };
+    (actual - created_at).abs() <= tolerance_seconds
+}
+
+fn kill_process_tree_impl(pid: u32, timeout_seconds: f64) {
+    let mut system = System::new_all();
+    let pid = system_pid(pid);
+    let Some(_) = system.process(pid) else {
+        return;
+    };
+
+    let mut kill_order = descendant_pids(&system, pid);
+    kill_order.reverse();
+    kill_order.push(pid);
+
+    for target in &kill_order {
+        if let Some(process) = system.process(*target) {
+            let _ = process.kill_with(Signal::Kill);
+            let _ = process.kill();
+        }
+    }
+
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs_f64(timeout_seconds.max(0.0)))
+        .unwrap_or_else(Instant::now);
+    loop {
+        system.refresh_processes();
+        if kill_order.iter().all(|target| system.process(*target).is_none()) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(windows)]
+fn windows_terminal_input_payload(data: &[u8]) -> Vec<u8> {
+    let mut translated = Vec::with_capacity(data.len());
+    let mut index = 0usize;
+    while index < data.len() {
+        let current = data[index];
+        if current == b'\r' {
+            translated.push(current);
+            if index + 1 < data.len() && data[index + 1] == b'\n' {
+                translated.push(b'\n');
+                index += 2;
+                continue;
+            }
+            index += 1;
+            continue;
+        }
+        if current == b'\n' {
+            translated.push(b'\r');
+            index += 1;
+            continue;
+        }
+        translated.push(current);
+        index += 1;
+    }
+    translated
+}
+
+fn tracked_process_db_path() -> PyResult<PathBuf> {
+    if let Ok(value) = std::env::var("RUNNING_PROCESS_PID_DB") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
+    #[cfg(windows)]
+    let base_dir = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+
+    #[cfg(not(windows))]
+    let base_dir = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| {
+                let mut path = PathBuf::from(home);
+                path.push(".local");
+                path.push("state");
+                path
+            })
+        })
+        .unwrap_or_else(std::env::temp_dir);
+
+    Ok(base_dir.join("running-process").join("tracked-pids.sqlite3"))
+}
+
+fn open_tracked_process_db() -> PyResult<Connection> {
+    let db_path = tracked_process_db_path()?;
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(to_py_err)?;
+    }
+    let connection = Connection::open(db_path).map_err(to_py_err)?;
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE IF NOT EXISTS tracked_processes (
+                 pid INTEGER PRIMARY KEY,
+                 created_at REAL NOT NULL,
+                 kind TEXT NOT NULL,
+                 command TEXT NOT NULL,
+                 cwd TEXT
+             );",
+        )
+        .map_err(to_py_err)?;
+    Ok(connection)
+}
+
+#[pyfunction]
+fn tracked_pid_db_path_py() -> PyResult<String> {
+    Ok(tracked_process_db_path()?.to_string_lossy().into_owned())
+}
+
+#[pyfunction]
+#[pyo3(signature = (pid, created_at, kind, command, cwd=None))]
+fn track_process_pid(
+    pid: u32,
+    created_at: f64,
+    kind: &str,
+    command: &str,
+    cwd: Option<String>,
+) -> PyResult<()> {
+    let connection = open_tracked_process_db()?;
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO tracked_processes(pid, created_at, kind, command, cwd)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![pid, created_at, kind, command, cwd],
+        )
+        .map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(signature = (pid, kind, command, cwd=None))]
+fn native_register_process(pid: u32, kind: &str, command: &str, cwd: Option<String>) -> PyResult<()> {
+    let created_at = match process_created_at(pid) {
+        Some(value) => value,
+        None => return Ok(()),
+    };
+    let connection = open_tracked_process_db()?;
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO tracked_processes(pid, created_at, kind, command, cwd)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![pid, created_at, kind, command, cwd.clone()],
+        )
+        .map_err(to_py_err)?;
+    register_active_process(pid, kind, command, cwd, unix_now_seconds());
+    Ok(())
+}
+
+#[pyfunction]
+fn untrack_process_pid(pid: u32) -> PyResult<()> {
+    let connection = open_tracked_process_db()?;
+    connection
+        .execute("DELETE FROM tracked_processes WHERE pid = ?1", params![pid])
+        .map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn native_unregister_process(pid: u32) -> PyResult<()> {
+    unregister_active_process(pid);
+    let connection = open_tracked_process_db()?;
+    connection
+        .execute("DELETE FROM tracked_processes WHERE pid = ?1", params![pid])
+        .map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn list_tracked_processes() -> PyResult<Vec<(u32, f64, String, String, Option<String>)>> {
+    let connection = open_tracked_process_db()?;
+    let mut statement = connection
+        .prepare(
+            "SELECT pid, created_at, kind, command, cwd
+             FROM tracked_processes
+             ORDER BY created_at ASC, pid ASC",
+        )
+        .map_err(to_py_err)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(to_py_err)?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        items.push(row.map_err(to_py_err)?);
+    }
+    Ok(items)
+}
+
+#[pyfunction]
+fn native_get_process_tree_info(pid: u32) -> String {
+    let system = System::new_all();
+    let pid = system_pid(pid);
+    let Some(process) = system.process(pid) else {
+        return format!("Could not get process info for PID {}", pid.as_u32());
+    };
+
+    let mut info = vec![
+        format!(
+            "Process {} ({})",
+            pid.as_u32(),
+            process.name()
+        ),
+        format!("Status: {:?}", process.status()),
+    ];
+    let children = descendant_pids(&system, pid);
+    if !children.is_empty() {
+        info.push("Child processes:".to_string());
+        for child_pid in children {
+            if let Some(child) = system.process(child_pid) {
+                info.push(format!(
+                    "  Child {} ({})",
+                    child_pid.as_u32(),
+                    child.name()
+                ));
+            }
+        }
+    }
+    info.join("\n")
+}
+
+#[pyfunction]
+#[pyo3(signature = (pid, timeout_seconds=3.0))]
+fn native_kill_process_tree(pid: u32, timeout_seconds: f64) {
+    kill_process_tree_impl(pid, timeout_seconds);
+}
+
+#[pyfunction]
+fn native_process_created_at(pid: u32) -> Option<f64> {
+    process_created_at(pid)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pid, created_at, tolerance_seconds=1.0))]
+fn native_is_same_process(pid: u32, created_at: f64, tolerance_seconds: f64) -> bool {
+    same_process_identity(pid, created_at, tolerance_seconds)
+}
+
+#[pyfunction]
+#[pyo3(signature = (tolerance_seconds=1.0, kill_timeout_seconds=3.0))]
+fn native_cleanup_tracked_processes(
+    tolerance_seconds: f64,
+    kill_timeout_seconds: f64,
+) -> PyResult<Vec<(u32, f64, String, String, Option<String>)>> {
+    let connection = open_tracked_process_db()?;
+    let mut statement = connection
+        .prepare(
+            "SELECT pid, created_at, kind, command, cwd
+             FROM tracked_processes
+             ORDER BY created_at ASC, pid ASC",
+        )
+        .map_err(to_py_err)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(to_py_err)?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        entries.push(row.map_err(to_py_err)?);
+    }
+    drop(statement);
+
+    let mut killed = Vec::new();
+    for entry in entries {
+        let pid = entry.0;
+        if !same_process_identity(pid, entry.1, tolerance_seconds) {
+            unregister_active_process(pid);
+            connection
+                .execute("DELETE FROM tracked_processes WHERE pid = ?1", params![pid])
+                .map_err(to_py_err)?;
+            continue;
+        }
+        kill_process_tree_impl(pid, kill_timeout_seconds);
+        unregister_active_process(pid);
+        connection
+            .execute("DELETE FROM tracked_processes WHERE pid = ?1", params![pid])
+            .map_err(to_py_err)?;
+        killed.push(entry);
+    }
+    Ok(killed)
+}
+
+#[pyfunction]
+fn native_list_active_processes() -> Vec<(u32, String, String, Option<String>, f64)> {
+    let registry = active_process_registry()
+        .lock()
+        .expect("active process registry mutex poisoned");
+    let mut items: Vec<_> = registry
+        .values()
+        .map(|entry| {
+            (
+                entry.pid,
+                entry.kind.clone(),
+                entry.command.clone(),
+                entry.cwd.clone(),
+                entry.started_at,
+            )
+        })
+        .collect();
+    items.sort_by(|left, right| {
+        left.4
+            .partial_cmp(&right.4)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    items
+}
+
+#[pyfunction]
+fn native_apply_process_nice(pid: u32, nice: i32) -> PyResult<()> {
+    #[cfg(windows)]
+    {
+        use winapi::um::handleapi::CloseHandle;
+        use winapi::um::processthreadsapi::OpenProcess;
+        use winapi::um::processthreadsapi::SetPriorityClass;
+        use winapi::um::winbase::{
+            ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
+            IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+        };
+        use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_SET_INFORMATION};
+
+        let priority_class = if nice >= 15 {
+            IDLE_PRIORITY_CLASS
+        } else if nice >= 1 {
+            BELOW_NORMAL_PRIORITY_CLASS
+        } else if nice <= -15 {
+            HIGH_PRIORITY_CLASS
+        } else if nice <= -1 {
+            ABOVE_NORMAL_PRIORITY_CLASS
+        } else {
+            NORMAL_PRIORITY_CLASS
+        };
+
+        let handle = unsafe {
+            OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, 0, pid)
+        };
+        if handle.is_null() {
+            return Err(to_py_err(std::io::Error::last_os_error()));
+        }
+        let result = unsafe { SetPriorityClass(handle, priority_class) };
+        let close_result = unsafe { CloseHandle(handle) };
+        if close_result == 0 {
+            return Err(to_py_err(std::io::Error::last_os_error()));
+        }
+        if result == 0 {
+            return Err(to_py_err(std::io::Error::last_os_error()));
+        }
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid, nice) };
+        if result == -1 {
+            return Err(to_py_err(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+}
+
+#[pyfunction]
+fn native_windows_terminal_input_bytes(py: Python<'_>, data: &[u8]) -> Py<PyAny> {
+    #[cfg(windows)]
+    let payload = windows_terminal_input_payload(data);
+    #[cfg(not(windows))]
+    let payload = data.to_vec();
+    PyBytes::new(py, &payload).into_any().unbind()
+}
+
+#[pymethods]
+impl NativeProcessMetrics {
+    #[new]
+    fn new(pid: u32) -> Self {
+        let pid = system_pid(pid);
+        let mut system = System::new();
+        system.refresh_process_specifics(
+            pid,
+            ProcessRefreshKind::new()
+                .with_cpu()
+                .with_disk_usage()
+                .with_memory()
+                .with_exe(UpdateKind::Never),
+        );
+        Self {
+            pid,
+            system: Mutex::new(system),
+        }
+    }
+
+    fn prime(&self) {
+        let mut system = self.system.lock().expect("process metrics mutex poisoned");
+        system.refresh_process_specifics(
+            self.pid,
+            ProcessRefreshKind::new()
+                .with_cpu()
+                .with_disk_usage()
+                .with_memory()
+                .with_exe(UpdateKind::Never),
+        );
+    }
+
+    fn sample(&self) -> (bool, f32, u64, u64) {
+        let mut system = self.system.lock().expect("process metrics mutex poisoned");
+        system.refresh_process_specifics(
+            self.pid,
+            ProcessRefreshKind::new()
+                .with_cpu()
+                .with_disk_usage()
+                .with_memory()
+                .with_exe(UpdateKind::Never),
+        );
+        let Some(process) = system.process(self.pid) else {
+            return (false, 0.0, 0, 0);
+        };
+        let disk = process.disk_usage();
+        (
+            true,
+            process.cpu_usage(),
+            disk.total_read_bytes.saturating_add(disk.total_written_bytes),
+            0,
+        )
+    }
+}
+
+struct PtyReadState {
+    chunks: VecDeque<Vec<u8>>,
+    closed: bool,
+}
+
+struct PtyReadShared {
+    state: Mutex<PtyReadState>,
+    condvar: Condvar,
+}
+
+struct NativePtyHandles {
+    master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    #[cfg(windows)]
+    _job: WindowsJobHandle,
+}
+
+#[pyclass]
+struct NativeProcessMetrics {
+    pid: Pid,
+    system: Mutex<System>,
+}
+
+#[pyclass]
+struct NativePtyProcess {
+    argv: Vec<String>,
+    cwd: Option<String>,
+    env: Option<Vec<(String, String)>>,
+    rows: u16,
+    cols: u16,
+    nice: Option<i32>,
+    handles: Mutex<Option<NativePtyHandles>>,
+    reader: Arc<PtyReadShared>,
+    returncode: Mutex<Option<i32>>,
+}
+
+impl NativePtyProcess {
+    fn mark_reader_closed(&self) {
+        let mut guard = self.reader.state.lock().expect("pty read mutex poisoned");
+        guard.closed = true;
+        self.reader.condvar.notify_all();
+    }
+
+    fn close_impl(&self) -> PyResult<()> {
+        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+        let Some(mut handles) = guard.take() else {
+            self.mark_reader_closed();
+            return Ok(());
+        };
+
+        let status = handles.child.try_wait().map_err(to_py_err)?;
+        let code = match status {
+            Some(status) => portable_exit_code(status),
+            None => {
+                handles.child.kill().map_err(to_py_err)?;
+                let status = handles.child.wait().map_err(to_py_err)?;
+                portable_exit_code(status)
+            }
+        };
+        *self
+            .returncode
+            .lock()
+            .expect("pty returncode mutex poisoned") = Some(code);
+        drop(handles);
+        self.mark_reader_closed();
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+struct WindowsJobHandle(usize);
+
+#[cfg(windows)]
+impl Drop for WindowsJobHandle {
+    fn drop(&mut self) {
+        unsafe {
+            winapi::um::handleapi::CloseHandle(self.0 as winapi::shared::ntdef::HANDLE);
+        }
+    }
 }
 
 fn parse_command(command: &Bound<'_, PyAny>, shell: bool) -> PyResult<CommandSpec> {
@@ -63,13 +692,57 @@ struct NativeRunningProcess {
     text: bool,
     encoding: Option<String>,
     errors: Option<String>,
+    creationflags: Option<u32>,
+    create_process_group: bool,
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct NativeSignalBool {
+    value: Arc<AtomicBool>,
+    write_lock: Arc<Mutex<()>>,
+}
+
+struct IdleMonitorState {
+    last_reset_at: Instant,
+    returncode: Option<i32>,
+    interrupted: bool,
+}
+
+#[pyclass]
+struct NativeIdleDetector {
+    timeout_seconds: f64,
+    stability_window_seconds: f64,
+    sample_interval_seconds: f64,
+    reset_on_input: bool,
+    reset_on_output: bool,
+    count_control_churn_as_output: bool,
+    enabled: Arc<AtomicBool>,
+    state: Mutex<IdleMonitorState>,
+    condvar: Condvar,
+}
+
+struct PtyBufferState {
+    chunks: VecDeque<Vec<u8>>,
+    history: Vec<u8>,
+    history_bytes: usize,
+    closed: bool,
+}
+
+#[pyclass]
+struct NativePtyBuffer {
+    text: bool,
+    encoding: String,
+    errors: String,
+    state: Mutex<PtyBufferState>,
+    condvar: Condvar,
 }
 
 #[pymethods]
 impl NativeRunningProcess {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", nice=None))]
+    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", nice=None, create_process_group=false))]
     fn new(
         command: &Bound<'_, PyAny>,
         cwd: Option<String>,
@@ -82,6 +755,7 @@ impl NativeRunningProcess {
         errors: Option<String>,
         stdin_mode_name: &str,
         nice: Option<i32>,
+        create_process_group: bool,
     ) -> PyResult<Self> {
         let parsed = parse_command(command, shell)?;
         let env_pairs = env
@@ -100,12 +774,15 @@ impl NativeRunningProcess {
                 env: env_pairs,
                 capture,
                 creationflags,
+                create_process_group,
                 stdin_mode: stdin_mode(stdin_mode_name)?,
                 nice,
             }),
             text,
             encoding,
             errors,
+            creationflags,
+            create_process_group,
         })
     }
 
@@ -118,13 +795,18 @@ impl NativeRunningProcess {
     }
 
     #[pyo3(signature = (timeout=None))]
-    fn wait(&self, timeout: Option<f64>) -> PyResult<i32> {
-        let timeout = timeout.map(Duration::from_secs_f64);
-        let code = self.inner.wait(timeout).map_err(to_py_err)?;
-        if code == -999_999 {
-            return Err(PyTimeoutError::new_err("process timed out"));
+    fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<i32> {
+        let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
+        loop {
+            py.check_signals()?;
+            if let Some(code) = self.inner.poll().map_err(to_py_err)? {
+                return Ok(code);
+            }
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                return Err(PyTimeoutError::new_err("process timed out"));
+            }
+            py.allow_threads(|| thread::sleep(Duration::from_millis(10)));
         }
-        Ok(code)
     }
 
     fn kill(&self) -> PyResult<()> {
@@ -132,6 +814,24 @@ impl NativeRunningProcess {
     }
 
     fn terminate(&self) -> PyResult<()> {
+        self.inner.terminate().map_err(to_py_err)
+    }
+
+    fn terminate_group(&self) -> PyResult<()> {
+        let pid = self
+            .inner
+            .pid()
+            .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
+        #[cfg(unix)]
+        {
+            if self.create_process_group {
+                let result = unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
+                if result == 0 {
+                    return Ok(());
+                }
+                return Err(to_py_err(std::io::Error::last_os_error()));
+            }
+        }
         self.inner.terminate().map_err(to_py_err)
     }
 
@@ -147,6 +847,64 @@ impl NativeRunningProcess {
     #[getter]
     fn returncode(&self) -> Option<i32> {
         self.inner.returncode()
+    }
+
+    fn send_interrupt(&self) -> PyResult<()> {
+        let pid = self
+            .inner
+            .pid()
+            .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
+
+        #[cfg(windows)]
+        {
+            use winapi::um::wincon::GenerateConsoleCtrlEvent;
+
+            let new_process_group =
+                self.creationflags.unwrap_or(0) & winapi::um::winbase::CREATE_NEW_PROCESS_GROUP;
+            if new_process_group == 0 {
+                return Err(PyRuntimeError::new_err(
+                    "send_interrupt on Windows requires CREATE_NEW_PROCESS_GROUP",
+                ));
+            }
+            let result = unsafe { GenerateConsoleCtrlEvent(winapi::um::wincon::CTRL_BREAK_EVENT, pid) };
+            if result == 0 {
+                return Err(to_py_err(std::io::Error::last_os_error()));
+            }
+            return Ok(());
+        }
+
+        #[cfg(unix)]
+        {
+            let result = unsafe {
+                if self.create_process_group {
+                    libc::killpg(pid as i32, libc::SIGINT)
+                } else {
+                    libc::kill(pid as i32, libc::SIGINT)
+                }
+            };
+            if result == 0 {
+                return Ok(());
+            }
+            return Err(to_py_err(std::io::Error::last_os_error()));
+        }
+    }
+
+    fn kill_group(&self) -> PyResult<()> {
+        let pid = self
+            .inner
+            .pid()
+            .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
+        #[cfg(unix)]
+        {
+            if self.create_process_group {
+                let result = unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+                if result == 0 {
+                    return Ok(());
+                }
+                return Err(to_py_err(std::io::Error::last_os_error()));
+            }
+        }
+        self.inner.kill().map_err(to_py_err)
     }
 
     fn has_pending_combined(&self) -> bool {
@@ -244,13 +1002,610 @@ impl NativeRunningProcess {
             .collect()
     }
 
+    fn captured_stream_bytes(&self, stream: &str) -> PyResult<usize> {
+        Ok(self.inner.captured_stream_bytes(stream_kind(stream)?))
+    }
+
+    fn captured_combined_bytes(&self) -> usize {
+        self.inner.captured_combined_bytes()
+    }
+
+    fn clear_captured_stream(&self, stream: &str) -> PyResult<usize> {
+        Ok(self.inner.clear_captured_stream(stream_kind(stream)?))
+    }
+
+    fn clear_captured_combined(&self) -> usize {
+        self.inner.clear_captured_combined()
+    }
+
+    #[pyo3(signature = (stream, pattern, is_regex=false, timeout=None))]
+    fn expect(
+        &self,
+        py: Python<'_>,
+        stream: &str,
+        pattern: &str,
+        is_regex: bool,
+        timeout: Option<f64>,
+    ) -> PyResult<(String, String, Option<String>, Option<usize>, Option<usize>, Vec<String>)> {
+        let stream_kind = if stream == "combined" {
+            None
+        } else {
+            Some(stream_kind(stream)?)
+        };
+        let mut buffer = match stream_kind {
+            Some(kind) => self.captured_stream_text(py, kind)?,
+            None => self.captured_combined_text(py)?,
+        };
+        let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
+
+        loop {
+            if let Some((matched, start, end, groups)) =
+                self.find_expect_match(&buffer, pattern, is_regex)?
+            {
+                return Ok((
+                    "match".to_string(),
+                    buffer,
+                    Some(matched),
+                    Some(start),
+                    Some(end),
+                    groups,
+                ));
+            }
+
+            let wait_timeout = deadline.map(|limit| {
+                let now = Instant::now();
+                if now >= limit {
+                    Duration::from_secs(0)
+                } else {
+                    limit.saturating_duration_since(now).min(Duration::from_millis(100))
+                }
+            });
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                return Ok(("timeout".to_string(), buffer, None, None, None, Vec::new()));
+            }
+
+            match self.read_status_text(stream_kind, wait_timeout)? {
+                ReadStatus::Line(line) => {
+                    let decoded = self.decode_line_to_string(py, &line)?;
+                    buffer.push_str(&decoded);
+                    buffer.push('\n');
+                }
+                ReadStatus::Timeout => {
+                    return Ok(("timeout".to_string(), buffer, None, None, None, Vec::new()));
+                }
+                ReadStatus::Eof => {
+                    return Ok(("eof".to_string(), buffer, None, None, None, Vec::new()));
+                }
+            }
+        }
+    }
+
     #[staticmethod]
     fn is_pty_available() -> bool {
         false
     }
 }
 
+#[pymethods]
+impl NativePtyProcess {
+    #[new]
+    #[pyo3(signature = (argv, cwd=None, env=None, rows=24, cols=80, nice=None))]
+    fn new(
+        argv: Vec<String>,
+        cwd: Option<String>,
+        env: Option<Bound<'_, PyDict>>,
+        rows: u16,
+        cols: u16,
+        nice: Option<i32>,
+    ) -> PyResult<Self> {
+        if argv.is_empty() {
+            return Err(PyValueError::new_err("command cannot be empty"));
+        }
+        let env_pairs = env
+            .map(|mapping| {
+                mapping
+                    .iter()
+                    .map(|(key, value)| Ok((key.extract::<String>()?, value.extract::<String>()?)))
+                    .collect::<PyResult<Vec<(String, String)>>>()
+            })
+            .transpose()?;
+        Ok(Self {
+            argv,
+            cwd,
+            env: env_pairs,
+            rows,
+            cols,
+            nice,
+            handles: Mutex::new(None),
+            reader: Arc::new(PtyReadShared {
+                state: Mutex::new(PtyReadState {
+                    chunks: VecDeque::new(),
+                    closed: false,
+                }),
+                condvar: Condvar::new(),
+            }),
+            returncode: Mutex::new(None),
+        })
+    }
+
+    fn start(&self) -> PyResult<()> {
+        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+        if guard.is_some() {
+            return Err(PyRuntimeError::new_err(
+                "Pseudo-terminal process already started",
+            ));
+        }
+
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: self.rows,
+                cols: self.cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(to_py_err)?;
+
+        let mut cmd = command_builder_from_argv(&self.argv);
+        if let Some(cwd) = &self.cwd {
+            cmd.cwd(cwd);
+        }
+        if let Some(env) = &self.env {
+            cmd.env_clear();
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+        }
+
+        let reader = pair.master.try_clone_reader().map_err(to_py_err)?;
+        let writer = pair.master.take_writer().map_err(to_py_err)?;
+        let child = pair.slave.spawn_command(cmd).map_err(to_py_err)?;
+        #[cfg(windows)]
+        let job = assign_child_to_windows_kill_on_close_job(child.as_raw_handle())?;
+        #[cfg(windows)]
+        apply_windows_pty_priority(child.as_raw_handle(), self.nice)?;
+        let shared = Arc::clone(&self.reader);
+        thread::spawn(move || spawn_pty_reader(reader, shared));
+
+        *guard = Some(NativePtyHandles {
+            master: pair.master,
+            writer,
+            child,
+            #[cfg(windows)]
+            _job: job,
+        });
+        Ok(())
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn read_chunk(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
+        let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
+        let mut guard = self.reader.state.lock().expect("pty read mutex poisoned");
+        loop {
+            if let Some(chunk) = guard.chunks.pop_front() {
+                return Ok(PyBytes::new(py, &chunk).into_any().unbind());
+            }
+            if guard.closed {
+                return Err(PyRuntimeError::new_err("Pseudo-terminal stream is closed"));
+            }
+            match deadline {
+                Some(deadline) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(PyTimeoutError::new_err(
+                            "No pseudo-terminal output available before timeout",
+                        ));
+                    }
+                    let wait = deadline.saturating_duration_since(now);
+                    let result = self
+                        .reader
+                        .condvar
+                        .wait_timeout(guard, wait)
+                        .expect("pty read mutex poisoned");
+                    guard = result.0;
+                }
+                None => {
+                    guard = self
+                        .reader
+                        .condvar
+                        .wait(guard)
+                        .expect("pty read mutex poisoned");
+                }
+            }
+        }
+    }
+
+    fn write(&self, data: &[u8]) -> PyResult<()> {
+        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+        let handles = guard
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
+        #[cfg(windows)]
+        let payload = windows_terminal_input_payload(data);
+        #[cfg(not(windows))]
+        let payload = data.to_vec();
+        handles.writer.write_all(&payload).map_err(to_py_err)?;
+        handles.writer.flush().map_err(to_py_err)
+    }
+
+    fn respond_to_queries(&self, data: &[u8]) -> PyResult<()> {
+        #[cfg(not(windows))]
+        {
+            let _ = data;
+            return Ok(());
+        }
+        #[cfg(windows)]
+        {
+            let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+            let handles = guard
+                .as_mut()
+                .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
+            let query = b"\x1b[6n";
+            let count = data.windows(query.len()).filter(|window| *window == query).count();
+            for _ in 0..count {
+                handles.writer.write_all(b"\x1b[1;1R").map_err(to_py_err)?;
+            }
+            handles.writer.flush().map_err(to_py_err)
+        }
+    }
+
+    fn resize(&self, rows: u16, cols: u16) -> PyResult<()> {
+        let guard = self.handles.lock().expect("pty handles mutex poisoned");
+        if let Some(handles) = guard.as_ref() {
+            handles
+                .master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(to_py_err)?;
+        }
+        Ok(())
+    }
+
+    fn send_interrupt(&self) -> PyResult<()> {
+        #[cfg(unix)]
+        {
+            let guard = self.handles.lock().expect("pty handles mutex poisoned");
+            let handles = guard
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
+            if let Some(pid) = handles.master.process_group_leader() {
+                let result = unsafe { libc::killpg(pid, libc::SIGINT) };
+                if result == 0 {
+                    return Ok(());
+                }
+                return Err(to_py_err(std::io::Error::last_os_error()));
+            }
+        }
+        self.write(&[0x03])
+    }
+
+    fn poll(&self) -> PyResult<Option<i32>> {
+        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+        let Some(handles) = guard.as_mut() else {
+            return Ok(*self
+                .returncode
+                .lock()
+                .expect("pty returncode mutex poisoned"));
+        };
+        let status = handles.child.try_wait().map_err(to_py_err)?;
+        let code = status.map(portable_exit_code);
+        if code.is_some() {
+            *self
+                .returncode
+                .lock()
+                .expect("pty returncode mutex poisoned") = code;
+        }
+        Ok(code)
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn wait(&self, timeout: Option<f64>) -> PyResult<i32> {
+        let start = Instant::now();
+        loop {
+            if let Some(code) = self.poll()? {
+                return Ok(code);
+            }
+            if timeout.is_some_and(|limit| start.elapsed() >= Duration::from_secs_f64(limit)) {
+                return Err(PyTimeoutError::new_err("Pseudo-terminal process timed out"));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn terminate(&self) -> PyResult<()> {
+        self.kill()
+    }
+
+    fn kill(&self) -> PyResult<()> {
+        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+        let handles = guard
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
+        handles.child.kill().map_err(to_py_err)?;
+        let status = handles.child.wait().map_err(to_py_err)?;
+        *self
+            .returncode
+            .lock()
+            .expect("pty returncode mutex poisoned") = Some(portable_exit_code(status));
+        Ok(())
+    }
+
+    #[getter]
+    fn pid(&self) -> PyResult<Option<u32>> {
+        let guard = self.handles.lock().expect("pty handles mutex poisoned");
+        if let Some(handles) = guard.as_ref() {
+            return Ok(handles.child.process_id());
+        }
+        Ok(None)
+    }
+
+    fn close(&self) -> PyResult<()> {
+        self.close_impl()
+    }
+}
+
+impl Drop for NativePtyProcess {
+    fn drop(&mut self) {
+        let _ = self.close_impl();
+    }
+}
+
+#[pymethods]
+impl NativeSignalBool {
+    #[new]
+    #[pyo3(signature = (value=false))]
+    fn new(value: bool) -> Self {
+        Self {
+            value: Arc::new(AtomicBool::new(value)),
+            write_lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    #[getter]
+    fn value(&self) -> bool {
+        self.load_nolock()
+    }
+
+    #[setter]
+    fn set_value(&self, value: bool) {
+        self.store_locked(value);
+    }
+
+    fn load_nolock(&self) -> bool {
+        self.value.load(Ordering::Acquire)
+    }
+
+    fn store_locked(&self, value: bool) {
+        let _guard = self.write_lock.lock().expect("signal bool mutex poisoned");
+        self.value.store(value, Ordering::Release);
+    }
+
+    fn compare_and_swap_locked(&self, current: bool, new: bool) -> bool {
+        let _guard = self.write_lock.lock().expect("signal bool mutex poisoned");
+        self.value
+            .compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
+
+#[pymethods]
+impl NativePtyBuffer {
+    #[new]
+    #[pyo3(signature = (text=false, encoding="utf-8", errors="replace"))]
+    fn new(text: bool, encoding: &str, errors: &str) -> Self {
+        Self {
+            text,
+            encoding: encoding.to_string(),
+            errors: errors.to_string(),
+            state: Mutex::new(PtyBufferState {
+                chunks: VecDeque::new(),
+                history: Vec::new(),
+                history_bytes: 0,
+                closed: false,
+            }),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn available(&self) -> bool {
+        !self
+            .state
+            .lock()
+            .expect("pty buffer mutex poisoned")
+            .chunks
+            .is_empty()
+    }
+
+    fn record_output(&self, data: &[u8]) {
+        let mut guard = self.state.lock().expect("pty buffer mutex poisoned");
+        guard.history_bytes += data.len();
+        guard.history.extend_from_slice(data);
+        guard.chunks.push_back(data.to_vec());
+        self.condvar.notify_all();
+    }
+
+    fn close(&self) {
+        let mut guard = self.state.lock().expect("pty buffer mutex poisoned");
+        guard.closed = true;
+        self.condvar.notify_all();
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn read(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
+        let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
+        let mut guard = self.state.lock().expect("pty buffer mutex poisoned");
+        loop {
+            if let Some(chunk) = guard.chunks.pop_front() {
+                return self.decode_chunk(py, &chunk);
+            }
+            if guard.closed {
+                return Err(PyRuntimeError::new_err("Pseudo-terminal stream is closed"));
+            }
+            match deadline {
+                Some(deadline) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(PyTimeoutError::new_err(
+                            "No pseudo-terminal output available before timeout",
+                        ));
+                    }
+                    let wait = deadline.saturating_duration_since(now);
+                    let result = self
+                        .condvar
+                        .wait_timeout(guard, wait)
+                        .expect("pty buffer mutex poisoned");
+                    guard = result.0;
+                }
+                None => {
+                    guard = self.condvar.wait(guard).expect("pty buffer mutex poisoned");
+                }
+            }
+        }
+    }
+
+    fn read_non_blocking(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let mut guard = self.state.lock().expect("pty buffer mutex poisoned");
+        if let Some(chunk) = guard.chunks.pop_front() {
+            return self.decode_chunk(py, &chunk).map(Some);
+        }
+        if guard.closed {
+            return Err(PyRuntimeError::new_err("Pseudo-terminal stream is closed"));
+        }
+        Ok(None)
+    }
+
+    fn drain(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        let mut guard = self.state.lock().expect("pty buffer mutex poisoned");
+        guard
+            .chunks
+            .drain(..)
+            .map(|chunk| self.decode_chunk(py, &chunk))
+            .collect()
+    }
+
+    fn output(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let guard = self.state.lock().expect("pty buffer mutex poisoned");
+        self.decode_chunk(py, &guard.history)
+    }
+
+    fn output_since(&self, py: Python<'_>, start: usize) -> PyResult<Py<PyAny>> {
+        let guard = self.state.lock().expect("pty buffer mutex poisoned");
+        let start = start.min(guard.history.len());
+        self.decode_chunk(py, &guard.history[start..])
+    }
+
+    fn history_bytes(&self) -> usize {
+        self.state
+            .lock()
+            .expect("pty buffer mutex poisoned")
+            .history_bytes
+    }
+
+    fn clear_history(&self) -> usize {
+        let mut guard = self.state.lock().expect("pty buffer mutex poisoned");
+        let released = guard.history_bytes;
+        guard.history.clear();
+        guard.history_bytes = 0;
+        released
+    }
+}
+
 impl NativeRunningProcess {
+    fn decode_line_to_string(&self, py: Python<'_>, line: &[u8]) -> PyResult<String> {
+        if !self.text {
+            return Ok(String::from_utf8_lossy(line).into_owned());
+        }
+        PyBytes::new(py, line)
+            .call_method1(
+                "decode",
+                (
+                    self.encoding.as_deref().unwrap_or("utf-8"),
+                    self.errors.as_deref().unwrap_or("replace"),
+                ),
+            )?
+            .extract()
+    }
+
+    fn captured_stream_text(&self, py: Python<'_>, stream: StreamKind) -> PyResult<String> {
+        let lines = match stream {
+            StreamKind::Stdout => self.inner.captured_stdout(),
+            StreamKind::Stderr => self.inner.captured_stderr(),
+        };
+        let mut text = String::new();
+        for (index, line) in lines.iter().enumerate() {
+            if index > 0 {
+                text.push('\n');
+            }
+            text.push_str(&self.decode_line_to_string(py, line)?);
+        }
+        Ok(text)
+    }
+
+    fn captured_combined_text(&self, py: Python<'_>) -> PyResult<String> {
+        let lines = self.inner.captured_combined();
+        let mut text = String::new();
+        for (index, event) in lines.iter().enumerate() {
+            if index > 0 {
+                text.push('\n');
+            }
+            text.push_str(&self.decode_line_to_string(py, &event.line)?);
+        }
+        Ok(text)
+    }
+
+    fn read_status_text(&self, stream: Option<StreamKind>, timeout: Option<Duration>) -> PyResult<ReadStatus<Vec<u8>>> {
+        Ok(match stream {
+            Some(kind) => self.inner.read_stream(kind, timeout),
+            None => match self.inner.read_combined(timeout) {
+                ReadStatus::Line(StreamEvent { line, .. }) => ReadStatus::Line(line),
+                ReadStatus::Timeout => ReadStatus::Timeout,
+                ReadStatus::Eof => ReadStatus::Eof,
+            },
+        })
+    }
+
+    fn find_expect_match(
+        &self,
+        buffer: &str,
+        pattern: &str,
+        is_regex: bool,
+    ) -> PyResult<Option<(String, usize, usize, Vec<String>)>> {
+        if !is_regex {
+            let Some(start) = buffer.find(pattern) else {
+                return Ok(None);
+            };
+            return Ok(Some((
+                pattern.to_string(),
+                start,
+                start + pattern.len(),
+                Vec::new(),
+            )));
+        }
+
+        let regex = Regex::new(pattern).map_err(to_py_err)?;
+        let Some(captures) = regex.captures(buffer) else {
+            return Ok(None);
+        };
+        let whole = captures
+            .get(0)
+            .ok_or_else(|| PyRuntimeError::new_err("regex capture missing group 0"))?;
+        let groups = captures
+            .iter()
+            .skip(1)
+            .map(|group| group.map(|value| value.as_str().to_string()).unwrap_or_default())
+            .collect();
+        Ok(Some((
+            whole.as_str().to_string(),
+            whole.start(),
+            whole.end(),
+            groups,
+        )))
+    }
+
     fn decode_line(&self, py: Python<'_>, line: &[u8]) -> PyResult<Py<PyAny>> {
         if !self.text {
             return Ok(PyBytes::new(py, line).into_any().unbind());
@@ -268,9 +1623,349 @@ impl NativeRunningProcess {
     }
 }
 
+impl NativePtyBuffer {
+    fn decode_chunk(&self, py: Python<'_>, line: &[u8]) -> PyResult<Py<PyAny>> {
+        if !self.text {
+            return Ok(PyBytes::new(py, line).into_any().unbind());
+        }
+        Ok(PyBytes::new(py, line)
+            .call_method1("decode", (&self.encoding, &self.errors))?
+            .into_any()
+            .unbind())
+    }
+}
+
+#[pymethods]
+impl NativeIdleDetector {
+    #[new]
+    #[pyo3(signature = (timeout_seconds, stability_window_seconds, sample_interval_seconds, enabled_signal, reset_on_input=true, reset_on_output=true, count_control_churn_as_output=true, initial_idle_for_seconds=0.0))]
+    fn new(
+        py: Python<'_>,
+        timeout_seconds: f64,
+        stability_window_seconds: f64,
+        sample_interval_seconds: f64,
+        enabled_signal: Py<NativeSignalBool>,
+        reset_on_input: bool,
+        reset_on_output: bool,
+        count_control_churn_as_output: bool,
+        initial_idle_for_seconds: f64,
+    ) -> Self {
+        let now = Instant::now();
+        let initial_idle_for_seconds = initial_idle_for_seconds.max(0.0);
+        let last_reset_at = now
+            .checked_sub(Duration::from_secs_f64(initial_idle_for_seconds))
+            .unwrap_or(now);
+        let enabled = enabled_signal.borrow(py).value.clone();
+        Self {
+            timeout_seconds,
+            stability_window_seconds,
+            sample_interval_seconds,
+            reset_on_input,
+            reset_on_output,
+            count_control_churn_as_output,
+            enabled,
+            state: Mutex::new(IdleMonitorState {
+                last_reset_at,
+                returncode: None,
+                interrupted: false,
+            }),
+            condvar: Condvar::new(),
+        }
+    }
+
+    #[getter]
+    fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    #[setter]
+    fn set_enabled(&self, enabled: bool) {
+        let was_enabled = self.enabled.swap(enabled, Ordering::AcqRel);
+        if enabled && !was_enabled {
+            let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+            guard.last_reset_at = Instant::now();
+        }
+        self.condvar.notify_all();
+    }
+
+    fn record_input(&self, byte_count: usize) {
+        if !self.reset_on_input || byte_count == 0 {
+            return;
+        }
+        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+        guard.last_reset_at = Instant::now();
+        self.condvar.notify_all();
+    }
+
+    fn record_output(&self, data: &[u8]) {
+        if !self.reset_on_output || data.is_empty() {
+            return;
+        }
+        let control_bytes = control_churn_bytes(data);
+        let visible_output_bytes = data.len().saturating_sub(control_bytes);
+        let active_output =
+            visible_output_bytes > 0 || (self.count_control_churn_as_output && control_bytes > 0);
+        if !active_output {
+            return;
+        }
+        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+        guard.last_reset_at = Instant::now();
+        self.condvar.notify_all();
+    }
+
+    fn mark_exit(&self, returncode: i32, interrupted: bool) {
+        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+        guard.returncode = Some(returncode);
+        guard.interrupted = interrupted;
+        self.condvar.notify_all();
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> (bool, String, f64, Option<i32>) {
+        py.allow_threads(|| {
+            let started = Instant::now();
+            let overall_timeout = timeout.map(Duration::from_secs_f64);
+            let min_idle = self.timeout_seconds.max(self.stability_window_seconds);
+            let sample_interval = Duration::from_secs_f64(self.sample_interval_seconds.max(0.001));
+
+            let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+            loop {
+                let now = Instant::now();
+                let idle_for = now.duration_since(guard.last_reset_at).as_secs_f64();
+
+                if let Some(returncode) = guard.returncode {
+                    let reason = if guard.interrupted {
+                        "interrupt"
+                    } else {
+                        "process_exit"
+                    };
+                    return (false, reason.to_string(), idle_for, Some(returncode));
+                }
+
+                let enabled = self.enabled.load(Ordering::Acquire);
+                if enabled && idle_for >= min_idle {
+                    return (true, "idle_timeout".to_string(), idle_for, None);
+                }
+
+                if let Some(limit) = overall_timeout {
+                    if now.duration_since(started) >= limit {
+                        return (false, "timeout".to_string(), idle_for, None);
+                    }
+                }
+
+                let idle_remaining = if enabled {
+                    (min_idle - idle_for).max(0.0)
+                } else {
+                    sample_interval.as_secs_f64()
+                };
+                let mut wait_for =
+                    sample_interval.min(Duration::from_secs_f64(idle_remaining.max(0.001)));
+                if let Some(limit) = overall_timeout {
+                    let elapsed = now.duration_since(started);
+                    if elapsed < limit {
+                        let remaining = limit - elapsed;
+                        wait_for = wait_for.min(remaining);
+                    }
+                }
+                let result = self
+                    .condvar
+                    .wait_timeout(guard, wait_for)
+                    .expect("idle monitor mutex poisoned");
+                guard = result.0;
+            }
+        })
+    }
+}
+
+fn control_churn_bytes(data: &[u8]) -> usize {
+    let mut total = 0;
+    let mut index = 0;
+    while index < data.len() {
+        let byte = data[index];
+        if byte == 0x1B {
+            let start = index;
+            index += 1;
+            if index < data.len() && data[index] == b'[' {
+                index += 1;
+                while index < data.len() {
+                    let current = data[index];
+                    index += 1;
+                    if (0x40..=0x7E).contains(&current) {
+                        break;
+                    }
+                }
+            }
+            total += index - start;
+            continue;
+        }
+        if matches!(byte, 0x08 | 0x0D | 0x7F) {
+            total += 1;
+        }
+        index += 1;
+    }
+    total
+}
+
+fn command_builder_from_argv(argv: &[String]) -> CommandBuilder {
+    let mut command = CommandBuilder::new(&argv[0]);
+    if argv.len() > 1 {
+        command.args(
+            argv[1..]
+                .iter()
+                .map(OsString::from)
+                .collect::<Vec<OsString>>(),
+        );
+    }
+    command
+}
+
+fn spawn_pty_reader(mut reader: Box<dyn Read + Send>, shared: Arc<PtyReadShared>) {
+    let mut chunk = [0_u8; 4096];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let mut guard = shared.state.lock().expect("pty read mutex poisoned");
+                guard.chunks.push_back(chunk[..n].to_vec());
+                shared.condvar.notify_all();
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+    let mut guard = shared.state.lock().expect("pty read mutex poisoned");
+    guard.closed = true;
+    shared.condvar.notify_all();
+}
+
+fn portable_exit_code(status: portable_pty::ExitStatus) -> i32 {
+    if let Some(signal) = status.signal() {
+        let signal = signal.to_ascii_lowercase();
+        if signal.contains("interrupt") {
+            return -2;
+        }
+        if signal.contains("terminated") {
+            return -15;
+        }
+        if signal.contains("killed") {
+            return -9;
+        }
+    }
+    status.exit_code() as i32
+}
+
+#[cfg(windows)]
+fn assign_child_to_windows_kill_on_close_job(
+    handle: Option<std::os::windows::io::RawHandle>,
+) -> PyResult<WindowsJobHandle> {
+    use std::mem::zeroed;
+
+    use winapi::shared::minwindef::FALSE;
+    use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+    use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
+    use winapi::um::winnt::{
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    let Some(handle) = handle else {
+        return Err(PyRuntimeError::new_err(
+            "Pseudo-terminal child does not expose a Windows process handle",
+        ));
+    };
+
+    let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+    if job.is_null() || job == INVALID_HANDLE_VALUE {
+        return Err(to_py_err(std::io::Error::last_os_error()));
+    }
+
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let result = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            (&mut info as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if result == FALSE {
+        let err = std::io::Error::last_os_error();
+        unsafe {
+            winapi::um::handleapi::CloseHandle(job);
+        }
+        return Err(to_py_err(err));
+    }
+
+    let result = unsafe { AssignProcessToJobObject(job, handle.cast()) };
+    if result == FALSE {
+        let err = std::io::Error::last_os_error();
+        unsafe {
+            winapi::um::handleapi::CloseHandle(job);
+        }
+        return Err(to_py_err(err));
+    }
+
+    Ok(WindowsJobHandle(job as usize))
+}
+
+#[cfg(windows)]
+fn apply_windows_pty_priority(
+    handle: Option<std::os::windows::io::RawHandle>,
+    nice: Option<i32>,
+) -> PyResult<()> {
+    use winapi::um::processthreadsapi::SetPriorityClass;
+    use winapi::um::winbase::{
+        ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
+        IDLE_PRIORITY_CLASS,
+    };
+
+    let Some(handle) = handle else {
+        return Ok(());
+    };
+    let flags = match nice {
+        Some(value) if value >= 15 => IDLE_PRIORITY_CLASS,
+        Some(value) if value >= 1 => BELOW_NORMAL_PRIORITY_CLASS,
+        Some(value) if value <= -15 => HIGH_PRIORITY_CLASS,
+        Some(value) if value <= -1 => ABOVE_NORMAL_PRIORITY_CLASS,
+        _ => 0,
+    };
+    if flags == 0 {
+        return Ok(());
+    }
+    let result = unsafe { SetPriorityClass(handle.cast(), flags) };
+    if result == 0 {
+        return Err(to_py_err(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
 #[pymodule]
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeRunningProcess>()?;
+    module.add_class::<NativePtyProcess>()?;
+    module.add_class::<NativeProcessMetrics>()?;
+    module.add_class::<NativeSignalBool>()?;
+    module.add_class::<NativeIdleDetector>()?;
+    module.add_class::<NativePtyBuffer>()?;
+    module.add_function(wrap_pyfunction!(tracked_pid_db_path_py, module)?)?;
+    module.add_function(wrap_pyfunction!(track_process_pid, module)?)?;
+    module.add_function(wrap_pyfunction!(untrack_process_pid, module)?)?;
+    module.add_function(wrap_pyfunction!(native_register_process, module)?)?;
+    module.add_function(wrap_pyfunction!(native_unregister_process, module)?)?;
+    module.add_function(wrap_pyfunction!(list_tracked_processes, module)?)?;
+    module.add_function(wrap_pyfunction!(native_list_active_processes, module)?)?;
+    module.add_function(wrap_pyfunction!(native_get_process_tree_info, module)?)?;
+    module.add_function(wrap_pyfunction!(native_kill_process_tree, module)?)?;
+    module.add_function(wrap_pyfunction!(native_process_created_at, module)?)?;
+    module.add_function(wrap_pyfunction!(native_is_same_process, module)?)?;
+    module.add_function(wrap_pyfunction!(native_cleanup_tracked_processes, module)?)?;
+    module.add_function(wrap_pyfunction!(native_apply_process_nice, module)?)?;
+    module.add_function(wrap_pyfunction!(native_windows_terminal_input_bytes, module)?)?;
     module.add("VERSION", PyString::new(_py, env!("CARGO_PKG_VERSION")))?;
     Ok(())
 }

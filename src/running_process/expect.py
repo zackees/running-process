@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from re import Pattern
-from typing import Any
 
 ExpectPattern = str | Pattern[str]
-ExpectAction = str | bytes | Callable[["ExpectMatch", Any], None] | None
+ExpectAction = str | bytes | None
 
 
 @dataclass
@@ -46,28 +44,25 @@ def search_expect_pattern(buffer: str, pattern: ExpectPattern) -> ExpectMatch | 
     )
 
 
-def apply_expect_action(process: Any, action: ExpectAction, match: ExpectMatch) -> None:
+def apply_expect_action(process: object, action: ExpectAction, match: ExpectMatch) -> None:
     if action is None:
         return
-    if callable(action):
-        action(match, process)
-        return
     if isinstance(action, bytes):
-        process.write(action)
+        process.write(action)  # type: ignore[attr-defined]
         return
     if action == "terminate":
-        process.terminate()
+        process.terminate()  # type: ignore[attr-defined]
         return
     if action == "kill":
-        process.kill()
+        process.kill()  # type: ignore[attr-defined]
         return
     if action == "interrupt":
         if hasattr(process, "send_interrupt"):
-            process.send_interrupt()
+            process.send_interrupt()  # type: ignore[attr-defined]
             return
-        process.terminate()
+        process.terminate()  # type: ignore[attr-defined]
         return
-    process.write(action)
+    process.write(action)  # type: ignore[attr-defined]
 
 
 def ensure_text(value: str | bytes, encoding: str = "utf-8", errors: str = "replace") -> str:

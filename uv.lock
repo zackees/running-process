@@ -117,28 +117,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pywinpty"
-version = "3.0.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f7/54/37c7370ba91f579235049dc26cd2c5e657d2a943e01820844ffc81f32176/pywinpty-3.0.3.tar.gz", hash = "sha256:523441dc34d231fb361b4b00f8c99d3f16de02f5005fd544a0183112bcc22412", size = 31309, upload-time = "2026-02-04T21:51:09.524Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/62/28/a652709bd76ca7533cd1c443b03add9f5051fdf71bc6bdb8801dddd4e7a3/pywinpty-3.0.3-cp310-cp310-win_amd64.whl", hash = "sha256:ff05f12d775b142b11c6fe085129bdd759b61cf7d41da6c745e78e3a1ef5bf40", size = 2114320, upload-time = "2026-02-04T21:53:50.972Z" },
-    { url = "https://files.pythonhosted.org/packages/b2/13/a0181cc5c2d5635d3dbc3802b97bc8e3ad4fa7502ccef576651a5e08e54c/pywinpty-3.0.3-cp310-cp310-win_arm64.whl", hash = "sha256:340ccacb4d74278a631923794ccd758471cfc8eeeeee4610b280420a17ad1e82", size = 235670, upload-time = "2026-02-04T21:50:20.324Z" },
-    { url = "https://files.pythonhosted.org/packages/79/c3/3e75075c7f71735f22b66fab0481f2c98e3a4d58cba55cb50ba29114bcf6/pywinpty-3.0.3-cp311-cp311-win_amd64.whl", hash = "sha256:dff25a9a6435f527d7c65608a7e62783fc12076e7d44487a4911ee91be5a8ac8", size = 2114430, upload-time = "2026-02-04T21:54:19.485Z" },
-    { url = "https://files.pythonhosted.org/packages/8d/1e/8a54166a8c5e4f5cb516514bdf4090be4d51a71e8d9f6d98c0aa00fe45d4/pywinpty-3.0.3-cp311-cp311-win_arm64.whl", hash = "sha256:fbc1e230e5b193eef4431cba3f39996a288f9958f9c9f092c8a961d930ee8f68", size = 236191, upload-time = "2026-02-04T21:50:36.239Z" },
-    { url = "https://files.pythonhosted.org/packages/7c/d4/aeb5e1784d2c5bff6e189138a9ca91a090117459cea0c30378e1f2db3d54/pywinpty-3.0.3-cp312-cp312-win_amd64.whl", hash = "sha256:c9081df0e49ffa86d15db4a6ba61530630e48707f987df42c9d3313537e81fc0", size = 2113098, upload-time = "2026-02-04T21:54:37.711Z" },
-    { url = "https://files.pythonhosted.org/packages/b9/53/7278223c493ccfe4883239cf06c823c56460a8010e0fc778eef67858dc14/pywinpty-3.0.3-cp312-cp312-win_arm64.whl", hash = "sha256:15e79d870e18b678fb8a5a6105fd38496b55697c66e6fc0378236026bc4d59e9", size = 234901, upload-time = "2026-02-04T21:53:31.35Z" },
-    { url = "https://files.pythonhosted.org/packages/e5/cb/58d6ed3fd429c96a90ef01ac9a617af10a6d41469219c25e7dc162abbb71/pywinpty-3.0.3-cp313-cp313-win_amd64.whl", hash = "sha256:9c91dbb026050c77bdcef964e63a4f10f01a639113c4d3658332614544c467ab", size = 2112686, upload-time = "2026-02-04T21:52:03.035Z" },
-    { url = "https://files.pythonhosted.org/packages/fd/50/724ed5c38c504d4e58a88a072776a1e880d970789deaeb2b9f7bd9a5141a/pywinpty-3.0.3-cp313-cp313-win_arm64.whl", hash = "sha256:fe1f7911805127c94cf51f89ab14096c6f91ffdcacf993d2da6082b2142a2523", size = 234591, upload-time = "2026-02-04T21:52:29.821Z" },
-    { url = "https://files.pythonhosted.org/packages/f7/ad/90a110538696b12b39fd8758a06d70ded899308198ad2305ac68e361126e/pywinpty-3.0.3-cp313-cp313t-win_amd64.whl", hash = "sha256:3f07a6cf1c1d470d284e614733c3d0f726d2c85e78508ea10a403140c3c0c18a", size = 2112360, upload-time = "2026-02-04T21:55:33.397Z" },
-    { url = "https://files.pythonhosted.org/packages/44/0f/7ffa221757a220402bc79fda44044c3f2cc57338d878ab7d622add6f4581/pywinpty-3.0.3-cp313-cp313t-win_arm64.whl", hash = "sha256:15c7c0b6f8e9d87aabbaff76468dabf6e6121332c40fc1d83548d02a9d6a3759", size = 233107, upload-time = "2026-02-04T21:51:45.455Z" },
-    { url = "https://files.pythonhosted.org/packages/28/88/2ff917caff61e55f38bcdb27de06ee30597881b2cae44fbba7627be015c4/pywinpty-3.0.3-cp314-cp314-win_amd64.whl", hash = "sha256:d4b6b7b0fe0cdcd02e956bd57cfe9f4e5a06514eecf3b5ae174da4f951b58be9", size = 2113282, upload-time = "2026-02-04T21:52:08.188Z" },
-    { url = "https://files.pythonhosted.org/packages/63/32/40a775343ace542cc43ece3f1d1fce454021521ecac41c4c4573081c2336/pywinpty-3.0.3-cp314-cp314-win_arm64.whl", hash = "sha256:34789d685fc0d547ce0c8a65e5a70e56f77d732fa6e03c8f74fefb8cbb252019", size = 234207, upload-time = "2026-02-04T21:51:58.687Z" },
-    { url = "https://files.pythonhosted.org/packages/8d/54/5d5e52f4cb75028104ca6faf36c10f9692389b1986d34471663b4ebebd6d/pywinpty-3.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:0c37e224a47a971d1a6e08649a1714dac4f63c11920780977829ed5c8cadead1", size = 2112910, upload-time = "2026-02-04T21:52:30.976Z" },
-    { url = "https://files.pythonhosted.org/packages/0a/44/dcd184824e21d4620b06c7db9fbb15c3ad0a0f1fa2e6de79969fb82647ec/pywinpty-3.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:c4e9c3dff7d86ba81937438d5819f19f385a39d8f592d4e8af67148ceb4f6ab5", size = 233425, upload-time = "2026-02-04T21:51:56.754Z" },
-]
-
-[[package]]
 name = "ruff"
 version = "0.15.9"
 source = { registry = "https://pypi.org/simple" }
@@ -169,7 +147,6 @@ version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "psutil" },
-    { name = "pywinpty", marker = "sys_platform == 'win32'" },
 ]
 
 [package.dev-dependencies]
@@ -177,19 +154,18 @@ dev = [
     { name = "maturin" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "zccache" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "psutil", specifier = ">=5.9.0" },
-    { name = "pywinpty", marker = "sys_platform == 'win32'", specifier = ">=3.0.0" },
-]
+requires-dist = [{ name = "psutil", specifier = ">=5.9.0" }]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "maturin", specifier = ">=1.7,<2" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.8.0" },
+    { name = "zccache" },
 ]
 
 [[package]]
@@ -253,4 +229,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/94/1a15dd82efb362ac84269196e94cf00f187f7ed21c242792a923cdb1c61f/typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466", size = 109391, upload-time = "2025-08-25T13:49:26.313Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548", size = 44614, upload-time = "2025-08-25T13:49:24.86Z" },
+]
+
+[[package]]
+name = "zccache"
+version = "1.1.20"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/2b/a698afd8fc5db92ad9f5591f01fd69212933eb2daeba1e89b7380c52ceb1/zccache-1.1.20-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:69b812f72410da597c16197450628b06aeac98788894c6ad2f7db770f5b48379", size = 4776532, upload-time = "2026-04-08T11:17:04.542Z" },
+    { url = "https://files.pythonhosted.org/packages/de/38/8a7e1ba5127dfb6006b4589a690d2aface720b3c06b4b675231625f74787/zccache-1.1.20-py3-none-macosx_11_0_arm64.whl", hash = "sha256:2d92075339096c218922f6ba1bc30e64298337c0d6378ae8450b77ae0bac9156", size = 4605465, upload-time = "2026-04-08T11:17:13.076Z" },
+    { url = "https://files.pythonhosted.org/packages/16/cc/2350504f032eb7c5f0b88c7fdb2b3cf7e2c24a796304d1789f14f7a95af6/zccache-1.1.20-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:928cc94a22fe02d4be1bfb950d7585daa8fe3b95c99b74a7684eabd18dc71040", size = 4926813, upload-time = "2026-04-08T11:17:20.921Z" },
+    { url = "https://files.pythonhosted.org/packages/02/05/7625a1d1d9820e7aa419bcc94151d3ebd55124d8a035e63eb94677261f19/zccache-1.1.20-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:499aa19336922ca9ee934db84112a09050aa0c3a6e7c43300887939b98429b36", size = 5314373, upload-time = "2026-04-08T11:17:30.685Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/a1/baad72b54a037b4ab47b5fcf346a71d0b806884cdf39eadb330af504f9c2/zccache-1.1.20-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:4a24116935071443aa5995105fcf7c5964038d1f9ac2ac5c2a2d9916d1af2ec6", size = 5015502, upload-time = "2026-04-08T11:17:40.729Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/4d/5619901aaa109b2d46c2b33eb9262ed0413b3e57b7b08d72a7017ef63892/zccache-1.1.20-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:8e8d67a84b4b610f3f78a99a29a3c08b050a0f6f6d23b2193726546c6eb23411", size = 5454262, upload-time = "2026-04-08T11:17:50.682Z" },
+    { url = "https://files.pythonhosted.org/packages/30/21/9c1ea13744bf8f7a5ef0b534213b30c23598789421423980c0c9a7a9ca15/zccache-1.1.20-py3-none-win_amd64.whl", hash = "sha256:f16d17782cfc979e0c230ae698393aa719467ea9a51dc9c25f6d03ad9dd23f65", size = 4605376, upload-time = "2026-04-08T11:17:58.867Z" },
+    { url = "https://files.pythonhosted.org/packages/92/f7/9d871bb4abc91371cc1180abd0e58cee778cfc9bc5f8e13ac839b1d4fdde/zccache-1.1.20-py3-none-win_arm64.whl", hash = "sha256:905a23827fbc440c4190c9ddbb625c244d114e460fd1d1b219f298853c4daa0f", size = 4288680, upload-time = "2026-04-08T11:18:06.066Z" },
 ]

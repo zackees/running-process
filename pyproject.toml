@@ -11,10 +11,10 @@ requires-python = ">=3.10"
 license = { text = "BSD 3-Clause License" }
 license-files = ["LICENSE"]
 authors = [{ name = "Your Name", email = "your.email@example.com" }]
-dependencies = ["psutil>=5.9.0", "pywinpty>=3.0.0; platform_system == 'Windows'"]
+dependencies = ["psutil>=5.9.0"]
 
 [dependency-groups]
-dev = ["maturin>=1.7,<2", "pytest>=8.0.0", "ruff>=0.8.0"]
+dev = ["maturin>=1.7,<2", "pytest>=8.0.0", "ruff>=0.8.0", "zccache"]
 
 [tool.maturin]
 manifest-path = "crates/running-process-py/Cargo.toml"

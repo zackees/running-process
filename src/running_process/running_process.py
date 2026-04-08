@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
-import signal
-import subprocess
 import sys
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from io import TextIOBase
 from pathlib import Path
 from typing import Any, ClassVar
 
 from running_process._native import NativeRunningProcess
+from running_process.command_render import list2cmdline
+from running_process.compat import (
+    DEVNULL,
+    PIPE,
+    CalledProcessError,
+    CompletedProcess,
+    TimeoutExpired,
+    make_completed_process,
+)
 from running_process.exit_status import ExitStatus, ProcessAbnormalExit, classify_exit_status
 from running_process.expect import (
     ExpectAction,
@@ -20,18 +29,22 @@ from running_process.expect import (
     ExpectPattern,
     ExpectRule,
     apply_expect_action,
-    ensure_text,
-    search_expect_pattern,
 )
 from running_process.line_iterator import _RunningProcessLineIterator
-from running_process.output_formatter import NullOutputFormatter, OutputFormatter
+from running_process.pid_tracker import register_process, unregister_process
 from running_process.priority import CpuPriority, normalize_nice
 from running_process.pty import (
+    Expect,
+    IdleDetector,
+    IdleWaitResult,
     InteractiveLaunchSpec,
     InteractiveMode,
     InteractiveProcess,
     PseudoTerminalProcess,
-    Pty,
+    SignalBool,
+    WaitCheckpoint,
+    WaitCondition,
+    WaitForResult,
     interactive_launch_spec,
 )
 from running_process.running_process_manager import RunningProcessManagerSingleton
@@ -51,7 +64,6 @@ class ProcessInfo:
 
 
 EchoValue = str | bytes
-EchoCallback = Callable[[EchoValue], None]
 
 
 class CapturedProcessStream:
@@ -124,26 +136,21 @@ def _safe_console_write(stream: TextIOBase, line: EchoValue) -> None:
     stream.flush()
 
 
-def _normalize_echo_callback(echo: bool | EchoCallback) -> EchoCallback:
-    if echo is True:
-        return lambda line: _safe_console_write(sys.stdout, line)
-    if echo is False:
-        return lambda _line: None
-    if callable(echo):
-        return echo
-    raise TypeError(f"echo must be bool or callable, got {type(echo).__name__}")
-
-
 def _stdin_mode(stdin: int | Any | None, has_input: bool) -> str:
     if has_input:
         return "piped"
     if stdin is None:
         return "inherit"
-    if stdin is subprocess.DEVNULL:
+    if stdin is DEVNULL:
         return "null"
-    if stdin is subprocess.PIPE:
+    if stdin is PIPE:
         return "piped"
     raise ValueError("unsupported stdin value for RunningProcess; use None, PIPE, or DEVNULL")
+
+
+def _validate_echo_flag(echo: bool) -> None:
+    if not isinstance(echo, bool):
+        raise TypeError(f"echo must be bool, got {type(echo).__name__}")
 
 
 def _parse_shebang_command(script_path: Path) -> list[str]:
@@ -178,6 +185,14 @@ def _validate_expect_stream(stream: str) -> str:
     return stream
 
 
+def _expect_pattern_spec(pattern: ExpectPattern) -> tuple[str, bool]:
+    if isinstance(pattern, str):
+        return pattern, False
+    if isinstance(pattern, re.Pattern):
+        return pattern.pattern, True
+    raise TypeError("pattern must be a string or compiled regex pattern")
+
+
 class RunningProcess:
     KEYBOARD_INTERRUPT_EXIT_CODES: ClassVar[set[int]] = {
         -2,
@@ -188,6 +203,7 @@ class RunningProcess:
         3221225786,
         4294967294,
     }
+    SignalBool = SignalBool
     end_of_stream_type = EndOfStream
 
     def __init__(
@@ -199,8 +215,6 @@ class RunningProcess:
         shell: bool | None = None,
         timeout: int | None = None,
         on_timeout: Callable[[ProcessInfo], None] | None = None,
-        on_complete: Callable[[], None] | None = None,
-        output_formatter: OutputFormatter | None = None,
         use_pty: bool = False,
         env: dict[str, str] | None = None,
         creationflags: int | None = None,
@@ -227,8 +241,6 @@ class RunningProcess:
         self.check = check
         self.timeout = timeout
         self.on_timeout = on_timeout
-        self.on_complete = on_complete
-        self.output_formatter = output_formatter or NullOutputFormatter()
         self.use_pty = use_pty
         self.env = env.copy() if env is not None else os.environ.copy()
         self.env.setdefault("PYTHONUTF8", "1")
@@ -241,7 +253,7 @@ class RunningProcess:
         self.encoding = encoding or "utf-8"
         self.errors = errors or "replace"
         if use_pty:
-            if stdin not in (None, subprocess.PIPE):
+            if stdin not in (None, PIPE):
                 raise ValueError("use_pty=True only supports stdin=None or PIPE")
             self._pty_process = PseudoTerminalProcess(
                 command,
@@ -271,29 +283,12 @@ class RunningProcess:
             )
         self._start_time: float | None = None
         self._end_time: float | None = None
-        self._formatter_started = False
         self._exit_status: ExitStatus | None = None
         if auto_run:
             self.start()
 
-    def _ensure_formatter_started(self) -> None:
-        if not self._formatter_started:
-            self.output_formatter.begin()
-            self._formatter_started = True
-
-    def _finalize_formatter(self) -> None:
-        if self._formatter_started:
-            self.output_formatter.end()
-            self._formatter_started = False
-
     def _format(self, line: EchoValue) -> EchoValue:
-        if isinstance(line, bytes):
-            return line
-        self._ensure_formatter_started()
-        return self.output_formatter.transform(line)
-
-    def _pty_available(self) -> bool:
-        return Pty.is_available()
+        return line
 
     def _create_process_info(self) -> ProcessInfo:
         return ProcessInfo(
@@ -304,7 +299,7 @@ class RunningProcess:
 
     def get_command_str(self) -> str:
         if isinstance(self.command, list):
-            return subprocess.list2cmdline(self.command)
+            return list2cmdline(self.command)
         return self.command
 
     def start(self) -> None:
@@ -314,6 +309,7 @@ class RunningProcess:
             self.proc.start()
         self._start_time = time.time()
         RunningProcessManagerSingleton.register(self)
+        register_process(self.pid, kind="running_process", command=self.command, cwd=self.cwd)
 
     def _handle_timeout(self, timeout: float) -> None:
         if self.on_timeout is not None:
@@ -397,32 +393,48 @@ class RunningProcess:
         if result is not None and self._end_time is None:
             self._end_time = time.time()
             RunningProcessManagerSingleton.unregister(self)
+            unregister_process(self.pid)
         return result
+
+    @property
+    def idle_timeout_enabled(self) -> bool:
+        if self._pty_process is None:
+            raise AttributeError("idle_timeout_enabled is only available for PTY-backed processes")
+        return self._pty_process.idle_timeout_enabled
+
+    @idle_timeout_enabled.setter
+    def idle_timeout_enabled(self, enabled: bool) -> None:
+        if self._pty_process is None:
+            raise AttributeError("idle_timeout_enabled is only available for PTY-backed processes")
+        self._pty_process.idle_timeout_enabled = enabled
 
     @property
     def finished(self) -> bool:
         return self.returncode is not None
 
-    def _echo_streams(
-        self,
-        stdout_callback: EchoCallback,
-        stderr_callback: EchoCallback | None = None,
-    ) -> None:
+    def _echo_streams(self) -> None:
         for line in self.drain_stdout():
-            stdout_callback(line)
-        if stderr_callback is not None:
-            for line in self.drain_stderr():
-                stderr_callback(line)
+            _safe_console_write(sys.stdout, line)
+        for line in self.drain_stderr():
+            _safe_console_write(sys.stderr, line)
 
     def wait(
         self,
-        echo: bool | EchoCallback = False,
+        echo: bool = False,
         timeout: float | None = None,
         *,
         raise_on_abnormal_exit: bool = False,
-    ) -> int:
+        idle_detector: IdleDetector = None,
+    ) -> int | IdleWaitResult:
+        _validate_echo_flag(echo)
+        if idle_detector is not None:
+            return self.wait_for_idle(
+                idle_detector,
+                echo=echo,
+                timeout=timeout,
+                raise_on_abnormal_exit=raise_on_abnormal_exit,
+            )
         if self._pty_process is not None:
-            callback = _normalize_echo_callback(echo)
             effective_timeout = timeout if timeout is not None else self.timeout
             deadline = time.time() + effective_timeout if effective_timeout is not None else None
             while True:
@@ -431,52 +443,151 @@ class RunningProcess:
                     break
                 if deadline is not None and time.time() >= deadline:
                     self._handle_timeout(effective_timeout)
-                if echo is not False:
+                if echo:
                     for line in self.drain_stdout():
-                        callback(line)
+                        _safe_console_write(sys.stdout, line)
                 time.sleep(0.01)
-            if echo is not False:
+            if echo:
                 for line in self.drain_stdout():
-                    callback(line)
+                    _safe_console_write(sys.stdout, line)
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
-            if self.on_complete is not None:
-                self.on_complete()
+            unregister_process(self.pid)
             self._exit_status = classify_exit_status(code, self.KEYBOARD_INTERRUPT_EXIT_CODES)
             if code in self.KEYBOARD_INTERRUPT_EXIT_CODES:
                 raise KeyboardInterrupt
             if raise_on_abnormal_exit and self._exit_status.abnormal:
                 raise ProcessAbnormalExit(self._exit_status)
             return code
-        callback = _normalize_echo_callback(echo)
         effective_timeout = timeout if timeout is not None else self.timeout
         deadline = time.time() + effective_timeout if effective_timeout is not None else None
-
-        while True:
-            code = self.poll()
-            if code is not None:
-                code = self.proc.wait(timeout=0)
-                break
-            if deadline is not None and time.time() >= deadline:
+        if not echo:
+            try:
+                code = self.proc.wait(timeout=effective_timeout)
+            except TimeoutError:
                 self._handle_timeout(effective_timeout)
-            if echo is not False:
-                self._echo_streams(callback, callback)
-            time.sleep(0.01)
+        else:
+            while True:
+                code = self.poll()
+                if code is not None:
+                    code = self.proc.wait(timeout=0)
+                    break
+                if deadline is not None and time.time() >= deadline:
+                    self._handle_timeout(effective_timeout)
+                self._echo_streams()
+                time.sleep(0.01)
 
-        if echo is not False:
-            self._echo_streams(callback, callback)
+        if echo:
+            self._echo_streams()
 
         self._end_time = self._end_time or time.time()
-        self._finalize_formatter()
         RunningProcessManagerSingleton.unregister(self)
-        if self.on_complete is not None:
-            self.on_complete()
+        unregister_process(self.pid)
         self._exit_status = classify_exit_status(code, self.KEYBOARD_INTERRUPT_EXIT_CODES)
         if code in self.KEYBOARD_INTERRUPT_EXIT_CODES:
             raise KeyboardInterrupt
         if raise_on_abnormal_exit and self._exit_status.abnormal:
             raise ProcessAbnormalExit(self._exit_status)
         return code
+
+    def wait_for_idle(
+        self,
+        idle_detector: IdleDetector | None = None,
+        *,
+        echo: bool = False,
+        timeout: float | None = None,
+        raise_on_abnormal_exit: bool = False,
+    ) -> IdleWaitResult:
+        _validate_echo_flag(echo)
+        if self._pty_process is None:
+            raise NotImplementedError("idle detection currently only supports PTY-backed processes")
+
+        effective_timeout = timeout if timeout is not None else self.timeout
+        result = self._pty_process.wait_for_idle(
+            idle_detector,
+            timeout=effective_timeout,
+            raise_on_abnormal_exit=raise_on_abnormal_exit,
+            echo_output=echo,
+        )
+        if echo:
+            for line in self.drain_stdout():
+                _safe_console_write(sys.stdout, line)
+        if result.returncode is not None:
+            self._end_time = self._end_time or time.time()
+            RunningProcessManagerSingleton.unregister(self)
+            unregister_process(self.pid)
+            self._exit_status = classify_exit_status(
+                result.returncode, self.KEYBOARD_INTERRUPT_EXIT_CODES
+            )
+        return result
+
+    def wait_for_expect(
+        self,
+        next_expect: Expect | None = None,
+        *,
+        echo: bool = False,
+        timeout: float | None = None,
+        raise_on_abnormal_exit: bool = False,
+    ) -> WaitForResult:
+        _validate_echo_flag(echo)
+        if self._pty_process is None:
+            raise NotImplementedError(
+                "wait_for_expect currently only supports PTY-backed processes"
+            )
+        result = self._pty_process.wait_for_expect(
+            next_expect,
+            timeout=timeout if timeout is not None else self.timeout,
+            raise_on_abnormal_exit=raise_on_abnormal_exit,
+            echo_output=echo,
+        )
+        if echo:
+            for line in self.drain_stdout():
+                _safe_console_write(sys.stdout, line)
+        if result.returncode is not None:
+            self._end_time = self._end_time or time.time()
+            RunningProcessManagerSingleton.unregister(self)
+            unregister_process(self.pid)
+            self._exit_status = classify_exit_status(
+                result.returncode, self.KEYBOARD_INTERRUPT_EXIT_CODES
+            )
+        return result
+
+    def checkpoint(self) -> WaitCheckpoint:
+        if self._pty_process is None:
+            raise NotImplementedError("checkpoint currently only supports PTY-backed processes")
+        return self._pty_process.checkpoint()
+
+    def wait_for(
+        self,
+        *conditions: WaitCondition
+        | Callable[..., object]
+        | list[WaitCondition | Callable[..., object]]
+        | tuple[WaitCondition | Callable[..., object], ...],
+        echo: bool = False,
+        timeout: float | None = None,
+        raise_on_abnormal_exit: bool = False,
+    ) -> WaitForResult:
+        _validate_echo_flag(echo)
+        if self._pty_process is None:
+            raise NotImplementedError("wait_for currently only supports PTY-backed processes")
+
+        result = self._pty_process.wait_for(
+            *conditions,
+            timeout=timeout if timeout is not None else self.timeout,
+            raise_on_abnormal_exit=raise_on_abnormal_exit,
+            echo_output=echo,
+        )
+        if echo:
+            for line in self.drain_stdout():
+                _safe_console_write(sys.stdout, line)
+        if result.returncode is not None:
+            self._end_time = self._end_time or time.time()
+            RunningProcessManagerSingleton.unregister(self)
+            unregister_process(self.pid)
+            self._exit_status = classify_exit_status(
+                result.returncode, self.KEYBOARD_INTERRUPT_EXIT_CODES
+            )
+        return result
 
     def kill(self) -> None:
         if self._pty_process is not None:
@@ -485,7 +596,7 @@ class RunningProcess:
             self.proc.kill()
         self._end_time = self._end_time or time.time()
         RunningProcessManagerSingleton.unregister(self)
-        self._finalize_formatter()
+        unregister_process(self.pid)
 
     def terminate(self) -> None:
         if self._pty_process is not None:
@@ -494,27 +605,13 @@ class RunningProcess:
             self.proc.terminate()
         self._end_time = self._end_time or time.time()
         RunningProcessManagerSingleton.unregister(self)
-        self._finalize_formatter()
+        unregister_process(self.pid)
 
     def send_interrupt(self) -> None:
         if self._pty_process is not None:
             self._pty_process.send_interrupt()
             return
-        pid = self.pid
-        if pid is None:
-            raise RuntimeError("Process is not running.")
-        if sys.platform == "win32":
-            create_new_process_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            has_process_group = bool(create_new_process_group) and bool(
-                (self.creationflags or 0) & create_new_process_group
-            )
-            if not has_process_group:
-                raise RuntimeError(
-                    "send_interrupt on Windows requires CREATE_NEW_PROCESS_GROUP"
-                )
-            os.kill(pid, signal.CTRL_BREAK_EVENT)
-            return
-        os.kill(pid, signal.SIGINT)
+        self.proc.send_interrupt()
 
     @property
     def pid(self) -> int | None:
@@ -523,6 +620,22 @@ class RunningProcess:
     @property
     def returncode(self) -> int | None:
         return self._pty_process.poll() if self._pty_process is not None else self.proc.returncode
+
+    def close(self) -> None:
+        try:
+            code = self.poll()
+        except Exception:
+            code = None
+        if code is not None:
+            RunningProcessManagerSingleton.unregister(self)
+            unregister_process(self.pid)
+            return
+        with suppress(Exception):
+            self.kill()
+
+    def __del__(self) -> None:
+        with suppress(Exception):
+            self.close()
 
     @property
     def exit_status(self) -> ExitStatus | None:
@@ -585,6 +698,26 @@ class RunningProcess:
             lines = [line for _stream, line in self.proc.captured_combined()]
         return "\n".join(lines) if self.text else b"\n".join(lines)
 
+    def discard_captured_output(self, stream: str = "combined") -> int:
+        stream = _validate_expect_stream(stream)
+        if self._pty_process is not None:
+            if stream == "stderr":
+                return 0
+            return self._pty_process.discard_output()
+        if stream == "combined":
+            return int(self.proc.clear_captured_combined())
+        return int(self.proc.clear_captured_stream(stream))
+
+    def captured_output_bytes(self, stream: str = "combined") -> int:
+        stream = _validate_expect_stream(stream)
+        if self._pty_process is not None:
+            if stream == "stderr":
+                return 0
+            return self._pty_process.output_bytes
+        if stream == "combined":
+            return int(self.proc.captured_combined_bytes())
+        return int(self.proc.captured_stream_bytes(stream))
+
     def line_iter(self, timeout: float | None) -> _RunningProcessLineIterator:
         return _RunningProcessLineIterator(self, timeout)
 
@@ -611,40 +744,26 @@ class RunningProcess:
             match = self._pty_process.expect(pattern, timeout=timeout, action=action)
             return match
         stream = _validate_expect_stream(stream)
-        deadline = time.time() + timeout if timeout is not None else None
-        buffer = ensure_text(self._captured_stream_value(stream), self.encoding, self.errors)
+        native_pattern, is_regex = _expect_pattern_spec(pattern)
+        status, buffer, matched, start, end, groups = self.proc.expect(
+            stream,
+            native_pattern,
+            is_regex=is_regex,
+            timeout=timeout,
+        )
+        if status == "timeout":
+            raise TimeoutError(f"Pattern not found before timeout: {pattern!r}")
+        if status == "eof" or matched is None or start is None or end is None:
+            raise EOFError(f"Pattern not found before stream closed: {pattern!r}")
 
-        while True:
-            match = search_expect_pattern(buffer, pattern)
-            if match is not None:
-                apply_expect_action(self, action, match)
-                return match
-
-            wait_timeout = 0.1
-            if deadline is not None:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    raise TimeoutError(f"Pattern not found before timeout: {pattern!r}")
-                wait_timeout = min(wait_timeout, remaining)
-
-            if stream == "stdout":
-                try:
-                    item = self.get_next_stdout_line(timeout=wait_timeout)
-                except TimeoutError:
-                    continue
-            elif stream == "stderr":
-                try:
-                    item = self.get_next_stderr_line(timeout=wait_timeout)
-                except TimeoutError:
-                    continue
-            else:
-                try:
-                    item = self.get_next_line(timeout=wait_timeout)
-                except TimeoutError:
-                    continue
-            if isinstance(item, EndOfStream):
-                raise EOFError(f"Pattern not found before stream closed: {pattern!r}")
-            buffer = f"{buffer}{ensure_text(item, self.encoding, self.errors)}\n"
+        match = ExpectMatch(
+            buffer=buffer,
+            matched=matched,
+            span=(start, end),
+            groups=tuple(groups),
+        )
+        apply_expect_action(self, action, match)
+        return match
 
     @staticmethod
     def run(
@@ -670,15 +789,15 @@ class RunningProcess:
         raise_on_abnormal_exit: bool = False,
         nice: int | CpuPriority | None = None,
         **_other_popen_kwargs: Any,
-    ) -> subprocess.CompletedProcess[Any]:
+    ) -> CompletedProcess[Any]:
         if input is not None and stdin is not None:
             raise ValueError("stdin and input arguments may not both be used.")
 
         if executable is not None:
             raise NotImplementedError("RunningProcess.run does not support executable= yet")
-        if stdout not in (None, subprocess.PIPE):
+        if stdout not in (None, PIPE):
             raise NotImplementedError("RunningProcess.run only supports stdout=None or PIPE")
-        if stderr not in (None, subprocess.PIPE):
+        if stderr not in (None, PIPE):
             raise NotImplementedError("RunningProcess.run only supports stderr=None or PIPE")
         if bufsize is not _BUFSIZE_NOT_SET and bufsize != 1:
             raise NotImplementedError(
@@ -690,13 +809,13 @@ class RunningProcess:
                 f"RunningProcess.run does not support extra Popen kwargs: {unsupported}"
             )
         should_text = text or universal_newlines or encoding is not None or errors is not None
-        effective_stdin = subprocess.PIPE if input is not None and stdin is None else stdin
+        effective_stdin = PIPE if input is not None and stdin is None else stdin
         proc = RunningProcess(
             args,
             cwd=Path(cwd) if cwd is not None else None,
             shell=shell,
             timeout=int(timeout) if timeout is not None else None,
-            capture=capture_output or stdout is subprocess.PIPE or stderr is subprocess.PIPE,
+            capture=capture_output or stdout is PIPE or stderr is PIPE,
             env=env,
             stdin=effective_stdin,
             text=should_text,
@@ -716,25 +835,25 @@ class RunningProcess:
         try:
             returncode = proc.wait(timeout=timeout, raise_on_abnormal_exit=raise_on_abnormal_exit)
         except TimeoutError as exc:
-            raise subprocess.TimeoutExpired(args, timeout) from exc
+            raise TimeoutExpired(args, timeout) from exc
 
-        merged_output = capture_output or stdout is subprocess.PIPE
+        merged_output = capture_output or stdout is PIPE
         stdout_value: Any
         stderr_value: Any
         if merged_output:
             stdout_value = proc.combined_output if stderr is None else proc.stdout
         else:
             stdout_value = None
-        stderr_value = proc.stderr if stderr is subprocess.PIPE else None
+        stderr_value = proc.stderr if stderr is PIPE else None
 
-        result: subprocess.CompletedProcess[Any] = subprocess.CompletedProcess(
+        result: CompletedProcess[Any] = make_completed_process(
             args=args,
             returncode=returncode,
             stdout=stdout_value,
             stderr=stderr_value,
         )
         if check and result.returncode != 0:
-            raise subprocess.CalledProcessError(
+            raise CalledProcessError(
                 result.returncode,
                 args,
                 output=result.stdout,
@@ -753,7 +872,7 @@ class RunningProcess:
         text: bool = True,
         env: dict[str, str] | None = None,
         nice: int | CpuPriority | None = None,
-    ) -> subprocess.CompletedProcess[Any]:
+    ) -> CompletedProcess[Any]:
         script_path = Path(script)
         command = [*_parse_shebang_command(script_path), str(script_path), *script_args]
         return RunningProcess.run(
@@ -781,12 +900,19 @@ class RunningProcess:
         cols: int = 80,
         nice: int | CpuPriority | None = None,
         restore_terminal: bool = True,
-        restore_callback: Callable[[], None] | None = None,
-        cleanup_callback: Callable[[str], None] | None = None,
         auto_run: bool = True,
-        expect: list[ExpectRule] | None = None,
+        expect: list[ExpectRule | Expect] | None = None,
         expect_timeout: float | None = None,
+        idle_detector: IdleDetector | None = None,
     ) -> PseudoTerminalProcess:
+        registered_expect: list[Expect] = []
+        bootstrap_expect: list[ExpectRule] = []
+        if expect is not None:
+            for rule in expect:
+                if isinstance(rule, Expect):
+                    registered_expect.append(rule)
+                else:
+                    bootstrap_expect.append(rule)
         process = PseudoTerminalProcess(
             command,
             cwd=cwd,
@@ -799,12 +925,12 @@ class RunningProcess:
             cols=cols,
             nice=nice,
             restore_terminal=restore_terminal,
-            restore_callback=restore_callback,
-            cleanup_callback=cleanup_callback,
+            expect=registered_expect or None,
+            idle_detector=idle_detector,
             auto_run=auto_run,
         )
-        if expect is not None:
-            for rule in expect:
+        if bootstrap_expect:
+            for rule in bootstrap_expect:
                 process.expect(rule.pattern, timeout=expect_timeout, action=rule.action)
         return process
 
@@ -829,8 +955,6 @@ class RunningProcess:
         cols: int = 80,
         nice: int | CpuPriority | None = None,
         restore_terminal: bool | None = None,
-        restore_callback: Callable[[], None] | None = None,
-        cleanup_callback: Callable[[str], None] | None = None,
         auto_run: bool = True,
     ) -> InteractiveProcess | PseudoTerminalProcess:
         resolved_mode = InteractiveMode(mode)
@@ -847,8 +971,6 @@ class RunningProcess:
                 cols=cols,
                 nice=nice,
                 restore_terminal=True if restore_terminal is None else restore_terminal,
-                restore_callback=restore_callback,
-                cleanup_callback=cleanup_callback,
                 auto_run=auto_run,
             )
         return InteractiveProcess(
@@ -859,8 +981,6 @@ class RunningProcess:
             env=env,
             nice=nice,
             restore_terminal=restore_terminal,
-            restore_callback=restore_callback,
-            cleanup_callback=cleanup_callback,
             auto_run=auto_run,
         )
 
@@ -871,8 +991,6 @@ class RunningProcess:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         timeout: float | None = None,
-        stdout_callback: Callable[[str], None] | None = None,
-        stderr_callback: Callable[[str], None] | None = None,
         nice: int | CpuPriority | None = None,
         **_kwargs: Any,
     ) -> int:
@@ -884,13 +1002,11 @@ class RunningProcess:
             nice=nice,
             auto_run=True,
         )
-        stdout_callback = stdout_callback or print
-        stderr_callback = stderr_callback or print
         deadline = time.time() + timeout if timeout is not None else None
 
         while True:
             code = process.poll()
-            process._echo_streams(stdout_callback, stderr_callback)
+            process._echo_streams()
             if code is not None:
                 return code
             if deadline is not None and time.time() >= deadline:
@@ -905,7 +1021,7 @@ def subprocess_run(
     timeout: int,
     on_timeout: Callable[[ProcessInfo], None] | None = None,
     nice: int | CpuPriority | None = None,
-) -> subprocess.CompletedProcess[str]:
+) -> CompletedProcess[str]:
     try:
         return RunningProcess.run(
             command,
@@ -916,7 +1032,7 @@ def subprocess_run(
             on_timeout=on_timeout,
             nice=nice,
         )
-    except subprocess.TimeoutExpired as exc:
+    except TimeoutExpired as exc:
         raise RuntimeError(
             f"CRITICAL: Process timed out after {timeout} seconds: {command}"
         ) from exc
