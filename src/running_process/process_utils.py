@@ -28,5 +28,6 @@ def kill_process_tree(pid: int) -> None:
                 child.kill()
         with contextlib.suppress(psutil.NoSuchProcess):
             parent.kill()
+        psutil.wait_procs([*children, parent], timeout=3)
     except psutil.Error:
         return None
