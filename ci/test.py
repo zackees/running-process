@@ -15,7 +15,7 @@ def run(cmd: list[str]) -> int:
 
 def main() -> int:
     activate()
-    if run(["uv", "run", "maturin", "develop"]) != 0:
+    if run(["uv", "run", "maturin", "develop", "--uv", "--profile", "dev"]) != 0:
         return 1
     if run(["cargo", "test", "--workspace"]) != 0:
         return 1

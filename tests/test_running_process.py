@@ -252,9 +252,22 @@ def test_run_matches_subprocess_contract() -> None:
         check=True,
     )
     assert result.stdout is not None
-    assert result.stdout.strip() == "out"
-    assert result.stderr is not None
-    assert result.stderr.strip() == "err"
+    lines = result.stdout.strip().splitlines()
+    assert "out" in lines
+    assert "err" in lines
+    assert result.stderr is None
+
+
+def test_run_can_explicitly_request_split_stderr() -> None:
+    result = RunningProcess.run(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        capture_output=True,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == "out"
+    assert result.stderr == "err"
 
 
 def test_run_without_capture_returns_none_streams() -> None:
@@ -265,12 +278,18 @@ def test_run_without_capture_returns_none_streams() -> None:
 
 def test_run_capture_output_defaults_to_bytes() -> None:
     result = RunningProcess.run(
-        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'bad:\\xff')"],
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'bad:\\xff'); sys.stderr.buffer.write(b'err')",
+        ],
         capture_output=True,
         text=False,
     )
-    assert result.stdout == b"bad:\xff"
-    assert result.stderr == b""
+    assert result.stdout is not None
+    assert b"bad:\xff" in result.stdout
+    assert b"err" in result.stdout
+    assert result.stderr is None
 
 
 def test_run_capture_output_text_mode_replaces_invalid_utf8() -> None:
@@ -287,8 +306,11 @@ def test_run_capture_output_text_mode_replaces_invalid_utf8() -> None:
         capture_output=True,
         text=True,
     )
-    assert result.stdout == "bad:\ufffd"
-    assert result.stderr == "err:\ufffd"
+    assert result.stdout is not None
+    lines = result.stdout.splitlines()
+    assert "bad:\ufffd" in lines
+    assert "err:\ufffd" in lines
+    assert result.stderr is None
 
 
 def test_run_preserves_bare_carriage_return_in_text_mode() -> None:
@@ -328,9 +350,10 @@ def test_run_with_text_input_capture_output() -> None:
         check=True,
     )
     assert result.stdout is not None
-    assert result.stdout.strip() == "HELLO"
-    assert result.stderr is not None
-    assert result.stderr.strip() == "err:hello"
+    lines = result.stdout.strip().splitlines()
+    assert "HELLO" in lines
+    assert "err:hello" in lines
+    assert result.stderr is None
 
 
 def test_run_with_bytes_input_capture_output() -> None:
@@ -345,7 +368,7 @@ def test_run_with_bytes_input_capture_output() -> None:
         text=False,
     )
     assert result.stdout == b"cba"
-    assert result.stderr == b""
+    assert result.stderr is None
 
 
 def test_running_process_binary_mode_returns_bytes() -> None:
@@ -426,8 +449,11 @@ def test_run_filter_input_uses_native_path_for_text() -> None:
         text=True,
         timeout=5,
     )
-    assert result.stdout == "ABC"
-    assert result.stderr == "stderr:abc"
+    assert result.stdout is not None
+    lines = result.stdout.splitlines()
+    assert "ABC" in lines
+    assert "stderr:abc" in lines
+    assert result.stderr is None
 
 
 def test_run_filter_input_uses_native_path_for_bytes() -> None:
@@ -447,8 +473,10 @@ def test_run_filter_input_uses_native_path_for_bytes() -> None:
         text=False,
         timeout=5,
     )
-    assert result.stdout == b"cba"
-    assert result.stderr == b"ABC"
+    assert result.stdout is not None
+    assert b"cba" in result.stdout
+    assert b"ABC" in result.stdout
+    assert result.stderr is None
 
 
 def test_run_supports_detached_stdin_with_devnull() -> None:
@@ -468,8 +496,11 @@ def test_run_supports_detached_stdin_with_devnull() -> None:
         text=True,
         timeout=5,
     )
-    assert result.stdout == "stdin_closed"
-    assert result.stderr == "err-ok"
+    assert result.stdout is not None
+    lines = result.stdout.splitlines()
+    assert "stdin_closed" in lines
+    assert "err-ok" in lines
+    assert result.stderr is None
 
 
 def test_run_supports_shell_and_env() -> None:
@@ -492,9 +523,10 @@ def test_subprocess_run_capture_output() -> None:
         timeout=5,
     )
     assert result.stdout is not None
-    assert result.stdout.strip() == "out"
-    assert result.stderr is not None
-    assert result.stderr.strip() == "err"
+    lines = result.stdout.strip().splitlines()
+    assert "out" in lines
+    assert "err" in lines
+    assert result.stderr is None
 
 
 def test_subprocess_run_timeout_raises_runtime_error() -> None:

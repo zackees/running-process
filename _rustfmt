@@ -1,0 +1,7 @@
+#!/bin/bash
+# Trampoline: ensures the repo-local rustup toolchain is used for rustfmt.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export CARGO_HOME="$SCRIPT_DIR/.cargo"
+export RUSTUP_HOME="$SCRIPT_DIR/.rustup"
+export PATH="$CARGO_HOME/bin:$PATH"
+exec rustfmt "$@"

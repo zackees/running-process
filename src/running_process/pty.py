@@ -29,7 +29,10 @@ from running_process.expect import (
 from running_process.priority import CpuPriority, normalize_nice
 
 if sys.platform == "win32":
-    import winpty
+    try:
+        import winpty
+    except ImportError:
+        winpty = None
 else:
     import fcntl
     import pty as posix_pty
@@ -85,11 +88,7 @@ class Pty:
     @classmethod
     def is_available(cls) -> bool:
         if sys.platform == "win32":
-            try:
-                import winpty  # noqa: F401
-            except ImportError:
-                return False
-            return True
+            return winpty is not None
         return hasattr(os, "read")
 
 
@@ -156,6 +155,8 @@ class PseudoTerminalProcess:
             raise RuntimeError("Pseudo-terminal process already started")
 
         if sys.platform == "win32":
+            if winpty is None:
+                raise PtyNotAvailableError("winpty is not available on this platform")
             argv = _windows_pty_command(self.command, self.shell)
             self._proc = winpty.PtyProcess.spawn(
                 argv,
@@ -352,6 +353,10 @@ class PseudoTerminalProcess:
             if deadline is not None:
                 remaining = deadline - time.time()
                 if remaining <= 0:
+                    if self._closed or self.poll() is not None:
+                        raise EOFError(
+                            f"Pattern not found before stream closed: {pattern!r}"
+                        )
                     raise TimeoutError(f"Pattern not found before timeout: {pattern!r}")
                 wait_timeout = min(wait_timeout, remaining)
 
@@ -382,38 +387,20 @@ class PseudoTerminalProcess:
     ) -> InterruptResult:
         self.send_interrupt()
         if self._wait_until_exit(grace_timeout):
-            return InterruptResult(
-                self.exit_reason or "interrupt",
-                self.interrupt_count,
-                self.poll(),
-            )
+            return self._interrupt_result("interrupt")
         if second_interrupt:
             self.send_interrupt()
             if self._wait_until_exit(grace_timeout):
-                return InterruptResult(
-                    self.exit_reason or "interrupt", self.interrupt_count, self.poll()
-                )
+                return self._interrupt_result("interrupt")
         if terminate_timeout is not None:
             self.terminate()
             if self._wait_until_exit(terminate_timeout):
-                return InterruptResult(
-                    self.exit_reason or "terminate",
-                    self.interrupt_count,
-                    self.poll(),
-                )
+                return self._interrupt_result("terminate")
         if kill_timeout is not None:
             self.kill()
             if self._wait_until_exit(kill_timeout):
-                return InterruptResult(
-                    self.exit_reason or "kill",
-                    self.interrupt_count,
-                    self.poll(),
-                )
-        return InterruptResult(
-            self.exit_reason or "interrupt",
-            self.interrupt_count,
-            self.poll(),
-        )
+                return self._interrupt_result("kill")
+        return self._interrupt_result("interrupt")
 
     def wait_for_idle(
         self,
@@ -515,6 +502,20 @@ class PseudoTerminalProcess:
             if callable(self.restore_callback):
                 self.restore_callback()
 
+    def _interrupt_result(self, fallback_reason: str) -> InterruptResult:
+        code = self.poll()
+        if code is not None:
+            self._wait_for_reader()
+            self._finalize("exit")
+            code = self.poll()
+        reason = self.exit_reason or fallback_reason
+        self.exit_reason = reason
+        return InterruptResult(
+            reason,
+            self.interrupt_count,
+            code,
+        )
+
     def _wait_until_exit(self, timeout: float) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -523,7 +524,11 @@ class PseudoTerminalProcess:
                 self._finalize("exit")
                 return True
             time.sleep(0.01)
-        return self.poll() is not None
+        if self.poll() is not None:
+            self._wait_for_reader()
+            self._finalize("exit")
+            return True
+        return False
 
 
 class InteractiveProcess:

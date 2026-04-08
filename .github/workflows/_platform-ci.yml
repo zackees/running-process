@@ -23,18 +23,15 @@ jobs:
   test:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 30
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: running-process-${{ inputs.runs-on }}
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -43,30 +40,37 @@ jobs:
       - name: Sync
         run: uv sync --group dev
 
+      - name: Install Toolchain
+        run: uv run python ci/run_logged.py logs/install.log -- python install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: running-process-${{ inputs.runs-on }}
+
       - name: Rust Check
-        run: cargo check --workspace
+        run: uv run python ci/run_logged.py logs/rust-check.log -- cargo check --workspace
 
       - name: Install Extension
-        run: uv run maturin develop
+        run: uv run python ci/run_logged.py logs/maturin-develop.log -- uv run maturin develop
 
       - name: Rust Tests
-        run: cargo test --workspace
+        run: uv run python ci/run_logged.py logs/rust-test.log -- cargo test --workspace
 
       - name: Python Tests
-        run: uv run pytest -q
+        run: uv run python ci/run_logged.py logs/python-test.log -- uv run pytest -q
 
       - name: Live Tests
         env:
           RUNNING_PROCESS_LIVE_TESTS: "1"
-        run: uv run pytest -m live -q
+        run: uv run python ci/run_logged.py logs/live-test.log -- uv run pytest -m live -q
 
       - name: Build wheel
         if: ${{ inputs.build-dist }}
-        run: uv build --wheel
+        run: uv run python ci/run_logged.py logs/build-wheel.log -- uv build --wheel
 
       - name: Build sdist
         if: ${{ inputs.build-sdist }}
-        run: uv build --sdist
+        run: uv run python ci/run_logged.py logs/build-sdist.log -- uv build --sdist
 
       - name: Upload dist artifacts
         if: ${{ inputs.build-dist }}
@@ -75,3 +79,11 @@ jobs:
           name: ${{ inputs.artifact-name }}
           path: dist/*
           if-no-files-found: error
+
+      - name: Upload failure logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-${{ inputs.artifact-name || inputs.runs-on }}
+          path: logs/*
+          if-no-files-found: warn

@@ -12,3 +12,7 @@ __pycache__/
 .coverage
 
 *.pdb
+*.log
+logs/
+.cargo/
+.rustup/

@@ -4,13 +4,177 @@
 # ///
 from __future__ import annotations
 
+import os
+import platform
+import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+
+RUST_TOOLCHAIN = "1.85.1"
+RUSTUP_WIN_URL = "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe"
+RUSTUP_UNIX_URL = "https://sh.rustup.rs"
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_CARGO_HOME = os.path.join(ROOT, ".cargo")
+PROJECT_RUSTUP_HOME = os.path.join(ROOT, ".rustup")
+
+
+def local_cargo_exe(name: str) -> str:
+    suffix = ".exe" if os.name == "nt" else ""
+    return os.path.join(PROJECT_CARGO_HOME, "bin", name + suffix)
+
+
+def local_cargo_bootstrapped() -> bool:
+    return os.path.exists(local_cargo_exe("cargo"))
+
+
+def detect_platform() -> str:
+    system = platform.system()
+    if system == "Linux":
+        return "linux"
+    if system == "Darwin":
+        return "macos"
+    if system == "Windows":
+        return "windows"
+    try:
+        uname = subprocess.check_output(["uname", "-s"], text=True).strip()
+    except Exception:
+        uname = ""
+    if any(name in uname for name in ("MINGW", "MSYS", "CYGWIN", "_NT")):
+        return "windows"
+    raise RuntimeError(f"unsupported platform: {system}")
+
+
+def download(url: str, dest: str) -> None:
+    urllib.request.urlretrieve(url, dest)
+
+
+def native_path(path: str, plat: str) -> str:
+    if plat == "windows":
+        try:
+            return subprocess.check_output(["cygpath", "-w", path], text=True).strip()
+        except Exception:
+            return path
+    return path
+
+
+def make_tempfile(filename: str, plat: str) -> str:
+    if plat == "windows":
+        try:
+            temp_dir = subprocess.check_output(
+                ["cygpath", "-u", os.environ.get("TEMP", os.environ.get("USERPROFILE", "/tmp"))],
+                text=True,
+            ).strip()
+            return os.path.join(temp_dir, filename)
+        except Exception:
+            pass
+    return os.path.join(tempfile.gettempdir(), filename)
+
+
+def source_cargo_env() -> None:
+    os.environ["CARGO_HOME"] = PROJECT_CARGO_HOME
+    os.environ["RUSTUP_HOME"] = PROJECT_RUSTUP_HOME
+    for candidate in (
+        os.environ.get("CARGO_HOME", ""),
+        PROJECT_CARGO_HOME,
+        os.path.expanduser("~/.cargo"),
+        os.path.join(os.environ.get("USERPROFILE", ""), ".cargo"),
+    ):
+        if not candidate:
+            continue
+        bin_dir = os.path.join(candidate, "bin")
+        if os.path.isdir(bin_dir) and bin_dir not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+
+
+def current_rust_version() -> str | None:
+    source_cargo_env()
+    try:
+        out = subprocess.check_output(["rustc", "--version"], text=True).strip()
+    except Exception:
+        return None
+    parts = out.split()
+    if len(parts) < 2:
+        return None
+    return parts[1].split("-")[0]
+
+
+def install_rustup(plat: str) -> None:
+    env = os.environ.copy()
+    env["RUSTUP_INIT_SKIP_PATH_CHECK"] = "yes"
+    env["CARGO_HOME"] = env.get("CARGO_HOME", PROJECT_CARGO_HOME)
+    env["RUSTUP_HOME"] = env.get("RUSTUP_HOME", PROJECT_RUSTUP_HOME)
+    args = [
+        "-y",
+        "--default-toolchain",
+        RUST_TOOLCHAIN,
+        "--profile",
+        "default",
+        "-c",
+        "clippy",
+        "-c",
+        "rustfmt",
+    ]
+
+    if plat == "windows":
+        tmp = make_tempfile("rustup-init.exe", plat)
+        download(RUSTUP_WIN_URL, native_path(tmp, plat))
+        subprocess.run([tmp, *args], check=True, env=env)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return
+
+    tmp = make_tempfile("rustup-init.sh", plat)
+    download(RUSTUP_UNIX_URL, tmp)
+    os.chmod(tmp, 0o755)
+    subprocess.run([tmp, *args], check=True, env=env)
+    os.unlink(tmp)
+
+
+def ensure_rust_toolchain() -> int:
+    plat = detect_platform()
+
+    source_cargo_env()
+    if not local_cargo_bootstrapped():
+        install_rustup(plat)
+
+    current = current_rust_version()
+    if current == RUST_TOOLCHAIN:
+        return 0
+
+    if shutil.which("rustup"):
+        if subprocess.run(
+            [
+                "rustup",
+                "toolchain",
+                "install",
+                RUST_TOOLCHAIN,
+                "--profile",
+                "default",
+                "-c",
+                "clippy",
+                "-c",
+                "rustfmt",
+            ],
+            check=False,
+        ).returncode != 0:
+            return 1
+        return subprocess.run(["rustup", "default", RUST_TOOLCHAIN], check=False).returncode
+
+    install_rustup(plat)
+    return 0
 
 
 def main() -> int:
-    if subprocess.run(["uv", "sync"]).returncode != 0:
+    if subprocess.run(["uv", "sync", "--group", "dev"]).returncode != 0:
         return 1
+    if ensure_rust_toolchain() != 0:
+        return 1
+    source_cargo_env()
     return subprocess.run(["cargo", "check", "--workspace"]).returncode
 
 

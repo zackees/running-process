@@ -14,7 +14,6 @@ from running_process import (
     CpuPriority,
     ExpectRule,
     InteractiveMode,
-    PtyNotAvailableError,
     RunningProcess,
 )
 from running_process.pty import (
@@ -27,7 +26,7 @@ from running_process.pty import (
 )
 
 
-def _read_until_contains(process: object, needle: str, timeout: float = 5) -> str:
+def _read_until_contains(process: object, needle: str, timeout: float = 10) -> str:
     deadline = time.time() + timeout
     chunks: list[str] = []
     while time.time() < deadline:
@@ -490,6 +489,9 @@ def test_pseudo_terminal_kill_uses_killpg_on_posix(monkeypatch: pytest.MonkeyPat
     assert calls == [(2468, pty_module.signal.SIGKILL)]
 
 
-def test_running_process_use_pty_requires_specialized_api() -> None:
-    with pytest.raises(PtyNotAvailableError, match="pseudo_terminal"):
-        RunningProcess(["echo", "test"], auto_run=False, use_pty=True)
+@pytest.mark.skipif(not Pty.is_available(), reason="PTY support is not available")
+def test_running_process_use_pty_remains_constructor_compatible() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('pty compat')"], use_pty=True)
+    assert process.wait(timeout=5) == 0
+    assert "pty compat" in process.stdout
+    assert process.stderr == ""

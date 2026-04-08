@@ -225,7 +225,17 @@ PTY mode is intentionally more conservative:
 ./test
 ```
 
-`./test` runs the Rust tests, rebuilds the native extension, and runs the Python tests.
+`./install` bootstraps the repo-local Rust toolchain into `./.cargo` and `./.rustup`.
+
+`./test` runs the Rust tests, rebuilds the native extension with the unoptimized `dev` profile, and runs the Python tests.
+
+For direct Rust commands, prefer the repo-local trampolines:
+
+```bash
+./_cargo check --workspace
+./_cargo fmt --all --check
+./_cargo clippy --workspace --all-targets -- -D warnings
+```
 
 ## Notes
 

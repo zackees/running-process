@@ -43,6 +43,10 @@ def run_capture(cmd: list[str]) -> str:
     return result.stdout.strip()
 
 
+def run_capture_allow_failure(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
 def read_project_meta() -> tuple[str, str]:
     with open(ROOT / "pyproject.toml", "rb") as f:
         data = tomllib.load(f)
@@ -164,6 +168,7 @@ def trigger_and_wait(repo: str, workflow_file: str) -> int:
         state = json.loads(result)
         if state["status"] == "completed":
             if state.get("conclusion") != "success":
+                display_failure_logs(repo, run_id, workflow_file)
                 raise SystemExit(
                     f"remote build failed: {state.get('conclusion')} "
                     f"https://github.com/{repo}/actions/runs/{run_id}"
@@ -171,6 +176,43 @@ def trigger_and_wait(repo: str, workflow_file: str) -> int:
             log(f"  Build completed in {int(time.time() - started)}s")
             return run_id
         time.sleep(15)
+
+
+def display_failure_logs(repo: str, run_id: int, workflow_file: str) -> None:
+    logs_dir = DIST_DIR / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    artifact_download = run_capture_allow_failure(
+        [
+            "gh",
+            "run",
+            "download",
+            str(run_id),
+            "--repo",
+            repo,
+            "--pattern",
+            "failure-logs-*",
+            "--dir",
+            str(logs_dir),
+        ]
+    )
+    if artifact_download.returncode == 0:
+        log(f"  Downloaded failure log artifacts to {logs_dir}")
+        for path in sorted(logs_dir.rglob("*.log")):
+            log(f"\n  --- {workflow_file} :: {path.name} ---")
+            content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            preview = content[-60:]
+            for line in preview:
+                log(f"  | {line}")
+        return
+
+    result = run_capture_allow_failure(
+        ["gh", "run", "view", str(run_id), "--repo", repo, "--log-failed"]
+    )
+    if result.stdout:
+        log(f"\n  --- {workflow_file} failed log ---")
+        for line in result.stdout.splitlines()[-120:]:
+            log(f"  | {line}")
 
 
 def download_artifacts(repo: str, runs: dict[str, int]) -> list[Path]:

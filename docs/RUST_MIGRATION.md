@@ -28,6 +28,7 @@ The migration is focused on the process runtime and the split-stream API. PTY su
 
 ## Validation
 
-- `cargo test --workspace`
+- `./install`
+- `./_cargo test --workspace`
 - `uv run python -m ci.lint`
 - `uv run python -m ci.test`
