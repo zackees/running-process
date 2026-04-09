@@ -527,6 +527,7 @@ struct NativePtyProcess {
     env: Option<Vec<(String, String)>>,
     rows: u16,
     cols: u16,
+    #[cfg(windows)]
     nice: Option<i32>,
     handles: Mutex<Option<NativePtyHandles>>,
     reader: Arc<PtyReadShared>,
@@ -629,6 +630,7 @@ struct NativeRunningProcess {
     text: bool,
     encoding: Option<String>,
     errors: Option<String>,
+    #[cfg(windows)]
     creationflags: Option<u32>,
     #[cfg(unix)]
     create_process_group: bool,
@@ -719,6 +721,7 @@ impl NativeRunningProcess {
             text,
             encoding,
             errors,
+            #[cfg(windows)]
             creationflags,
             #[cfg(unix)]
             create_process_group,
@@ -1047,6 +1050,7 @@ impl NativePtyProcess {
             env: env_pairs,
             rows,
             cols,
+            #[cfg(windows)]
             nice,
             handles: Mutex::new(None),
             reader: Arc::new(PtyReadShared {

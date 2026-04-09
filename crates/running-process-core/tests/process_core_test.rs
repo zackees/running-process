@@ -1,10 +1,17 @@
-use std::env;
-use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::thread;
 use std::time::Duration;
+
+#[cfg(windows)]
+use std::env;
+#[cfg(windows)]
+use std::fs;
+#[cfg(windows)]
+use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
+use std::path::PathBuf;
+#[cfg(windows)]
+use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::thread;
 
 use running_process_core::{
     CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StdinMode, StreamKind,
