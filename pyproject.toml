@@ -13,6 +13,11 @@ license-files = ["LICENSE"]
 authors = [{ name = "Your Name", email = "your.email@example.com" }]
 dependencies = ["psutil>=5.9.0"]
 
+[project.urls]
+Homepage = "https://github.com/zackees/running-process"
+Repository = "https://github.com/zackees/running-process"
+Issues = "https://github.com/zackees/running-process/issues"
+
 [dependency-groups]
 dev = ["maturin>=1.7,<2", "pytest>=8.0.0", "ruff>=0.8.0"]
 
