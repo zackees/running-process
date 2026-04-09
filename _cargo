@@ -1,7 +1,16 @@
 #!/bin/bash
-# Trampoline: ensures the repo-local rustup toolchain is used for cargo.
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-export CARGO_HOME="$SCRIPT_DIR/.cargo"
-export RUSTUP_HOME="$SCRIPT_DIR/.rustup"
-export PATH="$CARGO_HOME/bin:$PATH"
+# Trampoline: prefers the shared rustup proxy in ~/.cargo/bin when present.
+if [ -n "${CARGO_HOME:-}" ]; then
+  CARGO_BIN="$CARGO_HOME/bin"
+elif [ -n "${HOME:-}" ]; then
+  CARGO_BIN="$HOME/.cargo/bin"
+elif [ -n "${USERPROFILE:-}" ]; then
+  CARGO_BIN="$USERPROFILE/.cargo/bin"
+else
+  CARGO_BIN=""
+fi
+
+if [ -n "$CARGO_BIN" ] && [ -d "$CARGO_BIN" ]; then
+  export PATH="$CARGO_BIN:$PATH"
+fi
 exec cargo "$@"

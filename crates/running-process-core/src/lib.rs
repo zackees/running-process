@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
+use std::fs::OpenOptions;
 use std::io::Read;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -7,6 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
+
+const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_PATH";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamKind {
@@ -63,6 +67,14 @@ pub enum StdinMode {
     Null,
 }
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnixSignal {
+    Interrupt,
+    Terminate,
+    Kill,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProcessConfig {
     pub command: CommandSpec,
@@ -70,6 +82,7 @@ pub struct ProcessConfig {
     pub env: Option<Vec<(String, String)>>,
     pub capture: bool,
     pub creationflags: Option<u32>,
+    pub create_process_group: bool,
     pub stdin_mode: StdinMode,
     pub nice: Option<i32>,
 }
@@ -79,9 +92,12 @@ struct QueueState {
     stdout_queue: VecDeque<Vec<u8>>,
     stderr_queue: VecDeque<Vec<u8>>,
     combined_queue: VecDeque<StreamEvent>,
-    stdout_history: Vec<Vec<u8>>,
-    stderr_history: Vec<Vec<u8>>,
-    combined_history: Vec<StreamEvent>,
+    stdout_history: VecDeque<Vec<u8>>,
+    stderr_history: VecDeque<Vec<u8>>,
+    combined_history: VecDeque<StreamEvent>,
+    stdout_history_bytes: usize,
+    stderr_history_bytes: usize,
+    combined_history_bytes: usize,
     stdout_closed: bool,
     stderr_closed: bool,
 }
@@ -90,6 +106,24 @@ struct SharedState {
     queues: Mutex<QueueState>,
     condvar: Condvar,
     returncode: Mutex<Option<i32>>,
+}
+
+#[cfg(windows)]
+struct WindowsJobHandle(usize);
+
+#[cfg(windows)]
+impl Drop for WindowsJobHandle {
+    fn drop(&mut self) {
+        unsafe {
+            winapi::um::handleapi::CloseHandle(self.0 as winapi::shared::ntdef::HANDLE);
+        }
+    }
+}
+
+struct ChildState {
+    child: Child,
+    #[cfg(windows)]
+    _job: WindowsJobHandle,
 }
 
 impl SharedState {
@@ -109,7 +143,7 @@ impl SharedState {
 
 pub struct NativeProcess {
     config: ProcessConfig,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<ChildState>>,
     shared: Arc<SharedState>,
 }
 
@@ -144,19 +178,26 @@ impl NativeProcess {
         }
 
         let mut child = command.spawn().map_err(ProcessError::Spawn)?;
+        log_spawned_child_pid(child.id()).map_err(ProcessError::Spawn)?;
+        #[cfg(windows)]
+        let job = assign_child_to_windows_kill_on_close_job(&child).map_err(ProcessError::Spawn)?;
         if self.config.capture {
             let stdout = child.stdout.take().expect("stdout pipe missing");
             let stderr = child.stderr.take().expect("stderr pipe missing");
             self.spawn_reader(stdout, StreamKind::Stdout);
             self.spawn_reader(stderr, StreamKind::Stderr);
         }
-        *guard = Some(child);
+        *guard = Some(ChildState {
+            child,
+            #[cfg(windows)]
+            _job: job,
+        });
         Ok(())
     }
 
     pub fn write_stdin(&self, data: &[u8]) -> Result<(), ProcessError> {
         let mut guard = self.child.lock().expect("child mutex poisoned");
-        let child = guard.as_mut().ok_or(ProcessError::NotRunning)?;
+        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
         let stdin = child.stdin.as_mut().ok_or(ProcessError::StdinUnavailable)?;
         use std::io::Write;
         stdin.write_all(data).map_err(ProcessError::Io)?;
@@ -167,7 +208,7 @@ impl NativeProcess {
 
     pub fn poll(&self) -> Result<Option<i32>, ProcessError> {
         let mut guard = self.child.lock().expect("child mutex poisoned");
-        let child = guard.as_mut().ok_or(ProcessError::NotRunning)?;
+        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
         let status = child.try_wait().map_err(ProcessError::Io)?;
         if let Some(status) = status {
             let code = exit_code(status);
@@ -193,7 +234,7 @@ impl NativeProcess {
 
     pub fn kill(&self) -> Result<(), ProcessError> {
         let mut guard = self.child.lock().expect("child mutex poisoned");
-        let child = guard.as_mut().ok_or(ProcessError::NotRunning)?;
+        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
         child.kill().map_err(ProcessError::Io)?;
         let status = child.wait().map_err(ProcessError::Io)?;
         self.set_returncode(exit_code(status));
@@ -209,7 +250,7 @@ impl NativeProcess {
             .lock()
             .expect("child mutex poisoned")
             .as_ref()
-            .map(Child::id)
+            .map(|state| state.child.id())
     }
 
     pub fn returncode(&self) -> Option<i32> {
@@ -347,6 +388,8 @@ impl NativeProcess {
             .expect("queue mutex poisoned")
             .stdout_history
             .clone()
+            .into_iter()
+            .collect()
     }
 
     pub fn captured_stderr(&self) -> Vec<Vec<u8>> {
@@ -356,6 +399,8 @@ impl NativeProcess {
             .expect("queue mutex poisoned")
             .stderr_history
             .clone()
+            .into_iter()
+            .collect()
     }
 
     pub fn captured_combined(&self) -> Vec<StreamEvent> {
@@ -365,6 +410,50 @@ impl NativeProcess {
             .expect("queue mutex poisoned")
             .combined_history
             .clone()
+            .into_iter()
+            .collect()
+    }
+
+    pub fn captured_stream_bytes(&self, stream: StreamKind) -> usize {
+        let guard = self.shared.queues.lock().expect("queue mutex poisoned");
+        match stream {
+            StreamKind::Stdout => guard.stdout_history_bytes,
+            StreamKind::Stderr => guard.stderr_history_bytes,
+        }
+    }
+
+    pub fn captured_combined_bytes(&self) -> usize {
+        self.shared
+            .queues
+            .lock()
+            .expect("queue mutex poisoned")
+            .combined_history_bytes
+    }
+
+    pub fn clear_captured_stream(&self, stream: StreamKind) -> usize {
+        let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
+        match stream {
+            StreamKind::Stdout => {
+                let released = guard.stdout_history_bytes;
+                guard.stdout_history.clear();
+                guard.stdout_history_bytes = 0;
+                released
+            }
+            StreamKind::Stderr => {
+                let released = guard.stderr_history_bytes;
+                guard.stderr_history.clear();
+                guard.stderr_history_bytes = 0;
+                released
+            }
+        }
+    }
+
+    pub fn clear_captured_combined(&self) -> usize {
+        let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
+        let released = guard.combined_history_bytes;
+        guard.combined_history.clear();
+        guard.combined_history_bytes = 0;
+        released
     }
 
     fn build_command(&self) -> Command {
@@ -396,14 +485,21 @@ impl NativeProcess {
             }
         }
         #[cfg(unix)]
-        if let Some(nice) = self.config.nice {
+        if self.config.create_process_group || self.config.nice.is_some() {
             use std::os::unix::process::CommandExt;
+            let create_process_group = self.config.create_process_group;
+            let nice = self.config.nice;
 
             unsafe {
                 command.pre_exec(move || {
-                    let result = libc::setpriority(libc::PRIO_PROCESS, 0, nice);
-                    if result == -1 {
+                    if create_process_group && libc::setpgid(0, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
+                    }
+                    if let Some(nice) = nice {
+                        let result = libc::setpriority(libc::PRIO_PROCESS, 0, nice);
+                        if result == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
                     }
                     Ok(())
                 });
@@ -469,6 +565,93 @@ impl NativeProcess {
     }
 }
 
+#[cfg(unix)]
+pub fn unix_set_priority(pid: u32, nice: i32) -> Result<(), std::io::Error> {
+    let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid, nice) };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn unix_signal_process(pid: u32, signal: UnixSignal) -> Result<(), std::io::Error> {
+    let result = unsafe { libc::kill(pid as i32, unix_signal_raw(signal)) };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn unix_signal_process_group(pid: i32, signal: UnixSignal) -> Result<(), std::io::Error> {
+    let result = unsafe { libc::killpg(pid, unix_signal_raw(signal)) };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
+    let Some(path) = std::env::var_os(CHILD_PID_LOG_PATH_ENV) else {
+        return Ok(());
+    };
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(format!("{pid}\n").as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn assign_child_to_windows_kill_on_close_job(
+    child: &Child,
+) -> Result<WindowsJobHandle, std::io::Error> {
+    use std::mem::zeroed;
+    use std::os::windows::io::AsRawHandle;
+
+    use winapi::shared::minwindef::FALSE;
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::jobapi2::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+    };
+    use winapi::um::winnt::{
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    let handle = child.as_raw_handle();
+    let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+    if job.is_null() || job == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let ok = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            (&mut info as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if ok == FALSE {
+        let err = std::io::Error::last_os_error();
+        unsafe { CloseHandle(job) };
+        return Err(err);
+    }
+
+    let ok = unsafe { AssignProcessToJobObject(job, handle.cast()) };
+    if ok == FALSE {
+        let err = std::io::Error::last_os_error();
+        unsafe { CloseHandle(job) };
+        return Err(err);
+    }
+
+    Ok(WindowsJobHandle(job as usize))
+}
+
 fn feed_chunk(shared: &Arc<SharedState>, stream: StreamKind, pending: &mut Vec<u8>, chunk: &[u8]) {
     let mut start = 0;
     let mut index = 0;
@@ -497,15 +680,18 @@ fn emit_line(shared: &Arc<SharedState>, stream: StreamKind, line: Vec<u8>) {
     let mut guard = shared.queues.lock().expect("queue mutex poisoned");
     match event.stream {
         StreamKind::Stdout => {
-            guard.stdout_history.push(event.line.clone());
+            guard.stdout_history_bytes += event.line.len();
+            guard.stdout_history.push_back(event.line.clone());
             guard.stdout_queue.push_back(event.line.clone());
         }
         StreamKind::Stderr => {
-            guard.stderr_history.push(event.line.clone());
+            guard.stderr_history_bytes += event.line.len();
+            guard.stderr_history.push_back(event.line.clone());
             guard.stderr_queue.push_back(event.line.clone());
         }
     }
-    guard.combined_history.push(event.clone());
+    guard.combined_history_bytes += event.line.len();
+    guard.combined_history.push_back(event.clone());
     guard.combined_queue.push_back(event);
     shared.condvar.notify_all();
 }
@@ -540,6 +726,15 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
     #[cfg(not(unix))]
     {
         status.code().unwrap_or(1)
+    }
+}
+
+#[cfg(unix)]
+fn unix_signal_raw(signal: UnixSignal) -> i32 {
+    match signal {
+        UnixSignal::Interrupt => libc::SIGINT,
+        UnixSignal::Terminate => libc::SIGTERM,
+        UnixSignal::Kill => libc::SIGKILL,
     }
 }
 

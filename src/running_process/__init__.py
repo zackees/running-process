@@ -2,19 +2,44 @@ from __future__ import annotations
 
 __version__ = "3.0.0"
 
+from running_process.compat import (
+    CREATE_NEW_PROCESS_GROUP,
+    DEVNULL,
+    PIPE,
+    CalledProcessError,
+    CompletedProcess,
+    TimeoutExpired,
+)
 from running_process.exit_status import ExitStatus, ProcessAbnormalExit
 from running_process.expect import ExpectMatch, ExpectRule
 from running_process.output_formatter import OutputFormatter, TimeDeltaFormatter
 from running_process.priority import CpuPriority
 from running_process.process_utils import get_process_tree_info, kill_process_tree
 from running_process.pty import (
+    Callback,
+    Expect,
+    Idle,
+    IdleContext,
+    IdleDecision,
+    IdleDetection,
+    IdleDetector,
+    IdleDiff,
+    IdleInfoDiff,
+    IdleTiming,
     IdleWaitResult,
     InteractiveLaunchSpec,
     InteractiveMode,
     InteractiveProcess,
     InterruptResult,
+    ProcessIdleDetection,
     PseudoTerminalProcess,
+    PtyIdleDetection,
     PtyNotAvailableError,
+    SignalBool,
+    WaitCallbackResult,
+    WaitCheckpoint,
+    WaitForResult,
+    WaitInputBuffer,
 )
 from running_process.running_process import (
     EndOfStream,
@@ -28,11 +53,26 @@ from running_process.running_process_manager import (
 )
 
 __all__ = [
+    "CREATE_NEW_PROCESS_GROUP",
+    "DEVNULL",
+    "PIPE",
+    "Callback",
+    "CalledProcessError",
+    "CompletedProcess",
     "CpuPriority",
     "EndOfStream",
     "ExitStatus",
+    "Expect",
     "ExpectMatch",
     "ExpectRule",
+    "Idle",
+    "IdleContext",
+    "IdleDecision",
+    "IdleDetection",
+    "IdleDetector",
+    "IdleDiff",
+    "IdleInfoDiff",
+    "IdleTiming",
     "IdleWaitResult",
     "InteractiveLaunchSpec",
     "InteractiveMode",
@@ -40,13 +80,21 @@ __all__ = [
     "InterruptResult",
     "OutputFormatter",
     "ProcessAbnormalExit",
+    "ProcessIdleDetection",
     "ProcessInfo",
     "PseudoTerminalProcess",
+    "PtyIdleDetection",
     "PtyNotAvailableError",
     "RunningProcess",
     "RunningProcessManager",
     "RunningProcessManagerSingleton",
+    "SignalBool",
     "TimeDeltaFormatter",
+    "TimeoutExpired",
+    "WaitCallbackResult",
+    "WaitCheckpoint",
+    "WaitForResult",
+    "WaitInputBuffer",
     "get_process_tree_info",
     "kill_process_tree",
     "subprocess_run",

@@ -35,6 +35,18 @@ uv run pyright src tests  # Type checking
 . ./activate.sh          # Activate development environment (requires git-bash on Windows)
 ```
 
+## Windows Native Build Rules
+
+**Do not treat this repo like a generic Rust build on Windows**:
+- The canonical local rebuild path is `uv run build.py`
+- `uv run build.py` defaults to building a dev wheel and reinstalling it into the repo venv
+- `uv run build.py --dev` and `uv run build.py --quick` are the same mode
+- Use `uv run build.py --release` when you need publish-grade wheels in `dist/`
+- Prefer the repo entrypoints (`./install`, `./test`, and the root trampolines like `./_cargo`) over ad hoc cargo commands
+- When a native dependency needs a C compiler, run the command from a Visual Studio developer shell or through `VsDevCmd.bat`
+- Force the build target to `x86_64-pc-windows-msvc` when the environment is ambiguous; otherwise crates such as `libsqlite3-sys` may incorrectly try the GNU toolchain and fail looking for `gcc.exe`
+- If a rebuild behaves like a GNU build on Windows, check the active shell environment before changing Rust code
+
 ## Import Resolution Guidelines
 
 **Use fully qualified absolute imports for all module resolution**:

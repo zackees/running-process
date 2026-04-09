@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec uv run python -m ci.test "$@"
+exec uv run --no-project python -m ci.test "$@"

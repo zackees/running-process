@@ -11,6 +11,18 @@
 
 The pipe-backed API keeps `stdout` and `stderr` separate, preserves raw bytes until decode time, and defaults to UTF-8 with `errors="replace"` when you ask for text. The PTY API is separate because terminal sessions are chunk-oriented and should not be forced through line normalization.
 
+## PTY Support Matrix
+
+PTY support is a guaranteed part of the package contract on:
+
+- Windows
+- Linux
+- macOS
+
+On those platforms, `RunningProcess.pseudo_terminal(...)`, `wait_for_expect(...)`, and `wait_for_idle(...)` are core functionality rather than optional extras.
+
+`Pty.is_available()` remains as a compatibility shim and only reports `False` on unsupported platforms.
+
 ## Pipe-backed API
 
 ```python
@@ -105,7 +117,6 @@ Supported `action=` forms:
 - `"interrupt"`: send Ctrl-C style interrupt when supported
 - `"terminate"`
 - `"kill"`
-- `callable(match, process)`
 
 Pipe-backed `expect(...)` matches line-delimited output. If the child writes prompts without trailing newlines, use the PTY API instead.
 
@@ -131,14 +142,19 @@ PTY behavior:
 - accepts `str` and `list[str]` commands
 - auto-splits simple string commands into argv when shell syntax is not present
 - uses shell mode automatically when shell metacharacters are present
+- is guaranteed on supported Windows, Linux, and macOS builds
 - keeps output chunk-buffered by default
 - preserves `\r` for redraw-style terminal output
 - supports `write(...)`, `read(...)`, `drain()`, `available()`, `expect(...)`, `resize(...)`, and `send_interrupt()`
 - supports `nice=...` at launch
-- supports `restore_callback=` and `cleanup_callback=` so terminal restoration and cleanup paths are explicit and testable
 - supports `interrupt_and_wait(...)` for staged interrupt escalation
 - supports `wait_for_idle(...)` with activity filtering
 - exposes `exit_reason`, `interrupt_count`, `interrupted_by_caller`, and `exit_status`
+
+`wait_for_idle(...)` has two modes:
+
+- default fast path: built-in PTY activity rules and optional process metrics
+- slow path: `IdleDetection(idle_reached=...)`, where your Python callback receives an `IdleInfoDiff` delta and returns `IdleDecision.DEFAULT`, `IdleDecision.ACTIVE`, `IdleDecision.BEGIN_IDLE`, or `IdleDecision.IS_IDLE`
 
 There is also a compatibility alias: `RunningProcess.psuedo_terminal(...)`.
 
@@ -225,13 +241,13 @@ PTY mode is intentionally more conservative:
 ./test
 ```
 
-`./install` bootstraps the repo-local Rust toolchain into `./.cargo` and `./.rustup`.
+`./install` bootstraps `rustup` into the shared user locations (`~/.cargo` and `~/.rustup`, or `CARGO_HOME` / `RUSTUP_HOME` if you override them), then installs the exact toolchain pinned in `rust-toolchain.toml`. Toolchain installs are serialized with a lock so concurrent repo bootstraps do not race the same shared version.
 
 `./test` runs the Rust tests, rebuilds the native extension with the unoptimized `dev` profile, runs the non-live Python tests, and then runs the `@pytest.mark.live` coverage that exercises real OS process and signal behavior.
 
 If you want to invoke pytest directly, set `RUNNING_PROCESS_LIVE_TESTS=1` and run `uv run pytest -m live`.
 
-For direct Rust commands, prefer the repo-local trampolines:
+For direct Rust commands, prefer the repo trampolines, which prepend the shared `rustup` proxy location:
 
 ```bash
 ./_cargo check --workspace
@@ -239,9 +255,37 @@ For direct Rust commands, prefer the repo-local trampolines:
 ./_cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+On Windows, native rebuilds that compile bundled C code should run from a Visual Studio developer shell. When the environment is ambiguous, point `maturin` at the MSVC toolchain binaries directly rather than relying on the generic cargo proxy.
+
+For local extension rebuilds, prefer:
+
+```bash
+uv run build.py
+```
+
+That defaults to building a dev-profile wheel and reinstalling it into the repo's `uv` environment, which keeps the native extension in `site-packages` instead of copying it into `src/`. For publish-grade artifacts, use:
+
+```bash
+uv run build.py --release
+```
+
+## Tracked PID Cleanup
+
+`RunningProcess`, `InteractiveProcess`, and PTY-backed launches register their live PIDs in a SQLite database. The default location is:
+
+- Windows: `%LOCALAPPDATA%\\running-process\\tracked-pids.sqlite3`
+- Override: `RUNNING_PROCESS_PID_DB=/custom/path/tracked-pids.sqlite3`
+
+If a bad run leaves child processes behind, terminate everything still tracked in the database:
+
+```bash
+python scripts/terminate_tracked_processes.py
+```
+
 ## Notes
 
 - `stdout` and `stderr` are no longer merged by default.
 - `combined_output` exists for compatibility when you need the merged view.
 - `RunningProcess(..., use_pty=True)` is no longer the preferred path; use `RunningProcess.pseudo_terminal(...)` for PTY sessions.
+- On supported Windows builds, PTY support is provided by the native Rust extension rather than a Python `winpty` fallback.
 - The test suite checks that `running_process.__version__`, package metadata, and manifest versions stay in sync.

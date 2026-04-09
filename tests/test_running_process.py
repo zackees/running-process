@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import io
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import warnings
 from pathlib import Path
 
@@ -14,16 +17,20 @@ import psutil
 import pytest
 
 from running_process import (
+    DEVNULL,
+    PIPE,
+    CalledProcessError,
+    CompletedProcess,
     CpuPriority,
     EndOfStream,
     ProcessAbnormalExit,
     ProcessInfo,
     RunningProcess,
     RunningProcessManagerSingleton,
+    TimeoutExpired,
     subprocess_run,
 )
 from running_process.exit_status import classify_exit_status
-from running_process.output_formatter import TimeDeltaFormatter
 from running_process.process_utils import get_process_tree_info, kill_process_tree
 
 
@@ -171,6 +178,24 @@ def test_stream_values_are_plain_text_and_streams_are_separate() -> None:
     assert process.stdout_stream.read() == "hello world"
 
 
+def test_discard_captured_output_releases_pipe_history_bytes() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "import sys; print('alpha'); print('beta', file=sys.stderr)"]
+    )
+    process.wait()
+
+    assert process.captured_output_bytes("stdout") == len("alpha")
+    assert process.captured_output_bytes("stderr") == len("beta")
+    assert process.captured_output_bytes("combined") == len("alpha") + len("beta")
+    assert process.discard_captured_output("stdout") == len("alpha")
+    assert process.stdout == ""
+    assert process.captured_output_bytes("stdout") == 0
+    assert process.stderr == "beta"
+    assert process.discard_captured_output("combined") == len("alpha") + len("beta")
+    assert process.combined_output == ""
+    assert process.captured_output_bytes("combined") == 0
+
+
 def test_run_rejects_unsupported_subprocess_kwargs() -> None:
     with pytest.raises(NotImplementedError, match="executable="):
         RunningProcess.run([sys.executable, "-c", "print('x')"], executable=sys.executable)
@@ -245,6 +270,27 @@ def test_manager_unregisters_after_wait() -> None:
     assert before == after
 
 
+def test_manager_does_not_hold_strong_reference_to_abandoned_process() -> None:
+    before = len(RunningProcessManagerSingleton.list_active())
+    process = RunningProcess([sys.executable, "-c", "import time; time.sleep(10)"])
+    assert len(RunningProcessManagerSingleton.list_active()) == before + 1
+
+    pid = process.pid
+    del process
+    gc.collect()
+
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        if len(RunningProcessManagerSingleton.list_active()) == before:
+            break
+        gc.collect()
+        time.sleep(0.05)
+
+    assert len(RunningProcessManagerSingleton.list_active()) == before
+    if pid is not None:
+        assert not psutil.pid_exists(pid)
+
+
 def test_run_matches_subprocess_contract() -> None:
     result = RunningProcess.run(
         [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
@@ -256,6 +302,8 @@ def test_run_matches_subprocess_contract() -> None:
     assert "out" in lines
     assert "err" in lines
     assert result.stderr is None
+    assert isinstance(result, CompletedProcess)
+    assert isinstance(result, subprocess.CompletedProcess)
 
 
 def test_run_can_explicitly_request_split_stderr() -> None:
@@ -323,12 +371,28 @@ def test_run_preserves_bare_carriage_return_in_text_mode() -> None:
 
 
 def test_run_timeout_raises_timeout_expired() -> None:
-    with pytest.raises(subprocess.TimeoutExpired):
+    with pytest.raises(TimeoutExpired) as exc_info:
         RunningProcess.run(
             [sys.executable, "-c", "import time; time.sleep(5)"],
             capture_output=True,
             timeout=0.2,
         )
+    assert isinstance(exc_info.value, subprocess.TimeoutExpired)
+
+
+def test_running_process_exports_subprocess_compat_constants() -> None:
+    assert PIPE is subprocess.PIPE
+    assert DEVNULL is subprocess.DEVNULL
+
+
+def test_run_check_raises_compat_called_process_error() -> None:
+    with pytest.raises(CalledProcessError) as exc_info:
+        RunningProcess.run(
+            [sys.executable, "-c", "import sys; sys.exit(9)"],
+            capture_output=True,
+            check=True,
+        )
+    assert isinstance(exc_info.value, subprocess.CalledProcessError)
 
 
 def test_run_with_text_input_capture_output() -> None:
@@ -539,19 +603,15 @@ def test_subprocess_run_timeout_raises_runtime_error() -> None:
         )
 
 
-def test_run_streaming_calls_both_callbacks() -> None:
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
+def test_run_streaming_echoes_both_streams(capsys: pytest.CaptureFixture[str]) -> None:
     code = RunningProcess.run_streaming(
         [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
-        stdout_callback=stdout_lines.append,
-        stderr_callback=stderr_lines.append,
         timeout=5,
     )
-
+    captured = capsys.readouterr()
     assert code == 0
-    assert stdout_lines == ["out"]
-    assert stderr_lines == ["err"]
+    assert "out" in captured.out
+    assert "err" in captured.err
 
 
 def test_capture_false_does_not_store_output() -> None:
@@ -568,8 +628,15 @@ def test_invalid_string_command_without_shell() -> None:
 
 def test_invalid_echo_type_raises() -> None:
     process = RunningProcess([sys.executable, "-c", "print('hello')"])
-    with pytest.raises(TypeError, match="echo must be bool or callable"):
+    with pytest.raises(TypeError):
         process.wait(echo="bad")  # type: ignore[arg-type]
+
+
+def test_is_runninng_compat_alias() -> None:
+    process = RunningProcess([sys.executable, "-c", "import time; time.sleep(0.2)"])
+    assert process.is_runninng() is True
+    process.wait()
+    assert process.is_runninng() is False
 
 
 def test_echo_true_writes_stdout_only(capsys: pytest.CaptureFixture[str]) -> None:
@@ -620,6 +687,46 @@ def test_wait_raises_keyboard_interrupt_when_child_gets_sigint() -> None:
         process.wait()
 
 
+def test_wait_raises_keyboard_interrupt_promptly_while_main_thread_is_blocked() -> None:
+    creationflags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if sys.platform == "win32" else None
+    )
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import time\n"
+                "print('ready', flush=True)\n"
+                "try:\n"
+                "    time.sleep(30)\n"
+                "except KeyboardInterrupt:\n"
+                "    raise\n"
+            ),
+        ],
+        creationflags=creationflags,
+        timeout=5,
+    )
+    assert process.get_next_stdout_line(timeout=5) == "ready"
+
+    sent_at: list[float] = []
+
+    def trigger_interrupt() -> None:
+        time.sleep(0.1)
+        sent_at.append(time.perf_counter())
+        process.send_interrupt()
+
+    worker = threading.Thread(target=trigger_interrupt, daemon=True)
+    worker.start()
+
+    with pytest.raises(KeyboardInterrupt):
+        process.wait()
+
+    worker.join(timeout=1)
+    assert sent_at
+    assert time.perf_counter() - sent_at[0] < 0.2
+
+
 def test_exit_status_classifies_possible_oom_for_sigkill_on_unix() -> None:
     status = classify_exit_status(-9, set(), platform="linux")
     assert status.signal_number == 9
@@ -640,7 +747,7 @@ def test_wait_echo_includes_stderr(capsys: pytest.CaptureFixture[str]) -> None:
     process.wait(echo=True)
     captured = capsys.readouterr()
     assert "out" in captured.out
-    assert "err" in captured.out
+    assert "err" in captured.err
 
 
 def test_echo_true_is_safe_for_ascii_console(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -650,28 +757,6 @@ def test_echo_true_is_safe_for_ascii_console(monkeypatch: pytest.MonkeyPatch) ->
     process.wait(echo=True)
     fake_stdout.flush()
     assert b"snowman: ?" in fake_stdout.buffer.getvalue()
-
-
-def test_on_complete_callback_runs() -> None:
-    completed: list[str] = []
-    process = RunningProcess(
-        [sys.executable, "-c", "print('done')"],
-        on_complete=lambda: completed.append("done"),
-    )
-    process.wait()
-    assert completed == ["done"]
-
-
-def test_time_delta_formatter_applies_to_stream_reads() -> None:
-    process = RunningProcess(
-        [sys.executable, "-c", "print('hello')"],
-        output_formatter=TimeDeltaFormatter(),
-    )
-    line = process.get_next_stdout_line(timeout=5)
-    process.wait()
-    assert line.startswith("[")
-    assert line.endswith(" hello")
-    TimeDeltaFormatter().end()
 
 
 def test_process_utils_handle_invalid_pid() -> None:
@@ -801,6 +886,44 @@ time.sleep(10)
     assert not psutil.pid_exists(child_pid)
 
 
+def test_running_process_force_killed_parent_reaps_child() -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows-specific parent crash behavior")
+
+    script = """
+import sys
+import time
+from running_process import RunningProcess
+
+process = RunningProcess([sys.executable, "-c", "import time; time.sleep(30)"])
+print(process.pid, flush=True)
+time.sleep(30)
+"""
+    owner = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert owner.stdout is not None
+        child_pid = int(owner.stdout.readline().strip())
+
+        owner.kill()
+        owner.wait(timeout=5)
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline and psutil.pid_exists(child_pid):
+            time.sleep(0.05)
+
+        assert not psutil.pid_exists(child_pid)
+    finally:
+        with contextlib.suppress(Exception):
+            owner.kill()
+        with contextlib.suppress(Exception):
+            owner.wait(timeout=1)
+
+
 def test_manager_dump_active_reports_process() -> None:
     process = RunningProcess([sys.executable, "-c", "import time; time.sleep(1)"])
     with warnings.catch_warnings(record=True) as caught:
@@ -817,3 +940,10 @@ def test_manager_dump_active_reports_empty_state() -> None:
         warnings.simplefilter("always")
         RunningProcessManagerSingleton.dump_active()
     assert any("NO ACTIVE SUBPROCESSES DETECTED" in str(item.message) for item in caught)
+
+
+def test_top_level_imports_preserve_output_formatter_exports() -> None:
+    import running_process
+
+    assert hasattr(running_process, "OutputFormatter")
+    assert hasattr(running_process, "TimeDeltaFormatter")

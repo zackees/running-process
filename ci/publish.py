@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import shutil
 import subprocess
@@ -27,6 +28,15 @@ WORKFLOWS = {
     "macos-x86.yml": "wheels-macos-x86",
     "macos-arm.yml": "wheels-macos-arm",
 }
+EXPECTED_ARTIFACT_GLOBS = (
+    "{name}-{version}.tar.gz",
+    "{name}-{version}-*-manylinux*_x86_64.whl",
+    "{name}-{version}-*-manylinux*_aarch64.whl",
+    "{name}-{version}-*-win_amd64.whl",
+    "{name}-{version}-*-win_arm64.whl",
+    "{name}-{version}-*-macosx*_x86_64.whl",
+    "{name}-{version}-*-macosx*_arm64.whl",
+)
 
 
 def log(msg: str) -> None:
@@ -38,13 +48,21 @@ def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(cmd, check=True, **kwargs)
 
 
+def _captured_text_kwargs() -> dict[str, Any]:
+    return {
+        "capture_output": True,
+        "text": True,
+        "errors": "replace",
+    }
+
+
 def run_capture(cmd: list[str]) -> str:
-    result: subprocess.CompletedProcess[str] = run(cmd, capture_output=True, text=True)
+    result: subprocess.CompletedProcess[str] = run(cmd, **_captured_text_kwargs())
     return result.stdout.strip()
 
 
 def run_capture_allow_failure(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, **_captured_text_kwargs())
 
 
 def read_project_meta() -> tuple[str, str]:
@@ -235,23 +253,42 @@ def download_artifacts(repo: str, runs: dict[str, int]) -> list[Path]:
     temp = DIST_DIR / "_tmp"
     temp.mkdir()
 
-    for _workflow_file, run_id in runs.items():
-        run(["gh", "run", "download", str(run_id), "--repo", repo, "--dir", str(temp)])
+    for workflow_file, run_id in runs.items():
+        artifact_name = WORKFLOWS[workflow_file]
+        workflow_temp = temp / workflow_file.removesuffix(".yml")
+        workflow_temp.mkdir()
+        run(
+            [
+                "gh",
+                "run",
+                "download",
+                str(run_id),
+                "--repo",
+                repo,
+                "--pattern",
+                artifact_name,
+                "--dir",
+                str(workflow_temp),
+            ]
+        )
 
-    artifact_dirs = {path.name for path in temp.iterdir() if path.is_dir()}
-    missing = sorted(set(WORKFLOWS.values()) - artifact_dirs)
-    if missing:
-        raise SystemExit(f"missing expected artifacts: {', '.join(missing)}")
+        artifact_dir = workflow_temp / artifact_name
+        if not artifact_dir.is_dir():
+            raise SystemExit(
+                f"{workflow_file} did not produce expected artifact directory {artifact_name}"
+            )
 
     built: list[Path] = []
-    for path in temp.rglob("*"):
-        if not path.is_file():
-            continue
-        if path.suffix not in {".whl", ".gz"}:
-            continue
-        target = DIST_DIR / path.name
-        shutil.copy2(path, target)
-        built.append(target)
+    for workflow_file, artifact_name in WORKFLOWS.items():
+        artifact_dir = temp / workflow_file.removesuffix(".yml") / artifact_name
+        for path in artifact_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix not in {".whl", ".gz"}:
+                continue
+            target = DIST_DIR / path.name
+            shutil.copy2(path, target)
+            built.append(target)
 
     shutil.rmtree(temp)
 
@@ -262,6 +299,25 @@ def download_artifacts(repo: str, runs: dict[str, int]) -> list[Path]:
     if len(sdists) != 1:
         raise SystemExit(f"expected exactly one sdist, found {len(sdists)}")
     return sorted(built)
+
+
+def expected_artifact_globs(name: str, version: str) -> list[str]:
+    return [pattern.format(name=name, version=version) for pattern in EXPECTED_ARTIFACT_GLOBS]
+
+
+def select_expected_artifacts(
+    artifacts: list[Path], *, name: str, version: str
+) -> tuple[list[Path], list[str]]:
+    matched: list[Path] = []
+    missing: list[str] = []
+    by_name = {path.name: path for path in artifacts if path.exists()}
+    for pattern in expected_artifact_globs(name, version):
+        names = sorted(filename for filename in by_name if fnmatch.fnmatch(filename, pattern))
+        if not names:
+            missing.append(pattern)
+            continue
+        matched.append(by_name[names[0]])
+    return matched, missing
 
 
 def filter_missing_artifacts(artifacts: list[Path], existing_files: set[str]) -> list[Path]:
@@ -302,14 +358,21 @@ def main() -> int:
         for workflow_file, run_id in triggered.items()
     }
     artifacts = download_artifacts(repo, runs)
+    expected_artifacts, missing_expected = select_expected_artifacts(
+        artifacts, name=name, version=version
+    )
+    if missing_expected:
+        log("Expected artifacts not found locally:")
+        for pattern in missing_expected:
+            log(f"  {pattern}")
 
     if args.dry_run:
         log("Dry run artifacts:")
-        for artifact in artifacts:
+        for artifact in expected_artifacts:
             log(f"  {artifact.name}")
         return 0
 
-    to_upload = filter_missing_artifacts(artifacts, existing_files)
+    to_upload = filter_missing_artifacts(expected_artifacts, existing_files)
     if not to_upload:
         return 0
     run(["uv", "publish", *[str(path) for path in to_upload]])
