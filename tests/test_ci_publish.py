@@ -4,6 +4,8 @@ import importlib
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 def _load_publish_module():
     return importlib.import_module("ci.publish")
@@ -118,14 +120,12 @@ def test_download_artifacts_fails_when_expected_artifact_directory_missing(
 
     monkeypatch.setattr(module, "run", fake_run)
 
-    try:
+    with pytest.raises(SystemExit) as exc:
         module.download_artifacts("owner/repo", {"windows-x86.yml": 123})
-    except SystemExit as exc:
-        assert str(exc) == (
-            "windows-x86.yml did not produce expected artifact directory wheels-windows-x86"
-        )
-    else:
-        raise AssertionError("expected download_artifacts to fail")
+
+    assert str(exc.value) == (
+        "windows-x86.yml did not produce expected artifact directory wheels-windows-x86"
+    )
 
 
 def test_select_expected_artifacts_returns_only_matching_existing_files(tmp_path: Path) -> None:

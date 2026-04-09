@@ -30,11 +30,11 @@ def main() -> int:
     python = repo_python()
     if run([str(python), "-m", "ci.spawn_path_guard"]) != 0:
         return 1
-    if run(["cargo", "fmt", "--all", "--check"]) != 0:
+    if run(["cargo", "fmt", "--all"]) != 0:
         return 1
     if run(["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]) != 0:
         return 1
-    if run([str(python), "-m", "ruff", "check", "src", "tests", "ci"]) != 0:
+    if run([str(python), "-m", "ruff", "check", "--fix", "src", "tests", "ci"]) != 0:
         return 1
     return 0
 

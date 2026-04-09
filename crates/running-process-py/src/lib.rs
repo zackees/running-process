@@ -15,12 +15,12 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use regex::Regex;
-use running_process_core::{
-    CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StdinMode, StreamEvent, StreamKind,
-};
 #[cfg(unix)]
 use running_process_core::{
     unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal,
+};
+use running_process_core::{
+    CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StdinMode, StreamEvent, StreamKind,
 };
 use sysinfo::{Pid, ProcessRefreshKind, Signal, System, UpdateKind};
 
