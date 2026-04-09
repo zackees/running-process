@@ -18,6 +18,10 @@ use regex::Regex;
 use running_process_core::{
     CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StdinMode, StreamEvent, StreamKind,
 };
+#[cfg(unix)]
+use running_process_core::{
+    unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal,
+};
 use sysinfo::{Pid, ProcessRefreshKind, Signal, System, UpdateKind};
 
 fn to_py_err(err: impl std::fmt::Display) -> PyErr {
@@ -423,11 +427,7 @@ fn native_apply_process_nice(pid: u32, nice: i32) -> PyResult<()> {
 
     #[cfg(unix)]
     {
-        let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid, nice) };
-        if result == -1 {
-            return Err(to_py_err(std::io::Error::last_os_error()));
-        }
-        Ok(())
+        unix_set_priority(pid, nice).map_err(to_py_err)
     }
 }
 
@@ -764,11 +764,8 @@ impl NativeRunningProcess {
                 .pid()
                 .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
             if self.create_process_group {
-                let result = unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
-                if result == 0 {
-                    return Ok(());
-                }
-                return Err(to_py_err(std::io::Error::last_os_error()));
+                unix_signal_process_group(pid as i32, UnixSignal::Terminate).map_err(to_py_err)?;
+                return Ok(());
             }
         }
         self.inner.terminate().map_err(to_py_err)
@@ -816,17 +813,12 @@ impl NativeRunningProcess {
 
         #[cfg(unix)]
         {
-            let result = unsafe {
-                if self.create_process_group {
-                    libc::killpg(pid as i32, libc::SIGINT)
-                } else {
-                    libc::kill(pid as i32, libc::SIGINT)
-                }
-            };
-            if result == 0 {
-                return Ok(());
+            if self.create_process_group {
+                unix_signal_process_group(pid as i32, UnixSignal::Interrupt).map_err(to_py_err)?;
+            } else {
+                unix_signal_process(pid, UnixSignal::Interrupt).map_err(to_py_err)?;
             }
-            return Err(to_py_err(std::io::Error::last_os_error()));
+            return Ok(());
         }
     }
 
@@ -838,11 +830,8 @@ impl NativeRunningProcess {
                 .pid()
                 .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
             if self.create_process_group {
-                let result = unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
-                if result == 0 {
-                    return Ok(());
-                }
-                return Err(to_py_err(std::io::Error::last_os_error()));
+                unix_signal_process_group(pid as i32, UnixSignal::Kill).map_err(to_py_err)?;
+                return Ok(());
             }
         }
         self.inner.kill().map_err(to_py_err)
@@ -1219,11 +1208,8 @@ impl NativePtyProcess {
                 .as_ref()
                 .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
             if let Some(pid) = handles.master.process_group_leader() {
-                let result = unsafe { libc::killpg(pid, libc::SIGINT) };
-                if result == 0 {
-                    return Ok(());
-                }
-                return Err(to_py_err(std::io::Error::last_os_error()));
+                unix_signal_process_group(pid, UnixSignal::Interrupt).map_err(to_py_err)?;
+                return Ok(());
             }
         }
         self.write(&[0x03])
