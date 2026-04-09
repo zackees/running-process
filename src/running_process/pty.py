@@ -4,6 +4,7 @@ import inspect
 import os
 import re
 import shlex
+import signal
 import sys
 import threading
 import time
@@ -39,6 +40,9 @@ from running_process.expect import (
 from running_process.priority import CpuPriority, normalize_nice
 
 _SUPPORTED_PTY_PLATFORMS = {"win32", "linux", "darwin"}
+_PTY_READ_CHUNK_TIMEOUT_SECONDS = 0.01
+_PTY_POLL_INTERVAL_SECONDS = 0.001
+_PTY_READER_GRACE_JOIN_SECONDS = 0.005
 
 
 class PtyNotAvailableError(RuntimeError):
@@ -656,7 +660,8 @@ def _run_pty_reader_loop(process_ref: weakref.ReferenceType[PseudoTerminalProces
                 if not chunk:
                     break
                 if process._proc is not None:
-                    process._proc.respond_to_queries(chunk)
+                    with suppress(RuntimeError):
+                        process._proc.respond_to_queries(chunk)
                 control_bytes = _control_churn_bytes(chunk)
                 rendered_chunk = process._terminal_control_stripper.strip(chunk)
                 if control_bytes and rendered_chunk:
@@ -743,7 +748,6 @@ class PseudoTerminalProcess:
         self._idle_timeout_signal = SignalBool(True)
         self._registered_expect_conditions = list(expect) if expect is not None else []
         self._registered_idle_detector = idle_detector
-
         if auto_run:
             self.start()
 
@@ -773,6 +777,7 @@ class PseudoTerminalProcess:
             target=_run_pty_reader_loop,
             args=(weakref.ref(self),),
             daemon=True,
+            name=f"pty-reader-{self.pid or 'pending'}",
         )
         self._reader_thread.start()
 
@@ -842,6 +847,10 @@ class PseudoTerminalProcess:
         self.interrupt_count += 1
         self.interrupted_by_caller = True
         assert self._proc is not None
+        if sys.platform != "win32" and self.pid is not None:
+            with suppress(OSError, AttributeError):
+                os.killpg(self.pid, signal.SIGINT)
+                return
         self._proc.send_interrupt()
 
     def poll(self) -> int | None:
@@ -866,7 +875,7 @@ class PseudoTerminalProcess:
                 self.kill()
                 self._finalize("timeout")
                 raise TimeoutError("Pseudo-terminal process timed out")
-            time.sleep(0.01)
+            time.sleep(_PTY_POLL_INTERVAL_SECONDS)
 
     def terminate(self) -> None:
         self._ensure_started()
@@ -883,6 +892,12 @@ class PseudoTerminalProcess:
         if self.poll() is not None:
             self._finalize("exit")
             return
+        if sys.platform != "win32" and self.pid is not None:
+            with suppress(OSError, AttributeError):
+                os.killpg(self.pid, signal.SIGKILL)
+                self._wait_for_reader()
+                self._finalize("kill")
+                return
         assert self._proc is not None
         self._proc.kill()
         with suppress(RuntimeError):
@@ -1002,6 +1017,28 @@ class PseudoTerminalProcess:
                         f"{new_output}"
                     )
                     history_bytes = current_history_bytes
+                    continue
+                code = self.poll()
+                if code is not None:
+                    self._wait_for_reader()
+                    self._finalize("exit")
+                    self._exit_status = classify_exit_status(
+                        code, KEYBOARD_INTERRUPT_EXIT_CODES
+                    )
+                    current_history_bytes = self.output_bytes
+                    if current_history_bytes > history_bytes:
+                        new_output = ensure_text(
+                            self._output_since(history_bytes),
+                            self.encoding,
+                            self.errors,
+                        )
+                        buffer = (
+                            f"{buffer}"
+                            f"{new_output}"
+                        )
+                        history_bytes = current_history_bytes
+                        continue
+                    raise EOFError(f"Pattern not found before stream closed: {pattern!r}")
                 continue
             except EOFError as exc:
                 raise EOFError(f"Pattern not found before stream closed: {pattern!r}") from exc
@@ -1089,128 +1126,128 @@ class PseudoTerminalProcess:
                     for chunk in self.drain():
                         _safe_console_write(sys.stdout, chunk)
 
-                now = time.time()
-                if self.idle_timeout_enabled != idle_timeout_enabled:
-                    idle_timeout_enabled = self.idle_timeout_enabled
-                    if idle_timeout_enabled:
-                        state.last_reset_at = now
-                        state.stable_since = None
-                if deadline is not None and now >= deadline:
-                    return IdleWaitResult(
-                        returncode=self.poll(),
-                        idle_detected=False,
-                        exit_reason="timeout",
-                        idle_for_seconds=max(0.0, now - state.last_reset_at),
+                    now = time.time()
+                    if self.idle_timeout_enabled != idle_timeout_enabled:
+                        idle_timeout_enabled = self.idle_timeout_enabled
+                        if idle_timeout_enabled:
+                            state.last_reset_at = now
+                            state.stable_since = None
+                    if deadline is not None and now >= deadline:
+                        return IdleWaitResult(
+                            returncode=self.poll(),
+                            idle_detected=False,
+                            exit_reason="timeout",
+                            idle_for_seconds=max(0.0, now - state.last_reset_at),
+                        )
+
+                    wait_timeout = timing.sample_interval_seconds
+                    if deadline is not None:
+                        wait_timeout = min(wait_timeout, max(0.0, deadline - now))
+                    if wait_timeout > 0:
+                        time.sleep(wait_timeout)
+
+                    current = self._sample_idle_snapshot(process_cfg=idle_process_cfg)
+                    diff = IdleInfoDiff(
+                        delta_seconds=max(0.0, current.sampled_at - previous.sampled_at),
+                        process_alive=current.process_alive,
+                        pty_input_bytes=current.pty_input_bytes - previous.pty_input_bytes,
+                        pty_output_bytes=current.pty_output_bytes - previous.pty_output_bytes,
+                        pty_control_churn_bytes=(
+                            current.pty_control_churn_bytes - previous.pty_control_churn_bytes
+                        ),
+                        cpu_percent=current.cpu_percent,
+                        disk_io_bytes=current.disk_io_bytes - previous.disk_io_bytes,
+                        network_io_bytes=current.network_io_bytes - previous.network_io_bytes,
                     )
+                    previous = current
 
-                wait_timeout = timing.sample_interval_seconds
-                if deadline is not None:
-                    wait_timeout = min(wait_timeout, max(0.0, deadline - now))
-                if wait_timeout > 0:
-                    time.sleep(wait_timeout)
-
-                current = self._sample_idle_snapshot(process_cfg=idle_process_cfg)
-                diff = IdleInfoDiff(
-                    delta_seconds=max(0.0, current.sampled_at - previous.sampled_at),
-                    process_alive=current.process_alive,
-                    pty_input_bytes=current.pty_input_bytes - previous.pty_input_bytes,
-                    pty_output_bytes=current.pty_output_bytes - previous.pty_output_bytes,
-                    pty_control_churn_bytes=(
-                        current.pty_control_churn_bytes - previous.pty_control_churn_bytes
-                    ),
-                    cpu_percent=current.cpu_percent,
-                    disk_io_bytes=current.disk_io_bytes - previous.disk_io_bytes,
-                    network_io_bytes=current.network_io_bytes - previous.network_io_bytes,
-                )
-                previous = current
-
-                sample_now = current.sampled_at
-                stable_for = 0.0
-                if state.stable_since is not None:
-                    stable_for = max(0.0, sample_now - state.stable_since)
-                ctx = IdleContext(
-                    idle_for_seconds=max(0.0, sample_now - state.last_reset_at),
-                    stable_for_seconds=stable_for,
-                    sample_count=state.sample_count,
-                )
-                state.sample_count += 1
-
-                handled = False
-                if idle_reached is not None:
-                    decision = idle_reached(diff)
-                    if not isinstance(decision, IdleDecision):
-                        raise TypeError("idle_reached callback must return an IdleDecision")
-                    if decision is IdleDecision.DEFAULT:
-                        handled = False
-                    elif decision is IdleDecision.IS_IDLE:
-                        return IdleWaitResult(
-                            returncode=self.poll(),
-                            idle_detected=True,
-                            exit_reason="idle_timeout",
-                            idle_for_seconds=max(0.0, sample_now - state.last_reset_at),
-                        )
-                    elif decision is IdleDecision.ACTIVE:
-                        state.last_reset_at = sample_now
-                        state.stable_since = None
-                        self.last_activity_at = sample_now
-                        handled = True
-                    elif decision is IdleDecision.BEGIN_IDLE and state.stable_since is None:
-                        idle_started_at = max(0.0, sample_now - diff.delta_seconds)
-                        state.last_reset_at = idle_started_at
-                        state.stable_since = idle_started_at
-                        handled = True
-                    elif decision is IdleDecision.BEGIN_IDLE:
-                        handled = True
-                    if handled and (
-                        idle_timeout_enabled
-                        and state.stable_since is not None
-                        and max(0.0, sample_now - state.last_reset_at) >= timing.timeout_seconds
-                    ):
-                        return IdleWaitResult(
-                            returncode=self.poll(),
-                            idle_detected=True,
-                            exit_reason="idle_timeout",
-                            idle_for_seconds=max(0.0, sample_now - state.last_reset_at),
-                        )
-                if not handled:
-                    if (
-                        (predicate is not None and predicate(diff, ctx))
-                        or (idle_reached is not None and default_predicate(diff, ctx))
-                    ):
-                        state.last_reset_at = sample_now
-                        state.stable_since = None
-                        self.last_activity_at = sample_now
-                    else:
-                        if state.stable_since is None:
-                            state.stable_since = sample_now
-                        idle_for = max(0.0, sample_now - state.last_reset_at)
+                    sample_now = current.sampled_at
+                    stable_for = 0.0
+                    if state.stable_since is not None:
                         stable_for = max(0.0, sample_now - state.stable_since)
-                        if (
+                    ctx = IdleContext(
+                        idle_for_seconds=max(0.0, sample_now - state.last_reset_at),
+                        stable_for_seconds=stable_for,
+                        sample_count=state.sample_count,
+                    )
+                    state.sample_count += 1
+
+                    handled = False
+                    if idle_reached is not None:
+                        decision = idle_reached(diff)
+                        if not isinstance(decision, IdleDecision):
+                            raise TypeError("idle_reached callback must return an IdleDecision")
+                        if decision is IdleDecision.DEFAULT:
+                            handled = False
+                        elif decision is IdleDecision.IS_IDLE:
+                            return IdleWaitResult(
+                                returncode=self.poll(),
+                                idle_detected=True,
+                                exit_reason="idle_timeout",
+                                idle_for_seconds=max(0.0, sample_now - state.last_reset_at),
+                            )
+                        elif decision is IdleDecision.ACTIVE:
+                            state.last_reset_at = sample_now
+                            state.stable_since = None
+                            self.last_activity_at = sample_now
+                            handled = True
+                        elif decision is IdleDecision.BEGIN_IDLE and state.stable_since is None:
+                            idle_started_at = max(0.0, sample_now - diff.delta_seconds)
+                            state.last_reset_at = idle_started_at
+                            state.stable_since = idle_started_at
+                            handled = True
+                        elif decision is IdleDecision.BEGIN_IDLE:
+                            handled = True
+                        if handled and (
                             idle_timeout_enabled
-                            and idle_for >= timing.timeout_seconds
-                            and stable_for >= timing.stability_window_seconds
+                            and state.stable_since is not None
+                            and max(0.0, sample_now - state.last_reset_at) >= timing.timeout_seconds
                         ):
                             return IdleWaitResult(
                                 returncode=self.poll(),
                                 idle_detected=True,
                                 exit_reason="idle_timeout",
-                                idle_for_seconds=idle_for,
+                                idle_for_seconds=max(0.0, sample_now - state.last_reset_at),
                             )
+                    if not handled:
+                        if (
+                            (predicate is not None and predicate(diff, ctx))
+                            or (idle_reached is not None and default_predicate(diff, ctx))
+                        ):
+                            state.last_reset_at = sample_now
+                            state.stable_since = None
+                            self.last_activity_at = sample_now
+                        else:
+                            if state.stable_since is None:
+                                state.stable_since = sample_now
+                            idle_for = max(0.0, sample_now - state.last_reset_at)
+                            stable_for = max(0.0, sample_now - state.stable_since)
+                            if (
+                                idle_timeout_enabled
+                                and idle_for >= timing.timeout_seconds
+                                and stable_for >= timing.stability_window_seconds
+                            ):
+                                return IdleWaitResult(
+                                    returncode=self.poll(),
+                                    idle_detected=True,
+                                    exit_reason="idle_timeout",
+                                    idle_for_seconds=idle_for,
+                                )
 
-                code = current.returncode
-                if code is not None:
-                    self._wait_for_reader()
-                    self._finalize("exit")
-                    self._exit_status = classify_exit_status(code, KEYBOARD_INTERRUPT_EXIT_CODES)
-                    interrupted = code in KEYBOARD_INTERRUPT_EXIT_CODES
-                    if raise_on_abnormal_exit and self._exit_status.abnormal and not interrupted:
-                        raise ProcessAbnormalExit(self._exit_status)
-                    return IdleWaitResult(
-                        returncode=code,
-                        idle_detected=False,
-                        exit_reason="interrupt" if interrupted else "process_exit",
-                        idle_for_seconds=max(0.0, sample_now - state.last_reset_at),
-                    )
+                    code = current.returncode
+                    if code is not None:
+                        self._wait_for_reader()
+                        self._finalize("exit")
+                        self._exit_status = classify_exit_status(code, KEYBOARD_INTERRUPT_EXIT_CODES)
+                        interrupted = code in KEYBOARD_INTERRUPT_EXIT_CODES
+                        if raise_on_abnormal_exit and self._exit_status.abnormal and not interrupted:
+                            raise ProcessAbnormalExit(self._exit_status)
+                        return IdleWaitResult(
+                            returncode=code,
+                            idle_detected=False,
+                            exit_reason="interrupt" if interrupted else "process_exit",
+                            idle_for_seconds=max(0.0, sample_now - state.last_reset_at),
+                        )
         finally:
             pass
 
@@ -1227,6 +1264,14 @@ class PseudoTerminalProcess:
         echo_output: bool = False,
     ) -> WaitForResult:
         wait_conditions = _normalize_wait_conditions(*conditions)
+        wait_for_start_ns = time.perf_counter_ns()
+        loop_iterations = 0
+        sleep_ns = 0
+        expect_scan_ns = 0
+        expect_scan_count = 0
+        history_update_ns = 0
+        history_update_count = 0
+
         if not wait_conditions:
             code = self.wait(timeout=timeout, raise_on_abnormal_exit=raise_on_abnormal_exit)
             return WaitForResult(returncode=code, matched=False, exit_reason="process_exit")
@@ -1345,12 +1390,14 @@ class PseudoTerminalProcess:
 
         try:
             while True:
+                loop_iterations += 1
                 if echo_output:
                     for chunk in self.drain():
                         _safe_console_write(sys.stdout, chunk)
 
                 current_history_bytes = self.output_bytes
                 if current_history_bytes > history_bytes:
+                    history_update_start = time.perf_counter_ns()
                     new_output = ensure_text(
                         self._output_since(history_bytes),
                         self.encoding,
@@ -1361,16 +1408,21 @@ class PseudoTerminalProcess:
                         f"{new_output}"
                     )
                     history_bytes = current_history_bytes
+                    history_update_count += 1
+                    history_update_ns += time.perf_counter_ns() - history_update_start
                 for condition, state in expect_states:
                     if not state.armed:
                         continue
                     scoped_buffer = buffer[state.search_offset :]
+                    scan_start = time.perf_counter_ns()
                     suppress_match = (
                         search_expect_pattern(scoped_buffer, condition.NOT)
                         if condition.NOT is not None
                         else None
                     )
                     match = search_expect_pattern(scoped_buffer, condition.pattern)
+                    expect_scan_count += 1
+                    expect_scan_ns += time.perf_counter_ns() - scan_start
                     if suppress_match is not None and (
                         match is None or suppress_match.span[0] <= match.span[0]
                     ):
@@ -1430,6 +1482,22 @@ class PseudoTerminalProcess:
                     self._wait_for_reader()
                     self._finalize("exit")
                     self._exit_status = classify_exit_status(code, KEYBOARD_INTERRUPT_EXIT_CODES)
+                    current_history_bytes = self.output_bytes
+                    if current_history_bytes > history_bytes:
+                        history_update_start = time.perf_counter_ns()
+                        new_output = ensure_text(
+                            self._output_since(history_bytes),
+                            self.encoding,
+                            self.errors,
+                        )
+                        buffer = (
+                            f"{buffer}"
+                            f"{new_output}"
+                        )
+                        history_bytes = current_history_bytes
+                        history_update_count += 1
+                        history_update_ns += time.perf_counter_ns() - history_update_start
+                        continue
                     if code in KEYBOARD_INTERRUPT_EXIT_CODES:
                         raise KeyboardInterrupt
                     if raise_on_abnormal_exit and self._exit_status.abnormal:
@@ -1564,7 +1632,7 @@ class PseudoTerminalProcess:
                             idle_result=idle_result,
                         )
 
-                sleep_for = 0.01
+                sleep_for = _PTY_POLL_INTERVAL_SECONDS
                 if callback_conditions:
                     sleep_for = min(
                         sleep_for,
@@ -1576,7 +1644,9 @@ class PseudoTerminalProcess:
                 if deadline is not None:
                     sleep_for = min(sleep_for, max(0.0, deadline - time.time()))
                 if sleep_for > 0:
+                    sleep_start = time.perf_counter_ns()
                     time.sleep(sleep_for)
+                    sleep_ns += time.perf_counter_ns() - sleep_start
         finally:
             stop_callbacks.set()
             for thread in callback_threads:
@@ -1585,7 +1655,7 @@ class PseudoTerminalProcess:
     def _read_chunk(self) -> bytes | None:
         try:
             assert self._proc is not None
-            return self._proc.read_chunk(timeout=0.1)
+            return self._proc.read_chunk(timeout=_PTY_READ_CHUNK_TIMEOUT_SECONDS)
         except TimeoutError:
             return None
         except RuntimeError as exc:
@@ -1598,10 +1668,18 @@ class PseudoTerminalProcess:
             raise RuntimeError("Pseudo-terminal process is not running")
 
     def _wait_for_reader(self) -> None:
-        if self._reader_thread is not None:
-            self._reader_thread.join(timeout=2)
-        if self._native_exit_watcher is not None:
-            self._native_exit_watcher.join(timeout=2)
+        reader_thread = self._reader_thread
+        if reader_thread is not None:
+            reader_thread.join(timeout=_PTY_READER_GRACE_JOIN_SECONDS)
+            if reader_thread.is_alive() and self._proc is not None:
+                code = self.poll()
+                if code is not None:
+                    with suppress(RuntimeError):
+                        self._proc.close()
+                    reader_thread.join(timeout=2)
+        watcher_thread = self._native_exit_watcher
+        if watcher_thread is not None:
+            watcher_thread.join(timeout=2)
 
     def _prime_process_metrics(self) -> None:
         metrics = self._native_process_metrics
@@ -1684,9 +1762,13 @@ class PseudoTerminalProcess:
                 if code is not None:
                     detector.mark_exit(code, code in KEYBOARD_INTERRUPT_EXIT_CODES)
                     return
-                time.sleep(0.01)
+                time.sleep(_PTY_POLL_INTERVAL_SECONDS)
 
-        self._native_exit_watcher = threading.Thread(target=watch_for_exit, daemon=True)
+        self._native_exit_watcher = threading.Thread(
+            target=watch_for_exit,
+            daemon=True,
+            name=f"pty-exit-watcher-{self.pid or 'pending'}",
+        )
         self._native_exit_watcher.start()
 
     def _decode(self, data: bytes) -> str | bytes:
@@ -1722,12 +1804,14 @@ class PseudoTerminalProcess:
     def _wait_until_exit(self, timeout: float) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.poll() is not None:
+            code = self.poll()
+            if code is not None:
                 self._wait_for_reader()
                 self._finalize("exit")
                 return True
-            time.sleep(0.01)
-        if self.poll() is not None:
+            time.sleep(_PTY_POLL_INTERVAL_SECONDS)
+        code = self.poll()
+        if code is not None:
             self._wait_for_reader()
             self._finalize("exit")
             return True
@@ -1859,6 +1943,14 @@ class InteractiveProcess:
             raise RuntimeError("Interactive process is not running")
         self.interrupt_count += 1
         self.interrupted_by_caller = True
+        if (
+            sys.platform != "win32"
+            and self.launch_spec.mode is InteractiveMode.CONSOLE_ISOLATED
+            and self.pid is not None
+        ):
+            with suppress(OSError, AttributeError):
+                os.killpg(self.pid, signal.SIGINT)
+                return
         self._proc.send_interrupt()
 
     @property

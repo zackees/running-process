@@ -551,6 +551,13 @@ impl NativePtyProcess {
         self.reader.condvar.notify_all();
     }
 
+    fn store_returncode(&self, code: i32) {
+        *self
+            .returncode
+            .lock()
+            .expect("pty returncode mutex poisoned") = Some(code);
+    }
+
     /// Synchronously tear down the PTY and reap the child.
     ///
     /// This MUST NOT be called while holding the Python GIL — `child.wait()`
@@ -607,10 +614,7 @@ impl NativePtyProcess {
         #[cfg(windows)]
         drop(_job);
 
-        *self
-            .returncode
-            .lock()
-            .expect("pty returncode mutex poisoned") = Some(code);
+        self.store_returncode(code);
         self.mark_reader_closed();
         Ok(())
     }
@@ -1312,10 +1316,7 @@ impl NativePtyProcess {
         let status = handles.child.try_wait().map_err(to_py_err)?;
         let code = status.map(portable_exit_code);
         if code.is_some() {
-            *self
-                .returncode
-                .lock()
-                .expect("pty returncode mutex poisoned") = code;
+            self.store_returncode(code.expect("checked is_some"));
         }
         Ok(code)
     }

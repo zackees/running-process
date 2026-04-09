@@ -439,27 +439,28 @@ class RunningProcess:
             )
         if self._pty_process is not None:
             effective_timeout = timeout if timeout is not None else self.timeout
-            deadline = time.time() + effective_timeout if effective_timeout is not None else None
-            while True:
-                code = self.poll()
-                if code is not None:
-                    break
-                if deadline is not None and time.time() >= deadline:
-                    self._handle_timeout(effective_timeout)
-                if echo:
+            if not echo:
+                code = self._pty_process.wait(
+                    timeout=effective_timeout,
+                    raise_on_abnormal_exit=raise_on_abnormal_exit,
+                )
+            else:
+                deadline = time.time() + effective_timeout if effective_timeout is not None else None
+                while True:
+                    code = self.poll()
+                    if code is not None:
+                        code = self._pty_process.wait(timeout=0)
+                        break
+                    if deadline is not None and time.time() >= deadline:
+                        self._handle_timeout(effective_timeout)
                     for line in self.drain_stdout():
                         _safe_console_write(sys.stdout, line)
-                time.sleep(0.01)
-            if echo:
+                    time.sleep(0.01)
                 for line in self.drain_stdout():
                     _safe_console_write(sys.stdout, line)
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
             self._exit_status = classify_exit_status(code, self.KEYBOARD_INTERRUPT_EXIT_CODES)
-            if code in self.KEYBOARD_INTERRUPT_EXIT_CODES:
-                raise KeyboardInterrupt
-            if raise_on_abnormal_exit and self._exit_status.abnormal:
-                raise ProcessAbnormalExit(self._exit_status)
             return code
         effective_timeout = timeout if timeout is not None else self.timeout
         deadline = time.time() + effective_timeout if effective_timeout is not None else None
