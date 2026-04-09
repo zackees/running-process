@@ -38,13 +38,21 @@ def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(cmd, check=True, **kwargs)
 
 
+def _captured_text_kwargs() -> dict[str, Any]:
+    return {
+        "capture_output": True,
+        "text": True,
+        "errors": "replace",
+    }
+
+
 def run_capture(cmd: list[str]) -> str:
-    result: subprocess.CompletedProcess[str] = run(cmd, capture_output=True, text=True)
+    result: subprocess.CompletedProcess[str] = run(cmd, **_captured_text_kwargs())
     return result.stdout.strip()
 
 
 def run_capture_allow_failure(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, **_captured_text_kwargs())
 
 
 def read_project_meta() -> tuple[str, str]:
