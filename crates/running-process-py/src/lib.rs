@@ -24,6 +24,16 @@ use running_process_core::{
 };
 use sysinfo::{Pid, ProcessRefreshKind, Signal, System, UpdateKind};
 
+#[cfg(unix)]
+mod pty_posix;
+#[cfg(windows)]
+mod pty_windows;
+
+#[cfg(unix)]
+use pty_posix as pty_platform;
+#[cfg(windows)]
+use pty_windows as pty_platform;
+
 fn to_py_err(err: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(err.to_string())
 }
@@ -541,29 +551,112 @@ impl NativePtyProcess {
         self.reader.condvar.notify_all();
     }
 
+    /// Synchronously tear down the PTY and reap the child.
+    ///
+    /// This MUST NOT be called while holding the Python GIL — `child.wait()`
+    /// can block indefinitely on Windows ConPTY (the child stays alive until
+    /// every handle to the master pipe is dropped, including the one held by
+    /// the background reader thread). Always wrap this in `py.allow_threads`
+    /// from a Python-callable method.
     fn close_impl(&self) -> PyResult<()> {
         let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
-        let Some(mut handles) = guard.take() else {
+        let Some(handles) = guard.take() else {
             self.mark_reader_closed();
             return Ok(());
         };
+        // Release the lock while we wait so other threads can still touch
+        // unrelated fields on this object (e.g. the reader buffer).
+        drop(guard);
 
-        let status = handles.child.try_wait().map_err(to_py_err)?;
-        let code = match status {
-            Some(status) => portable_exit_code(status),
-            None => {
-                handles.child.kill().map_err(to_py_err)?;
-                let status = handles.child.wait().map_err(to_py_err)?;
-                portable_exit_code(status)
-            }
+        #[cfg(windows)]
+        let NativePtyHandles {
+            master,
+            writer,
+            mut child,
+            _job,
+        } = handles;
+        #[cfg(not(windows))]
+        let NativePtyHandles {
+            master,
+            writer,
+            mut child,
+        } = handles;
+
+        // Kill first so the child has stopped writing before we tear down
+        // ConPTY. On Windows, ClosePseudoConsole (triggered by dropping
+        // master) does not always terminate the child, so we explicitly
+        // TerminateProcess it.
+        let _ = child.kill();
+
+        // Drop the writer/master so the background reader thread sees EOF
+        // and releases its handle. Otherwise the reader stays blocked
+        // forever holding a master clone, which keeps ConPTY alive.
+        drop(writer);
+        drop(master);
+
+        // Now block until the child is reaped. This is safe to call
+        // unbounded because `close()` invoked us inside `py.allow_threads`,
+        // so the GIL is released and other Python threads can make
+        // progress. After the explicit kill() above, this returns within
+        // milliseconds in practice.
+        let code = match child.wait() {
+            Ok(status) => portable_exit_code(status),
+            Err(_) => -9,
         };
+        drop(child);
+        #[cfg(windows)]
+        drop(_job);
+
         *self
             .returncode
             .lock()
             .expect("pty returncode mutex poisoned") = Some(code);
-        drop(handles);
         self.mark_reader_closed();
         Ok(())
+    }
+
+    /// Best-effort, non-blocking teardown for use from `Drop`.
+    ///
+    /// `Drop` runs while Python holds the GIL (it is invoked by PyO3 during
+    /// finalization), so we cannot call any blocking syscalls here. We kill
+    /// the child, drop every handle so the OS reclaims the file descriptors,
+    /// and let the OS reap the process. The background reader thread will
+    /// notice EOF on its master clone and exit on its own.
+    fn close_nonblocking(&self) {
+        let Ok(mut guard) = self.handles.lock() else {
+            return;
+        };
+        let Some(handles) = guard.take() else {
+            self.mark_reader_closed();
+            return;
+        };
+        drop(guard);
+
+        #[cfg(windows)]
+        let NativePtyHandles {
+            master,
+            writer,
+            mut child,
+            _job,
+        } = handles;
+        #[cfg(not(windows))]
+        let NativePtyHandles {
+            master,
+            writer,
+            mut child,
+        } = handles;
+
+        let _ = child.kill();
+        // Drop writer + master so the reader thread sees EOF immediately.
+        drop(writer);
+        drop(master);
+        // Do NOT call child.wait() here — that would block the interpreter.
+        // Drop on the child closes its OS handle; the process is reaped by
+        // the OS once it actually exits.
+        drop(child);
+        #[cfg(windows)]
+        drop(_job);
+        self.mark_reader_closed();
     }
 }
 
@@ -1117,39 +1210,60 @@ impl NativePtyProcess {
 
     #[pyo3(signature = (timeout=None))]
     fn read_chunk(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
-        let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
-        let mut guard = self.reader.state.lock().expect("pty read mutex poisoned");
-        loop {
-            if let Some(chunk) = guard.chunks.pop_front() {
-                return Ok(PyBytes::new(py, &chunk).into_any().unbind());
-            }
-            if guard.closed {
-                return Err(PyRuntimeError::new_err("Pseudo-terminal stream is closed"));
-            }
-            match deadline {
-                Some(deadline) => {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return Err(PyTimeoutError::new_err(
-                            "No pseudo-terminal output available before timeout",
-                        ));
+        // Wait for a chunk WITHOUT holding the GIL. The previous version
+        // called `condvar.wait()` while still holding the GIL, which starved
+        // every other Python thread for the duration of the wait. With a
+        // 100ms read poll loop, that meant the main thread could only run
+        // for a few microseconds every 100ms — turning ordinary calls like
+        // `os.path.realpath` into ~430ms operations and producing apparent
+        // deadlocks during pytest failure formatting.
+        enum WaitOutcome {
+            Chunk(Vec<u8>),
+            Closed,
+            Timeout,
+        }
+
+        let outcome = py.allow_threads(|| -> WaitOutcome {
+            let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
+            let mut guard = self.reader.state.lock().expect("pty read mutex poisoned");
+            loop {
+                if let Some(chunk) = guard.chunks.pop_front() {
+                    return WaitOutcome::Chunk(chunk);
+                }
+                if guard.closed {
+                    return WaitOutcome::Closed;
+                }
+                match deadline {
+                    Some(deadline) => {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            return WaitOutcome::Timeout;
+                        }
+                        let wait = deadline.saturating_duration_since(now);
+                        let result = self
+                            .reader
+                            .condvar
+                            .wait_timeout(guard, wait)
+                            .expect("pty read mutex poisoned");
+                        guard = result.0;
                     }
-                    let wait = deadline.saturating_duration_since(now);
-                    let result = self
-                        .reader
-                        .condvar
-                        .wait_timeout(guard, wait)
-                        .expect("pty read mutex poisoned");
-                    guard = result.0;
-                }
-                None => {
-                    guard = self
-                        .reader
-                        .condvar
-                        .wait(guard)
-                        .expect("pty read mutex poisoned");
+                    None => {
+                        guard = self
+                            .reader
+                            .condvar
+                            .wait(guard)
+                            .expect("pty read mutex poisoned");
+                    }
                 }
             }
+        });
+
+        match outcome {
+            WaitOutcome::Chunk(chunk) => Ok(PyBytes::new(py, &chunk).into_any().unbind()),
+            WaitOutcome::Closed => Err(PyRuntimeError::new_err("Pseudo-terminal stream is closed")),
+            WaitOutcome::Timeout => Err(PyTimeoutError::new_err(
+                "No pseudo-terminal output available before timeout",
+            )),
         }
     }
 
@@ -1158,35 +1272,13 @@ impl NativePtyProcess {
         let handles = guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
-        #[cfg(windows)]
-        let payload = windows_terminal_input_payload(data);
-        #[cfg(not(windows))]
-        let payload = data.to_vec();
+        let payload = pty_platform::input_payload(data);
         handles.writer.write_all(&payload).map_err(to_py_err)?;
         handles.writer.flush().map_err(to_py_err)
     }
 
-    #[cfg(not(windows))]
     fn respond_to_queries(&self, data: &[u8]) -> PyResult<()> {
-        let _ = data;
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    fn respond_to_queries(&self, data: &[u8]) -> PyResult<()> {
-        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
-        let handles = guard
-            .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
-        let query = b"\x1b[6n";
-        let count = data
-            .windows(query.len())
-            .filter(|window| *window == query)
-            .count();
-        for _ in 0..count {
-            handles.writer.write_all(b"\x1b[1;1R").map_err(to_py_err)?;
-        }
-        handles.writer.flush().map_err(to_py_err)
+        pty_platform::respond_to_queries(self, data)
     }
 
     fn resize(&self, rows: u16, cols: u16) -> PyResult<()> {
@@ -1206,18 +1298,7 @@ impl NativePtyProcess {
     }
 
     fn send_interrupt(&self) -> PyResult<()> {
-        #[cfg(unix)]
-        {
-            let guard = self.handles.lock().expect("pty handles mutex poisoned");
-            let handles = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
-            if let Some(pid) = handles.master.process_group_leader() {
-                unix_signal_process_group(pid, UnixSignal::Interrupt).map_err(to_py_err)?;
-                return Ok(());
-            }
-        }
-        self.write(&[0x03])
+        pty_platform::send_interrupt(self)
     }
 
     fn poll(&self) -> PyResult<Option<i32>> {
@@ -1254,40 +1335,45 @@ impl NativePtyProcess {
     }
 
     fn terminate(&self) -> PyResult<()> {
-        self.kill()
+        pty_platform::terminate(self)
     }
 
     fn kill(&self) -> PyResult<()> {
-        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
-        let handles = guard
-            .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
-        handles.child.kill().map_err(to_py_err)?;
-        let status = handles.child.wait().map_err(to_py_err)?;
-        *self
-            .returncode
-            .lock()
-            .expect("pty returncode mutex poisoned") = Some(portable_exit_code(status));
-        Ok(())
+        pty_platform::kill(self)
+    }
+
+    fn terminate_tree(&self) -> PyResult<()> {
+        pty_platform::terminate_tree(self)
+    }
+
+    fn kill_tree(&self) -> PyResult<()> {
+        pty_platform::kill_tree(self)
     }
 
     #[getter]
     fn pid(&self) -> PyResult<Option<u32>> {
-        let guard = self.handles.lock().expect("pty handles mutex poisoned");
-        if let Some(handles) = guard.as_ref() {
+        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+        if let Some(handles) = guard.as_mut() {
             return Ok(handles.child.process_id());
         }
         Ok(None)
     }
 
-    fn close(&self) -> PyResult<()> {
-        self.close_impl()
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        // Release the GIL while waiting on the child — otherwise the wait
+        // blocks every other Python thread (including the one that may need
+        // to drop additional references for the child to actually exit).
+        py.allow_threads(|| self.close_impl())
     }
 }
 
 impl Drop for NativePtyProcess {
     fn drop(&mut self) {
-        let _ = self.close_impl();
+        // Drop runs under the GIL during PyO3 finalization. Calling
+        // `close_impl` here would block the interpreter on `child.wait()`
+        // and deadlock with the background reader thread. Use the
+        // non-blocking teardown instead.
+        self.close_nonblocking();
     }
 }
 
@@ -1373,34 +1459,51 @@ impl NativePtyBuffer {
 
     #[pyo3(signature = (timeout=None))]
     fn read(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
-        let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
-        let mut guard = self.state.lock().expect("pty buffer mutex poisoned");
-        loop {
-            if let Some(chunk) = guard.chunks.pop_front() {
-                return self.decode_chunk(py, &chunk);
-            }
-            if guard.closed {
-                return Err(PyRuntimeError::new_err("Pseudo-terminal stream is closed"));
-            }
-            match deadline {
-                Some(deadline) => {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return Err(PyTimeoutError::new_err(
-                            "No pseudo-terminal output available before timeout",
-                        ));
+        // Mirror NativePtyProcess::read_chunk: do the wait WITHOUT the GIL
+        // so other Python threads (notably the test/main thread) can make
+        // progress instead of being starved by our 100ms read poll loop.
+        enum WaitOutcome {
+            Chunk(Vec<u8>),
+            Closed,
+            Timeout,
+        }
+
+        let outcome = py.allow_threads(|| -> WaitOutcome {
+            let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
+            let mut guard = self.state.lock().expect("pty buffer mutex poisoned");
+            loop {
+                if let Some(chunk) = guard.chunks.pop_front() {
+                    return WaitOutcome::Chunk(chunk);
+                }
+                if guard.closed {
+                    return WaitOutcome::Closed;
+                }
+                match deadline {
+                    Some(deadline) => {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            return WaitOutcome::Timeout;
+                        }
+                        let wait = deadline.saturating_duration_since(now);
+                        let result = self
+                            .condvar
+                            .wait_timeout(guard, wait)
+                            .expect("pty buffer mutex poisoned");
+                        guard = result.0;
                     }
-                    let wait = deadline.saturating_duration_since(now);
-                    let result = self
-                        .condvar
-                        .wait_timeout(guard, wait)
-                        .expect("pty buffer mutex poisoned");
-                    guard = result.0;
-                }
-                None => {
-                    guard = self.condvar.wait(guard).expect("pty buffer mutex poisoned");
+                    None => {
+                        guard = self.condvar.wait(guard).expect("pty buffer mutex poisoned");
+                    }
                 }
             }
+        });
+
+        match outcome {
+            WaitOutcome::Chunk(chunk) => self.decode_chunk(py, &chunk),
+            WaitOutcome::Closed => Err(PyRuntimeError::new_err("Pseudo-terminal stream is closed")),
+            WaitOutcome::Timeout => Err(PyTimeoutError::new_err(
+                "No pseudo-terminal output available before timeout",
+            )),
         }
     }
 
