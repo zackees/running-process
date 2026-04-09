@@ -1036,6 +1036,8 @@ impl NativePtyProcess {
         if argv.is_empty() {
             return Err(PyValueError::new_err("command cannot be empty"));
         }
+        #[cfg(not(windows))]
+        let _ = nice;
         let env_pairs = env
             .map(|mapping| {
                 mapping
@@ -1164,28 +1166,27 @@ impl NativePtyProcess {
         handles.writer.flush().map_err(to_py_err)
     }
 
+    #[cfg(not(windows))]
     fn respond_to_queries(&self, data: &[u8]) -> PyResult<()> {
-        #[cfg(not(windows))]
-        {
-            let _ = data;
-            return Ok(());
+        let _ = data;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn respond_to_queries(&self, data: &[u8]) -> PyResult<()> {
+        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+        let handles = guard
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
+        let query = b"\x1b[6n";
+        let count = data
+            .windows(query.len())
+            .filter(|window| *window == query)
+            .count();
+        for _ in 0..count {
+            handles.writer.write_all(b"\x1b[1;1R").map_err(to_py_err)?;
         }
-        #[cfg(windows)]
-        {
-            let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
-            let handles = guard
-                .as_mut()
-                .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
-            let query = b"\x1b[6n";
-            let count = data
-                .windows(query.len())
-                .filter(|window| *window == query)
-                .count();
-            for _ in 0..count {
-                handles.writer.write_all(b"\x1b[1;1R").map_err(to_py_err)?;
-            }
-            handles.writer.flush().map_err(to_py_err)
-        }
+        handles.writer.flush().map_err(to_py_err)
     }
 
     fn resize(&self, rows: u16, cols: u16) -> PyResult<()> {
