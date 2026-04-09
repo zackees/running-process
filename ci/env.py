@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import platform
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -148,16 +147,6 @@ def _windows_build_env() -> dict[str, str]:
     return env
 
 
-def _configure_zccache(env: dict[str, str]) -> dict[str, str]:
-    zccache = shutil.which("zccache", path=env.get("PATH"))
-    if zccache is None:
-        return env
-    env["RUSTC_WRAPPER"] = zccache
-    env.setdefault("ZCCACHE_DIR", str(repo_root() / ".zccache"))
-    subprocess.run([zccache, "start"], check=False, env=env, capture_output=True, text=True)
-    return env
-
-
 def activate() -> None:
     bin_dir = cargo_bin()
     if not bin_dir.is_dir():
@@ -190,8 +179,5 @@ def clean_env() -> dict[str, str]:
     return env
 
 
-def build_env(*, use_zccache: bool = False) -> dict[str, str]:
-    env = clean_env()
-    if use_zccache:
-        env = _configure_zccache(env)
-    return env
+def build_env() -> dict[str, str]:
+    return clean_env()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 import shlex
 import sys
 import threading
@@ -35,7 +36,6 @@ from running_process.expect import (
     ensure_text,
     search_expect_pattern,
 )
-from running_process.pid_tracker import register_process, unregister_process
 from running_process.priority import CpuPriority, normalize_nice
 
 _SUPPORTED_PTY_PLATFORMS = {"win32", "linux", "darwin"}
@@ -283,6 +283,79 @@ class _IdleSample:
     disk_io_bytes: int
     network_io_bytes: int
     returncode: int | None
+
+
+@dataclass(slots=True)
+class _TerminalControlStripper:
+    _pending: bytearray = field(default_factory=bytearray)
+    _string_terminator: bytes | None = None
+
+    def strip(self, chunk: bytes) -> bytes:
+        if not chunk and not self._pending:
+            return b""
+        data = bytes(self._pending) + bytes(chunk)
+        self._pending.clear()
+        output = bytearray()
+        index = 0
+
+        while index < len(data):
+            if self._string_terminator is not None:
+                terminator = self._string_terminator
+                terminator_index = data.find(terminator, index)
+                if terminator_index == -1:
+                    self._pending.extend(data[index:])
+                    break
+                index = terminator_index + len(terminator)
+                self._string_terminator = None
+                continue
+
+            byte = data[index]
+            if byte == 0x1B:
+                if index + 1 >= len(data):
+                    self._pending.append(byte)
+                    break
+                marker = data[index + 1]
+                if marker == ord("["):
+                    end = _find_csi_end(data, index + 2)
+                    if end is None:
+                        self._pending.extend(data[index:])
+                        break
+                    index = end + 1
+                    continue
+                if marker == ord("]"):
+                    self._string_terminator = b"\x07"
+                    index += 2
+                    continue
+                if marker in {ord("P"), ord("X"), ord("^"), ord("_")}:
+                    self._string_terminator = b"\x1b\\"
+                    index += 2
+                    continue
+                index += 2
+                continue
+            if byte in {0x08, 0x7F}:
+                index += 1
+                continue
+            output.append(byte)
+            index += 1
+
+        return bytes(output)
+
+
+def _find_csi_end(data: bytes, start: int) -> int | None:
+    for index in range(start, len(data)):
+        current = data[index]
+        if 0x40 <= current <= 0x7E:
+            return index
+    return None
+
+
+_TERMINAL_FRAGMENT_RE = re.compile(rb"(?:\d+;){2,}\d+_")
+
+
+def _strip_terminal_fragments(chunk: bytes) -> bytes:
+    if not chunk:
+        return chunk
+    return _TERMINAL_FRAGMENT_RE.sub(b"", chunk)
 
 
 @dataclass(slots=True)
@@ -585,10 +658,14 @@ def _run_pty_reader_loop(process_ref: weakref.ReferenceType[PseudoTerminalProces
                 if process._proc is not None:
                     process._proc.respond_to_queries(chunk)
                 control_bytes = _control_churn_bytes(chunk)
+                rendered_chunk = process._terminal_control_stripper.strip(chunk)
+                if control_bytes and rendered_chunk:
+                    rendered_chunk = _strip_terminal_fragments(rendered_chunk)
                 process.last_activity_at = time.time()
                 process._pty_output_bytes_total += max(0, len(chunk) - control_bytes)
                 process._pty_control_churn_bytes_total += control_bytes
-                process._buffer.record_output(chunk)
+                if rendered_chunk:
+                    process._buffer.record_output(rendered_chunk)
                 if process._native_idle_detector is not None:
                     process._native_idle_detector.record_output(chunk)
             finally:
@@ -658,6 +735,7 @@ class PseudoTerminalProcess:
         self._pty_input_bytes_total = 0
         self._pty_output_bytes_total = 0
         self._pty_control_churn_bytes_total = 0
+        self._terminal_control_stripper = _TerminalControlStripper()
         self._native_idle_detector: NativeIdleDetector | None = None
         self._native_process_metrics: NativeProcessMetrics | None = None
         self._native_exit_watcher: threading.Thread | None = None
@@ -691,12 +769,6 @@ class PseudoTerminalProcess:
             self._native_process_metrics = NativeProcessMetrics(self.pid)
         self._prime_process_metrics()
         self._close_finalizer = weakref.finalize(self, _close_native_pty_process, self._proc)
-        register_process(
-            self.pid,
-            kind="pseudo_terminal_process",
-            command=self.command,
-            cwd=self.cwd,
-        )
         self._reader_thread = threading.Thread(
             target=_run_pty_reader_loop,
             args=(weakref.ref(self),),
@@ -1627,7 +1699,6 @@ class PseudoTerminalProcess:
             return
         self._finalized = True
         self._end_time = self._end_time or time.time()
-        unregister_process(self.pid)
         self.exit_reason = (
             "interrupt" if reason == "exit" and self.interrupted_by_caller else reason
         )
@@ -1721,7 +1792,6 @@ class InteractiveProcess:
             ),
         )
         self._proc.start()
-        register_process(self.pid, kind="interactive_process", command=self.command, cwd=self.cwd)
 
     def poll(self) -> int | None:
         if self._proc is None:
@@ -1811,7 +1881,6 @@ class InteractiveProcess:
             return
         self._finalized = True
         self._end_time = time.time()
-        unregister_process(self.pid)
         self.exit_reason = (
             "interrupt" if reason == "exit" and self.interrupted_by_caller else reason
         )

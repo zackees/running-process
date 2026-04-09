@@ -15,7 +15,6 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use regex::Regex;
-use rusqlite::{params, Connection};
 use running_process_core::{
     CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StdinMode, StreamEvent, StreamKind,
 };
@@ -51,6 +50,18 @@ struct ActiveProcessRecord {
     cwd: Option<String>,
     started_at: f64,
 }
+
+type TrackedProcessEntry = (u32, f64, String, String, Option<String>);
+type ActiveProcessEntry = (u32, String, String, Option<String>, f64);
+type ExpectDetails = (String, usize, usize, Vec<String>);
+type ExpectResult = (
+    String,
+    String,
+    Option<String>,
+    Option<usize>,
+    Option<usize>,
+    Vec<String>,
+);
 
 fn active_process_registry() -> &'static Mutex<HashMap<u32, ActiveProcessRecord>> {
     static ACTIVE_PROCESSES: OnceLock<Mutex<HashMap<u32, ActiveProcessRecord>>> = OnceLock::new();
@@ -104,7 +115,9 @@ fn process_created_at(pid: u32) -> Option<f64> {
             .with_memory()
             .with_exe(UpdateKind::Never),
     );
-    system.process(pid).map(|process| process.start_time() as f64)
+    system
+        .process(pid)
+        .map(|process| process.start_time() as f64)
 }
 
 fn same_process_identity(pid: u32, created_at: f64, tolerance_seconds: f64) -> bool {
@@ -112,6 +125,106 @@ fn same_process_identity(pid: u32, created_at: f64, tolerance_seconds: f64) -> b
         return false;
     };
     (actual - created_at).abs() <= tolerance_seconds
+}
+
+fn tracked_process_db_path() -> PyResult<PathBuf> {
+    if let Ok(value) = std::env::var("RUNNING_PROCESS_PID_DB") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
+    #[cfg(windows)]
+    let base_dir = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+
+    #[cfg(not(windows))]
+    let base_dir = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| {
+                let mut path = PathBuf::from(home);
+                path.push(".local");
+                path.push("state");
+                path
+            })
+        })
+        .unwrap_or_else(std::env::temp_dir);
+
+    Ok(base_dir
+        .join("running-process")
+        .join("tracked-pids.sqlite3"))
+}
+
+#[pyfunction]
+fn tracked_pid_db_path_py() -> PyResult<String> {
+    Ok(tracked_process_db_path()?.to_string_lossy().into_owned())
+}
+
+#[pyfunction]
+#[pyo3(signature = (pid, created_at, kind, command, cwd=None))]
+fn track_process_pid(
+    pid: u32,
+    created_at: f64,
+    kind: &str,
+    command: &str,
+    cwd: Option<String>,
+) -> PyResult<()> {
+    let _ = created_at;
+    register_active_process(pid, kind, command, cwd, unix_now_seconds());
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(signature = (pid, kind, command, cwd=None))]
+fn native_register_process(
+    pid: u32,
+    kind: &str,
+    command: &str,
+    cwd: Option<String>,
+) -> PyResult<()> {
+    register_active_process(pid, kind, command, cwd, unix_now_seconds());
+    Ok(())
+}
+
+#[pyfunction]
+fn untrack_process_pid(pid: u32) -> PyResult<()> {
+    unregister_active_process(pid);
+    Ok(())
+}
+
+#[pyfunction]
+fn native_unregister_process(pid: u32) -> PyResult<()> {
+    unregister_active_process(pid);
+    Ok(())
+}
+
+#[pyfunction]
+fn list_tracked_processes() -> PyResult<Vec<TrackedProcessEntry>> {
+    let registry = active_process_registry()
+        .lock()
+        .expect("active process registry mutex poisoned");
+    let mut entries: Vec<_> = registry
+        .values()
+        .map(|entry| {
+            (
+                entry.pid,
+                process_created_at(entry.pid).unwrap_or(entry.started_at),
+                entry.kind.clone(),
+                entry.command.clone(),
+                entry.cwd.clone(),
+            )
+        })
+        .collect();
+    entries.sort_by(|left, right| {
+        left.1
+            .partial_cmp(&right.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    Ok(entries)
 }
 
 fn kill_process_tree_impl(pid: u32, timeout_seconds: f64) {
@@ -137,7 +250,10 @@ fn kill_process_tree_impl(pid: u32, timeout_seconds: f64) {
         .unwrap_or_else(Instant::now);
     loop {
         system.refresh_processes();
-        if kill_order.iter().all(|target| system.process(*target).is_none()) {
+        if kill_order
+            .iter()
+            .all(|target| system.process(*target).is_none())
+        {
             break;
         }
         if Instant::now() >= deadline {
@@ -174,148 +290,6 @@ fn windows_terminal_input_payload(data: &[u8]) -> Vec<u8> {
     translated
 }
 
-fn tracked_process_db_path() -> PyResult<PathBuf> {
-    if let Ok(value) = std::env::var("RUNNING_PROCESS_PID_DB") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
-    }
-
-    #[cfg(windows)]
-    let base_dir = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-
-    #[cfg(not(windows))]
-    let base_dir = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| {
-                let mut path = PathBuf::from(home);
-                path.push(".local");
-                path.push("state");
-                path
-            })
-        })
-        .unwrap_or_else(std::env::temp_dir);
-
-    Ok(base_dir.join("running-process").join("tracked-pids.sqlite3"))
-}
-
-fn open_tracked_process_db() -> PyResult<Connection> {
-    let db_path = tracked_process_db_path()?;
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).map_err(to_py_err)?;
-    }
-    let connection = Connection::open(db_path).map_err(to_py_err)?;
-    connection
-        .execute_batch(
-            "PRAGMA journal_mode=WAL;
-             CREATE TABLE IF NOT EXISTS tracked_processes (
-                 pid INTEGER PRIMARY KEY,
-                 created_at REAL NOT NULL,
-                 kind TEXT NOT NULL,
-                 command TEXT NOT NULL,
-                 cwd TEXT
-             );",
-        )
-        .map_err(to_py_err)?;
-    Ok(connection)
-}
-
-#[pyfunction]
-fn tracked_pid_db_path_py() -> PyResult<String> {
-    Ok(tracked_process_db_path()?.to_string_lossy().into_owned())
-}
-
-#[pyfunction]
-#[pyo3(signature = (pid, created_at, kind, command, cwd=None))]
-fn track_process_pid(
-    pid: u32,
-    created_at: f64,
-    kind: &str,
-    command: &str,
-    cwd: Option<String>,
-) -> PyResult<()> {
-    let connection = open_tracked_process_db()?;
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO tracked_processes(pid, created_at, kind, command, cwd)
-             VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![pid, created_at, kind, command, cwd],
-        )
-        .map_err(to_py_err)?;
-    Ok(())
-}
-
-#[pyfunction]
-#[pyo3(signature = (pid, kind, command, cwd=None))]
-fn native_register_process(pid: u32, kind: &str, command: &str, cwd: Option<String>) -> PyResult<()> {
-    let created_at = match process_created_at(pid) {
-        Some(value) => value,
-        None => return Ok(()),
-    };
-    let connection = open_tracked_process_db()?;
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO tracked_processes(pid, created_at, kind, command, cwd)
-             VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![pid, created_at, kind, command, cwd.clone()],
-        )
-        .map_err(to_py_err)?;
-    register_active_process(pid, kind, command, cwd, unix_now_seconds());
-    Ok(())
-}
-
-#[pyfunction]
-fn untrack_process_pid(pid: u32) -> PyResult<()> {
-    let connection = open_tracked_process_db()?;
-    connection
-        .execute("DELETE FROM tracked_processes WHERE pid = ?1", params![pid])
-        .map_err(to_py_err)?;
-    Ok(())
-}
-
-#[pyfunction]
-fn native_unregister_process(pid: u32) -> PyResult<()> {
-    unregister_active_process(pid);
-    let connection = open_tracked_process_db()?;
-    connection
-        .execute("DELETE FROM tracked_processes WHERE pid = ?1", params![pid])
-        .map_err(to_py_err)?;
-    Ok(())
-}
-
-#[pyfunction]
-fn list_tracked_processes() -> PyResult<Vec<(u32, f64, String, String, Option<String>)>> {
-    let connection = open_tracked_process_db()?;
-    let mut statement = connection
-        .prepare(
-            "SELECT pid, created_at, kind, command, cwd
-             FROM tracked_processes
-             ORDER BY created_at ASC, pid ASC",
-        )
-        .map_err(to_py_err)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, u32>(0)?,
-                row.get::<_, f64>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })
-        .map_err(to_py_err)?;
-
-    let mut items = Vec::new();
-    for row in rows {
-        items.push(row.map_err(to_py_err)?);
-    }
-    Ok(items)
-}
-
 #[pyfunction]
 fn native_get_process_tree_info(pid: u32) -> String {
     let system = System::new_all();
@@ -325,11 +299,7 @@ fn native_get_process_tree_info(pid: u32) -> String {
     };
 
     let mut info = vec![
-        format!(
-            "Process {} ({})",
-            pid.as_u32(),
-            process.name()
-        ),
+        format!("Process {} ({})", pid.as_u32(), process.name()),
         format!("Status: {:?}", process.status()),
     ];
     let children = descendant_pids(&system, pid);
@@ -337,11 +307,7 @@ fn native_get_process_tree_info(pid: u32) -> String {
         info.push("Child processes:".to_string());
         for child_pid in children {
             if let Some(child) = system.process(child_pid) {
-                info.push(format!(
-                    "  Child {} ({})",
-                    child_pid.as_u32(),
-                    child.name()
-                ));
+                info.push(format!("  Child {} ({})", child_pid.as_u32(), child.name()));
             }
         }
     }
@@ -370,55 +336,25 @@ fn native_is_same_process(pid: u32, created_at: f64, tolerance_seconds: f64) -> 
 fn native_cleanup_tracked_processes(
     tolerance_seconds: f64,
     kill_timeout_seconds: f64,
-) -> PyResult<Vec<(u32, f64, String, String, Option<String>)>> {
-    let connection = open_tracked_process_db()?;
-    let mut statement = connection
-        .prepare(
-            "SELECT pid, created_at, kind, command, cwd
-             FROM tracked_processes
-             ORDER BY created_at ASC, pid ASC",
-        )
-        .map_err(to_py_err)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, u32>(0)?,
-                row.get::<_, f64>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })
-        .map_err(to_py_err)?;
-
-    let mut entries = Vec::new();
-    for row in rows {
-        entries.push(row.map_err(to_py_err)?);
-    }
-    drop(statement);
+) -> PyResult<Vec<TrackedProcessEntry>> {
+    let entries = list_tracked_processes()?;
 
     let mut killed = Vec::new();
     for entry in entries {
         let pid = entry.0;
         if !same_process_identity(pid, entry.1, tolerance_seconds) {
             unregister_active_process(pid);
-            connection
-                .execute("DELETE FROM tracked_processes WHERE pid = ?1", params![pid])
-                .map_err(to_py_err)?;
             continue;
         }
         kill_process_tree_impl(pid, kill_timeout_seconds);
         unregister_active_process(pid);
-        connection
-            .execute("DELETE FROM tracked_processes WHERE pid = ?1", params![pid])
-            .map_err(to_py_err)?;
         killed.push(entry);
     }
     Ok(killed)
 }
 
 #[pyfunction]
-fn native_list_active_processes() -> Vec<(u32, String, String, Option<String>, f64)> {
+fn native_list_active_processes() -> Vec<ActiveProcessEntry> {
     let registry = active_process_registry()
         .lock()
         .expect("active process registry mutex poisoned");
@@ -444,6 +380,7 @@ fn native_list_active_processes() -> Vec<(u32, String, String, Option<String>, f
 }
 
 #[pyfunction]
+#[allow(clippy::needless_return)]
 fn native_apply_process_nice(pid: u32, nice: i32) -> PyResult<()> {
     #[cfg(windows)]
     {
@@ -468,9 +405,8 @@ fn native_apply_process_nice(pid: u32, nice: i32) -> PyResult<()> {
             NORMAL_PRIORITY_CLASS
         };
 
-        let handle = unsafe {
-            OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, 0, pid)
-        };
+        let handle =
+            unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, 0, pid) };
         if handle.is_null() {
             return Err(to_py_err(std::io::Error::last_os_error()));
         }
@@ -553,7 +489,8 @@ impl NativeProcessMetrics {
         (
             true,
             process.cpu_usage(),
-            disk.total_read_bytes.saturating_add(disk.total_written_bytes),
+            disk.total_read_bytes
+                .saturating_add(disk.total_written_bytes),
             0,
         )
     }
@@ -693,6 +630,7 @@ struct NativeRunningProcess {
     encoding: Option<String>,
     errors: Option<String>,
     creationflags: Option<u32>,
+    #[cfg(unix)]
     create_process_group: bool,
 }
 
@@ -782,6 +720,7 @@ impl NativeRunningProcess {
             encoding,
             errors,
             creationflags,
+            #[cfg(unix)]
             create_process_group,
         })
     }
@@ -818,12 +757,12 @@ impl NativeRunningProcess {
     }
 
     fn terminate_group(&self) -> PyResult<()> {
-        let pid = self
-            .inner
-            .pid()
-            .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
         #[cfg(unix)]
         {
+            let pid = self
+                .inner
+                .pid()
+                .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
             if self.create_process_group {
                 let result = unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
                 if result == 0 {
@@ -849,6 +788,7 @@ impl NativeRunningProcess {
         self.inner.returncode()
     }
 
+    #[allow(clippy::needless_return)]
     fn send_interrupt(&self) -> PyResult<()> {
         let pid = self
             .inner
@@ -866,7 +806,8 @@ impl NativeRunningProcess {
                     "send_interrupt on Windows requires CREATE_NEW_PROCESS_GROUP",
                 ));
             }
-            let result = unsafe { GenerateConsoleCtrlEvent(winapi::um::wincon::CTRL_BREAK_EVENT, pid) };
+            let result =
+                unsafe { GenerateConsoleCtrlEvent(winapi::um::wincon::CTRL_BREAK_EVENT, pid) };
             if result == 0 {
                 return Err(to_py_err(std::io::Error::last_os_error()));
             }
@@ -890,12 +831,12 @@ impl NativeRunningProcess {
     }
 
     fn kill_group(&self) -> PyResult<()> {
-        let pid = self
-            .inner
-            .pid()
-            .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
         #[cfg(unix)]
         {
+            let pid = self
+                .inner
+                .pid()
+                .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
             if self.create_process_group {
                 let result = unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
                 if result == 0 {
@@ -1026,7 +967,7 @@ impl NativeRunningProcess {
         pattern: &str,
         is_regex: bool,
         timeout: Option<f64>,
-    ) -> PyResult<(String, String, Option<String>, Option<usize>, Option<usize>, Vec<String>)> {
+    ) -> PyResult<ExpectResult> {
         let stream_kind = if stream == "combined" {
             None
         } else {
@@ -1057,7 +998,9 @@ impl NativeRunningProcess {
                 if now >= limit {
                     Duration::from_secs(0)
                 } else {
-                    limit.saturating_duration_since(now).min(Duration::from_millis(100))
+                    limit
+                        .saturating_duration_since(now)
+                        .min(Duration::from_millis(100))
                 }
             });
             if deadline.is_some_and(|limit| Instant::now() >= limit) {
@@ -1241,7 +1184,10 @@ impl NativePtyProcess {
                 .as_mut()
                 .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
             let query = b"\x1b[6n";
-            let count = data.windows(query.len()).filter(|window| *window == query).count();
+            let count = data
+                .windows(query.len())
+                .filter(|window| *window == query)
+                .count();
             for _ in 0..count {
                 handles.writer.write_all(b"\x1b[1;1R").map_err(to_py_err)?;
             }
@@ -1557,7 +1503,11 @@ impl NativeRunningProcess {
         Ok(text)
     }
 
-    fn read_status_text(&self, stream: Option<StreamKind>, timeout: Option<Duration>) -> PyResult<ReadStatus<Vec<u8>>> {
+    fn read_status_text(
+        &self,
+        stream: Option<StreamKind>,
+        timeout: Option<Duration>,
+    ) -> PyResult<ReadStatus<Vec<u8>>> {
         Ok(match stream {
             Some(kind) => self.inner.read_stream(kind, timeout),
             None => match self.inner.read_combined(timeout) {
@@ -1573,7 +1523,7 @@ impl NativeRunningProcess {
         buffer: &str,
         pattern: &str,
         is_regex: bool,
-    ) -> PyResult<Option<(String, usize, usize, Vec<String>)>> {
+    ) -> PyResult<Option<ExpectDetails>> {
         if !is_regex {
             let Some(start) = buffer.find(pattern) else {
                 return Ok(None);
@@ -1596,7 +1546,11 @@ impl NativeRunningProcess {
         let groups = captures
             .iter()
             .skip(1)
-            .map(|group| group.map(|value| value.as_str().to_string()).unwrap_or_default())
+            .map(|group| {
+                group
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_default()
+            })
             .collect();
         Ok(Some((
             whole.as_str().to_string(),
@@ -1638,6 +1592,7 @@ impl NativePtyBuffer {
 #[pymethods]
 impl NativeIdleDetector {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (timeout_seconds, stability_window_seconds, sample_interval_seconds, enabled_signal, reset_on_input=true, reset_on_output=true, count_control_churn_as_output=true, initial_idle_for_seconds=0.0))]
     fn new(
         py: Python<'_>,
@@ -1866,7 +1821,9 @@ fn assign_child_to_windows_kill_on_close_job(
 
     use winapi::shared::minwindef::FALSE;
     use winapi::um::handleapi::INVALID_HANDLE_VALUE;
-    use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
+    use winapi::um::jobapi2::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+    };
     use winapi::um::winnt::{
         JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -1965,7 +1922,10 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(native_is_same_process, module)?)?;
     module.add_function(wrap_pyfunction!(native_cleanup_tracked_processes, module)?)?;
     module.add_function(wrap_pyfunction!(native_apply_process_nice, module)?)?;
-    module.add_function(wrap_pyfunction!(native_windows_terminal_input_bytes, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        native_windows_terminal_input_bytes,
+        module
+    )?)?;
     module.add("VERSION", PyString::new(_py, env!("CARGO_PKG_VERSION")))?;
     Ok(())
 }

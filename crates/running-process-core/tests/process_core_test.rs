@@ -1,5 +1,7 @@
 use std::env;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -8,7 +10,12 @@ use running_process_core::{
     CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StdinMode, StreamKind,
 };
 
-fn config(command: CommandSpec, capture: bool, stdin_mode: StdinMode, nice: Option<i32>) -> ProcessConfig {
+fn config(
+    command: CommandSpec,
+    capture: bool,
+    stdin_mode: StdinMode,
+    nice: Option<i32>,
+) -> ProcessConfig {
     ProcessConfig {
         command,
         cwd: None,
@@ -242,9 +249,8 @@ fn force_killed_parent_reaps_native_child_on_windows() {
     owner.kill().unwrap();
     owner.wait().unwrap();
 
-    let probe = format!(
-        "import psutil, sys; sys.exit(0 if not psutil.pid_exists({child_pid}) else 1)"
-    );
+    let probe =
+        format!("import psutil, sys; sys.exit(0 if not psutil.pid_exists({child_pid}) else 1)");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         let status = Command::new("python")
@@ -255,7 +261,135 @@ fn force_killed_parent_reaps_native_child_on_windows() {
         if status.success() {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "child {child_pid} survived owner death");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "child {child_pid} survived owner death"
+        );
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+#[cfg(windows)]
+fn helper_force_killed_parent_logs_native_child() {
+    if env::var("RUNNING_PROCESS_CORE_HELPER_LOGGED")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+
+    let process = NativeProcess::new(ProcessConfig {
+        ..config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import time; time.sleep(30)".into(),
+            ]),
+            false,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+    process.start().unwrap();
+    println!("OWNER_READY");
+    std::io::stdout().flush().unwrap();
+    thread::sleep(Duration::from_secs(30));
+}
+
+#[test]
+#[cfg(windows)]
+fn repeated_force_killed_parents_leave_no_logged_native_children_on_windows() {
+    let current_exe = env::current_exe().unwrap();
+    let log_path = unique_pid_log_path();
+    let owner_count = 6;
+    let mut owners = Vec::new();
+
+    for _ in 0..owner_count {
+        let mut owner = Command::new(&current_exe)
+            .arg("--exact")
+            .arg("helper_force_killed_parent_logs_native_child")
+            .arg("--nocapture")
+            .env("RUNNING_PROCESS_CORE_HELPER_LOGGED", "1")
+            .env("RUNNING_PROCESS_CHILD_PID_LOG_PATH", &log_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        {
+            let stdout = owner.stdout.take().unwrap();
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let read = reader.read_line(&mut line).unwrap();
+                assert!(read != 0, "helper exited before reporting readiness");
+                if line.trim() == "OWNER_READY" {
+                    break;
+                }
+            }
+        }
+
+        owners.push(owner);
+    }
+
+    for owner in &mut owners {
+        owner.kill().unwrap();
+        owner.wait().unwrap();
+    }
+
+    let child_pids = read_logged_pids(&log_path);
+    assert_eq!(child_pids.len(), owner_count);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let all_dead = child_pids.iter().all(|pid| !pid_exists(*pid));
+        if all_dead {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "some logged child pids survived owner death: {child_pids:?}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let _ = fs::remove_file(&log_path);
+}
+
+#[cfg(windows)]
+fn unique_pid_log_path() -> PathBuf {
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    env::temp_dir().join(format!("running-process-native-child-pids-{suffix}.log"))
+}
+
+#[cfg(windows)]
+fn read_logged_pids(path: &PathBuf) -> Vec<u32> {
+    let content = fs::read_to_string(path).unwrap();
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.parse::<u32>().unwrap())
+        .collect()
+}
+
+#[cfg(windows)]
+fn pid_exists(pid: u32) -> bool {
+    let probe = format!("import psutil, sys; sys.exit(0 if psutil.pid_exists({pid}) else 1)");
+    Command::new("python")
+        .arg("-c")
+        .arg(&probe)
+        .status()
+        .unwrap()
+        .success()
 }

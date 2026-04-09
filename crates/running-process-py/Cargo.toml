@@ -16,7 +16,6 @@ crate-type = ["cdylib"]
 pyo3 = { workspace = true }
 portable-pty = "0.9"
 regex = "1"
-rusqlite = { workspace = true }
 running-process-core = { path = "../running-process-core" }
 sysinfo = "0.30"
 winapi = { version = "0.3", features = ["handleapi", "jobapi2", "processthreadsapi", "winbase", "winnt"] }

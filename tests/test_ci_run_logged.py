@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import io
-from pathlib import Path
 
 
 def _load_run_logged_module():
-    root = Path(__file__).resolve().parents[1]
-    path = root / "ci" / "run_logged.py"
-    spec = importlib.util.spec_from_file_location("ci.run_logged", path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("ci.run_logged")
 
 
 class _Cp1252Stdout:
@@ -38,3 +30,26 @@ def test_write_console_line_replaces_unencodable_characters(monkeypatch) -> None
     module._write_console_line("📦 hello\n")
 
     assert fake_stdout.buffer.getvalue().decode("cp1252") == "? hello\n"
+
+
+def test_stack_dump_timeout_defaults_and_clamps(monkeypatch) -> None:
+    module = _load_run_logged_module()
+
+    monkeypatch.delenv(module._STACK_DUMP_TIMEOUT_ENV, raising=False)
+    assert module._stack_dump_timeout_seconds() == module._DEFAULT_STACK_DUMP_TIMEOUT_SECONDS
+
+    monkeypatch.setenv(module._STACK_DUMP_TIMEOUT_ENV, "3")
+    assert module._stack_dump_timeout_seconds() == 5.0
+
+    monkeypatch.setenv(module._STACK_DUMP_TIMEOUT_ENV, "bad")
+    assert module._stack_dump_timeout_seconds() == module._DEFAULT_STACK_DUMP_TIMEOUT_SECONDS
+
+
+def test_child_env_sets_python_faulthandler(monkeypatch) -> None:
+    module = _load_run_logged_module()
+
+    monkeypatch.delenv("PYTHONFAULTHANDLER", raising=False)
+
+    env = module._child_env()
+
+    assert env["PYTHONFAULTHANDLER"] == "1"

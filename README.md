@@ -263,7 +263,7 @@ For local extension rebuilds, prefer:
 uv run build.py
 ```
 
-That defaults to the dev/editable build path (`maturin develop --uv --profile dev`) and enables `zccache` only when you are using the repo's `dev` dependency group. For publish-grade artifacts, use:
+That defaults to building a dev-profile wheel and reinstalling it into the repo's `uv` environment, which keeps the native extension in `site-packages` instead of copying it into `src/`. For publish-grade artifacts, use:
 
 ```bash
 uv run build.py --release

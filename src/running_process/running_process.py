@@ -31,7 +31,6 @@ from running_process.expect import (
     apply_expect_action,
 )
 from running_process.line_iterator import _RunningProcessLineIterator
-from running_process.pid_tracker import register_process, unregister_process
 from running_process.priority import CpuPriority, normalize_nice
 from running_process.pty import (
     Expect,
@@ -309,7 +308,6 @@ class RunningProcess:
             self.proc.start()
         self._start_time = time.time()
         RunningProcessManagerSingleton.register(self)
-        register_process(self.pid, kind="running_process", command=self.command, cwd=self.cwd)
 
     def _handle_timeout(self, timeout: float) -> None:
         if self.on_timeout is not None:
@@ -393,8 +391,13 @@ class RunningProcess:
         if result is not None and self._end_time is None:
             self._end_time = time.time()
             RunningProcessManagerSingleton.unregister(self)
-            unregister_process(self.pid)
         return result
+
+    def is_running(self) -> bool:
+        return self.poll() is None
+
+    def is_runninng(self) -> bool:
+        return self.is_running()
 
     @property
     def idle_timeout_enabled(self) -> bool:
@@ -452,7 +455,6 @@ class RunningProcess:
                     _safe_console_write(sys.stdout, line)
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
-            unregister_process(self.pid)
             self._exit_status = classify_exit_status(code, self.KEYBOARD_INTERRUPT_EXIT_CODES)
             if code in self.KEYBOARD_INTERRUPT_EXIT_CODES:
                 raise KeyboardInterrupt
@@ -482,7 +484,6 @@ class RunningProcess:
 
         self._end_time = self._end_time or time.time()
         RunningProcessManagerSingleton.unregister(self)
-        unregister_process(self.pid)
         self._exit_status = classify_exit_status(code, self.KEYBOARD_INTERRUPT_EXIT_CODES)
         if code in self.KEYBOARD_INTERRUPT_EXIT_CODES:
             raise KeyboardInterrupt
@@ -515,7 +516,6 @@ class RunningProcess:
         if result.returncode is not None:
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
-            unregister_process(self.pid)
             self._exit_status = classify_exit_status(
                 result.returncode, self.KEYBOARD_INTERRUPT_EXIT_CODES
             )
@@ -546,7 +546,6 @@ class RunningProcess:
         if result.returncode is not None:
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
-            unregister_process(self.pid)
             self._exit_status = classify_exit_status(
                 result.returncode, self.KEYBOARD_INTERRUPT_EXIT_CODES
             )
@@ -583,7 +582,6 @@ class RunningProcess:
         if result.returncode is not None:
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
-            unregister_process(self.pid)
             self._exit_status = classify_exit_status(
                 result.returncode, self.KEYBOARD_INTERRUPT_EXIT_CODES
             )
@@ -596,7 +594,6 @@ class RunningProcess:
             self.proc.kill()
         self._end_time = self._end_time or time.time()
         RunningProcessManagerSingleton.unregister(self)
-        unregister_process(self.pid)
 
     def terminate(self) -> None:
         if self._pty_process is not None:
@@ -605,7 +602,6 @@ class RunningProcess:
             self.proc.terminate()
         self._end_time = self._end_time or time.time()
         RunningProcessManagerSingleton.unregister(self)
-        unregister_process(self.pid)
 
     def send_interrupt(self) -> None:
         if self._pty_process is not None:
@@ -628,7 +624,6 @@ class RunningProcess:
             code = None
         if code is not None:
             RunningProcessManagerSingleton.unregister(self)
-            unregister_process(self.pid)
             return
         with suppress(Exception):
             self.kill()

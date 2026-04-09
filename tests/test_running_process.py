@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import warnings
 from pathlib import Path
@@ -16,21 +17,18 @@ import psutil
 import pytest
 
 from running_process import (
+    DEVNULL,
+    PIPE,
     CalledProcessError,
     CompletedProcess,
     CpuPriority,
-    DEVNULL,
     EndOfStream,
-    PIPE,
     ProcessAbnormalExit,
     ProcessInfo,
     RunningProcess,
     RunningProcessManagerSingleton,
     TimeoutExpired,
-    cleanup_tracked_processes,
-    list_tracked_processes,
     subprocess_run,
-    tracked_pid_db_path,
 )
 from running_process.exit_status import classify_exit_status
 from running_process.process_utils import get_process_tree_info, kill_process_tree
@@ -257,30 +255,6 @@ def test_timeout_kills_process() -> None:
     with pytest.raises(TimeoutError):
         process.wait(timeout=1)
     assert process.finished
-
-
-def test_running_process_registers_pid_in_sqlite_db() -> None:
-    process = RunningProcess([sys.executable, "-c", "import time; time.sleep(10)"])
-    tracked = list_tracked_processes()
-
-    assert tracked_pid_db_path().name == "tracked-pids.sqlite3"
-    assert any(entry.pid == process.pid and entry.kind == "running_process" for entry in tracked)
-
-    process.kill()
-    assert all(entry.pid != process.pid for entry in list_tracked_processes())
-
-
-def test_cleanup_tracked_processes_kills_registered_processes() -> None:
-    process = RunningProcess([sys.executable, "-c", "import time; time.sleep(10)"])
-
-    killed = cleanup_tracked_processes()
-
-    assert any(entry.pid == process.pid for entry in killed)
-    deadline = time.time() + 5
-    while process.poll() is None and time.time() < deadline:
-        time.sleep(0.05)
-    assert process.poll() is not None
-    assert all(entry.pid != process.pid for entry in list_tracked_processes())
 
 
 def test_terminate_finishes_process() -> None:
@@ -658,6 +632,13 @@ def test_invalid_echo_type_raises() -> None:
         process.wait(echo="bad")  # type: ignore[arg-type]
 
 
+def test_is_runninng_compat_alias() -> None:
+    process = RunningProcess([sys.executable, "-c", "import time; time.sleep(0.2)"])
+    assert process.is_runninng() is True
+    process.wait()
+    assert process.is_runninng() is False
+
+
 def test_echo_true_writes_stdout_only(capsys: pytest.CaptureFixture[str]) -> None:
     process = RunningProcess([sys.executable, "-c", "print('hello')"])
     process.wait(echo=True)
@@ -704,6 +685,46 @@ def test_wait_raises_keyboard_interrupt_when_child_gets_sigint() -> None:
     process.send_interrupt()
     with pytest.raises(KeyboardInterrupt):
         process.wait()
+
+
+def test_wait_raises_keyboard_interrupt_promptly_while_main_thread_is_blocked() -> None:
+    creationflags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if sys.platform == "win32" else None
+    )
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import time\n"
+                "print('ready', flush=True)\n"
+                "try:\n"
+                "    time.sleep(30)\n"
+                "except KeyboardInterrupt:\n"
+                "    raise\n"
+            ),
+        ],
+        creationflags=creationflags,
+        timeout=5,
+    )
+    assert process.get_next_stdout_line(timeout=5) == "ready"
+
+    sent_at: list[float] = []
+
+    def trigger_interrupt() -> None:
+        time.sleep(0.1)
+        sent_at.append(time.perf_counter())
+        process.send_interrupt()
+
+    worker = threading.Thread(target=trigger_interrupt, daemon=True)
+    worker.start()
+
+    with pytest.raises(KeyboardInterrupt):
+        process.wait()
+
+    worker.join(timeout=1)
+    assert sent_at
+    assert time.perf_counter() - sent_at[0] < 0.2
 
 
 def test_exit_status_classifies_possible_oom_for_sigkill_on_unix() -> None:
@@ -865,7 +886,7 @@ time.sleep(10)
     assert not psutil.pid_exists(child_pid)
 
 
-def test_running_process_force_killed_parent_reaps_child_and_cleans_registry() -> None:
+def test_running_process_force_killed_parent_reaps_child() -> None:
     if sys.platform != "win32":
         pytest.skip("Windows-specific parent crash behavior")
 
@@ -888,17 +909,6 @@ time.sleep(30)
         assert owner.stdout is not None
         child_pid = int(owner.stdout.readline().strip())
 
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            if any(
-                entry.pid == child_pid and entry.kind == "running_process"
-                for entry in list_tracked_processes()
-            ):
-                break
-            time.sleep(0.05)
-        else:
-            raise AssertionError(f"running process pid {child_pid} was not registered")
-
         owner.kill()
         owner.wait(timeout=5)
 
@@ -907,9 +917,6 @@ time.sleep(30)
             time.sleep(0.05)
 
         assert not psutil.pid_exists(child_pid)
-
-        cleanup_tracked_processes()
-        assert all(entry.pid != child_pid for entry in list_tracked_processes())
     finally:
         with contextlib.suppress(Exception):
             owner.kill()

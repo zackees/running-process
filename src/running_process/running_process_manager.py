@@ -5,7 +5,6 @@ import warnings
 from dataclasses import dataclass
 
 from running_process._native import native_list_active_processes
-from running_process.pid_tracker import unregister_process
 from running_process.process_utils import kill_process_tree
 
 
@@ -27,7 +26,6 @@ class ActiveProcessInfo:
 
     def kill(self) -> None:
         kill_process_tree(self.pid)
-        unregister_process(self.pid)
 
 
 class RunningProcessManager:

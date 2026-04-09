@@ -5,89 +5,99 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import platform
-import shutil
 import subprocess
 import sys
-import sysconfig
 from pathlib import Path
 from typing import Literal
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+DIST = ROOT / "dist"
 
 BuildMode = Literal["dev", "release"]
 
 
 def build_command(mode: BuildMode) -> list[str]:
-    cmd = ["uv", "run"]
-    if mode == "dev":
-        cmd.extend(["maturin", "develop", "--uv", "--profile", "dev"])
-        return cmd
-
-    if platform.system() == "Linux":
-        cmd.extend(["--with", "ziglang"])
+    cmd = [
+        sys.executable,
+        "-m",
+        "maturin",
+    ]
     cmd.extend(
         [
-            "maturin",
             "build",
-            "--release",
             "--interpreter",
             sys.executable,
             "--out",
-            str(ROOT / "dist"),
+            str(DIST),
         ]
     )
-    if platform.system() == "Linux":
-        cmd.extend(["--compatibility", "manylinux2014", "--zig"])
+    if mode == "dev":
+        cmd.extend(["--profile", "dev"])
     else:
-        cmd.extend(["--compatibility", "pypi"])
+        cmd.append("--release")
+        if platform.system() == "Linux":
+            cmd.extend(["--compatibility", "manylinux2014"])
+        else:
+            cmd.extend(["--compatibility", "pypi"])
     return cmd
 
 
-def sync_in_tree_native_artifact() -> None:
-    ext_suffix = sysconfig.get_config_var("EXT_SUFFIX")
-    if not isinstance(ext_suffix, str) or not ext_suffix:
-        return
+def built_wheels() -> list[Path]:
+    return sorted(DIST.glob("running_process-*.whl"), key=lambda path: path.stat().st_mtime)
 
-    source_name = "_native.dll" if platform.system() == "Windows" else f"_native{ext_suffix}"
-    source = ROOT / "target" / "maturin" / source_name
-    if not source.is_file():
-        return
 
-    destination = ROOT / "src" / "running_process" / f"_native{ext_suffix}"
-    try:
-        shutil.copy2(source, destination)
-    except PermissionError:
-        if platform.system() != "Windows":
-            raise
-        print(
-            (
-                f"warning: could not refresh in-tree native artifact at {destination} "
-                "because it is currently in use; the editable install was updated successfully"
-            ),
-            file=sys.stderr,
-            flush=True,
-        )
+def latest_wheel() -> Path:
+    wheels = built_wheels()
+    if not wheels:
+        raise RuntimeError(f"no built wheel found in {DIST}")
+    return wheels[-1]
+
+
+def install_wheel(wheel: Path, *, env: dict[str, str]) -> int:
+    install = subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--reinstall",
+            str(wheel),
+        ],
+        cwd=ROOT,
+        check=False,
+        env=env,
+    )
+    if install.returncode != 0:
+        return install.returncode
+
+    # Clean up the stale editable path file if a prior `maturin develop` left one behind.
+    for pth in (ROOT / ".venv").glob("**/site-packages/running_process.pth"):
+        with contextlib.suppress(OSError):
+            pth.unlink()
+    return 0
 
 
 def run_build(mode: BuildMode) -> int:
     from ci.env import build_env
 
-    env = build_env(use_zccache=mode == "dev")
+    env = build_env()
+    DIST.mkdir(parents=True, exist_ok=True)
+    before = {path.name for path in built_wheels()}
     cmd = build_command(mode)
     print(f"build mode: {mode}", file=sys.stderr, flush=True)
-    if mode == "dev":
-        print(
-            f"zccache: {env.get('RUSTC_WRAPPER', 'disabled')}",
-            file=sys.stderr,
-            flush=True,
-        )
     result = subprocess.run(cmd, cwd=ROOT, check=False, env=env)
-    if result.returncode == 0 and mode == "dev":
-        sync_in_tree_native_artifact()
-    return result.returncode
+    if result.returncode != 0:
+        return result.returncode
+    if mode != "dev":
+        return 0
+
+    wheel = latest_wheel()
+    action = "reinstalling existing dev wheel" if wheel.name in before else "installing dev wheel"
+    print(f"{action}: {wheel.name}", file=sys.stderr, flush=True)
+    return install_wheel(wheel, env=env)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -96,7 +106,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument(
         "--dev",
         action="store_true",
-        help="fast local editable rebuild using maturin develop --uv --profile dev",
+        help="build a dev-profile wheel and reinstall it into the active uv environment",
     )
     mode.add_argument(
         "--quick",

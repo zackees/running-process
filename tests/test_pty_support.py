@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import psutil
 import pytest
+from running_process._native import native_windows_terminal_input_bytes
 
 import running_process.pty as pty_module
 from running_process import (
@@ -26,10 +27,7 @@ from running_process import (
     ProcessIdleDetection,
     RunningProcess,
     WaitCallbackResult,
-    cleanup_tracked_processes,
-    list_tracked_processes,
 )
-from running_process._native import native_windows_terminal_input_bytes
 from running_process.pty import (
     IdleContext,
     IdleDiff,
@@ -109,6 +107,54 @@ def test_pseudo_terminal_preserves_carriage_returns() -> None:
     output = _read_until_contains(process, "second")
     assert "\r" in output
     process.wait(timeout=5)
+
+
+def test_pseudo_terminal_filters_arrow_up_control_sequences_from_subprocess_output() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time; "
+                "sys.stdout.buffer.write(b'prefix'); sys.stdout.flush(); "
+                "payload = ("
+                "    b'\\x1b[0;0;27;1;0;1_'"
+                "    b'\\x1b[0;0;91;1;0;1_'"
+                "    b'\\x1b[0;0;49;1;0;1_'"
+                "    b'\\x1b[0;0;51;1;0;1_'"
+                "    b'\\x1b[0;0;59;1;0;1_'"
+                "    b'\\x1b[0;0;50;1;0;1_'"
+                "    b'\\x1b[0;0;56;1;0;1_'"
+                "    b'\\x1b[0;0;59;1;0;1_'"
+                "    b'\\x1b[0;0;49;1;0;1_'"
+                "    b'\\x1b[0;0;51;1;0;1_'"
+                "    b'\\x1b[0;0;59;1;0;1_'"
+                "    b'\\x1b[0;0;48;1;0;1_'"
+                "    b'\\x1b[0;0;59;1;0;1_'"
+                "    b'\\x1b[0;0;51;1;0;1_'"
+                "    b'\\x1b[0;0;50;1;0;1_'"
+                "    b'\\x1b[0;0;59;1;0;1_'"
+                "    b'\\x1b[0;0;49;1;0;1_'"
+                "); "
+                "sys.stdout.buffer.write(payload[:24]); sys.stdout.flush(); "
+                "time.sleep(0.05); "
+                "sys.stdout.buffer.write(payload[24:]); sys.stdout.flush(); "
+                "time.sleep(0.05); "
+                "sys.stdout.buffer.write(b'\\x1b[?2004l\\x1b[?1049lvisible\\r\\n'); "
+                "sys.stdout.flush()"
+            ),
+        ],
+        text=True,
+    )
+
+    output = _read_until_contains(process, "visible")
+    assert "\x1b" not in output
+    assert "0;0;27;1;0;1_" not in output
+    assert "0;0;59;1;0;1_" not in output
+    assert "?2004l" not in output
+    assert "?1049l" not in output
+    assert output == "prefixvisible\r\n"
+    assert process.wait(timeout=5) == 0
 
 
 def test_pseudo_terminal_discard_output_releases_history_bytes() -> None:
@@ -223,7 +269,7 @@ def test_pseudo_terminal_gc_reaps_child_process() -> None:
     assert not psutil.pid_exists(pid)
 
 
-def test_pseudo_terminal_force_killed_parent_reaps_child_and_cleans_registry() -> None:
+def test_pseudo_terminal_force_killed_parent_reaps_child() -> None:
     if sys.platform != "win32":
         pytest.skip("Windows-specific PTY parent crash behavior")
 
@@ -255,18 +301,6 @@ def test_pseudo_terminal_force_killed_parent_reaps_child_and_cleans_registry() -
         assert child_line.isdigit(), f"expected PTY child pid, got: {child_line!r}"
         child_pid = int(child_line)
 
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            tracked = list_tracked_processes()
-            if any(
-                entry.pid == child_pid and entry.kind == "pseudo_terminal_process"
-                for entry in tracked
-            ):
-                break
-            time.sleep(0.05)
-        else:
-            raise AssertionError(f"PTY child pid {child_pid} was not registered in tracked DB")
-
         owner.kill()
         owner.wait(timeout=5)
 
@@ -275,9 +309,6 @@ def test_pseudo_terminal_force_killed_parent_reaps_child_and_cleans_registry() -
             time.sleep(0.05)
 
         assert not psutil.pid_exists(child_pid)
-
-        cleanup_tracked_processes()
-        assert all(entry.pid != child_pid for entry in list_tracked_processes())
     finally:
         with contextlib.suppress(Exception):
             owner.kill()
@@ -285,7 +316,7 @@ def test_pseudo_terminal_force_killed_parent_reaps_child_and_cleans_registry() -
             owner.wait(timeout=1)
 
 
-def test_interactive_force_killed_parent_reaps_child_and_cleans_registry() -> None:
+def test_interactive_force_killed_parent_reaps_child() -> None:
     if sys.platform != "win32":
         pytest.skip("Windows-specific parent crash behavior")
 
@@ -310,17 +341,6 @@ def test_interactive_force_killed_parent_reaps_child_and_cleans_registry() -> No
         assert owner.stdout is not None
         child_pid = int(owner.stdout.readline().strip())
 
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            if any(
-                entry.pid == child_pid and entry.kind == "interactive_process"
-                for entry in list_tracked_processes()
-            ):
-                break
-            time.sleep(0.05)
-        else:
-            raise AssertionError(f"interactive process pid {child_pid} was not registered")
-
         owner.kill()
         owner.wait(timeout=5)
 
@@ -329,9 +349,6 @@ def test_interactive_force_killed_parent_reaps_child_and_cleans_registry() -> No
             time.sleep(0.05)
 
         assert not psutil.pid_exists(child_pid)
-
-        cleanup_tracked_processes()
-        assert all(entry.pid != child_pid for entry in list_tracked_processes())
     finally:
         with contextlib.suppress(Exception):
             owner.kill()
@@ -1222,40 +1239,6 @@ def test_console_isolated_uses_process_group_on_posix(monkeypatch: pytest.Monkey
 
     assert captured["create_process_group"] is True
     assert process.pid == 1234
-
-
-def test_interactive_process_registers_pid_in_sqlite_db() -> None:
-    class FakeProc:
-        pid = 4321
-
-        def __init__(self, command: object, **kwargs: object) -> None:
-            self.command = command
-            self.kwargs = kwargs
-
-        def start(self) -> None:
-            return None
-
-        def poll(self) -> int | None:
-            return None
-
-        def kill(self) -> None:
-            return None
-
-        def wait(self, timeout: float | None = None) -> int:
-            return 0
-
-    original_native = pty_module.NativeRunningProcess
-    try:
-        pty_module.NativeRunningProcess = FakeProc
-        process = InteractiveProcess([sys.executable, "-c", "print('x')"])
-        assert any(
-            entry.pid == process.pid and entry.kind == "interactive_process"
-            for entry in list_tracked_processes()
-        )
-        process.kill()
-        assert all(entry.pid != process.pid for entry in list_tracked_processes())
-    finally:
-        pty_module.NativeRunningProcess = original_native
 
 
 def test_console_isolated_send_interrupt_uses_killpg_on_posix(

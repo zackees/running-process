@@ -41,36 +41,25 @@ jobs:
         run: uv sync --group dev
 
       - name: Install Toolchain
-        run: uv run python ci/run_logged.py logs/install.log -- python install
+        run: uv run --module ci.run_logged logs/install.log -- uv run --script install
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: running-process-${{ inputs.runs-on }}
 
-      - name: Rust Check
-        run: uv run python ci/run_logged.py logs/rust-check.log -- cargo check --workspace
+      - name: Lint
+        run: uv run --module ci.run_logged logs/lint.log -- uv run --module ci.lint
 
-      - name: Install Extension
-        run: uv run python ci/run_logged.py logs/maturin-develop.log -- uv run maturin develop
-
-      - name: Rust Tests
-        run: uv run python ci/run_logged.py logs/rust-test.log -- cargo test --workspace
-
-      - name: Python Tests
-        run: uv run python ci/run_logged.py logs/python-test.log -- uv run pytest -q
-
-      - name: Live Tests
-        env:
-          RUNNING_PROCESS_LIVE_TESTS: "1"
-        run: uv run python ci/run_logged.py logs/live-test.log -- uv run pytest -m live -q
+      - name: Test Suite
+        run: uv run --module ci.run_logged logs/test.log -- uv run --module ci.test
 
       - name: Build wheel
         if: ${{ inputs.build-dist }}
-        run: uv run python ci/run_logged.py logs/build-wheel.log -- python ci/build_wheel.py
+        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel
 
       - name: Build sdist
         if: ${{ inputs.build-sdist }}
-        run: uv run python ci/run_logged.py logs/build-sdist.log -- uv build --sdist
+        run: uv run --module ci.run_logged logs/build-sdist.log -- uv build --sdist
 
       - name: Upload dist artifacts
         if: ${{ inputs.build-dist }}

@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
+use std::fs::OpenOptions;
 use std::io::Read;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -7,6 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
+
+const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_PATH";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamKind {
@@ -166,6 +170,7 @@ impl NativeProcess {
         }
 
         let mut child = command.spawn().map_err(ProcessError::Spawn)?;
+        log_spawned_child_pid(child.id()).map_err(ProcessError::Spawn)?;
         #[cfg(windows)]
         let job = assign_child_to_windows_kill_on_close_job(&child).map_err(ProcessError::Spawn)?;
         if self.config.capture {
@@ -552,14 +557,29 @@ impl NativeProcess {
     }
 }
 
+fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
+    let Some(path) = std::env::var_os(CHILD_PID_LOG_PATH_ENV) else {
+        return Ok(());
+    };
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(format!("{pid}\n").as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
 #[cfg(windows)]
-fn assign_child_to_windows_kill_on_close_job(child: &Child) -> Result<WindowsJobHandle, std::io::Error> {
+fn assign_child_to_windows_kill_on_close_job(
+    child: &Child,
+) -> Result<WindowsJobHandle, std::io::Error> {
     use std::mem::zeroed;
     use std::os::windows::io::AsRawHandle;
 
     use winapi::shared::minwindef::FALSE;
     use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-    use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
+    use winapi::um::jobapi2::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+    };
     use winapi::um::winnt::{
         JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,

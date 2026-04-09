@@ -14,7 +14,7 @@ authors = [{ name = "Your Name", email = "your.email@example.com" }]
 dependencies = ["psutil>=5.9.0"]
 
 [dependency-groups]
-dev = ["maturin>=1.7,<2", "pytest>=8.0.0", "ruff>=0.8.0", "zccache"]
+dev = ["maturin>=1.7,<2", "pytest>=8.0.0", "ruff>=0.8.0"]
 
 [tool.maturin]
 manifest-path = "crates/running-process-py/Cargo.toml"
@@ -26,7 +26,6 @@ features = ["pyo3/extension-module"]
 minversion = "8.0"
 addopts = ["-ra", "--strict-markers"]
 testpaths = ["tests"]
-pythonpath = ["src"]
 markers = [
     "live: exercises real OS process and signal behavior; skipped unless RUNNING_PROCESS_LIVE_TESTS=1",
 ]
