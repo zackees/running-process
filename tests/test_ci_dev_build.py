@@ -41,6 +41,7 @@ def test_ensure_dev_wheel_reuses_cached_wheel(monkeypatch, tmp_path: Path) -> No
             "--python",
             str(tmp_path / ".venv" / "Scripts" / "python.exe"),
             "--reinstall",
+            "--no-deps",
             str(wheel),
         ]
     ]

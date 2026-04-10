@@ -90,6 +90,7 @@ def _reinstall_wheel(wheel: Path, *, python: Path, root: Path = ROOT) -> int:
             "--python",
             str(python),
             "--reinstall",
+            "--no-deps",
             str(wheel),
         ],
         cwd=root,

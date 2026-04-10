@@ -67,6 +67,7 @@ def install_wheel(wheel: Path, *, env: dict[str, str]) -> int:
             "--python",
             sys.executable,
             "--reinstall",
+            "--no-deps",
             str(wheel),
         ],
         cwd=ROOT,
