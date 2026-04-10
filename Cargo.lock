@@ -335,7 +335,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "running-process-core"
-version = "3.0.6"
+version = "3.0.7"
 dependencies = [
  "libc",
  "thiserror 2.0.18",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "3.0.6"
+version = "3.0.7"
 dependencies = [
  "libc",
  "portable-pty",
