@@ -84,8 +84,8 @@ def test_download_artifacts_scopes_each_run_to_expected_artifact(
         target_dir = Path(cmd[cmd.index("--dir") + 1]) / pattern
         target_dir.mkdir(parents=True, exist_ok=True)
         if pattern == "wheels-linux-x86":
-            (target_dir / "running_process-3.0.2.tar.gz").write_text("sdist", encoding="utf-8")
-        (target_dir / f"running_process-3.0.2-{pattern}.whl").write_text(
+            (target_dir / "running_process-3.0.3.tar.gz").write_text("sdist", encoding="utf-8")
+        (target_dir / f"running_process-3.0.3-{pattern}.whl").write_text(
             "wheel", encoding="utf-8"
         )
         return subprocess.CompletedProcess(cmd, 0)
@@ -101,9 +101,9 @@ def test_download_artifacts_scopes_each_run_to_expected_artifact(
     assert all("--pattern" in cmd for cmd in downloaded)
     assert {cmd[cmd.index("--pattern") + 1] for cmd in downloaded} == set(module.WORKFLOWS.values())
     assert {path.name for path in artifacts} == {
-        "running_process-3.0.2.tar.gz",
+        "running_process-3.0.3.tar.gz",
         *{
-            f"running_process-3.0.2-{artifact_name}.whl"
+            f"running_process-3.0.3-{artifact_name}.whl"
             for artifact_name in module.WORKFLOWS.values()
         },
     }
@@ -131,42 +131,42 @@ def test_download_artifacts_fails_when_expected_artifact_directory_missing(
 def test_select_expected_artifacts_returns_only_matching_existing_files(tmp_path: Path) -> None:
     module = _load_publish_module()
     artifacts = [
-        tmp_path / "running_process-3.0.2.tar.gz",
-        tmp_path / "running_process-3.0.2-cp313-cp313-win_amd64.whl",
-        tmp_path / "running_process-3.0.2-cp313-cp313-win_arm64.whl",
-        tmp_path / "running_process-3.0.2-cp313-cp313-macosx_11_0_arm64.whl",
-        tmp_path / "running_process-3.0.2-cp313-cp313-manylinux2014_aarch64.whl",
+        tmp_path / "running_process-3.0.3.tar.gz",
+        tmp_path / "running_process-3.0.3-cp313-cp313-win_amd64.whl",
+        tmp_path / "running_process-3.0.3-cp313-cp313-win_arm64.whl",
+        tmp_path / "running_process-3.0.3-cp313-cp313-macosx_11_0_arm64.whl",
+        tmp_path / "running_process-3.0.3-cp313-cp313-manylinux2014_aarch64.whl",
         tmp_path / "stray-file.whl",
     ]
     for path in artifacts:
         path.write_text("artifact", encoding="utf-8")
 
     selected, missing = module.select_expected_artifacts(
-        artifacts, name="running_process", version="3.0.2"
+        artifacts, name="running_process", version="3.0.3"
     )
 
     assert {path.name for path in selected} == {
-        "running_process-3.0.2.tar.gz",
-        "running_process-3.0.2-cp313-cp313-win_amd64.whl",
-        "running_process-3.0.2-cp313-cp313-win_arm64.whl",
-        "running_process-3.0.2-cp313-cp313-macosx_11_0_arm64.whl",
-        "running_process-3.0.2-cp313-cp313-manylinux2014_aarch64.whl",
+        "running_process-3.0.3.tar.gz",
+        "running_process-3.0.3-cp313-cp313-win_amd64.whl",
+        "running_process-3.0.3-cp313-cp313-win_arm64.whl",
+        "running_process-3.0.3-cp313-cp313-macosx_11_0_arm64.whl",
+        "running_process-3.0.3-cp313-cp313-manylinux2014_aarch64.whl",
     }
     assert missing == [
-        "running_process-3.0.2-*-manylinux*_x86_64.whl",
-        "running_process-3.0.2-*-macosx*_x86_64.whl",
+        "running_process-3.0.3-*-manylinux*_x86_64.whl",
+        "running_process-3.0.3-*-macosx*_x86_64.whl",
     ]
 
 
 def test_select_expected_artifacts_skips_missing_files_on_disk(tmp_path: Path) -> None:
     module = _load_publish_module()
-    present = tmp_path / "running_process-3.0.2.tar.gz"
-    missing_file = tmp_path / "running_process-3.0.2-cp313-cp313-win_amd64.whl"
+    present = tmp_path / "running_process-3.0.3.tar.gz"
+    missing_file = tmp_path / "running_process-3.0.3-cp313-cp313-win_amd64.whl"
     present.write_text("artifact", encoding="utf-8")
 
     selected, missing = module.select_expected_artifacts(
-        [present, missing_file], name="running_process", version="3.0.2"
+        [present, missing_file], name="running_process", version="3.0.3"
     )
 
-    assert [path.name for path in selected] == ["running_process-3.0.2.tar.gz"]
-    assert "running_process-3.0.2-*-win_amd64.whl" in missing
+    assert [path.name for path in selected] == ["running_process-3.0.3.tar.gz"]
+    assert "running_process-3.0.3-*-win_amd64.whl" in missing

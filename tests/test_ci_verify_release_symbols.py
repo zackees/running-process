@@ -11,7 +11,7 @@ from ci.tiny_pdb_symbols import TINY_PDB_SYMBOLS
 
 
 def _write_release_wheel(tmp_path: Path, *, pdb_bytes: bytes = b"x" * 733_184) -> Path:
-    wheel = tmp_path / "running_process-3.0.2-cp313-cp313-win_amd64.whl"
+    wheel = tmp_path / "running_process-3.0.3-cp313-cp313-win_amd64.whl"
     manifest = {
         "schema_version": 1,
         "symbols": [spec.__dict__ for spec in TINY_PDB_SYMBOLS],
@@ -166,7 +166,7 @@ def test_verify_release_artifact_rejects_disallowed_symbol_families(
 
 
 def test_verify_release_artifact_requires_packaged_pdb(tmp_path: Path) -> None:
-    wheel = tmp_path / "running_process-3.0.2-cp313-cp313-win_amd64.whl"
+    wheel = tmp_path / "running_process-3.0.3-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as zf:
         zf.writestr("running_process/_native.cp313-win_amd64.pyd", b"pyd-bytes")
 
@@ -181,7 +181,7 @@ def test_verify_release_artifact_requires_packaged_pdb(tmp_path: Path) -> None:
 
 def test_format_release_artifact_report_mentions_public_symbol_count() -> None:
     report = {
-        "wheel": "C:/repo/dist/running_process-3.0.2-cp313-cp313-win_amd64.whl",
+        "wheel": "C:/repo/dist/running_process-3.0.3-cp313-cp313-win_amd64.whl",
         "pyd_entry": "running_process/_native.cp313-win_amd64.pyd",
         "pyd_size": 2684416,
         "pdb_entry": "running_process/_native.cp313-win_amd64.pdb",

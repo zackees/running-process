@@ -35,7 +35,7 @@ Critical public behavior areas covered in baseline tests:
 ## Build/Install Gate
 
 - `python -m py_compile src/running_process/pty.py src/running_process/running_process.py` passed.
-- `python build.py` passed and reinstalled wheel `running_process-3.0.2-cp313-cp313-win_amd64.whl`.
+- `python build.py` passed and reinstalled wheel `running_process-3.0.3-cp313-cp313-win_amd64.whl`.
 
 ## Trace/Diagnostics Baseline
 
@@ -51,4 +51,3 @@ Critical public behavior areas covered in baseline tests:
 
 - During Phase 0 validation, `test_pseudo_terminal_wait_for_idle_uses_callable_predicate` exposed a hang caused by `wait_for_idle` loop logic being accidentally nested under `if echo_output`.
 - Fix applied in `src/running_process/pty.py` by restoring loop-body indentation so idle sampling and timeout/exit checks run regardless of `echo_output`.
-

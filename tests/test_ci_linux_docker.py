@@ -131,7 +131,7 @@ def test_main_build_runs_builder_image_then_container(monkeypatch, tmp_path: Pat
 
 def test_main_pytest_uses_existing_wheel_and_runtime_args(monkeypatch, tmp_path: Path) -> None:
     seen: list[list[str]] = []
-    wheel = tmp_path / "running_process-3.0.2-cp311-cp311-musllinux_1_2_x86_64.whl"
+    wheel = tmp_path / "running_process-3.0.3-cp311-cp311-musllinux_1_2_x86_64.whl"
     wheel.write_text("placeholder", encoding="utf-8")
 
     monkeypatch.setattr(linux_docker, "ensure_docker_engine_running", lambda **kwargs: "docker")

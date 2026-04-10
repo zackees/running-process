@@ -34,11 +34,11 @@ def test_write_filter_file_contains_allowlisted_public_symbols(tmp_path: Path) -
 
 
 def test_bundle_windows_tiny_pdb_injects_pdb_and_manifest(tmp_path: Path) -> None:
-    wheel = tmp_path / "running_process-3.0.2-cp313-cp313-win_amd64.whl"
+    wheel = tmp_path / "running_process-3.0.3-cp313-cp313-win_amd64.whl"
     pdb = tmp_path / "_native.tiny.pdb"
     pdb.write_bytes(b"pdb-bytes")
     with zipfile.ZipFile(wheel, "w") as zf:
-        zf.writestr("running_process/__init__.py", "__version__ = '3.0.2'\n")
+        zf.writestr("running_process/__init__.py", "__version__ = '3.0.3'\n")
         zf.writestr("running_process/_native.cp313-win_amd64.pyd", b"native-binary")
 
     bundled = tiny_pdb.bundle_windows_tiny_pdb(wheel, tiny_pdb=pdb, root=tmp_path)
