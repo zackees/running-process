@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from running_process._native import (
     native_list_active_processes,
+    native_process_created_at,
     native_register_process,
     native_unregister_process,
 )
@@ -57,7 +58,17 @@ class RunningProcessManager:
         native_unregister_process(int(pid))
 
     def list_active(self) -> list[ActiveProcessInfo]:
-        return [ActiveProcessInfo(*row) for row in native_list_active_processes()]
+        active: list[ActiveProcessInfo] = []
+        stale_pids: list[int] = []
+        for row in native_list_active_processes():
+            info = ActiveProcessInfo(*row)
+            if native_process_created_at(info.pid) is not None:
+                active.append(info)
+            else:
+                stale_pids.append(info.pid)
+        for pid in stale_pids:
+            native_unregister_process(pid)
+        return active
 
     def dump_active(self) -> None:
         active = self.list_active()

@@ -18,7 +18,8 @@ RUN apk add --no-cache \
 
 FROM substrate AS python-tools
 
-RUN python -m pip install --upgrade pip \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip \
  && python -m pip install "maturin>=1.7,<2"
 
 ENV CARGO_TARGET_DIR=/work/target \
@@ -38,7 +39,9 @@ RUN mkdir -p /work/crates/running-process-core/src /work/crates/running-process-
 
 FROM rust-manifests AS rust-deps
 
-RUN cargo build --release --manifest-path crates/running-process-py/Cargo.toml
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git/db \
+    cargo build --release --manifest-path crates/running-process-py/Cargo.toml
 
 FROM python-tools AS build
 
@@ -47,7 +50,9 @@ COPY Cargo.toml Cargo.lock pyproject.toml README.md LICENSE /work/
 COPY crates /work/crates
 COPY src /work/src
 
-RUN mkdir -p /dist \
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git/db \
+    mkdir -p /dist \
  && python -m maturin build \
     --release \
     --interpreter python \

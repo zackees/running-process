@@ -16,6 +16,7 @@ SKIP_LINUX_DOCKER_ENV = "RUNNING_PROCESS_SKIP_LINUX_DOCKER"
 DEFAULT_TEST_TIMEOUT_SECONDS = "10"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 180.0
+DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS = 600.0
 COMMAND_TIMEOUT_ENV = "RUNNING_PROCESS_TEST_COMMAND_TIMEOUT_SECONDS"
 
 
@@ -76,6 +77,16 @@ def _linux_unit_test_command(
         python,
         *command,
         timeout=DEFAULT_LINUX_TEST_TIMEOUT_SECONDS,
+    )
+
+
+def _release_build_command(python: Path) -> list[str]:
+    return supervised_command(
+        python,
+        str(python),
+        "build.py",
+        "--release",
+        timeout=DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS,
     )
 
 
@@ -167,6 +178,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if not running_on_github_actions() and not skip_linux_docker_preflight():
         if run(_linux_unit_test_command(python, *pytest_args)) != 0:
+            return 1
+    if require_symbols and sys.platform == "win32":
+        if run(_release_build_command(python)) != 0:
             return 1
     if run_live(_supervised_pytest_command(python, "-m", "live", *pytest_args)) != 0:
         return 1

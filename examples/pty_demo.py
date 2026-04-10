@@ -2,6 +2,7 @@
 """PTY Demo - Shows the difference between pipe and PTY output."""
 
 import sys
+
 from running_process import RunningProcess
 
 
@@ -30,7 +31,14 @@ def demo_pipe_vs_pty():
         command = ["cmd", "/c", "echo Hello from PTY!"]
     else:
         # Unix command that checks for TTY
-        command = ["sh", "-c", "if [ -t 0 ]; then echo 'Running in TTY mode'; else echo 'Running in pipe mode'; fi"]
+        command = [
+            "sh",
+            "-c",
+            (
+                "if [ -t 0 ]; then echo 'Running in TTY mode'; "
+                "else echo 'Running in pipe mode'; fi"
+            ),
+        ]
 
     print("Running with pipe (standard mode):")
     proc_pipe = RunningProcess(command, use_pty=False)
@@ -58,7 +66,7 @@ def demo_pipe_vs_pty():
     print("Running command with ANSI codes using PTY:")
     proc_ansi = RunningProcess(ansi_command, use_pty=True)
     exit_code = proc_ansi.wait()
-    print(f"Raw output would contain ANSI codes, but PTY filtered them:")
+    print("Raw output would contain ANSI codes, but PTY filtered them:")
     print(f"Clean output: '{proc_ansi.stdout.strip()}'")
     print()
 

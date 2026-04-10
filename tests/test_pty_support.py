@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import io
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -47,6 +49,11 @@ from tests.process_helpers import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _suppress_pty_text_warning_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RUNNING_PROCESS_NO_PTY_TEXT_WARNING", "1")
+
+
 def _read_until_contains(process: object, needle: str, timeout: float = 10) -> str:
     deadline = time.time() + timeout
     chunks: list[str] = []
@@ -62,6 +69,18 @@ def _read_until_contains(process: object, needle: str, timeout: float = 10) -> s
         if needle in "".join(chunks):
             return "".join(chunks)
     raise AssertionError(f"Did not observe {needle!r} in PTY output: {''.join(chunks)!r}")
+
+
+def _capture_wait_echo_bytes(process: RunningProcess) -> bytes:
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
+    original_stdout = sys.stdout
+    sys.stdout = fake_stdout
+    try:
+        assert process.wait(timeout=5, echo=True) == 0
+        fake_stdout.flush()
+        return fake_stdout.buffer.getvalue()
+    finally:
+        sys.stdout = original_stdout
 
 
 def test_pseudo_terminal_round_trips_interactive_io() -> None:
@@ -114,7 +133,263 @@ def test_pseudo_terminal_preserves_carriage_returns() -> None:
     process.wait(timeout=5)
 
 
-def test_pseudo_terminal_filters_arrow_up_control_sequences_from_subprocess_output() -> None:
+def test_pseudo_terminal_wait_echo_preserves_ansi_color_sequences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.buffer.write(b'\\x1b[31mred\\x1b[0m'); "
+                "sys.stdout.flush()"
+            ),
+        ],
+        use_pty=True,
+        capture=True,
+        text=True,
+    )
+
+    assert process.wait(timeout=5, echo=True) == 0
+    fake_stdout.flush()
+
+    echoed = fake_stdout.buffer.getvalue()
+    assert echoed == process.stdout
+    assert b"red" in echoed
+    assert b"\x1b[" in echoed
+
+
+def test_running_process_use_pty_text_mode_warns_and_falls_back_to_bytes() -> None:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.delenv("RUNNING_PROCESS_NO_PTY_TEXT_WARNING", raising=False)
+        with pytest.warns(
+            RuntimeWarning,
+            match="PTY mode ignores text/universal_newlines and always uses raw bytes",
+        ):
+            process = RunningProcess(
+                [sys.executable, "-c", "print('warn')"],
+                use_pty=True,
+                text=True,
+            )
+    assert process.wait(timeout=5) == 0
+    assert isinstance(process.stdout, bytes)
+
+
+def test_running_process_use_pty_text_mode_warning_can_be_suppressed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RUNNING_PROCESS_NO_PTY_TEXT_WARNING", "1")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        process = RunningProcess(
+            [sys.executable, "-c", "print('quiet')"],
+            use_pty=True,
+            text=True,
+        )
+        assert process.wait(timeout=5) == 0
+    runtime_warnings = [item for item in caught if issubclass(item.category, RuntimeWarning)]
+    assert runtime_warnings == []
+
+
+def test_pseudo_terminal_text_mode_warns_and_output_remains_bytes() -> None:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.delenv("RUNNING_PROCESS_NO_PTY_TEXT_WARNING", raising=False)
+        with pytest.warns(
+            RuntimeWarning,
+            match="PTY mode ignores text/universal_newlines and always uses raw bytes",
+        ):
+            process = RunningProcess.pseudo_terminal(
+                [sys.executable, "-c", "print('warn')"],
+                text=True,
+            )
+    assert process.wait(timeout=5) == 0
+    assert isinstance(process.output, bytes)
+
+
+def test_pseudo_terminal_wait_echo_preserves_carriage_return_redraws(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time; "
+                "sys.stdout.write('first'); sys.stdout.flush(); "
+                "time.sleep(0.05); "
+                "sys.stdout.write('\\rsecond'); sys.stdout.flush()"
+            ),
+        ],
+        use_pty=True,
+        capture=True,
+        text=True,
+    )
+
+    assert process.wait(timeout=5, echo=True) == 0
+    fake_stdout.flush()
+
+    echoed = fake_stdout.buffer.getvalue()
+    assert echoed == process.stdout
+    assert b"first" in echoed
+    assert b"second" in echoed
+    assert any(marker in echoed for marker in (b"\r", b"\x1b[H", b"\x1b[1G"))
+
+
+def test_pseudo_terminal_wait_echo_preserves_progress_redraw_sequences() -> None:
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "for value in (10, 20, 30):\n"
+                "    sys.stdout.write(f'progress {value}%\\r')\n"
+                "    sys.stdout.flush()\n"
+                "    time.sleep(0.02)\n"
+                "sys.stdout.write('done\\n')\n"
+                "sys.stdout.flush()\n"
+            ),
+        ],
+        use_pty=True,
+        capture=True,
+        text=True,
+    )
+
+    echoed = _capture_wait_echo_bytes(process)
+
+    assert echoed == process.stdout
+    assert b"progress 10%" in echoed
+    assert b"progress 20%" in echoed
+    assert b"progress 30%" in echoed
+    assert b"done\r\n" in echoed
+    assert any(marker in echoed for marker in (b"\r", b"\x1b[H", b"\x1b[1G"))
+
+
+def test_pseudo_terminal_progress_capture_preserves_redraw_markers() -> None:
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "for value in (10, 20, 30):\n"
+                "    sys.stdout.write(f'progress {value}%\\r')\n"
+                "    sys.stdout.flush()\n"
+                "    time.sleep(0.02)\n"
+                "sys.stdout.write('done\\n')\n"
+                "sys.stdout.flush()\n"
+            ),
+        ],
+        use_pty=True,
+        capture=True,
+        text=True,
+    )
+
+    assert process.wait(timeout=5) == 0
+    assert isinstance(process.stdout, bytes)
+    assert b"progress 10%" in process.stdout
+    assert b"progress 20%" in process.stdout
+    assert b"progress 30%" in process.stdout
+    assert b"done\r\n" in process.stdout
+    assert any(marker in process.stdout for marker in (b"\r", b"\x1b[H", b"\x1b[1G"))
+
+
+def test_pseudo_terminal_internal_chunk_capture_keeps_cursor_home_bytes_untouched() -> None:
+    process = PseudoTerminalProcess([sys.executable, "-c", "print('x')"], text=True, auto_run=False)
+
+    process._handle_native_chunk(b"first")
+    process._handle_native_chunk(b"\x1b[25l\x1b[Hsecond\x1b[?25h")
+
+    assert process.output == b"first\x1b[25l\x1b[Hsecond\x1b[?25h"
+    assert process.drain_echo() == [b"first", b"\x1b[25l\x1b[Hsecond\x1b[?25h"]
+
+
+def test_running_process_use_pty_defaults_to_no_capture() -> None:
+    process = RunningProcess([sys.executable, "-c", "print('uncaptured')"], use_pty=True)
+
+    assert process.wait(timeout=5) == 0
+    assert process.stdout == b""
+    assert process.stderr == b""
+    assert process.combined_output == b""
+    assert process.captured_output_bytes("stdout") == 0
+    assert process.captured_output_bytes("combined") == 0
+
+
+def test_running_process_use_pty_capture_true_retains_raw_bytes() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "print('captured')"],
+        use_pty=True,
+        capture=True,
+    )
+
+    assert process.wait(timeout=5) == 0
+    assert b"captured" in process.stdout
+
+
+def test_running_process_use_pty_no_capture_still_supports_idle_detection() -> None:
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "sys.stdout.write('tick')\n"
+                "sys.stdout.flush()\n"
+                "time.sleep(0.2)\n"
+            ),
+        ],
+        use_pty=True,
+    )
+
+    result = process.wait_for_idle(
+        IdleDetection(
+            timing=IdleTiming(
+                timeout_seconds=0.05,
+                stability_window_seconds=0.02,
+                sample_interval_seconds=0.02,
+            )
+        ),
+        timeout=1.0,
+    )
+
+    assert result.idle_detected is True
+    assert process.stdout == b""
+    assert process.captured_output_bytes("combined") == 0
+
+
+def test_pseudo_terminal_internal_chunk_capture_keeps_sgr_bytes_untouched() -> None:
+    process = PseudoTerminalProcess([sys.executable, "-c", "print('x')"], text=True, auto_run=False)
+
+    process._handle_native_chunk(b"\x1b[31mred\x1b[0m")
+
+    assert process.output == b"\x1b[31mred\x1b[0m"
+    assert process.drain_echo() == [b"\x1b[31mred\x1b[0m"]
+
+
+def test_pseudo_terminal_internal_chunk_capture_keeps_query_and_title_bytes_untouched() -> None:
+    process = PseudoTerminalProcess([sys.executable, "-c", "print('x')"], text=True, auto_run=False)
+
+    process._handle_native_chunk(b"\x1b[6n\x1b]0;python\x07visible")
+
+    assert process.output == b"\x1b[6n\x1b]0;python\x07visible"
+    assert process.drain_echo() == [b"\x1b[6n\x1b]0;python\x07visible"]
+
+
+def test_pseudo_terminal_internal_chunk_capture_keeps_cursor_motion_bytes_untouched() -> None:
+    process = PseudoTerminalProcess([sys.executable, "-c", "print('x')"], text=True, auto_run=False)
+
+    process._handle_native_chunk(b"\x1b[2Aup\x1b[1Bdown\x1b[2K")
+
+    assert process.output == b"\x1b[2Aup\x1b[1Bdown\x1b[2K"
+    assert process.drain_echo() == [b"\x1b[2Aup\x1b[1Bdown\x1b[2K"]
+
+
+def test_pseudo_terminal_keeps_control_sequences_from_subprocess_output_untouched() -> None:
     process = RunningProcess.pseudo_terminal(
         [
             sys.executable,
@@ -153,13 +428,13 @@ def test_pseudo_terminal_filters_arrow_up_control_sequences_from_subprocess_outp
     )
 
     output = _read_until_contains(process, "visible")
-    assert "\x1b" not in output
-    assert "0;0;27;1;0;1_" not in output
-    assert "0;0;59;1;0;1_" not in output
-    assert "?2004l" not in output
-    assert "?1049l" not in output
-    assert output == "prefixvisible\r\n"
+    assert "prefix" in output
+    assert "visible" in output
     assert process.wait(timeout=5) == 0
+    assert isinstance(process.output, bytes)
+    assert b"\x1b" in process.output
+    assert b"0;0;27;1;0;1_" in process.output
+    assert b"?2004l" in process.output
 
 
 def test_pseudo_terminal_discard_output_releases_history_bytes() -> None:
@@ -175,7 +450,7 @@ def test_pseudo_terminal_discard_output_releases_history_bytes() -> None:
     released = process.discard_output()
     assert released >= len("alpha\nbeta")
     assert process.output_bytes == 0
-    assert process.output == ""
+    assert process.output == b""
 
 
 def test_pseudo_terminal_expect_sequence_runs_during_creation() -> None:
@@ -1309,7 +1584,11 @@ def test_pseudo_terminal_kill_uses_killpg_on_posix(monkeypatch: pytest.MonkeyPat
 
 
 def test_running_process_use_pty_remains_constructor_compatible() -> None:
-    process = RunningProcess([sys.executable, "-c", "print('pty compat')"], use_pty=True)
+    process = RunningProcess(
+        [sys.executable, "-c", "print('pty compat')"],
+        use_pty=True,
+        capture=True,
+    )
     assert process.wait(timeout=5) == 0
-    assert "pty compat" in process.stdout
-    assert process.stderr == ""
+    assert b"pty compat" in process.stdout
+    assert process.stderr == b""

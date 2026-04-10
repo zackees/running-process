@@ -51,7 +51,9 @@ def iter_matches(target: Path) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Find processes holding a file handle or module map")
+    parser = argparse.ArgumentParser(
+        description="Find processes holding a file handle or module map"
+    )
     parser.add_argument("path", help="Path to the target file")
     args = parser.parse_args()
 

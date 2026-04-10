@@ -83,8 +83,9 @@ def test_live_native_debugger_dump_resolves_tiny_pdb_public_frames(tmp_path: Pat
     log_path = tmp_path / "native-debugger.log"
     env = os.environ.copy()
     env["PYTHONPATH"] = str(tmp_path / "wheel")
+    target_python = getattr(sys, "_base_executable", sys.executable)
     child = subprocess.Popen(
-        [sys.executable, str(script_path)],
+        [target_python, str(script_path)],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

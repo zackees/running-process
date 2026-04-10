@@ -262,3 +262,91 @@ def test_parse_args_tracks_no_skip_without_mutating_env(monkeypatch) -> None:
     assert pytest_args == ["tests/test_version.py"]
     assert require_symbols is True
     assert "RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS" not in os.environ
+
+
+def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monkeypatch) -> None:
+    commands: list[list[str]] = []
+    fake_python = Path("/tmp/fake-venv/bin/python")
+
+    monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
+    monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.setenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", "0")
+    monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
+    monkeypatch.setattr(ci_test.sys, "platform", "win32")
+    monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
+    monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
+    monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
+
+    result = ci_test.main(["--no-skip"])
+
+    python = str(fake_python)
+    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
+    release_timeout = str(ci_test.DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS)
+    assert result == 0
+    assert os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] == "1"
+    assert commands == [
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            "cargo",
+            "test",
+            "--workspace",
+        ],
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            python,
+            "-m",
+            "pytest",
+            "-m",
+            "not live",
+        ],
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            linux_timeout,
+            "--",
+            python,
+            "-m",
+            "ci.linux_docker",
+            "all",
+            "--output-dir",
+            str(ci_test.ROOT / "linux"),
+        ],
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            release_timeout,
+            "--",
+            python,
+            "build.py",
+            "--release",
+        ],
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            python,
+            "-m",
+            "pytest",
+            "-m",
+            "live",
+        ],
+    ]

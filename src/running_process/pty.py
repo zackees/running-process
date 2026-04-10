@@ -8,6 +8,7 @@ import signal
 import sys
 import threading
 import time
+import warnings
 import weakref
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -43,6 +44,7 @@ _PTY_READ_CHUNK_TIMEOUT_SECONDS = 0.01
 _PTY_POLL_INTERVAL_SECONDS = 0.001
 _PTY_READER_NATIVE_CLOSE_WAIT_SECONDS = 2.0
 _PTY_CLEANUP_ERRORS = (OSError, RuntimeError, TimeoutError, ValueError, AttributeError)
+_NO_PTY_TEXT_WARNING_ENV = "RUNNING_PROCESS_NO_PTY_TEXT_WARNING"
 
 
 class PtyNotAvailableError(RuntimeError):
@@ -94,6 +96,35 @@ def _safe_console_write(stream: TextIOBase, line: str | bytes) -> None:
         else:
             stream.write(rendered.decode(encoding, errors="replace"))
             stream.write("\n")
+    stream.flush()
+
+
+def _safe_console_write_chunk(
+    stream: TextIOBase,
+    chunk: bytes,
+    *,
+    encoding: str,
+    errors: str,
+) -> None:
+    if not chunk:
+        return
+    if hasattr(stream, "buffer"):
+        try:
+            stream.buffer.write(chunk)
+            stream.flush()
+            return
+        except UnicodeEncodeError:
+            pass
+    text = chunk.decode(encoding, errors)
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        fallback_encoding = stream.encoding or encoding or "utf-8"
+        rendered = text.encode(fallback_encoding, errors="replace")
+        if hasattr(stream, "buffer"):
+            stream.buffer.write(rendered)
+        else:
+            stream.write(rendered.decode(fallback_encoding, errors="replace"))
     stream.flush()
 
 
@@ -291,6 +322,7 @@ class _IdleSample:
 
 @dataclass(slots=True)
 class _TerminalControlStripper:
+    mode: str = "capture"
     _pending: bytearray = field(default_factory=bytearray)
     _string_terminator: bytes | None = None
 
@@ -324,6 +356,12 @@ class _TerminalControlStripper:
                     if end is None:
                         self._pending.extend(data[index:])
                         break
+                    normalized = _normalize_csi_sequence(
+                        data[index : end + 1],
+                        mode=self.mode,
+                    )
+                    if normalized:
+                        output.extend(normalized)
                     index = end + 1
                     continue
                 if marker == ord("]"):
@@ -351,6 +389,44 @@ def _find_csi_end(data: bytes, start: int) -> int | None:
         if 0x40 <= current <= 0x7E:
             return index
     return None
+
+
+_ECHO_DISPLAY_CSI_FINALS = {
+    b"A",
+    b"B",
+    b"C",
+    b"D",
+    b"E",
+    b"F",
+    b"G",
+    b"H",
+    b"J",
+    b"K",
+    b"S",
+    b"T",
+    b"f",
+    b"m",
+    b"s",
+    b"u",
+}
+
+
+def _normalize_csi_sequence(chunk: bytes, *, mode: str) -> bytes:
+    if len(chunk) < 3 or not chunk.startswith(b"\x1b["):
+        return b""
+    final = chunk[-1:]
+    params = chunk[2:-1]
+    if mode == "echo":
+        if final in _ECHO_DISPLAY_CSI_FINALS:
+            return b"\x1b[0m" if final == b"m" and params == b"" else chunk
+        if final in {b"h", b"l"}:
+            return chunk
+        return b""
+    if final == b"H" and params in {b"", b"1;1"}:
+        return b"\r"
+    if final == b"G" and params in {b"", b"1"}:
+        return b"\r"
+    return b""
 
 
 _TERMINAL_FRAGMENT_RE = re.compile(rb"(?:\d+;){2,}\d+_")
@@ -659,6 +735,18 @@ def _close_native_pty_process(proc: NativeProcess | None) -> None:
         proc.terminate()
 
 
+def _warn_pty_text_mode_ignored(env: Mapping[str, str] | None) -> None:
+    effective_env = env if env is not None else os.environ
+    if effective_env.get(_NO_PTY_TEXT_WARNING_ENV):
+        return
+    warnings.warn(
+        "PTY mode ignores text/universal_newlines and always uses raw bytes; "
+        f"set {_NO_PTY_TEXT_WARNING_ENV}=1 to suppress this warning.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
 class Pty:
     @classmethod
     def is_available(cls) -> bool:
@@ -679,6 +767,7 @@ class PseudoTerminalProcess:
         rows: int = 24,
         cols: int = 80,
         nice: int | CpuPriority | None = None,
+        capture: bool = True,
         restore_terminal: bool = True,
         expect: list[Expect] | None = None,
         idle_detector: IdleDetector | None = None,
@@ -690,21 +779,28 @@ class PseudoTerminalProcess:
             )
         command, shell = _normalize_command(command, shell)
 
+        if text:
+            _warn_pty_text_mode_ignored(env)
         self.command = command
         self.shell = shell
         self.cwd = str(cwd) if cwd is not None else None
         self.env = dict(env) if env is not None else os.environ.copy()
-        self.text = text
+        self.text = False
         self.encoding = encoding
         self.errors = errors
         self.rows = rows
         self.cols = cols
         self.nice = normalize_nice(nice)
+        self.capture = bool(capture)
         self.launch_spec = interactive_launch_spec(InteractiveMode.PSEUDO_TERMINAL)
         self.restore_terminal = restore_terminal
 
         self._proc: NativeProcess | None = None
-        self._buffer = NativePtyBuffer(text=self.text, encoding=self.encoding, errors=self.errors)
+        self._buffer = (
+            NativePtyBuffer(text=False, encoding=self.encoding, errors=self.errors)
+            if self.capture
+            else None
+        )
         self._native_stream_closed = False
         self._start_time: float | None = None
         self._end_time: float | None = None
@@ -718,7 +814,7 @@ class PseudoTerminalProcess:
         self._pty_input_bytes_total = 0
         self._pty_output_bytes_total = 0
         self._pty_control_churn_bytes_total = 0
-        self._terminal_control_stripper = _TerminalControlStripper()
+        self._pending_echo_chunks: list[bytes] = []
         self._native_idle_detector: NativeIdleDetector | None = None
         self._native_process_metrics: NativeProcessMetrics | None = None
         self._native_exit_watcher: threading.Thread | None = None
@@ -753,6 +849,9 @@ class PseudoTerminalProcess:
         self._native_stream_closed = False
 
     def available(self) -> bool:
+        if not self.capture:
+            self._pump_native_output(timeout=0.0, consume_all=True)
+            return False
         self._pump_native_output(timeout=0.0, consume_all=True)
         return self._buffer.available()
 
@@ -769,6 +868,8 @@ class PseudoTerminalProcess:
         self._idle_timeout_signal.value = enabled
 
     def read(self, timeout: float | None = None) -> str | bytes:
+        if not self.capture:
+            raise NotImplementedError("PTY read() requires capture=True")
         chunk = self.read_non_blocking()
         if chunk is not None:
             return chunk
@@ -781,6 +882,8 @@ class PseudoTerminalProcess:
         raise TimeoutError("No pseudo-terminal output available before timeout")
 
     def read_non_blocking(self) -> str | bytes | None:
+        if not self.capture:
+            raise NotImplementedError("PTY read_non_blocking() requires capture=True")
         self._pump_native_output(timeout=0.0, consume_all=True)
         try:
             return self._buffer.read_non_blocking()
@@ -790,23 +893,41 @@ class PseudoTerminalProcess:
             raise
 
     def drain(self) -> list[str | bytes]:
+        if not self.capture:
+            raise NotImplementedError("PTY drain() requires capture=True")
         self._pump_native_output(timeout=0.0, consume_all=True)
         return self._buffer.drain()
 
+    def drain_echo(self) -> list[bytes]:
+        self._pump_native_output(timeout=0.0, consume_all=True)
+        chunks = list(self._pending_echo_chunks)
+        self._pending_echo_chunks.clear()
+        return chunks
+
     def discard_output(self) -> int:
+        if not self.capture:
+            self._pump_native_output(timeout=0.0, consume_all=True)
+            return 0
         self._pump_native_output(timeout=0.0, consume_all=True)
         return int(self._buffer.clear_history())
 
     @property
     def output_bytes(self) -> int:
+        if not self.capture:
+            self._pump_native_output(timeout=0.0, consume_all=True)
+            return 0
         self._pump_native_output(timeout=0.0, consume_all=True)
         return int(self._buffer.history_bytes())
 
     def _output_since(self, start: int) -> str | bytes:
+        if not self.capture:
+            raise NotImplementedError("PTY output capture is disabled")
         self._pump_native_output(timeout=0.0, consume_all=True)
         return self._buffer.output_since(max(0, start))
 
     def _snapshot_output_history(self) -> tuple[str, int]:
+        if not self.capture:
+            raise NotImplementedError("PTY output capture is disabled")
         self._pump_native_output(timeout=0.0, consume_all=True)
         return (
             ensure_text(self._buffer.output(), self.encoding, self.errors),
@@ -814,6 +935,8 @@ class PseudoTerminalProcess:
         )
 
     def _snapshot_output_since(self, start: int) -> tuple[str, int]:
+        if not self.capture:
+            raise NotImplementedError("PTY output capture is disabled")
         self._pump_native_output(timeout=0.0, consume_all=True)
         return (
             ensure_text(
@@ -937,10 +1060,15 @@ class PseudoTerminalProcess:
 
     @property
     def output(self) -> str | bytes:
+        if not self.capture:
+            self._pump_native_output(timeout=0.0, consume_all=True)
+            return b""
         self._pump_native_output(timeout=0.0, consume_all=True)
         return self._buffer.output()
 
     def checkpoint(self) -> WaitCheckpoint:
+        if not self.capture:
+            raise NotImplementedError("PTY checkpoint() requires capture=True")
         return WaitCheckpoint(len(ensure_text(self.output, self.encoding, self.errors)))
 
     def wait_for_expect(
@@ -951,6 +1079,8 @@ class PseudoTerminalProcess:
         raise_on_abnormal_exit: bool = False,
         echo_output: bool = False,
     ) -> WaitForResult:
+        if not self.capture:
+            raise NotImplementedError("PTY wait_for_expect() requires capture=True")
         active_expect_conditions = list(self._registered_expect_conditions)
         if not active_expect_conditions:
             if next_expect is None:
@@ -988,6 +1118,8 @@ class PseudoTerminalProcess:
         timeout: float | None = None,
         action: ExpectAction = None,
     ) -> ExpectMatch:
+        if not self.capture:
+            raise NotImplementedError("PTY expect() requires capture=True")
         deadline = time.time() + timeout if timeout is not None else None
         buffer, history_bytes = self._snapshot_output_history()
 
@@ -1113,8 +1245,7 @@ class PseudoTerminalProcess:
         try:
             while True:
                 if echo_output:
-                    for chunk in self.drain():
-                        _safe_console_write(sys.stdout, chunk)
+                    self._echo_to_console(sys.stdout)
 
                 now = time.time()
                 if self.idle_timeout_enabled != idle_timeout_enabled:
@@ -1303,6 +1434,8 @@ class PseudoTerminalProcess:
         expect_conditions = [
             condition for condition in wait_conditions if isinstance(condition, Expect)
         ]
+        if expect_conditions and not self.capture:
+            raise NotImplementedError("PTY wait_for() Expect conditions require capture=True")
         expect_states: list[tuple[Expect, _ExpectRuntimeState]] = [
             (
                 condition,
@@ -1374,22 +1507,25 @@ class PseudoTerminalProcess:
             callback_threads.append(thread)
 
         deadline = time.time() + timeout if timeout is not None else None
-        buffer, history_bytes = self._snapshot_output_history()
+        if self.capture:
+            buffer, history_bytes = self._snapshot_output_history()
+        else:
+            buffer, history_bytes = "", 0
 
         try:
             while True:
                 loop_iterations += 1
                 if echo_output:
-                    for chunk in self.drain():
-                        _safe_console_write(sys.stdout, chunk)
+                    self._echo_to_console(sys.stdout)
 
-                new_output, current_history_bytes = self._snapshot_output_since(history_bytes)
-                if current_history_bytes > history_bytes:
-                    history_update_start = time.perf_counter_ns()
-                    buffer = f"{buffer}{new_output}"
-                    history_bytes = current_history_bytes
-                    history_update_count += 1
-                    history_update_ns += time.perf_counter_ns() - history_update_start
+                if self.capture:
+                    new_output, current_history_bytes = self._snapshot_output_since(history_bytes)
+                    if current_history_bytes > history_bytes:
+                        history_update_start = time.perf_counter_ns()
+                        buffer = f"{buffer}{new_output}"
+                        history_bytes = current_history_bytes
+                        history_update_count += 1
+                        history_update_ns += time.perf_counter_ns() - history_update_start
                 for condition, state in expect_states:
                     if not state.armed:
                         continue
@@ -1462,14 +1598,17 @@ class PseudoTerminalProcess:
                     self._drain_native_until_eof(timeout=_PTY_READER_NATIVE_CLOSE_WAIT_SECONDS)
                     self._finalize("exit")
                     self._exit_status = classify_exit_status(code, KEYBOARD_INTERRUPT_EXIT_CODES)
-                    new_output, current_history_bytes = self._snapshot_output_since(history_bytes)
-                    if current_history_bytes > history_bytes:
-                        history_update_start = time.perf_counter_ns()
-                        buffer = f"{buffer}{new_output}"
-                        history_bytes = current_history_bytes
-                        history_update_count += 1
-                        history_update_ns += time.perf_counter_ns() - history_update_start
-                        continue
+                    if self.capture:
+                        new_output, current_history_bytes = (
+                            self._snapshot_output_since(history_bytes)
+                        )
+                        if current_history_bytes > history_bytes:
+                            history_update_start = time.perf_counter_ns()
+                            buffer = f"{buffer}{new_output}"
+                            history_bytes = current_history_bytes
+                            history_update_count += 1
+                            history_update_ns += time.perf_counter_ns() - history_update_start
+                            continue
                     if code in KEYBOARD_INTERRUPT_EXIT_CODES:
                         raise KeyboardInterrupt
                     if raise_on_abnormal_exit and self._exit_status.abnormal:
@@ -1644,24 +1783,31 @@ class PseudoTerminalProcess:
         if self._native_stream_closed:
             return
         self._native_stream_closed = True
-        self._buffer.close()
+        if self._buffer is not None:
+            self._buffer.close()
 
     def _handle_native_chunk(self, chunk: bytes) -> None:
         if self._proc is not None:
             with suppress(RuntimeError):
                 self._proc.respond_to_queries(chunk)
         control_bytes = _control_churn_bytes(chunk)
-        rendered_chunk = self._terminal_control_stripper.strip(chunk)
-        if control_bytes and rendered_chunk:
-            rendered_chunk = _strip_terminal_fragments(rendered_chunk)
-            rendered_chunk = _collapse_duplicate_carriage_returns(rendered_chunk)
         self.last_activity_at = time.time()
         self._pty_output_bytes_total += max(0, len(chunk) - control_bytes)
         self._pty_control_churn_bytes_total += control_bytes
-        if rendered_chunk:
-            self._buffer.record_output(rendered_chunk)
+        self._pending_echo_chunks.append(chunk)
+        if self._buffer is not None:
+            self._buffer.record_output(chunk)
         if self._native_idle_detector is not None:
             self._native_idle_detector.record_output(chunk)
+
+    def _echo_to_console(self, stream: TextIOBase) -> None:
+        for chunk in self.drain_echo():
+            _safe_console_write_chunk(
+                stream,
+                chunk,
+                encoding=self.encoding,
+                errors=self.errors,
+            )
 
     def _pump_native_output(
         self,

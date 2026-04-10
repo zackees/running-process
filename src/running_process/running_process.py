@@ -297,7 +297,7 @@ class RunningProcess:
         use_pty: bool = False,
         env: dict[str, str] | None = None,
         creationflags: int | None = None,
-        capture: bool = True,
+        capture: bool | None = None,
         stdin: int | Any | None = None,
         nice: int | CpuPriority | None = None,
         text: bool = True,
@@ -325,13 +325,15 @@ class RunningProcess:
         self.env.setdefault("PYTHONUTF8", "1")
         self.env.setdefault("PYTHONUNBUFFERED", "1")
         self.creationflags = creationflags
-        self.capture = capture
+        self.capture = bool(capture) if capture is not None else True
         self.stdin = stdin
         self.nice = normalize_nice(nice)
-        self.text = text or universal_newlines
+        requested_text = text or universal_newlines
+        self.text = requested_text
         self.encoding = encoding or "utf-8"
         self.errors = errors or "replace"
         if use_pty:
+            self.capture = bool(capture) if capture is not None else False
             if stdin not in (None, PIPE):
                 raise ValueError("use_pty=True only supports stdin=None or PIPE")
             self._pty_process = PseudoTerminalProcess(
@@ -339,19 +341,21 @@ class RunningProcess:
                 cwd=cwd,
                 shell=self.shell,
                 env=self.env,
-                text=self.text,
+                text=requested_text,
                 encoding=self.encoding,
                 errors=self.errors,
                 nice=self.nice,
+                capture=self.capture,
                 auto_run=False,
             )
+            self.text = False
             self.proc = None
         else:
             self.proc = NativeProcess(
                 command,
                 cwd=str(cwd) if cwd is not None else None,
                 shell=self.shell,
-                capture=capture,
+                capture=self.capture,
                 env=self.env,
                 creationflags=creationflags,
                 text=self.text,
@@ -397,6 +401,8 @@ class RunningProcess:
 
     def get_next_line(self, timeout: float | None = None) -> EchoValue | EndOfStream:
         if self._pty_process is not None:
+            if not self.capture:
+                raise NotImplementedError("PTY line reads require capture=True")
             try:
                 return self._format(self._pty_process.read(timeout=timeout))
             except EOFError:
@@ -410,6 +416,8 @@ class RunningProcess:
 
     def get_next_stdout_line(self, timeout: float | None = None) -> EchoValue | EndOfStream:
         if self._pty_process is not None:
+            if not self.capture:
+                raise NotImplementedError("PTY stdout reads require capture=True")
             return self.get_next_line(timeout)
         status, line = self.proc.take_stream_line("stdout", timeout)
         if status == "line" and line is not None:
@@ -420,6 +428,8 @@ class RunningProcess:
 
     def get_next_stderr_line(self, timeout: float | None = None) -> EchoValue | EndOfStream:
         if self._pty_process is not None:
+            if not self.capture:
+                raise NotImplementedError("PTY stderr reads require capture=True")
             if self._pty_process.poll() is not None:
                 return EOS
             raise TimeoutError("No stderr available before timeout")
@@ -438,6 +448,8 @@ class RunningProcess:
 
     def drain_stdout(self) -> list[EchoValue]:
         if self._pty_process is not None:
+            if not self.capture:
+                return []
             return [self._format(line) for line in self._pty_process.drain()]
         return [self._format(line) for line in self.proc.drain_stream("stdout")]
 
@@ -448,16 +460,24 @@ class RunningProcess:
 
     def drain_combined(self) -> list[tuple[str, EchoValue]]:
         if self._pty_process is not None:
+            if not self.capture:
+                return []
             return [("stdout", self._format(line)) for line in self._pty_process.drain()]
         return [(stream, self._format(line)) for stream, line in self.proc.drain_combined()]
 
     def has_pending_output(self) -> bool:
         if self._pty_process is not None:
+            if not self.capture:
+                self._pty_process.available()
+                return False
             return self._pty_process.available()
         return self.proc.has_pending_combined()
 
     def has_pending_stdout(self) -> bool:
         if self._pty_process is not None:
+            if not self.capture:
+                self._pty_process.available()
+                return False
             return self._pty_process.available()
         return self.proc.has_pending_stream("stdout")
 
@@ -535,11 +555,9 @@ class RunningProcess:
                         break
                     if deadline is not None and time.time() >= deadline:
                         self._handle_timeout(effective_timeout)
-                    for line in self.drain_stdout():
-                        _safe_console_write(sys.stdout, line)
+                    self._pty_process._echo_to_console(sys.stdout)
                     time.sleep(0.01)
-                for line in self.drain_stdout():
-                    _safe_console_write(sys.stdout, line)
+                self._pty_process._echo_to_console(sys.stdout)
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
             self._exit_status = classify_exit_status(code, self.KEYBOARD_INTERRUPT_EXIT_CODES)
@@ -594,8 +612,7 @@ class RunningProcess:
             echo_output=echo,
         )
         if echo:
-            for line in self.drain_stdout():
-                _safe_console_write(sys.stdout, line)
+            self._pty_process._echo_to_console(sys.stdout)
         if result.returncode is not None:
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
@@ -624,8 +641,7 @@ class RunningProcess:
             echo_output=echo,
         )
         if echo:
-            for line in self.drain_stdout():
-                _safe_console_write(sys.stdout, line)
+            self._pty_process._echo_to_console(sys.stdout)
         if result.returncode is not None:
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
@@ -660,8 +676,7 @@ class RunningProcess:
             echo_output=echo,
         )
         if echo:
-            for line in self.drain_stdout():
-                _safe_console_write(sys.stdout, line)
+            self._pty_process._echo_to_console(sys.stdout)
         if result.returncode is not None:
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
@@ -772,7 +787,7 @@ class RunningProcess:
     def _captured_stream_value(self, stream: str) -> str | bytes:
         if self._pty_process is not None:
             if stream == "stderr":
-                return "" if self.text else b""
+                return b""
             return self._pty_process.output
         if stream == "stdout":
             lines = self.proc.captured_stdout()
@@ -993,6 +1008,7 @@ class RunningProcess:
         cwd: str | Path | None = None,
         shell: bool | None = None,
         env: dict[str, str] | None = None,
+        capture: bool = True,
         text: bool = False,
         encoding: str = "utf-8",
         errors: str = "replace",
@@ -1018,6 +1034,7 @@ class RunningProcess:
             cwd=cwd,
             shell=shell,
             env=env,
+            capture=capture,
             text=text,
             encoding=encoding,
             errors=errors,
