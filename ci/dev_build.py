@@ -24,10 +24,14 @@ SOURCE_PATTERNS = (
 )
 
 
+def os_name() -> str:
+    return os.name
+
+
 def repo_python(root: Path = ROOT) -> Path:
     windows_python = root / ".venv" / "Scripts" / "python.exe"
     posix_python = root / ".venv" / "bin" / "python"
-    if os.name == "nt":
+    if os_name() == "nt":
         if windows_python.is_file():
             return windows_python
         if posix_python.is_file():

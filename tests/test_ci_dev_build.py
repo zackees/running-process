@@ -81,7 +81,7 @@ def test_repo_python_ignores_windows_venv_on_non_windows(monkeypatch, tmp_path: 
     windows_python.parent.mkdir(parents=True, exist_ok=True)
     windows_python.write_text("placeholder", encoding="utf-8")
 
-    monkeypatch.setattr(dev_build.os, "name", "posix")
+    monkeypatch.setattr(dev_build, "os_name", lambda: "posix")
 
     assert dev_build.repo_python(tmp_path) == Path(sys.executable)
 
@@ -94,6 +94,6 @@ def test_repo_python_prefers_windows_venv_on_windows(monkeypatch, tmp_path: Path
     windows_python.write_text("placeholder", encoding="utf-8")
     posix_python.write_text("placeholder", encoding="utf-8")
 
-    monkeypatch.setattr(dev_build.os, "name", "nt")
+    monkeypatch.setattr(dev_build, "os_name", lambda: "nt")
 
     assert dev_build.repo_python(tmp_path) == windows_python
