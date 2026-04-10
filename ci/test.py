@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from ci.dev_build import ensure_dev_wheel, repo_python
 ROOT = Path(__file__).resolve().parent.parent
 IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
 IN_RUNNING_PROCESS_VALUE = "running-process-cli"
+GITHUB_ACTIONS_ENV = "GITHUB_ACTIONS"
 DEFAULT_TEST_TIMEOUT_SECONDS = "10"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 180.0
@@ -59,13 +61,25 @@ def _linux_unit_test_command(
     python: Path,
     *pytest_args: str,
 ) -> list[str]:
+    command = [
+        str(python),
+        "-m",
+        "ci.linux_docker",
+        "all",
+        "--output-dir",
+        str(ROOT / "linux"),
+    ]
+    if pytest_args:
+        command.extend(["--pytest-args", shlex.join(pytest_args)])
     return supervised_command(
         python,
-        str(python),
-        str(ROOT / "run_linux_tests.py"),
-        *pytest_args,
+        *command,
         timeout=DEFAULT_LINUX_TEST_TIMEOUT_SECONDS,
     )
+
+
+def running_on_github_actions() -> bool:
+    return os.environ.get(GITHUB_ACTIONS_ENV, "").lower() == "true"
 
 
 def run(cmd: list[str]) -> int:
@@ -114,8 +128,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if run(_supervised_pytest_command(python, "-m", "not live", *pytest_args)) != 0:
         return 1
-    if run(_linux_unit_test_command(python, *pytest_args)) != 0:
-        return 1
+    if not running_on_github_actions():
+        if run(_linux_unit_test_command(python, *pytest_args)) != 0:
+            return 1
     if run_live(_supervised_pytest_command(python, "-m", "live", *pytest_args)) != 0:
         return 1
     return 0

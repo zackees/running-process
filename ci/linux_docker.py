@@ -13,9 +13,11 @@ from ci.env import repo_root
 
 ROOT = repo_root()
 BUILD_DOCKERFILE = ROOT / "Dockerfile.linux-build"
+LINT_DOCKERFILE = ROOT / "Dockerfile.linux-lint"
 PYTEST_DOCKERFILE = ROOT / "Dockerfile.linux-pytest"
 DIST_DEV = ROOT / "dist-dev"
 BUILD_IMAGE_TAG = "running-process/linux-build:local"
+LINT_IMAGE_TAG = "running-process/linux-lint:local"
 PYTEST_IMAGE_TAG = "running-process/linux-pytest:local"
 DEFAULT_ENGINE_TIMEOUT_SECONDS = 120.0
 DEFAULT_PYTEST_ARGS = ["-m", "not live", "-ra"]
@@ -146,6 +148,14 @@ def pytest_mounts(dist_dir: Path) -> list[str]:
     ]
 
 
+def lint_mounts() -> list[str]:
+    return [
+        cache_volume("linux-lint-cargo", "/root/.cargo"),
+        cache_volume("linux-lint-rustup", "/root/.rustup"),
+        cache_volume("linux-lint-uv", "/root/.cache/uv"),
+    ]
+
+
 def build_export_mounts(dist_dir: Path) -> list[str]:
     return [f"{dist_dir}:/dist-dev"]
 
@@ -184,12 +194,16 @@ def pytest_shell_command(pytest_args: list[str]) -> str:
     )
 
 
+def lint_shell_command() -> str:
+    return "uv run --script install && uv run --no-editable -m ci.lint"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run Alpine Linux wheel build and pytest workflows"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("build", "pytest", "all"):
+    for name in ("build", "lint", "pytest", "all"):
         subparser = subparsers.add_parser(name)
         subparser.add_argument(
             "--platform",
@@ -274,6 +288,27 @@ def run_build_workflow(*, docker: str, platform: str | None, dist_dir: Path) -> 
     )
 
 
+def run_lint_workflow(*, docker: str, platform: str | None) -> int:
+    if (
+        build_image(
+            docker=docker,
+            dockerfile=LINT_DOCKERFILE,
+            tag=LINT_IMAGE_TAG,
+            platform=platform,
+        )
+        != 0
+    ):
+        return 1
+    return run_logged(
+        run_container_command(
+            docker=docker,
+            image=LINT_IMAGE_TAG,
+            shell_command=lint_shell_command(),
+            extra_mounts=lint_mounts(),
+        )
+    )
+
+
 def run_pytest_workflow(
     *,
     docker: str,
@@ -323,6 +358,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "build":
         return run_build_workflow(docker=docker, platform=args.platform, dist_dir=dist_dir)
 
+    if args.command == "lint":
+        return run_lint_workflow(docker=docker, platform=args.platform)
+
     if args.command == "pytest":
         try:
             return run_pytest_workflow(
@@ -339,6 +377,9 @@ def main(argv: list[str] | None = None) -> int:
         build_result = run_build_workflow(docker=docker, platform=args.platform, dist_dir=dist_dir)
         if build_result != 0:
             return build_result
+        lint_result = run_lint_workflow(docker=docker, platform=args.platform)
+        if lint_result != 0:
+            return lint_result
         try:
             return run_pytest_workflow(
                 docker=docker,

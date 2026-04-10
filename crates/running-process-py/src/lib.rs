@@ -1936,8 +1936,14 @@ impl NativePtyProcess {
 
     #[getter]
     fn pid(&self) -> PyResult<Option<u32>> {
-        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
-        if let Some(handles) = guard.as_mut() {
+        let guard = self.handles.lock().expect("pty handles mutex poisoned");
+        if let Some(handles) = guard.as_ref() {
+            #[cfg(unix)]
+            if let Some(pid) = handles.master.process_group_leader() {
+                if let Ok(pid) = u32::try_from(pid) {
+                    return Ok(Some(pid));
+                }
+            }
             return Ok(handles.child.process_id());
         }
         Ok(None)

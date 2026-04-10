@@ -129,6 +129,39 @@ def test_main_build_runs_builder_image_then_container(monkeypatch, tmp_path: Pat
     assert any("cp /dist/running_process-*.whl /dist-dev/" in part for part in seen[1])
 
 
+def test_main_lint_builds_lint_image_then_runs_ci_lint(monkeypatch) -> None:
+    seen: list[list[str]] = []
+
+    monkeypatch.setattr(linux_docker, "ensure_docker_engine_running", lambda **kwargs: "docker")
+    monkeypatch.setattr(
+        linux_docker.subprocess,
+        "run",
+        lambda cmd, cwd, check=False, capture_output=False, text=False: seen.append(
+            [str(part) for part in cmd]
+        )
+        or subprocess.CompletedProcess(cmd, 0, stdout="28.5.1" if capture_output else None),
+    )
+
+    result = linux_docker.main(["lint"])
+
+    assert result == 0
+    assert seen[0] == [
+        "docker",
+        "build",
+        "-f",
+        str(linux_docker.LINT_DOCKERFILE),
+        "-t",
+        linux_docker.LINT_IMAGE_TAG,
+        ".",
+    ]
+    assert seen[1][0:3] == ["docker", "run", "--rm"]
+    assert any(
+        "uv run --script install && uv run --no-editable -m ci.lint" in part
+        for part in seen[1]
+    )
+    assert any("running-process-linux-lint-cargo:/root/.cargo" == part for part in seen[1])
+
+
 def test_main_pytest_uses_existing_wheel_and_runtime_args(monkeypatch, tmp_path: Path) -> None:
     seen: list[list[str]] = []
     wheel = tmp_path / "running_process-3.0.3-cp311-cp311-musllinux_1_2_x86_64.whl"
