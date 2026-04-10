@@ -1281,10 +1281,14 @@ def test_console_isolated_send_interrupt_uses_killpg_on_posix(
 
 def test_pseudo_terminal_kill_uses_killpg_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[int, int]] = []
+    state = {"alive": True}
     monkeypatch.setattr(pty_module.sys, "platform", "linux")
     monkeypatch.setattr(pty_module.Pty, "is_available", classmethod(lambda cls: True))
     monkeypatch.setattr(
-        pty_module.os, "killpg", lambda pid, sig: calls.append((pid, sig)), raising=False
+        pty_module.os,
+        "killpg",
+        lambda pid, sig: (calls.append((pid, sig)), state.__setitem__("alive", False)),
+        raising=False,
     )
     monkeypatch.setattr(pty_module.signal, "SIGKILL", 9, raising=False)
 
@@ -1292,7 +1296,7 @@ def test_pseudo_terminal_kill_uses_killpg_on_posix(monkeypatch: pytest.MonkeyPat
         pid = 2468
 
         def poll(self) -> int | None:
-            return None
+            return None if state["alive"] else -9
 
     process = PseudoTerminalProcess(
         [sys.executable, "-c", "print('x')"],
