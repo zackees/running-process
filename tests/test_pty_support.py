@@ -16,6 +16,7 @@ import pytest
 from running_process._native import native_windows_terminal_input_bytes
 
 import running_process.pty as pty_module
+import running_process.running_process as running_process_module
 from running_process import (
     CpuPriority,
     Expect,
@@ -23,9 +24,11 @@ from running_process import (
     Idle,
     IdleDecision,
     IdleDetection,
+    IdleStartTrigger,
     IdleTiming,
     InteractiveMode,
     ProcessIdleDetection,
+    PtyIdleDetection,
     RunningProcess,
     WaitCallbackResult,
 )
@@ -107,7 +110,7 @@ def test_pseudo_terminal_round_trips_interactive_io() -> None:
 
 def test_pseudo_terminal_accepts_string_command_and_auto_splits() -> None:
     process = RunningProcess.pseudo_terminal(
-        f'{sys.executable} -c "print(\'string command ok\')"',
+        f"{sys.executable} -c \"print('string command ok')\"",
         text=True,
     )
     output = _read_until_contains(process, "string command ok")
@@ -120,11 +123,7 @@ def test_pseudo_terminal_preserves_carriage_returns() -> None:
         [
             sys.executable,
             "-c",
-            (
-                "import sys, time; "
-                "sys.stdout.write('first\\rsecond\\n'); "
-                "sys.stdout.flush()"
-            ),
+            ("import sys, time; sys.stdout.write('first\\rsecond\\n'); sys.stdout.flush()"),
         ],
         text=True,
     )
@@ -142,11 +141,7 @@ def test_pseudo_terminal_wait_echo_preserves_ansi_color_sequences(
         [
             sys.executable,
             "-c",
-            (
-                "import sys; "
-                "sys.stdout.buffer.write(b'\\x1b[31mred\\x1b[0m'); "
-                "sys.stdout.flush()"
-            ),
+            ("import sys; sys.stdout.buffer.write(b'\\x1b[31mred\\x1b[0m'); sys.stdout.flush()"),
         ],
         use_pty=True,
         capture=True,
@@ -336,12 +331,7 @@ def test_running_process_use_pty_no_capture_still_supports_idle_detection() -> N
         [
             sys.executable,
             "-c",
-            (
-                "import sys, time\n"
-                "sys.stdout.write('tick')\n"
-                "sys.stdout.flush()\n"
-                "time.sleep(0.2)\n"
-            ),
+            ("import sys, time\nsys.stdout.write('tick')\nsys.stdout.flush()\ntime.sleep(0.2)\n"),
         ],
         use_pty=True,
     )
@@ -553,7 +543,7 @@ def test_pseudo_terminal_force_killed_parent_reaps_child() -> None:
         "        sys.executable,\n"
         "        '-c',\n"
         "        \"import sys, time; sys.stdout.write('username:'); sys.stdout.flush(); "
-        "sys.stdin.readline(); time.sleep(30)\",\n"
+        'sys.stdin.readline(); time.sleep(30)",\n'
         "    ],\n"
         "    text=True,\n"
         ")\n"
@@ -693,11 +683,7 @@ def test_pseudo_terminal_wait_for_idle_uses_callable_predicate() -> None:
         [
             sys.executable,
             "-c",
-            (
-                "import sys, time\n"
-                "print('noise', flush=True)\n"
-                "time.sleep(0.1)\n"
-            ),
+            ("import sys, time\nprint('noise', flush=True)\ntime.sleep(0.1)\n"),
         ],
         text=True,
     )
@@ -1177,11 +1163,7 @@ def test_pseudo_terminal_wait_for_idle_honors_stability_window() -> None:
         [
             sys.executable,
             "-c",
-            (
-                "import sys, time\n"
-                "print('start', flush=True)\n"
-                "time.sleep(0.4)\n"
-            ),
+            ("import sys, time\nprint('start', flush=True)\ntime.sleep(0.4)\n"),
         ],
         text=True,
     )
@@ -1321,6 +1303,326 @@ def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait() -> N
     assert result.exit_reason == "idle_timeout"
     assert elapsed >= 0.15
     process.kill()
+
+
+def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_bytes() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "sys.stdout.write('ready>')\n"
+                "sys.stdout.flush()\n"
+                "sys.stdin.readline()\n"
+                "time.sleep(0.3)\n"
+            ),
+        ],
+        text=True,
+    )
+
+    def submit_later() -> None:
+        time.sleep(0.12)
+        process.write("hello\n")
+
+    worker = threading.Thread(target=submit_later, daemon=True)
+    worker.start()
+    try:
+        started = time.time()
+        result = process.wait_for_idle(
+            IdleDetection(
+                timing=IdleTiming(
+                    timeout_seconds=0.05,
+                    stability_window_seconds=0.02,
+                    sample_interval_seconds=0.01,
+                ),
+                pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
+            ),
+            timeout=0.5,
+        )
+        elapsed = time.time() - started
+        worker.join(timeout=1.0)
+
+        assert result.idle_detected is False
+        assert result.exit_reason == "process_exit"
+        assert elapsed >= 0.25
+    finally:
+        with contextlib.suppress(Exception):
+            worker.join(timeout=1.0)
+        with contextlib.suppress(Exception):
+            process.kill()
+
+
+def test_pseudo_terminal_wait_for_idle_can_arm_on_explicit_input_submit() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "sys.stdout.write('ready>')\n"
+                "sys.stdout.flush()\n"
+                "sys.stdin.readline()\n"
+                "time.sleep(0.3)\n"
+            ),
+        ],
+        text=True,
+    )
+
+    def submit_later() -> None:
+        time.sleep(0.12)
+        process.write("hello\n", submit=True)
+
+    worker = threading.Thread(target=submit_later, daemon=True)
+    worker.start()
+    try:
+        started = time.time()
+        result = process.wait_for_idle(
+            IdleDetection(
+                timing=IdleTiming(
+                    timeout_seconds=0.05,
+                    stability_window_seconds=0.02,
+                    sample_interval_seconds=0.01,
+                ),
+                pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
+            ),
+            timeout=0.35,
+        )
+        elapsed = time.time() - started
+        worker.join(timeout=1.0)
+
+        assert result.idle_detected is True
+        assert result.exit_reason == "idle_timeout"
+        assert elapsed >= 0.15
+    finally:
+        with contextlib.suppress(Exception):
+            worker.join(timeout=1.0)
+        with contextlib.suppress(Exception):
+            process.kill()
+
+
+def test_pseudo_terminal_wait_for_idle_can_arm_on_input_newline() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "sys.stdout.write('ready>')\n"
+                "sys.stdout.flush()\n"
+                "sys.stdin.readline()\n"
+                "time.sleep(0.3)\n"
+            ),
+        ],
+        text=True,
+    )
+
+    def submit_later() -> None:
+        time.sleep(0.12)
+        process.write("hello\n")
+
+    worker = threading.Thread(target=submit_later, daemon=True)
+    worker.start()
+    try:
+        started = time.time()
+        result = process.wait_for_idle(
+            IdleDetection(
+                timing=IdleTiming(
+                    timeout_seconds=0.05,
+                    stability_window_seconds=0.02,
+                    sample_interval_seconds=0.01,
+                ),
+                pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_NEWLINE),
+            ),
+            timeout=0.35,
+        )
+        elapsed = time.time() - started
+        worker.join(timeout=1.0)
+
+        assert result.idle_detected is True
+        assert result.exit_reason == "idle_timeout"
+        assert elapsed >= 0.15
+    finally:
+        with contextlib.suppress(Exception):
+            worker.join(timeout=1.0)
+        with contextlib.suppress(Exception):
+            process.kill()
+
+
+def test_pseudo_terminal_wait_for_idle_condition_can_arm_on_explicit_input_submit() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "sys.stdout.write('ready>')\n"
+                "sys.stdout.flush()\n"
+                "sys.stdin.readline()\n"
+                "time.sleep(0.3)\n"
+            ),
+        ],
+        text=True,
+    )
+
+    def submit_later() -> None:
+        time.sleep(0.12)
+        process.write("hello\n", submit=True)
+
+    worker = threading.Thread(target=submit_later, daemon=True)
+    worker.start()
+    try:
+        started = time.time()
+        result = process.wait_for(
+            Idle(
+                IdleDetection(
+                    timing=IdleTiming(
+                        timeout_seconds=0.05,
+                        stability_window_seconds=0.02,
+                        sample_interval_seconds=0.01,
+                    ),
+                    pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
+                )
+            ),
+            timeout=0.35,
+        )
+        elapsed = time.time() - started
+        worker.join(timeout=1.0)
+
+        assert result.matched is True
+        assert result.exit_reason == "condition_met"
+        assert result.idle_result is not None
+        assert result.idle_result.idle_detected is True
+        assert result.idle_result.exit_reason == "idle_timeout"
+        assert elapsed >= 0.15
+    finally:
+        with contextlib.suppress(Exception):
+            worker.join(timeout=1.0)
+        with contextlib.suppress(Exception):
+            process.kill()
+
+
+def test_running_process_use_pty_forwards_terminal_input_relay_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: dict[str, object] = {}
+
+    class FakePtyProcess:
+        def __init__(self, command: str | list[str], **kwargs: object) -> None:
+            recorded["command"] = command
+            recorded["kwargs"] = kwargs
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(running_process_module, "PseudoTerminalProcess", FakePtyProcess)
+
+    process = RunningProcess(
+        [sys.executable, "-c", "print('relay')"],
+        use_pty=True,
+        auto_run=False,
+        relay_terminal_input=True,
+        arm_idle_timeout_on_submit=True,
+    )
+
+    assert process._pty_process is not None
+    kwargs = recorded["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["relay_terminal_input"] is True
+    assert kwargs["arm_idle_timeout_on_submit"] is True
+
+
+def test_running_process_pseudo_terminal_forwards_terminal_input_relay_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: dict[str, object] = {}
+
+    class FakePtyProcess:
+        def __init__(self, command: str | list[str], **kwargs: object) -> None:
+            recorded["command"] = command
+            recorded["kwargs"] = kwargs
+
+    monkeypatch.setattr(running_process_module, "PseudoTerminalProcess", FakePtyProcess)
+
+    process = RunningProcess.pseudo_terminal(
+        [sys.executable, "-c", "print('relay')"],
+        auto_run=False,
+        relay_terminal_input=True,
+        arm_idle_timeout_on_submit=True,
+    )
+
+    kwargs = recorded["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["relay_terminal_input"] is True
+    assert kwargs["arm_idle_timeout_on_submit"] is True
+    assert isinstance(process, FakePtyProcess)
+
+
+def test_pseudo_terminal_windows_native_input_relay_forwards_events_and_arms_idle_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captures: list[FakeCapture] = []
+
+    class FakeCapture:
+        def __init__(self) -> None:
+            self.started = False
+            self.closed = False
+            self._reads = 0
+            captures.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def read_event(self, timeout: float | None = None) -> SimpleNamespace:
+            del timeout
+            self._reads += 1
+            if self._reads == 1:
+                return SimpleNamespace(data=b"hello\r", submit=True)
+            raise TimeoutError
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeProc:
+        def __init__(self, owner: PseudoTerminalProcess) -> None:
+            self.owner = owner
+            self.pid = 1234
+
+        def poll(self) -> int | None:
+            if self.owner._terminal_input_stop.is_set():
+                return 0
+            return None
+
+    monkeypatch.setattr(pty_module, "NativeTerminalInput", FakeCapture)
+    monkeypatch.setattr(pty_module.sys, "platform", "win32")
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('relay')"],
+        auto_run=False,
+    )
+    process._proc = FakeProc(process)  # type: ignore[assignment]
+    process.idle_timeout_enabled = False
+    writes: list[tuple[bytes, bool]] = []
+
+    def fake_write(data: str | bytes, *, submit: bool = False) -> None:
+        raw = data.encode(process.encoding, process.errors) if isinstance(data, str) else data
+        writes.append((raw, submit))
+        process._terminal_input_stop.set()
+
+    process.write = fake_write  # type: ignore[method-assign]
+    process.start_terminal_input_relay(arm_idle_timeout_on_submit=True)
+
+    deadline = time.time() + 1.0
+    while process.terminal_input_relay_active and time.time() < deadline:
+        time.sleep(0.01)
+
+    capture = captures[0]
+    process.stop_terminal_input_relay()
+
+    assert capture.started is True
+    assert capture.closed is True
+    assert writes == [(b"hello\r", True)]
+    assert process.idle_timeout_enabled is True
 
 
 def test_pseudo_terminal_idle_sampling_uses_native_process_metrics() -> None:

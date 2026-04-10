@@ -24,6 +24,7 @@ from running_process._native import (
     NativeProcessMetrics,
     NativePtyBuffer,
     NativeSignalBool,
+    NativeTerminalInput,
     native_apply_process_nice,
 )
 from running_process.command_render import list2cmdline as render_command_list
@@ -157,6 +158,12 @@ class IdleDecision(str, Enum):
     IS_IDLE = "is_idle"
 
 
+class IdleStartTrigger(str, Enum):
+    IMMEDIATE = "immediate"
+    INPUT_NEWLINE = "input_newline"
+    INPUT_SUBMIT = "input_submit"
+
+
 @dataclass(slots=True)
 class IdleTiming:
     timeout_seconds: float = 10.0
@@ -169,6 +176,7 @@ class PtyIdleDetection:
     reset_on_input: bool = True
     reset_on_output: bool = True
     count_control_churn_as_output: bool = True
+    start_trigger: IdleStartTrigger = IdleStartTrigger.IMMEDIATE
 
 
 @dataclass(slots=True)
@@ -284,14 +292,23 @@ class WaitCheckpoint:
     offset: int
 
 
+@dataclass(frozen=True, slots=True)
+class _BufferedInput:
+    data: str | bytes
+    submit: bool = False
+
+
 class WaitInputBuffer:
     def __init__(self) -> None:
-        self._items: list[str | bytes] = []
+        self._items: list[str | bytes | _BufferedInput] = []
 
     def write(self, data: str | bytes) -> None:
         self._items.append(data)
 
-    def drain(self) -> list[str | bytes]:
+    def submit(self, data: str | bytes) -> None:
+        self._items.append(_BufferedInput(data=data, submit=True))
+
+    def drain(self) -> list[str | bytes | _BufferedInput]:
         items = list(self._items)
         self._items.clear()
         return items
@@ -639,9 +656,12 @@ def _normalize_wait_conditions(
 
 
 def _flush_wait_input(
-    process: PseudoTerminalProcess, items: list[str | bytes]
+    process: PseudoTerminalProcess, items: list[str | bytes | _BufferedInput]
 ) -> None:
     for item in items:
+        if isinstance(item, _BufferedInput):
+            process.write(item.data, submit=item.submit)
+            continue
         process.write(item)
 
 
@@ -657,6 +677,20 @@ def _resolve_expect_offset(
 
 def _build_default_idle_reset(cfg: IdleDetection) -> IdleResetPredicate:
     return lambda diff, ctx: _default_idle_reset(diff, ctx, cfg)
+
+
+def _input_contains_newline(data: bytes) -> bool:
+    return b"\r" in data or b"\n" in data
+
+
+def _start_event_count(
+    process: PseudoTerminalProcess, start_trigger: IdleStartTrigger
+) -> int:
+    if start_trigger is IdleStartTrigger.INPUT_NEWLINE:
+        return process._pty_newline_events_total
+    if start_trigger is IdleStartTrigger.INPUT_SUBMIT:
+        return process._pty_submit_events_total
+    return 1
 
 
 def _default_idle_reset(diff: IdleDiff, _ctx: IdleContext, cfg: IdleDetection) -> bool:
@@ -771,6 +805,8 @@ class PseudoTerminalProcess:
         restore_terminal: bool = True,
         expect: list[Expect] | None = None,
         idle_detector: IdleDetector | None = None,
+        relay_terminal_input: bool = False,
+        arm_idle_timeout_on_submit: bool = False,
         auto_run: bool = True,
     ) -> None:
         if not Pty.is_available():
@@ -812,8 +848,10 @@ class PseudoTerminalProcess:
         self.last_activity_at: float | None = None
         self._exit_status: ExitStatus | None = None
         self._pty_input_bytes_total = 0
+        self._pty_newline_events_total = 0
         self._pty_output_bytes_total = 0
         self._pty_control_churn_bytes_total = 0
+        self._pty_submit_events_total = 0
         self._pending_echo_chunks: list[bytes] = []
         self._native_idle_detector: NativeIdleDetector | None = None
         self._native_process_metrics: NativeProcessMetrics | None = None
@@ -822,6 +860,12 @@ class PseudoTerminalProcess:
         self._idle_timeout_signal = SignalBool(True)
         self._registered_expect_conditions = list(expect) if expect is not None else []
         self._registered_idle_detector = idle_detector
+        self._relay_terminal_input = bool(relay_terminal_input)
+        self._arm_idle_timeout_on_submit = bool(arm_idle_timeout_on_submit)
+        self._terminal_input_capture: NativeTerminalInput | None = None
+        self._terminal_input_thread: threading.Thread | None = None
+        self._terminal_input_stop = threading.Event()
+        self._terminal_input_restore_state: Any | None = None
         if auto_run:
             self.start()
 
@@ -847,6 +891,10 @@ class PseudoTerminalProcess:
         self._prime_process_metrics()
         self._close_finalizer = weakref.finalize(self, _close_native_pty_process, self._proc)
         self._native_stream_closed = False
+        if self._relay_terminal_input:
+            self.start_terminal_input_relay(
+                arm_idle_timeout_on_submit=self._arm_idle_timeout_on_submit
+            )
 
     def available(self) -> bool:
         if not self.capture:
@@ -947,15 +995,139 @@ class PseudoTerminalProcess:
             int(self._buffer.history_bytes()),
         )
 
-    def write(self, data: str | bytes) -> None:
+    def write(self, data: str | bytes, *, submit: bool = False) -> None:
         self._ensure_started()
         raw = data.encode(self.encoding, self.errors) if isinstance(data, str) else data
         self._pty_input_bytes_total += len(raw)
+        if _input_contains_newline(raw):
+            self._pty_newline_events_total += 1
+        if submit:
+            self._pty_submit_events_total += 1
         self.last_activity_at = time.time()
         if self._native_idle_detector is not None:
             self._native_idle_detector.record_input(len(raw))
         assert self._proc is not None
         self._proc.write(raw)
+
+    def submit(self, data: str | bytes = "\n") -> None:
+        self.write(data, submit=True)
+
+    @property
+    def terminal_input_relay_active(self) -> bool:
+        thread = self._terminal_input_thread
+        return thread is not None and thread.is_alive()
+
+    def _maybe_arm_idle_timeout_from_terminal_input(self, *, submit: bool) -> None:
+        if not self._arm_idle_timeout_on_submit and not submit:
+            return
+        if not submit or self.idle_timeout_enabled:
+            return
+        self.idle_timeout_enabled = True
+
+    def _start_windows_terminal_input_relay(self) -> None:
+        capture = NativeTerminalInput()
+        capture.start()
+        self._terminal_input_capture = capture
+
+        def relay() -> None:
+            try:
+                while not self._terminal_input_stop.is_set() and self.poll() is None:
+                    try:
+                        event = capture.read_event(timeout=0.05)
+                    except TimeoutError:
+                        continue
+                    self._maybe_arm_idle_timeout_from_terminal_input(
+                        submit=bool(getattr(event, "submit", False))
+                    )
+                    self.write(event.data, submit=bool(getattr(event, "submit", False)))
+            finally:
+                with suppress(Exception):
+                    capture.close()
+
+        self._terminal_input_thread = threading.Thread(
+            target=relay,
+            daemon=True,
+            name=f"pty-terminal-input-{self.pid or 'pending'}",
+        )
+        self._terminal_input_thread.start()
+
+    def _start_posix_terminal_input_relay(self) -> None:
+        import select
+        import termios
+        import tty
+
+        if not sys.stdin.isatty():
+            return
+
+        stdin_fd = sys.stdin.fileno()
+        previous_state = termios.tcgetattr(stdin_fd)
+        tty.setraw(stdin_fd)
+        self._terminal_input_restore_state = (stdin_fd, previous_state)
+
+        def relay() -> None:
+            try:
+                while not self._terminal_input_stop.is_set() and self.poll() is None:
+                    try:
+                        ready, _, _ = select.select([stdin_fd], [], [], 0.05)
+                    except (OSError, ValueError):
+                        return
+                    if not ready:
+                        continue
+                    data = os.read(stdin_fd, 1024)
+                    if not data:
+                        continue
+                    submit = b"\r" in data or b"\n" in data
+                    self._maybe_arm_idle_timeout_from_terminal_input(submit=submit)
+                    self.write(data, submit=submit)
+            finally:
+                self._restore_posix_terminal_input()
+
+        self._terminal_input_thread = threading.Thread(
+            target=relay,
+            daemon=True,
+            name=f"pty-terminal-input-{self.pid or 'pending'}",
+        )
+        self._terminal_input_thread.start()
+
+    def _restore_posix_terminal_input(self) -> None:
+        state = self._terminal_input_restore_state
+        if state is None:
+            return
+        self._terminal_input_restore_state = None
+        import termios
+
+        stdin_fd, previous_state = state
+        with suppress(Exception):
+            termios.tcsetattr(stdin_fd, termios.TCSANOW, previous_state)
+
+    def start_terminal_input_relay(
+        self,
+        *,
+        arm_idle_timeout_on_submit: bool | None = None,
+    ) -> None:
+        self._ensure_started()
+        if self.terminal_input_relay_active:
+            return
+        if arm_idle_timeout_on_submit is not None:
+            self._arm_idle_timeout_on_submit = bool(arm_idle_timeout_on_submit)
+        self._terminal_input_stop = threading.Event()
+        if sys.platform == "win32":
+            self._start_windows_terminal_input_relay()
+            return
+        self._start_posix_terminal_input_relay()
+
+    def stop_terminal_input_relay(self) -> None:
+        self._terminal_input_stop.set()
+        thread = self._terminal_input_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=0.2)
+        self._terminal_input_thread = None
+        capture = self._terminal_input_capture
+        self._terminal_input_capture = None
+        if capture is not None:
+            with suppress(Exception):
+                capture.close()
+        self._restore_posix_terminal_input()
 
     def resize(self, rows: int, cols: int) -> None:
         self.rows = rows
@@ -1240,6 +1412,15 @@ class PseudoTerminalProcess:
         idle_process_cfg = (
             idle_detector.process if isinstance(idle_detector, IdleDetection) else None
         )
+        start_trigger = (
+            idle_detector.pty.start_trigger
+            if isinstance(idle_detector, IdleDetection) and idle_detector.pty is not None
+            else IdleStartTrigger.IMMEDIATE
+        )
+        start_events_seen = _start_event_count(self, start_trigger)
+        idle_armed = (
+            start_trigger is IdleStartTrigger.IMMEDIATE or start_events_seen > 0
+        )
         previous = self._sample_idle_snapshot(process_cfg=idle_process_cfg)
 
         try:
@@ -1283,6 +1464,39 @@ class PseudoTerminalProcess:
                 previous = current
 
                 sample_now = current.sampled_at
+                if not idle_armed and start_trigger is not IdleStartTrigger.IMMEDIATE:
+                    current_start_events = _start_event_count(self, start_trigger)
+                    if current_start_events != start_events_seen:
+                        start_events_seen = current_start_events
+                        idle_armed = True
+                        state.last_reset_at = sample_now
+                        state.stable_since = None
+                        self.last_activity_at = sample_now
+                    else:
+                        code = current.returncode
+                        if code is not None:
+                            self._drain_native_until_eof(
+                                timeout=_PTY_READER_NATIVE_CLOSE_WAIT_SECONDS
+                            )
+                            self._finalize("exit")
+                            self._exit_status = classify_exit_status(
+                                code, KEYBOARD_INTERRUPT_EXIT_CODES
+                            )
+                            interrupted = code in KEYBOARD_INTERRUPT_EXIT_CODES
+                            if (
+                                raise_on_abnormal_exit
+                                and self._exit_status.abnormal
+                                and not interrupted
+                            ):
+                                raise ProcessAbnormalExit(self._exit_status)
+                            return IdleWaitResult(
+                                returncode=code,
+                                idle_detected=False,
+                                exit_reason="interrupt" if interrupted else "process_exit",
+                                idle_for_seconds=0.0,
+                            )
+                        continue
+
                 stable_for = 0.0
                 if state.stable_since is not None:
                     stable_for = max(0.0, sample_now - state.stable_since)
@@ -1455,6 +1669,8 @@ class PseudoTerminalProcess:
         idle_timeout_enabled = self.idle_timeout_enabled
         previous: _IdleSample | None = None
         process_cfg: ProcessIdleDetection | None = None
+        start_trigger = IdleStartTrigger.IMMEDIATE
+        start_events_seen = _start_event_count(self, start_trigger)
         idle_armed = idle_condition is not None
         next_idle_sample_at: float | None = None
 
@@ -1465,12 +1681,18 @@ class PseudoTerminalProcess:
             if isinstance(idle_condition.detector, IdleDetection):
                 default_predicate = _build_default_idle_reset(idle_condition.detector)
                 process_cfg = idle_condition.detector.process
+                if idle_condition.detector.pty is not None:
+                    start_trigger = idle_condition.detector.pty.start_trigger
             else:
                 default_predicate = _build_default_idle_reset(IdleDetection())
             started = time.time()
             idle_state = _IdleRuntimeState(last_reset_at=started, stable_since=None)
             previous = self._sample_idle_snapshot(process_cfg=process_cfg)
             next_idle_sample_at = started + timing.sample_interval_seconds
+            start_events_seen = _start_event_count(self, start_trigger)
+            idle_armed = (
+                start_trigger is IdleStartTrigger.IMMEDIATE or start_events_seen > 0
+            )
 
         callback_states: list[tuple[Callback, _WaitCallbackState]] = []
         callback_threads: list[threading.Thread] = []
@@ -1661,6 +1883,17 @@ class PseudoTerminalProcess:
                     previous = current
                     sample_now = current.sampled_at
                     next_idle_sample_at = sample_now + timing.sample_interval_seconds
+
+                    if not idle_armed and start_trigger is not IdleStartTrigger.IMMEDIATE:
+                        current_start_events = _start_event_count(self, start_trigger)
+                        if current_start_events != start_events_seen:
+                            start_events_seen = current_start_events
+                            idle_armed = True
+                            idle_state.last_reset_at = sample_now
+                            idle_state.stable_since = None
+                            self.last_activity_at = sample_now
+                        else:
+                            continue
 
                     stable_for = 0.0
                     if idle_state.stable_since is not None:
@@ -1946,6 +2179,7 @@ class PseudoTerminalProcess:
     def _finalize(self, reason: str) -> None:
         if self._finalized:
             return
+        self.stop_terminal_input_relay()
         self._finalized = True
         self._end_time = self._end_time or time.time()
         self.exit_reason = (

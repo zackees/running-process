@@ -2,6 +2,7 @@ from __future__ import annotations
 
 __version__ = "3.0.5"
 
+from running_process._native import NativeTerminalInput, NativeTerminalInputEvent
 from running_process.compat import (
     CREATE_NEW_PROCESS_GROUP,
     DEVNULL,
@@ -25,6 +26,7 @@ from running_process.pty import (
     IdleDetector,
     IdleDiff,
     IdleInfoDiff,
+    IdleStartTrigger,
     IdleTiming,
     IdleWaitResult,
     InteractiveLaunchSpec,
@@ -75,12 +77,15 @@ __all__ = [
     "IdleDetector",
     "IdleDiff",
     "IdleInfoDiff",
+    "IdleStartTrigger",
     "IdleTiming",
     "IdleWaitResult",
     "InteractiveLaunchSpec",
     "InteractiveMode",
     "InteractiveProcess",
     "InterruptResult",
+    "NativeTerminalInput",
+    "NativeTerminalInputEvent",
     "OutputFormatter",
     "ProcessAbnormalExit",
     "ProcessIdleDetection",

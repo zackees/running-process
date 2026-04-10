@@ -19,4 +19,4 @@ portable-pty = "0.9"
 regex = "1"
 running-process-core = { path = "../running-process-core" }
 sysinfo = "0.30"
-winapi = { version = "0.3", features = ["handleapi", "jobapi2", "processthreadsapi", "winbase", "winnt"] }
+winapi = { version = "0.3", features = ["consoleapi", "handleapi", "jobapi2", "processenv", "processthreadsapi", "synchapi", "winbase", "wincon", "winnt", "winuser"] }

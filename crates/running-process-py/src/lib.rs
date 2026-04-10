@@ -328,6 +328,312 @@ fn windows_terminal_input_payload(data: &[u8]) -> Vec<u8> {
     translated
 }
 
+#[cfg(windows)]
+fn native_terminal_input_mode(original_mode: u32) -> u32 {
+    use winapi::um::wincon::{
+        ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+        ENABLE_QUICK_EDIT_MODE, ENABLE_WINDOW_INPUT,
+    };
+
+    (original_mode | ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT)
+        & !(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_QUICK_EDIT_MODE)
+}
+
+#[cfg(windows)]
+fn terminal_input_modifier_parameter(shift: bool, alt: bool, ctrl: bool) -> Option<u8> {
+    let value = 1 + u8::from(shift) + (u8::from(alt) * 2) + (u8::from(ctrl) * 4);
+    (value > 1).then_some(value)
+}
+
+#[cfg(windows)]
+fn repeat_terminal_input_bytes(chunk: &[u8], repeat_count: u16) -> Vec<u8> {
+    let repeat = usize::from(repeat_count.max(1));
+    let mut output = Vec::with_capacity(chunk.len() * repeat);
+    for _ in 0..repeat {
+        output.extend_from_slice(chunk);
+    }
+    output
+}
+
+#[cfg(windows)]
+fn repeated_modified_sequence(base: &[u8], modifier: Option<u8>, repeat_count: u16) -> Vec<u8> {
+    if let Some(value) = modifier {
+        let base_text = std::str::from_utf8(base).expect("VT sequence literal must be utf-8");
+        let body = base_text
+            .strip_prefix("\x1b[")
+            .expect("VT sequence literal must start with CSI");
+        let sequence = format!("\x1b[1;{value}{body}");
+        repeat_terminal_input_bytes(sequence.as_bytes(), repeat_count)
+    } else {
+        repeat_terminal_input_bytes(base, repeat_count)
+    }
+}
+
+#[cfg(windows)]
+fn repeated_tilde_sequence(number: u8, modifier: Option<u8>, repeat_count: u16) -> Vec<u8> {
+    if let Some(value) = modifier {
+        let sequence = format!("\x1b[{number};{value}~");
+        repeat_terminal_input_bytes(sequence.as_bytes(), repeat_count)
+    } else {
+        let sequence = format!("\x1b[{number}~");
+        repeat_terminal_input_bytes(sequence.as_bytes(), repeat_count)
+    }
+}
+
+#[cfg(windows)]
+fn control_character_for_unicode(unicode: u16) -> Option<u8> {
+    let upper = char::from_u32(u32::from(unicode))?.to_ascii_uppercase();
+    match upper {
+        '@' | ' ' => Some(0x00),
+        'A'..='Z' => Some((upper as u8) - b'@'),
+        '[' => Some(0x1B),
+        '\\' => Some(0x1C),
+        ']' => Some(0x1D),
+        '^' => Some(0x1E),
+        '_' => Some(0x1F),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn translate_console_key_event(
+    record: &winapi::um::wincontypes::KEY_EVENT_RECORD,
+) -> Option<TerminalInputEventRecord> {
+    use winapi::um::wincontypes::{
+        LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, RIGHT_ALT_PRESSED, RIGHT_CTRL_PRESSED, SHIFT_PRESSED,
+    };
+    use winapi::um::winuser::{
+        VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_INSERT, VK_LEFT, VK_NEXT,
+        VK_PRIOR, VK_RETURN, VK_RIGHT, VK_TAB, VK_UP,
+    };
+
+    if record.bKeyDown == 0 {
+        return None;
+    }
+
+    let repeat_count = record.wRepeatCount.max(1);
+    let modifiers = record.dwControlKeyState;
+    let shift = modifiers & SHIFT_PRESSED != 0;
+    let alt = modifiers & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED) != 0;
+    let ctrl = modifiers & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0;
+    let virtual_key_code = record.wVirtualKeyCode;
+    let unicode = unsafe { *record.uChar.UnicodeChar() };
+
+    let mut data = if ctrl {
+        control_character_for_unicode(unicode)
+            .map(|byte| repeat_terminal_input_bytes(&[byte], repeat_count))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    if data.is_empty() && unicode != 0 {
+        if let Some(character) = char::from_u32(u32::from(unicode)) {
+            let text: String = std::iter::repeat_n(character, usize::from(repeat_count)).collect();
+            data = text.into_bytes();
+        }
+    }
+
+    if data.is_empty() {
+        let modifier = terminal_input_modifier_parameter(shift, alt, ctrl);
+        let sequence = match virtual_key_code as i32 {
+            VK_BACK => Some(b"\x08".as_slice()),
+            VK_TAB if shift => Some(b"\x1b[Z".as_slice()),
+            VK_TAB => Some(b"\t".as_slice()),
+            VK_RETURN => Some(b"\r".as_slice()),
+            VK_ESCAPE => Some(b"\x1b".as_slice()),
+            VK_UP => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_modified_sequence(b"\x1b[A", modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            VK_DOWN => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_modified_sequence(b"\x1b[B", modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            VK_RIGHT => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_modified_sequence(b"\x1b[C", modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            VK_LEFT => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_modified_sequence(b"\x1b[D", modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            VK_HOME => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_modified_sequence(b"\x1b[H", modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            VK_END => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_modified_sequence(b"\x1b[F", modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            VK_INSERT => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_tilde_sequence(2, modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            VK_DELETE => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_tilde_sequence(3, modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            VK_PRIOR => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_tilde_sequence(5, modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            VK_NEXT => {
+                return Some(TerminalInputEventRecord {
+                    data: repeated_tilde_sequence(6, modifier, repeat_count),
+                    submit: false,
+                    shift,
+                    ctrl,
+                    alt,
+                    virtual_key_code,
+                    repeat_count,
+                });
+            }
+            _ => None,
+        };
+        data = sequence.map(|chunk| repeat_terminal_input_bytes(chunk, repeat_count))?;
+    }
+
+    if alt && !data.starts_with(b"\x1b[") && !data.starts_with(b"\x1bO") {
+        let mut prefixed = Vec::with_capacity(data.len() + 1);
+        prefixed.push(0x1B);
+        prefixed.extend_from_slice(&data);
+        data = prefixed;
+    }
+
+    Some(TerminalInputEventRecord {
+        data,
+        submit: virtual_key_code as i32 == VK_RETURN && !shift,
+        shift,
+        ctrl,
+        alt,
+        virtual_key_code,
+        repeat_count,
+    })
+}
+
+#[cfg(windows)]
+fn native_terminal_input_worker(
+    input_handle: usize,
+    state: Arc<Mutex<TerminalInputState>>,
+    condvar: Arc<Condvar>,
+    stop: Arc<AtomicBool>,
+    capturing: Arc<AtomicBool>,
+) {
+    use winapi::shared::minwindef::DWORD;
+    use winapi::shared::winerror::WAIT_TIMEOUT;
+    use winapi::um::consoleapi::ReadConsoleInputW;
+    use winapi::um::synchapi::WaitForSingleObject;
+    use winapi::um::winbase::WAIT_OBJECT_0;
+    use winapi::um::wincontypes::{INPUT_RECORD, KEY_EVENT};
+    use winapi::um::winnt::HANDLE;
+
+    let handle = input_handle as HANDLE;
+    let mut records: [INPUT_RECORD; 16] = unsafe { std::mem::zeroed() };
+
+    while !stop.load(Ordering::Acquire) {
+        let wait_result = unsafe { WaitForSingleObject(handle, 50) };
+        match wait_result {
+            WAIT_OBJECT_0 => {
+                let mut read_count: DWORD = 0;
+                let ok = unsafe {
+                    ReadConsoleInputW(
+                        handle,
+                        records.as_mut_ptr(),
+                        records.len() as DWORD,
+                        &mut read_count,
+                    )
+                };
+                if ok == 0 {
+                    break;
+                }
+                for record in records.iter().take(read_count as usize) {
+                    if record.EventType != KEY_EVENT {
+                        continue;
+                    }
+                    let key_event = unsafe { record.Event.KeyEvent() };
+                    if let Some(event) = translate_console_key_event(key_event) {
+                        let mut guard = state.lock().expect("terminal input mutex poisoned");
+                        guard.events.push_back(event);
+                        drop(guard);
+                        condvar.notify_all();
+                    }
+                }
+            }
+            WAIT_TIMEOUT => continue,
+            _ => break,
+        }
+    }
+
+    capturing.store(false, Ordering::Release);
+    let mut guard = state.lock().expect("terminal input mutex poisoned");
+    guard.closed = true;
+    condvar.notify_all();
+}
+
 #[pyfunction]
 fn native_get_process_tree_info(pid: u32) -> String {
     let system = System::new_all();
@@ -1086,6 +1392,52 @@ struct NativePtyBuffer {
     errors: String,
     state: Mutex<PtyBufferState>,
     condvar: Condvar,
+}
+
+#[derive(Clone)]
+struct TerminalInputEventRecord {
+    data: Vec<u8>,
+    submit: bool,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    virtual_key_code: u16,
+    repeat_count: u16,
+}
+
+struct TerminalInputState {
+    events: VecDeque<TerminalInputEventRecord>,
+    closed: bool,
+}
+
+#[cfg(windows)]
+struct ActiveTerminalInputCapture {
+    input_handle: usize,
+    original_mode: u32,
+    active_mode: u32,
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct NativeTerminalInputEvent {
+    data: Vec<u8>,
+    submit: bool,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    virtual_key_code: u16,
+    repeat_count: u16,
+}
+
+#[pyclass]
+struct NativeTerminalInput {
+    state: Arc<Mutex<TerminalInputState>>,
+    condvar: Arc<Condvar>,
+    stop: Arc<AtomicBool>,
+    capturing: Arc<AtomicBool>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
+    #[cfg(windows)]
+    console: Mutex<Option<ActiveTerminalInputCapture>>,
 }
 
 #[pymethods]
@@ -2144,6 +2496,402 @@ impl NativePtyBuffer {
     }
 }
 
+impl NativeTerminalInput {
+    fn next_event(&self) -> Option<TerminalInputEventRecord> {
+        self.state
+            .lock()
+            .expect("terminal input mutex poisoned")
+            .events
+            .pop_front()
+    }
+
+    fn event_to_py(
+        py: Python<'_>,
+        event: TerminalInputEventRecord,
+    ) -> PyResult<Py<NativeTerminalInputEvent>> {
+        Py::new(
+            py,
+            NativeTerminalInputEvent {
+                data: event.data,
+                submit: event.submit,
+                shift: event.shift,
+                ctrl: event.ctrl,
+                alt: event.alt,
+                virtual_key_code: event.virtual_key_code,
+                repeat_count: event.repeat_count,
+            },
+        )
+    }
+
+    fn wait_for_event(
+        &self,
+        py: Python<'_>,
+        timeout: Option<f64>,
+    ) -> PyResult<TerminalInputEventRecord> {
+        enum WaitOutcome {
+            Event(TerminalInputEventRecord),
+            Closed,
+            Timeout,
+        }
+
+        let state = Arc::clone(&self.state);
+        let condvar = Arc::clone(&self.condvar);
+        let outcome = py.allow_threads(move || -> WaitOutcome {
+            let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
+            let mut guard = state.lock().expect("terminal input mutex poisoned");
+            loop {
+                if let Some(event) = guard.events.pop_front() {
+                    return WaitOutcome::Event(event);
+                }
+                if guard.closed {
+                    return WaitOutcome::Closed;
+                }
+                match deadline {
+                    Some(deadline) => {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            return WaitOutcome::Timeout;
+                        }
+                        let wait = deadline.saturating_duration_since(now);
+                        let result = condvar
+                            .wait_timeout(guard, wait)
+                            .expect("terminal input mutex poisoned");
+                        guard = result.0;
+                    }
+                    None => {
+                        guard = condvar.wait(guard).expect("terminal input mutex poisoned");
+                    }
+                }
+            }
+        });
+
+        match outcome {
+            WaitOutcome::Event(event) => Ok(event),
+            WaitOutcome::Closed => Err(PyRuntimeError::new_err("Native terminal input is closed")),
+            WaitOutcome::Timeout => Err(PyTimeoutError::new_err(
+                "No terminal input available before timeout",
+            )),
+        }
+    }
+
+    fn stop_impl(&self) -> PyResult<()> {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .expect("terminal input worker mutex poisoned")
+            .take()
+        {
+            let _ = worker.join();
+        }
+        self.capturing.store(false, Ordering::Release);
+
+        #[cfg(windows)]
+        let restore_result = {
+            use winapi::um::consoleapi::SetConsoleMode;
+            use winapi::um::winnt::HANDLE;
+
+            let console = self
+                .console
+                .lock()
+                .expect("terminal input console mutex poisoned")
+                .take();
+            console.map(|capture| unsafe {
+                SetConsoleMode(capture.input_handle as HANDLE, capture.original_mode)
+            })
+        };
+
+        let mut guard = self.state.lock().expect("terminal input mutex poisoned");
+        guard.closed = true;
+        self.condvar.notify_all();
+        drop(guard);
+
+        #[cfg(windows)]
+        if let Some(result) = restore_result {
+            if result == 0 {
+                return Err(to_py_err(std::io::Error::last_os_error()));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn start_impl(&self) -> PyResult<()> {
+        use winapi::um::consoleapi::{GetConsoleMode, SetConsoleMode};
+        use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+        use winapi::um::processenv::GetStdHandle;
+        use winapi::um::winbase::STD_INPUT_HANDLE;
+
+        let mut worker_guard = self
+            .worker
+            .lock()
+            .expect("terminal input worker mutex poisoned");
+        if worker_guard.is_some() {
+            return Ok(());
+        }
+
+        let input_handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        if input_handle.is_null() || input_handle == INVALID_HANDLE_VALUE {
+            return Err(to_py_err(std::io::Error::last_os_error()));
+        }
+
+        let mut original_mode = 0u32;
+        let got_mode = unsafe { GetConsoleMode(input_handle, &mut original_mode) };
+        if got_mode == 0 {
+            return Err(PyRuntimeError::new_err(
+                "NativeTerminalInput requires an attached Windows console stdin",
+            ));
+        }
+
+        let active_mode = native_terminal_input_mode(original_mode);
+        let set_mode = unsafe { SetConsoleMode(input_handle, active_mode) };
+        if set_mode == 0 {
+            return Err(to_py_err(std::io::Error::last_os_error()));
+        }
+
+        self.stop.store(false, Ordering::Release);
+        self.capturing.store(true, Ordering::Release);
+        {
+            let mut state = self.state.lock().expect("terminal input mutex poisoned");
+            state.events.clear();
+            state.closed = false;
+        }
+        *self
+            .console
+            .lock()
+            .expect("terminal input console mutex poisoned") = Some(ActiveTerminalInputCapture {
+            input_handle: input_handle as usize,
+            original_mode,
+            active_mode,
+        });
+
+        let state = Arc::clone(&self.state);
+        let condvar = Arc::clone(&self.condvar);
+        let stop = Arc::clone(&self.stop);
+        let capturing = Arc::clone(&self.capturing);
+        let input_handle_raw = input_handle as usize;
+        *worker_guard = Some(thread::spawn(move || {
+            native_terminal_input_worker(input_handle_raw, state, condvar, stop, capturing);
+        }));
+        Ok(())
+    }
+}
+
+#[pymethods]
+impl NativeTerminalInputEvent {
+    #[getter]
+    fn data(&self, py: Python<'_>) -> Py<PyAny> {
+        PyBytes::new(py, &self.data).into_any().unbind()
+    }
+
+    #[getter]
+    fn submit(&self) -> bool {
+        self.submit
+    }
+
+    #[getter]
+    fn shift(&self) -> bool {
+        self.shift
+    }
+
+    #[getter]
+    fn ctrl(&self) -> bool {
+        self.ctrl
+    }
+
+    #[getter]
+    fn alt(&self) -> bool {
+        self.alt
+    }
+
+    #[getter]
+    fn virtual_key_code(&self) -> u16 {
+        self.virtual_key_code
+    }
+
+    #[getter]
+    fn repeat_count(&self) -> u16 {
+        self.repeat_count
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "NativeTerminalInputEvent(data={:?}, submit={}, shift={}, ctrl={}, alt={}, virtual_key_code={}, repeat_count={})",
+            self.data,
+            self.submit,
+            self.shift,
+            self.ctrl,
+            self.alt,
+            self.virtual_key_code,
+            self.repeat_count,
+        )
+    }
+}
+
+#[pymethods]
+impl NativeTerminalInput {
+    #[new]
+    fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(TerminalInputState {
+                events: VecDeque::new(),
+                closed: true,
+            })),
+            condvar: Arc::new(Condvar::new()),
+            stop: Arc::new(AtomicBool::new(false)),
+            capturing: Arc::new(AtomicBool::new(false)),
+            worker: Mutex::new(None),
+            #[cfg(windows)]
+            console: Mutex::new(None),
+        }
+    }
+
+    fn start(&self) -> PyResult<()> {
+        #[cfg(windows)]
+        {
+            self.start_impl()
+        }
+
+        #[cfg(not(windows))]
+        {
+            Err(PyRuntimeError::new_err(
+                "NativeTerminalInput is only available on Windows consoles",
+            ))
+        }
+    }
+
+    fn stop(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.stop_impl())
+    }
+
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.stop_impl())
+    }
+
+    fn available(&self) -> bool {
+        !self
+            .state
+            .lock()
+            .expect("terminal input mutex poisoned")
+            .events
+            .is_empty()
+    }
+
+    #[getter]
+    fn capturing(&self) -> bool {
+        self.capturing.load(Ordering::Acquire)
+    }
+
+    #[getter]
+    fn original_console_mode(&self) -> Option<u32> {
+        #[cfg(windows)]
+        {
+            return self
+                .console
+                .lock()
+                .expect("terminal input console mutex poisoned")
+                .as_ref()
+                .map(|capture| capture.original_mode);
+        }
+
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    #[getter]
+    fn active_console_mode(&self) -> Option<u32> {
+        #[cfg(windows)]
+        {
+            return self
+                .console
+                .lock()
+                .expect("terminal input console mutex poisoned")
+                .as_ref()
+                .map(|capture| capture.active_mode);
+        }
+
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn read_event(
+        &self,
+        py: Python<'_>,
+        timeout: Option<f64>,
+    ) -> PyResult<Py<NativeTerminalInputEvent>> {
+        let event = self.wait_for_event(py, timeout)?;
+        Self::event_to_py(py, event)
+    }
+
+    fn read_event_non_blocking(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<Option<Py<NativeTerminalInputEvent>>> {
+        if let Some(event) = self.next_event() {
+            return Self::event_to_py(py, event).map(Some);
+        }
+        if self
+            .state
+            .lock()
+            .expect("terminal input mutex poisoned")
+            .closed
+        {
+            return Err(PyRuntimeError::new_err("Native terminal input is closed"));
+        }
+        Ok(None)
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn read(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
+        let event = self.wait_for_event(py, timeout)?;
+        Ok(PyBytes::new(py, &event.data).into_any().unbind())
+    }
+
+    fn read_non_blocking(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        if let Some(event) = self.next_event() {
+            return Ok(Some(PyBytes::new(py, &event.data).into_any().unbind()));
+        }
+        if self
+            .state
+            .lock()
+            .expect("terminal input mutex poisoned")
+            .closed
+        {
+            return Err(PyRuntimeError::new_err("Native terminal input is closed"));
+        }
+        Ok(None)
+    }
+
+    fn drain(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
+        let mut guard = self.state.lock().expect("terminal input mutex poisoned");
+        guard
+            .events
+            .drain(..)
+            .map(|event| PyBytes::new(py, &event.data).into_any().unbind())
+            .collect()
+    }
+
+    fn drain_events(&self, py: Python<'_>) -> PyResult<Vec<Py<NativeTerminalInputEvent>>> {
+        let mut guard = self.state.lock().expect("terminal input mutex poisoned");
+        guard
+            .events
+            .drain(..)
+            .map(|event| Self::event_to_py(py, event))
+            .collect()
+    }
+}
+
+impl Drop for NativeTerminalInput {
+    fn drop(&mut self) {
+        let _ = self.stop_impl();
+    }
+}
+
 impl NativeRunningProcess {
     fn start_impl(&self) -> PyResult<()> {
         running_process_core::rp_rust_debug_scope!(
@@ -2657,6 +3405,77 @@ fn apply_windows_pty_priority(
     Ok(())
 }
 
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use winapi::um::wincontypes::{
+        KEY_EVENT_RECORD, LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, SHIFT_PRESSED,
+    };
+    use winapi::um::winuser::{VK_RETURN, VK_TAB, VK_UP};
+
+    fn key_event(
+        virtual_key_code: u16,
+        unicode: u16,
+        control_key_state: u32,
+        repeat_count: u16,
+    ) -> KEY_EVENT_RECORD {
+        let mut event: KEY_EVENT_RECORD = unsafe { std::mem::zeroed() };
+        event.bKeyDown = 1;
+        event.wRepeatCount = repeat_count;
+        event.wVirtualKeyCode = virtual_key_code;
+        event.wVirtualScanCode = 0;
+        event.dwControlKeyState = control_key_state;
+        unsafe {
+            *event.uChar.UnicodeChar_mut() = unicode;
+        }
+        event
+    }
+
+    #[test]
+    fn translate_terminal_input_preserves_submit_hint_for_enter() {
+        let event = translate_console_key_event(&key_event(VK_RETURN as u16, '\r' as u16, 0, 1))
+            .expect("enter should translate");
+        assert_eq!(event.data, b"\r");
+        assert!(event.submit);
+    }
+
+    #[test]
+    fn translate_terminal_input_encodes_shift_tab() {
+        let event = translate_console_key_event(&key_event(VK_TAB as u16, 0, SHIFT_PRESSED, 1))
+            .expect("shift-tab should translate");
+        assert_eq!(event.data, b"\x1b[Z");
+        assert!(!event.submit);
+    }
+
+    #[test]
+    fn translate_terminal_input_encodes_modified_arrows() {
+        let event = translate_console_key_event(&key_event(
+            VK_UP as u16,
+            0,
+            SHIFT_PRESSED | LEFT_CTRL_PRESSED,
+            1,
+        ))
+        .expect("modified arrow should translate");
+        assert_eq!(event.data, b"\x1b[1;6A");
+    }
+
+    #[test]
+    fn translate_terminal_input_encodes_alt_printable_with_escape_prefix() {
+        let event =
+            translate_console_key_event(&key_event(b'X' as u16, 'x' as u16, LEFT_ALT_PRESSED, 1))
+                .expect("alt printable should translate");
+        assert_eq!(event.data, b"\x1bx");
+    }
+
+    #[test]
+    fn translate_terminal_input_encodes_ctrl_printable_as_control_character() {
+        let event =
+            translate_console_key_event(&key_event(b'C' as u16, 'c' as u16, LEFT_CTRL_PRESSED, 1))
+                .expect("ctrl-c should translate");
+        assert_eq!(event.data, [0x03]);
+    }
+}
+
 #[pymodule]
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyNativeProcess>()?;
@@ -2666,6 +3485,8 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeSignalBool>()?;
     module.add_class::<NativeIdleDetector>()?;
     module.add_class::<NativePtyBuffer>()?;
+    module.add_class::<NativeTerminalInput>()?;
+    module.add_class::<NativeTerminalInputEvent>()?;
     module.add_function(wrap_pyfunction!(tracked_pid_db_path_py, module)?)?;
     module.add_function(wrap_pyfunction!(track_process_pid, module)?)?;
     module.add_function(wrap_pyfunction!(untrack_process_pid, module)?)?;

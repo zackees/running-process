@@ -108,9 +108,7 @@ class _RunningProcessOutputIterator:
                 "stdout/stderr tuple iteration is only available for pipe-backed RunningProcess"
             )
         if not self._process.capture:
-            raise NotImplementedError(
-                "stdout/stderr tuple iteration requires capture=True"
-            )
+            raise NotImplementedError("stdout/stderr tuple iteration requires capture=True")
         if self._streams_drained:
             exit_code = self._process.poll()
             if exit_code is None:
@@ -304,6 +302,8 @@ class RunningProcess:
         encoding: str | None = None,
         errors: str | None = None,
         universal_newlines: bool = False,
+        relay_terminal_input: bool = False,
+        arm_idle_timeout_on_submit: bool = False,
         **_popen_kwargs: Any,
     ) -> None:
         if isinstance(command, str) and shell is False:
@@ -332,6 +332,8 @@ class RunningProcess:
         self.text = requested_text
         self.encoding = encoding or "utf-8"
         self.errors = errors or "replace"
+        self.relay_terminal_input = bool(relay_terminal_input)
+        self.arm_idle_timeout_on_submit = bool(arm_idle_timeout_on_submit)
         if use_pty:
             self.capture = bool(capture) if capture is not None else False
             if stdin not in (None, PIPE):
@@ -346,11 +348,17 @@ class RunningProcess:
                 errors=self.errors,
                 nice=self.nice,
                 capture=self.capture,
+                relay_terminal_input=self.relay_terminal_input,
+                arm_idle_timeout_on_submit=self.arm_idle_timeout_on_submit,
                 auto_run=False,
             )
             self.text = False
             self.proc = None
         else:
+            if self.relay_terminal_input:
+                raise ValueError("relay_terminal_input requires use_pty=True")
+            if self.arm_idle_timeout_on_submit:
+                raise ValueError("arm_idle_timeout_on_submit requires use_pty=True")
             self.proc = NativeProcess(
                 command,
                 cwd=str(cwd) if cwd is not None else None,
@@ -826,14 +834,15 @@ class RunningProcess:
     def __iter__(self) -> _RunningProcessOutputIterator:
         return self.stream_iter()
 
-    def write(self, data: str | bytes) -> None:
+    def write(self, data: str | bytes, *, submit: bool = False) -> None:
         if self._pty_process is not None:
-            self._pty_process.write(data)
+            self._pty_process.write(data, submit=submit)
             return
-        payload = (
-            data.encode(self.encoding, self.errors) if isinstance(data, str) else data
-        )
+        payload = data.encode(self.encoding, self.errors) if isinstance(data, str) else data
         self.proc.write_stdin(payload)
+
+    def submit(self, data: str | bytes = "\n") -> None:
+        self.write(data, submit=True)
 
     def expect(
         self,
@@ -1020,6 +1029,8 @@ class RunningProcess:
         expect: list[ExpectRule | Expect] | None = None,
         expect_timeout: float | None = None,
         idle_detector: IdleDetector | None = None,
+        relay_terminal_input: bool = False,
+        arm_idle_timeout_on_submit: bool = False,
     ) -> PseudoTerminalProcess:
         registered_expect: list[Expect] = []
         bootstrap_expect: list[ExpectRule] = []
@@ -1044,6 +1055,8 @@ class RunningProcess:
             restore_terminal=restore_terminal,
             expect=registered_expect or None,
             idle_detector=idle_detector,
+            relay_terminal_input=relay_terminal_input,
+            arm_idle_timeout_on_submit=arm_idle_timeout_on_submit,
             auto_run=auto_run,
         )
         if bootstrap_expect:
