@@ -55,7 +55,10 @@ def test_live_native_debugger_dump_resolves_tiny_pdb_public_frames(tmp_path: Pat
     if not cli._native_debugger_commands(os.getpid()):
         _skip_or_fail("native debugger unavailable on PATH")
 
-    wheels = sorted(Path.cwd().glob("dist/running_process-*.whl"), key=lambda path: path.stat().st_mtime)
+    wheels = sorted(
+        Path.cwd().glob("dist/running_process-*.whl"),
+        key=lambda path: path.stat().st_mtime,
+    )
     if not wheels:
         _skip_or_fail("release wheel not found in dist/")
     wheel = wheels[-1]

@@ -362,6 +362,14 @@ def _strip_terminal_fragments(chunk: bytes) -> bytes:
     return _TERMINAL_FRAGMENT_RE.sub(b"", chunk)
 
 
+def _collapse_duplicate_carriage_returns(chunk: bytes) -> bytes:
+    if not chunk:
+        return chunk
+    while b"\r\r\n" in chunk:
+        chunk = chunk.replace(b"\r\r\n", b"\r\n")
+    return chunk
+
+
 @dataclass(slots=True)
 class _IdleCallbackThreadState:
     pending_diff: IdleInfoDiff | None = None
@@ -1016,7 +1024,9 @@ class PseudoTerminalProcess:
                         )
                         history_bytes = current_history_bytes
                         continue
-                    raise EOFError(f"Pattern not found before stream closed: {pattern!r}")
+                    raise EOFError(
+                        f"Pattern not found before stream closed: {pattern!r}"
+                    ) from None
                 continue
             except EOFError as exc:
                 raise EOFError(f"Pattern not found before stream closed: {pattern!r}") from exc
@@ -1240,7 +1250,6 @@ class PseudoTerminalProcess:
         echo_output: bool = False,
     ) -> WaitForResult:
         wait_conditions = _normalize_wait_conditions(*conditions)
-        wait_for_start_ns = time.perf_counter_ns()
         loop_iterations = 0
         sleep_ns = 0
         expect_scan_ns = 0
@@ -1658,6 +1667,7 @@ class PseudoTerminalProcess:
         rendered_chunk = self._terminal_control_stripper.strip(chunk)
         if control_bytes and rendered_chunk:
             rendered_chunk = _strip_terminal_fragments(rendered_chunk)
+            rendered_chunk = _collapse_duplicate_carriage_returns(rendered_chunk)
         self.last_activity_at = time.time()
         self._pty_output_bytes_total += max(0, len(chunk) - control_bytes)
         self._pty_control_churn_bytes_total += control_bytes

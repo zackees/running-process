@@ -1,2 +1,5 @@
 #!/usr/bin/env bash
-exec uv run --no-project python -m ci.lint "$@"
+set -euo pipefail
+
+uv sync --refresh
+exec uv run --no-editable -m ci.lint "$@"

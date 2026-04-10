@@ -7,9 +7,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
-import tempfile
 from collections.abc import Sequence
 from contextlib import suppress
 from datetime import UTC, datetime

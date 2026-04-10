@@ -21,6 +21,10 @@ ALLOWED_PORTABLE_PTY = {
     Path("crates/running-process-py/src/lib.rs"),
 }
 
+ALLOWED_PYTHON_POPEN = {
+    Path("src/running_process/cli.py"),
+}
+
 
 def _iter_files(root: Path, suffix: str) -> list[Path]:
     return sorted(path for path in root.rglob(f"*{suffix}") if path.is_file())
@@ -48,7 +52,7 @@ def check_python_spawn_sites() -> list[str]:
     popen_pattern = re.compile(r"\bsubprocess\.Popen\s*\(")
     for path in _iter_files(PYTHON_PRODUCTION_ROOT, ".py"):
         hits = _find_matches(path, popen_pattern)
-        if hits:
+        if hits and _relative(path) not in ALLOWED_PYTHON_POPEN:
             failures.extend(
                 _format_hits(
                     path,

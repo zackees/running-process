@@ -11,10 +11,7 @@ pub extern "C" fn rp_native_apply_process_nice_public(pid: u32, nice: i32) -> Py
 #[cfg(windows)]
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn rp_windows_apply_process_priority_public(
-    pid: u32,
-    nice: i32,
-) -> PyResult<()> {
+pub extern "C" fn rp_windows_apply_process_priority_public(pid: u32, nice: i32) -> PyResult<()> {
     windows_apply_process_priority_impl(pid, nice)
 }
 
@@ -170,9 +167,7 @@ pub extern "C" fn rp_native_pty_process_close_impl_public(
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn rp_native_pty_process_close_nonblocking_public(
-    process: &NativePtyProcess,
-) {
+pub extern "C" fn rp_native_pty_process_close_nonblocking_public(process: &NativePtyProcess) {
     process.close_nonblocking();
 }
 
@@ -196,18 +191,14 @@ pub extern "C" fn rp_pty_windows_respond_to_queries_public(
 #[cfg(windows)]
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn rp_pty_windows_send_interrupt_public(
-    process: &NativePtyProcess,
-) -> PyResult<()> {
+pub extern "C" fn rp_pty_windows_send_interrupt_public(process: &NativePtyProcess) -> PyResult<()> {
     crate::pty_windows::send_interrupt(process)
 }
 
 #[cfg(windows)]
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn rp_pty_windows_terminate_public(
-    process: &NativePtyProcess,
-) -> PyResult<()> {
+pub extern "C" fn rp_pty_windows_terminate_public(process: &NativePtyProcess) -> PyResult<()> {
     crate::pty_windows::terminate(process)
 }
 
@@ -221,18 +212,14 @@ pub extern "C" fn rp_pty_windows_kill_public(process: &NativePtyProcess) -> PyRe
 #[cfg(windows)]
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn rp_pty_windows_terminate_tree_public(
-    process: &NativePtyProcess,
-) -> PyResult<()> {
+pub extern "C" fn rp_pty_windows_terminate_tree_public(process: &NativePtyProcess) -> PyResult<()> {
     crate::pty_windows::terminate_tree(process)
 }
 
 #[cfg(windows)]
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn rp_pty_windows_kill_tree_public(
-    process: &NativePtyProcess,
-) -> PyResult<()> {
+pub extern "C" fn rp_pty_windows_kill_tree_public(process: &NativePtyProcess) -> PyResult<()> {
     crate::pty_windows::kill_tree(process)
 }
 

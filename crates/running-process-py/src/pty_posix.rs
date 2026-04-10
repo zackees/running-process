@@ -1,7 +1,7 @@
 use super::*;
 
 fn signal_tree(pid: u32, signal: UnixSignal) -> Result<(), std::io::Error> {
-    let mut system = System::new_all();
+    let system = System::new_all();
     let pid = system_pid(pid);
     let Some(_) = system.process(pid) else {
         return Ok(());

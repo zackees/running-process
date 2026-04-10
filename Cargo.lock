@@ -346,6 +346,7 @@ dependencies = [
 name = "running-process-py"
 version = "3.0.2"
 dependencies = [
+ "libc",
  "portable-pty",
  "pyo3",
  "regex",

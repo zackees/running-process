@@ -1,5 +1,8 @@
 target/
 dist/
+dist-dev/
+linux/*.whl
+linux/.incoming-*/
 *.pyd
 *.so
 *.dll

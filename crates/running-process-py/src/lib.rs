@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
+#[cfg(windows)]
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -28,9 +29,9 @@ use sysinfo::{Pid, ProcessRefreshKind, Signal, System, UpdateKind};
 
 #[cfg(unix)]
 mod pty_posix;
-mod public_symbols;
 #[cfg(windows)]
 mod pty_windows;
+mod public_symbols;
 
 #[cfg(unix)]
 use pty_posix as pty_platform;
@@ -426,7 +427,7 @@ fn native_apply_process_nice_impl(pid: u32, nice: i32) -> PyResult<()> {
     running_process_core::rp_rust_debug_scope!("running_process_py::native_apply_process_nice");
     #[cfg(windows)]
     {
-        return public_symbols::rp_windows_apply_process_priority_public(pid, nice);
+        public_symbols::rp_windows_apply_process_priority_public(pid, nice)
     }
 
     #[cfg(unix)]
@@ -477,10 +478,7 @@ fn windows_apply_process_priority_impl(pid: u32, nice: i32) -> PyResult<()> {
 }
 
 #[cfg(windows)]
-fn windows_generate_console_ctrl_break_impl(
-    pid: u32,
-    creationflags: Option<u32>,
-) -> PyResult<()> {
+fn windows_generate_console_ctrl_break_impl(pid: u32, creationflags: Option<u32>) -> PyResult<()> {
     running_process_core::rp_rust_debug_scope!(
         "running_process_py::windows_generate_console_ctrl_break"
     );
@@ -855,7 +853,7 @@ impl NativePtyProcess {
     fn respond_to_queries_impl(&self, data: &[u8]) -> PyResult<()> {
         #[cfg(windows)]
         {
-            return public_symbols::rp_pty_windows_respond_to_queries_public(self, data);
+            public_symbols::rp_pty_windows_respond_to_queries_public(self, data)
         }
 
         #[cfg(unix)]
@@ -887,7 +885,7 @@ impl NativePtyProcess {
         );
         #[cfg(windows)]
         {
-            return public_symbols::rp_pty_windows_send_interrupt_public(self);
+            public_symbols::rp_pty_windows_send_interrupt_public(self)
         }
 
         #[cfg(unix)]
@@ -916,7 +914,7 @@ impl NativePtyProcess {
         );
         #[cfg(windows)]
         {
-            return public_symbols::rp_pty_windows_terminate_public(self);
+            public_symbols::rp_pty_windows_terminate_public(self)
         }
 
         #[cfg(unix)]
@@ -929,7 +927,7 @@ impl NativePtyProcess {
         running_process_core::rp_rust_debug_scope!("running_process_py::NativePtyProcess::kill");
         #[cfg(windows)]
         {
-            return public_symbols::rp_pty_windows_kill_public(self);
+            public_symbols::rp_pty_windows_kill_public(self)
         }
 
         #[cfg(unix)]
@@ -944,7 +942,7 @@ impl NativePtyProcess {
         );
         #[cfg(windows)]
         {
-            return public_symbols::rp_pty_windows_terminate_tree_public(self);
+            public_symbols::rp_pty_windows_terminate_tree_public(self)
         }
 
         #[cfg(unix)]
@@ -959,7 +957,7 @@ impl NativePtyProcess {
         );
         #[cfg(windows)]
         {
-            return public_symbols::rp_pty_windows_kill_tree_public(self);
+            public_symbols::rp_pty_windows_kill_tree_public(self)
         }
 
         #[cfg(unix)]
@@ -1902,10 +1900,12 @@ impl NativePtyProcess {
         };
         let status = handles.child.try_wait().map_err(to_py_err)?;
         let code = status.map(portable_exit_code);
-        if code.is_some() {
-            self.store_returncode(code.expect("checked is_some"));
+        if let Some(code) = code {
+            self.store_returncode(code);
+            Ok(Some(code))
+        } else {
+            Ok(None)
         }
-        Ok(code)
     }
 
     #[pyo3(signature = (timeout=None))]
@@ -2189,10 +2189,7 @@ impl NativeRunningProcess {
 
         #[cfg(windows)]
         {
-            return public_symbols::rp_windows_generate_console_ctrl_break_public(
-                pid,
-                self.creationflags,
-            );
+            public_symbols::rp_windows_generate_console_ctrl_break_public(pid, self.creationflags)
         }
 
         #[cfg(unix)]

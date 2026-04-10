@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1.7
+
+ARG PYTHON_VERSION=3.11
+
+FROM python:${PYTHON_VERSION}-alpine AS substrate
+
+WORKDIR /work
+
+RUN apk add --no-cache \
+    bash \
+    build-base \
+    cargo \
+    git \
+    patchelf \
+    pkgconf \
+    rust
+
+FROM substrate AS python-tools
+
+RUN python -m pip install --upgrade pip \
+ && python -m pip install "maturin>=1.7,<2"
+
+ENV CARGO_TARGET_DIR=/work/target \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+FROM python-tools AS rust-manifests
+
+COPY Cargo.toml Cargo.lock /work/
+COPY crates/running-process-core/Cargo.toml /work/crates/running-process-core/Cargo.toml
+COPY crates/running-process-py/Cargo.toml /work/crates/running-process-py/Cargo.toml
+
+RUN mkdir -p /work/crates/running-process-core/src /work/crates/running-process-py/src \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-core/src/lib.rs \
+ && printf "use pyo3::prelude::*;\n#[pymodule]\nfn _native(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> { Ok(()) }\n" > /work/crates/running-process-py/src/lib.rs
+
+FROM rust-manifests AS rust-deps
+
+RUN cargo build --release --manifest-path crates/running-process-py/Cargo.toml
+
+FROM python-tools AS build
+
+COPY --from=rust-deps /work/target /work/target
+COPY Cargo.toml Cargo.lock pyproject.toml README.md LICENSE /work/
+COPY crates /work/crates
+COPY src /work/src
+
+RUN mkdir -p /dist \
+ && python -m maturin build \
+    --release \
+    --interpreter python \
+    --manifest-path crates/running-process-py/Cargo.toml \
+    --out /dist \
+    --compatibility musllinux_1_2
+
+# Final step: the script should run `docker cp <container_id>:/dist/. linux/`.
+FROM scratch AS artifact
+
+COPY --from=build /dist/ /

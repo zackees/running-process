@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from ci.env import build_env, repo_root
@@ -26,7 +27,10 @@ def repo_python(root: Path = ROOT) -> Path:
     windows_python = root / ".venv" / "Scripts" / "python.exe"
     if windows_python.is_file():
         return windows_python
-    return root / ".venv" / "bin" / "python"
+    posix_python = root / ".venv" / "bin" / "python"
+    if posix_python.is_file():
+        return posix_python
+    return Path(sys.executable)
 
 
 def _fingerprint_files(root: Path = ROOT) -> list[Path]:

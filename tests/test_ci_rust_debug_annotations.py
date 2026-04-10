@@ -5,7 +5,6 @@ from pathlib import Path
 from ci import check_rust_debug_annotations
 from ci.tiny_pdb_symbols import TinyPdbSymbolSpec
 
-
 PADDING = ["", "", "", "", "", ""]
 
 

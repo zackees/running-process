@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.7
+
+ARG PYTHON_VERSION=3.11
+
+FROM python:${PYTHON_VERSION}-alpine
+
+WORKDIR /work
+
+RUN apk add --no-cache bash
+
+RUN python -m pip install --upgrade pip \
+ && python -m pip install \
+    "pytest>=8,<10" \
+    "pytest-timeout>=2,<3" \
+    "uv>=0.8,<1"
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY linux/*.whl /tmp/dist/
+
+RUN python -m pip install --force-reinstall /tmp/dist/running_process-*.whl
+
+COPY pyproject.toml Cargo.toml /work/
+COPY ci /work/ci
+COPY crates/running-process-core/src/public_symbols.rs /work/crates/running-process-core/src/public_symbols.rs
+COPY crates/running-process-py/src/public_symbols.rs /work/crates/running-process-py/src/public_symbols.rs
+COPY src /work/src
+COPY tests /work/tests
+
+ENTRYPOINT ["python", "-m", "running_process.cli", "--", "python", "-m", "pytest"]
+CMD ["-m", "not live", "-ra"]

@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-mod rust_debug;
 mod public_symbols;
+mod rust_debug;
 
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 

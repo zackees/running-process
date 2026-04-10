@@ -170,7 +170,12 @@ def test_verify_release_artifact_requires_packaged_pdb(tmp_path: Path) -> None:
     with zipfile.ZipFile(wheel, "w") as zf:
         zf.writestr("running_process/_native.cp313-win_amd64.pyd", b"pyd-bytes")
 
-    with pytest.raises(RuntimeError, match="expected running_process/_native.cp313-win_amd64.pdb"):
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"expected running_process/_native\.cp313-win_amd64\.pdb"
+        ),
+    ):
         verify_release_symbols.wheel_native_entries(wheel)
 
 
