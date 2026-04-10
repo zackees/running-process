@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
 import time
 import warnings
 from dataclasses import dataclass
 
-from running_process._native import native_list_active_processes
+from running_process._native import (
+    native_list_active_processes,
+    native_register_process,
+    native_unregister_process,
+)
 from running_process.process_utils import kill_process_tree
 
 
@@ -29,11 +34,27 @@ class ActiveProcessInfo:
 
 
 class RunningProcessManager:
-    def register(self, _proc: object) -> None:
-        return None
+    def register(self, proc: object) -> None:
+        pid = getattr(proc, "pid", None)
+        if pid is None:
+            return
+        command_value = getattr(proc, "command", None)
+        if isinstance(command_value, list):
+            command = " ".join(str(part) for part in command_value)
+        else:
+            command = str(command_value)
+        cwd = getattr(proc, "cwd", None)
+        if isinstance(cwd, os.PathLike):
+            cwd = os.fspath(cwd)
+        use_pty = bool(getattr(proc, "use_pty", False))
+        kind = "pty" if use_pty else "subprocess"
+        native_register_process(int(pid), kind, command, cwd)
 
-    def unregister(self, _proc: object) -> None:
-        return None
+    def unregister(self, proc: object) -> None:
+        pid = getattr(proc, "pid", None)
+        if pid is None:
+            return
+        native_unregister_process(int(pid))
 
     def list_active(self) -> list[ActiveProcessInfo]:
         return [ActiveProcessInfo(*row) for row in native_list_active_processes()]

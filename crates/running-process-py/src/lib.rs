@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
+use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,27 +16,48 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use regex::Regex;
+use running_process_core::{
+    render_rust_debug_traces, CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus,
+    StdinMode, StreamEvent, StreamKind,
+};
 #[cfg(unix)]
 use running_process_core::{
     unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal,
-};
-use running_process_core::{
-    CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StdinMode, StreamEvent, StreamKind,
 };
 use sysinfo::{Pid, ProcessRefreshKind, Signal, System, UpdateKind};
 
 #[cfg(unix)]
 mod pty_posix;
+mod public_symbols;
 #[cfg(windows)]
 mod pty_windows;
 
 #[cfg(unix)]
 use pty_posix as pty_platform;
-#[cfg(windows)]
-use pty_windows as pty_platform;
 
 fn to_py_err(err: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(err.to_string())
+}
+
+fn is_ignorable_process_control_error(err: &std::io::Error) -> bool {
+    if matches!(
+        err.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        return true;
+    }
+    false
+}
+
+fn process_err_to_py(err: ProcessError) -> PyErr {
+    match err {
+        ProcessError::Timeout => PyTimeoutError::new_err("process timed out"),
+        other => to_py_err(other),
+    }
 }
 
 fn system_pid(pid: u32) -> Pid {
@@ -254,8 +276,9 @@ fn kill_process_tree_impl(pid: u32, timeout_seconds: f64) {
 
     for target in &kill_order {
         if let Some(process) = system.process(*target) {
-            let _ = process.kill_with(Signal::Kill);
-            let _ = process.kill();
+            if !process.kill_with(Signal::Kill).unwrap_or(false) {
+                process.kill();
+            }
         }
     }
 
@@ -394,51 +417,87 @@ fn native_list_active_processes() -> Vec<ActiveProcessEntry> {
 }
 
 #[pyfunction]
-#[allow(clippy::needless_return)]
+#[inline(never)]
 fn native_apply_process_nice(pid: u32, nice: i32) -> PyResult<()> {
+    public_symbols::rp_native_apply_process_nice_public(pid, nice)
+}
+
+fn native_apply_process_nice_impl(pid: u32, nice: i32) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::native_apply_process_nice");
     #[cfg(windows)]
     {
-        use winapi::um::handleapi::CloseHandle;
-        use winapi::um::processthreadsapi::OpenProcess;
-        use winapi::um::processthreadsapi::SetPriorityClass;
-        use winapi::um::winbase::{
-            ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
-            IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-        };
-        use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_SET_INFORMATION};
-
-        let priority_class = if nice >= 15 {
-            IDLE_PRIORITY_CLASS
-        } else if nice >= 1 {
-            BELOW_NORMAL_PRIORITY_CLASS
-        } else if nice <= -15 {
-            HIGH_PRIORITY_CLASS
-        } else if nice <= -1 {
-            ABOVE_NORMAL_PRIORITY_CLASS
-        } else {
-            NORMAL_PRIORITY_CLASS
-        };
-
-        let handle =
-            unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return Err(to_py_err(std::io::Error::last_os_error()));
-        }
-        let result = unsafe { SetPriorityClass(handle, priority_class) };
-        let close_result = unsafe { CloseHandle(handle) };
-        if close_result == 0 {
-            return Err(to_py_err(std::io::Error::last_os_error()));
-        }
-        if result == 0 {
-            return Err(to_py_err(std::io::Error::last_os_error()));
-        }
-        return Ok(());
+        return public_symbols::rp_windows_apply_process_priority_public(pid, nice);
     }
 
     #[cfg(unix)]
     {
         unix_set_priority(pid, nice).map_err(to_py_err)
     }
+}
+
+#[cfg(windows)]
+fn windows_apply_process_priority_impl(pid: u32, nice: i32) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!(
+        "running_process_py::windows_apply_process_priority"
+    );
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::processthreadsapi::{OpenProcess, SetPriorityClass};
+    use winapi::um::winbase::{
+        ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
+        IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+    };
+    use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_SET_INFORMATION};
+
+    let priority_class = if nice >= 15 {
+        IDLE_PRIORITY_CLASS
+    } else if nice >= 1 {
+        BELOW_NORMAL_PRIORITY_CLASS
+    } else if nice <= -15 {
+        HIGH_PRIORITY_CLASS
+    } else if nice <= -1 {
+        ABOVE_NORMAL_PRIORITY_CLASS
+    } else {
+        NORMAL_PRIORITY_CLASS
+    };
+
+    let handle =
+        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return Err(to_py_err(std::io::Error::last_os_error()));
+    }
+    let result = unsafe { SetPriorityClass(handle, priority_class) };
+    let close_result = unsafe { CloseHandle(handle) };
+    if close_result == 0 {
+        return Err(to_py_err(std::io::Error::last_os_error()));
+    }
+    if result == 0 {
+        return Err(to_py_err(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_generate_console_ctrl_break_impl(
+    pid: u32,
+    creationflags: Option<u32>,
+) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!(
+        "running_process_py::windows_generate_console_ctrl_break"
+    );
+    use winapi::um::wincon::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+
+    let new_process_group =
+        creationflags.unwrap_or(0) & winapi::um::winbase::CREATE_NEW_PROCESS_GROUP;
+    if new_process_group == 0 {
+        return Err(PyRuntimeError::new_err(
+            "send_interrupt on Windows requires CREATE_NEW_PROCESS_GROUP",
+        ));
+    }
+    let result = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
+    if result == 0 {
+        return Err(to_py_err(std::io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 #[pyfunction]
@@ -448,6 +507,66 @@ fn native_windows_terminal_input_bytes(py: Python<'_>, data: &[u8]) -> Py<PyAny>
     #[cfg(not(windows))]
     let payload = data.to_vec();
     PyBytes::new(py, &payload).into_any().unbind()
+}
+
+#[pyfunction]
+fn native_dump_rust_debug_traces() -> String {
+    render_rust_debug_traces()
+}
+
+#[pyfunction]
+fn native_test_capture_rust_debug_trace() -> String {
+    #[inline(never)]
+    fn inner() -> String {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::native_test_capture_rust_debug_trace::inner"
+        );
+        render_rust_debug_traces()
+    }
+
+    #[inline(never)]
+    fn outer() -> String {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::native_test_capture_rust_debug_trace::outer"
+        );
+        inner()
+    }
+
+    outer()
+}
+
+#[cfg(windows)]
+#[no_mangle]
+#[inline(never)]
+pub fn running_process_py_debug_hang_inner(release_path: &std::path::Path) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::debug_hang_inner");
+    while !release_path.exists() {
+        std::hint::spin_loop();
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[no_mangle]
+#[inline(never)]
+pub fn running_process_py_debug_hang_outer(
+    ready_path: &std::path::Path,
+    release_path: &std::path::Path,
+) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::debug_hang_outer");
+    fs::write(ready_path, b"ready").map_err(to_py_err)?;
+    running_process_py_debug_hang_inner(release_path)
+}
+
+#[pyfunction]
+#[cfg(windows)]
+#[inline(never)]
+fn native_test_hang_in_rust(ready_path: String, release_path: String) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::native_test_hang_in_rust");
+    running_process_py_debug_hang_outer(
+        std::path::Path::new(&ready_path),
+        std::path::Path::new(&release_path),
+    )
 }
 
 #[pymethods]
@@ -565,7 +684,12 @@ impl NativePtyProcess {
     /// every handle to the master pipe is dropped, including the one held by
     /// the background reader thread). Always wrap this in `py.allow_threads`
     /// from a Python-callable method.
+    // Preserve a stable Rust frame here in release user dumps.
+    #[inline(never)]
     fn close_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativePtyProcess::close_impl"
+        );
         let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
         let Some(handles) = guard.take() else {
             self.mark_reader_closed();
@@ -593,7 +717,11 @@ impl NativePtyProcess {
         // ConPTY. On Windows, ClosePseudoConsole (triggered by dropping
         // master) does not always terminate the child, so we explicitly
         // TerminateProcess it.
-        let _ = child.kill();
+        if let Err(err) = child.kill() {
+            if !is_ignorable_process_control_error(&err) {
+                return Err(to_py_err(err));
+            }
+        }
 
         // Drop the writer/master so the background reader thread sees EOF
         // and releases its handle. Otherwise the reader stays blocked
@@ -626,7 +754,12 @@ impl NativePtyProcess {
     /// the child, drop every handle so the OS reclaims the file descriptors,
     /// and let the OS reap the process. The background reader thread will
     /// notice EOF on its master clone and exit on its own.
+    // Preserve a stable Rust frame here in release user dumps.
+    #[inline(never)]
     fn close_nonblocking(&self) {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativePtyProcess::close_nonblocking"
+        );
         let Ok(mut guard) = self.handles.lock() else {
             return;
         };
@@ -650,7 +783,11 @@ impl NativePtyProcess {
             mut child,
         } = handles;
 
-        let _ = child.kill();
+        if let Err(err) = child.kill() {
+            if !is_ignorable_process_control_error(&err) {
+                return;
+            }
+        }
         // Drop writer + master so the reader thread sees EOF immediately.
         drop(writer);
         drop(master);
@@ -661,6 +798,174 @@ impl NativePtyProcess {
         #[cfg(windows)]
         drop(_job);
         self.mark_reader_closed();
+    }
+
+    fn start_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!("running_process_py::NativePtyProcess::start");
+        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+        if guard.is_some() {
+            return Err(PyRuntimeError::new_err(
+                "Pseudo-terminal process already started",
+            ));
+        }
+
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: self.rows,
+                cols: self.cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(to_py_err)?;
+
+        let mut cmd = command_builder_from_argv(&self.argv);
+        if let Some(cwd) = &self.cwd {
+            cmd.cwd(cwd);
+        }
+        if let Some(env) = &self.env {
+            cmd.env_clear();
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+        }
+
+        let reader = pair.master.try_clone_reader().map_err(to_py_err)?;
+        let writer = pair.master.take_writer().map_err(to_py_err)?;
+        let child = pair.slave.spawn_command(cmd).map_err(to_py_err)?;
+        #[cfg(windows)]
+        let job = public_symbols::rp_py_assign_child_to_windows_kill_on_close_job_public(
+            child.as_raw_handle(),
+        )?;
+        #[cfg(windows)]
+        public_symbols::rp_apply_windows_pty_priority_public(child.as_raw_handle(), self.nice)?;
+        let shared = Arc::clone(&self.reader);
+        thread::spawn(move || public_symbols::rp_spawn_pty_reader_public(reader, shared));
+
+        *guard = Some(NativePtyHandles {
+            master: pair.master,
+            writer,
+            child,
+            #[cfg(windows)]
+            _job: job,
+        });
+        Ok(())
+    }
+
+    fn respond_to_queries_impl(&self, data: &[u8]) -> PyResult<()> {
+        #[cfg(windows)]
+        {
+            return public_symbols::rp_pty_windows_respond_to_queries_public(self, data);
+        }
+
+        #[cfg(unix)]
+        {
+            pty_platform::respond_to_queries(self, data)
+        }
+    }
+
+    fn resize_impl(&self, rows: u16, cols: u16) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!("running_process_py::NativePtyProcess::resize");
+        let guard = self.handles.lock().expect("pty handles mutex poisoned");
+        if let Some(handles) = guard.as_ref() {
+            handles
+                .master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(to_py_err)?;
+        }
+        Ok(())
+    }
+
+    fn send_interrupt_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativePtyProcess::send_interrupt"
+        );
+        #[cfg(windows)]
+        {
+            return public_symbols::rp_pty_windows_send_interrupt_public(self);
+        }
+
+        #[cfg(unix)]
+        {
+            pty_platform::send_interrupt(self)
+        }
+    }
+
+    fn wait_impl(&self, timeout: Option<f64>) -> PyResult<i32> {
+        running_process_core::rp_rust_debug_scope!("running_process_py::NativePtyProcess::wait");
+        let start = Instant::now();
+        loop {
+            if let Some(code) = self.poll()? {
+                return Ok(code);
+            }
+            if timeout.is_some_and(|limit| start.elapsed() >= Duration::from_secs_f64(limit)) {
+                return Err(PyTimeoutError::new_err("Pseudo-terminal process timed out"));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn terminate_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativePtyProcess::terminate"
+        );
+        #[cfg(windows)]
+        {
+            return public_symbols::rp_pty_windows_terminate_public(self);
+        }
+
+        #[cfg(unix)]
+        {
+            pty_platform::terminate(self)
+        }
+    }
+
+    fn kill_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!("running_process_py::NativePtyProcess::kill");
+        #[cfg(windows)]
+        {
+            return public_symbols::rp_pty_windows_kill_public(self);
+        }
+
+        #[cfg(unix)]
+        {
+            pty_platform::kill(self)
+        }
+    }
+
+    fn terminate_tree_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativePtyProcess::terminate_tree"
+        );
+        #[cfg(windows)]
+        {
+            return public_symbols::rp_pty_windows_terminate_tree_public(self);
+        }
+
+        #[cfg(unix)]
+        {
+            pty_platform::terminate_tree(self)
+        }
+    }
+
+    fn kill_tree_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativePtyProcess::kill_tree"
+        );
+        #[cfg(windows)]
+        {
+            return public_symbols::rp_pty_windows_kill_tree_public(self);
+        }
+
+        #[cfg(unix)]
+        {
+            pty_platform::kill_tree(self)
+        }
     }
 }
 
@@ -731,6 +1036,16 @@ struct NativeRunningProcess {
     creationflags: Option<u32>,
     #[cfg(unix)]
     create_process_group: bool,
+}
+
+enum NativeProcessBackend {
+    Running(NativeRunningProcess),
+    Pty(NativePtyProcess),
+}
+
+#[pyclass(name = "NativeProcess")]
+struct PyNativeProcess {
+    backend: NativeProcessBackend,
 }
 
 #[pyclass]
@@ -825,8 +1140,9 @@ impl NativeRunningProcess {
         })
     }
 
+    #[inline(never)]
     fn start(&self) -> PyResult<()> {
-        self.inner.start().map_err(to_py_err)
+        public_symbols::rp_native_running_process_start_public(self)
     }
 
     fn poll(&self) -> PyResult<Option<i32>> {
@@ -834,26 +1150,24 @@ impl NativeRunningProcess {
     }
 
     #[pyo3(signature = (timeout=None))]
+    #[inline(never)]
     fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<i32> {
-        let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
-        loop {
-            py.check_signals()?;
-            if let Some(code) = self.inner.poll().map_err(to_py_err)? {
-                return Ok(code);
-            }
-            if deadline.is_some_and(|limit| Instant::now() >= limit) {
-                return Err(PyTimeoutError::new_err("process timed out"));
-            }
-            py.allow_threads(|| thread::sleep(Duration::from_millis(10)));
-        }
+        public_symbols::rp_native_running_process_wait_public(self, py, timeout)
     }
 
+    #[inline(never)]
     fn kill(&self) -> PyResult<()> {
-        self.inner.kill().map_err(to_py_err)
+        public_symbols::rp_native_running_process_kill_public(self)
     }
 
+    #[inline(never)]
     fn terminate(&self) -> PyResult<()> {
-        self.inner.terminate().map_err(to_py_err)
+        public_symbols::rp_native_running_process_terminate_public(self)
+    }
+
+    #[inline(never)]
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        public_symbols::rp_native_running_process_close_public(self, py)
     }
 
     fn terminate_group(&self) -> PyResult<()> {
@@ -885,41 +1199,9 @@ impl NativeRunningProcess {
         self.inner.returncode()
     }
 
-    #[allow(clippy::needless_return)]
+    #[inline(never)]
     fn send_interrupt(&self) -> PyResult<()> {
-        let pid = self
-            .inner
-            .pid()
-            .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
-
-        #[cfg(windows)]
-        {
-            use winapi::um::wincon::GenerateConsoleCtrlEvent;
-
-            let new_process_group =
-                self.creationflags.unwrap_or(0) & winapi::um::winbase::CREATE_NEW_PROCESS_GROUP;
-            if new_process_group == 0 {
-                return Err(PyRuntimeError::new_err(
-                    "send_interrupt on Windows requires CREATE_NEW_PROCESS_GROUP",
-                ));
-            }
-            let result =
-                unsafe { GenerateConsoleCtrlEvent(winapi::um::wincon::CTRL_BREAK_EVENT, pid) };
-            if result == 0 {
-                return Err(to_py_err(std::io::Error::last_os_error()));
-            }
-            return Ok(());
-        }
-
-        #[cfg(unix)]
-        {
-            if self.create_process_group {
-                unix_signal_process_group(pid as i32, UnixSignal::Interrupt).map_err(to_py_err)?;
-            } else {
-                unix_signal_process(pid, UnixSignal::Interrupt).map_err(to_py_err)?;
-            }
-            return Ok(());
-        }
+        public_symbols::rp_native_running_process_send_interrupt_public(self)
     }
 
     fn kill_group(&self) -> PyResult<()> {
@@ -1103,7 +1385,8 @@ impl NativeRunningProcess {
                     buffer.push('\n');
                 }
                 ReadStatus::Timeout => {
-                    return Ok(("timeout".to_string(), buffer, None, None, None, Vec::new()));
+                    // Keep polling until the overall expect deadline expires.
+                    continue;
                 }
                 ReadStatus::Eof => {
                     return Ok(("eof".to_string(), buffer, None, None, None, Vec::new()));
@@ -1115,6 +1398,325 @@ impl NativeRunningProcess {
     #[staticmethod]
     fn is_pty_available() -> bool {
         false
+    }
+}
+
+#[pymethods]
+impl PyNativeProcess {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", nice=None, create_process_group=false))]
+    fn new(
+        command: &Bound<'_, PyAny>,
+        cwd: Option<String>,
+        shell: bool,
+        capture: bool,
+        env: Option<Bound<'_, PyDict>>,
+        creationflags: Option<u32>,
+        text: bool,
+        encoding: Option<String>,
+        errors: Option<String>,
+        stdin_mode_name: &str,
+        nice: Option<i32>,
+        create_process_group: bool,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            backend: NativeProcessBackend::Running(NativeRunningProcess::new(
+                command,
+                cwd,
+                shell,
+                capture,
+                env,
+                creationflags,
+                text,
+                encoding,
+                errors,
+                stdin_mode_name,
+                nice,
+                create_process_group,
+            )?),
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (argv, cwd=None, env=None, rows=24, cols=80, nice=None))]
+    fn for_pty(
+        argv: Vec<String>,
+        cwd: Option<String>,
+        env: Option<Bound<'_, PyDict>>,
+        rows: u16,
+        cols: u16,
+        nice: Option<i32>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            backend: NativeProcessBackend::Pty(NativePtyProcess::new(
+                argv, cwd, env, rows, cols, nice,
+            )?),
+        })
+    }
+
+    fn start(&self) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.start(),
+            NativeProcessBackend::Pty(process) => process.start(),
+        }
+    }
+
+    fn poll(&self) -> PyResult<Option<i32>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.poll(),
+            NativeProcessBackend::Pty(process) => process.poll(),
+        }
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<i32> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.wait(py, timeout),
+            NativeProcessBackend::Pty(process) => py.allow_threads(|| process.wait(timeout)),
+        }
+    }
+
+    fn kill(&self) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.kill(),
+            NativeProcessBackend::Pty(process) => process.kill(),
+        }
+    }
+
+    fn terminate(&self) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.terminate(),
+            NativeProcessBackend::Pty(process) => process.terminate(),
+        }
+    }
+
+    fn terminate_group(&self) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.terminate_group(),
+            NativeProcessBackend::Pty(process) => process.terminate_tree(),
+        }
+    }
+
+    fn kill_group(&self) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.kill_group(),
+            NativeProcessBackend::Pty(process) => process.kill_tree(),
+        }
+    }
+
+    fn has_pending_combined(&self) -> PyResult<bool> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => Ok(process.has_pending_combined()),
+            NativeProcessBackend::Pty(_) => Ok(false),
+        }
+    }
+
+    fn has_pending_stream(&self, stream: &str) -> PyResult<bool> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.has_pending_stream(stream),
+            NativeProcessBackend::Pty(_) => Ok(false),
+        }
+    }
+
+    fn drain_combined(&self, py: Python<'_>) -> PyResult<Vec<(String, Py<PyAny>)>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.drain_combined(py),
+            NativeProcessBackend::Pty(_) => Ok(Vec::new()),
+        }
+    }
+
+    fn drain_stream(&self, py: Python<'_>, stream: &str) -> PyResult<Vec<Py<PyAny>>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.drain_stream(py, stream),
+            NativeProcessBackend::Pty(_) => {
+                let _ = stream;
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn take_combined_line(
+        &self,
+        py: Python<'_>,
+        timeout: Option<f64>,
+    ) -> PyResult<(String, Option<String>, Option<Py<PyAny>>)> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.take_combined_line(py, timeout),
+            NativeProcessBackend::Pty(_) => Ok(("eof".into(), None, None)),
+        }
+    }
+
+    #[pyo3(signature = (stream, timeout=None))]
+    fn take_stream_line(
+        &self,
+        py: Python<'_>,
+        stream: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<(String, Option<Py<PyAny>>)> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.take_stream_line(py, stream, timeout),
+            NativeProcessBackend::Pty(_) => {
+                let _ = (py, stream, timeout);
+                Ok(("eof".into(), None))
+            }
+        }
+    }
+
+    fn captured_stdout(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.captured_stdout(py),
+            NativeProcessBackend::Pty(_) => Ok(Vec::new()),
+        }
+    }
+
+    fn captured_stderr(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.captured_stderr(py),
+            NativeProcessBackend::Pty(_) => Ok(Vec::new()),
+        }
+    }
+
+    fn captured_combined(&self, py: Python<'_>) -> PyResult<Vec<(String, Py<PyAny>)>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.captured_combined(py),
+            NativeProcessBackend::Pty(_) => Ok(Vec::new()),
+        }
+    }
+
+    fn captured_stream_bytes(&self, stream: &str) -> PyResult<usize> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.captured_stream_bytes(stream),
+            NativeProcessBackend::Pty(_) => Ok(0),
+        }
+    }
+
+    fn captured_combined_bytes(&self) -> PyResult<usize> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => Ok(process.captured_combined_bytes()),
+            NativeProcessBackend::Pty(_) => Ok(0),
+        }
+    }
+
+    fn clear_captured_stream(&self, stream: &str) -> PyResult<usize> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.clear_captured_stream(stream),
+            NativeProcessBackend::Pty(_) => Ok(0),
+        }
+    }
+
+    fn clear_captured_combined(&self) -> PyResult<usize> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => Ok(process.clear_captured_combined()),
+            NativeProcessBackend::Pty(_) => Ok(0),
+        }
+    }
+
+    fn write_stdin(&self, data: &[u8]) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.write_stdin(data),
+            NativeProcessBackend::Pty(process) => process.write(data),
+        }
+    }
+
+    fn write(&self, data: &[u8]) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.write_stdin(data),
+            NativeProcessBackend::Pty(process) => process.write(data),
+        }
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn read_chunk(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
+        match &self.backend {
+            NativeProcessBackend::Pty(process) => process.read_chunk(py, timeout),
+            NativeProcessBackend::Running(_) => Err(PyRuntimeError::new_err(
+                "read_chunk is only available for PTY-backed NativeProcess",
+            )),
+        }
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn wait_for_pty_reader_closed(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<bool> {
+        match &self.backend {
+            NativeProcessBackend::Pty(process) => process.wait_for_reader_closed(py, timeout),
+            NativeProcessBackend::Running(_) => Err(PyRuntimeError::new_err(
+                "wait_for_pty_reader_closed is only available for PTY-backed NativeProcess",
+            )),
+        }
+    }
+
+    fn respond_to_queries(&self, data: &[u8]) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Pty(process) => process.respond_to_queries(data),
+            NativeProcessBackend::Running(_) => Ok(()),
+        }
+    }
+
+    fn resize(&self, rows: u16, cols: u16) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Pty(process) => process.resize(rows, cols),
+            NativeProcessBackend::Running(_) => Err(PyRuntimeError::new_err(
+                "resize is only available for PTY-backed NativeProcess",
+            )),
+        }
+    }
+
+    fn send_interrupt(&self) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.send_interrupt(),
+            NativeProcessBackend::Pty(process) => process.send_interrupt(),
+        }
+    }
+
+    #[pyo3(signature = (stream, pattern, is_regex=false, timeout=None))]
+    fn expect(
+        &self,
+        py: Python<'_>,
+        stream: &str,
+        pattern: &str,
+        is_regex: bool,
+        timeout: Option<f64>,
+    ) -> PyResult<ExpectResult> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => {
+                process.expect(py, stream, pattern, is_regex, timeout)
+            }
+            NativeProcessBackend::Pty(_) => Err(PyRuntimeError::new_err(
+                "expect is only available for subprocess-backed NativeProcess",
+            )),
+        }
+    }
+
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.close(py),
+            NativeProcessBackend::Pty(process) => process.close(py),
+        }
+    }
+
+    #[getter]
+    fn pid(&self) -> PyResult<Option<u32>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => Ok(process.pid()),
+            NativeProcessBackend::Pty(process) => process.pid(),
+        }
+    }
+
+    #[getter]
+    fn returncode(&self) -> PyResult<Option<i32>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => Ok(process.returncode()),
+            NativeProcessBackend::Pty(process) => Ok(*process
+                .returncode
+                .lock()
+                .expect("pty returncode mutex poisoned")),
+        }
+    }
+
+    fn is_pty(&self) -> bool {
+        matches!(self.backend, NativeProcessBackend::Pty(_))
     }
 }
 
@@ -1163,53 +1765,9 @@ impl NativePtyProcess {
         })
     }
 
+    #[inline(never)]
     fn start(&self) -> PyResult<()> {
-        let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
-        if guard.is_some() {
-            return Err(PyRuntimeError::new_err(
-                "Pseudo-terminal process already started",
-            ));
-        }
-
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: self.rows,
-                cols: self.cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(to_py_err)?;
-
-        let mut cmd = command_builder_from_argv(&self.argv);
-        if let Some(cwd) = &self.cwd {
-            cmd.cwd(cwd);
-        }
-        if let Some(env) = &self.env {
-            cmd.env_clear();
-            for (key, value) in env {
-                cmd.env(key, value);
-            }
-        }
-
-        let reader = pair.master.try_clone_reader().map_err(to_py_err)?;
-        let writer = pair.master.take_writer().map_err(to_py_err)?;
-        let child = pair.slave.spawn_command(cmd).map_err(to_py_err)?;
-        #[cfg(windows)]
-        let job = assign_child_to_windows_kill_on_close_job(child.as_raw_handle())?;
-        #[cfg(windows)]
-        apply_windows_pty_priority(child.as_raw_handle(), self.nice)?;
-        let shared = Arc::clone(&self.reader);
-        thread::spawn(move || spawn_pty_reader(reader, shared));
-
-        *guard = Some(NativePtyHandles {
-            master: pair.master,
-            writer,
-            child,
-            #[cfg(windows)]
-            _job: job,
-        });
-        Ok(())
+        public_symbols::rp_native_pty_process_start_public(self)
     }
 
     #[pyo3(signature = (timeout=None))]
@@ -1271,38 +1829,67 @@ impl NativePtyProcess {
         }
     }
 
+    #[pyo3(signature = (timeout=None))]
+    fn wait_for_reader_closed(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<bool> {
+        let closed = py.allow_threads(|| {
+            let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
+            let mut guard = self.reader.state.lock().expect("pty read mutex poisoned");
+            loop {
+                if guard.closed {
+                    return true;
+                }
+                match deadline {
+                    Some(deadline) => {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            return false;
+                        }
+                        let wait = deadline.saturating_duration_since(now);
+                        let result = self
+                            .reader
+                            .condvar
+                            .wait_timeout(guard, wait)
+                            .expect("pty read mutex poisoned");
+                        guard = result.0;
+                    }
+                    None => {
+                        guard = self
+                            .reader
+                            .condvar
+                            .wait(guard)
+                            .expect("pty read mutex poisoned");
+                    }
+                }
+            }
+        });
+        Ok(closed)
+    }
+
     fn write(&self, data: &[u8]) -> PyResult<()> {
         let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
         let handles = guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Pseudo-terminal process is not running"))?;
+        #[cfg(windows)]
+        let payload = public_symbols::rp_pty_windows_input_payload_public(data);
+        #[cfg(unix)]
         let payload = pty_platform::input_payload(data);
         handles.writer.write_all(&payload).map_err(to_py_err)?;
         handles.writer.flush().map_err(to_py_err)
     }
 
     fn respond_to_queries(&self, data: &[u8]) -> PyResult<()> {
-        pty_platform::respond_to_queries(self, data)
+        public_symbols::rp_native_pty_process_respond_to_queries_public(self, data)
     }
 
+    #[inline(never)]
     fn resize(&self, rows: u16, cols: u16) -> PyResult<()> {
-        let guard = self.handles.lock().expect("pty handles mutex poisoned");
-        if let Some(handles) = guard.as_ref() {
-            handles
-                .master
-                .resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })
-                .map_err(to_py_err)?;
-        }
-        Ok(())
+        public_symbols::rp_native_pty_process_resize_public(self, rows, cols)
     }
 
+    #[inline(never)]
     fn send_interrupt(&self) -> PyResult<()> {
-        pty_platform::send_interrupt(self)
+        public_symbols::rp_native_pty_process_send_interrupt_public(self)
     }
 
     fn poll(&self) -> PyResult<Option<i32>> {
@@ -1322,33 +1909,29 @@ impl NativePtyProcess {
     }
 
     #[pyo3(signature = (timeout=None))]
+    #[inline(never)]
     fn wait(&self, timeout: Option<f64>) -> PyResult<i32> {
-        let start = Instant::now();
-        loop {
-            if let Some(code) = self.poll()? {
-                return Ok(code);
-            }
-            if timeout.is_some_and(|limit| start.elapsed() >= Duration::from_secs_f64(limit)) {
-                return Err(PyTimeoutError::new_err("Pseudo-terminal process timed out"));
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
+        public_symbols::rp_native_pty_process_wait_public(self, timeout)
     }
 
+    #[inline(never)]
     fn terminate(&self) -> PyResult<()> {
-        pty_platform::terminate(self)
+        public_symbols::rp_native_pty_process_terminate_public(self)
     }
 
+    #[inline(never)]
     fn kill(&self) -> PyResult<()> {
-        pty_platform::kill(self)
+        public_symbols::rp_native_pty_process_kill_public(self)
     }
 
+    #[inline(never)]
     fn terminate_tree(&self) -> PyResult<()> {
-        pty_platform::terminate_tree(self)
+        public_symbols::rp_native_pty_process_terminate_tree_public(self)
     }
 
+    #[inline(never)]
     fn kill_tree(&self) -> PyResult<()> {
-        pty_platform::kill_tree(self)
+        public_symbols::rp_native_pty_process_kill_tree_public(self)
     }
 
     #[getter]
@@ -1364,7 +1947,7 @@ impl NativePtyProcess {
         // Release the GIL while waiting on the child — otherwise the wait
         // blocks every other Python thread (including the one that may need
         // to drop additional references for the child to actually exit).
-        py.allow_threads(|| self.close_impl())
+        public_symbols::rp_native_pty_process_close_public(self, py)
     }
 }
 
@@ -1374,7 +1957,7 @@ impl Drop for NativePtyProcess {
         // `close_impl` here would block the interpreter on `child.wait()`
         // and deadlock with the background reader thread. Use the
         // non-blocking teardown instead.
-        self.close_nonblocking();
+        public_symbols::rp_native_pty_process_close_nonblocking_public(self);
     }
 }
 
@@ -1556,6 +2139,73 @@ impl NativePtyBuffer {
 }
 
 impl NativeRunningProcess {
+    fn start_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativeRunningProcess::start"
+        );
+        self.inner.start().map_err(to_py_err)
+    }
+
+    fn wait_impl(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<i32> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativeRunningProcess::wait"
+        );
+        py.allow_threads(|| {
+            self.inner
+                .wait(timeout.map(Duration::from_secs_f64))
+                .map_err(process_err_to_py)
+        })
+    }
+
+    fn kill_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativeRunningProcess::kill"
+        );
+        self.inner.kill().map_err(to_py_err)
+    }
+
+    fn terminate_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativeRunningProcess::terminate"
+        );
+        self.inner.terminate().map_err(to_py_err)
+    }
+
+    fn close_impl(&self, py: Python<'_>) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativeRunningProcess::close"
+        );
+        py.allow_threads(|| self.inner.close().map_err(process_err_to_py))
+    }
+
+    fn send_interrupt_impl(&self) -> PyResult<()> {
+        running_process_core::rp_rust_debug_scope!(
+            "running_process_py::NativeRunningProcess::send_interrupt"
+        );
+        let pid = self
+            .inner
+            .pid()
+            .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
+
+        #[cfg(windows)]
+        {
+            return public_symbols::rp_windows_generate_console_ctrl_break_public(
+                pid,
+                self.creationflags,
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            if self.create_process_group {
+                unix_signal_process_group(pid as i32, UnixSignal::Interrupt).map_err(to_py_err)?;
+            } else {
+                unix_signal_process(pid, UnixSignal::Interrupt).map_err(to_py_err)?;
+            }
+            Ok(())
+        }
+    }
+
     fn decode_line_to_string(&self, py: Python<'_>, line: &[u8]) -> PyResult<String> {
         if !self.text {
             return Ok(String::from_utf8_lossy(line).into_owned());
@@ -1869,7 +2519,9 @@ fn command_builder_from_argv(argv: &[String]) -> CommandBuilder {
     command
 }
 
+#[inline(never)]
 fn spawn_pty_reader(mut reader: Box<dyn Read + Send>, shared: Arc<PtyReadShared>) {
+    running_process_core::rp_rust_debug_scope!("running_process_py::spawn_pty_reader");
     let mut chunk = [0_u8; 4096];
     loop {
         match reader.read(&mut chunk) {
@@ -1909,9 +2561,13 @@ fn portable_exit_code(status: portable_pty::ExitStatus) -> i32 {
 }
 
 #[cfg(windows)]
+#[inline(never)]
 fn assign_child_to_windows_kill_on_close_job(
     handle: Option<std::os::windows::io::RawHandle>,
 ) -> PyResult<WindowsJobHandle> {
+    running_process_core::rp_rust_debug_scope!(
+        "running_process_py::assign_child_to_windows_kill_on_close_job"
+    );
     use std::mem::zeroed;
 
     use winapi::shared::minwindef::FALSE;
@@ -1966,10 +2622,12 @@ fn assign_child_to_windows_kill_on_close_job(
 }
 
 #[cfg(windows)]
+#[inline(never)]
 fn apply_windows_pty_priority(
     handle: Option<std::os::windows::io::RawHandle>,
     nice: Option<i32>,
 ) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::apply_windows_pty_priority");
     use winapi::um::processthreadsapi::SetPriorityClass;
     use winapi::um::winbase::{
         ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
@@ -1998,6 +2656,7 @@ fn apply_windows_pty_priority(
 
 #[pymodule]
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyNativeProcess>()?;
     module.add_class::<NativeRunningProcess>()?;
     module.add_class::<NativePtyProcess>()?;
     module.add_class::<NativeProcessMetrics>()?;
@@ -2021,6 +2680,13 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         native_windows_terminal_input_bytes,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(native_dump_rust_debug_traces, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        native_test_capture_rust_debug_trace,
+        module
+    )?)?;
+    #[cfg(windows)]
+    module.add_function(wrap_pyfunction!(native_test_hang_in_rust, module)?)?;
     module.add("VERSION", PyString::new(_py, env!("CARGO_PKG_VERSION")))?;
     Ok(())
 }

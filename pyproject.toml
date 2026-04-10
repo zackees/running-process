@@ -13,6 +13,9 @@ license-files = ["LICENSE"]
 authors = [{ name = "Your Name", email = "your.email@example.com" }]
 dependencies = ["psutil>=5.9.0"]
 
+[project.scripts]
+running-process = "running_process.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/zackees/running-process"
 Repository = "https://github.com/zackees/running-process"
@@ -26,6 +29,17 @@ manifest-path = "crates/running-process-py/Cargo.toml"
 module-name = "running_process._native"
 python-source = "src"
 features = ["pyo3/extension-module"]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "build.py" },
+    { file = "src/**/*.py" },
+    { file = "crates/**/*.rs" },
+    { file = "crates/**/*.toml" },
+]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

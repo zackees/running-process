@@ -18,6 +18,7 @@ import pytest
 
 from running_process import (
     DEVNULL,
+    EOS,
     PIPE,
     CalledProcessError,
     CompletedProcess,
@@ -25,6 +26,7 @@ from running_process import (
     EndOfStream,
     ProcessAbnormalExit,
     ProcessInfo,
+    ProcessOutputEvent,
     RunningProcess,
     RunningProcessManagerSingleton,
     TimeoutExpired,
@@ -143,6 +145,139 @@ def test_stdout_and_stderr_stream_objects_report_availability() -> None:
     assert stderr_line == "stderr-ready"
     assert process.stderr_stream.available() is False
     assert process.wait() == 0
+
+
+def test_running_process_iteration_yields_stdout_stderr_and_terminal_tuple() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
+    )
+
+    seen: list[tuple[object, object, int | None]] = []
+    for stdout, stderr, exit_code in process:
+        seen.append((stdout, stderr, exit_code))
+        finished_and_drained = (
+            (stdout is None or stdout is EOS)
+            and (stderr is None or stderr is EOS)
+            and exit_code is not None
+        )
+        if finished_and_drained:
+            break
+
+    assert any(stdout == "out" for stdout, _stderr, _code in seen)
+    assert any(stderr == "err" for _stdout, stderr, _code in seen)
+    assert seen[-1] == (EOS, EOS, 0)
+
+
+def test_stream_iter_latches_exit_code_while_stderr_keeps_draining() -> None:
+    child_code = (
+        "import sys, time; "
+        "time.sleep(0.2); "
+        "print('late-stderr', file=sys.stderr, flush=True)"
+    )
+    script = (
+        "import subprocess, sys; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        "sys.exit(1)"
+    )
+    process = RunningProcess([sys.executable, "-c", script])
+
+    events = list(process.stream_iter(timeout=5))
+
+    assert any(
+        event == ProcessOutputEvent(None, "late-stderr", 1) for event in events[:-1]
+    )
+    assert events[-1] == ProcessOutputEvent(EOS, EOS, 1)
+    assert events[-1].finished_and_drained is True
+
+
+def test_stream_iter_reports_drained_streams_before_exit_code_when_needed() -> None:
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time; "
+                "sys.stdout.close(); "
+                "sys.stderr.close(); "
+                "time.sleep(0.2); "
+                "sys.exit(7)"
+            ),
+        ]
+    )
+
+    events = list(process.stream_iter(timeout=5))
+
+    assert events[0].streams_drained is True
+    if events[0].exit_code is None:
+        assert events[0] == ProcessOutputEvent(EOS, EOS, None)
+        assert events[0].finished_and_drained is False
+    else:
+        assert events[0] == ProcessOutputEvent(EOS, EOS, 7)
+    assert events[-1] == ProcessOutputEvent(EOS, EOS, 7)
+    assert events[-1].finished_and_drained is True
+
+
+def test_stream_iter_single_terminal_event_when_process_exits_without_output() -> None:
+    process = RunningProcess([sys.executable, "-c", "import sys; sys.exit(4)"])
+
+    events = list(process.stream_iter(timeout=5))
+
+    assert events == [ProcessOutputEvent(EOS, EOS, 4)]
+    assert events[0].finished_and_drained is True
+
+
+def test_stream_iter_can_surface_exit_code_on_last_payload_before_terminal_event() -> None:
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('done', file=sys.stderr, flush=True); sys.exit(3)",
+        ]
+    )
+
+    events = list(process.stream_iter(timeout=5))
+
+    assert (
+        ProcessOutputEvent(None, "done", None) in events
+        or ProcessOutputEvent(None, "done", 3) in events
+    )
+    assert events[-1] == ProcessOutputEvent(EOS, EOS, 3)
+
+
+def test_stream_iter_times_out_when_no_output_and_process_has_not_exited() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "import time; time.sleep(0.5)"],
+    )
+
+    iterator = process.stream_iter(timeout=0.05)
+    with pytest.raises(TimeoutError, match="No stdout or stderr available before timeout"):
+        next(iterator)
+
+    process.wait(timeout=5)
+
+
+def test_stream_iter_requires_capture_enabled() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "print('hello')"],
+        capture=False,
+    )
+
+    with pytest.raises(NotImplementedError, match="requires capture=True"):
+        next(iter(process))
+
+    process.wait(timeout=5)
+
+
+def test_stream_iter_is_not_available_for_pty_backed_processes() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "print('hello from pty')"],
+        use_pty=True,
+    )
+
+    with pytest.raises(NotImplementedError, match="only available for pipe-backed"):
+        next(iter(process))
+
+    process.wait(timeout=5)
 
 
 def test_line_iter_uses_combined_stream() -> None:
@@ -268,6 +403,43 @@ def test_manager_unregisters_after_wait() -> None:
     RunningProcess.run([sys.executable, "-c", "print('manager')"], capture_output=True)
     after = len(RunningProcessManagerSingleton.list_active())
     assert before == after
+
+
+def test_running_process_manager_register_normalizes_pathlike_cwd(monkeypatch) -> None:
+    from running_process.running_process_manager import RunningProcessManager
+
+    seen: dict[str, object] = {}
+
+    def fake_register(pid: int, kind: str, command: str, cwd: str | None) -> None:
+        seen["pid"] = pid
+        seen["kind"] = kind
+        seen["command"] = command
+        seen["cwd"] = cwd
+
+    monkeypatch.setattr(
+        "running_process.running_process_manager.native_register_process",
+        fake_register,
+    )
+
+    proc = type(
+        "FakeProc",
+        (),
+        {
+            "pid": 123,
+            "command": ["python", "-m", "ci.test"],
+            "cwd": Path("C:/tmp/example"),
+            "use_pty": False,
+        },
+    )()
+
+    RunningProcessManager().register(proc)
+
+    assert seen == {
+        "pid": 123,
+        "kind": "subprocess",
+        "command": "python -m ci.test",
+        "cwd": str(Path("C:/tmp/example")),
+    }
 
 
 def test_manager_does_not_hold_strong_reference_to_abandoned_process() -> None:

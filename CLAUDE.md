@@ -35,6 +35,11 @@ uv run pyright src tests  # Type checking
 . ./activate.sh          # Activate development environment (requires git-bash on Windows)
 ```
 
+## Agent Backlog
+
+- Active pending work lives in [docs/AGENT_TASKS.md](C:/Users/niteris/dev/running-process/docs/AGENT_TASKS.md)
+- Root-level scratch task files should be treated as redirects or historical breadcrumbs, not the source of truth
+
 ## Windows Native Build Rules
 
 **Do not treat this repo like a generic Rust build on Windows**:

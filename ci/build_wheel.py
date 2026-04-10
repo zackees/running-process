@@ -18,7 +18,7 @@ DIST = ROOT / "dist"
 BuildMode = Literal["dev", "release"]
 
 
-def build_command(mode: BuildMode) -> list[str]:
+def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> list[str]:
     cmd = [
         sys.executable,
         "-m",
@@ -41,6 +41,9 @@ def build_command(mode: BuildMode) -> list[str]:
             cmd.extend(["--compatibility", "manylinux2014"])
         else:
             cmd.extend(["--compatibility", "pypi"])
+    if rustc_args:
+        cmd.append("--")
+        cmd.extend(rustc_args)
     return cmd
 
 
@@ -82,15 +85,45 @@ def install_wheel(wheel: Path, *, env: dict[str, str]) -> int:
 
 def run_build(mode: BuildMode) -> int:
     from ci.env import build_env
+    from ci.tiny_pdb import (
+        apply_tiny_pdb_env,
+        bundle_windows_tiny_pdb,
+        filter_public_pdb,
+        filtered_pdb_path,
+        final_crate_rustc_args,
+        stripped_pdb_path,
+    )
+    from ci.verify_release_symbols import format_release_artifact_report, verify_release_artifact
 
     env = build_env()
+    rustc_args: list[str] = []
+    if mode == "release":
+        env = apply_tiny_pdb_env(env)
+        if platform.system() == "Windows":
+            rustc_args = final_crate_rustc_args(ROOT)
     DIST.mkdir(parents=True, exist_ok=True)
     before = {path.name for path in built_wheels()}
-    cmd = build_command(mode)
+    cmd = build_command(mode, rustc_args=rustc_args)
     print(f"build mode: {mode}", file=sys.stderr, flush=True)
     result = subprocess.run(cmd, cwd=ROOT, check=False, env=env)
     if result.returncode != 0:
         return result.returncode
+    if mode == "release" and platform.system() == "Windows":
+        tiny_pdb = filter_public_pdb(
+            source_pdb=stripped_pdb_path(ROOT),
+            destination_pdb=filtered_pdb_path(ROOT),
+            root=ROOT,
+        )
+        new_wheels = [path for path in built_wheels() if path.name not in before]
+        for wheel in (new_wheels or [latest_wheel()]):
+            bundled = bundle_windows_tiny_pdb(wheel, tiny_pdb=tiny_pdb, root=ROOT)
+            print(
+                f"bundled tiny PDB into {wheel.name}: {', '.join(bundled)}",
+                file=sys.stderr,
+                flush=True,
+            )
+            report = verify_release_artifact(wheel)
+            print(format_release_artifact_report(report), file=sys.stderr, flush=True)
     if mode != "dev":
         return 0
 

@@ -683,6 +683,34 @@ def test_pseudo_terminal_wait_for_on_callback_buffer_can_answer_prompts() -> Non
     assert process.wait(timeout=5) == 0
 
 
+def test_pseudo_terminal_wait_for_on_callback_propagates_keyboard_interrupt() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "sys.stdout.write('username:'); sys.stdout.flush()\n"
+                "sys.stdin.readline()\n"
+            ),
+        ],
+        text=True,
+    )
+
+    def interrupt(_match, _buffer) -> WaitCallbackResult:
+        raise KeyboardInterrupt
+
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            process.wait_for(
+                Expect("username:", on_callback=interrupt),
+                timeout=5.0,
+            )
+    finally:
+        with contextlib.suppress(Exception):
+            process.kill()
+
+
 def test_pseudo_terminal_wait_for_expect_can_chain_next_expect() -> None:
     def send_username(_match, buffer) -> WaitCallbackResult:
         buffer.write("alice\n")
@@ -1230,7 +1258,7 @@ def test_console_isolated_uses_process_group_on_posix(monkeypatch: pytest.Monkey
             return None
 
     monkeypatch.setattr(pty_module.sys, "platform", "linux")
-    monkeypatch.setattr(pty_module, "NativeRunningProcess", FakeProc)
+    monkeypatch.setattr(pty_module, "NativeProcess", FakeProc)
 
     process = InteractiveProcess(
         [sys.executable, "-c", "print('x')"],

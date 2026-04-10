@@ -10,9 +10,9 @@ from contextlib import suppress
 from dataclasses import dataclass
 from io import TextIOBase
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
-from running_process._native import NativeRunningProcess
+from running_process._native import NativeProcess
 from running_process.command_render import list2cmdline
 from running_process.compat import (
     DEVNULL,
@@ -52,7 +52,12 @@ _BUFSIZE_NOT_SET = object()
 
 
 class EndOfStream:
-    pass
+    def __repr__(self) -> str:
+        return "EOS"
+
+
+EOS = EndOfStream()
+_FINALIZER_CLEANUP_ERRORS = (OSError, RuntimeError, TimeoutError, ValueError, AttributeError)
 
 
 @dataclass
@@ -63,6 +68,81 @@ class ProcessInfo:
 
 
 EchoValue = str | bytes
+
+
+def _is_eos(value: object) -> bool:
+    return isinstance(value, EndOfStream)
+
+
+class ProcessOutputEvent(NamedTuple):
+    stdout: EchoValue | EndOfStream | None
+    stderr: EchoValue | EndOfStream | None
+    exit_code: int | None
+
+    @property
+    def streams_drained(self) -> bool:
+        return (self.stdout is None or _is_eos(self.stdout)) and (
+            self.stderr is None or _is_eos(self.stderr)
+        )
+
+    @property
+    def finished_and_drained(self) -> bool:
+        return self.streams_drained and self.exit_code is not None
+
+
+class _RunningProcessOutputIterator:
+    def __init__(self, process: RunningProcess, timeout: float | None) -> None:
+        self._process = process
+        self._timeout = timeout
+        self._streams_drained = False
+        self._finished = False
+
+    def __iter__(self) -> _RunningProcessOutputIterator:
+        return self
+
+    def __next__(self) -> ProcessOutputEvent:
+        if self._finished:
+            raise StopIteration
+        if self._process._pty_process is not None:
+            raise NotImplementedError(
+                "stdout/stderr tuple iteration is only available for pipe-backed RunningProcess"
+            )
+        if not self._process.capture:
+            raise NotImplementedError(
+                "stdout/stderr tuple iteration requires capture=True"
+            )
+        if self._streams_drained:
+            exit_code = self._process.poll()
+            if exit_code is None:
+                exit_code = self._process.proc.wait(timeout=self._timeout)
+                self._process._end_time = self._process._end_time or time.time()
+                RunningProcessManagerSingleton.unregister(self._process)
+            self._finished = True
+            return ProcessOutputEvent(EOS, EOS, exit_code)
+
+        status, stream, line = self._process.proc.take_combined_line(self._timeout)
+        exit_code = self._process.poll()
+        if status == "timeout":
+            raise TimeoutError("No stdout or stderr available before timeout")
+        if status == "line" and stream is not None and line is not None:
+            if stream == "stdout":
+                return ProcessOutputEvent(self._process._format(line), None, exit_code)
+            return ProcessOutputEvent(None, self._process._format(line), exit_code)
+
+        self._streams_drained = True
+        if exit_code is None:
+            try:
+                grace_timeout = 0.01
+                if self._timeout is not None:
+                    grace_timeout = min(self._timeout, grace_timeout)
+                exit_code = self._process.proc.wait(timeout=grace_timeout)
+                self._process._end_time = self._process._end_time or time.time()
+                RunningProcessManagerSingleton.unregister(self._process)
+            except TimeoutError:
+                exit_code = None
+        if exit_code is not None:
+            self._finished = True
+        return ProcessOutputEvent(EOS, EOS, exit_code)
 
 
 class CapturedProcessStream:
@@ -267,7 +347,7 @@ class RunningProcess:
             )
             self.proc = None
         else:
-            self.proc = NativeRunningProcess(
+            self.proc = NativeProcess(
                 command,
                 cwd=str(cwd) if cwd is not None else None,
                 shell=self.shell,
@@ -320,13 +400,13 @@ class RunningProcess:
             try:
                 return self._format(self._pty_process.read(timeout=timeout))
             except EOFError:
-                return EndOfStream()
+                return EOS
         status, _stream, line = self.proc.take_combined_line(timeout)
         if status == "line" and line is not None:
             return self._format(line)
         if status == "timeout":
             raise TimeoutError("No combined output available before timeout")
-        return EndOfStream()
+        return EOS
 
     def get_next_stdout_line(self, timeout: float | None = None) -> EchoValue | EndOfStream:
         if self._pty_process is not None:
@@ -336,19 +416,19 @@ class RunningProcess:
             return self._format(line)
         if status == "timeout":
             raise TimeoutError("No stdout available before timeout")
-        return EndOfStream()
+        return EOS
 
     def get_next_stderr_line(self, timeout: float | None = None) -> EchoValue | EndOfStream:
         if self._pty_process is not None:
             if self._pty_process.poll() is not None:
-                return EndOfStream()
+                return EOS
             raise TimeoutError("No stderr available before timeout")
         status, line = self.proc.take_stream_line("stderr", timeout)
         if status == "line" and line is not None:
             return self._format(line)
         if status == "timeout":
             raise TimeoutError("No stderr available before timeout")
-        return EndOfStream()
+        return EOS
 
     def get_next_line_non_blocking(self) -> EchoValue | None | EndOfStream:
         try:
@@ -445,7 +525,9 @@ class RunningProcess:
                     raise_on_abnormal_exit=raise_on_abnormal_exit,
                 )
             else:
-                deadline = time.time() + effective_timeout if effective_timeout is not None else None
+                deadline = (
+                    time.time() + effective_timeout if effective_timeout is not None else None
+                )
                 while True:
                     code = self.poll()
                     if code is not None:
@@ -619,18 +701,24 @@ class RunningProcess:
         return self._pty_process.poll() if self._pty_process is not None else self.proc.returncode
 
     def close(self) -> None:
-        try:
-            code = self.poll()
-        except Exception:
-            code = None
-        if code is not None:
-            RunningProcessManagerSingleton.unregister(self)
+        if self._pty_process is not None:
+            try:
+                code = self.poll()
+            except _FINALIZER_CLEANUP_ERRORS:
+                code = None
+            if code is not None:
+                RunningProcessManagerSingleton.unregister(self)
+                return
+            with suppress(*_FINALIZER_CLEANUP_ERRORS):
+                self.kill()
             return
-        with suppress(Exception):
-            self.kill()
+        with suppress(*_FINALIZER_CLEANUP_ERRORS):
+            self.proc.close()
+        self._end_time = self._end_time or time.time()
+        RunningProcessManagerSingleton.unregister(self)
 
     def __del__(self) -> None:
-        with suppress(Exception):
+        with suppress(*_FINALIZER_CLEANUP_ERRORS):
             self.close()
 
     @property
@@ -716,6 +804,12 @@ class RunningProcess:
 
     def line_iter(self, timeout: float | None) -> _RunningProcessLineIterator:
         return _RunningProcessLineIterator(self, timeout)
+
+    def stream_iter(self, timeout: float | None = None) -> _RunningProcessOutputIterator:
+        return _RunningProcessOutputIterator(self, timeout)
+
+    def __iter__(self) -> _RunningProcessOutputIterator:
+        return self.stream_iter()
 
     def write(self, data: str | bytes) -> None:
         if self._pty_process is not None:
@@ -871,12 +965,22 @@ class RunningProcess:
     ) -> CompletedProcess[Any]:
         script_path = Path(script)
         command = [*_parse_shebang_command(script_path), str(script_path), *script_args]
+        effective_cwd = cwd
+        if (
+            effective_cwd is None
+            and len(command) >= 3
+            and command[0] == "uv"
+            and command[1] == "run"
+            and command[2] == "--script"
+        ):
+            effective_cwd = str(script_path.parent)
         return RunningProcess.run(
             command,
-            cwd=cwd,
+            cwd=effective_cwd,
             timeout=timeout,
             check=check,
             capture_output=capture_output,
+            stderr=PIPE if capture_output else None,
             text=text,
             env=env,
             nice=nice,

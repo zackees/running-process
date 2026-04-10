@@ -1,10 +1,16 @@
 use super::*;
 
+#[inline(never)]
 pub(super) fn input_payload(data: &[u8]) -> Vec<u8> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::pty_windows::input_payload");
     windows_terminal_input_payload(data)
 }
 
+#[inline(never)]
 pub(super) fn respond_to_queries(process: &NativePtyProcess, data: &[u8]) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!(
+        "running_process_py::pty_windows::respond_to_queries"
+    );
     let mut guard = process.handles.lock().expect("pty handles mutex poisoned");
     let handles = guard
         .as_mut()
@@ -20,15 +26,21 @@ pub(super) fn respond_to_queries(process: &NativePtyProcess, data: &[u8]) -> PyR
     handles.writer.flush().map_err(to_py_err)
 }
 
+#[inline(never)]
 pub(super) fn send_interrupt(process: &NativePtyProcess) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::pty_windows::send_interrupt");
     process.write(&[0x03])
 }
 
+#[inline(never)]
 pub(super) fn terminate(process: &NativePtyProcess) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::pty_windows::terminate");
     kill(process)
 }
 
+#[inline(never)]
 pub(super) fn kill(process: &NativePtyProcess) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::pty_windows::kill");
     let mut guard = process.handles.lock().expect("pty handles mutex poisoned");
     let handles = guard
         .take()
@@ -42,7 +54,11 @@ pub(super) fn kill(process: &NativePtyProcess) -> PyResult<()> {
         _job,
     } = handles;
 
-    let _ = child.kill();
+    if let Err(err) = child.kill() {
+        if !is_ignorable_process_control_error(&err) {
+            return Err(to_py_err(err));
+        }
+    }
     drop(writer);
     drop(master);
     let status = child.wait().map_err(to_py_err)?;
@@ -52,10 +68,14 @@ pub(super) fn kill(process: &NativePtyProcess) -> PyResult<()> {
     Ok(())
 }
 
+#[inline(never)]
 pub(super) fn terminate_tree(process: &NativePtyProcess) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::pty_windows::terminate_tree");
     terminate(process)
 }
 
+#[inline(never)]
 pub(super) fn kill_tree(process: &NativePtyProcess) -> PyResult<()> {
+    running_process_core::rp_rust_debug_scope!("running_process_py::pty_windows::kill_tree");
     kill(process)
 }

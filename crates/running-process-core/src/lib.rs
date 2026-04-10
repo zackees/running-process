@@ -10,6 +10,19 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+mod rust_debug;
+mod public_symbols;
+
+pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
+
+#[macro_export]
+macro_rules! rp_rust_debug_scope {
+    ($label:expr) => {
+        let _running_process_rust_debug_scope =
+            $crate::RustDebugScopeGuard::enter($label, file!(), line!());
+    };
+}
+
 const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_PATH";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +65,8 @@ pub enum ProcessError {
     Spawn(std::io::Error),
     #[error("failed to read process output: {0}")]
     Io(std::io::Error),
+    #[error("process timed out")]
+    Timeout,
 }
 
 #[derive(Debug, Clone)]
@@ -156,7 +171,14 @@ impl NativeProcess {
         }
     }
 
+    // Preserve a stable Rust frame here in release user dumps.
+    #[inline(never)]
     pub fn start(&self) -> Result<(), ProcessError> {
+        public_symbols::rp_native_process_start_public(self)
+    }
+
+    fn start_impl(&self) -> Result<(), ProcessError> {
+        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::start");
         let mut guard = self.child.lock().expect("child mutex poisoned");
         if guard.is_some() {
             return Err(ProcessError::AlreadyStarted);
@@ -180,7 +202,8 @@ impl NativeProcess {
         let mut child = command.spawn().map_err(ProcessError::Spawn)?;
         log_spawned_child_pid(child.id()).map_err(ProcessError::Spawn)?;
         #[cfg(windows)]
-        let job = assign_child_to_windows_kill_on_close_job(&child).map_err(ProcessError::Spawn)?;
+        let job = public_symbols::rp_assign_child_to_windows_kill_on_close_job_public(&child)
+            .map_err(ProcessError::Spawn)?;
         if self.config.capture {
             let stdout = child.stdout.take().expect("stdout pipe missing");
             let stderr = child.stderr.take().expect("stderr pipe missing");
@@ -208,7 +231,10 @@ impl NativeProcess {
 
     pub fn poll(&self) -> Result<Option<i32>, ProcessError> {
         let mut guard = self.child.lock().expect("child mutex poisoned");
-        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
+        let Some(child_state) = guard.as_mut() else {
+            return Ok(self.returncode());
+        };
+        let child = &mut child_state.child;
         let status = child.try_wait().map_err(ProcessError::Io)?;
         if let Some(status) = status {
             let code = exit_code(status);
@@ -218,21 +244,38 @@ impl NativeProcess {
         Ok(None)
     }
 
+    // Preserve a stable Rust frame here in release user dumps.
+    #[inline(never)]
     pub fn wait(&self, timeout: Option<Duration>) -> Result<i32, ProcessError> {
+        public_symbols::rp_native_process_wait_public(self, timeout)
+    }
+
+    fn wait_impl(&self, timeout: Option<Duration>) -> Result<i32, ProcessError> {
+        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::wait");
+        if self.child.lock().expect("child mutex poisoned").is_none() {
+            return self.returncode().ok_or(ProcessError::NotRunning);
+        }
         let start = Instant::now();
         loop {
             if let Some(code) = self.poll()? {
-                self.wait_for_capture_completion();
+                public_symbols::rp_native_process_wait_for_capture_completion_public(self);
                 return Ok(code);
             }
             if timeout.is_some_and(|limit| start.elapsed() >= limit) {
-                return Ok(-999_999);
+                return Err(ProcessError::Timeout);
             }
             thread::sleep(Duration::from_millis(10));
         }
     }
 
+    // Preserve a stable Rust frame here in release user dumps.
+    #[inline(never)]
     pub fn kill(&self) -> Result<(), ProcessError> {
+        public_symbols::rp_native_process_kill_public(self)
+    }
+
+    fn kill_impl(&self) -> Result<(), ProcessError> {
+        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::kill");
         let mut guard = self.child.lock().expect("child mutex poisoned");
         let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
         child.kill().map_err(ProcessError::Io)?;
@@ -243,6 +286,25 @@ impl NativeProcess {
 
     pub fn terminate(&self) -> Result<(), ProcessError> {
         self.kill()
+    }
+
+    // Preserve a stable Rust frame here in release user dumps.
+    #[inline(never)]
+    pub fn close(&self) -> Result<(), ProcessError> {
+        public_symbols::rp_native_process_close_public(self)
+    }
+
+    fn close_impl(&self) -> Result<(), ProcessError> {
+        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::close");
+        if self.child.lock().expect("child mutex poisoned").is_none() {
+            return Ok(());
+        }
+        if self.poll()?.is_none() {
+            self.kill()?;
+        } else {
+            public_symbols::rp_native_process_wait_for_capture_completion_public(self);
+        }
+        Ok(())
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -341,7 +403,14 @@ impl NativeProcess {
         }
     }
 
+    // Preserve a stable Rust frame here in release user dumps.
+    #[inline(never)]
     pub fn read_combined(&self, timeout: Option<Duration>) -> ReadStatus<StreamEvent> {
+        public_symbols::rp_native_process_read_combined_public(self, timeout)
+    }
+
+    fn read_combined_impl(&self, timeout: Option<Duration>) -> ReadStatus<StreamEvent> {
+        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::read_combined");
         let deadline = timeout.map(|limit| Instant::now() + limit);
         let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
 
@@ -549,7 +618,10 @@ impl NativeProcess {
         self.shared.condvar.notify_all();
     }
 
-    fn wait_for_capture_completion(&self) {
+    fn wait_for_capture_completion_impl(&self) {
+        crate::rp_rust_debug_scope!(
+            "running_process_core::NativeProcess::wait_for_capture_completion"
+        );
         if !self.config.capture {
             return;
         }
@@ -604,9 +676,10 @@ fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
 }
 
 #[cfg(windows)]
-fn assign_child_to_windows_kill_on_close_job(
+fn assign_child_to_windows_kill_on_close_job_impl(
     child: &Child,
 ) -> Result<WindowsJobHandle, std::io::Error> {
+    crate::rp_rust_debug_scope!("running_process_core::assign_child_to_windows_kill_on_close_job");
     use std::mem::zeroed;
     use std::os::windows::io::AsRawHandle;
 

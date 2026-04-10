@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
+from ci.dev_build import ensure_dev_wheel, repo_python
+
 ROOT = Path(__file__).resolve().parent.parent
-
-
-def repo_python() -> Path:
-    if sys.platform == "win32":
-        return ROOT / ".venv" / "Scripts" / "python.exe"
-    return ROOT / ".venv" / "bin" / "python"
+IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
+IN_RUNNING_PROCESS_VALUE = "running-process-cli"
 
 
 def run(cmd: list[str]) -> int:
@@ -35,8 +34,12 @@ def main() -> int:
     activate, _ = load_env_helpers()
     activate()
     python = repo_python()
-    if run([str(python), "build.py"]) != 0:
-        return 1
+    if os.environ.get(IN_RUNNING_PROCESS_ENV) != IN_RUNNING_PROCESS_VALUE:
+        try:
+            ensure_dev_wheel(python, root=ROOT)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr, flush=True)
+            return 1
     if run(["cargo", "test", "--workspace"]) != 0:
         return 1
     if run([str(python), "-m", "pytest", "-m", "not live"]) != 0:

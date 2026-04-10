@@ -71,12 +71,18 @@ Available helpers:
 - `get_next_stdout_line(timeout)`
 - `get_next_stderr_line(timeout)`
 - `get_next_line(timeout)` for combined compatibility reads
+- `stream_iter(timeout)` or `for stdout, stderr, exit_code in process`
 - `drain_stdout()`
 - `drain_stderr()`
 - `drain_combined()`
 - `stdout_stream.available()`
 - `stderr_stream.available()`
 - `combined_stream.available()`
+
+`stream_iter(...)` yields tuple-like `ProcessOutputEvent(stdout, stderr, exit_code)` records.
+Only one stream payload is populated per nonterminal item. When both pipes are drained, it yields
+`(EOS, EOS, exit_code)` if the child has already exited, or `(EOS, EOS, None)` followed by a final
+`(EOS, EOS, exit_code)` if the child closed both pipes before it exited.
 
 `RunningProcess.run(...)` supports common `subprocess.run(...)` style cases including:
 

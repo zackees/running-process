@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+from ci import dev_build
+
+
+def test_ensure_dev_wheel_reuses_cached_wheel(monkeypatch, tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    wheel = dist / "running_process-3.0.2-cp313-cp313-win_amd64.whl"
+    wheel.write_text("wheel", encoding="utf-8")
+    state_path = dist / ".running-process-dev-build.json"
+    state_path.write_text(
+        '{"fingerprint": "abc123", "wheel": "running_process-3.0.2-cp313-cp313-win_amd64.whl"}',
+        encoding="utf-8",
+    )
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, cwd, check, env):
+        calls.append([str(part) for part in command])
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(dev_build, "build_env", lambda: {})
+    monkeypatch.setattr(dev_build, "source_fingerprint", lambda root: "abc123")
+    monkeypatch.setattr(dev_build.subprocess, "run", fake_run)
+
+    action = dev_build.ensure_dev_wheel(
+        tmp_path / ".venv" / "Scripts" / "python.exe",
+        root=tmp_path,
+    )
+
+    assert action == "reused"
+    assert calls == [
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(tmp_path / ".venv" / "Scripts" / "python.exe"),
+            "--reinstall",
+            str(wheel),
+        ]
+    ]
+
+
+def test_ensure_dev_wheel_builds_and_records_state(monkeypatch, tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    built_wheel = dist / "running_process-3.0.2-cp313-cp313-win_amd64.whl"
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, cwd, check, env):
+        calls.append([str(part) for part in command])
+        built_wheel.write_text("wheel", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(dev_build, "build_env", lambda: {})
+    monkeypatch.setattr(dev_build, "source_fingerprint", lambda root: "new-fingerprint")
+    monkeypatch.setattr(dev_build.subprocess, "run", fake_run)
+
+    action = dev_build.ensure_dev_wheel(
+        tmp_path / ".venv" / "Scripts" / "python.exe",
+        root=tmp_path,
+    )
+
+    assert action == "built"
+    assert calls == [[str(tmp_path / ".venv" / "Scripts" / "python.exe"), "build.py", "--dev"]]
+    state = (dist / ".running-process-dev-build.json").read_text(encoding="utf-8")
+    assert '"fingerprint": "new-fingerprint"' in state
+    assert built_wheel.name in state

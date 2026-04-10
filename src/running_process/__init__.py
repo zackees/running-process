@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "3.0.0"
+__version__ = "3.0.2"
 
 from running_process.compat import (
     CREATE_NEW_PROCESS_GROUP,
@@ -42,8 +42,10 @@ from running_process.pty import (
     WaitInputBuffer,
 )
 from running_process.running_process import (
+    EOS,
     EndOfStream,
     ProcessInfo,
+    ProcessOutputEvent,
     RunningProcess,
     subprocess_run,
 )
@@ -55,6 +57,7 @@ from running_process.running_process_manager import (
 __all__ = [
     "CREATE_NEW_PROCESS_GROUP",
     "DEVNULL",
+    "EOS",
     "PIPE",
     "Callback",
     "CalledProcessError",
@@ -82,6 +85,7 @@ __all__ = [
     "ProcessAbnormalExit",
     "ProcessIdleDetection",
     "ProcessInfo",
+    "ProcessOutputEvent",
     "PseudoTerminalProcess",
     "PtyIdleDetection",
     "PtyNotAvailableError",

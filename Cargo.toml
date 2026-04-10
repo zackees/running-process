@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "3.0.0"
+version = "3.0.2"
 edition = "2021"
 rust-version = "1.85"
 license = "BSD-3-Clause"
@@ -17,3 +17,8 @@ homepage = "https://github.com/zackees/running-process"
 pyo3 = { version = "0.23", features = ["extension-module"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
+
+[profile.release]
+debug = "line-tables-only"
+split-debuginfo = "packed"
+strip = "none"
