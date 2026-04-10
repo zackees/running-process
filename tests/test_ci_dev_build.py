@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 from ci import dev_build
@@ -73,3 +74,26 @@ def test_ensure_dev_wheel_builds_and_records_state(monkeypatch, tmp_path: Path) 
     state = (dist / ".running-process-dev-build.json").read_text(encoding="utf-8")
     assert '"fingerprint": "new-fingerprint"' in state
     assert built_wheel.name in state
+
+
+def test_repo_python_ignores_windows_venv_on_non_windows(monkeypatch, tmp_path: Path) -> None:
+    windows_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    windows_python.parent.mkdir(parents=True, exist_ok=True)
+    windows_python.write_text("placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(dev_build.os, "name", "posix")
+
+    assert dev_build.repo_python(tmp_path) == Path(sys.executable)
+
+
+def test_repo_python_prefers_windows_venv_on_windows(monkeypatch, tmp_path: Path) -> None:
+    windows_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    posix_python = tmp_path / ".venv" / "bin" / "python"
+    windows_python.parent.mkdir(parents=True, exist_ok=True)
+    posix_python.parent.mkdir(parents=True, exist_ok=True)
+    windows_python.write_text("placeholder", encoding="utf-8")
+    posix_python.write_text("placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(dev_build.os, "name", "nt")
+
+    assert dev_build.repo_python(tmp_path) == windows_python

@@ -13,7 +13,6 @@ import time
 import warnings
 from pathlib import Path
 
-import psutil
 import pytest
 
 from running_process import (
@@ -34,6 +33,11 @@ from running_process import (
 )
 from running_process.exit_status import classify_exit_status
 from running_process.process_utils import get_process_tree_info, kill_process_tree
+from tests.process_helpers import (
+    WINDOWS_BELOW_NORMAL_PRIORITY_CLASS,
+    wait_for_pid_exit,
+    windows_priority_class_script,
+)
 
 
 def test_basic_stdout_capture() -> None:
@@ -460,7 +464,7 @@ def test_manager_does_not_hold_strong_reference_to_abandoned_process() -> None:
 
     assert len(RunningProcessManagerSingleton.list_active()) == before
     if pid is not None:
-        assert not psutil.pid_exists(pid)
+        assert wait_for_pid_exit(pid, 3.0, before_sleep=gc.collect)
 
 
 def test_run_matches_subprocess_contract() -> None:
@@ -961,13 +965,10 @@ def test_child_python_env_defaults_to_utf8_replace() -> None:
 
 def test_running_process_can_set_positive_nice() -> None:
     if sys.platform == "win32":
-        script = (
-            "import psutil; "
-            "print(psutil.Process().nice())"
-        )
+        script = windows_priority_class_script()
         process = RunningProcess([sys.executable, "-c", script], nice=5)
         process.wait()
-        assert int(process.stdout) == psutil.BELOW_NORMAL_PRIORITY_CLASS
+        assert int(process.stdout) == WINDOWS_BELOW_NORMAL_PRIORITY_CLASS
         return
 
     process = RunningProcess(
@@ -980,10 +981,10 @@ def test_running_process_can_set_positive_nice() -> None:
 
 def test_running_process_accepts_platform_neutral_priority_enum() -> None:
     if sys.platform == "win32":
-        script = "import psutil; print(psutil.Process().nice())"
+        script = windows_priority_class_script()
         process = RunningProcess([sys.executable, "-c", script], nice=CpuPriority.LOW)
         process.wait()
-        assert int(process.stdout) == psutil.BELOW_NORMAL_PRIORITY_CLASS
+        assert int(process.stdout) == WINDOWS_BELOW_NORMAL_PRIORITY_CLASS
         return
 
     process = RunningProcess(
@@ -1054,8 +1055,8 @@ time.sleep(10)
     kill_process_tree(parent.pid)
 
     parent.wait(timeout=3)
-    assert not psutil.pid_exists(parent.pid)
-    assert not psutil.pid_exists(child_pid)
+    assert wait_for_pid_exit(parent.pid, 3.0)
+    assert wait_for_pid_exit(child_pid, 3.0)
 
 
 def test_running_process_force_killed_parent_reaps_child() -> None:
@@ -1084,11 +1085,7 @@ time.sleep(30)
         owner.kill()
         owner.wait(timeout=5)
 
-        deadline = time.time() + 5.0
-        while time.time() < deadline and psutil.pid_exists(child_pid):
-            time.sleep(0.05)
-
-        assert not psutil.pid_exists(child_pid)
+        assert wait_for_pid_exit(child_pid, 5.0)
     finally:
         with contextlib.suppress(Exception):
             owner.kill()

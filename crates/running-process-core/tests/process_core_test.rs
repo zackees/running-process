@@ -256,16 +256,9 @@ fn force_killed_parent_reaps_native_child_on_windows() {
     owner.kill().unwrap();
     owner.wait().unwrap();
 
-    let probe =
-        format!("import psutil, sys; sys.exit(0 if not psutil.pid_exists({child_pid}) else 1)");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let status = Command::new("python")
-            .arg("-c")
-            .arg(&probe)
-            .status()
-            .unwrap();
-        if status.success() {
+        if !pid_exists(child_pid) {
             break;
         }
         assert!(
@@ -392,11 +385,21 @@ fn read_logged_pids(path: &PathBuf) -> Vec<u32> {
 
 #[cfg(windows)]
 fn pid_exists(pid: u32) -> bool {
-    let probe = format!("import psutil, sys; sys.exit(0 if psutil.pid_exists({pid}) else 1)");
-    Command::new("python")
-        .arg("-c")
-        .arg(&probe)
-        .status()
-        .unwrap()
-        .success()
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::processthreadsapi::{GetExitCodeProcess, OpenProcess};
+    use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
+
+    const STILL_ACTIVE: u32 = 259;
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+
+    let mut exit_code = 0u32;
+    let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+    unsafe {
+        CloseHandle(handle);
+    }
+    ok && exit_code == STILL_ACTIVE
 }

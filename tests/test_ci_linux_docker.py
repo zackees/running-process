@@ -207,3 +207,57 @@ def test_main_pytest_uses_existing_wheel_and_runtime_args(monkeypatch, tmp_path:
         in part
         for part in seen[1]
     )
+
+
+def test_main_pytest_rejects_multiple_wheels(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "running_process-3.0.2-cp311.whl").write_text("old", encoding="utf-8")
+    (tmp_path / "running_process-3.0.3-cp311.whl").write_text("new", encoding="utf-8")
+
+    monkeypatch.setattr(linux_docker, "ensure_docker_engine_running", lambda **kwargs: "docker")
+
+    result = linux_docker.main(["pytest", "--output-dir", str(tmp_path)])
+
+    assert result == 1
+
+
+def test_main_debug_builds_tools_image_then_runs_override_command(monkeypatch) -> None:
+    seen: list[list[str]] = []
+
+    monkeypatch.setattr(linux_docker, "ensure_docker_engine_running", lambda **kwargs: "docker")
+    monkeypatch.setattr(
+        linux_docker.subprocess,
+        "run",
+        lambda cmd, cwd, check=False, capture_output=False, text=False: seen.append(
+            [str(part) for part in cmd]
+        )
+        or subprocess.CompletedProcess(cmd, 0, stdout="28.5.1" if capture_output else None),
+    )
+
+    result = linux_docker.main(
+        [
+            "debug",
+            "--command",
+            "bash test timeout_does_not_arm_next_expect",
+        ]
+    )
+
+    assert result == 0
+    assert seen[0] == [
+        "docker",
+        "build",
+        "-f",
+        str(linux_docker.BUILD_DOCKERFILE),
+        "-t",
+        linux_docker.DEBUG_IMAGE_TAG,
+        "--target",
+        "python-tools",
+        ".",
+    ]
+    assert seen[1][0:3] == ["docker", "run", "--rm"]
+    assert any(
+        "export IN_RUNNING_PROCESS=running-process-cli" in part
+        and "RUNNING_PROCESS_SKIP_LINUX_DOCKER=1" in part
+        and "bash test timeout_does_not_arm_next_expect" in part
+        for part in seen[1]
+    )
+    assert any("running-process-linux-debug-cargo:/root/.cargo" == part for part in seen[1])

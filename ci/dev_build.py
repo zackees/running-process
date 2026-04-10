@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,9 +26,13 @@ SOURCE_PATTERNS = (
 
 def repo_python(root: Path = ROOT) -> Path:
     windows_python = root / ".venv" / "Scripts" / "python.exe"
-    if windows_python.is_file():
-        return windows_python
     posix_python = root / ".venv" / "bin" / "python"
+    if os.name == "nt":
+        if windows_python.is_file():
+            return windows_python
+        if posix_python.is_file():
+            return posix_python
+        return Path(sys.executable)
     if posix_python.is_file():
         return posix_python
     return Path(sys.executable)

@@ -17,6 +17,7 @@ LINT_DOCKERFILE = ROOT / "Dockerfile.linux-lint"
 PYTEST_DOCKERFILE = ROOT / "Dockerfile.linux-pytest"
 DIST_DEV = ROOT / "dist-dev"
 BUILD_IMAGE_TAG = "running-process/linux-build:local"
+DEBUG_IMAGE_TAG = "running-process/linux-debug:local"
 LINT_IMAGE_TAG = "running-process/linux-lint:local"
 PYTEST_IMAGE_TAG = "running-process/linux-pytest:local"
 DEFAULT_ENGINE_TIMEOUT_SECONDS = 120.0
@@ -156,28 +157,32 @@ def lint_mounts() -> list[str]:
     ]
 
 
+def debug_mounts() -> list[str]:
+    return [
+        cache_volume("linux-debug-cargo", "/root/.cargo"),
+        cache_volume("linux-debug-rustup", "/root/.rustup"),
+        cache_volume("linux-debug-pip", "/root/.cache/pip"),
+        cache_volume("linux-debug-uv", "/root/.cache/uv"),
+    ]
+
+
 def build_export_mounts(dist_dir: Path) -> list[str]:
     return [f"{dist_dir}:/dist-dev"]
 
 
 def build_export_shell_command() -> str:
-    return "mkdir -p /dist-dev && cp /dist/running_process-*.whl /dist-dev/"
+    return (
+        "mkdir -p /dist-dev && "
+        "rm -f /dist-dev/running_process-*.whl && "
+        "cp /dist/running_process-*.whl /dist-dev/"
+    )
 
 
 def pytest_shell_command(pytest_args: list[str]) -> str:
     return (
         "mkdir -p /tmp/dist && "
         + f"cp {wheel_glob()} /tmp/dist/ && "
-        + shell_join(
-            [
-                "python",
-                "-m",
-                "pip",
-                "install",
-                "--force-reinstall",
-                "/tmp/dist/running_process-*.whl",
-            ]
-        )
+        + "python -m pip install --force-reinstall /tmp/dist/running_process-*.whl"
         + " && "
         + shell_join(
             [
@@ -198,12 +203,35 @@ def lint_shell_command() -> str:
     return "uv run --script install && uv run --no-editable -m ci.lint"
 
 
+def debug_shell_command(*, command: str | None, pytest_args: list[str]) -> str:
+    prefix = (
+        "export IN_RUNNING_PROCESS=running-process-cli "
+        "RUNNING_PROCESS_SKIP_LINUX_DOCKER=1 "
+        "RUNNING_PROCESS_TEST_COMMAND_TIMEOUT_SECONDS=180 "
+        "UV_PROJECT_ENVIRONMENT=/tmp/running-process-linux-venv"
+    )
+    setup = shell_join(
+        [
+            "python",
+            "-m",
+            "pip",
+            "install",
+            "uv>=0.8,<1",
+            "pytest-timeout>=2,<3",
+        ]
+    )
+    run_command = shell_join(
+        shlex.split(command, posix=True) if command is not None else ["bash", "test"]
+    )
+    return " && ".join([prefix, setup, run_command])
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run Alpine Linux wheel build and pytest workflows"
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("build", "lint", "pytest", "all"):
+    subparsers = parser.add_subparsers(dest="workflow", required=True)
+    for name in ("build", "lint", "pytest", "all", "debug"):
         subparser = subparsers.add_parser(name)
         subparser.add_argument(
             "--platform",
@@ -237,6 +265,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Optional pytest arguments passed at container runtime",
     )
+    subparsers.choices["debug"].add_argument(
+        "--command",
+        default=None,
+        help="Optional shell command override to run inside the Linux builder container",
+    )
     return parser.parse_args(argv)
 
 
@@ -255,12 +288,18 @@ def build_image(*, docker: str, dockerfile: Path, tag: str, platform: str | None
     )
 
 
-def ensure_wheel_exists(dist_dir: Path) -> None:
+def ensure_single_wheel_exists(dist_dir: Path) -> Path:
     wheels = sorted(dist_dir.glob("running_process-*.whl"))
     if not wheels:
         raise RuntimeError(
             f"no wheel found in {dist_dir}; run `python -m ci.linux_build_wheel` first"
         )
+    if len(wheels) > 1:
+        names = ", ".join(wheel.name for wheel in wheels)
+        raise RuntimeError(
+            f"expected exactly one wheel in {dist_dir}, found {len(wheels)}: {names}"
+        )
+    return wheels[0]
 
 
 def run_build_workflow(*, docker: str, platform: str | None, dist_dir: Path) -> int:
@@ -316,7 +355,7 @@ def run_pytest_workflow(
     dist_dir: Path,
     pytest_args: list[str],
 ) -> int:
-    ensure_wheel_exists(dist_dir)
+    ensure_single_wheel_exists(dist_dir)
     if (
         build_image(
             docker=docker,
@@ -333,6 +372,36 @@ def run_pytest_workflow(
             image=PYTEST_IMAGE_TAG,
             shell_command=pytest_shell_command(pytest_args),
             extra_mounts=pytest_mounts(dist_dir),
+        )
+    )
+
+
+def run_debug_workflow(
+    *,
+    docker: str,
+    platform: str | None,
+    command: str | None,
+    pytest_args: list[str],
+) -> int:
+    if (
+        run_logged(
+            build_image_command(
+                docker=docker,
+                dockerfile=BUILD_DOCKERFILE,
+                tag=DEBUG_IMAGE_TAG,
+                platform=platform,
+                target="python-tools",
+            )
+        )
+        != 0
+    ):
+        return 1
+    return run_logged(
+        run_container_command(
+            docker=docker,
+            image=DEBUG_IMAGE_TAG,
+            shell_command=debug_shell_command(command=command, pytest_args=pytest_args),
+            extra_mounts=debug_mounts(),
         )
     )
 
@@ -355,13 +424,13 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr, flush=True)
         return 1
 
-    if args.command == "build":
+    if args.workflow == "build":
         return run_build_workflow(docker=docker, platform=args.platform, dist_dir=dist_dir)
 
-    if args.command == "lint":
+    if args.workflow == "lint":
         return run_lint_workflow(docker=docker, platform=args.platform)
 
-    if args.command == "pytest":
+    if args.workflow == "pytest":
         try:
             return run_pytest_workflow(
                 docker=docker,
@@ -373,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr, flush=True)
             return 1
 
-    if args.command == "all":
+    if args.workflow == "all":
         build_result = run_build_workflow(docker=docker, platform=args.platform, dist_dir=dist_dir)
         if build_result != 0:
             return build_result
@@ -391,7 +460,15 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr, flush=True)
             return 1
 
-    raise RuntimeError(f"unsupported command {args.command}")
+    if args.workflow == "debug":
+        return run_debug_workflow(
+            docker=docker,
+            platform=args.platform,
+            command=args.command,
+            pytest_args=list(DEFAULT_PYTEST_ARGS),
+        )
+
+    raise RuntimeError(f"unsupported workflow {args.workflow}")
 
 
 if __name__ == "__main__":

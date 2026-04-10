@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import psutil
 import pytest
 from running_process._native import native_windows_terminal_input_bytes
 
@@ -39,6 +38,12 @@ from running_process.pty import (
     Pty,
     WaitForResult,
     interactive_launch_spec,
+)
+from tests.process_helpers import (
+    WINDOWS_BELOW_NORMAL_PRIORITY_CLASS,
+    pid_exists,
+    wait_for_pid_exit,
+    windows_priority_class_script,
 )
 
 
@@ -242,12 +247,9 @@ def test_pseudo_terminal_kill_reaps_child_process() -> None:
 
     process.kill()
 
-    deadline = time.time() + 3.0
-    while time.time() < deadline and psutil.pid_exists(pid):
-        time.sleep(0.05)
-
+    assert wait_for_pid_exit(pid, 3.0)
     assert process.poll() is not None
-    assert not psutil.pid_exists(pid)
+    assert not pid_exists(pid)
 
 
 def test_pseudo_terminal_gc_reaps_child_process() -> None:
@@ -261,12 +263,7 @@ def test_pseudo_terminal_gc_reaps_child_process() -> None:
     del process
     gc.collect()
 
-    deadline = time.time() + 3.0
-    while time.time() < deadline and psutil.pid_exists(pid):
-        gc.collect()
-        time.sleep(0.05)
-
-    assert not psutil.pid_exists(pid)
+    assert wait_for_pid_exit(pid, 3.0, before_sleep=gc.collect)
 
 
 def test_pseudo_terminal_force_killed_parent_reaps_child() -> None:
@@ -304,11 +301,7 @@ def test_pseudo_terminal_force_killed_parent_reaps_child() -> None:
         owner.kill()
         owner.wait(timeout=5)
 
-        deadline = time.time() + 5.0
-        while time.time() < deadline and psutil.pid_exists(child_pid):
-            time.sleep(0.05)
-
-        assert not psutil.pid_exists(child_pid)
+        assert wait_for_pid_exit(child_pid, 5.0)
     finally:
         with contextlib.suppress(Exception):
             owner.kill()
@@ -344,11 +337,7 @@ def test_interactive_force_killed_parent_reaps_child() -> None:
         owner.kill()
         owner.wait(timeout=5)
 
-        deadline = time.time() + 5.0
-        while time.time() < deadline and psutil.pid_exists(child_pid):
-            time.sleep(0.05)
-
-        assert not psutil.pid_exists(child_pid)
+        assert wait_for_pid_exit(child_pid, 5.0)
     finally:
         with contextlib.suppress(Exception):
             owner.kill()
@@ -1093,13 +1082,13 @@ def test_pseudo_terminal_can_set_positive_nice() -> None:
             [
                 sys.executable,
                 "-c",
-                "import psutil, time; time.sleep(0.3); print(psutil.Process().nice(), flush=True)",
+                f"{windows_priority_class_script()}\nimport time\ntime.sleep(0.3)",
             ],
             text=True,
             nice=5,
         )
-        output = _read_until_contains(process, str(psutil.BELOW_NORMAL_PRIORITY_CLASS))
-        assert str(psutil.BELOW_NORMAL_PRIORITY_CLASS) in output
+        output = _read_until_contains(process, str(WINDOWS_BELOW_NORMAL_PRIORITY_CLASS))
+        assert str(WINDOWS_BELOW_NORMAL_PRIORITY_CLASS) in output
         assert process.wait(timeout=5) == 0
         return
 
@@ -1136,14 +1125,14 @@ def test_pseudo_terminal_accepts_priority_enum() -> None:
         else [
             sys.executable,
             "-c",
-            "import psutil, time; time.sleep(0.3); print(psutil.Process().nice(), flush=True)",
+            f"{windows_priority_class_script()}\nimport time\ntime.sleep(0.3)",
         ],
         text=True,
         nice=CpuPriority.LOW,
     )
     if sys.platform == "win32":
-        output = _read_until_contains(process, str(psutil.BELOW_NORMAL_PRIORITY_CLASS))
-        assert str(psutil.BELOW_NORMAL_PRIORITY_CLASS) in output
+        output = _read_until_contains(process, str(WINDOWS_BELOW_NORMAL_PRIORITY_CLASS))
+        assert str(WINDOWS_BELOW_NORMAL_PRIORITY_CLASS) in output
     else:
         output = _read_until_contains(process, "5")
         assert int(output.strip().splitlines()[-1]) >= 5
@@ -1185,16 +1174,8 @@ def test_interactive_can_set_positive_nice() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "nice.txt"
         if sys.platform == "win32":
-            script = (
-                "from pathlib import Path\n"
-                "import time\n"
-                "import psutil\n"
-                "time.sleep(0.3)\n"
-                "Path(r'"
-                f"{output_path}"
-                "').write_text(str(psutil.Process().nice()), encoding='utf-8')\n"
-            )
-            expected = psutil.BELOW_NORMAL_PRIORITY_CLASS
+            script = windows_priority_class_script(output_path=output_path)
+            expected = WINDOWS_BELOW_NORMAL_PRIORITY_CLASS
         else:
             script = (
                 "from pathlib import Path\n"
@@ -1219,16 +1200,8 @@ def test_interactive_accepts_priority_enum() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "nice.txt"
         if sys.platform == "win32":
-            script = (
-                "from pathlib import Path\n"
-                "import time\n"
-                "import psutil\n"
-                "time.sleep(0.3)\n"
-                "Path(r'"
-                f"{output_path}"
-                "').write_text(str(psutil.Process().nice()), encoding='utf-8')\n"
-            )
-            expected = psutil.BELOW_NORMAL_PRIORITY_CLASS
+            script = windows_priority_class_script(output_path=output_path)
+            expected = WINDOWS_BELOW_NORMAL_PRIORITY_CLASS
         else:
             script = (
                 "from pathlib import Path\n"

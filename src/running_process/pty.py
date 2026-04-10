@@ -806,6 +806,24 @@ class PseudoTerminalProcess:
         self._pump_native_output(timeout=0.0, consume_all=True)
         return self._buffer.output_since(max(0, start))
 
+    def _snapshot_output_history(self) -> tuple[str, int]:
+        self._pump_native_output(timeout=0.0, consume_all=True)
+        return (
+            ensure_text(self._buffer.output(), self.encoding, self.errors),
+            int(self._buffer.history_bytes()),
+        )
+
+    def _snapshot_output_since(self, start: int) -> tuple[str, int]:
+        self._pump_native_output(timeout=0.0, consume_all=True)
+        return (
+            ensure_text(
+                self._buffer.output_since(max(0, start)),
+                self.encoding,
+                self.errors,
+            ),
+            int(self._buffer.history_bytes()),
+        )
+
     def write(self, data: str | bytes) -> None:
         self._ensure_started()
         raw = data.encode(self.encoding, self.errors) if isinstance(data, str) else data
@@ -967,8 +985,7 @@ class PseudoTerminalProcess:
         action: ExpectAction = None,
     ) -> ExpectMatch:
         deadline = time.time() + timeout if timeout is not None else None
-        buffer = ensure_text(self.output, self.encoding, self.errors)
-        history_bytes = self.output_bytes
+        buffer, history_bytes = self._snapshot_output_history()
 
         while True:
             match = search_expect_pattern(buffer, pattern)
@@ -990,17 +1007,9 @@ class PseudoTerminalProcess:
             try:
                 chunk = self.read(timeout=wait_timeout)
             except TimeoutError:
-                current_history_bytes = self.output_bytes
+                new_output, current_history_bytes = self._snapshot_output_since(history_bytes)
                 if current_history_bytes > history_bytes:
-                    new_output = ensure_text(
-                        self._output_since(history_bytes),
-                        self.encoding,
-                        self.errors,
-                    )
-                    buffer = (
-                        f"{buffer}"
-                        f"{new_output}"
-                    )
+                    buffer = f"{buffer}{new_output}"
                     history_bytes = current_history_bytes
                     continue
                 code = self.poll()
@@ -1010,17 +1019,9 @@ class PseudoTerminalProcess:
                     self._exit_status = classify_exit_status(
                         code, KEYBOARD_INTERRUPT_EXIT_CODES
                     )
-                    current_history_bytes = self.output_bytes
+                    new_output, current_history_bytes = self._snapshot_output_since(history_bytes)
                     if current_history_bytes > history_bytes:
-                        new_output = ensure_text(
-                            self._output_since(history_bytes),
-                            self.encoding,
-                            self.errors,
-                        )
-                        buffer = (
-                            f"{buffer}"
-                            f"{new_output}"
-                        )
+                        buffer = f"{buffer}{new_output}"
                         history_bytes = current_history_bytes
                         continue
                     raise EOFError(
@@ -1030,7 +1031,7 @@ class PseudoTerminalProcess:
             except EOFError as exc:
                 raise EOFError(f"Pattern not found before stream closed: {pattern!r}") from exc
             buffer = f"{buffer}{ensure_text(chunk, self.encoding, self.errors)}"
-            history_bytes = self.output_bytes
+            history_bytes = int(self._buffer.history_bytes())
 
     @property
     def exit_status(self) -> ExitStatus | None:
@@ -1369,8 +1370,7 @@ class PseudoTerminalProcess:
             callback_threads.append(thread)
 
         deadline = time.time() + timeout if timeout is not None else None
-        buffer = ensure_text(self.output, self.encoding, self.errors)
-        history_bytes = self.output_bytes
+        buffer, history_bytes = self._snapshot_output_history()
 
         try:
             while True:
@@ -1379,18 +1379,10 @@ class PseudoTerminalProcess:
                     for chunk in self.drain():
                         _safe_console_write(sys.stdout, chunk)
 
-                current_history_bytes = self.output_bytes
+                new_output, current_history_bytes = self._snapshot_output_since(history_bytes)
                 if current_history_bytes > history_bytes:
                     history_update_start = time.perf_counter_ns()
-                    new_output = ensure_text(
-                        self._output_since(history_bytes),
-                        self.encoding,
-                        self.errors,
-                    )
-                    buffer = (
-                        f"{buffer}"
-                        f"{new_output}"
-                    )
+                    buffer = f"{buffer}{new_output}"
                     history_bytes = current_history_bytes
                     history_update_count += 1
                     history_update_ns += time.perf_counter_ns() - history_update_start
@@ -1466,18 +1458,10 @@ class PseudoTerminalProcess:
                     self._drain_native_until_eof(timeout=_PTY_READER_NATIVE_CLOSE_WAIT_SECONDS)
                     self._finalize("exit")
                     self._exit_status = classify_exit_status(code, KEYBOARD_INTERRUPT_EXIT_CODES)
-                    current_history_bytes = self.output_bytes
+                    new_output, current_history_bytes = self._snapshot_output_since(history_bytes)
                     if current_history_bytes > history_bytes:
                         history_update_start = time.perf_counter_ns()
-                        new_output = ensure_text(
-                            self._output_since(history_bytes),
-                            self.encoding,
-                            self.errors,
-                        )
-                        buffer = (
-                            f"{buffer}"
-                            f"{new_output}"
-                        )
+                        buffer = f"{buffer}{new_output}"
                         history_bytes = current_history_bytes
                         history_update_count += 1
                         history_update_ns += time.perf_counter_ns() - history_update_start

@@ -11,6 +11,7 @@ RUN apk add --no-cache \
     build-base \
     cargo \
     git \
+    linux-headers \
     patchelf \
     pkgconf \
     rust

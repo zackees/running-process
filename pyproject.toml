@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = { text = "BSD 3-Clause License" }
 license-files = ["LICENSE"]
 authors = [{ name = "Your Name", email = "your.email@example.com" }]
-dependencies = ["psutil>=5.9.0"]
+dependencies = []
 
 [project.scripts]
 running-process = "running_process.cli:main"

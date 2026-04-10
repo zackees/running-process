@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from ci import test as ci_test
@@ -11,8 +12,8 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
 
     monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
-    monkeypatch.setattr(ci_test, "repo_python", lambda: fake_python)
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(
         ci_test,
@@ -88,7 +89,6 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
 
 def test_main_skips_dev_wheel_reinstall_when_running_under_cli(monkeypatch) -> None:
     called = False
-    fake_python = Path("/tmp/fake-venv/bin/python")
 
     def fake_ensure_dev_wheel(*args, **kwargs):
         del args, kwargs
@@ -98,7 +98,6 @@ def test_main_skips_dev_wheel_reinstall_when_running_under_cli(monkeypatch) -> N
 
     monkeypatch.setenv(ci_test.IN_RUNNING_PROCESS_ENV, ci_test.IN_RUNNING_PROCESS_VALUE)
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", fake_ensure_dev_wheel)
-    monkeypatch.setattr(ci_test, "repo_python", lambda: fake_python)
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(ci_test, "run", lambda cmd: 0)
     monkeypatch.setattr(ci_test, "run_live", lambda cmd: 0)
@@ -115,8 +114,8 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
 
     monkeypatch.setenv(ci_test.GITHUB_ACTIONS_ENV, "true")
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
-    monkeypatch.setattr(ci_test, "repo_python", lambda: fake_python)
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
     monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
@@ -165,3 +164,101 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
             "live",
         ],
     ]
+
+
+def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> None:
+    commands: list[list[str]] = []
+    fake_python = Path("/tmp/fake-venv/bin/python")
+
+    monkeypatch.setenv(ci_test.SKIP_LINUX_DOCKER_ENV, "1")
+    monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
+    monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
+    monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
+    monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
+    monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
+
+    result = ci_test.main([])
+
+    python = str(fake_python)
+    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    assert result == 0
+    assert commands == [
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            "cargo",
+            "test",
+            "--workspace",
+        ],
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            python,
+            "-m",
+            "pytest",
+            "-m",
+            "not live",
+        ],
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            python,
+            "-m",
+            "pytest",
+            "-m",
+            "live",
+        ],
+    ]
+
+
+def test_parse_args_converts_target_and_selector_to_pytest_k_expr(monkeypatch) -> None:
+    monkeypatch.delenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", raising=False)
+
+    pytest_args, require_symbols = ci_test.parse_args(
+        ["tests/test_pty_support.py", "timeout_does_not_arm_next_expect"]
+    )
+
+    assert pytest_args == [
+        "tests/test_pty_support.py",
+        "-k",
+        "timeout_does_not_arm_next_expect",
+    ]
+    assert require_symbols is False
+
+
+def test_parse_args_preserves_explicit_pytest_flags() -> None:
+    pytest_args, require_symbols = ci_test.parse_args(
+        ["tests/test_pty_support.py", "-k", "timeout_does_not_arm_next_expect", "-ra"]
+    )
+
+    assert pytest_args == [
+        "tests/test_pty_support.py",
+        "-k",
+        "timeout_does_not_arm_next_expect",
+        "-ra",
+    ]
+    assert require_symbols is False
+
+
+def test_parse_args_tracks_no_skip_without_mutating_env(monkeypatch) -> None:
+    monkeypatch.delenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", raising=False)
+
+    pytest_args, require_symbols = ci_test.parse_args(["--no-skip", "tests/test_version.py"])
+
+    assert pytest_args == ["tests/test_version.py"]
+    assert require_symbols is True
+    assert "RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS" not in os.environ
