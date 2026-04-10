@@ -1113,6 +1113,22 @@ def test_pseudo_terminal_can_set_positive_nice() -> None:
     assert process.wait(timeout=5) == 0
 
 
+def test_posix_pty_command_wraps_nice_before_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pty_module.sys, "platform", "darwin")
+
+    command = pty_module._pty_command(["python", "-c", "print('x')"], False, 5)
+
+    assert command[0] == sys.executable
+    assert command[1:4] == [
+        "-c",
+        "import os, sys\n"
+        "os.setpriority(os.PRIO_PROCESS, 0, int(sys.argv[1]))\n"
+        "os.execvp(sys.argv[2], sys.argv[2:])\n",
+        "5",
+    ]
+    assert command[4:] == ["python", "-c", "print('x')"]
+
+
 def test_pseudo_terminal_accepts_priority_enum() -> None:
     process = RunningProcess.pseudo_terminal(
         [sys.executable, "-c", "import os, time; time.sleep(0.3); print(os.nice(0), flush=True)"]

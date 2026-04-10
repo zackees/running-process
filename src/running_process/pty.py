@@ -733,7 +733,7 @@ class PseudoTerminalProcess:
         if self._proc is not None:
             raise RuntimeError("Pseudo-terminal process already started")
 
-        argv = _pty_command(self.command, self.shell)
+        argv = _pty_command(self.command, self.shell, self.nice)
         self._proc = NativeProcess.for_pty(
             argv,
             cwd=self.cwd,
@@ -746,7 +746,6 @@ class PseudoTerminalProcess:
 
         self._start_time = time.time()
         self.last_activity_at = self._start_time
-        _apply_process_nice(self.pid, self.nice)
         if self.pid is not None:
             self._native_process_metrics = NativeProcessMetrics(self.pid)
         self._prime_process_metrics()
@@ -2039,20 +2038,41 @@ def _windows_pty_command(command: str | list[str], shell: bool) -> list[str]:
     return command
 
 
-def _posix_pty_command(command: str | list[str], shell: bool) -> list[str]:
+def _posix_pty_command(
+    command: str | list[str], shell: bool, nice: int | None = None
+) -> list[str]:
     if shell:
         if isinstance(command, str):
-            return ["sh", "-lc", command]
-        return ["sh", "-lc", shlex.join(command)]
-    if isinstance(command, str):
-        return [command]
-    return command
+            argv = ["sh", "-lc", command]
+        else:
+            argv = ["sh", "-lc", shlex.join(command)]
+    elif isinstance(command, str):
+        argv = [command]
+    else:
+        argv = command
+    if nice is None:
+        return argv
+    return _wrap_posix_pty_command_with_nice(argv, nice)
 
 
-def _pty_command(command: str | list[str], shell: bool) -> list[str]:
+def _wrap_posix_pty_command_with_nice(argv: list[str], nice: int) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        (
+            "import os, sys\n"
+            "os.setpriority(os.PRIO_PROCESS, 0, int(sys.argv[1]))\n"
+            "os.execvp(sys.argv[2], sys.argv[2:])\n"
+        ),
+        str(nice),
+        *argv,
+    ]
+
+
+def _pty_command(command: str | list[str], shell: bool, nice: int | None = None) -> list[str]:
     if sys.platform == "win32":
         return _windows_pty_command(command, shell)
-    return _posix_pty_command(command, shell)
+    return _posix_pty_command(command, shell, nice)
 
 
 def _normalize_command(
