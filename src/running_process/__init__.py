@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "3.0.4"
+__version__ = "3.0.5"
 
 from running_process.compat import (
     CREATE_NEW_PROCESS_GROUP,
