@@ -145,6 +145,12 @@ def _normalize_pytest_args(args: list[str]) -> list[str]:
     return normalized
 
 
+def _pytest_exit_is_acceptable(returncode: int, pytest_args: list[str]) -> bool:
+    if returncode == 0:
+        return True
+    return returncode == 5 and bool(pytest_args)
+
+
 def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool]:
     argv = list(sys.argv[1:] if argv is None else argv)
     raw_pytest_args: list[str] = []
@@ -174,7 +180,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     if run(supervised_command(python, "cargo", "test", "--workspace")) != 0:
         return 1
-    if run(_supervised_pytest_command(python, "-m", "not live", *pytest_args)) != 0:
+    if not _pytest_exit_is_acceptable(
+        run(_supervised_pytest_command(python, "-m", "not live", *pytest_args)),
+        pytest_args,
+    ):
         return 1
     if not running_on_github_actions() and not skip_linux_docker_preflight():
         if run(_linux_unit_test_command(python, *pytest_args)) != 0:
@@ -182,7 +191,10 @@ def main(argv: list[str] | None = None) -> int:
     if require_symbols and sys.platform == "win32":
         if run(_release_build_command(python)) != 0:
             return 1
-    if run_live(_supervised_pytest_command(python, "-m", "live", *pytest_args)) != 0:
+    if not _pytest_exit_is_acceptable(
+        run_live(_supervised_pytest_command(python, "-m", "live", *pytest_args)),
+        pytest_args,
+    ):
         return 1
     return 0
 

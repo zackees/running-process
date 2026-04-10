@@ -29,7 +29,7 @@ pub(super) fn respond_to_queries(process: &NativePtyProcess, data: &[u8]) -> PyR
 #[inline(never)]
 pub(super) fn send_interrupt(process: &NativePtyProcess) -> PyResult<()> {
     running_process_core::rp_rust_debug_scope!("running_process_py::pty_windows::send_interrupt");
-    process.write(&[0x03])
+    process.write(&[0x03], false)
 }
 
 #[inline(never)]

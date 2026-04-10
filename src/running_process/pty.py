@@ -46,6 +46,8 @@ _PTY_POLL_INTERVAL_SECONDS = 0.001
 _PTY_READER_NATIVE_CLOSE_WAIT_SECONDS = 2.0
 _PTY_CLEANUP_ERRORS = (OSError, RuntimeError, TimeoutError, ValueError, AttributeError)
 _NO_PTY_TEXT_WARNING_ENV = "RUNNING_PROCESS_NO_PTY_TEXT_WARNING"
+_WINDOWS_VT_OUTPUT_HANDLES: set[int] = set()
+_WINDOWS_VT_OUTPUT_LOCK = threading.Lock()
 
 
 class PtyNotAvailableError(RuntimeError):
@@ -86,6 +88,7 @@ class SignalBool:
 
 def _safe_console_write(stream: TextIOBase, line: str | bytes) -> None:
     text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
+    _ensure_windows_vt_output(stream)
     try:
         stream.write(text)
         stream.write("\n")
@@ -100,6 +103,58 @@ def _safe_console_write(stream: TextIOBase, line: str | bytes) -> None:
     stream.flush()
 
 
+def _windows_console_output_handle(stream: TextIOBase) -> int | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        fileno = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None
+    try:
+        import msvcrt
+    except ImportError:
+        return None
+    try:
+        return int(msvcrt.get_osfhandle(fileno))
+    except OSError:
+        return None
+
+
+def _enable_windows_vt_output_handle(handle: int) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+    except ImportError:
+        return False
+
+    kernel32 = ctypes.windll.kernel32
+    mode = ctypes.c_uint32()
+    console_handle = ctypes.c_void_p(handle)
+    if kernel32.GetConsoleMode(console_handle, ctypes.byref(mode)) == 0:
+        return False
+
+    enable_processed_output = 0x0001
+    enable_virtual_terminal_processing = 0x0004
+    updated_mode = (
+        mode.value | enable_processed_output | enable_virtual_terminal_processing
+    )
+    if updated_mode == mode.value:
+        return True
+    return kernel32.SetConsoleMode(console_handle, updated_mode) != 0
+
+
+def _ensure_windows_vt_output(stream: TextIOBase) -> None:
+    handle = _windows_console_output_handle(stream)
+    if handle is None:
+        return
+    with _WINDOWS_VT_OUTPUT_LOCK:
+        if handle in _WINDOWS_VT_OUTPUT_HANDLES:
+            return
+        if _enable_windows_vt_output_handle(handle):
+            _WINDOWS_VT_OUTPUT_HANDLES.add(handle)
+
+
 def _safe_console_write_chunk(
     stream: TextIOBase,
     chunk: bytes,
@@ -109,6 +164,7 @@ def _safe_console_write_chunk(
 ) -> None:
     if not chunk:
         return
+    _ensure_windows_vt_output(stream)
     if hasattr(stream, "buffer"):
         try:
             stream.buffer.write(chunk)
@@ -686,6 +742,7 @@ def _input_contains_newline(data: bytes) -> bool:
 def _start_event_count(
     process: PseudoTerminalProcess, start_trigger: IdleStartTrigger
 ) -> int:
+    process._sync_native_input_metrics()
     if start_trigger is IdleStartTrigger.INPUT_NEWLINE:
         return process._pty_newline_events_total
     if start_trigger is IdleStartTrigger.INPUT_SUBMIT:
@@ -1007,15 +1064,41 @@ class PseudoTerminalProcess:
         if self._native_idle_detector is not None:
             self._native_idle_detector.record_input(len(raw))
         assert self._proc is not None
-        self._proc.write(raw)
+        self._proc.write(raw, submit=submit)
+        self._sync_native_input_metrics()
 
     def submit(self, data: str | bytes = "\n") -> None:
         self.write(data, submit=True)
 
     @property
     def terminal_input_relay_active(self) -> bool:
+        if (
+            sys.platform == "win32"
+            and self._proc is not None
+            and hasattr(self._proc, "terminal_input_relay_active")
+        ):
+            active = bool(self._proc.terminal_input_relay_active())
+            self._sync_native_input_metrics()
+            return active
         thread = self._terminal_input_thread
         return thread is not None and thread.is_alive()
+
+    def _sync_native_input_metrics(self) -> None:
+        if self._proc is None or not hasattr(self._proc, "pty_input_bytes_total"):
+            return
+        input_bytes_total = int(self._proc.pty_input_bytes_total())
+        newline_events_total = int(self._proc.pty_newline_events_total())
+        submit_events_total = int(self._proc.pty_submit_events_total())
+        submit_delta = submit_events_total - self._pty_submit_events_total
+        self._pty_input_bytes_total = input_bytes_total
+        self._pty_newline_events_total = newline_events_total
+        self._pty_submit_events_total = submit_events_total
+        if (
+            self._arm_idle_timeout_on_submit
+            and submit_delta > 0
+            and not self.idle_timeout_enabled
+        ):
+            self.idle_timeout_enabled = True
 
     def _maybe_arm_idle_timeout_from_terminal_input(self, *, submit: bool) -> None:
         if not self._arm_idle_timeout_on_submit and not submit:
@@ -1025,6 +1108,10 @@ class PseudoTerminalProcess:
         self.idle_timeout_enabled = True
 
     def _start_windows_terminal_input_relay(self) -> None:
+        if self._proc is not None and hasattr(self._proc, "start_terminal_input_relay"):
+            self._proc.start_terminal_input_relay()
+            self._sync_native_input_metrics()
+            return
         capture = NativeTerminalInput()
         capture.start()
         self._terminal_input_capture = capture
@@ -1118,6 +1205,14 @@ class PseudoTerminalProcess:
 
     def stop_terminal_input_relay(self) -> None:
         self._terminal_input_stop.set()
+        if (
+            sys.platform == "win32"
+            and self._proc is not None
+            and hasattr(self._proc, "stop_terminal_input_relay")
+        ):
+            with suppress(Exception):
+                self._proc.stop_terminal_input_relay()
+            self._sync_native_input_metrics()
         thread = self._terminal_input_thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=0.2)
@@ -2088,6 +2183,7 @@ class PseudoTerminalProcess:
         metrics.prime()
 
     def _sample_idle_snapshot(self, process_cfg: ProcessIdleDetection | None) -> _IdleSample:
+        self._sync_native_input_metrics()
         now = time.time()
         cpu_percent = 0.0
         disk_io_bytes = 0

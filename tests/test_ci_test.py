@@ -264,6 +264,29 @@ def test_parse_args_tracks_no_skip_without_mutating_env(monkeypatch) -> None:
     assert "RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS" not in os.environ
 
 
+def test_pytest_exit_is_acceptable_only_allows_no_tests_for_targeted_runs() -> None:
+    assert ci_test._pytest_exit_is_acceptable(0, []) is True
+    assert ci_test._pytest_exit_is_acceptable(5, []) is False
+    assert ci_test._pytest_exit_is_acceptable(5, ["tests/test_pty_support.py"]) is True
+
+
+def test_main_allows_targeted_live_selection_with_no_matching_tests(monkeypatch) -> None:
+    fake_python = Path("/tmp/fake-venv/bin/python")
+
+    monkeypatch.setenv(ci_test.SKIP_LINUX_DOCKER_ENV, "1")
+    monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
+    monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
+    monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
+    monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
+    monkeypatch.setattr(ci_test, "run", lambda cmd: 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: 5)
+
+    result = ci_test.main(["tests/test_pty_support.py"])
+
+    assert result == 0
+
+
 def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monkeypatch) -> None:
     commands: list[list[str]] = []
     fake_python = Path("/tmp/fake-venv/bin/python")

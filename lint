@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uv sync --refresh
+uv sync --refresh --no-editable
 exec uv run --no-editable -m ci.lint "$@"

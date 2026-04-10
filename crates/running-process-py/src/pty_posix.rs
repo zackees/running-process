@@ -40,7 +40,7 @@ pub(super) fn send_interrupt(process: &NativePtyProcess) -> PyResult<()> {
         return Ok(());
     }
     drop(guard);
-    process.write(&[0x03])
+    process.write(&[0x03], false)
 }
 
 pub(super) fn terminate(process: &NativePtyProcess) -> PyResult<()> {

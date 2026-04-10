@@ -157,6 +157,105 @@ def test_pseudo_terminal_wait_echo_preserves_ansi_color_sequences(
     assert b"\x1b[" in echoed
 
 
+def test_pseudo_terminal_wait_echo_enables_windows_vt_output_for_ansi_sequences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+    monkeypatch.setattr(pty_module.sys, "platform", "win32")
+    monkeypatch.setattr(pty_module, "_WINDOWS_VT_OUTPUT_HANDLES", set())
+
+    handles: list[int] = []
+
+    def fake_windows_console_output_handle(stream: io.TextIOWrapper) -> int:
+        return 77
+
+    def fake_enable_windows_vt_output_handle(handle: int) -> bool:
+        handles.append(handle)
+        return True
+
+    monkeypatch.setattr(
+        pty_module,
+        "_windows_console_output_handle",
+        fake_windows_console_output_handle,
+    )
+    monkeypatch.setattr(
+        pty_module,
+        "_enable_windows_vt_output_handle",
+        fake_enable_windows_vt_output_handle,
+    )
+
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.buffer.write(b'\\x1b[?25l\\x1b[31mred\\x1b[0m\\x1b[?25h'); "
+                "sys.stdout.flush()"
+            ),
+        ],
+        use_pty=True,
+        capture=True,
+        text=True,
+    )
+
+    assert process.wait(timeout=5, echo=True) == 0
+    fake_stdout.flush()
+
+    echoed = fake_stdout.buffer.getvalue()
+    assert handles == [77]
+    assert echoed == process.stdout
+    assert b"red" in echoed
+    assert b"\x1b[" in echoed
+
+
+def test_safe_console_write_chunk_enables_windows_vt_output_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pty_module.sys, "platform", "win32")
+    monkeypatch.setattr(pty_module, "_WINDOWS_VT_OUTPUT_HANDLES", set())
+
+    handles: list[int] = []
+
+    def fake_windows_console_output_handle(stream: io.TextIOWrapper) -> int:
+        return 99
+
+    def fake_enable_windows_vt_output_handle(handle: int) -> bool:
+        handles.append(handle)
+        return True
+
+    monkeypatch.setattr(
+        pty_module,
+        "_windows_console_output_handle",
+        fake_windows_console_output_handle,
+    )
+    monkeypatch.setattr(
+        pty_module,
+        "_enable_windows_vt_output_handle",
+        fake_enable_windows_vt_output_handle,
+    )
+
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
+
+    pty_module._safe_console_write_chunk(
+        fake_stdout,
+        b"\x1b[?25l",
+        encoding="utf-8",
+        errors="replace",
+    )
+    pty_module._safe_console_write_chunk(
+        fake_stdout,
+        b"\x1b[?25h",
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    fake_stdout.flush()
+    assert handles == [99]
+    assert fake_stdout.buffer.getvalue() == b"\x1b[?25l\x1b[?25h"
+
+
 def test_running_process_use_pty_text_mode_warns_and_falls_back_to_bytes() -> None:
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.delenv("RUNNING_PROCESS_NO_PTY_TEXT_WARNING", raising=False)
@@ -1622,6 +1721,177 @@ def test_pseudo_terminal_windows_native_input_relay_forwards_events_and_arms_idl
     assert capture.started is True
     assert capture.closed is True
     assert writes == [(b"hello\r", True)]
+    assert process.idle_timeout_enabled is True
+
+
+def test_pseudo_terminal_windows_native_process_relay_api_owns_relay_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProc:
+        def __init__(self) -> None:
+            self.started = False
+            self.stopped = False
+            self.active_checks = 0
+            self.input_bytes_total = 0
+            self.newline_events_total = 0
+            self.submit_events_total = 0
+
+        def start_terminal_input_relay(self) -> None:
+            self.started = True
+
+        def stop_terminal_input_relay(self) -> None:
+            self.stopped = True
+
+        def terminal_input_relay_active(self) -> bool:
+            if not self.started:
+                return False
+            self.active_checks += 1
+            if self.active_checks == 1:
+                self.input_bytes_total = 6
+                self.newline_events_total = 1
+                self.submit_events_total = 1
+                return True
+            return False
+
+        def pty_input_bytes_total(self) -> int:
+            return self.input_bytes_total
+
+        def pty_newline_events_total(self) -> int:
+            return self.newline_events_total
+
+        def pty_submit_events_total(self) -> int:
+            return self.submit_events_total
+
+    monkeypatch.setattr(pty_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        pty_module,
+        "NativeTerminalInput",
+        lambda: (_ for _ in ()).throw(AssertionError("python relay should stay unused")),
+    )
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('relay')"],
+        auto_run=False,
+    )
+    process._proc = FakeProc()  # type: ignore[assignment]
+    process.idle_timeout_enabled = False
+
+    process.start_terminal_input_relay(arm_idle_timeout_on_submit=True)
+
+    assert process.terminal_input_relay_active is True
+    assert process.idle_timeout_enabled is True
+    assert process._pty_input_bytes_total == 6
+    assert process._pty_newline_events_total == 1
+    assert process._pty_submit_events_total == 1
+    assert process.terminal_input_relay_active is False
+
+    process.stop_terminal_input_relay()
+
+    assert process._proc.started is True  # type: ignore[union-attr]
+    assert process._proc.stopped is True  # type: ignore[union-attr]
+
+
+def test_pseudo_terminal_windows_native_input_relay_preserves_shift_enter_vs_enter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captures: list[FakeCapture] = []
+
+    class FakeCapture:
+        def __init__(self) -> None:
+            self.started = False
+            self.closed = False
+            self._events = iter(
+                [
+                    SimpleNamespace(
+                        data=b"hello",
+                        submit=False,
+                        shift=False,
+                        ctrl=False,
+                        alt=False,
+                    ),
+                    SimpleNamespace(
+                        data=b"\r",
+                        submit=False,
+                        shift=True,
+                        ctrl=False,
+                        alt=False,
+                    ),
+                    SimpleNamespace(
+                        data=b"world",
+                        submit=False,
+                        shift=False,
+                        ctrl=False,
+                        alt=False,
+                    ),
+                    SimpleNamespace(
+                        data=b"\r",
+                        submit=True,
+                        shift=False,
+                        ctrl=False,
+                        alt=False,
+                    ),
+                ]
+            )
+            captures.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def read_event(self, timeout: float | None = None) -> SimpleNamespace:
+            del timeout
+            try:
+                return next(self._events)
+            except StopIteration as exc:
+                raise TimeoutError from exc
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeProc:
+        def __init__(self, owner: PseudoTerminalProcess) -> None:
+            self.owner = owner
+            self.pid = 1234
+
+        def poll(self) -> int | None:
+            if self.owner._terminal_input_stop.is_set():
+                return 0
+            return None
+
+    monkeypatch.setattr(pty_module, "NativeTerminalInput", FakeCapture)
+    monkeypatch.setattr(pty_module.sys, "platform", "win32")
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('relay')"],
+        auto_run=False,
+    )
+    process._proc = FakeProc(process)  # type: ignore[assignment]
+    process.idle_timeout_enabled = False
+    writes: list[tuple[bytes, bool, bool]] = []
+
+    def fake_write(data: str | bytes, *, submit: bool = False) -> None:
+        raw = data.encode(process.encoding, process.errors) if isinstance(data, str) else data
+        writes.append((raw, submit, process.idle_timeout_enabled))
+        if len(writes) >= 4:
+            process._terminal_input_stop.set()
+
+    process.write = fake_write  # type: ignore[method-assign]
+    process.start_terminal_input_relay(arm_idle_timeout_on_submit=True)
+
+    deadline = time.time() + 1.0
+    while process.terminal_input_relay_active and time.time() < deadline:
+        time.sleep(0.01)
+
+    capture = captures[0]
+    process.stop_terminal_input_relay()
+
+    assert capture.started is True
+    assert capture.closed is True
+    assert writes == [
+        (b"hello", False, False),
+        (b"\r", False, False),
+        (b"world", False, False),
+        (b"\r", True, True),
+    ]
     assert process.idle_timeout_enabled is True
 
 
