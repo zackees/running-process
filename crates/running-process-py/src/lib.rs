@@ -489,6 +489,24 @@ fn translate_console_key_event(
     let virtual_key_code = record.wVirtualKeyCode;
     let unicode = unsafe { *record.uChar.UnicodeChar() };
 
+    // Shift+Enter: send CSI u escape sequence so downstream TUI apps
+    // (e.g. Claude Code) can distinguish Shift+Enter (newline) from
+    // plain Enter (submit).  Format: ESC [ 13 ; 2 u
+    if shift && !ctrl && !alt && virtual_key_code as i32 == VK_RETURN {
+        return Some(trace_translated_console_key_event(
+            record,
+            TerminalInputEventRecord {
+                data: repeat_terminal_input_bytes(b"\x1b[13;2u", repeat_count),
+                submit: false,
+                shift,
+                ctrl,
+                alt,
+                virtual_key_code,
+                repeat_count,
+            },
+        ));
+    }
+
     let mut data = if ctrl {
         control_character_for_unicode(unicode)
             .map(|byte| repeat_terminal_input_bytes(&[byte], repeat_count))
@@ -3920,7 +3938,9 @@ mod tests {
             1,
         ))
         .expect("shift-enter should translate");
-        assert_eq!(event.data, b"\r");
+        // Shift+Enter emits CSI u sequence so downstream apps can
+        // distinguish it from plain Enter.
+        assert_eq!(event.data, b"\x1b[13;2u");
         assert!(!event.submit);
         assert!(event.shift);
     }

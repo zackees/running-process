@@ -825,6 +825,41 @@ def test_run_streaming_echoes_both_streams(capsys: pytest.CaptureFixture[str]) -
     assert captured.err == ""
 
 
+def test_run_streaming_stdout_callback_receives_output() -> None:
+    lines: list[str] = []
+    code = RunningProcess.run_streaming(
+        [sys.executable, "-c", "print('hello'); print('world')"],
+        timeout=5,
+        stdout_callback=lines.append,
+    )
+    assert code == 0
+    combined = "".join(lines)
+    assert "hello" in combined
+    assert "world" in combined
+
+
+def test_run_streaming_stdout_callback_suppresses_console_echo(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    lines: list[str] = []
+    RunningProcess.run_streaming(
+        [sys.executable, "-c", "print('captured')"],
+        timeout=5,
+        stdout_callback=lines.append,
+    )
+    captured = capsys.readouterr()
+    assert "captured" not in captured.out
+    assert "captured" in "".join(lines)
+
+
+def test_run_streaming_rejects_unknown_kwargs() -> None:
+    with pytest.raises(TypeError):
+        RunningProcess.run_streaming(
+            [sys.executable, "-c", "print('x')"],
+            bogus_kwarg="should fail",  # type: ignore[call-arg]
+        )
+
+
 def test_capture_false_does_not_store_output() -> None:
     process = RunningProcess([sys.executable, "-c", "print('hidden')"], capture=False)
     process.wait()

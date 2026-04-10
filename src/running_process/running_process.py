@@ -1134,7 +1134,7 @@ class RunningProcess:
         cwd: str | None = None,
         timeout: float | None = None,
         nice: int | CpuPriority | None = None,
-        **_kwargs: Any,
+        stdout_callback: Callable[[str], None] | None = None,
     ) -> int:
         process = cls(
             command=cmd,
@@ -1148,7 +1148,18 @@ class RunningProcess:
 
         while True:
             code = process.poll()
-            process._echo_streams()
+            if stdout_callback is not None:
+                for line in process.drain_stdout():
+                    text = (
+                        line.decode("utf-8", errors="replace")
+                        if isinstance(line, bytes)
+                        else line
+                    )
+                    stdout_callback(text)
+                for line in process.drain_stderr():
+                    _safe_console_write(sys.stderr, line)
+            else:
+                process._echo_streams()
             if code is not None:
                 return code
             if deadline is not None and time.time() >= deadline:

@@ -1810,7 +1810,7 @@ def test_pseudo_terminal_windows_native_input_relay_preserves_shift_enter_vs_ent
                         alt=False,
                     ),
                     SimpleNamespace(
-                        data=b"\r",
+                        data=b"\x1b[13;2u",
                         submit=False,
                         shift=True,
                         ctrl=False,
@@ -1888,7 +1888,7 @@ def test_pseudo_terminal_windows_native_input_relay_preserves_shift_enter_vs_ent
     assert capture.closed is True
     assert writes == [
         (b"hello", False, False),
-        (b"\r", False, False),
+        (b"\x1b[13;2u", False, False),
         (b"world", False, False),
         (b"\r", True, True),
     ]
