@@ -336,6 +336,11 @@ def main() -> int:
         description="Publish running-process from remote GitHub builds"
     )
     parser.add_argument("--dry-run", action="store_true", help="build remotely but do not upload")
+    parser.add_argument(
+        "--skip-rust",
+        action="store_true",
+        help="Accepted for compatibility; remote publish builds the configured artifacts.",
+    )
     args = parser.parse_args()
 
     try:
