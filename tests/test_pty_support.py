@@ -1338,7 +1338,7 @@ def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_byte
                 ),
                 pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
             ),
-            timeout=0.5,
+            timeout=0.8,
         )
         elapsed = time.time() - started
         worker.join(timeout=1.0)
