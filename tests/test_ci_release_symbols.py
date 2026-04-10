@@ -33,6 +33,19 @@ def test_write_filter_file_contains_allowlisted_public_symbols(tmp_path: Path) -
     assert path.read_text(encoding="utf-8").splitlines() == [spec.name for spec in TINY_PDB_SYMBOLS]
 
 
+def test_resolve_pdbcopy_checks_arm64_debugger_path(monkeypatch, tmp_path: Path) -> None:
+    kits_root = tmp_path / "Program Files"
+    arm64_pdbcopy = kits_root / "Windows Kits" / "10" / "Debuggers" / "arm64" / "pdbcopy.exe"
+    arm64_pdbcopy.parent.mkdir(parents=True, exist_ok=True)
+    arm64_pdbcopy.write_text("stub", encoding="utf-8")
+
+    monkeypatch.setattr(tiny_pdb.shutil, "which", lambda _: None)
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "missing"))
+    monkeypatch.setenv("ProgramFiles", str(kits_root))
+
+    assert tiny_pdb.resolve_pdbcopy() == str(arm64_pdbcopy)
+
+
 def test_bundle_windows_tiny_pdb_injects_pdb_and_manifest(tmp_path: Path) -> None:
     wheel = tmp_path / "running_process-3.0.3-cp313-cp313-win_amd64.whl"
     pdb = tmp_path / "_native.tiny.pdb"

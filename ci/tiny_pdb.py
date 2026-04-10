@@ -43,17 +43,23 @@ def final_crate_rustc_args(root: Path = ROOT) -> list[str]:
 
 
 def resolve_pdbcopy() -> str:
-    candidates = [
-        shutil.which("pdbcopy"),
-        str(
-            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
-            / "Windows Kits"
-            / "10"
-            / "Debuggers"
-            / "x64"
-            / "pdbcopy.exe"
-        ),
+    kits_roots = [
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")),
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")),
     ]
+    candidates = [shutil.which("pdbcopy")]
+    for kits_root in kits_roots:
+        for arch in ("x64", "arm64", "x86"):
+            candidates.append(
+                str(
+                    kits_root
+                    / "Windows Kits"
+                    / "10"
+                    / "Debuggers"
+                    / arch
+                    / "pdbcopy.exe"
+                )
+            )
     for candidate in candidates:
         if candidate and Path(candidate).exists():
             return str(candidate)
