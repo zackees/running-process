@@ -104,7 +104,11 @@ def test_cli_passes_in_running_process_to_child(monkeypatch) -> None:
     assert cli.main(["--", "python", "-m", "ci.test"]) == 0
     assert seen["command"] == ["python", "-m", "ci.test"]
     assert isinstance(seen["env"], dict)
-    assert seen["env"][cli.IN_RUNNING_PROCESS_ENV] == cli.IN_RUNNING_PROCESS_VALUE
+    assert seen["env"][cli.IN_RUNNING_PROCESS_ENV] == cli.IN_RUNNING_PROCESS_VALUE, (
+        "pytest must be run through the running-process CLI so it provides "
+        "IN_RUNNING_PROCESS=running-process-cli and can auto-dump stacks on hangs; "
+        "do not manually set IN_RUNNING_PROCESS in agent-driven test commands."
+    )
     assert seen["stdout"] is cli.subprocess.PIPE
     assert seen["stderr"] is cli.subprocess.PIPE
 

@@ -20,7 +20,10 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         raise RuntimeError(
             "pytest must run under the running-process test entrypoint; "
             f"expected {_IN_RUNNING_PROCESS_ENV}={_EXPECTED_IN_RUNNING_PROCESS!r}, "
-            f"got {actual!r}"
+            f"got {actual!r}. Run pytest through the running-process CLI so it sets "
+            "IN_RUNNING_PROCESS=running-process-cli and can auto-dump stacks when a "
+            "test hangs. Do not manually inject IN_RUNNING_PROCESS in the agent or "
+            "test command."
         )
 
 
