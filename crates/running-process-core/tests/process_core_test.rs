@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 
 use running_process_core::{
-    CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StdinMode, StreamKind,
+    CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StderrMode, StdinMode, StreamKind,
 };
 
 fn config(
@@ -28,6 +28,7 @@ fn config(
         cwd: None,
         env: None,
         capture,
+        stderr_mode: StderrMode::Stdout,
         creationflags: None,
         create_process_group: false,
         stdin_mode,
@@ -36,8 +37,31 @@ fn config(
 }
 
 #[test]
-fn captures_stdout_and_stderr_separately() {
+fn captures_stderr_in_stdout_by_default() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import sys; print('out'); print('err', file=sys.stderr)".into(),
+        ]),
+        true,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+
+    assert_eq!(code, 0);
+    assert!(process.captured_stdout().iter().any(|line| line == b"out"));
+    assert!(process.captured_stdout().iter().any(|line| line == b"err"));
+    assert!(process.captured_stderr().is_empty());
+}
+
+#[test]
+fn captures_stdout_and_stderr_separately_when_requested() {
     let process = NativeProcess::new(ProcessConfig {
+        stderr_mode: StderrMode::Pipe,
         ..config(
             CommandSpec::Argv(vec![
                 "python".into(),
@@ -142,6 +166,7 @@ fn supports_piped_stdin_filter_execution() {
 #[test]
 fn captured_output_can_be_cleared_to_release_memory() {
     let process = NativeProcess::new(ProcessConfig {
+        stderr_mode: StderrMode::Pipe,
         ..config(
             CommandSpec::Argv(vec![
                 "python".into(),

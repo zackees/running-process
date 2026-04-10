@@ -17,6 +17,7 @@ from running_process.command_render import list2cmdline
 from running_process.compat import (
     DEVNULL,
     PIPE,
+    STDOUT,
     CalledProcessError,
     CompletedProcess,
     TimeoutExpired,
@@ -304,6 +305,7 @@ class RunningProcess:
         universal_newlines: bool = False,
         relay_terminal_input: bool = False,
         arm_idle_timeout_on_submit: bool = False,
+        stderr: int | Any | None = None,
         **_popen_kwargs: Any,
     ) -> None:
         if isinstance(command, str) and shell is False:
@@ -334,10 +336,17 @@ class RunningProcess:
         self.errors = errors or "replace"
         self.relay_terminal_input = bool(relay_terminal_input)
         self.arm_idle_timeout_on_submit = bool(arm_idle_timeout_on_submit)
+        if stderr not in (None, PIPE, STDOUT):
+            raise ValueError("stderr must be None, PIPE, or STDOUT")
+        if capture is False and stderr is PIPE:
+            raise ValueError("stderr=PIPE requires capture=True")
+        self._stderr_mode_name = "pipe" if stderr is PIPE else "stdout"
         if use_pty:
             self.capture = bool(capture) if capture is not None else False
             if stdin not in (None, PIPE):
                 raise ValueError("use_pty=True only supports stdin=None or PIPE")
+            if stderr is PIPE:
+                raise ValueError("use_pty=True only supports stderr=None or STDOUT")
             self._pty_process = PseudoTerminalProcess(
                 command,
                 cwd=cwd,
@@ -370,6 +379,7 @@ class RunningProcess:
                 encoding=self.encoding if self.text else None,
                 errors=self.errors if self.text else None,
                 stdin_mode_name=_stdin_mode(stdin, has_input=False),
+                stderr_mode_name=self._stderr_mode_name,
                 nice=self.nice,
             )
         self._start_time: float | None = None
@@ -911,8 +921,10 @@ class RunningProcess:
             raise NotImplementedError("RunningProcess.run does not support executable= yet")
         if stdout not in (None, PIPE):
             raise NotImplementedError("RunningProcess.run only supports stdout=None or PIPE")
-        if stderr not in (None, PIPE):
-            raise NotImplementedError("RunningProcess.run only supports stderr=None or PIPE")
+        if stderr not in (None, PIPE, STDOUT):
+            raise NotImplementedError(
+                "RunningProcess.run only supports stderr=None, PIPE, or STDOUT"
+            )
         if bufsize is not _BUFSIZE_NOT_SET and bufsize != 1:
             raise NotImplementedError(
                 "RunningProcess.run only supports default buffering or bufsize=1"
@@ -938,6 +950,7 @@ class RunningProcess:
             universal_newlines=universal_newlines,
             on_timeout=on_timeout,
             nice=nice,
+            stderr=stderr,
         )
         if input is not None:
             payload = (
@@ -955,7 +968,7 @@ class RunningProcess:
         stdout_value: Any
         stderr_value: Any
         if merged_output:
-            stdout_value = proc.combined_output if stderr is None else proc.stdout
+            stdout_value = proc.combined_output if stderr in (None, STDOUT) else proc.stdout
         else:
             stdout_value = None
         stderr_value = proc.stderr if stderr is PIPE else None
@@ -1004,7 +1017,6 @@ class RunningProcess:
             timeout=timeout,
             check=check,
             capture_output=capture_output,
-            stderr=PIPE if capture_output else None,
             text=text,
             env=env,
             nice=nice,

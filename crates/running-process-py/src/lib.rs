@@ -19,7 +19,7 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use regex::Regex;
 use running_process_core::{
     render_rust_debug_traces, CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus,
-    StdinMode, StreamEvent, StreamKind,
+    StderrMode, StdinMode, StreamEvent, StreamKind,
 };
 #[cfg(unix)]
 use running_process_core::{
@@ -1330,6 +1330,16 @@ fn stdin_mode(name: &str) -> PyResult<StdinMode> {
     }
 }
 
+fn stderr_mode(name: &str) -> PyResult<StderrMode> {
+    match name {
+        "stdout" => Ok(StderrMode::Stdout),
+        "pipe" => Ok(StderrMode::Pipe),
+        _ => Err(PyValueError::new_err(
+            "stderr_mode must be 'stdout' or 'pipe'",
+        )),
+    }
+}
+
 #[pyclass]
 struct NativeRunningProcess {
     inner: NativeProcess,
@@ -1444,7 +1454,7 @@ struct NativeTerminalInput {
 impl NativeRunningProcess {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", nice=None, create_process_group=false))]
+    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false))]
     fn new(
         command: &Bound<'_, PyAny>,
         cwd: Option<String>,
@@ -1456,6 +1466,7 @@ impl NativeRunningProcess {
         encoding: Option<String>,
         errors: Option<String>,
         stdin_mode_name: &str,
+        stderr_mode_name: &str,
         nice: Option<i32>,
         create_process_group: bool,
     ) -> PyResult<Self> {
@@ -1475,6 +1486,7 @@ impl NativeRunningProcess {
                 cwd: cwd.map(PathBuf::from),
                 env: env_pairs,
                 capture,
+                stderr_mode: stderr_mode(stderr_mode_name)?,
                 creationflags,
                 create_process_group,
                 stdin_mode: stdin_mode(stdin_mode_name)?,
@@ -1755,7 +1767,7 @@ impl NativeRunningProcess {
 impl PyNativeProcess {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", nice=None, create_process_group=false))]
+    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false))]
     fn new(
         command: &Bound<'_, PyAny>,
         cwd: Option<String>,
@@ -1767,6 +1779,7 @@ impl PyNativeProcess {
         encoding: Option<String>,
         errors: Option<String>,
         stdin_mode_name: &str,
+        stderr_mode_name: &str,
         nice: Option<i32>,
         create_process_group: bool,
     ) -> PyResult<Self> {
@@ -1782,6 +1795,7 @@ impl PyNativeProcess {
                 encoding,
                 errors,
                 stdin_mode_name,
+                stderr_mode_name,
                 nice,
                 create_process_group,
             )?),

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-__version__ = "3.0.5"
+__version__ = "3.0.6"
 
 from running_process._native import NativeTerminalInput, NativeTerminalInputEvent
 from running_process.compat import (
     CREATE_NEW_PROCESS_GROUP,
     DEVNULL,
     PIPE,
+    STDOUT,
     CalledProcessError,
     CompletedProcess,
     TimeoutExpired,
@@ -61,6 +62,7 @@ __all__ = [
     "DEVNULL",
     "EOS",
     "PIPE",
+    "STDOUT",
     "Callback",
     "CalledProcessError",
     "CompletedProcess",

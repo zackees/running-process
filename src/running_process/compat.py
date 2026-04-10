@@ -6,6 +6,7 @@ from typing import Any, Generic, TypeVar
 T = TypeVar("T")
 
 PIPE = _subprocess.PIPE
+STDOUT = _subprocess.STDOUT
 DEVNULL = _subprocess.DEVNULL
 CREATE_NEW_PROCESS_GROUP = getattr(_subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 

@@ -53,9 +53,24 @@ def test_basic_stdout_capture() -> None:
     assert process.combined_output.strip() == "hello"
 
 
-def test_split_stdout_and_stderr_capture() -> None:
+def test_default_capture_merges_stderr_into_stdout() -> None:
     script = "import sys; print('out'); print('err', file=sys.stderr)"
     process = RunningProcess([sys.executable, "-c", script])
+    code = process.wait()
+
+    assert code == 0
+    stdout_lines = process.stdout.strip().splitlines()
+    combined_lines = process.combined_output.strip().splitlines()
+    assert "out" in stdout_lines
+    assert "err" in stdout_lines
+    assert process.stderr == ""
+    assert "out" in combined_lines
+    assert "err" in combined_lines
+
+
+def test_split_stdout_and_stderr_capture() -> None:
+    script = "import sys; print('out'); print('err', file=sys.stderr)"
+    process = RunningProcess([sys.executable, "-c", script], stderr=PIPE)
     code = process.wait()
 
     assert code == 0
@@ -72,7 +87,7 @@ def test_invalid_utf8_replaced_by_default_for_running_process() -> None:
         "sys.stderr.buffer.write(b'err:\\xfe\\n'); "
         "sys.stdout.flush(); sys.stderr.flush()"
     )
-    process = RunningProcess([sys.executable, "-c", script])
+    process = RunningProcess([sys.executable, "-c", script], stderr=PIPE)
     process.wait()
 
     assert process.stdout == "bad:\ufffd"
@@ -85,7 +100,7 @@ def test_crlf_is_normalized_but_bare_cr_is_preserved() -> None:
         "sys.stdout.buffer.write(b'first\\r\\nsecond\\rthird\\n'); "
         "sys.stdout.flush()"
     )
-    process = RunningProcess([sys.executable, "-c", script])
+    process = RunningProcess([sys.executable, "-c", script], stderr=PIPE)
     process.wait()
 
     assert process.stdout == "first\nsecond\rthird"
@@ -93,7 +108,7 @@ def test_crlf_is_normalized_but_bare_cr_is_preserved() -> None:
 
 def test_get_next_line_preserves_combined_stream() -> None:
     script = "import sys; print('out'); print('err', file=sys.stderr)"
-    process = RunningProcess([sys.executable, "-c", script])
+    process = RunningProcess([sys.executable, "-c", script], stderr=PIPE)
 
     seen = []
     while True:
@@ -114,7 +129,7 @@ def test_stream_specific_reads_and_availability() -> None:
         "time.sleep(0.2); "
         "print('err-1', file=sys.stderr); sys.stderr.flush()"
     )
-    process = RunningProcess([sys.executable, "-c", script])
+    process = RunningProcess([sys.executable, "-c", script], stderr=PIPE)
 
     stdout_line = process.get_next_stdout_line(timeout=2)
     assert stdout_line == "out-1"
@@ -138,7 +153,8 @@ def test_stdout_and_stderr_stream_objects_report_availability() -> None:
                 "time.sleep(0.2); "
                 "print('stderr-ready', file=sys.stderr); sys.stderr.flush()"
             ),
-        ]
+        ],
+        stderr=PIPE,
     )
 
     stdout_line = process.get_next_stdout_line(timeout=2)
@@ -153,7 +169,8 @@ def test_stdout_and_stderr_stream_objects_report_availability() -> None:
 
 def test_running_process_iteration_yields_stdout_stderr_and_terminal_tuple() -> None:
     process = RunningProcess(
-        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        stderr=PIPE,
     )
 
     seen: list[tuple[object, object, int | None]] = []
@@ -172,6 +189,19 @@ def test_running_process_iteration_yields_stdout_stderr_and_terminal_tuple() -> 
     assert seen[-1] == (EOS, EOS, 0)
 
 
+def test_stream_iter_merges_stderr_into_stdout_by_default() -> None:
+    process = RunningProcess(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
+    )
+
+    events = list(process.stream_iter(timeout=5))
+
+    assert any(event.stdout == "out" for event in events)
+    assert any(event.stdout == "err" for event in events)
+    assert all(event.stderr in (None, EOS) for event in events)
+    assert events[-1] == ProcessOutputEvent(EOS, EOS, 0)
+
+
 def test_stream_iter_latches_exit_code_while_stderr_keeps_draining() -> None:
     child_code = (
         "import sys, time; "
@@ -183,7 +213,7 @@ def test_stream_iter_latches_exit_code_while_stderr_keeps_draining() -> None:
         f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
         "sys.exit(1)"
     )
-    process = RunningProcess([sys.executable, "-c", script])
+    process = RunningProcess([sys.executable, "-c", script], stderr=PIPE)
 
     events = list(process.stream_iter(timeout=5))
 
@@ -206,7 +236,8 @@ def test_stream_iter_reports_drained_streams_before_exit_code_when_needed() -> N
                 "time.sleep(0.2); "
                 "sys.exit(7)"
             ),
-        ]
+        ],
+        stderr=PIPE,
     )
 
     events = list(process.stream_iter(timeout=5))
@@ -236,7 +267,8 @@ def test_stream_iter_can_surface_exit_code_on_last_payload_before_terminal_event
             sys.executable,
             "-c",
             "import sys; print('done', file=sys.stderr, flush=True); sys.exit(3)",
-        ]
+        ],
+        stderr=PIPE,
     )
 
     events = list(process.stream_iter(timeout=5))
@@ -300,7 +332,8 @@ def test_get_next_line_non_blocking_returns_none_without_output() -> None:
 
 def test_drain_combined_includes_stream_names() -> None:
     process = RunningProcess(
-        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        stderr=PIPE,
     )
     process.wait()
     drained = process.drain_combined()
@@ -319,7 +352,8 @@ def test_stream_values_are_plain_text_and_streams_are_separate() -> None:
 
 def test_discard_captured_output_releases_pipe_history_bytes() -> None:
     process = RunningProcess(
-        [sys.executable, "-c", "import sys; print('alpha'); print('beta', file=sys.stderr)"]
+        [sys.executable, "-c", "import sys; print('alpha'); print('beta', file=sys.stderr)"],
+        stderr=PIPE,
     )
     process.wait()
 
@@ -787,7 +821,8 @@ def test_run_streaming_echoes_both_streams(capsys: pytest.CaptureFixture[str]) -
     captured = capsys.readouterr()
     assert code == 0
     assert "out" in captured.out
-    assert "err" in captured.err
+    assert "err" in captured.out
+    assert captured.err == ""
 
 
 def test_capture_false_does_not_store_output() -> None:
@@ -923,7 +958,8 @@ def test_wait_echo_includes_stderr(capsys: pytest.CaptureFixture[str]) -> None:
     process.wait(echo=True)
     captured = capsys.readouterr()
     assert "out" in captured.out
-    assert "err" in captured.err
+    assert "err" in captured.out
+    assert captured.err == ""
 
 
 def test_echo_true_is_safe_for_ascii_console(monkeypatch: pytest.MonkeyPatch) -> None:

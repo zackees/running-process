@@ -82,6 +82,12 @@ pub enum StdinMode {
     Null,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StderrMode {
+    Stdout,
+    Pipe,
+}
+
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnixSignal {
@@ -96,6 +102,7 @@ pub struct ProcessConfig {
     pub cwd: Option<PathBuf>,
     pub env: Option<Vec<(String, String)>>,
     pub capture: bool,
+    pub stderr_mode: StderrMode,
     pub creationflags: Option<u32>,
     pub create_process_group: bool,
     pub stdin_mode: StdinMode,
@@ -207,8 +214,15 @@ impl NativeProcess {
         if self.config.capture {
             let stdout = child.stdout.take().expect("stdout pipe missing");
             let stderr = child.stderr.take().expect("stderr pipe missing");
-            self.spawn_reader(stdout, StreamKind::Stdout);
-            self.spawn_reader(stderr, StreamKind::Stderr);
+            self.spawn_reader(stdout, StreamKind::Stdout, StreamKind::Stdout);
+            self.spawn_reader(
+                stderr,
+                StreamKind::Stderr,
+                match self.config.stderr_mode {
+                    StderrMode::Stdout => StreamKind::Stdout,
+                    StderrMode::Pipe => StreamKind::Stderr,
+                },
+            );
         }
         *guard = Some(ChildState {
             child,
@@ -324,6 +338,9 @@ impl NativeProcess {
     }
 
     pub fn has_pending_stream(&self, stream: StreamKind) -> bool {
+        if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
+            return false;
+        }
         let guard = self.shared.queues.lock().expect("queue mutex poisoned");
         match stream {
             StreamKind::Stdout => !guard.stdout_queue.is_empty(),
@@ -337,6 +354,9 @@ impl NativeProcess {
     }
 
     pub fn drain_stream(&self, stream: StreamKind) -> Vec<Vec<u8>> {
+        if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
+            return Vec::new();
+        }
         let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
         let queue = match stream {
             StreamKind::Stdout => &mut guard.stdout_queue,
@@ -359,6 +379,10 @@ impl NativeProcess {
         let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
 
         loop {
+            if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
+                return ReadStatus::Eof;
+            }
+
             let queue = match stream {
                 StreamKind::Stdout => &mut guard.stdout_queue,
                 StreamKind::Stderr => &mut guard.stderr_queue,
@@ -368,7 +392,13 @@ impl NativeProcess {
             }
 
             let closed = match stream {
-                StreamKind::Stdout => guard.stdout_closed,
+                StreamKind::Stdout => {
+                    if self.config.stderr_mode == StderrMode::Stdout {
+                        guard.stdout_closed && guard.stderr_closed
+                    } else {
+                        guard.stdout_closed
+                    }
+                }
                 StreamKind::Stderr => guard.stderr_closed,
             };
             if closed {
@@ -462,6 +492,9 @@ impl NativeProcess {
     }
 
     pub fn captured_stderr(&self) -> Vec<Vec<u8>> {
+        if self.config.stderr_mode == StderrMode::Stdout {
+            return Vec::new();
+        }
         self.shared
             .queues
             .lock()
@@ -484,6 +517,9 @@ impl NativeProcess {
     }
 
     pub fn captured_stream_bytes(&self, stream: StreamKind) -> usize {
+        if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
+            return 0;
+        }
         let guard = self.shared.queues.lock().expect("queue mutex poisoned");
         match stream {
             StreamKind::Stdout => guard.stdout_history_bytes,
@@ -500,6 +536,9 @@ impl NativeProcess {
     }
 
     pub fn clear_captured_stream(&self, stream: StreamKind) -> usize {
+        if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
+            return 0;
+        }
         let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
         match stream {
             StreamKind::Stdout => {
@@ -577,7 +616,7 @@ impl NativeProcess {
         command
     }
 
-    fn spawn_reader<R>(&self, pipe: R, stream: StreamKind)
+    fn spawn_reader<R>(&self, pipe: R, source_stream: StreamKind, visible_stream: StreamKind)
     where
         R: Read + Send + 'static,
     {
@@ -590,17 +629,17 @@ impl NativeProcess {
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
-                    Ok(n) => feed_chunk(&shared, stream, &mut pending, &chunk[..n]),
+                    Ok(n) => feed_chunk(&shared, visible_stream, &mut pending, &chunk[..n]),
                     Err(_) => break,
                 }
             }
 
             if !pending.is_empty() {
-                emit_line(&shared, stream, std::mem::take(&mut pending));
+                emit_line(&shared, visible_stream, std::mem::take(&mut pending));
             }
 
             let mut guard = shared.queues.lock().expect("queue mutex poisoned");
-            match stream {
+            match source_stream {
                 StreamKind::Stdout => guard.stdout_closed = true,
                 StreamKind::Stderr => guard.stderr_closed = true,
             }
