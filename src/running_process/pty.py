@@ -882,6 +882,8 @@ class PseudoTerminalProcess:
             return
         assert self._proc is not None
         self._proc.terminate()
+        with suppress(TimeoutError, RuntimeError):
+            self._wait_for_exit_code(timeout=2.0)
         self._drain_native_until_eof(timeout=_PTY_READER_NATIVE_CLOSE_WAIT_SECONDS)
         self._finalize("terminate")
 
@@ -896,6 +898,8 @@ class PseudoTerminalProcess:
             except (OSError, AttributeError):
                 pass
             else:
+                with suppress(TimeoutError, RuntimeError):
+                    self._wait_for_exit_code(timeout=2.0)
                 with suppress(*_PTY_CLEANUP_ERRORS):
                     self._drain_native_until_eof(timeout=_PTY_READER_NATIVE_CLOSE_WAIT_SECONDS)
                 self._finalize("kill")
