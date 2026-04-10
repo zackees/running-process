@@ -55,7 +55,13 @@ jobs:
 
       - name: Build wheel
         if: ${{ inputs.build-dist }}
-        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.linux_build_wheel --output-dir dist
+          else
+            uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel
+          fi
 
       - name: Build sdist
         if: ${{ inputs.build-sdist }}

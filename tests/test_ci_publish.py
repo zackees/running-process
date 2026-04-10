@@ -135,7 +135,7 @@ def test_select_expected_artifacts_returns_only_matching_existing_files(tmp_path
         tmp_path / "running_process-3.0.3-cp313-cp313-win_amd64.whl",
         tmp_path / "running_process-3.0.3-cp313-cp313-win_arm64.whl",
         tmp_path / "running_process-3.0.3-cp313-cp313-macosx_11_0_arm64.whl",
-        tmp_path / "running_process-3.0.3-cp313-cp313-manylinux2014_aarch64.whl",
+        tmp_path / "running_process-3.0.3-cp313-cp313-musllinux_1_2_aarch64.whl",
         tmp_path / "stray-file.whl",
     ]
     for path in artifacts:
@@ -150,10 +150,10 @@ def test_select_expected_artifacts_returns_only_matching_existing_files(tmp_path
         "running_process-3.0.3-cp313-cp313-win_amd64.whl",
         "running_process-3.0.3-cp313-cp313-win_arm64.whl",
         "running_process-3.0.3-cp313-cp313-macosx_11_0_arm64.whl",
-        "running_process-3.0.3-cp313-cp313-manylinux2014_aarch64.whl",
+        "running_process-3.0.3-cp313-cp313-musllinux_1_2_aarch64.whl",
     }
     assert missing == [
-        "running_process-3.0.3-*-manylinux*_x86_64.whl",
+        "running_process-3.0.3-*linux*_x86_64.whl",
         "running_process-3.0.3-*-macosx*_x86_64.whl",
     ]
 

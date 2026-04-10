@@ -30,8 +30,8 @@ WORKFLOWS = {
 }
 EXPECTED_ARTIFACT_GLOBS = (
     "{name}-{version}.tar.gz",
-    "{name}-{version}-*-manylinux*_x86_64.whl",
-    "{name}-{version}-*-manylinux*_aarch64.whl",
+    "{name}-{version}-*linux*_x86_64.whl",
+    "{name}-{version}-*linux*_aarch64.whl",
     "{name}-{version}-*-win_amd64.whl",
     "{name}-{version}-*-win_arm64.whl",
     "{name}-{version}-*-macosx*_x86_64.whl",
