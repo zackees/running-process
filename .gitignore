@@ -22,3 +22,4 @@ coverage-rust.lcov
 logs/
 .cargo/
 .rustup/
+.loop/
