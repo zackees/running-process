@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -167,6 +168,16 @@ def activate() -> None:
     )
 
 
+def _apply_sccache(env: dict[str, str]) -> dict[str, str]:
+    """Set RUSTC_WRAPPER=sccache when sccache is available."""
+    if env.get("RUSTC_WRAPPER"):
+        return env
+    sccache = shutil.which("sccache", path=env.get("PATH"))
+    if sccache:
+        env["RUSTC_WRAPPER"] = sccache
+    return env
+
+
 def clean_env() -> dict[str, str]:
     activate()
     env = os.environ.copy()
@@ -176,6 +187,7 @@ def clean_env() -> dict[str, str]:
         env = env | _windows_build_env()
         env.pop("VIRTUAL_ENV", None)
         env.setdefault("PYTHONUTF8", "1")
+    env = _apply_sccache(env)
     return env
 
 

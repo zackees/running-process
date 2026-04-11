@@ -51,6 +51,12 @@ jobs:
         with:
           shared-key: running-process-${{ inputs.runs-on }}
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
+      - name: Set Rust cache env
+        shell: bash
+        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
       - name: Lint
         if: ${{ inputs.run-tests }}
         run: uv run --module ci.run_logged logs/lint.log -- uv run --module ci.lint
