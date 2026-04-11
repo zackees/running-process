@@ -22,13 +22,13 @@ Repository = "https://github.com/zackees/running-process"
 Issues = "https://github.com/zackees/running-process/issues"
 
 [dependency-groups]
-dev = ["maturin>=1.7,<2", "pytest>=8.0.0", "ruff>=0.8.0"]
+dev = ["maturin[zig]>=1.7,<2", "pytest>=8.0.0", "ruff>=0.8.0"]
 
 [tool.maturin]
 manifest-path = "crates/running-process-py/Cargo.toml"
 module-name = "running_process._native"
 python-source = "src"
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "pyo3/abi3-py310"]
 
 [tool.uv]
 cache-keys = [

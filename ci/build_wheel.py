@@ -38,7 +38,7 @@ def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> li
     else:
         cmd.append("--release")
         if platform.system() == "Linux":
-            cmd.extend(["--compatibility", "manylinux2014"])
+            cmd.extend(["--zig", "--compatibility", "manylinux2014"])
         else:
             cmd.extend(["--compatibility", "pypi"])
     if rustc_args:
