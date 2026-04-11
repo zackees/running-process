@@ -864,6 +864,7 @@ class PseudoTerminalProcess:
         idle_detector: IdleDetector | None = None,
         relay_terminal_input: bool = False,
         arm_idle_timeout_on_submit: bool = False,
+        allows_child_ctrl_c_interruption: bool = True,
         auto_run: bool = True,
     ) -> None:
         if not Pty.is_available():
@@ -919,6 +920,7 @@ class PseudoTerminalProcess:
         self._registered_idle_detector = idle_detector
         self._relay_terminal_input = bool(relay_terminal_input)
         self._arm_idle_timeout_on_submit = bool(arm_idle_timeout_on_submit)
+        self._allows_child_ctrl_c_interruption = bool(allows_child_ctrl_c_interruption)
         self._terminal_input_capture: NativeTerminalInput | None = None
         self._terminal_input_thread: threading.Thread | None = None
         self._terminal_input_stop = threading.Event()
@@ -1108,13 +1110,18 @@ class PseudoTerminalProcess:
         self.idle_timeout_enabled = True
 
     def _start_windows_terminal_input_relay(self) -> None:
-        if self._proc is not None and hasattr(self._proc, "start_terminal_input_relay"):
+        if (
+            self._allows_child_ctrl_c_interruption
+            and self._proc is not None
+            and hasattr(self._proc, "start_terminal_input_relay")
+        ):
             self._proc.start_terminal_input_relay()
             self._sync_native_input_metrics()
             return
         capture = NativeTerminalInput()
         capture.start()
         self._terminal_input_capture = capture
+        filter_ctrl_c = not self._allows_child_ctrl_c_interruption
 
         def relay() -> None:
             try:
@@ -1123,10 +1130,15 @@ class PseudoTerminalProcess:
                         event = capture.read_event(timeout=0.05)
                     except TimeoutError:
                         continue
+                    data = event.data
+                    if filter_ctrl_c:
+                        data = data.replace(b"\x03", b"")
+                        if not data:
+                            continue
                     self._maybe_arm_idle_timeout_from_terminal_input(
                         submit=bool(getattr(event, "submit", False))
                     )
-                    self.write(event.data, submit=bool(getattr(event, "submit", False)))
+                    self.write(data, submit=bool(getattr(event, "submit", False)))
             finally:
                 with suppress(Exception):
                     capture.close()
@@ -1150,6 +1162,7 @@ class PseudoTerminalProcess:
         previous_state = termios.tcgetattr(stdin_fd)
         tty.setraw(stdin_fd)
         self._terminal_input_restore_state = (stdin_fd, previous_state)
+        filter_ctrl_c = not self._allows_child_ctrl_c_interruption
 
         def relay() -> None:
             try:
@@ -1163,6 +1176,10 @@ class PseudoTerminalProcess:
                     data = os.read(stdin_fd, 1024)
                     if not data:
                         continue
+                    if filter_ctrl_c:
+                        data = data.replace(b"\x03", b"")
+                        if not data:
+                            continue
                     submit = b"\r" in data or b"\n" in data
                     self._maybe_arm_idle_timeout_from_terminal_input(submit=submit)
                     self.write(data, submit=submit)

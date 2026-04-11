@@ -1187,3 +1187,87 @@ def test_top_level_imports_preserve_output_formatter_exports() -> None:
 
     assert hasattr(running_process, "OutputFormatter")
     assert hasattr(running_process, "TimeDeltaFormatter")
+
+
+def test_allows_child_ctrl_c_false_child_does_not_see_sigint() -> None:
+    """When allows_child_ctrl_c_interruption=False, send_interrupt kills the child
+    but the child's own SIGINT handler never fires."""
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import signal, time, sys\n"
+                "got_sigint = False\n"
+                "def handler(sig, frame):\n"
+                "    global got_sigint\n"
+                "    got_sigint = True\n"
+                "    print('child-saw-sigint', flush=True)\n"
+                "signal.signal(signal.SIGINT, handler)\n"
+                "print('ready', flush=True)\n"
+                "time.sleep(30)\n"
+            ),
+        ],
+        allows_child_ctrl_c_interruption=False,
+        timeout=10,
+    )
+    assert process.get_next_stdout_line(timeout=5) == "ready"
+    # The parent kills the child — child never sees SIGINT
+    process.kill()
+    # Ensure child did not print "child-saw-sigint"
+    remaining = process.stdout
+    assert "child-saw-sigint" not in remaining
+
+
+def test_allows_child_ctrl_c_false_process_group_isolation() -> None:
+    """When allows_child_ctrl_c_interruption=False, the child is in its own
+    process group and send_interrupt still works to explicitly interrupt it."""
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import time\n"
+                "print('ready', flush=True)\n"
+                "try:\n"
+                "    time.sleep(30)\n"
+                "except KeyboardInterrupt:\n"
+                "    raise\n"
+            ),
+        ],
+        allows_child_ctrl_c_interruption=False,
+        timeout=10,
+    )
+    assert process.get_next_stdout_line(timeout=5) == "ready"
+    # send_interrupt still works (explicit API call)
+    process.send_interrupt()
+    with pytest.raises(KeyboardInterrupt):
+        process.wait()
+
+
+def test_allows_child_ctrl_c_false_wait_kills_on_keyboard_interrupt() -> None:
+    """When allows_child_ctrl_c_interruption=False, KeyboardInterrupt during
+    wait() kills the child before re-raising."""
+    process = RunningProcess(
+        [
+            sys.executable,
+            "-c",
+            "import time; print('ready', flush=True); time.sleep(60)",
+        ],
+        allows_child_ctrl_c_interruption=False,
+        timeout=10,
+    )
+    assert process.get_next_stdout_line(timeout=5) == "ready"
+
+    def trigger_interrupt() -> None:
+        time.sleep(0.2)
+        process.send_interrupt()
+
+    worker = threading.Thread(target=trigger_interrupt, daemon=True)
+    worker.start()
+
+    with pytest.raises(KeyboardInterrupt):
+        process.wait()
+    worker.join(timeout=5)
+    # Process should be dead — killed by the wait() handler
+    assert process.returncode is not None

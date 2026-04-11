@@ -16,6 +16,7 @@ from typing import Any, ClassVar, NamedTuple
 from running_process._native import NativeProcess
 from running_process.command_render import list2cmdline
 from running_process.compat import (
+    CREATE_NEW_PROCESS_GROUP,
     DEVNULL,
     PIPE,
     STDOUT,
@@ -338,6 +339,7 @@ class RunningProcess:
         stderr: int | Any | None = None,
         output_formatter: OutputFormatter | None = None,
         on_complete: Callable[[], None] | None = None,
+        allows_child_ctrl_c_interruption: bool = True,
         **_popen_kwargs: Any,
     ) -> None:
         if isinstance(command, str) and shell is False:
@@ -368,6 +370,7 @@ class RunningProcess:
         self.errors = errors or "replace"
         self.relay_terminal_input = bool(relay_terminal_input)
         self.arm_idle_timeout_on_submit = bool(arm_idle_timeout_on_submit)
+        self._allows_child_ctrl_c_interruption = bool(allows_child_ctrl_c_interruption)
         if stderr not in (None, PIPE, STDOUT):
             raise ValueError("stderr must be None, PIPE, or STDOUT")
         if capture is False and stderr is PIPE:
@@ -391,6 +394,7 @@ class RunningProcess:
                 capture=self.capture,
                 relay_terminal_input=self.relay_terminal_input,
                 arm_idle_timeout_on_submit=self.arm_idle_timeout_on_submit,
+                allows_child_ctrl_c_interruption=self._allows_child_ctrl_c_interruption,
                 auto_run=False,
             )
             self.text = False
@@ -400,19 +404,29 @@ class RunningProcess:
                 raise ValueError("relay_terminal_input requires use_pty=True")
             if self.arm_idle_timeout_on_submit:
                 raise ValueError("arm_idle_timeout_on_submit requires use_pty=True")
+            effective_creationflags = creationflags
+            effective_create_process_group = False
+            if not self._allows_child_ctrl_c_interruption:
+                if sys.platform == "win32":
+                    effective_creationflags = (
+                        effective_creationflags or 0
+                    ) | CREATE_NEW_PROCESS_GROUP
+                else:
+                    effective_create_process_group = True
             self._proc = NativeProcess(
                 command,
                 cwd=str(cwd) if cwd is not None else None,
                 shell=self.shell,
                 capture=self.capture,
                 env=self.env,
-                creationflags=creationflags,
+                creationflags=effective_creationflags,
                 text=self.text,
                 encoding=self.encoding if self.text else None,
                 errors=self.errors if self.text else None,
                 stdin_mode_name=_stdin_mode(stdin, has_input=False),
                 stderr_mode_name=self._stderr_mode_name,
                 nice=self.nice,
+                create_process_group=effective_create_process_group,
             )
         self._output_formatter: OutputFormatter = output_formatter or NullOutputFormatter()
         self._on_complete: Callable[[], None] | None = on_complete
@@ -626,6 +640,29 @@ class RunningProcess:
         raise_on_abnormal_exit: bool = False,
         idle_detector: IdleDetector = None,
     ) -> int | IdleWaitResult:
+        try:
+            return self._wait_impl(
+                echo=echo,
+                timeout=timeout,
+                echo_timestamps=echo_timestamps,
+                raise_on_abnormal_exit=raise_on_abnormal_exit,
+                idle_detector=idle_detector,
+            )
+        except KeyboardInterrupt:
+            if not self._allows_child_ctrl_c_interruption:
+                with suppress(Exception):
+                    self.kill()
+            raise
+
+    def _wait_impl(
+        self,
+        echo: bool | EchoCallback = False,
+        timeout: float | None = None,
+        *,
+        echo_timestamps: str | None = None,
+        raise_on_abnormal_exit: bool = False,
+        idle_detector: IdleDetector = None,
+    ) -> int | IdleWaitResult:
         _validate_echo_flag(echo)
         _validate_echo_timestamps(echo_timestamps)
         echo_active = bool(echo) or echo_timestamps is not None
@@ -716,6 +753,29 @@ class RunningProcess:
         timeout: float | None = None,
         raise_on_abnormal_exit: bool = False,
     ) -> IdleWaitResult:
+        try:
+            return self._wait_for_idle_impl(
+                idle_detector,
+                echo=echo,
+                echo_timestamps=echo_timestamps,
+                timeout=timeout,
+                raise_on_abnormal_exit=raise_on_abnormal_exit,
+            )
+        except KeyboardInterrupt:
+            if not self._allows_child_ctrl_c_interruption:
+                with suppress(Exception):
+                    self.kill()
+            raise
+
+    def _wait_for_idle_impl(
+        self,
+        idle_detector: IdleDetector | None = None,
+        *,
+        echo: bool | EchoCallback = False,
+        echo_timestamps: str | None = None,
+        timeout: float | None = None,
+        raise_on_abnormal_exit: bool = False,
+    ) -> IdleWaitResult:
         _validate_echo_flag(echo)
         _validate_echo_timestamps(echo_timestamps)
         if self._pty_process is None:
@@ -744,6 +804,29 @@ class RunningProcess:
         return result
 
     def wait_for_expect(
+        self,
+        next_expect: Expect | None = None,
+        *,
+        echo: bool | EchoCallback = False,
+        echo_timestamps: str | None = None,
+        timeout: float | None = None,
+        raise_on_abnormal_exit: bool = False,
+    ) -> WaitForResult:
+        try:
+            return self._wait_for_expect_impl(
+                next_expect,
+                echo=echo,
+                echo_timestamps=echo_timestamps,
+                timeout=timeout,
+                raise_on_abnormal_exit=raise_on_abnormal_exit,
+            )
+        except KeyboardInterrupt:
+            if not self._allows_child_ctrl_c_interruption:
+                with suppress(Exception):
+                    self.kill()
+            raise
+
+    def _wait_for_expect_impl(
         self,
         next_expect: Expect | None = None,
         *,
@@ -785,6 +868,31 @@ class RunningProcess:
         return self._pty_process.checkpoint()
 
     def wait_for(
+        self,
+        *conditions: WaitCondition
+        | Callable[..., object]
+        | list[WaitCondition | Callable[..., object]]
+        | tuple[WaitCondition | Callable[..., object], ...],
+        echo: bool | EchoCallback = False,
+        echo_timestamps: str | None = None,
+        timeout: float | None = None,
+        raise_on_abnormal_exit: bool = False,
+    ) -> WaitForResult:
+        try:
+            return self._wait_for_impl(
+                *conditions,
+                echo=echo,
+                echo_timestamps=echo_timestamps,
+                timeout=timeout,
+                raise_on_abnormal_exit=raise_on_abnormal_exit,
+            )
+        except KeyboardInterrupt:
+            if not self._allows_child_ctrl_c_interruption:
+                with suppress(Exception):
+                    self.kill()
+            raise
+
+    def _wait_for_impl(
         self,
         *conditions: WaitCondition
         | Callable[..., object]
