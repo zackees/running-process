@@ -6784,7 +6784,7 @@ mod tests {
                 "import os; print(os.environ.get('RP_TEST_PTY', 'MISSING'))".to_string(),
             ];
             let process =
-                NativePtyProcess::new(argv, None, Some(env.into()), 24, 80, None).unwrap();
+                NativePtyProcess::new(argv, None, Some(env), 24, 80, None).unwrap();
             process.start_impl().unwrap();
             assert!(process.close_impl().is_ok());
         });
@@ -7622,7 +7622,7 @@ mod tests {
                 None,
                 false,
                 true,
-                Some(env.into()),
+                Some(env),
                 None,
                 true,
                 None,
