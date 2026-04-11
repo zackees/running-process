@@ -187,6 +187,7 @@ def clean_env() -> dict[str, str]:
         env = env | _windows_build_env()
         env.pop("VIRTUAL_ENV", None)
         env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("RUSTUP_TOOLCHAIN", toolchain_name())
     env = _apply_sccache(env)
     return env
 
