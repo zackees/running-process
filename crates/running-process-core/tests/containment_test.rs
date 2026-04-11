@@ -44,7 +44,7 @@ fn testbin_path(name: &str) -> PathBuf {
             if v["reason"] == "compiler-artifact"
                 && v["target"]["kind"]
                     .as_array()
-                    .map_or(false, |a| a.iter().any(|k| k == "bin"))
+                    .is_some_and(|a| a.iter().any(|k| k == "bin"))
             {
                 if let Some(exe) = v["executable"].as_str() {
                     let p = PathBuf::from(exe);

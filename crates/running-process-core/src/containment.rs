@@ -239,11 +239,22 @@ impl ContainedProcessGroup {
 
                 // Record the process group ID.
                 let mut pgid_lock = self.pgid.lock().expect("pgid mutex poisoned");
-                if pgid_lock.is_none() {
+                let group_pgid = if let Some(existing) = *pgid_lock {
+                    existing
+                } else {
                     // First child becomes the process group leader.
                     *pgid_lock = Some(pid as i32);
-                }
+                    pid as i32
+                };
                 drop(pgid_lock);
+
+                // Parent-side setpgid: the standard double-setpgid pattern.
+                // Both parent and child call setpgid so the group assignment
+                // is guaranteed regardless of scheduling order.  EACCES is
+                // expected (child already exec'd) and harmless.
+                unsafe {
+                    libc::setpgid(pid as i32, group_pgid);
+                }
 
                 self.child_pids
                     .lock()
@@ -278,6 +289,16 @@ impl Drop for ContainedProcessGroup {
             // the group. Errors are ignored (processes may have already exited).
             unsafe {
                 libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+        drop(pgid);
+
+        // Fallback: kill each tracked PID individually, in case any child
+        // failed to join the process group (e.g. race between fork and exec).
+        let pids = self.child_pids.lock().expect("child_pids mutex poisoned");
+        for &pid in pids.iter() {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
             }
         }
     }
