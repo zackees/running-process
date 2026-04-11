@@ -289,6 +289,38 @@ That defaults to building a dev-profile wheel and reinstalling it into the repo'
 uv run build.py --release
 ```
 
+## Process Containment
+
+`ContainedProcessGroup` ensures all child processes are killed when the group is dropped, using OS-level mechanisms (Job Objects on Windows, process groups + `SIGKILL` on Unix).
+
+```python
+from running_process import ContainedProcessGroup
+
+with ContainedProcessGroup() as group:
+    proc = group.spawn(["sleep", "3600"])
+# all children killed on exit, even on crash
+```
+
+### Crash-resilient orphan discovery
+
+When a parent crashes, its in-process registry is lost. `ContainedProcessGroup` can stamp every child with an environment variable that survives parent death:
+
+```python
+from running_process import ContainedProcessGroup, find_processes_by_originator
+
+# At launch: tag children with your tool name
+with ContainedProcessGroup(originator="MYTOOL") as group:
+    proc = group.spawn(["long-running-worker"])
+
+# Later (from any process, any session): find orphans
+stale = find_processes_by_originator("MYTOOL")
+for info in stale:
+    if not info.parent_alive:
+        print(f"Orphaned PID {info.pid} from dead parent {info.parent_pid}")
+```
+
+The env var `RUNNING_PROCESS_ORIGINATOR=TOOL:PID` is inherited by all descendants. The scanner uses process start times to guard against PID reuse.
+
 ## Tracked PID Cleanup
 
 `RunningProcess`, `InteractiveProcess`, and PTY-backed launches register their live PIDs in a SQLite database. The default location is:
