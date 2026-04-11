@@ -18,6 +18,8 @@ jobs:
     env:
       CARGO_HOME: ${{ github.workspace }}/.cargo
       RUSTUP_HOME: ${{ github.workspace }}/.rustup
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
 
@@ -30,12 +32,11 @@ jobs:
           enable-cache: true
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.7
-      - name: Set Rust cache env
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Set Rust toolchain env
         shell: bash
-        run: |
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          echo "RUSTUP_TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *\"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
+        run: echo "RUSTUP_TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *\"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
       - name: Sync
         run: uv sync --group dev
@@ -46,9 +47,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: running-process-${{ inputs.runs-on }}
+          cache-targets: false
 
-      - name: Build wheel
-        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel
+      - name: Build wheel (dev)
+        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run build.py --dev
 
       - name: Upload dist artifacts
         if: ${{ inputs.artifact-name != '' }}
