@@ -10,17 +10,11 @@
 
 `running-process` is a Rust-backed subprocess runtime with a thin Python API.
 
-I first developing a good python sub process abstraction when I was working at YouTube. I needed a way to sperate the stdout and stderr streams in processes and consume in parallel.
+## Why?
 
-Wow, this turned out to be non trivial. The python sub process class has a lot of limitatiohs. This is designed to be high performance replacement for subprocess.
-  
-  * handling both stdout and stderr streams with the same ease as hadling a concurrent.queue
-  * expect (string or regex) event trigger, idle time outs
-  * formtting functors
-  * Native:
-     * PTY Psuedo Terminal
-     * Subprocess
-     * Dameon processor (coming soon!)
+Subprocess on python suck. I'm not going to get into this but if you know, you know.
+
+This project started off as a fix for python's sub process module. It was in python originally, but then moved to OS specific rust. Now it's blazing fast. It also has cross platform process tracking, pty generation. It has zombie process tracking. It also has builtin `expect` for keyword event triggers, `idle tracking` (great for agent CLI's that dont' notifiy when they are done, they just stop sending data).
 
 This libary is design for speed and correctness and portability. We get all three via near total code coverage.
 
