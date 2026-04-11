@@ -14,28 +14,48 @@ use std::time::{Duration, Instant};
 
 use running_process_core::ContainedProcessGroup;
 
-/// Locate a test binary built by cargo in the target directory.
+/// Build (if needed) and locate a test binary from the workspace.
+///
+/// `cargo test` does not guarantee that binary targets from sibling workspace
+/// members are built before integration tests run.  We shell out to
+/// `cargo build -p <name>` to ensure the binary exists, then return the path
+/// from the `--message-format=json` output so it works on every platform and
+/// target-directory layout.
 fn testbin_path(name: &str) -> PathBuf {
-    let mut path = std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("parent of test exe")
-        .parent()
-        .expect("parent of deps dir")
-        .to_path_buf();
-    #[cfg(windows)]
-    {
-        path.push(format!("{name}.exe"));
-    }
-    #[cfg(not(windows))]
-    {
-        path.push(name);
-    }
+    let output = Command::new(env!("CARGO"))
+        .args(["build", "-p", name, "--message-format=json"])
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .expect("failed to run cargo build");
     assert!(
-        path.exists(),
-        "test binary not found at {path:?} — run `cargo build -p {name}` first"
+        output.status.success(),
+        "`cargo build -p {name}` failed with status {}",
+        output.status,
     );
-    path
+
+    // Parse the JSON lines to find the compiler artifact for the binary.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        // Quick pre-filter before parsing JSON.
+        if !line.contains("\"compiler-artifact\"") || !line.contains(name) {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if v["reason"] == "compiler-artifact"
+                && v["target"]["kind"]
+                    .as_array()
+                    .map_or(false, |a| a.iter().any(|k| k == "bin"))
+            {
+                if let Some(exe) = v["executable"].as_str() {
+                    let p = PathBuf::from(exe);
+                    assert!(p.exists(), "cargo reported {p:?} but it does not exist");
+                    return p;
+                }
+            }
+        }
+    }
+
+    panic!("`cargo build -p {name}` succeeded but no binary artifact found in JSON output");
 }
 
 /// Check whether a process with the given PID is still alive.
