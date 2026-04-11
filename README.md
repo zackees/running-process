@@ -18,8 +18,8 @@ Wow, this turned out to be non trivial. The python sub process class has a lot o
   * expect (string or regex) event trigger, idle time outs
   * formtting functors
   * Native:
-     * Psuedo Terminal
-     * SUbprocess abstraction
+     * PTY Psuedo Terminal
+     * Subprocess
      * Dameon processor (coming soon!)
 
 This libary is design for speed and correctness and portability. We get all three via near total code coverage.
