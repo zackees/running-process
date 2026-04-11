@@ -13,6 +13,8 @@ jobs:
     env:
       CARGO_HOME: ${{ github.workspace }}/.cargo
       RUSTUP_HOME: ${{ github.workspace }}/.rustup
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
 
@@ -24,6 +26,13 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Set Rust toolchain env
+        shell: bash
+        run: echo "RUSTUP_TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *\"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
+
       - name: Sync
         run: uv sync --group dev
 
@@ -33,6 +42,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: running-process-ubuntu-24.04
+          cache-targets: false
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
