@@ -12,7 +12,7 @@
 
 ## Why?
 
-Subprocess on python suck. I'm not going to get into this but if you know, you know.
+Subprocess on python sucks. I'm not going to get into this but if you know, you know. It's all fixable but you have to drop into native platform. running-process does exactly this and fixes all the problems.
 
 This project started off as a fix for python's sub process module. It was in python originally, but then moved to OS specific rust. Now it's blazing fast. It also has cross platform process tracking, pty generation. It has zombie process tracking. It also has builtin `expect` for keyword event triggers, `idle tracking` (great for agent CLI's that dont' notifiy when they are done, they just stop sending data).
 
