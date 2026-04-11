@@ -41,6 +41,14 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
+      - name: Set Rust cache env
+        shell: bash
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "RUSTUP_TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *\"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
+
       - name: Sync
         run: uv sync --group dev
 
@@ -50,12 +58,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: running-process-${{ inputs.runs-on }}
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.7
-      - name: Set Rust cache env
-        shell: bash
-        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Lint
         if: ${{ inputs.run-tests }}
