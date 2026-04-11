@@ -1,0 +1,67 @@
+name: Build Template
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        required: true
+        type: string
+      artifact-name:
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 30
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
+      - name: Set Rust cache env
+        shell: bash
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "RUSTUP_TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *\"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
+
+      - name: Sync
+        run: uv sync --group dev
+
+      - name: Install Toolchain
+        run: uv run --module ci.run_logged logs/install.log -- uv run --script install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: running-process-${{ inputs.runs-on }}
+
+      - name: Build wheel
+        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel
+
+      - name: Upload dist artifacts
+        if: ${{ inputs.artifact-name != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Upload failure logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-build-${{ inputs.artifact-name || inputs.runs-on }}
+          path: logs/*
+          if-no-files-found: warn

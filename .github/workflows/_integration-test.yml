@@ -1,0 +1,59 @@
+name: Integration Test Template
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        required: true
+        type: string
+
+jobs:
+  integration-test:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 30
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup
+      RUNNING_PROCESS_LIVE_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
+      - name: Set Rust cache env
+        shell: bash
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "RUSTUP_TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *\"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
+
+      - name: Sync
+        run: uv sync --group dev
+
+      - name: Install Toolchain
+        run: uv run --module ci.run_logged logs/install.log -- uv run --script install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: running-process-${{ inputs.runs-on }}
+
+      - name: Dev build
+        run: uv run --module ci.run_logged logs/dev-build.log -- uv run build.py --dev
+
+      - name: Integration Tests
+        run: uv run --module ci.run_logged logs/integration-test.log -- uv run pytest -m live -ra --strict-markers
+
+      - name: Upload failure logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-integration-test-${{ inputs.runs-on }}
+          path: logs/*
+          if-no-files-found: warn
