@@ -84,6 +84,18 @@ fn is_pid_alive(pid: u32) -> bool {
 
 #[cfg(unix)]
 fn is_pid_alive(pid: u32) -> bool {
+    // Try to reap a zombie first.  After SIGKILL a child stays in the
+    // process table as a zombie until waitpid() is called.  kill(pid, 0)
+    // returns 0 for zombies, which would make us think the process is
+    // alive when it's actually dead.  WNOHANG ensures we never block.
+    // If the PID is not our child, waitpid returns -1/ECHILD — harmless.
+    unsafe {
+        let mut status: i32 = 0;
+        let ret = libc::waitpid(pid as i32, &mut status, libc::WNOHANG);
+        if ret == pid as i32 {
+            return false; // was a zombie, now reaped — definitely dead
+        }
+    }
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
