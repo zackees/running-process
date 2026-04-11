@@ -11,10 +11,13 @@ RUST_SOURCE_ROOT = ROOT / "crates"
 
 ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process-core/src/lib.rs"),
+    Path("crates/running-process-py/src/lib.rs"),
 }
 
 ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-core/src/lib.rs"),
+    Path("crates/running-process-core/src/containment.rs"),
+    Path("crates/running-process-py/src/lib.rs"),
 }
 
 ALLOWED_PORTABLE_PTY = {

@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/running-process-core",
     "crates/running-process-py",
+    "testbins/sleeper",
+    "testbins/spawner",
 ]
 
 [workspace.package]
