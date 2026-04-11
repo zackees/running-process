@@ -14,7 +14,11 @@ from running_process.compat import (
 )
 from running_process.exit_status import ExitStatus, ProcessAbnormalExit
 from running_process.expect import ExpectMatch, ExpectRule
-from running_process.output_formatter import OutputFormatter, TimeDeltaFormatter
+from running_process.output_formatter import (
+    NullOutputFormatter,
+    OutputFormatter,
+    TimeDeltaFormatter,
+)
 from running_process.priority import CpuPriority
 from running_process.process_utils import get_process_tree_info, kill_process_tree
 from running_process.pty import (
@@ -46,6 +50,7 @@ from running_process.pty import (
 )
 from running_process.running_process import (
     EOS,
+    EchoCallback,
     EndOfStream,
     ProcessInfo,
     ProcessOutputEvent,
@@ -67,6 +72,7 @@ __all__ = [
     "CalledProcessError",
     "CompletedProcess",
     "CpuPriority",
+    "EchoCallback",
     "EndOfStream",
     "ExitStatus",
     "Expect",
@@ -88,6 +94,7 @@ __all__ = [
     "InterruptResult",
     "NativeTerminalInput",
     "NativeTerminalInputEvent",
+    "NullOutputFormatter",
     "OutputFormatter",
     "ProcessAbnormalExit",
     "ProcessIdleDetection",

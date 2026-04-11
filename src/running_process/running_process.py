@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from io import TextIOBase
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
@@ -32,6 +33,7 @@ from running_process.expect import (
     apply_expect_action,
 )
 from running_process.line_iterator import _RunningProcessLineIterator
+from running_process.output_formatter import NullOutputFormatter, OutputFormatter
 from running_process.priority import CpuPriority, normalize_nice
 from running_process.pty import (
     Expect,
@@ -69,6 +71,7 @@ class ProcessInfo:
 
 
 EchoValue = str | bytes
+EchoCallback = Callable[[str], None]
 
 
 def _is_eos(value: object) -> bool:
@@ -226,9 +229,36 @@ def _stdin_mode(stdin: int | Any | None, has_input: bool) -> str:
     raise ValueError("unsupported stdin value for RunningProcess; use None, PIPE, or DEVNULL")
 
 
-def _validate_echo_flag(echo: bool) -> None:
-    if not isinstance(echo, bool):
-        raise TypeError(f"echo must be bool, got {type(echo).__name__}")
+def _validate_echo_flag(echo: bool | EchoCallback) -> None:
+    if not isinstance(echo, bool) and not callable(echo):
+        raise TypeError(f"echo must be bool or callable, got {type(echo).__name__}")
+
+
+def _validate_echo_timestamps(echo_timestamps: str | None) -> None:
+    if echo_timestamps is not None and echo_timestamps not in ("relative", "absolute"):
+        raise ValueError(
+            f"echo_timestamps must be None, 'relative', or 'absolute', got {echo_timestamps!r}"
+        )
+
+
+def _make_timestamped_callback(
+    inner: EchoCallback,
+    mode: str,
+    start_time: float,
+) -> EchoCallback:
+    if mode == "relative":
+
+        def _relative_cb(line: str) -> None:
+            elapsed = time.time() - start_time
+            inner(f"[{elapsed:.2f}] {line}")
+
+        return _relative_cb
+
+    def _absolute_cb(line: str) -> None:
+        stamp = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
+        inner(f"[{stamp}] {line}")
+
+    return _absolute_cb
 
 
 def _parse_shebang_command(script_path: Path) -> list[str]:
@@ -306,6 +336,8 @@ class RunningProcess:
         relay_terminal_input: bool = False,
         arm_idle_timeout_on_submit: bool = False,
         stderr: int | Any | None = None,
+        output_formatter: OutputFormatter | None = None,
+        on_complete: Callable[[], None] | None = None,
         **_popen_kwargs: Any,
     ) -> None:
         if isinstance(command, str) and shell is False:
@@ -382,6 +414,8 @@ class RunningProcess:
                 stderr_mode_name=self._stderr_mode_name,
                 nice=self.nice,
             )
+        self._output_formatter: OutputFormatter = output_formatter or NullOutputFormatter()
+        self._on_complete: Callable[[], None] | None = on_complete
         self._start_time: float | None = None
         self._end_time: float | None = None
         self._exit_status: ExitStatus | None = None
@@ -389,6 +423,8 @@ class RunningProcess:
             self.start()
 
     def _format(self, line: EchoValue) -> EchoValue:
+        if isinstance(line, str):
+            return self._output_formatter.transform(line)
         return line
 
     def _create_process_info(self) -> ProcessInfo:
@@ -404,6 +440,7 @@ class RunningProcess:
         return self.command
 
     def start(self) -> None:
+        self._output_formatter.begin()
         if self._pty_process is not None:
             self._pty_process.start()
         else:
@@ -548,31 +585,66 @@ class RunningProcess:
     def finished(self) -> bool:
         return self.returncode is not None
 
-    def _echo_streams(self) -> None:
+    def _echo_streams(self, echo_callback: EchoCallback | None = None) -> None:
         for line in self.drain_stdout():
-            _safe_console_write(sys.stdout, line)
+            if echo_callback is not None:
+                text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
+                echo_callback(text)
+            else:
+                _safe_console_write(sys.stdout, line)
         for line in self.drain_stderr():
-            _safe_console_write(sys.stderr, line)
+            if echo_callback is not None:
+                text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
+                echo_callback(text)
+            else:
+                _safe_console_write(sys.stderr, line)
+
+    def _finalize_wait(self) -> None:
+        self._output_formatter.end()
+        if self._on_complete is not None:
+            self._on_complete()
+
+    def _resolve_echo_callback(
+        self,
+        echo: bool | EchoCallback,
+        echo_timestamps: str | None,
+    ) -> EchoCallback | None:
+        """Resolve echo + echo_timestamps into a single callback (or None)."""
+        callback: EchoCallback | None = echo if callable(echo) else None
+        if echo_timestamps is not None and bool(echo):
+            base = callback if callback is not None else print
+            start = self._start_time if self._start_time is not None else time.time()
+            callback = _make_timestamped_callback(base, echo_timestamps, start)
+        return callback
 
     def wait(
         self,
-        echo: bool = False,
+        echo: bool | EchoCallback = False,
         timeout: float | None = None,
         *,
+        echo_timestamps: str | None = None,
         raise_on_abnormal_exit: bool = False,
         idle_detector: IdleDetector = None,
     ) -> int | IdleWaitResult:
         _validate_echo_flag(echo)
+        _validate_echo_timestamps(echo_timestamps)
+        echo_active = bool(echo) or echo_timestamps is not None
+        if echo_timestamps is not None and not echo:
+            echo = True
+        echo_callback = self._resolve_echo_callback(echo, echo_timestamps)
         if idle_detector is not None:
-            return self.wait_for_idle(
+            result = self.wait_for_idle(
                 idle_detector,
                 echo=echo,
+                echo_timestamps=echo_timestamps,
                 timeout=timeout,
                 raise_on_abnormal_exit=raise_on_abnormal_exit,
             )
+            self._finalize_wait()
+            return result
         if self._pty_process is not None:
             effective_timeout = timeout if timeout is not None else self.timeout
-            if not echo:
+            if not echo_active:
                 code = self._pty_process.wait(
                     timeout=effective_timeout,
                     raise_on_abnormal_exit=raise_on_abnormal_exit,
@@ -588,16 +660,23 @@ class RunningProcess:
                         break
                     if deadline is not None and time.time() >= deadline:
                         self._handle_timeout(effective_timeout)
-                    self._pty_process._echo_to_console(sys.stdout)
+                    if echo_callback is not None:
+                        self._echo_streams(echo_callback)
+                    else:
+                        self._pty_process._echo_to_console(sys.stdout)
                     time.sleep(0.01)
-                self._pty_process._echo_to_console(sys.stdout)
+                if echo_callback is not None:
+                    self._echo_streams(echo_callback)
+                else:
+                    self._pty_process._echo_to_console(sys.stdout)
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
             self._exit_status = classify_exit_status(code, self.KEYBOARD_INTERRUPT_EXIT_CODES)
+            self._finalize_wait()
             return code
         effective_timeout = timeout if timeout is not None else self.timeout
         deadline = time.time() + effective_timeout if effective_timeout is not None else None
-        if not echo:
+        if not echo_active:
             try:
                 code = self._proc.wait(timeout=effective_timeout)
             except TimeoutError:
@@ -610,42 +689,52 @@ class RunningProcess:
                     break
                 if deadline is not None and time.time() >= deadline:
                     self._handle_timeout(effective_timeout)
-                self._echo_streams()
+                self._echo_streams(echo_callback)
                 time.sleep(0.01)
 
-        if echo:
-            self._echo_streams()
+        if echo_active:
+            self._echo_streams(echo_callback)
 
         self._end_time = self._end_time or time.time()
         RunningProcessManagerSingleton.unregister(self)
         self._exit_status = classify_exit_status(code, self.KEYBOARD_INTERRUPT_EXIT_CODES)
         if code in self.KEYBOARD_INTERRUPT_EXIT_CODES:
+            self._finalize_wait()
             raise KeyboardInterrupt
         if raise_on_abnormal_exit and self._exit_status.abnormal:
+            self._finalize_wait()
             raise ProcessAbnormalExit(self._exit_status)
+        self._finalize_wait()
         return code
 
     def wait_for_idle(
         self,
         idle_detector: IdleDetector | None = None,
         *,
-        echo: bool = False,
+        echo: bool | EchoCallback = False,
+        echo_timestamps: str | None = None,
         timeout: float | None = None,
         raise_on_abnormal_exit: bool = False,
     ) -> IdleWaitResult:
         _validate_echo_flag(echo)
+        _validate_echo_timestamps(echo_timestamps)
         if self._pty_process is None:
             raise NotImplementedError("idle detection currently only supports PTY-backed processes")
 
+        echo_active = bool(echo) or echo_timestamps is not None
+        echo_callback = self._resolve_echo_callback(echo, echo_timestamps)
         effective_timeout = timeout if timeout is not None else self.timeout
         result = self._pty_process.wait_for_idle(
             idle_detector,
             timeout=effective_timeout,
             raise_on_abnormal_exit=raise_on_abnormal_exit,
-            echo_output=echo,
+            echo_output=echo_active,
         )
-        if echo:
-            self._pty_process._echo_to_console(sys.stdout)
+        if echo_active:
+            if echo_callback is not None:
+                self._echo_streams(echo_callback)
+            else:
+                self._pty_process._echo_to_console(sys.stdout)
         if result.returncode is not None:
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
@@ -658,23 +747,30 @@ class RunningProcess:
         self,
         next_expect: Expect | None = None,
         *,
-        echo: bool = False,
+        echo: bool | EchoCallback = False,
+        echo_timestamps: str | None = None,
         timeout: float | None = None,
         raise_on_abnormal_exit: bool = False,
     ) -> WaitForResult:
         _validate_echo_flag(echo)
+        _validate_echo_timestamps(echo_timestamps)
         if self._pty_process is None:
             raise NotImplementedError(
                 "wait_for_expect currently only supports PTY-backed processes"
             )
+        echo_active = bool(echo) or echo_timestamps is not None
+        echo_callback = self._resolve_echo_callback(echo, echo_timestamps)
         result = self._pty_process.wait_for_expect(
             next_expect,
             timeout=timeout if timeout is not None else self.timeout,
             raise_on_abnormal_exit=raise_on_abnormal_exit,
-            echo_output=echo,
+            echo_output=echo_active,
         )
-        if echo:
-            self._pty_process._echo_to_console(sys.stdout)
+        if echo_active:
+            if echo_callback is not None:
+                self._echo_streams(echo_callback)
+            else:
+                self._pty_process._echo_to_console(sys.stdout)
         if result.returncode is not None:
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
@@ -694,22 +790,29 @@ class RunningProcess:
         | Callable[..., object]
         | list[WaitCondition | Callable[..., object]]
         | tuple[WaitCondition | Callable[..., object], ...],
-        echo: bool = False,
+        echo: bool | EchoCallback = False,
+        echo_timestamps: str | None = None,
         timeout: float | None = None,
         raise_on_abnormal_exit: bool = False,
     ) -> WaitForResult:
         _validate_echo_flag(echo)
+        _validate_echo_timestamps(echo_timestamps)
         if self._pty_process is None:
             raise NotImplementedError("wait_for currently only supports PTY-backed processes")
 
+        echo_active = bool(echo) or echo_timestamps is not None
+        echo_callback = self._resolve_echo_callback(echo, echo_timestamps)
         result = self._pty_process.wait_for(
             *conditions,
             timeout=timeout if timeout is not None else self.timeout,
             raise_on_abnormal_exit=raise_on_abnormal_exit,
-            echo_output=echo,
+            echo_output=echo_active,
         )
-        if echo:
-            self._pty_process._echo_to_console(sys.stdout)
+        if echo_active:
+            if echo_callback is not None:
+                self._echo_streams(echo_callback)
+            else:
+                self._pty_process._echo_to_console(sys.stdout)
         if result.returncode is not None:
             self._end_time = self._end_time or time.time()
             RunningProcessManagerSingleton.unregister(self)
