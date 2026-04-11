@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "3.0.7"
+__version__ = "3.0.8"
 
 from running_process._native import NativeTerminalInput, NativeTerminalInputEvent
 from running_process.compat import (
