@@ -4,6 +4,7 @@ use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -124,10 +125,15 @@ struct QueueState {
     stderr_closed: bool,
 }
 
+/// Sentinel value for returncode atomic: process has not exited yet.
+const RETURNCODE_NOT_SET: i64 = i64::MIN;
+
 struct SharedState {
     queues: Mutex<QueueState>,
     condvar: Condvar,
-    returncode: Mutex<Option<i32>>,
+    /// Atomic exit code. `RETURNCODE_NOT_SET` means "not exited yet".
+    /// Updated by a background waiter thread — reading is lock-free.
+    returncode: AtomicI64,
 }
 
 #[cfg(windows)]
@@ -158,14 +164,14 @@ impl SharedState {
         Self {
             queues: Mutex::new(queues),
             condvar: Condvar::new(),
-            returncode: Mutex::new(None),
+            returncode: AtomicI64::new(RETURNCODE_NOT_SET),
         }
     }
 }
 
 pub struct NativeProcess {
     config: ProcessConfig,
-    child: Mutex<Option<ChildState>>,
+    child: Arc<Mutex<Option<ChildState>>>,
     shared: Arc<SharedState>,
 }
 
@@ -173,7 +179,7 @@ impl NativeProcess {
     pub fn new(config: ProcessConfig) -> Self {
         Self {
             shared: Arc::new(SharedState::new(config.capture)),
-            child: Mutex::new(None),
+            child: Arc::new(Mutex::new(None)),
             config,
         }
     }
@@ -229,7 +235,41 @@ impl NativeProcess {
             #[cfg(windows)]
             _job: job,
         });
+        drop(guard);
+        self.spawn_exit_waiter();
         Ok(())
+    }
+
+    /// Background thread that polls for process exit and stores the exit code
+    /// atomically. This makes `returncode` auto-update without explicit `poll()`.
+    fn spawn_exit_waiter(&self) {
+        let child = Arc::clone(&self.child);
+        let shared = Arc::clone(&self.shared);
+        thread::spawn(move || {
+            loop {
+                if shared.returncode.load(Ordering::Acquire) != RETURNCODE_NOT_SET {
+                    return;
+                }
+                {
+                    let mut guard = child.lock().expect("child mutex poisoned");
+                    if let Some(child_state) = guard.as_mut() {
+                        match child_state.child.try_wait() {
+                            Ok(Some(status)) => {
+                                let code = exit_code(status);
+                                shared.returncode.store(code as i64, Ordering::Release);
+                                shared.condvar.notify_all();
+                                return;
+                            }
+                            Ok(None) => {}
+                            Err(_) => return,
+                        }
+                    } else {
+                        return;
+                    }
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
     }
 
     pub fn write_stdin(&self, data: &[u8]) -> Result<(), ProcessError> {
@@ -244,6 +284,10 @@ impl NativeProcess {
     }
 
     pub fn poll(&self) -> Result<Option<i32>, ProcessError> {
+        // Fast path: check atomic set by background waiter thread.
+        if let Some(code) = self.returncode() {
+            return Ok(Some(code));
+        }
         let mut guard = self.child.lock().expect("child mutex poisoned");
         let Some(child_state) = guard.as_mut() else {
             return Ok(self.returncode());
@@ -330,11 +374,12 @@ impl NativeProcess {
     }
 
     pub fn returncode(&self) -> Option<i32> {
-        *self
-            .shared
-            .returncode
-            .lock()
-            .expect("returncode mutex poisoned")
+        let v = self.shared.returncode.load(Ordering::Acquire);
+        if v == RETURNCODE_NOT_SET {
+            None
+        } else {
+            Some(v as i32)
+        }
     }
 
     pub fn has_pending_stream(&self, stream: StreamKind) -> bool {
@@ -648,12 +693,9 @@ impl NativeProcess {
     }
 
     fn set_returncode(&self, code: i32) {
-        let mut guard = self
-            .shared
+        self.shared
             .returncode
-            .lock()
-            .expect("returncode mutex poisoned");
-        *guard = Some(code);
+            .store(code as i64, Ordering::Release);
         self.shared.condvar.notify_all();
     }
 

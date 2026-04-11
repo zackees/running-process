@@ -40,6 +40,18 @@ from tests.process_helpers import (
 )
 
 
+def test_finished_becomes_true_without_poll(timeout: int = 10) -> None:
+    """Regression test for issue #7: .finished never becomes True without explicit .poll()."""
+    process = RunningProcess([sys.executable, "-c", "print('hello')"])
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.finished:
+            break
+        time.sleep(0.05)
+    assert process.finished, "Process.finished never became True without explicit poll()"
+    assert process.returncode == 0
+
+
 def test_basic_stdout_capture() -> None:
     process = RunningProcess([sys.executable, "-c", "print('hello')"])
     code = process.wait()
