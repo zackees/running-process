@@ -6,6 +6,7 @@
 [![Windows ARM](https://github.com/zackees/running-process/actions/workflows/windows-arm.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/windows-arm.yml)
 [![macOS x86](https://github.com/zackees/running-process/actions/workflows/macos-x86.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-x86.yml)
 [![macOS ARM](https://github.com/zackees/running-process/actions/workflows/macos-arm.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-arm.yml)
+[![codecov](https://codecov.io/gh/zackees/running-process/graph/badge.svg)](https://codecov.io/gh/zackees/running-process)
 
 `running-process` is a Rust-backed subprocess runtime with a thin Python API.
 

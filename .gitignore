@@ -13,6 +13,9 @@ __pycache__/
 .venv/
 .mypy_cache/
 .coverage
+htmlcov/
+coverage-python.xml
+coverage-rust.lcov
 
 *.pdb
 *.log

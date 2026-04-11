@@ -228,7 +228,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
 def test_parse_args_converts_target_and_selector_to_pytest_k_expr(monkeypatch) -> None:
     monkeypatch.delenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", raising=False)
 
-    pytest_args, require_symbols = ci_test.parse_args(
+    pytest_args, require_symbols, coverage = ci_test.parse_args(
         ["tests/test_pty_support.py", "timeout_does_not_arm_next_expect"]
     )
 
@@ -238,10 +238,11 @@ def test_parse_args_converts_target_and_selector_to_pytest_k_expr(monkeypatch) -
         "timeout_does_not_arm_next_expect",
     ]
     assert require_symbols is False
+    assert coverage is False
 
 
 def test_parse_args_preserves_explicit_pytest_flags() -> None:
-    pytest_args, require_symbols = ci_test.parse_args(
+    pytest_args, require_symbols, coverage = ci_test.parse_args(
         ["tests/test_pty_support.py", "-k", "timeout_does_not_arm_next_expect", "-ra"]
     )
 
@@ -252,15 +253,19 @@ def test_parse_args_preserves_explicit_pytest_flags() -> None:
         "-ra",
     ]
     assert require_symbols is False
+    assert coverage is False
 
 
 def test_parse_args_tracks_no_skip_without_mutating_env(monkeypatch) -> None:
     monkeypatch.delenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", raising=False)
 
-    pytest_args, require_symbols = ci_test.parse_args(["--no-skip", "tests/test_version.py"])
+    pytest_args, require_symbols, coverage = ci_test.parse_args(
+        ["--no-skip", "tests/test_version.py"]
+    )
 
     assert pytest_args == ["tests/test_version.py"]
     assert require_symbols is True
+    assert coverage is False
     assert "RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS" not in os.environ
 
 

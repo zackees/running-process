@@ -19,6 +19,19 @@ DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 180.0
 DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS = 600.0
 COMMAND_TIMEOUT_ENV = "RUNNING_PROCESS_TEST_COMMAND_TIMEOUT_SECONDS"
 
+# pytest-cov args for the first pytest run (creates fresh .coverage)
+_COV_PYTEST_FIRST = [
+    "--cov=running_process",
+    "--cov-report=term",
+]
+# pytest-cov args for subsequent runs (appends, then writes final XML)
+_COV_PYTEST_APPEND = [
+    "--cov=running_process",
+    "--cov-report=term",
+    "--cov-report=xml:coverage-python.xml",
+    "--cov-append",
+]
+
 
 def command_timeout_seconds() -> float | None:
     configured = os.environ.get(COMMAND_TIMEOUT_ENV)
@@ -151,21 +164,25 @@ def _pytest_exit_is_acceptable(returncode: int, pytest_args: list[str]) -> bool:
     return returncode == 5 and bool(pytest_args)
 
 
-def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool]:
+def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool]:
     argv = list(sys.argv[1:] if argv is None else argv)
     raw_pytest_args: list[str] = []
     require_symbols = False
+    coverage = False
     while argv:
         current = argv.pop(0)
         if current == "--no-skip":
             require_symbols = True
             continue
+        if current == "--coverage":
+            coverage = True
+            continue
         raw_pytest_args.append(current)
-    return _normalize_pytest_args(raw_pytest_args), require_symbols
+    return _normalize_pytest_args(raw_pytest_args), require_symbols, coverage
 
 
 def main(argv: list[str] | None = None) -> int:
-    pytest_args, require_symbols = parse_args(argv)
+    pytest_args, require_symbols, coverage = parse_args(argv)
     activate, _ = load_env_helpers()
     activate()
     if require_symbols:
@@ -178,10 +195,23 @@ def main(argv: list[str] | None = None) -> int:
         except RuntimeError as exc:
             print(str(exc), file=sys.stderr, flush=True)
             return 1
-    if run(supervised_command(python, "cargo", "test", "--workspace")) != 0:
+
+    # -- Rust tests (with optional coverage via cargo-llvm-cov) --
+    if coverage:
+        cargo_cmd = supervised_command(
+            python,
+            "cargo", "llvm-cov", "--workspace",
+            "--lcov", "--output-path", "coverage-rust.lcov",
+        )
+    else:
+        cargo_cmd = supervised_command(python, "cargo", "test", "--workspace")
+    if run(cargo_cmd) != 0:
         return 1
+
+    # -- Python non-live tests --
+    cov_first = list(_COV_PYTEST_FIRST) if coverage else []
     if not _pytest_exit_is_acceptable(
-        run(_supervised_pytest_command(python, "-m", "not live", *pytest_args)),
+        run(_supervised_pytest_command(python, "-m", "not live", *cov_first, *pytest_args)),
         pytest_args,
     ):
         return 1
@@ -191,8 +221,11 @@ def main(argv: list[str] | None = None) -> int:
     if require_symbols and sys.platform == "win32":
         if run(_release_build_command(python)) != 0:
             return 1
+
+    # -- Python live tests --
+    cov_append = list(_COV_PYTEST_APPEND) if coverage else []
     if not _pytest_exit_is_acceptable(
-        run_live(_supervised_pytest_command(python, "-m", "live", *pytest_args)),
+        run_live(_supervised_pytest_command(python, "-m", "live", *cov_append, *pytest_args)),
         pytest_args,
     ):
         return 1
