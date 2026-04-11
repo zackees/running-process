@@ -10,9 +10,9 @@
 
 `running-process` is a Rust-backed subprocess runtime with a thin Python API.
 
-I first developing a good python sub process abstraction when I was working at YouTube. I need a way to sperate the stdout and stderr streams in python and consume in parallel.
+I first developing a good python sub process abstraction when I was working at YouTube. I needed a way to sperate the stdout and stderr streams in processes and consume in parallel.
 
-This turned out to be non trivial. This python process class is designed to give you everything that's hard for python sub processos:
+Wow, this turned out to be non trivial. The python sub process class has a lot of limitatiohs. This is designed to be high performance replacement for subprocess.
   
   * handling both stdout and stderr streams with the same ease as hadling a concurrent.queue
   * expect (string or regex) event trigger, idle time outs
