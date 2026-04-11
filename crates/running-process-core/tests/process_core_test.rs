@@ -514,8 +514,19 @@ fn custom_cwd_is_respected() {
 
 #[test]
 fn custom_env_is_applied() {
+    // env_clear() wipes everything, so we must pass PATH for python to be found
+    let mut env_vars = vec![("RP_TEST_VAR".into(), "hello_coverage".into())];
+    if let Ok(path) = std::env::var("PATH") {
+        env_vars.push(("PATH".into(), path));
+    }
+    // Python on Windows also needs SystemRoot for proper operation
+    #[cfg(windows)]
+    if let Ok(root) = std::env::var("SystemRoot") {
+        env_vars.push(("SystemRoot".into(), root));
+    }
+
     let process = NativeProcess::new(ProcessConfig {
-        env: Some(vec![("RP_TEST_VAR".into(), "hello_coverage".into())]),
+        env: Some(env_vars),
         ..config(
             CommandSpec::Argv(vec![
                 "python".into(),
