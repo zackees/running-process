@@ -301,6 +301,19 @@ impl Drop for ContainedProcessGroup {
                 libc::kill(pid as i32, libc::SIGKILL);
             }
         }
+
+        // Reap zombie children.  After SIGKILL, child processes remain as
+        // zombies in the process table until waitpid() is called.  Without
+        // reaping, kill(pid, 0) still reports them as alive and they consume
+        // a slot in the process table.  SIGKILL is unblockable so blocking
+        // waitpid returns essentially immediately.  If the PID is not our
+        // child (or was already reaped), waitpid returns -1/ECHILD which we
+        // safely ignore.
+        for &pid in pids.iter() {
+            unsafe {
+                libc::waitpid(pid as i32, std::ptr::null_mut(), 0);
+            }
+        }
     }
 }
 
