@@ -45,7 +45,7 @@ jobs:
           shared-key: running-process-${{ inputs.runs-on }}
 
       - name: Dev build
-        run: uv run --module ci.run_logged logs/dev-build.log -- uv run build.py --dev
+        run: uv run --module ci.run_logged logs/dev-build.log -- uv run --module ci.build_wheel --dev
 
       - name: Integration Tests
         run: uv run --module ci.run_logged logs/integration-test.log -- uv run pytest -m live -ra --strict-markers
