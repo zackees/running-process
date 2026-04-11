@@ -151,6 +151,8 @@ def trigger(repo: str, workflow_file: str) -> int:
             branch,
             "-f",
             "build_dist=true",
+            "-f",
+            "run_tests=false",
         ]
     )
 

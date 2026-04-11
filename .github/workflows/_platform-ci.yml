@@ -18,6 +18,10 @@ on:
         required: false
         type: boolean
         default: false
+      run-tests:
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   test:
@@ -48,9 +52,11 @@ jobs:
           shared-key: running-process-${{ inputs.runs-on }}
 
       - name: Lint
+        if: ${{ inputs.run-tests }}
         run: uv run --module ci.run_logged logs/lint.log -- uv run --module ci.lint
 
       - name: Test Suite
+        if: ${{ inputs.run-tests }}
         run: uv run --module ci.run_logged logs/test.log -- uv run --module ci.test
 
       - name: Build wheel

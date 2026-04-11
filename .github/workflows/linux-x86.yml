@@ -9,6 +9,10 @@ on:
         description: Build and upload distribution artifacts
         required: false
         default: "false"
+      run_tests:
+        description: Run lint and test suite
+        required: false
+        default: "true"
 
 jobs:
   call:
@@ -18,3 +22,4 @@ jobs:
       artifact-name: wheels-linux-x86
       build-dist: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.build_dist == 'true' }}
       build-sdist: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.build_dist == 'true' }}
+      run-tests: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests != 'false' }}
