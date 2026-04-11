@@ -4532,7 +4532,7 @@ mod tests {
     #[test]
     fn process_metrics_sample_current_process() {
         let pid = std::process::id();
-        let mut metrics = NativeProcessMetrics::new(pid);
+        let metrics = NativeProcessMetrics::new(pid);
         metrics.prime();
         let (exists, _cpu, _disk, _extra) = metrics.sample();
         assert!(exists, "current process should exist");
@@ -4540,7 +4540,7 @@ mod tests {
 
     #[test]
     fn process_metrics_nonexistent_process() {
-        let mut metrics = NativeProcessMetrics::new(99999999);
+        let metrics = NativeProcessMetrics::new(99999999);
         metrics.prime();
         let (exists, _cpu, _disk, _extra) = metrics.sample();
         assert!(!exists, "nonexistent pid should not exist");
