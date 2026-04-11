@@ -260,8 +260,14 @@ def test_wait_for_child_timeout_is_based_on_output_activity(monkeypatch) -> None
 
 def test_wait_for_child_returns_after_exit_and_stream_drain(monkeypatch) -> None:
     process = _PollingProcess(polls_before_exit=1)
-    monotonic_values = iter([0.0, 0.0] + [0.02 * i for i in range(1, 21)])
-    monkeypatch.setattr(cli.time, "monotonic", lambda: next(monotonic_values))
+    call_count = [0]
+
+    def fake_monotonic():
+        val = call_count[0] * 0.02
+        call_count[0] += 1
+        return val
+
+    monkeypatch.setattr(cli.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
     stdout = _BufferedTextStream()
     stderr = _BufferedTextStream()
