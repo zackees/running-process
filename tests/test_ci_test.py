@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from ci import test as ci_test
+
+
+def _expected_cargo_test_cmd(python: str, timeout: str) -> list[str]:
+    """Build the expected supervised cargo test command for the current platform."""
+    cmd = [
+        python, "-m", "running_process.cli", "--timeout", timeout, "--",
+        "cargo", "test", "--workspace",
+    ]
+    if sys.platform == "win32":
+        cmd += ["--", "--test-threads=1"]
+    return cmd
 
 
 def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
@@ -33,17 +45,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
-        [
-            python,
-            "-m",
-            "running_process.cli",
-            "--timeout",
-            timeout,
-            "--",
-            "cargo",
-            "test",
-            "--workspace",
-        ],
+        _expected_cargo_test_cmd(python, timeout),
         [
             python,
             "-m",
@@ -126,17 +128,7 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
-        [
-            python,
-            "-m",
-            "running_process.cli",
-            "--timeout",
-            timeout,
-            "--",
-            "cargo",
-            "test",
-            "--workspace",
-        ],
+        _expected_cargo_test_cmd(python, timeout),
         [
             python,
             "-m",
@@ -185,17 +177,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
-        [
-            python,
-            "-m",
-            "running_process.cli",
-            "--timeout",
-            timeout,
-            "--",
-            "cargo",
-            "test",
-            "--workspace",
-        ],
+        _expected_cargo_test_cmd(python, timeout),
         [
             python,
             "-m",
@@ -315,17 +297,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     assert result == 0
     assert os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] == "1"
     assert commands == [
-        [
-            python,
-            "-m",
-            "running_process.cli",
-            "--timeout",
-            timeout,
-            "--",
-            "cargo",
-            "test",
-            "--workspace",
-        ],
+        _expected_cargo_test_cmd(python, timeout),
         [
             python,
             "-m",

@@ -4124,25 +4124,37 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn terminal_input_modifier_shift() {
-        assert_eq!(terminal_input_modifier_parameter(true, false, false), Some(2));
+        assert_eq!(
+            terminal_input_modifier_parameter(true, false, false),
+            Some(2)
+        );
     }
 
     #[test]
     #[cfg(windows)]
     fn terminal_input_modifier_alt() {
-        assert_eq!(terminal_input_modifier_parameter(false, true, false), Some(3));
+        assert_eq!(
+            terminal_input_modifier_parameter(false, true, false),
+            Some(3)
+        );
     }
 
     #[test]
     #[cfg(windows)]
     fn terminal_input_modifier_ctrl() {
-        assert_eq!(terminal_input_modifier_parameter(false, false, true), Some(5));
+        assert_eq!(
+            terminal_input_modifier_parameter(false, false, true),
+            Some(5)
+        );
     }
 
     #[test]
     #[cfg(windows)]
     fn terminal_input_modifier_shift_ctrl() {
-        assert_eq!(terminal_input_modifier_parameter(true, false, true), Some(6));
+        assert_eq!(
+            terminal_input_modifier_parameter(true, false, true),
+            Some(6)
+        );
     }
 
     #[test]
@@ -4181,19 +4193,13 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn repeated_tilde_sequence_no_modifier() {
-        assert_eq!(
-            repeated_tilde_sequence(3, None, 1),
-            b"\x1b[3~"
-        );
+        assert_eq!(repeated_tilde_sequence(3, None, 1), b"\x1b[3~");
     }
 
     #[test]
     #[cfg(windows)]
     fn repeated_tilde_sequence_with_modifier() {
-        assert_eq!(
-            repeated_tilde_sequence(3, Some(2), 1),
-            b"\x1b[3;2~"
-        );
+        assert_eq!(repeated_tilde_sequence(3, Some(2), 1), b"\x1b[3;2~");
     }
 
     #[test]
@@ -4343,9 +4349,8 @@ mod tests {
     #[cfg(windows)]
     fn translate_console_key_shift_delete() {
         use winapi::um::winuser::VK_DELETE;
-        let event =
-            translate_console_key_event(&key_event(VK_DELETE as u16, 0, SHIFT_PRESSED, 1))
-                .expect("Shift+Delete should translate");
+        let event = translate_console_key_event(&key_event(VK_DELETE as u16, 0, SHIFT_PRESSED, 1))
+            .expect("Shift+Delete should translate");
         assert_eq!(event.data, b"\x1b[3;2~");
         assert!(event.shift);
     }
@@ -4671,12 +4676,12 @@ mod tests {
         NativeIdleDetector::new(
             py,
             timeout_seconds,
-            0.0,   // stability_window_seconds
-            0.01,  // sample_interval_seconds
+            0.0,  // stability_window_seconds
+            0.01, // sample_interval_seconds
             signal,
-            true,  // reset_on_input
-            true,  // reset_on_output
-            true,  // count_control_churn_as_output
+            true, // reset_on_input
+            true, // reset_on_output
+            true, // count_control_churn_as_output
             initial_idle_for,
         )
     }
@@ -4776,8 +4781,7 @@ mod tests {
         pyo3::Python::with_gil(|py| {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
             let det = NativeIdleDetector::new(
-                py, 0.05, 0.0, 0.01, signal,
-                true, true,
+                py, 0.05, 0.0, 0.01, signal, true, true,
                 false, // count_control_churn_as_output = false
                 1.0,   // already idle for 1s
             );
@@ -4852,7 +4856,13 @@ mod tests {
         let newline_events = Arc::new(AtomicUsize::new(0));
         let submit_events = Arc::new(AtomicUsize::new(0));
 
-        record_pty_input_metrics(&input_bytes, &newline_events, &submit_events, b"hello", false);
+        record_pty_input_metrics(
+            &input_bytes,
+            &newline_events,
+            &submit_events,
+            b"hello",
+            false,
+        );
 
         assert_eq!(input_bytes.load(Ordering::Acquire), 5);
         assert_eq!(newline_events.load(Ordering::Acquire), 0);
@@ -5195,13 +5205,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
             let test_pid = 99998u32;
-            native_register_process(
-                test_pid,
-                "test",
-                "test-cmd",
-                Some("/tmp/test".to_string()),
-            )
-            .unwrap();
+            native_register_process(test_pid, "test", "test-cmd", Some("/tmp/test".to_string()))
+                .unwrap();
             let list = native_list_active_processes();
             let entry = list.iter().find(|(pid, _, _, _, _)| *pid == test_pid);
             assert!(entry.is_some());
@@ -5221,7 +5226,10 @@ mod tests {
             native_register_process(test_pid, "first", "cmd1", None).unwrap();
             native_register_process(test_pid, "second", "cmd2", None).unwrap();
             let list = native_list_active_processes();
-            let entries: Vec<_> = list.iter().filter(|(pid, _, _, _, _)| *pid == test_pid).collect();
+            let entries: Vec<_> = list
+                .iter()
+                .filter(|(pid, _, _, _, _)| *pid == test_pid)
+                .collect();
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].1, "second");
             native_unregister_process(test_pid).unwrap();
@@ -5362,7 +5370,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-            let detector = NativeIdleDetector::new(py, 0.01, 0.01, 0.001, signal, true, true, true, 100.0);
+            let detector =
+                NativeIdleDetector::new(py, 0.01, 0.01, 0.001, signal, true, true, true, 100.0);
             let (idle, reason, _, code) = detector.wait(py, Some(1.0));
             assert!(idle);
             assert_eq!(reason, "idle_timeout");
@@ -5375,7 +5384,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-            let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
+            let detector =
+                NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
             let state_before = detector.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_output(b"\x1b[H");
@@ -5389,7 +5399,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-            let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, false, 5.0);
+            let detector =
+                NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, false, 5.0);
             let state_before = detector.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_output(b"\x1b[H");
@@ -5403,7 +5414,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-            let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, false, true, 5.0);
+            let detector =
+                NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, false, true, 5.0);
             let state_before = detector.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_output(b"visible");
@@ -5417,7 +5429,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-            let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, false, true, true, 5.0);
+            let detector =
+                NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, false, true, true, 5.0);
             let state_before = detector.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_input(100);
@@ -5431,7 +5444,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-            let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
+            let detector =
+                NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
             let state_before = detector.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_input(100);
@@ -5445,7 +5459,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-            let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
+            let detector =
+                NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
             let state_before = detector.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_output(b"visible output");
@@ -5459,7 +5474,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-            let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 0.0);
+            let detector =
+                NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 0.0);
             detector.mark_exit(42, false);
             let state = detector.state.lock().unwrap();
             assert_eq!(state.returncode, Some(42));
@@ -5474,7 +5490,9 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
-            let result = process.find_expect_match("hello world", "world", false).unwrap();
+            let result = process
+                .find_expect_match("hello world", "world", false)
+                .unwrap();
             assert!(result.is_some());
             let (matched, start, end, groups) = result.unwrap();
             assert_eq!(matched, "world");
@@ -5489,7 +5507,9 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
-            let result = process.find_expect_match("hello world", "missing", false).unwrap();
+            let result = process
+                .find_expect_match("hello world", "missing", false)
+                .unwrap();
             assert!(result.is_none());
         });
     }
@@ -5499,7 +5519,9 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
-            let result = process.find_expect_match("hello 123 world", r"\d+", true).unwrap();
+            let result = process
+                .find_expect_match("hello 123 world", r"\d+", true)
+                .unwrap();
             assert!(result.is_some());
             let (matched, start, end, _) = result.unwrap();
             assert_eq!(matched, "123");
@@ -5513,7 +5535,9 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
-            let result = process.find_expect_match("hello 123 world", r"(\d+) (\w+)", true).unwrap();
+            let result = process
+                .find_expect_match("hello 123 world", r"(\d+) (\w+)", true)
+                .unwrap();
             assert!(result.is_some());
             let (_, _, _, groups) = result.unwrap();
             assert_eq!(groups.len(), 2);
@@ -5527,7 +5551,9 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
-            let result = process.find_expect_match("hello world", r"\d+", true).unwrap();
+            let result = process
+                .find_expect_match("hello world", r"\d+", true)
+                .unwrap();
             assert!(result.is_none());
         });
     }
@@ -5543,7 +5569,7 @@ mod tests {
     }
 
     fn make_test_running_process(py: Python<'_>) -> NativeRunningProcess {
-        let cmd = pyo3::types::PyList::new(py, &["echo", "test"]).unwrap();
+        let cmd = pyo3::types::PyList::new(py, ["echo", "test"]).unwrap();
         NativeRunningProcess::new(
             cmd.as_any(),
             None,
@@ -5588,7 +5614,7 @@ mod tests {
     fn parse_command_list_without_shell() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
-            let cmd = pyo3::types::PyList::new(py, &["echo", "hello"]).unwrap();
+            let cmd = pyo3::types::PyList::new(py, ["echo", "hello"]).unwrap();
             let result = parse_command(cmd.as_any(), false).unwrap();
             assert!(matches!(result, CommandSpec::Argv(ref v) if v.len() == 2));
         });
@@ -5598,7 +5624,7 @@ mod tests {
     fn parse_command_list_with_shell_joins() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
-            let cmd = pyo3::types::PyList::new(py, &["echo", "hello"]).unwrap();
+            let cmd = pyo3::types::PyList::new(py, ["echo", "hello"]).unwrap();
             let result = parse_command(cmd.as_any(), true).unwrap();
             assert!(matches!(result, CommandSpec::Shell(ref s) if s == "echo hello"));
         });
@@ -5756,27 +5782,42 @@ mod tests {
 
         #[test]
         fn modifier_param_shift_only() {
-            assert_eq!(terminal_input_modifier_parameter(true, false, false), Some(2));
+            assert_eq!(
+                terminal_input_modifier_parameter(true, false, false),
+                Some(2)
+            );
         }
 
         #[test]
         fn modifier_param_alt_only() {
-            assert_eq!(terminal_input_modifier_parameter(false, true, false), Some(3));
+            assert_eq!(
+                terminal_input_modifier_parameter(false, true, false),
+                Some(3)
+            );
         }
 
         #[test]
         fn modifier_param_ctrl_only() {
-            assert_eq!(terminal_input_modifier_parameter(false, false, true), Some(5));
+            assert_eq!(
+                terminal_input_modifier_parameter(false, false, true),
+                Some(5)
+            );
         }
 
         #[test]
         fn modifier_param_shift_ctrl() {
-            assert_eq!(terminal_input_modifier_parameter(true, false, true), Some(6));
+            assert_eq!(
+                terminal_input_modifier_parameter(true, false, true),
+                Some(6)
+            );
         }
 
         #[test]
         fn modifier_param_shift_alt() {
-            assert_eq!(terminal_input_modifier_parameter(true, true, false), Some(4));
+            assert_eq!(
+                terminal_input_modifier_parameter(true, true, false),
+                Some(4)
+            );
         }
 
         #[test]
@@ -5833,7 +5874,10 @@ mod tests {
 
         #[test]
         fn format_bytes_multiple() {
-            assert_eq!(format_terminal_input_bytes(&[0x1B, 0x5B, 0x41]), "[1b 5b 41]");
+            assert_eq!(
+                format_terminal_input_bytes(&[0x1B, 0x5B, 0x41]),
+                "[1b 5b 41]"
+            );
         }
 
         // ── native_terminal_input_trace_target tests ──
@@ -6067,10 +6111,15 @@ mod tests {
     // ── NativePtyProcess: start already started errors ──
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_start_already_started_errors() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
-            let argv = vec!["python".to_string(), "-c".to_string(), "import time; time.sleep(30)".to_string()];
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(30)".to_string(),
+            ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
             let result = process.start_impl();
@@ -6145,10 +6194,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_lifecycle_start_wait_close() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
-            let argv = vec!["python".to_string(), "-c".to_string(), "print('hello')".to_string()];
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "print('hello')".to_string(),
+            ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
             assert!(process.pid().unwrap().is_some());
@@ -6159,10 +6213,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_poll_none_while_running() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
-            let argv = vec!["python".to_string(), "-c".to_string(), "import time; time.sleep(5)".to_string()];
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(5)".to_string(),
+            ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
             assert!(process.poll().unwrap().is_none());
@@ -6171,10 +6230,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_nonzero_exit_code() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
-            let argv = vec!["python".to_string(), "-c".to_string(), "import sys; sys.exit(42)".to_string()];
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import sys; sys.exit(42)".to_string(),
+            ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
             let code = process.wait_impl(Some(10.0)).unwrap();
@@ -6194,10 +6258,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_input_metrics_tracked() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
-            let argv = vec!["python".to_string(), "-c".to_string(), "import time; time.sleep(2)".to_string()];
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(2)".to_string(),
+            ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
             assert_eq!(process.pty_input_bytes_total(), 0);
@@ -6211,10 +6280,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_resize_while_running() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
-            let argv = vec!["python".to_string(), "-c".to_string(), "import time; time.sleep(2)".to_string()];
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(2)".to_string(),
+            ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
             assert!(process.resize_impl(40, 120).is_ok());
@@ -6223,10 +6297,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_kill_running_process() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
-            let argv = vec!["python".to_string(), "-c".to_string(), "import time; time.sleep(60)".to_string()];
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(60)".to_string(),
+            ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
             assert!(process.kill_impl().is_ok());
@@ -6234,10 +6313,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_terminate_running_process() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
-            let argv = vec!["python".to_string(), "-c".to_string(), "import time; time.sleep(60)".to_string()];
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(60)".to_string(),
+            ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
             assert!(process.terminate_impl().is_ok());
@@ -6246,6 +6330,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_close_already_closed_is_noop() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
@@ -6259,10 +6344,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pty_process_wait_timeout_errors() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
-            let argv = vec!["python".to_string(), "-c".to_string(), "import time; time.sleep(60)".to_string()];
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(60)".to_string(),
+            ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
             assert!(process.wait_impl(Some(0.1)).is_err());
@@ -6323,7 +6413,13 @@ mod tests {
     #[test]
     fn register_and_list_active_processes() {
         let fake_pid = 777777u32;
-        register_active_process(fake_pid, "test", "echo hello", Some("/tmp".to_string()), 1000.0);
+        register_active_process(
+            fake_pid,
+            "test",
+            "echo hello",
+            Some("/tmp".to_string()),
+            1000.0,
+        );
         let items = native_list_active_processes();
         assert!(items.iter().any(|e| e.0 == fake_pid));
         unregister_active_process(fake_pid);
@@ -6395,7 +6491,11 @@ mod tests {
 
     #[test]
     fn idle_monitor_state_initial_values() {
-        let state = IdleMonitorState { last_reset_at: Instant::now(), returncode: None, interrupted: false };
+        let state = IdleMonitorState {
+            last_reset_at: Instant::now(),
+            returncode: None,
+            interrupted: false,
+        };
         assert!(state.returncode.is_none());
         assert!(!state.interrupted);
     }
@@ -6406,7 +6506,15 @@ mod tests {
         let state = Arc::new(Mutex::new(TerminalInputState {
             events: {
                 let mut q = VecDeque::new();
-                q.push_back(TerminalInputEventRecord { data: b"x".to_vec(), submit: false, shift: false, ctrl: false, alt: false, virtual_key_code: 0, repeat_count: 1 });
+                q.push_back(TerminalInputEventRecord {
+                    data: b"x".to_vec(),
+                    submit: false,
+                    shift: false,
+                    ctrl: false,
+                    alt: false,
+                    virtual_key_code: 0,
+                    repeat_count: 1,
+                });
                 q
             },
             closed: false,
@@ -6421,17 +6529,29 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn terminal_input_wait_returns_closed() {
-        let state = Arc::new(Mutex::new(TerminalInputState { events: VecDeque::new(), closed: true }));
+        let state = Arc::new(Mutex::new(TerminalInputState {
+            events: VecDeque::new(),
+            closed: true,
+        }));
         let condvar = Arc::new(Condvar::new());
-        assert!(matches!(wait_for_terminal_input_event(&state, &condvar, Some(Duration::from_millis(100))), TerminalInputWaitOutcome::Closed));
+        assert!(matches!(
+            wait_for_terminal_input_event(&state, &condvar, Some(Duration::from_millis(100))),
+            TerminalInputWaitOutcome::Closed
+        ));
     }
 
     #[test]
     #[cfg(windows)]
     fn terminal_input_wait_returns_timeout() {
-        let state = Arc::new(Mutex::new(TerminalInputState { events: VecDeque::new(), closed: false }));
+        let state = Arc::new(Mutex::new(TerminalInputState {
+            events: VecDeque::new(),
+            closed: false,
+        }));
         let condvar = Arc::new(Condvar::new());
-        assert!(matches!(wait_for_terminal_input_event(&state, &condvar, Some(Duration::from_millis(50))), TerminalInputWaitOutcome::Timeout));
+        assert!(matches!(
+            wait_for_terminal_input_event(&state, &condvar, Some(Duration::from_millis(50))),
+            TerminalInputWaitOutcome::Timeout
+        ));
     }
 
     #[test]

@@ -356,8 +356,12 @@ fn read_combined_returns_events_from_both_streams() {
         }
     }
 
-    assert!(events.iter().any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
-    assert!(events.iter().any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
+    assert!(events
+        .iter()
+        .any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
+    assert!(events
+        .iter()
+        .any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
 }
 
 #[test]
@@ -388,11 +392,7 @@ fn drain_combined_returns_all_pending() {
 #[test]
 fn has_pending_combined_reports_correctly() {
     let process = NativeProcess::new(config(
-        CommandSpec::Argv(vec![
-            "python".into(),
-            "-c".into(),
-            "print('hello')".into(),
-        ]),
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), "print('hello')".into()]),
         true,
         StdinMode::Inherit,
         None,
@@ -427,8 +427,12 @@ fn captured_combined_includes_both_streams() {
     process.wait(Some(Duration::from_secs(5))).unwrap();
 
     let combined = process.captured_combined();
-    assert!(combined.iter().any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
-    assert!(combined.iter().any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
+    assert!(combined
+        .iter()
+        .any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
+    assert!(combined
+        .iter()
+        .any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
 }
 
 #[test]

@@ -40,8 +40,9 @@ from tests.process_helpers import (
 )
 
 
-def test_finished_becomes_true_without_poll(timeout: int = 10) -> None:
+def test_finished_becomes_true_without_poll() -> None:
     """Regression test for issue #7: .finished never becomes True without explicit .poll()."""
+    timeout = 10
     process = RunningProcess([sys.executable, "-c", "print('hello')"])
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

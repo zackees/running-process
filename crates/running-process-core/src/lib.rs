@@ -245,30 +245,28 @@ impl NativeProcess {
     fn spawn_exit_waiter(&self) {
         let child = Arc::clone(&self.child);
         let shared = Arc::clone(&self.shared);
-        thread::spawn(move || {
-            loop {
-                if shared.returncode.load(Ordering::Acquire) != RETURNCODE_NOT_SET {
+        thread::spawn(move || loop {
+            if shared.returncode.load(Ordering::Acquire) != RETURNCODE_NOT_SET {
+                return;
+            }
+            {
+                let mut guard = child.lock().expect("child mutex poisoned");
+                if let Some(child_state) = guard.as_mut() {
+                    match child_state.child.try_wait() {
+                        Ok(Some(status)) => {
+                            let code = exit_code(status);
+                            shared.returncode.store(code as i64, Ordering::Release);
+                            shared.condvar.notify_all();
+                            return;
+                        }
+                        Ok(None) => {}
+                        Err(_) => return,
+                    }
+                } else {
                     return;
                 }
-                {
-                    let mut guard = child.lock().expect("child mutex poisoned");
-                    if let Some(child_state) = guard.as_mut() {
-                        match child_state.child.try_wait() {
-                            Ok(Some(status)) => {
-                                let code = exit_code(status);
-                                shared.returncode.store(code as i64, Ordering::Release);
-                                shared.condvar.notify_all();
-                                return;
-                            }
-                            Ok(None) => {}
-                            Err(_) => return,
-                        }
-                    } else {
-                        return;
-                    }
-                }
-                thread::sleep(Duration::from_millis(1));
             }
+            thread::sleep(Duration::from_millis(1));
         });
     }
 
@@ -693,9 +691,7 @@ impl NativeProcess {
     }
 
     fn set_returncode(&self, code: i32) {
-        self.shared
-            .returncode
-            .store(code as i64, Ordering::Release);
+        self.shared.returncode.store(code as i64, Ordering::Release);
         self.shared.condvar.notify_all();
     }
 
@@ -965,12 +961,18 @@ mod tests {
 
     #[test]
     fn process_error_display_already_started() {
-        assert_eq!(ProcessError::AlreadyStarted.to_string(), "process already started");
+        assert_eq!(
+            ProcessError::AlreadyStarted.to_string(),
+            "process already started"
+        );
     }
 
     #[test]
     fn process_error_display_not_running() {
-        assert_eq!(ProcessError::NotRunning.to_string(), "process is not running");
+        assert_eq!(
+            ProcessError::NotRunning.to_string(),
+            "process is not running"
+        );
     }
 
     #[test]
@@ -1396,13 +1398,22 @@ mod tests {
         #[test]
         fn priority_flags_low_positive_below_normal() {
             assert_eq!(windows_priority_flags(Some(1)), BELOW_NORMAL_PRIORITY_CLASS);
-            assert_eq!(windows_priority_flags(Some(14)), BELOW_NORMAL_PRIORITY_CLASS);
+            assert_eq!(
+                windows_priority_flags(Some(14)),
+                BELOW_NORMAL_PRIORITY_CLASS
+            );
         }
 
         #[test]
         fn priority_flags_negative_above_normal() {
-            assert_eq!(windows_priority_flags(Some(-1)), ABOVE_NORMAL_PRIORITY_CLASS);
-            assert_eq!(windows_priority_flags(Some(-14)), ABOVE_NORMAL_PRIORITY_CLASS);
+            assert_eq!(
+                windows_priority_flags(Some(-1)),
+                ABOVE_NORMAL_PRIORITY_CLASS
+            );
+            assert_eq!(
+                windows_priority_flags(Some(-14)),
+                ABOVE_NORMAL_PRIORITY_CLASS
+            );
         }
 
         #[test]
@@ -1428,7 +1439,7 @@ mod tests {
             nice: Some(5),
         };
         let cloned = config.clone();
-        assert_eq!(cloned.capture, true);
+        assert!(cloned.capture);
         assert_eq!(cloned.nice, Some(5));
     }
 
@@ -1526,7 +1537,11 @@ mod tests {
         // Shell commands go through the OS shell
         let program = cmd.get_program().to_string_lossy().to_string();
         #[cfg(windows)]
-        assert!(program.contains("cmd"), "expected cmd shell, got {}", program);
+        assert!(
+            program.contains("cmd"),
+            "expected cmd shell, got {}",
+            program
+        );
         #[cfg(not(windows))]
         assert!(program.contains("sh"), "expected sh shell, got {}", program);
     }
@@ -1554,7 +1569,10 @@ mod tests {
         let process = NativeProcess::new(ProcessConfig {
             command: CommandSpec::Argv(vec!["echo".into()]),
             cwd: None,
-            env: Some(vec![("FOO".into(), "bar".into()), ("BAZ".into(), "qux".into())]),
+            env: Some(vec![
+                ("FOO".into(), "bar".into()),
+                ("BAZ".into(), "qux".into()),
+            ]),
             capture: false,
             stderr_mode: StderrMode::Stdout,
             creationflags: None,
@@ -1564,8 +1582,12 @@ mod tests {
         });
         let cmd = process.build_command();
         let envs: Vec<_> = cmd.get_envs().collect();
-        assert!(envs.iter().any(|(k, v)| *k == "FOO" && *v == Some(std::ffi::OsStr::new("bar"))));
-        assert!(envs.iter().any(|(k, v)| *k == "BAZ" && *v == Some(std::ffi::OsStr::new("qux"))));
+        assert!(envs
+            .iter()
+            .any(|(k, v)| *k == "FOO" && *v == Some(std::ffi::OsStr::new("bar"))));
+        assert!(envs
+            .iter()
+            .any(|(k, v)| *k == "BAZ" && *v == Some(std::ffi::OsStr::new("qux"))));
     }
 
     #[test]
@@ -1646,14 +1668,20 @@ mod tests {
 
     #[test]
     fn process_error_display_io_variant() {
-        let err = ProcessError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe broken"));
+        let err = ProcessError::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "pipe broken",
+        ));
         let msg = format!("{}", err);
         assert!(msg.contains("pipe broken"));
     }
 
     #[test]
     fn process_error_display_spawn_variant() {
-        let err = ProcessError::Spawn(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+        let err = ProcessError::Spawn(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
         let msg = format!("{}", err);
         assert!(msg.contains("not found"));
     }

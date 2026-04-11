@@ -204,7 +204,12 @@ def main(argv: list[str] | None = None) -> int:
             "--lcov", "--output-path", "coverage-rust.lcov",
         )
     else:
-        cargo_cmd = supervised_command(python, "cargo", "test", "--workspace")
+        cargo_test_args = ["cargo", "test", "--workspace"]
+        # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
+        # Serialize Rust tests to avoid the issue.
+        if sys.platform == "win32":
+            cargo_test_args += ["--", "--test-threads=1"]
+        cargo_cmd = supervised_command(python, *cargo_test_args)
     if run(cargo_cmd) != 0:
         return 1
 
