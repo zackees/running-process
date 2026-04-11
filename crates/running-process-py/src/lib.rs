@@ -6564,6 +6564,1093 @@ mod tests {
     fn posix_input_payload_passthrough() {
         assert_eq!(pty_platform::input_payload(b"hello\n"), b"hello\n");
     }
+
+    // ══════════════════════════════════════════════════════════════
+    // Iteration 4: Windows PTY process lifecycle + NativeRunningProcess
+    // ══════════════════════════════════════════════════════════════
+
+    // ── Windows PTY process lifecycle tests ──
+    //
+    // Note: On Windows ConPTY, the child process cannot exit cleanly until
+    // the master pipe is dropped. Therefore `wait_impl()` alone may block
+    // indefinitely — use `close_impl()` (which drops handles then waits)
+    // for lifecycle cleanup. Tests that need the exit code must use
+    // `kill_impl()` which explicitly drops handles.
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_start_and_close_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "print('hello')".to_string(),
+            ];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            assert!(process.pid().unwrap().is_some());
+            // close drops handles then waits — this is the correct Windows lifecycle
+            assert!(process.close_impl().is_ok());
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_poll_none_while_running_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(5)".to_string(),
+            ];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            assert!(process.poll().unwrap().is_none());
+            let _ = process.close_impl();
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_kill_running_process_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(60)".to_string(),
+            ];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            assert!(process.kill_impl().is_ok());
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_terminate_running_process_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(60)".to_string(),
+            ];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            // On Windows, terminate delegates to kill
+            assert!(process.terminate_impl().is_ok());
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_close_not_started_is_ok_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            // close before start should be ok (handles are None)
+            assert!(process.close_impl().is_ok());
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_start_already_started_errors_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(30)".to_string(),
+            ];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            let result = process.start_impl();
+            assert!(result.is_err());
+            let _ = process.close_impl();
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_resize_while_running_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(2)".to_string(),
+            ];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            assert!(process.resize_impl(40, 120).is_ok());
+            let _ = process.close_impl();
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_write_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(2)".to_string(),
+            ];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            let _ = process.write_impl(b"hello\n", false);
+            assert!(process.pty_input_bytes_total() >= 6);
+            assert!(process.pty_newline_events_total() >= 1);
+            let _ = process.close_impl();
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_input_metrics_tracked_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(2)".to_string(),
+            ];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            assert_eq!(process.pty_input_bytes_total(), 0);
+            let _ = process.write_impl(b"hello\n", false);
+            assert_eq!(process.pty_input_bytes_total(), 6);
+            assert_eq!(process.pty_newline_events_total(), 1);
+            let _ = process.write_impl(b"x", true);
+            assert_eq!(process.pty_submit_events_total(), 1);
+            let _ = process.close_impl();
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_send_interrupt_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import time; time.sleep(60)".to_string(),
+            ];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            // send_interrupt on Windows writes Ctrl+C byte via PTY
+            assert!(process.send_interrupt_impl().is_ok());
+            let _ = process.close_impl();
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_with_cwd_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let tmp = std::env::temp_dir();
+            let cwd = tmp.to_str().unwrap().to_string();
+            let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
+            let process = NativePtyProcess::new(argv, Some(cwd), None, 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            assert!(process.close_impl().is_ok());
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_with_env_windows() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let env = pyo3::types::PyDict::new(py);
+            if let Ok(path) = std::env::var("PATH") {
+                env.set_item("PATH", &path).unwrap();
+            }
+            if let Ok(root) = std::env::var("SystemRoot") {
+                env.set_item("SystemRoot", &root).unwrap();
+            }
+            env.set_item("RP_TEST_PTY", "test_value").unwrap();
+            let argv = vec![
+                "python".to_string(),
+                "-c".to_string(),
+                "import os; print(os.environ.get('RP_TEST_PTY', 'MISSING'))".to_string(),
+            ];
+            let process =
+                NativePtyProcess::new(argv, None, Some(env.into()), 24, 80, None).unwrap();
+            process.start_impl().unwrap();
+            assert!(process.close_impl().is_ok());
+        });
+    }
+
+    // ── Windows PTY terminal input relay tests ──
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_terminal_input_relay_not_active_initially() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            assert!(!process.terminal_input_relay_active());
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_process_stop_terminal_input_relay_noop_when_not_started() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            process.stop_terminal_input_relay_impl(); // should not panic
+        });
+    }
+
+    // ── Windows-specific helper function tests ──
+
+    #[test]
+    #[cfg(windows)]
+    fn assign_child_to_job_null_handle_errors() {
+        pyo3::prepare_freethreaded_python();
+        let result = assign_child_to_windows_kill_on_close_job(None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn apply_windows_pty_priority_none_handle_ok() {
+        pyo3::prepare_freethreaded_python();
+        // None handle with any nice value should be Ok (early return)
+        assert!(apply_windows_pty_priority(None, Some(5)).is_ok());
+        assert!(apply_windows_pty_priority(None, None).is_ok());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn apply_windows_pty_priority_zero_nice_noop() {
+        pyo3::prepare_freethreaded_python();
+        // Some handle with nice=0 → flags=0 → early return Ok
+        use std::os::windows::io::AsRawHandle;
+        let current = std::process::Command::new("cmd")
+            .args(["/C", "echo"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let handle = current.as_raw_handle();
+        assert!(apply_windows_pty_priority(Some(handle), Some(0)).is_ok());
+        assert!(apply_windows_pty_priority(Some(handle), None).is_ok());
+    }
+
+    // ── NativeRunningProcess lifecycle tests ──
+
+    #[test]
+    fn running_process_start_wait_lifecycle() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "print('hello')"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            assert!(process.inner.pid().is_some());
+            let code = process.wait_impl(py, Some(10.0)).unwrap();
+            assert_eq!(code, 0);
+        });
+    }
+
+    #[test]
+    fn running_process_kill_running() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(60)"])
+                .unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                false,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            assert!(process.kill_impl().is_ok());
+        });
+    }
+
+    #[test]
+    fn running_process_terminate_running() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(60)"])
+                .unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                false,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            assert!(process.terminate_impl().is_ok());
+        });
+    }
+
+    #[test]
+    fn running_process_close_finished() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "pass"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                false,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            let _ = process.wait_impl(py, Some(10.0));
+            assert!(process.close_impl(py).is_ok());
+        });
+    }
+
+    #[test]
+    fn running_process_close_running() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(60)"])
+                .unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                false,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            assert!(process.close_impl(py).is_ok());
+        });
+    }
+
+    // ── NativeRunningProcess decode/text mode tests ──
+
+    #[test]
+    fn running_process_decode_line_text_mode() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["echo", "test"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                true, // text=true
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            let result = process.decode_line_to_string(py, b"hello world").unwrap();
+            assert_eq!(result, "hello world");
+        });
+    }
+
+    #[test]
+    fn running_process_decode_line_binary_mode() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["echo", "test"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                false, // text=false
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            let result = process.decode_line_to_string(py, b"\xff\xfe").unwrap();
+            // Binary mode uses lossy conversion
+            assert!(!result.is_empty());
+        });
+    }
+
+    #[test]
+    fn running_process_decode_line_custom_encoding() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["echo", "test"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                true,
+                Some("ascii".to_string()),
+                Some("replace".to_string()),
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            let result = process.decode_line_to_string(py, b"hello").unwrap();
+            assert_eq!(result, "hello");
+        });
+    }
+
+    #[test]
+    fn running_process_captured_stream_text() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd =
+                pyo3::types::PyList::new(py, ["python", "-c", "print('line1'); print('line2')"])
+                    .unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            let _ = process.wait_impl(py, Some(10.0));
+            let text = process
+                .captured_stream_text(py, StreamKind::Stdout)
+                .unwrap();
+            assert!(text.contains("line1"));
+            assert!(text.contains("line2"));
+        });
+    }
+
+    #[test]
+    fn running_process_captured_combined_text() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(
+                py,
+                [
+                    "python",
+                    "-c",
+                    "import sys; print('out'); print('err', file=sys.stderr)",
+                ],
+            )
+            .unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "pipe",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            let _ = process.wait_impl(py, Some(10.0));
+            let text = process.captured_combined_text(py).unwrap();
+            assert!(text.contains("out"));
+            assert!(text.contains("err"));
+        });
+    }
+
+    #[test]
+    fn running_process_read_status_text_stream() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "print('data')"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            let _ = process.wait_impl(py, Some(10.0));
+            std::thread::sleep(Duration::from_millis(50));
+            // Read from stdout
+            let status = process
+                .read_status_text(Some(StreamKind::Stdout), Some(Duration::from_millis(100)));
+            assert!(status.is_ok());
+        });
+    }
+
+    #[test]
+    fn running_process_read_status_text_combined() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "print('data')"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            let _ = process.wait_impl(py, Some(10.0));
+            std::thread::sleep(Duration::from_millis(50));
+            // Read from combined (None stream)
+            let status = process.read_status_text(None, Some(Duration::from_millis(100)));
+            assert!(status.is_ok());
+        });
+    }
+
+    #[test]
+    fn running_process_decode_line_returns_bytes_in_binary_mode() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["echo", "test"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                false, // text=false → bytes mode
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            let result = process.decode_line(py, b"hello").unwrap();
+            // In binary mode, should return PyBytes
+            let bytes: Vec<u8> = result.extract(py).unwrap();
+            assert_eq!(bytes, b"hello");
+        });
+    }
+
+    #[test]
+    fn running_process_decode_line_returns_string_in_text_mode() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["echo", "test"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                true, // text=true → string mode
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            let result = process.decode_line(py, b"hello").unwrap();
+            let text: String = result.extract(py).unwrap();
+            assert_eq!(text, "hello");
+        });
+    }
+
+    // ── NativePtyBuffer decode_chunk tests ──
+
+    #[test]
+    fn pty_buffer_decode_chunk_text_mode() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(true, "utf-8", "replace");
+            let result = buf.decode_chunk(py, b"hello").unwrap();
+            let text: String = result.extract(py).unwrap();
+            assert_eq!(text, "hello");
+        });
+    }
+
+    #[test]
+    fn pty_buffer_decode_chunk_binary_mode() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+            let result = buf.decode_chunk(py, b"\xff\xfe").unwrap();
+            let bytes: Vec<u8> = result.extract(py).unwrap();
+            assert_eq!(bytes, vec![0xff, 0xfe]);
+        });
+    }
+
+    // ── NativePtyProcess mark_reader_closed / store_returncode tests ──
+
+    #[test]
+    fn pty_process_mark_reader_closed() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            // reader should not be closed initially
+            assert!(!process.reader.state.lock().unwrap().closed);
+            process.mark_reader_closed();
+            assert!(process.reader.state.lock().unwrap().closed);
+        });
+    }
+
+    #[test]
+    fn pty_process_store_returncode_sets_value() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            assert!(process.returncode.lock().unwrap().is_none());
+            process.store_returncode(42);
+            assert_eq!(*process.returncode.lock().unwrap(), Some(42));
+        });
+    }
+
+    #[test]
+    fn pty_process_record_input_metrics_tracks_data() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
+            let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
+            assert_eq!(process.pty_input_bytes_total(), 0);
+            process.record_input_metrics(b"hello\n", false);
+            assert_eq!(process.pty_input_bytes_total(), 6);
+            assert_eq!(process.pty_newline_events_total(), 1);
+            assert_eq!(process.pty_submit_events_total(), 0);
+            process.record_input_metrics(b"\r", true);
+            assert_eq!(process.pty_submit_events_total(), 1);
+        });
+    }
+
+    // ── process_err_to_py additional variants ──
+
+    #[test]
+    fn process_err_to_py_already_started_is_runtime_error() {
+        pyo3::prepare_freethreaded_python();
+        let err = process_err_to_py(running_process_core::ProcessError::AlreadyStarted);
+        pyo3::Python::with_gil(|py| {
+            assert!(err.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+        });
+    }
+
+    #[test]
+    fn process_err_to_py_stdin_unavailable_is_runtime_error() {
+        pyo3::prepare_freethreaded_python();
+        let err = process_err_to_py(running_process_core::ProcessError::StdinUnavailable);
+        pyo3::Python::with_gil(|py| {
+            assert!(err.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+        });
+    }
+
+    #[test]
+    fn process_err_to_py_spawn_is_runtime_error() {
+        pyo3::prepare_freethreaded_python();
+        let err = process_err_to_py(running_process_core::ProcessError::Spawn(
+            std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        ));
+        pyo3::Python::with_gil(|py| {
+            assert!(err.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+        });
+    }
+
+    #[test]
+    fn process_err_to_py_io_is_runtime_error() {
+        pyo3::prepare_freethreaded_python();
+        let err = process_err_to_py(running_process_core::ProcessError::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "broken pipe",
+        )));
+        pyo3::Python::with_gil(|py| {
+            assert!(err.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+        });
+    }
+
+    // ── NativeRunningProcess: piped stdin tests ──
+
+    #[test]
+    fn running_process_piped_stdin() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(
+                py,
+                [
+                    "python",
+                    "-c",
+                    "import sys; data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data[::-1])",
+                ],
+            )
+            .unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "piped",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            process.inner.write_stdin(b"abc").unwrap();
+            let code = process.wait_impl(py, Some(10.0)).unwrap();
+            assert_eq!(code, 0);
+        });
+    }
+
+    // ── NativeRunningProcess: shell mode ──
+
+    #[test]
+    fn running_process_shell_mode() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyString::new(py, "echo shell-mode-test");
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                true, // shell=true
+                true,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            let code = process.wait_impl(py, Some(10.0)).unwrap();
+            assert_eq!(code, 0);
+        });
+    }
+
+    // ── NativeRunningProcess: send_interrupt before start errors ──
+
+    #[test]
+    fn running_process_send_interrupt_before_start_errors() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "pass"]).unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                false,
+                None,
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            assert!(process.send_interrupt_impl().is_err());
+        });
+    }
+
+    // ── NativeTerminalInput additional tests ──
+
+    #[test]
+    fn terminal_input_inject_multiple_events() {
+        let input = NativeTerminalInput::new();
+        {
+            let mut state = input.state.lock().unwrap();
+            for i in 0..5 {
+                state.events.push_back(TerminalInputEventRecord {
+                    data: vec![b'a' + i],
+                    submit: false,
+                    shift: false,
+                    ctrl: false,
+                    alt: false,
+                    virtual_key_code: 0,
+                    repeat_count: 1,
+                });
+            }
+        }
+        assert!(input.available());
+        let mut count = 0;
+        while input.next_event().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 5);
+        assert!(!input.available());
+    }
+
+    #[test]
+    fn terminal_input_capturing_false_initially() {
+        let input = NativeTerminalInput::new();
+        assert!(!input.capturing());
+    }
+
+    // ── NativeTerminalInputEvent fields ──
+
+    #[test]
+    fn terminal_input_event_fields() {
+        let event = NativeTerminalInputEvent {
+            data: vec![0x1B, 0x5B, 0x41],
+            submit: false,
+            shift: true,
+            ctrl: true,
+            alt: false,
+            virtual_key_code: 38,
+            repeat_count: 2,
+        };
+        assert_eq!(event.data, vec![0x1B, 0x5B, 0x41]);
+        assert!(!event.submit);
+        assert!(event.shift);
+        assert!(event.ctrl);
+        assert!(!event.alt);
+        assert_eq!(event.virtual_key_code, 38);
+        assert_eq!(event.repeat_count, 2);
+        // __repr__ should include all flags
+        let repr = event.__repr__();
+        assert!(repr.contains("shift=true"));
+        assert!(repr.contains("ctrl=true"));
+        assert!(repr.contains("alt=false"));
+    }
+
+    // ── spawn_pty_reader test ──
+
+    #[test]
+    fn spawn_pty_reader_reads_data_and_closes() {
+        let shared = Arc::new(PtyReadShared {
+            state: Mutex::new(PtyReadState {
+                chunks: VecDeque::new(),
+                closed: false,
+            }),
+            condvar: Condvar::new(),
+        });
+
+        let data = b"hello from reader\n";
+        let reader: Box<dyn std::io::Read + Send> = Box::new(std::io::Cursor::new(data.to_vec()));
+        spawn_pty_reader(reader, Arc::clone(&shared));
+
+        // Wait for the reader thread to finish
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let state = shared.state.lock().unwrap();
+            if state.closed {
+                break;
+            }
+            drop(state);
+            assert!(Instant::now() < deadline, "reader thread did not close");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let state = shared.state.lock().unwrap();
+        assert!(state.closed);
+        assert!(!state.chunks.is_empty());
+    }
+
+    #[test]
+    fn spawn_pty_reader_empty_input_closes() {
+        let shared = Arc::new(PtyReadShared {
+            state: Mutex::new(PtyReadState {
+                chunks: VecDeque::new(),
+                closed: false,
+            }),
+            condvar: Condvar::new(),
+        });
+
+        let reader: Box<dyn std::io::Read + Send> = Box::new(std::io::Cursor::new(Vec::new()));
+        spawn_pty_reader(reader, Arc::clone(&shared));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let state = shared.state.lock().unwrap();
+            if state.closed {
+                break;
+            }
+            drop(state);
+            assert!(Instant::now() < deadline, "reader thread did not close");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let state = shared.state.lock().unwrap();
+        assert!(state.closed);
+        assert!(state.chunks.is_empty());
+    }
+
+    // ── Windows-only: windows_generate_console_ctrl_break ──
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_generate_console_ctrl_break_nonexistent_pid() {
+        pyo3::prepare_freethreaded_python();
+        // Nonexistent PID should error
+        let result = windows_generate_console_ctrl_break_impl(999999, None);
+        assert!(result.is_err());
+    }
+
+    // ── NativeRunningProcess: with env ──
+
+    #[test]
+    fn running_process_with_env() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let env = pyo3::types::PyDict::new(py);
+            if let Ok(path) = std::env::var("PATH") {
+                env.set_item("PATH", &path).unwrap();
+            }
+            #[cfg(windows)]
+            if let Ok(root) = std::env::var("SystemRoot") {
+                env.set_item("SystemRoot", &root).unwrap();
+            }
+            env.set_item("RP_TEST_VAR", "test_value").unwrap();
+
+            let cmd = pyo3::types::PyList::new(
+                py,
+                [
+                    "python",
+                    "-c",
+                    "import os; print(os.environ.get('RP_TEST_VAR', 'MISSING'))",
+                ],
+            )
+            .unwrap();
+            let process = NativeRunningProcess::new(
+                cmd.as_any(),
+                None,
+                false,
+                true,
+                Some(env.into()),
+                None,
+                true,
+                None,
+                None,
+                "inherit",
+                "stdout",
+                None,
+                false,
+            )
+            .unwrap();
+            process.start_impl().unwrap();
+            let code = process.wait_impl(py, Some(10.0)).unwrap();
+            assert_eq!(code, 0);
+            let text = process
+                .captured_stream_text(py, StreamKind::Stdout)
+                .unwrap();
+            assert!(text.contains("test_value"));
+        });
+    }
+
+    // ── Windows input_payload test ──
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_pty_input_payload_via_module() {
+        assert_eq!(pty_windows::input_payload(b"hello"), b"hello");
+        assert_eq!(pty_windows::input_payload(b"\n"), b"\r");
+    }
 }
 
 #[pymodule]
