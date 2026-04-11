@@ -20,8 +20,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use regex::Regex;
 use running_process_core::{
-    render_rust_debug_traces, CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus,
-    StderrMode, StdinMode, StreamEvent, StreamKind,
+    render_rust_debug_traces, CommandSpec, ContainedChild, ContainedProcessGroup, Containment,
+    NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode, StreamEvent,
+    StreamKind,
 };
 #[cfg(unix)]
 use running_process_core::{
@@ -1859,6 +1860,7 @@ impl NativeRunningProcess {
                 create_process_group,
                 stdin_mode: stdin_mode(stdin_mode_name)?,
                 nice,
+                containment: None,
             }),
             text,
             encoding,
@@ -6566,10 +6568,135 @@ mod tests {
     }
 }
 
+// ── ContainedProcessGroup Python wrapper ────────────────────────────────────
+
+/// Python enum-like class for containment policy.
+#[pyclass]
+#[derive(Clone, Copy)]
+struct PyContainment {
+    inner: Containment,
+}
+
+#[pymethods]
+impl PyContainment {
+    /// Create a "Contained" policy — child is killed when the group drops.
+    #[staticmethod]
+    fn contained() -> Self {
+        Self {
+            inner: Containment::Contained,
+        }
+    }
+
+    /// Create a "Detached" policy — child survives the group drop.
+    #[staticmethod]
+    fn detached() -> Self {
+        Self {
+            inner: Containment::Detached,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match self.inner {
+            Containment::Contained => "Containment.Contained".to_string(),
+            Containment::Detached => "Containment.Detached".to_string(),
+        }
+    }
+}
+
+/// Python wrapper for `ContainedProcessGroup`.
+///
+/// Usage:
+/// ```python
+/// from running_process import ContainedProcessGroup
+///
+/// with ContainedProcessGroup() as group:
+///     proc = group.spawn(["sleep", "60"])
+///     proc.wait()
+/// # All contained children are killed on exit.
+/// ```
+#[pyclass]
+struct PyContainedProcessGroup {
+    inner: Option<ContainedProcessGroup>,
+    children: Vec<ContainedChild>,
+}
+
+#[pymethods]
+impl PyContainedProcessGroup {
+    #[new]
+    fn new() -> PyResult<Self> {
+        let group = ContainedProcessGroup::new().map_err(to_py_err)?;
+        Ok(Self {
+            inner: Some(group),
+            children: Vec::new(),
+        })
+    }
+
+    /// Spawn a contained child process (killed when group drops).
+    fn spawn(&mut self, argv: Vec<String>) -> PyResult<u32> {
+        let group = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("group already closed"))?;
+        if argv.is_empty() {
+            return Err(PyValueError::new_err("argv must not be empty"));
+        }
+        let mut cmd = std::process::Command::new(&argv[0]);
+        if argv.len() > 1 {
+            cmd.args(&argv[1..]);
+        }
+        let contained = group.spawn(&mut cmd).map_err(to_py_err)?;
+        let pid = contained.child.id();
+        self.children.push(contained);
+        Ok(pid)
+    }
+
+    /// Spawn a detached child process (survives group drop).
+    fn spawn_detached(&mut self, argv: Vec<String>) -> PyResult<u32> {
+        let group = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("group already closed"))?;
+        if argv.is_empty() {
+            return Err(PyValueError::new_err("argv must not be empty"));
+        }
+        let mut cmd = std::process::Command::new(&argv[0]);
+        if argv.len() > 1 {
+            cmd.args(&argv[1..]);
+        }
+        let contained = group.spawn_detached(&mut cmd).map_err(to_py_err)?;
+        let pid = contained.child.id();
+        self.children.push(contained);
+        Ok(pid)
+    }
+
+    /// Close the group, killing all contained children.
+    fn close(&mut self) {
+        self.inner.take();
+    }
+
+    /// Context manager: __enter__ returns self.
+    fn __enter__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    /// Context manager: __exit__ closes the group.
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
+    fn __exit__(
+        &mut self,
+        _exc_type: Option<&Bound<'_, PyAny>>,
+        _exc_val: Option<&Bound<'_, PyAny>>,
+        _exc_tb: Option<&Bound<'_, PyAny>>,
+    ) {
+        self.close();
+    }
+}
+
 #[pymodule]
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyNativeProcess>()?;
     module.add_class::<NativeRunningProcess>()?;
+    module.add_class::<PyContainedProcessGroup>()?;
+    module.add_class::<PyContainment>()?;
     module.add_class::<NativePtyProcess>()?;
     module.add_class::<NativeProcessMetrics>()?;
     module.add_class::<NativeSignalBool>()?;

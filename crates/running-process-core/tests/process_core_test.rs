@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::env;
@@ -34,6 +34,7 @@ fn config(
         create_process_group: false,
         stdin_mode,
         nice,
+        containment: None,
     }
 }
 
@@ -903,4 +904,31 @@ fn pid_exists(pid: u32) -> bool {
         CloseHandle(handle);
     }
     ok && exit_code == STILL_ACTIVE
+}
+
+#[test]
+fn returncode_auto_updates_without_poll() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), "print('hello')".into()]),
+        true,
+        StdinMode::Null,
+        None,
+    ));
+
+    process.start().unwrap();
+
+    // Wait up to 5 seconds for returncode to auto-update via the background waiter thread
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if process.returncode().is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert!(
+        process.returncode().is_some(),
+        "returncode should auto-update via background waiter thread without calling poll()"
+    );
+    assert_eq!(process.returncode(), Some(0));
 }

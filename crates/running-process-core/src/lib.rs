@@ -11,9 +11,11 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+pub mod containment;
 mod public_symbols;
 mod rust_debug;
 
+pub use containment::{ContainedChild, ContainedProcessGroup, Containment};
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 
 #[macro_export]
@@ -108,6 +110,11 @@ pub struct ProcessConfig {
     pub create_process_group: bool,
     pub stdin_mode: StdinMode,
     pub nice: Option<i32>,
+    /// Optional containment policy. `None` preserves existing behaviour.
+    /// `Some(Contained)` sets `PR_SET_PDEATHSIG(SIGKILL)` on Linux and uses
+    /// the existing Job Object on Windows. `Some(Detached)` creates a new
+    /// session (`setsid`) on Unix so the child survives the parent.
+    pub containment: Option<Containment>,
 }
 
 #[derive(Default)]
@@ -636,24 +643,61 @@ impl NativeProcess {
             }
         }
         #[cfg(unix)]
-        if self.config.create_process_group || self.config.nice.is_some() {
-            use std::os::unix::process::CommandExt;
+        {
             let create_process_group = self.config.create_process_group;
             let nice = self.config.nice;
+            let containment = self.config.containment;
 
-            unsafe {
-                command.pre_exec(move || {
-                    if create_process_group && libc::setpgid(0, 0) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if let Some(nice) = nice {
-                        let result = libc::setpriority(libc::PRIO_PROCESS, 0, nice);
-                        if result == -1 {
-                            return Err(std::io::Error::last_os_error());
+            let needs_pre_exec = create_process_group || nice.is_some() || containment.is_some();
+
+            if needs_pre_exec {
+                use std::os::unix::process::CommandExt;
+
+                unsafe {
+                    command.pre_exec(move || {
+                        match containment {
+                            Some(Containment::Contained) => {
+                                // Place child into its own process group.
+                                if libc::setpgid(0, 0) == -1 {
+                                    return Err(std::io::Error::last_os_error());
+                                }
+                                // Linux: ask the kernel to SIGKILL us when the
+                                // parent thread dies.
+                                // CAVEAT: PR_SET_PDEATHSIG is per-thread, not
+                                // per-process. If the spawning thread exits
+                                // before the process, the child is killed early.
+                                #[cfg(target_os = "linux")]
+                                {
+                                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                                        return Err(std::io::Error::last_os_error());
+                                    }
+                                    if libc::getppid() == 1 {
+                                        libc::_exit(1);
+                                    }
+                                }
+                            }
+                            Some(Containment::Detached) => {
+                                // Create a new session so the child is fully
+                                // independent of the parent.
+                                if libc::setsid() == -1 {
+                                    return Err(std::io::Error::last_os_error());
+                                }
+                            }
+                            None => {
+                                if create_process_group && libc::setpgid(0, 0) == -1 {
+                                    return Err(std::io::Error::last_os_error());
+                                }
+                            }
                         }
-                    }
-                    Ok(())
-                });
+                        if let Some(nice) = nice {
+                            let result = libc::setpriority(libc::PRIO_PROCESS, 0, nice);
+                            if result == -1 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        }
+                        Ok(())
+                    });
+                }
             }
         }
         command
@@ -1179,6 +1223,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert!(process.returncode().is_none());
     }
@@ -1195,6 +1240,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert!(process.pid().is_none());
     }
@@ -1211,6 +1257,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert!(!process.has_pending_stream(StreamKind::Stdout));
         assert!(!process.has_pending_combined());
@@ -1228,6 +1275,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert!(process.drain_stream(StreamKind::Stdout).is_empty());
         assert!(process.drain_combined().is_empty());
@@ -1245,6 +1293,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert!(!process.has_pending_stream(StreamKind::Stderr));
     }
@@ -1261,6 +1310,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert!(process.drain_stream(StreamKind::Stderr).is_empty());
     }
@@ -1277,6 +1327,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert!(process.captured_stderr().is_empty());
     }
@@ -1293,6 +1344,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert_eq!(process.captured_stream_bytes(StreamKind::Stderr), 0);
     }
@@ -1309,6 +1361,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert_eq!(process.clear_captured_stream(StreamKind::Stderr), 0);
     }
@@ -1325,6 +1378,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert_eq!(
             process.read_stream(StreamKind::Stderr, Some(Duration::from_millis(10))),
@@ -1437,6 +1491,7 @@ mod tests {
             create_process_group: true,
             stdin_mode: StdinMode::Piped,
             nice: Some(5),
+            containment: None,
         };
         let cloned = config.clone();
         assert!(cloned.capture);
@@ -1495,6 +1550,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         process.wait_for_capture_completion_impl();
     }
@@ -1513,6 +1569,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         let cmd = process.build_command();
         assert_eq!(cmd.get_program(), "echo");
@@ -1532,6 +1589,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         let cmd = process.build_command();
         // Shell commands go through the OS shell
@@ -1559,6 +1617,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         let cmd = process.build_command();
         assert_eq!(cmd.get_current_dir().unwrap(), &tmp);
@@ -1579,6 +1638,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         let cmd = process.build_command();
         let envs: Vec<_> = cmd.get_envs().collect();
@@ -1602,6 +1662,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         let cmd = process.build_command();
         assert_eq!(cmd.get_program(), "echo");
@@ -1622,6 +1683,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         assert!(process.returncode().is_none());
         process.set_returncode(42);
@@ -1640,6 +1702,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            containment: None,
         });
         process.set_returncode(1);
         process.set_returncode(2);
