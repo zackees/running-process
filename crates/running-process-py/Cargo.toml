@@ -10,7 +10,7 @@ description = "PyO3 bindings for running-process"
 
 [lib]
 name = "_native"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 libc = "0.2"

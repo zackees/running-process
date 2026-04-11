@@ -3876,18 +3876,23 @@ fn apply_windows_pty_priority(
     Ok(())
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
     use winapi::um::wincon::{
         ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
         ENABLE_QUICK_EDIT_MODE, ENABLE_WINDOW_INPUT,
     };
+    #[cfg(windows)]
     use winapi::um::wincontypes::{
         KEY_EVENT_RECORD, LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, SHIFT_PRESSED,
     };
+    #[cfg(windows)]
     use winapi::um::winuser::{VK_RETURN, VK_TAB, VK_UP};
 
+    #[cfg(windows)]
     fn key_event(
         virtual_key_code: u16,
         unicode: u16,
@@ -3907,6 +3912,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn native_terminal_input_mode_disables_cooked_console_flags() {
         let original_mode =
             ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_QUICK_EDIT_MODE;
@@ -3922,6 +3928,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn translate_terminal_input_preserves_submit_hint_for_enter() {
         let event = translate_console_key_event(&key_event(VK_RETURN as u16, '\r' as u16, 0, 1))
             .expect("enter should translate");
@@ -3930,6 +3937,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn translate_terminal_input_keeps_shift_enter_non_submit() {
         let event = translate_console_key_event(&key_event(
             VK_RETURN as u16,
@@ -3946,6 +3954,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn translate_terminal_input_encodes_shift_tab() {
         let event = translate_console_key_event(&key_event(VK_TAB as u16, 0, SHIFT_PRESSED, 1))
             .expect("shift-tab should translate");
@@ -3954,6 +3963,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn translate_terminal_input_encodes_modified_arrows() {
         let event = translate_console_key_event(&key_event(
             VK_UP as u16,
@@ -3966,6 +3976,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn translate_terminal_input_encodes_alt_printable_with_escape_prefix() {
         let event =
             translate_console_key_event(&key_event(b'X' as u16, 'x' as u16, LEFT_ALT_PRESSED, 1))
@@ -3974,6 +3985,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn translate_terminal_input_encodes_ctrl_printable_as_control_character() {
         let event =
             translate_console_key_event(&key_event(b'C' as u16, 'c' as u16, LEFT_CTRL_PRESSED, 1))
@@ -3982,10 +3994,556 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn translate_terminal_input_ignores_keyup_events() {
         let mut event = key_event(VK_RETURN as u16, '\r' as u16, 0, 1);
         event.bKeyDown = 0;
         assert!(translate_console_key_event(&event).is_none());
+    }
+
+    // ── control_churn_bytes tests ──
+
+    #[test]
+    fn control_churn_bytes_empty() {
+        assert_eq!(control_churn_bytes(b""), 0);
+    }
+
+    #[test]
+    fn control_churn_bytes_plain_text() {
+        assert_eq!(control_churn_bytes(b"hello world"), 0);
+    }
+
+    #[test]
+    fn control_churn_bytes_ansi_csi_sequence() {
+        // \x1b[31m = 5 bytes of control churn, \x1b[0m = 4 bytes
+        assert_eq!(control_churn_bytes(b"\x1b[31mhello\x1b[0m"), 9);
+    }
+
+    #[test]
+    fn control_churn_bytes_backspace_cr_del() {
+        assert_eq!(control_churn_bytes(b"\x08\x0D\x7F"), 3);
+    }
+
+    #[test]
+    fn control_churn_bytes_bare_escape() {
+        // Bare ESC with no CSI sequence following
+        assert_eq!(control_churn_bytes(b"\x1b"), 1);
+    }
+
+    #[test]
+    fn control_churn_bytes_mixed() {
+        // \x1b[J = 3 bytes CSI + 1 byte BS = 4
+        assert_eq!(control_churn_bytes(b"ok\x1b[Jmore\x08"), 4);
+    }
+
+    // ── input_contains_newline tests ──
+
+    #[test]
+    fn input_contains_newline_cr() {
+        assert!(input_contains_newline(b"hello\rworld"));
+    }
+
+    #[test]
+    fn input_contains_newline_lf() {
+        assert!(input_contains_newline(b"hello\nworld"));
+    }
+
+    #[test]
+    fn input_contains_newline_none() {
+        assert!(!input_contains_newline(b"hello world"));
+    }
+
+    #[test]
+    fn input_contains_newline_empty() {
+        assert!(!input_contains_newline(b""));
+    }
+
+    // ── is_ignorable_process_control_error tests ──
+
+    #[test]
+    fn ignorable_error_not_found() {
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
+        assert!(is_ignorable_process_control_error(&err));
+    }
+
+    #[test]
+    fn ignorable_error_invalid_input() {
+        let err = std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad input");
+        assert!(is_ignorable_process_control_error(&err));
+    }
+
+    #[test]
+    fn ignorable_error_permission_denied_is_not_ignorable() {
+        let err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        assert!(!is_ignorable_process_control_error(&err));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ignorable_error_esrch() {
+        let err = std::io::Error::from_raw_os_error(libc::ESRCH);
+        assert!(is_ignorable_process_control_error(&err));
+    }
+
+    // ── Windows-only pure function tests ──
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_terminal_input_payload_passthrough() {
+        let result = windows_terminal_input_payload(b"hello");
+        assert_eq!(result, b"hello");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_terminal_input_payload_lone_lf_becomes_cr() {
+        let result = windows_terminal_input_payload(b"\n");
+        assert_eq!(result, b"\r");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_terminal_input_payload_crlf_preserved() {
+        let result = windows_terminal_input_payload(b"\r\n");
+        assert_eq!(result, b"\r\n");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_terminal_input_payload_lone_cr_preserved() {
+        let result = windows_terminal_input_payload(b"\r");
+        assert_eq!(result, b"\r");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn terminal_input_modifier_none() {
+        assert!(terminal_input_modifier_parameter(false, false, false).is_none());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn terminal_input_modifier_shift() {
+        assert_eq!(terminal_input_modifier_parameter(true, false, false), Some(2));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn terminal_input_modifier_alt() {
+        assert_eq!(terminal_input_modifier_parameter(false, true, false), Some(3));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn terminal_input_modifier_ctrl() {
+        assert_eq!(terminal_input_modifier_parameter(false, false, true), Some(5));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn terminal_input_modifier_shift_ctrl() {
+        assert_eq!(terminal_input_modifier_parameter(true, false, true), Some(6));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_character_for_unicode_letters() {
+        assert_eq!(control_character_for_unicode('A' as u16), Some(0x01));
+        assert_eq!(control_character_for_unicode('C' as u16), Some(0x03));
+        assert_eq!(control_character_for_unicode('Z' as u16), Some(0x1A));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_character_for_unicode_special() {
+        assert_eq!(control_character_for_unicode('@' as u16), Some(0x00));
+        assert_eq!(control_character_for_unicode('[' as u16), Some(0x1B));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_character_for_unicode_digit_returns_none() {
+        assert!(control_character_for_unicode('1' as u16).is_none());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn format_terminal_input_bytes_empty() {
+        assert_eq!(format_terminal_input_bytes(b""), "[]");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn format_terminal_input_bytes_multi() {
+        assert_eq!(format_terminal_input_bytes(&[0x41, 0x42]), "[41 42]");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn repeated_tilde_sequence_no_modifier() {
+        assert_eq!(
+            repeated_tilde_sequence(3, None, 1),
+            b"\x1b[3~"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn repeated_tilde_sequence_with_modifier() {
+        assert_eq!(
+            repeated_tilde_sequence(3, Some(2), 1),
+            b"\x1b[3;2~"
+        );
+    }
+
+    // ── NativeSignalBool tests (no PyO3 needed) ──
+
+    #[test]
+    fn signal_bool_default_false() {
+        let sb = NativeSignalBool::new(false);
+        assert!(!sb.load_nolock());
+    }
+
+    #[test]
+    fn signal_bool_default_true() {
+        let sb = NativeSignalBool::new(true);
+        assert!(sb.load_nolock());
+    }
+
+    #[test]
+    fn signal_bool_store_and_load() {
+        let sb = NativeSignalBool::new(false);
+        sb.store_locked(true);
+        assert!(sb.load_nolock());
+        sb.store_locked(false);
+        assert!(!sb.load_nolock());
+    }
+
+    #[test]
+    fn signal_bool_compare_and_swap_success() {
+        let sb = NativeSignalBool::new(false);
+        assert!(sb.compare_and_swap_locked(false, true));
+        assert!(sb.load_nolock());
+    }
+
+    #[test]
+    fn signal_bool_compare_and_swap_failure() {
+        let sb = NativeSignalBool::new(false);
+        assert!(!sb.compare_and_swap_locked(true, false));
+        assert!(!sb.load_nolock());
+    }
+
+    // ── NativePtyBuffer tests (non-Python methods) ──
+
+    #[test]
+    fn pty_buffer_available_empty() {
+        let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+        assert!(!buf.available());
+    }
+
+    #[test]
+    fn pty_buffer_record_and_available() {
+        let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+        buf.record_output(b"hello");
+        assert!(buf.available());
+    }
+
+    #[test]
+    fn pty_buffer_history_bytes_and_clear() {
+        let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+        buf.record_output(b"hello");
+        buf.record_output(b"world");
+        assert_eq!(buf.history_bytes(), 10);
+        let released = buf.clear_history();
+        assert_eq!(released, 10);
+        assert_eq!(buf.history_bytes(), 0);
+    }
+
+    #[test]
+    fn pty_buffer_close() {
+        let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+        buf.close();
+        // After close, buffer is marked as closed
+        // (no panic, graceful handling)
+    }
+
+    // ── NativePtyBuffer tests with PyO3 ──
+
+    #[test]
+    fn pty_buffer_drain_returns_recorded_chunks() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+            buf.record_output(b"chunk1");
+            buf.record_output(b"chunk2");
+            let drained = buf.drain(py).unwrap();
+            assert_eq!(drained.len(), 2);
+            assert!(!buf.available());
+        });
+    }
+
+    #[test]
+    fn pty_buffer_output_returns_full_history() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(true, "utf-8", "replace");
+            buf.record_output(b"hello ");
+            buf.record_output(b"world");
+            let output = buf.output(py).unwrap();
+            let text: String = output.extract(py).unwrap();
+            assert_eq!(text, "hello world");
+        });
+    }
+
+    #[test]
+    fn pty_buffer_output_since_offset() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(true, "utf-8", "replace");
+            buf.record_output(b"hello ");
+            buf.record_output(b"world");
+            let output = buf.output_since(py, 6).unwrap();
+            let text: String = output.extract(py).unwrap();
+            assert_eq!(text, "world");
+        });
+    }
+
+    #[test]
+    fn pty_buffer_read_non_blocking_empty() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+            let result = buf.read_non_blocking(py).unwrap();
+            assert!(result.is_none());
+        });
+    }
+
+    #[test]
+    fn pty_buffer_read_non_blocking_with_data() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+            buf.record_output(b"data");
+            let result = buf.read_non_blocking(py).unwrap();
+            assert!(result.is_some());
+        });
+    }
+
+    #[test]
+    fn pty_buffer_read_closed_returns_error() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+            buf.close();
+            let result = buf.read_non_blocking(py);
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn pty_buffer_read_with_timeout() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+            let result = buf.read(py, Some(0.05));
+            // Should timeout since no data
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn pty_buffer_text_mode_decodes_utf8() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(true, "utf-8", "replace");
+            buf.record_output("héllo".as_bytes());
+            let result = buf.read_non_blocking(py).unwrap().unwrap();
+            let text: String = result.extract(py).unwrap();
+            assert_eq!(text, "héllo");
+        });
+    }
+
+    #[test]
+    fn pty_buffer_bytes_mode_returns_bytes() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let buf = NativePtyBuffer::new(false, "utf-8", "replace");
+            buf.record_output(b"\xff\xfe");
+            let result = buf.read_non_blocking(py).unwrap().unwrap();
+            let bytes: Vec<u8> = result.extract(py).unwrap();
+            assert_eq!(bytes, vec![0xff, 0xfe]);
+        });
+    }
+
+    // ── NativeIdleDetector tests (requires PyO3) ──
+
+    fn make_idle_detector(
+        py: pyo3::Python<'_>,
+        timeout_seconds: f64,
+        enabled: bool,
+        initial_idle_for: f64,
+    ) -> NativeIdleDetector {
+        let signal = pyo3::Py::new(py, NativeSignalBool::new(enabled)).unwrap();
+        NativeIdleDetector::new(
+            py,
+            timeout_seconds,
+            0.0,   // stability_window_seconds
+            0.01,  // sample_interval_seconds
+            signal,
+            true,  // reset_on_input
+            true,  // reset_on_output
+            true,  // count_control_churn_as_output
+            initial_idle_for,
+        )
+    }
+
+    #[test]
+    fn idle_detector_mark_exit_returns_process_exit() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let det = make_idle_detector(py, 10.0, true, 0.0);
+            det.mark_exit(42, false);
+            let (triggered, reason, _idle_for, returncode) = det.wait(py, Some(1.0));
+            assert!(!triggered);
+            assert_eq!(reason, "process_exit");
+            assert_eq!(returncode, Some(42));
+        });
+    }
+
+    #[test]
+    fn idle_detector_mark_exit_interrupted() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let det = make_idle_detector(py, 10.0, true, 0.0);
+            det.mark_exit(1, true);
+            let (triggered, reason, _idle_for, returncode) = det.wait(py, Some(1.0));
+            assert!(!triggered);
+            assert_eq!(reason, "interrupt");
+            assert_eq!(returncode, Some(1));
+        });
+    }
+
+    #[test]
+    fn idle_detector_timeout_when_not_idle() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let det = make_idle_detector(py, 10.0, true, 0.0);
+            let (triggered, reason, _idle_for, returncode) = det.wait(py, Some(0.05));
+            assert!(!triggered);
+            assert_eq!(reason, "timeout");
+            assert!(returncode.is_none());
+        });
+    }
+
+    #[test]
+    fn idle_detector_triggers_when_already_idle() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            // initial_idle_for=1.0 means it thinks it's been idle for 1 second
+            // timeout_seconds=0.5 means 0.5s idle triggers
+            let det = make_idle_detector(py, 0.5, true, 1.0);
+            let (triggered, reason, _idle_for, _returncode) = det.wait(py, Some(1.0));
+            assert!(triggered);
+            assert_eq!(reason, "idle_timeout");
+        });
+    }
+
+    #[test]
+    fn idle_detector_disabled_does_not_trigger() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let det = make_idle_detector(py, 0.01, false, 1.0);
+            let (triggered, reason, _idle_for, _returncode) = det.wait(py, Some(0.1));
+            assert!(!triggered);
+            assert_eq!(reason, "timeout");
+        });
+    }
+
+    #[test]
+    fn idle_detector_record_input_resets_idle() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let det = make_idle_detector(py, 0.5, true, 1.0);
+            // Recording input should reset the idle timer
+            det.record_input(5);
+            // Now it should NOT trigger immediately since we just reset
+            let (triggered, reason, _idle_for, _returncode) = det.wait(py, Some(0.05));
+            assert!(!triggered);
+            assert_eq!(reason, "timeout");
+        });
+    }
+
+    #[test]
+    fn idle_detector_record_output_resets_idle() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let det = make_idle_detector(py, 0.5, true, 1.0);
+            // Recording visible output should reset idle timer
+            det.record_output(b"visible output");
+            let (triggered, reason, _idle_for, _returncode) = det.wait(py, Some(0.05));
+            assert!(!triggered);
+            assert_eq!(reason, "timeout");
+        });
+    }
+
+    #[test]
+    fn idle_detector_control_churn_only_no_reset_when_not_counted() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
+            let det = NativeIdleDetector::new(
+                py, 0.05, 0.0, 0.01, signal,
+                true, true,
+                false, // count_control_churn_as_output = false
+                1.0,   // already idle for 1s
+            );
+            // Output only ANSI escape (no visible content)
+            det.record_output(b"\x1b[31m");
+            // Should still trigger because control churn doesn't count
+            let (triggered, reason, _idle_for, _returncode) = det.wait(py, Some(0.5));
+            assert!(triggered);
+            assert_eq!(reason, "idle_timeout");
+        });
+    }
+
+    // ── Process tracking tests (requires PyO3) ──
+
+    #[test]
+    fn process_registry_register_list_unregister() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|_py| {
+            let test_pid = 99999u32;
+            // Register
+            native_register_process(test_pid, "test", "test-command", None).unwrap();
+            // List
+            let list = native_list_active_processes();
+            let found = list.iter().any(|(pid, _, _, _, _)| *pid == test_pid);
+            assert!(found, "registered pid should appear in active list");
+            // Unregister
+            native_unregister_process(test_pid).unwrap();
+            let list = native_list_active_processes();
+            let found = list.iter().any(|(pid, _, _, _, _)| *pid == test_pid);
+            assert!(!found, "unregistered pid should not appear in active list");
+        });
+    }
+
+    // ── NativeProcessMetrics tests (requires PyO3) ──
+
+    #[test]
+    fn process_metrics_sample_current_process() {
+        let pid = std::process::id();
+        let mut metrics = NativeProcessMetrics::new(pid);
+        metrics.prime();
+        let (exists, _cpu, _disk, _extra) = metrics.sample();
+        assert!(exists, "current process should exist");
+    }
+
+    #[test]
+    fn process_metrics_nonexistent_process() {
+        let mut metrics = NativeProcessMetrics::new(99999999);
+        metrics.prime();
+        let (exists, _cpu, _disk, _extra) = metrics.sample();
+        assert!(!exists, "nonexistent pid should not exist");
     }
 }
 

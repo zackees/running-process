@@ -14,7 +14,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 
 use running_process_core::{
-    CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StderrMode, StdinMode, StreamKind,
+    CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode,
+    StreamKind,
 };
 
 fn config(
@@ -220,6 +221,466 @@ fn applies_positive_nice_before_exec() {
         .unwrap();
     assert!(observed >= 5);
 }
+
+// ── Error path tests ──
+
+#[test]
+fn start_twice_returns_already_started() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import time; time.sleep(30)".into(),
+        ]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    assert!(matches!(process.start(), Err(ProcessError::AlreadyStarted)));
+    let _ = process.kill();
+}
+
+#[test]
+fn write_stdin_before_start_returns_not_running() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), "pass".into()]),
+        false,
+        StdinMode::Piped,
+        None,
+    ));
+
+    assert!(matches!(
+        process.write_stdin(b"hello"),
+        Err(ProcessError::NotRunning)
+    ));
+}
+
+#[test]
+fn write_stdin_without_piped_returns_stdin_unavailable() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import time; time.sleep(30)".into(),
+        ]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    assert!(matches!(
+        process.write_stdin(b"hello"),
+        Err(ProcessError::StdinUnavailable)
+    ));
+    let _ = process.kill();
+}
+
+#[test]
+fn kill_before_start_returns_not_running() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), "pass".into()]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    assert!(matches!(process.kill(), Err(ProcessError::NotRunning)));
+}
+
+#[test]
+fn wait_before_start_returns_not_running() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), "pass".into()]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    assert!(matches!(
+        process.wait(Some(Duration::from_secs(1))),
+        Err(ProcessError::NotRunning)
+    ));
+}
+
+#[test]
+fn wait_timeout_returns_timeout_error() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import time; time.sleep(30)".into(),
+        ]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    assert!(matches!(
+        process.wait(Some(Duration::from_millis(100))),
+        Err(ProcessError::Timeout)
+    ));
+    let _ = process.kill();
+}
+
+// ── Combined stream tests ──
+
+#[test]
+fn read_combined_returns_events_from_both_streams() {
+    let process = NativeProcess::new(ProcessConfig {
+        stderr_mode: StderrMode::Pipe,
+        ..config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import sys; print('out'); sys.stdout.flush(); print('err', file=sys.stderr); sys.stderr.flush()".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    process.wait(Some(Duration::from_secs(5))).unwrap();
+
+    let mut events = Vec::new();
+    loop {
+        match process.read_combined(Some(Duration::from_millis(100))) {
+            ReadStatus::Line(event) => events.push(event),
+            ReadStatus::Eof => break,
+            ReadStatus::Timeout => break,
+        }
+    }
+
+    assert!(events.iter().any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
+    assert!(events.iter().any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
+}
+
+#[test]
+fn drain_combined_returns_all_pending() {
+    let process = NativeProcess::new(ProcessConfig {
+        stderr_mode: StderrMode::Pipe,
+        ..config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import sys; print('a'); print('b', file=sys.stderr)".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    process.wait(Some(Duration::from_secs(5))).unwrap();
+    // Small sleep to let reader threads finish queuing
+    std::thread::sleep(Duration::from_millis(50));
+
+    let events = process.drain_combined();
+    assert!(events.len() >= 2);
+}
+
+#[test]
+fn has_pending_combined_reports_correctly() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "print('hello')".into(),
+        ]),
+        true,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    process.wait(Some(Duration::from_secs(5))).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+
+    assert!(process.has_pending_combined());
+    process.drain_combined();
+    assert!(!process.has_pending_combined());
+}
+
+#[test]
+fn captured_combined_includes_both_streams() {
+    let process = NativeProcess::new(ProcessConfig {
+        stderr_mode: StderrMode::Pipe,
+        ..config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import sys; print('out'); print('err', file=sys.stderr)".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    process.wait(Some(Duration::from_secs(5))).unwrap();
+
+    let combined = process.captured_combined();
+    assert!(combined.iter().any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
+    assert!(combined.iter().any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
+}
+
+#[test]
+fn captured_combined_bytes_and_clear() {
+    let process = NativeProcess::new(ProcessConfig {
+        stderr_mode: StderrMode::Pipe,
+        ..config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import sys; print('ab'); print('cd', file=sys.stderr)".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    process.wait(Some(Duration::from_secs(5))).unwrap();
+
+    assert_eq!(process.captured_combined_bytes(), 4);
+    assert_eq!(process.clear_captured_combined(), 4);
+    assert_eq!(process.captured_combined_bytes(), 0);
+    assert!(process.captured_combined().is_empty());
+}
+
+// ── Shell command mode ──
+
+#[test]
+fn shell_command_captures_output() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Shell("echo shell-works".into()),
+        true,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+
+    assert_eq!(code, 0);
+    let stdout = process.captured_stdout();
+    assert!(
+        stdout.iter().any(|line| {
+            let text = String::from_utf8_lossy(line);
+            text.contains("shell-works")
+        }),
+        "expected 'shell-works' in output, got: {:?}",
+        stdout,
+    );
+}
+
+// ── Configuration: cwd and env ──
+
+#[test]
+fn custom_cwd_is_respected() {
+    let tmp = std::env::temp_dir();
+    let process = NativeProcess::new(ProcessConfig {
+        cwd: Some(tmp.clone()),
+        ..config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import os; print(os.getcwd())".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+
+    assert_eq!(code, 0);
+    let output = String::from_utf8(process.captured_stdout()[0].clone()).unwrap();
+    // Canonicalize both for cross-platform comparison
+    let expected = std::fs::canonicalize(&tmp).unwrap_or(tmp);
+    let actual = std::fs::canonicalize(output.trim()).unwrap_or_else(|_| output.trim().into());
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn custom_env_is_applied() {
+    let process = NativeProcess::new(ProcessConfig {
+        env: Some(vec![("RP_TEST_VAR".into(), "hello_coverage".into())]),
+        ..config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import os; print(os.environ.get('RP_TEST_VAR', 'MISSING'))".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+
+    assert_eq!(code, 0);
+    assert_eq!(process.captured_stdout(), vec![b"hello_coverage".to_vec()]);
+}
+
+// ── StdinMode::Null ──
+
+#[test]
+fn stdin_null_produces_empty_input() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import sys; data=sys.stdin.buffer.read(); print(len(data))".into(),
+        ]),
+        true,
+        StdinMode::Null,
+        None,
+    ));
+
+    process.start().unwrap();
+    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+
+    assert_eq!(code, 0);
+    assert_eq!(process.captured_stdout(), vec![b"0".to_vec()]);
+}
+
+// ── poll() ──
+
+#[test]
+fn poll_returns_none_while_running_then_exit_code() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import time; time.sleep(0.3)".into(),
+        ]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    // Process should still be running
+    let status = process.poll().unwrap();
+    assert!(status.is_none(), "expected None, got {:?}", status);
+
+    // Wait for it to finish
+    process.wait(Some(Duration::from_secs(5))).unwrap();
+    let status = process.poll().unwrap();
+    assert_eq!(status, Some(0));
+}
+
+// ── close() and terminate() ──
+
+#[test]
+fn close_kills_running_process() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import time; time.sleep(30)".into(),
+        ]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    process.close().unwrap();
+}
+
+#[test]
+fn close_on_already_finished_is_noop() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), "pass".into()]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    process.wait(Some(Duration::from_secs(5))).unwrap();
+    process.close().unwrap();
+}
+
+#[test]
+fn terminate_kills_running_process() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import time; time.sleep(30)".into(),
+        ]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+    process.terminate().unwrap();
+}
+
+// ── pid() ──
+
+#[test]
+fn pid_returns_some_after_start() {
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import time; time.sleep(30)".into(),
+        ]),
+        false,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    assert!(process.pid().is_none());
+    process.start().unwrap();
+    assert!(process.pid().is_some());
+    let _ = process.kill();
+}
+
+// ── process group (Unix) ──
+
+#[test]
+#[cfg(not(windows))]
+fn create_process_group_sets_new_pgid() {
+    let process = NativeProcess::new(ProcessConfig {
+        create_process_group: true,
+        ..config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import os; print(os.getpgid(0) == os.getpid())".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+
+    assert_eq!(code, 0);
+    assert_eq!(process.captured_stdout(), vec![b"True".to_vec()]);
+}
+
+// ── Windows tests ──
 
 #[test]
 #[cfg(windows)]
