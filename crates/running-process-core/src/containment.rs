@@ -46,32 +46,6 @@
 //! cmd.arg("60");
 //! let child = group.spawn(&mut cmd).unwrap();
 //! ```
-//!
-//! # `RUNNING_PROCESS_ORIGINATOR` environment variable
-//!
-//! When an `originator` is set on a `ContainedProcessGroup`, all spawned child
-//! processes inherit the environment variable `RUNNING_PROCESS_ORIGINATOR` with
-//! the format `TOOL:PID`, where:
-//!
-//! - **TOOL** is the originator name (e.g., `"CLUD"`, `"JUPYTER"`)
-//! - **PID** is the process ID of the parent that spawned the group
-//!
-//! Example value: `RUNNING_PROCESS_ORIGINATOR=CLUD:12345`
-//!
-//! ## Purpose
-//!
-//! This env var enables **cross-process session discovery** after crashes.
-//!
-//! ## Example
-//!
-//! ```no_run
-//! use running_process_core::ContainedProcessGroup;
-//!
-//! let group = ContainedProcessGroup::with_originator("CLUD").unwrap();
-//! let mut cmd = std::process::Command::new("sleep");
-//! cmd.arg("60");
-//! let child = group.spawn(&mut cmd).unwrap();
-//! ```
 
 use std::process::{Child, Command};
 

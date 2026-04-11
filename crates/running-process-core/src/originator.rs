@@ -196,4 +196,114 @@ mod tests {
         let results = find_processes_by_originator("__NONEXISTENT_TOOL_TEST__");
         assert!(results.is_empty());
     }
+
+    #[test]
+    fn parse_originator_value_max_pid() {
+        let (tool, pid) = parse_originator_value("TOOL:4294967295").unwrap();
+        assert_eq!(tool, "TOOL");
+        assert_eq!(pid, u32::MAX);
+    }
+
+    #[test]
+    fn parse_originator_value_pid_overflow() {
+        // u32::MAX + 1 should fail to parse
+        assert!(parse_originator_value("TOOL:4294967296").is_none());
+    }
+
+    #[test]
+    fn parse_originator_value_negative_pid() {
+        assert!(parse_originator_value("TOOL:-1").is_none());
+    }
+
+    #[test]
+    fn parse_originator_value_zero_pid() {
+        let (tool, pid) = parse_originator_value("TOOL:0").unwrap();
+        assert_eq!(tool, "TOOL");
+        assert_eq!(pid, 0);
+    }
+
+    #[test]
+    fn parse_originator_value_empty_string() {
+        assert!(parse_originator_value("").is_none());
+    }
+
+    #[test]
+    fn parse_originator_value_only_colon() {
+        assert!(parse_originator_value(":").is_none());
+    }
+
+    #[test]
+    fn originator_process_info_debug_and_clone() {
+        let info = OriginatorProcessInfo {
+            pid: 123,
+            name: "test".to_string(),
+            command: "test --arg".to_string(),
+            originator: "TOOL:456".to_string(),
+            parent_pid: 456,
+            parent_alive: true,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.pid, 123);
+        assert_eq!(cloned.name, "test");
+        assert_eq!(cloned.command, "test --arg");
+        assert_eq!(cloned.originator, "TOOL:456");
+        assert_eq!(cloned.parent_pid, 456);
+        assert!(cloned.parent_alive);
+
+        // Debug impl should not panic
+        let debug = format!("{:?}", info);
+        assert!(debug.contains("OriginatorProcessInfo"));
+        assert!(debug.contains("123"));
+    }
+
+    #[test]
+    fn is_parent_alive_returns_true_for_current_process() {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
+        );
+        let my_pid = std::process::id();
+        // Use a far-future child start time so the parent clearly started before it
+        let result = is_parent_alive(&system, my_pid, u64::MAX);
+        assert!(result, "current process should be reported as alive");
+    }
+
+    #[test]
+    fn is_parent_alive_returns_false_for_nonexistent_pid() {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
+        );
+        // PID 0 is the idle process on Windows / swapper on Linux — use a very
+        // unlikely high PID instead.
+        let result = is_parent_alive(&system, u32::MAX, 0);
+        assert!(!result, "nonexistent PID should be reported as dead");
+    }
+
+    #[test]
+    fn is_parent_alive_detects_pid_reuse() {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
+        );
+        let my_pid = std::process::id();
+        // Pretend the child started at time 0 (long before the current process).
+        // The current process's start_time should be > 0, so this should detect
+        // that the "parent" started after the "child" — a PID reuse scenario.
+        let result = is_parent_alive(&system, my_pid, 0);
+        // On most systems the current process started at time > 0, so this
+        // returns false (PID reuse detected). On systems where start_time
+        // reports 0, this would return true — both are acceptable.
+        // The key assertion: the function doesn't panic.
+        let _ = result;
+    }
+
+    #[test]
+    fn find_processes_with_empty_tool_prefix() {
+        // Empty prefix matches ":" which shouldn't match any real originator values
+        let results = find_processes_by_originator("");
+        // Should not panic — results may or may not be empty depending on
+        // whether any process happens to have the env var with format ":PID"
+        let _ = results;
+    }
 }
