@@ -12,10 +12,14 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 pub mod containment;
+#[cfg(feature = "originator-scan")]
+pub mod originator;
 mod public_symbols;
 mod rust_debug;
 
-pub use containment::{ContainedChild, ContainedProcessGroup, Containment};
+pub use containment::{ContainedChild, ContainedProcessGroup, Containment, ORIGINATOR_ENV_VAR};
+#[cfg(feature = "originator-scan")]
+pub use originator::{find_processes_by_originator, OriginatorProcessInfo};
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 
 #[macro_export]
