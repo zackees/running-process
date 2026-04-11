@@ -292,7 +292,7 @@ def ensure_single_wheel_exists(dist_dir: Path) -> Path:
     wheels = sorted(dist_dir.glob("running_process-*.whl"))
     if not wheels:
         raise RuntimeError(
-            f"no wheel found in {dist_dir}; run `python -m ci.linux_build_wheel` first"
+            f"no wheel found in {dist_dir}; run `python -m ci.linux_docker build` first"
         )
     if len(wheels) > 1:
         names = ", ".join(wheel.name for wheel in wheels)
