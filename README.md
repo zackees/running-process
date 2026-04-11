@@ -10,7 +10,19 @@
 
 `running-process` is a Rust-backed subprocess runtime with a thin Python API.
 
-The pipe-backed API keeps `stdout` and `stderr` separate, preserves raw bytes until decode time, and defaults to UTF-8 with `errors="replace"` when you ask for text. The PTY API is separate because terminal sessions are chunk-oriented and should not be forced through line normalization.
+I first developing a good python sub process abstraction when I was working at YouTube. I need a way to sperate the stdout and stderr streams in python and consume in parallel.
+
+This turned out to be non trivial. This python process class is designed to give you everything that's hard for python sub processos:
+  
+  * handling both stdout and stderr streams with the same ease as hadling a concurrent.queue
+  * expect (string or regex) event trigger, idle time outs
+  * formtting functors
+  * Native:
+     * Psuedo Terminal
+     * SUbprocess abstraction
+     * Dameon processor (coming soon!)
+
+This libary is design for speed and correctness and portability. We get all three via near total code coverage.
 
 ## PTY Support Matrix
 
