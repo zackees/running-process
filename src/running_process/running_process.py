@@ -113,13 +113,13 @@ class _RunningProcessOutputIterator:
         if self._streams_drained:
             exit_code = self._process.poll()
             if exit_code is None:
-                exit_code = self._process.proc.wait(timeout=self._timeout)
+                exit_code = self._process._proc.wait(timeout=self._timeout)
                 self._process._end_time = self._process._end_time or time.time()
                 RunningProcessManagerSingleton.unregister(self._process)
             self._finished = True
             return ProcessOutputEvent(EOS, EOS, exit_code)
 
-        status, stream, line = self._process.proc.take_combined_line(self._timeout)
+        status, stream, line = self._process._proc.take_combined_line(self._timeout)
         exit_code = self._process.poll()
         if status == "timeout":
             raise TimeoutError("No stdout or stderr available before timeout")
@@ -134,7 +134,7 @@ class _RunningProcessOutputIterator:
                 grace_timeout = 0.01
                 if self._timeout is not None:
                     grace_timeout = min(self._timeout, grace_timeout)
-                exit_code = self._process.proc.wait(timeout=grace_timeout)
+                exit_code = self._process._proc.wait(timeout=grace_timeout)
                 self._process._end_time = self._process._end_time or time.time()
                 RunningProcessManagerSingleton.unregister(self._process)
             except TimeoutError:
@@ -362,13 +362,13 @@ class RunningProcess:
                 auto_run=False,
             )
             self.text = False
-            self.proc = None
+            self._proc = None
         else:
             if self.relay_terminal_input:
                 raise ValueError("relay_terminal_input requires use_pty=True")
             if self.arm_idle_timeout_on_submit:
                 raise ValueError("arm_idle_timeout_on_submit requires use_pty=True")
-            self.proc = NativeProcess(
+            self._proc = NativeProcess(
                 command,
                 cwd=str(cwd) if cwd is not None else None,
                 shell=self.shell,
@@ -407,7 +407,7 @@ class RunningProcess:
         if self._pty_process is not None:
             self._pty_process.start()
         else:
-            self.proc.start()
+            self._proc.start()
         self._start_time = time.time()
         RunningProcessManagerSingleton.register(self)
 
@@ -425,7 +425,7 @@ class RunningProcess:
                 return self._format(self._pty_process.read(timeout=timeout))
             except EOFError:
                 return EOS
-        status, _stream, line = self.proc.take_combined_line(timeout)
+        status, _stream, line = self._proc.take_combined_line(timeout)
         if status == "line" and line is not None:
             return self._format(line)
         if status == "timeout":
@@ -437,7 +437,7 @@ class RunningProcess:
             if not self.capture:
                 raise NotImplementedError("PTY stdout reads require capture=True")
             return self.get_next_line(timeout)
-        status, line = self.proc.take_stream_line("stdout", timeout)
+        status, line = self._proc.take_stream_line("stdout", timeout)
         if status == "line" and line is not None:
             return self._format(line)
         if status == "timeout":
@@ -451,7 +451,7 @@ class RunningProcess:
             if self._pty_process.poll() is not None:
                 return EOS
             raise TimeoutError("No stderr available before timeout")
-        status, line = self.proc.take_stream_line("stderr", timeout)
+        status, line = self._proc.take_stream_line("stderr", timeout)
         if status == "line" and line is not None:
             return self._format(line)
         if status == "timeout":
@@ -469,19 +469,19 @@ class RunningProcess:
             if not self.capture:
                 return []
             return [self._format(line) for line in self._pty_process.drain()]
-        return [self._format(line) for line in self.proc.drain_stream("stdout")]
+        return [self._format(line) for line in self._proc.drain_stream("stdout")]
 
     def drain_stderr(self) -> list[EchoValue]:
         if self._pty_process is not None:
             return []
-        return [self._format(line) for line in self.proc.drain_stream("stderr")]
+        return [self._format(line) for line in self._proc.drain_stream("stderr")]
 
     def drain_combined(self) -> list[tuple[str, EchoValue]]:
         if self._pty_process is not None:
             if not self.capture:
                 return []
             return [("stdout", self._format(line)) for line in self._pty_process.drain()]
-        return [(stream, self._format(line)) for stream, line in self.proc.drain_combined()]
+        return [(stream, self._format(line)) for stream, line in self._proc.drain_combined()]
 
     def has_pending_output(self) -> bool:
         if self._pty_process is not None:
@@ -489,7 +489,7 @@ class RunningProcess:
                 self._pty_process.available()
                 return False
             return self._pty_process.available()
-        return self.proc.has_pending_combined()
+        return self._proc.has_pending_combined()
 
     def has_pending_stdout(self) -> bool:
         if self._pty_process is not None:
@@ -497,15 +497,15 @@ class RunningProcess:
                 self._pty_process.available()
                 return False
             return self._pty_process.available()
-        return self.proc.has_pending_stream("stdout")
+        return self._proc.has_pending_stream("stdout")
 
     def has_pending_stderr(self) -> bool:
         if self._pty_process is not None:
             return False
-        return self.proc.has_pending_stream("stderr")
+        return self._proc.has_pending_stream("stderr")
 
     def poll(self) -> int | None:
-        result = self._pty_process.poll() if self._pty_process is not None else self.proc.poll()
+        result = self._pty_process.poll() if self._pty_process is not None else self._proc.poll()
         if result is not None and self._end_time is None:
             self._end_time = time.time()
             RunningProcessManagerSingleton.unregister(self)
@@ -528,6 +528,21 @@ class RunningProcess:
         if self._pty_process is None:
             raise AttributeError("idle_timeout_enabled is only available for PTY-backed processes")
         self._pty_process.idle_timeout_enabled = enabled
+
+    @property
+    def proc(self) -> NativeProcess | None:
+        """The underlying process object, or None if start() hasn't been called.
+
+        Backwards compatible with the pre-Rust API where proc was None
+        until start() created a subprocess.Popen.
+        """
+        if self._start_time is None:
+            return None
+        return self._proc
+
+    @property
+    def is_started(self) -> bool:
+        return self._start_time is not None
 
     @property
     def finished(self) -> bool:
@@ -584,14 +599,14 @@ class RunningProcess:
         deadline = time.time() + effective_timeout if effective_timeout is not None else None
         if not echo:
             try:
-                code = self.proc.wait(timeout=effective_timeout)
+                code = self._proc.wait(timeout=effective_timeout)
             except TimeoutError:
                 self._handle_timeout(effective_timeout)
         else:
             while True:
                 code = self.poll()
                 if code is not None:
-                    code = self.proc.wait(timeout=0)
+                    code = self._proc.wait(timeout=0)
                     break
                 if deadline is not None and time.time() >= deadline:
                     self._handle_timeout(effective_timeout)
@@ -707,7 +722,7 @@ class RunningProcess:
         if self._pty_process is not None:
             self._pty_process.kill()
         else:
-            self.proc.kill()
+            self._proc.kill()
         self._end_time = self._end_time or time.time()
         RunningProcessManagerSingleton.unregister(self)
 
@@ -715,7 +730,7 @@ class RunningProcess:
         if self._pty_process is not None:
             self._pty_process.terminate()
         else:
-            self.proc.terminate()
+            self._proc.terminate()
         self._end_time = self._end_time or time.time()
         RunningProcessManagerSingleton.unregister(self)
 
@@ -723,15 +738,15 @@ class RunningProcess:
         if self._pty_process is not None:
             self._pty_process.send_interrupt()
             return
-        self.proc.send_interrupt()
+        self._proc.send_interrupt()
 
     @property
     def pid(self) -> int | None:
-        return self._pty_process.pid if self._pty_process is not None else self.proc.pid
+        return self._pty_process.pid if self._pty_process is not None else self._proc.pid
 
     @property
     def returncode(self) -> int | None:
-        return self._pty_process.poll() if self._pty_process is not None else self.proc.returncode
+        return self._pty_process.poll() if self._pty_process is not None else self._proc.returncode
 
     def close(self) -> None:
         if self._pty_process is not None:
@@ -746,7 +761,7 @@ class RunningProcess:
                 self.kill()
             return
         with suppress(*_FINALIZER_CLEANUP_ERRORS):
-            self.proc.close()
+            self._proc.close()
         self._end_time = self._end_time or time.time()
         RunningProcessManagerSingleton.unregister(self)
 
@@ -808,11 +823,11 @@ class RunningProcess:
                 return b""
             return self._pty_process.output
         if stream == "stdout":
-            lines = self.proc.captured_stdout()
+            lines = self._proc.captured_stdout()
         elif stream == "stderr":
-            lines = self.proc.captured_stderr()
+            lines = self._proc.captured_stderr()
         else:
-            lines = [line for _stream, line in self.proc.captured_combined()]
+            lines = [line for _stream, line in self._proc.captured_combined()]
         return "\n".join(lines) if self.text else b"\n".join(lines)
 
     def discard_captured_output(self, stream: str = "combined") -> int:
@@ -822,8 +837,8 @@ class RunningProcess:
                 return 0
             return self._pty_process.discard_output()
         if stream == "combined":
-            return int(self.proc.clear_captured_combined())
-        return int(self.proc.clear_captured_stream(stream))
+            return int(self._proc.clear_captured_combined())
+        return int(self._proc.clear_captured_stream(stream))
 
     def captured_output_bytes(self, stream: str = "combined") -> int:
         stream = _validate_expect_stream(stream)
@@ -832,8 +847,8 @@ class RunningProcess:
                 return 0
             return self._pty_process.output_bytes
         if stream == "combined":
-            return int(self.proc.captured_combined_bytes())
-        return int(self.proc.captured_stream_bytes(stream))
+            return int(self._proc.captured_combined_bytes())
+        return int(self._proc.captured_stream_bytes(stream))
 
     def line_iter(self, timeout: float | None) -> _RunningProcessLineIterator:
         return _RunningProcessLineIterator(self, timeout)
@@ -849,7 +864,7 @@ class RunningProcess:
             self._pty_process.write(data, submit=submit)
             return
         payload = data.encode(self.encoding, self.errors) if isinstance(data, str) else data
-        self.proc.write_stdin(payload)
+        self._proc.write_stdin(payload)
 
     def submit(self, data: str | bytes = "\n") -> None:
         self.write(data, submit=True)
@@ -869,7 +884,7 @@ class RunningProcess:
             return match
         stream = _validate_expect_stream(stream)
         native_pattern, is_regex = _expect_pattern_spec(pattern)
-        status, buffer, matched, start, end, groups = self.proc.expect(
+        status, buffer, matched, start, end, groups = self._proc.expect(
             stream,
             native_pattern,
             is_regex=is_regex,
@@ -958,7 +973,7 @@ class RunningProcess:
                 if isinstance(input, str)
                 else input
             )
-            proc.proc.write_stdin(payload)
+            proc._proc.write_stdin(payload)
         try:
             returncode = proc.wait(timeout=timeout, raise_on_abnormal_exit=raise_on_abnormal_exit)
         except TimeoutError as exc:
