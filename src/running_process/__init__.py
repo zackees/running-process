@@ -2,7 +2,15 @@ from __future__ import annotations
 
 __version__ = "3.0.10"
 
-from running_process._native import NativeTerminalInput, NativeTerminalInputEvent
+from running_process._native import (
+    ContainedProcessGroup,
+    NativeTerminalInput,
+    NativeTerminalInputEvent,
+    OriginatorProcessInfo,
+)
+from running_process._native import (
+    py_find_processes_by_originator as find_processes_by_originator,
+)
 from running_process.compat import (
     CREATE_NEW_PROCESS_GROUP,
     DEVNULL,
@@ -71,6 +79,7 @@ __all__ = [
     "Callback",
     "CalledProcessError",
     "CompletedProcess",
+    "ContainedProcessGroup",
     "CpuPriority",
     "EchoCallback",
     "EndOfStream",
@@ -95,6 +104,7 @@ __all__ = [
     "NativeTerminalInput",
     "NativeTerminalInputEvent",
     "NullOutputFormatter",
+    "OriginatorProcessInfo",
     "OutputFormatter",
     "ProcessAbnormalExit",
     "ProcessIdleDetection",
@@ -113,6 +123,7 @@ __all__ = [
     "WaitCheckpoint",
     "WaitForResult",
     "WaitInputBuffer",
+    "find_processes_by_originator",
     "get_process_tree_info",
     "kill_process_tree",
     "subprocess_run",

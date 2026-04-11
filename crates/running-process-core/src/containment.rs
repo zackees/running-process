@@ -20,8 +20,38 @@
 //!
 //! `Containment::Detached` spawns a process that intentionally survives the
 //! group's lifetime (daemon pattern).
+//!
+//! # `RUNNING_PROCESS_ORIGINATOR` environment variable
+//!
+//! When an `originator` is set on a `ContainedProcessGroup`, all spawned child
+//! processes inherit the environment variable `RUNNING_PROCESS_ORIGINATOR` with
+//! the format `TOOL:PID`, where:
+//!
+//! - **TOOL** is the originator name (e.g., `"CLUD"`, `"JUPYTER"`)
+//! - **PID** is the process ID of the parent that spawned the group
+//!
+//! Example value: `RUNNING_PROCESS_ORIGINATOR=CLUD:12345`
+//!
+//! ## Purpose
+//!
+//! This env var enables **cross-process session discovery** after crashes.
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use running_process_core::ContainedProcessGroup;
+//!
+//! let group = ContainedProcessGroup::with_originator("CLUD").unwrap();
+//! let mut cmd = std::process::Command::new("sleep");
+//! cmd.arg("60");
+//! let child = group.spawn(&mut cmd).unwrap();
+//! ```
 
 use std::process::{Child, Command};
+
+/// The environment variable name injected into child processes for
+/// cross-process session discovery.
+pub const ORIGINATOR_ENV_VAR: &str = "RUNNING_PROCESS_ORIGINATOR";
 
 /// Containment policy for a spawned process.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -40,6 +70,8 @@ pub enum Containment {
 /// On Windows this wraps a Job Object; on Unix it tracks a process-group ID
 /// and sends `SIGKILL` to the group on drop.
 pub struct ContainedProcessGroup {
+    originator: Option<String>,
+
     #[cfg(windows)]
     job: super::WindowsJobHandle,
 
@@ -56,19 +88,50 @@ pub struct ContainedChild {
     pub containment: Containment,
 }
 
+/// Format the originator env var value: `TOOL:PID`.
+fn format_originator_value(tool: &str) -> String {
+    format!("{}:{}", tool, std::process::id())
+}
+
 impl ContainedProcessGroup {
-    /// Create a new process group.
+    /// Create a new process group without an originator.
     pub fn new() -> Result<Self, std::io::Error> {
+        Self::build(None)
+    }
+
+    /// Create a new process group with an originator name.
+    pub fn with_originator(originator: &str) -> Result<Self, std::io::Error> {
+        Self::build(Some(originator.to_string()))
+    }
+
+    fn build(originator: Option<String>) -> Result<Self, std::io::Error> {
         #[cfg(windows)]
         {
-            Self::new_windows()
+            Self::new_windows(originator)
         }
         #[cfg(unix)]
         {
             Ok(Self {
+                originator,
                 pgid: std::sync::Mutex::new(None),
                 child_pids: std::sync::Mutex::new(Vec::new()),
             })
+        }
+    }
+
+    /// Returns the originator name, if set.
+    pub fn originator(&self) -> Option<&str> {
+        self.originator.as_deref()
+    }
+
+    /// Returns the full originator env var value (`TOOL:PID`), if set.
+    pub fn originator_value(&self) -> Option<String> {
+        self.originator.as_ref().map(|o| format_originator_value(o))
+    }
+
+    fn inject_originator_env(&self, command: &mut Command) {
+        if let Some(ref originator) = self.originator {
+            command.env(ORIGINATOR_ENV_VAR, format_originator_value(originator));
         }
     }
 
@@ -90,6 +153,8 @@ impl ContainedProcessGroup {
         command: &mut Command,
         containment: Containment,
     ) -> Result<ContainedChild, std::io::Error> {
+        self.inject_originator_env(command);
+
         #[cfg(windows)]
         {
             self.spawn_windows(command, containment)
@@ -105,7 +170,7 @@ impl ContainedProcessGroup {
 
 #[cfg(windows)]
 impl ContainedProcessGroup {
-    fn new_windows() -> Result<Self, std::io::Error> {
+    fn new_windows(originator: Option<String>) -> Result<Self, std::io::Error> {
         use std::mem::zeroed;
         use winapi::shared::minwindef::FALSE;
         use winapi::um::handleapi::INVALID_HANDLE_VALUE;
@@ -138,6 +203,7 @@ impl ContainedProcessGroup {
         }
 
         Ok(Self {
+            originator,
             job: super::WindowsJobHandle(job as usize),
         })
     }
@@ -348,5 +414,37 @@ mod tests {
     fn contained_process_group_creates_successfully() {
         let group = ContainedProcessGroup::new();
         assert!(group.is_ok());
+    }
+
+    #[test]
+    fn with_originator_creates_successfully() {
+        let group = ContainedProcessGroup::with_originator("CLUD");
+        assert!(group.is_ok());
+        let group = group.unwrap();
+        assert_eq!(group.originator(), Some("CLUD"));
+    }
+
+    #[test]
+    fn originator_value_format() {
+        let group = ContainedProcessGroup::with_originator("CLUD").unwrap();
+        let value = group.originator_value().unwrap();
+        let expected = format!("CLUD:{}", std::process::id());
+        assert_eq!(value, expected);
+    }
+
+    #[test]
+    fn no_originator_returns_none() {
+        let group = ContainedProcessGroup::new().unwrap();
+        assert!(group.originator().is_none());
+        assert!(group.originator_value().is_none());
+    }
+
+    #[test]
+    fn format_originator_value_correct() {
+        let value = format_originator_value("JUPYTER");
+        let parts: Vec<&str> = value.splitn(2, ':').collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], "JUPYTER");
+        assert_eq!(parts[1], std::process::id().to_string());
     }
 }

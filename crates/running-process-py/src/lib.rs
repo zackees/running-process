@@ -20,9 +20,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use regex::Regex;
 use running_process_core::{
-    render_rust_debug_traces, CommandSpec, ContainedChild, ContainedProcessGroup, Containment,
-    NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode, StreamEvent,
-    StreamKind,
+    find_processes_by_originator, render_rust_debug_traces, CommandSpec, ContainedChild,
+    ContainedProcessGroup, Containment, NativeProcess, OriginatorProcessInfo, ProcessConfig,
+    ProcessError, ReadStatus, StderrMode, StdinMode, StreamEvent, StreamKind,
 };
 #[cfg(unix)]
 use running_process_core::{
@@ -7691,17 +7691,7 @@ impl PyContainment {
 }
 
 /// Python wrapper for `ContainedProcessGroup`.
-///
-/// Usage:
-/// ```python
-/// from running_process import ContainedProcessGroup
-///
-/// with ContainedProcessGroup() as group:
-///     proc = group.spawn(["sleep", "60"])
-///     proc.wait()
-/// # All contained children are killed on exit.
-/// ```
-#[pyclass]
+#[pyclass(name = "ContainedProcessGroup")]
 struct PyContainedProcessGroup {
     inner: Option<ContainedProcessGroup>,
     children: Vec<ContainedChild>,
@@ -7710,12 +7700,26 @@ struct PyContainedProcessGroup {
 #[pymethods]
 impl PyContainedProcessGroup {
     #[new]
-    fn new() -> PyResult<Self> {
-        let group = ContainedProcessGroup::new().map_err(to_py_err)?;
+    #[pyo3(signature = (originator=None))]
+    fn new(originator: Option<String>) -> PyResult<Self> {
+        let group = match originator {
+            Some(ref orig) => ContainedProcessGroup::with_originator(orig).map_err(to_py_err)?,
+            None => ContainedProcessGroup::new().map_err(to_py_err)?,
+        };
         Ok(Self {
             inner: Some(group),
             children: Vec::new(),
         })
+    }
+
+    #[getter]
+    fn originator(&self) -> Option<String> {
+        self.inner.as_ref()?.originator().map(String::from)
+    }
+
+    #[getter]
+    fn originator_value(&self) -> Option<String> {
+        self.inner.as_ref()?.originator_value()
     }
 
     /// Spawn a contained child process (killed when group drops).
@@ -7778,12 +7782,66 @@ impl PyContainedProcessGroup {
     }
 }
 
+// ── Originator process scanning ─────────────────────────────────────────────
+
+#[pyclass(name = "OriginatorProcessInfo")]
+#[derive(Clone)]
+struct PyOriginatorProcessInfo {
+    #[pyo3(get)]
+    pid: u32,
+    #[pyo3(get)]
+    name: String,
+    #[pyo3(get)]
+    command: String,
+    #[pyo3(get)]
+    originator: String,
+    #[pyo3(get)]
+    parent_pid: u32,
+    #[pyo3(get)]
+    parent_alive: bool,
+}
+
+#[pymethods]
+impl PyOriginatorProcessInfo {
+    fn __repr__(&self) -> String {
+        format!(
+            "OriginatorProcessInfo(pid={}, name={:?}, originator={:?}, parent_pid={}, parent_alive={})",
+            self.pid, self.name, self.originator, self.parent_pid, self.parent_alive
+        )
+    }
+}
+
+impl From<OriginatorProcessInfo> for PyOriginatorProcessInfo {
+    fn from(info: OriginatorProcessInfo) -> Self {
+        Self {
+            pid: info.pid,
+            name: info.name,
+            command: info.command,
+            originator: info.originator,
+            parent_pid: info.parent_pid,
+            parent_alive: info.parent_alive,
+        }
+    }
+}
+
+/// Find all processes whose RUNNING_PROCESS_ORIGINATOR env var starts
+/// with the given tool prefix.
+#[pyfunction]
+fn py_find_processes_by_originator(tool: &str) -> Vec<PyOriginatorProcessInfo> {
+    find_processes_by_originator(tool)
+        .into_iter()
+        .map(PyOriginatorProcessInfo::from)
+        .collect()
+}
+
 #[pymodule]
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyNativeProcess>()?;
     module.add_class::<NativeRunningProcess>()?;
     module.add_class::<PyContainedProcessGroup>()?;
     module.add_class::<PyContainment>()?;
+    module.add_class::<PyOriginatorProcessInfo>()?;
+    module.add_function(wrap_pyfunction!(py_find_processes_by_originator, module)?)?;
     module.add_class::<NativePtyProcess>()?;
     module.add_class::<NativeProcessMetrics>()?;
     module.add_class::<NativeSignalBool>()?;

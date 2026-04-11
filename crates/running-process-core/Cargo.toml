@@ -8,8 +8,13 @@ repository.workspace = true
 homepage.workspace = true
 description = "Native process runtime for running-process"
 
+[features]
+default = []
+originator-scan = ["sysinfo"]
+
 [dependencies]
 libc = "0.2"
+sysinfo = { version = "0.30", optional = true }
 thiserror = { workspace = true }
 winapi = { version = "0.3", features = ["handleapi", "jobapi2", "processthreadsapi", "winnt", "minwindef"] }
 
