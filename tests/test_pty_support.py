@@ -1373,13 +1373,13 @@ def test_running_process_signal_bool_shadows_python_reads() -> None:
 
 def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait() -> None:
     process = RunningProcess.pseudo_terminal(
-        [sys.executable, "-c", "import time; time.sleep(0.35)"],
+        [sys.executable, "-c", "import time; time.sleep(1.5)"],
         text=True,
     )
     process.idle_timeout_enabled = False
 
     def enable_later() -> None:
-        time.sleep(0.12)
+        time.sleep(0.3)
         process.idle_timeout_enabled = True
 
     worker = threading.Thread(target=enable_later, daemon=True)
@@ -1388,19 +1388,19 @@ def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait() -> N
     result = process.wait_for_idle(
         IdleDetection(
             timing=IdleTiming(
-                timeout_seconds=0.05,
-                stability_window_seconds=0.02,
-                sample_interval_seconds=0.01,
+                timeout_seconds=0.2,
+                stability_window_seconds=0.1,
+                sample_interval_seconds=0.05,
             )
         ),
-        timeout=0.4,
+        timeout=2.0,
     )
     elapsed = time.time() - started
-    worker.join(timeout=1.0)
+    worker.join(timeout=2.0)
 
     assert result.idle_detected is True
     assert result.exit_reason == "idle_timeout"
-    assert elapsed >= 0.15
+    assert elapsed >= 0.3
     process.kill()
 
 
