@@ -7,6 +7,11 @@ from pathlib import Path
 from ci import test as ci_test
 
 
+def _expected_cargo_build_tests_cmd() -> list[str]:
+    """Build the expected unsupervised cargo test --no-run command."""
+    return ["cargo", "test", "--workspace", "--no-run"]
+
+
 def _expected_cargo_test_cmd(python: str, timeout: str) -> list[str]:
     """Build the expected supervised cargo test command for the current platform."""
     cmd = [
@@ -46,6 +51,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
+        _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python, timeout),
         [
             python,
@@ -129,6 +135,7 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
+        _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python, timeout),
         [
             python,
@@ -178,6 +185,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
+        _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python, timeout),
         [
             python,
@@ -299,6 +307,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     assert result == 0
     assert os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] == "1"
     assert commands == [
+        _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python, timeout),
         [
             python,

@@ -197,21 +197,36 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # -- Rust tests (with optional coverage via cargo-llvm-cov) --
+    #
+    # Build test binaries first WITHOUT the idle-timeout supervisor.
+    # Compilation can have long gaps (>10s) with no stdout/stderr when
+    # linking large crates (tokio, interprocess, clap, etc.) and the
+    # 10-second idle-timeout kills the process mid-compile.  The
+    # supervisor is only useful during test *execution* where hangs
+    # indicate a real bug.
     if coverage:
         cargo_cmd = supervised_command(
             python,
             "cargo", "llvm-cov", "--workspace",
             "--lcov", "--output-path", "coverage-rust.lcov",
         )
+        if run(cargo_cmd) != 0:
+            return 1
     else:
+        # Step 1: compile all test binaries (no supervisor, no timeout)
+        build_args = ["cargo", "test", "--workspace", "--no-run"]
+        if run(build_args) != 0:
+            return 1
+
+        # Step 2: run the pre-built tests under the supervisor
         cargo_test_args = ["cargo", "test", "--workspace"]
-        # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
-        # Serialize Rust tests to avoid the issue.
         if sys.platform == "win32":
+            # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
+            # Serialize Rust tests to avoid the issue.
             cargo_test_args += ["--", "--test-threads=1"]
         cargo_cmd = supervised_command(python, *cargo_test_args)
-    if run(cargo_cmd) != 0:
-        return 1
+        if run(cargo_cmd) != 0:
+            return 1
 
     # -- Python non-live tests --
     cov_first = list(_COV_PYTEST_FIRST) if coverage else []
