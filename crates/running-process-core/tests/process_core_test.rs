@@ -932,3 +932,147 @@ fn returncode_auto_updates_without_poll() {
     );
     assert_eq!(process.returncode(), Some(0));
 }
+
+// ── Stress tests ──
+// Run with: RUST_BACKTRACE=1 cargo test -p running-process-core --test process_core_test stress_ -- --nocapture --test-threads=1
+
+/// Spawn N processes, kill them all, verify all are reaped within a deadline.
+/// Exposes unbounded `child.wait()` in `kill_impl()`.
+#[test]
+fn stress_rapid_kill_and_reap() {
+    const PROCESS_COUNT: usize = 20;
+    const DEADLINE_SECS: u64 = 30;
+
+    let processes: Vec<_> = (0..PROCESS_COUNT)
+        .map(|i| {
+            let p = NativeProcess::new(config(
+                CommandSpec::Argv(vec![
+                    "python".into(),
+                    "-c".into(),
+                    format!("import time; time.sleep(60)  # stress child {i}"),
+                ]),
+                true, // capture=true to exercise wait_for_capture_completion
+                StdinMode::Null,
+                None,
+            ));
+            p.start().unwrap();
+            p
+        })
+        .collect();
+
+    let start = Instant::now();
+    let results: Vec<_> = processes
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let kill_start = Instant::now();
+            let result = p.kill();
+            let kill_duration = kill_start.elapsed();
+            (i, result, kill_duration)
+        })
+        .collect();
+
+    let total_duration = start.elapsed();
+
+    for (i, result, duration) in &results {
+        let status = if result.is_ok() { "killed" } else { "FAILED" };
+        eprintln!("  process[{i}]: {status} kill_time={duration:?}");
+    }
+    eprintln!(
+        "total kill+reap time: {total_duration:?} for {PROCESS_COUNT} processes"
+    );
+
+    assert!(
+        total_duration < Duration::from_secs(DEADLINE_SECS),
+        "killing {PROCESS_COUNT} processes took {total_duration:?}, exceeds {DEADLINE_SECS}s deadline"
+    );
+
+    let failures: Vec<_> = results.iter().filter(|(_, r, _)| r.is_err()).collect();
+    assert!(
+        failures.is_empty(),
+        "some processes failed to kill: {failures:?}"
+    );
+}
+
+/// Parallel kill from multiple threads to expose mutex deadlocks.
+#[test]
+fn stress_parallel_kill_from_threads() {
+    const PROCESS_COUNT: usize = 10;
+    const DEADLINE_SECS: u64 = 30;
+
+    let processes: Vec<_> = (0..PROCESS_COUNT)
+        .map(|_| {
+            let p = NativeProcess::new(config(
+                CommandSpec::Argv(vec![
+                    "python".into(),
+                    "-c".into(),
+                    "import time; time.sleep(60)".into(),
+                ]),
+                true,
+                StdinMode::Null,
+                None,
+            ));
+            p.start().unwrap();
+            std::sync::Arc::new(p)
+        })
+        .collect();
+
+    let start = Instant::now();
+    let handles: Vec<_> = processes
+        .iter()
+        .map(|p| {
+            let p = std::sync::Arc::clone(p);
+            std::thread::spawn(move || p.kill())
+        })
+        .collect();
+
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    let total = start.elapsed();
+    eprintln!("parallel kill of {PROCESS_COUNT} processes: {total:?}");
+
+    assert!(
+        total < Duration::from_secs(DEADLINE_SECS),
+        "parallel kill took {total:?}, exceeds {DEADLINE_SECS}s"
+    );
+    assert!(
+        results.iter().all(|r| r.is_ok()),
+        "some parallel kills failed"
+    );
+}
+
+/// Rapid start-kill cycles to expose resource leaks (fd, threads, handles).
+#[test]
+fn stress_rapid_start_kill_cycles() {
+    const CYCLES: usize = 50;
+    const DEADLINE_SECS: u64 = 120;
+
+    let start = Instant::now();
+    for i in 0..CYCLES {
+        let p = NativeProcess::new(config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import time; time.sleep(60)".into(),
+            ]),
+            i % 2 == 0, // alternate capture on/off
+            StdinMode::Null,
+            None,
+        ));
+        p.start().unwrap();
+        let kill_result = p.kill();
+        assert!(
+            kill_result.is_ok(),
+            "cycle {i}: kill failed: {kill_result:?}"
+        );
+        if (i + 1) % 10 == 0 {
+            eprintln!("  completed {}/{CYCLES} cycles ({:?} elapsed)", i + 1, start.elapsed());
+        }
+    }
+    let total = start.elapsed();
+    eprintln!("{CYCLES} start-kill cycles in {total:?}");
+    assert!(
+        total < Duration::from_secs(DEADLINE_SECS),
+        "{CYCLES} cycles took {total:?}, exceeds {DEADLINE_SECS}s"
+    );
+}
