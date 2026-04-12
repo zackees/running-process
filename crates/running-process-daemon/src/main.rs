@@ -49,13 +49,19 @@ fn main() {
             rt.block_on(async {
                 let socket = paths::socket_path(None);
                 let db = paths::db_path(None).to_string_lossy().into_owned();
-                let srv = server::DaemonServer::new(
+                let srv = match server::DaemonServer::new(
                     socket,
                     db,
                     "global".to_string(),
                     String::new(),
                     String::new(),
-                );
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("failed to initialize daemon: {e}");
+                        std::process::exit(1);
+                    }
+                };
                 if let Err(e) = srv.run().await {
                     eprintln!("daemon error: {e}");
                     std::process::exit(1);

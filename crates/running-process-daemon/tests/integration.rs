@@ -38,7 +38,8 @@ fn start_server(scope: &str) -> (tokio::task::JoinHandle<()>, String) {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned(),
-    );
+    )
+    .expect("failed to create DaemonServer");
 
     let handle = tokio::spawn(async move {
         server.run().await.expect("server.run() failed");

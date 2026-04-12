@@ -4,6 +4,7 @@ pub mod handlers;
 pub mod idle;
 pub mod paths;
 pub mod platform;
+pub mod registry;
 pub mod server;
 pub mod shadow;
 

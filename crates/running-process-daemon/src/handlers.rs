@@ -7,8 +7,11 @@ use running_process_proto::daemon::{
     DaemonRequest, DaemonResponse, PingResponse, ShutdownResponse, StatusCode, StatusResponse,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::watch;
+
+use crate::registry::Registry;
 
 // ---------------------------------------------------------------------------
 // Shared daemon state
@@ -37,6 +40,8 @@ pub struct DaemonState {
     pub shutdown_tx: watch::Sender<bool>,
     /// Number of currently active client connections.
     pub active_connections: AtomicU32,
+    /// SQLite-backed process registry.
+    pub registry: Arc<Registry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +76,7 @@ pub fn handle_status(request: &DaemonRequest, state: &DaemonState) -> DaemonResp
         status: Some(StatusResponse {
             version: state.version.clone(),
             uptime_seconds: uptime,
-            tracked_process_count: 0, // Phase 2 will populate this
+            tracked_process_count: state.registry.count() as u32,
             active_connections: active,
             socket_path: state.socket_path.clone(),
             db_path: state.db_path.clone(),
@@ -106,9 +111,12 @@ mod tests {
     use running_process_proto::daemon::{PingRequest, RequestType, ShutdownRequest, StatusRequest};
 
     /// Build a minimal `DaemonState` for testing.
-    fn test_state() -> DaemonState {
+    fn test_state() -> (DaemonState, tempfile::TempDir) {
         let (shutdown_tx, _rx) = watch::channel(false);
-        DaemonState {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let db_path = tmp_dir.path().join("test-handlers.db");
+        let registry = Arc::new(Registry::open(&db_path).unwrap());
+        let state = DaemonState {
             start_time: Instant::now(),
             version: "0.0.0-test".to_string(),
             socket_path: "/tmp/test.sock".to_string(),
@@ -118,7 +126,9 @@ mod tests {
             scope_cwd: "/tmp".to_string(),
             shutdown_tx,
             active_connections: AtomicU32::new(3),
-        }
+            registry,
+        };
+        (state, tmp_dir)
     }
 
     fn make_request(id: u64, rtype: RequestType) -> DaemonRequest {
@@ -133,7 +143,7 @@ mod tests {
 
     #[test]
     fn ping_returns_ok_with_server_time() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let mut req = make_request(1, RequestType::Ping);
         req.ping = Some(PingRequest {});
 
@@ -147,7 +157,7 @@ mod tests {
 
     #[test]
     fn status_returns_daemon_info() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let mut req = make_request(2, RequestType::Status);
         req.status = Some(StatusRequest {});
 
@@ -167,7 +177,7 @@ mod tests {
 
     #[test]
     fn shutdown_signals_channel() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         // Keep a receiver to check the shutdown signal.
         let rx = state.shutdown_tx.subscribe();
         let mut req = make_request(3, RequestType::Shutdown);
