@@ -30,6 +30,7 @@ use running_process_core::{
 };
 use sysinfo::{Pid, ProcessRefreshKind, Signal, System, UpdateKind};
 
+mod daemon_client;
 #[cfg(unix)]
 mod pty_posix;
 #[cfg(windows)]
@@ -167,10 +168,14 @@ fn register_active_process(
             pid,
             kind: kind.to_string(),
             command: command.to_string(),
-            cwd,
+            cwd: cwd.clone(),
             started_at,
         },
     );
+    drop(registry); // release lock before IPC
+
+    // Fire-and-forget daemon notification.
+    daemon_client::daemon_register(pid, started_at, kind, command, cwd.as_deref());
 }
 
 fn unregister_active_process(pid: u32) {
@@ -178,6 +183,10 @@ fn unregister_active_process(pid: u32) {
         .lock()
         .expect("active process registry mutex poisoned");
     registry.remove(&pid);
+    drop(registry); // release lock before IPC
+
+    // Fire-and-forget daemon notification.
+    daemon_client::daemon_unregister(pid);
 }
 
 fn process_created_at(pid: u32) -> Option<f64> {
