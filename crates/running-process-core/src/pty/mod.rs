@@ -76,6 +76,33 @@ pub struct NativePtyHandles {
 pub struct WindowsJobHandle(pub usize);
 
 #[cfg(windows)]
+impl WindowsJobHandle {
+    /// Assign an additional process (by PID) to this Job Object.
+    pub fn assign_pid(&self, pid: u32) -> Result<(), std::io::Error> {
+        use winapi::um::handleapi::CloseHandle;
+        use winapi::um::processthreadsapi::OpenProcess;
+        use winapi::um::winnt::PROCESS_SET_QUOTA;
+        use winapi::um::winnt::PROCESS_TERMINATE;
+
+        let handle = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let result = unsafe {
+            winapi::um::jobapi2::AssignProcessToJobObject(
+                self.0 as winapi::shared::ntdef::HANDLE,
+                handle,
+            )
+        };
+        unsafe { CloseHandle(handle) };
+        if result == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
 impl Drop for WindowsJobHandle {
     fn drop(&mut self) {
         unsafe {
@@ -428,6 +455,11 @@ impl NativePtyProcess {
             return Err(PtyError::AlreadyStarted);
         }
 
+        // Snapshot our conhost.exe children before openpty() so we can diff
+        // after spawn to find the new conhost.exe created by ConPTY.
+        #[cfg(windows)]
+        let conhost_pids_before = conhost_children_of_current_process();
+
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -454,6 +486,8 @@ impl NativePtyProcess {
         let child = pair.slave.spawn_command(cmd).map_err(|e| PtyError::Spawn(e.to_string()))?;
         #[cfg(windows)]
         let job = assign_child_to_windows_kill_on_close_job(child.as_raw_handle())?;
+        #[cfg(windows)]
+        assign_conpty_conhost_to_job(&job, &conhost_pids_before);
         #[cfg(windows)]
         apply_windows_pty_priority(child.as_raw_handle(), self.nice)?;
         let shared = Arc::clone(&self.reader);
@@ -1012,6 +1046,155 @@ pub fn assign_child_to_windows_kill_on_close_job(
     }
 
     Ok(WindowsJobHandle(job as usize))
+}
+
+/// Information about a child process found via Toolhelp snapshot.
+#[cfg(windows)]
+#[derive(Debug, Clone)]
+pub struct ChildProcessInfo {
+    pub pid: u32,
+    pub name: String,
+}
+
+/// Find all direct child processes of a given parent PID using the Windows Toolhelp API.
+/// Returns PID and process name for each child.
+#[cfg(windows)]
+pub fn find_child_processes(parent_pid: u32) -> Vec<ChildProcessInfo> {
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::tlhelp32::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+    };
+
+    let mut children = Vec::new();
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == winapi::um::handleapi::INVALID_HANDLE_VALUE {
+        return children;
+    }
+
+    let mut entry: PROCESSENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
+
+    if unsafe { Process32First(snapshot, &mut entry) } != 0 {
+        loop {
+            if entry.th32ParentProcessID == parent_pid {
+                let name_bytes = &entry.szExeFile;
+                let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+                let name = String::from_utf8_lossy(
+                    &name_bytes[..name_len].iter().map(|&c| c as u8).collect::<Vec<u8>>(),
+                )
+                .into_owned();
+                children.push(ChildProcessInfo {
+                    pid: entry.th32ProcessID,
+                    name,
+                });
+            }
+            if unsafe { Process32Next(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+    }
+
+    unsafe { CloseHandle(snapshot) };
+    children
+}
+
+/// Return PIDs of all conhost.exe processes that are children of the current process.
+#[cfg(windows)]
+fn conhost_children_of_current_process() -> Vec<u32> {
+    let our_pid = std::process::id();
+    find_child_processes(our_pid)
+        .into_iter()
+        .filter(|c| c.name.eq_ignore_ascii_case("conhost.exe"))
+        .map(|c| c.pid)
+        .collect()
+}
+
+/// After spawning a ConPTY child, find the new conhost.exe process that was created
+/// by the ConPTY infrastructure (child of our process, not present in the "before"
+/// snapshot) and assign it to the Job Object so it gets cleaned up on Job close.
+#[cfg(windows)]
+fn assign_conpty_conhost_to_job(job: &WindowsJobHandle, before_pids: &[u32]) {
+    let after_pids = conhost_children_of_current_process();
+    for pid in after_pids {
+        if !before_pids.contains(&pid) {
+            // This is a newly created conhost.exe — assign it to the Job.
+            let _ = job.assign_pid(pid);
+        }
+    }
+}
+
+/// A conhost.exe process whose parent is no longer alive — likely an orphan
+/// from a dead ConPTY session.
+#[cfg(windows)]
+#[derive(Debug, Clone)]
+pub struct OrphanConhostInfo {
+    /// PID of the orphaned conhost.exe.
+    pub pid: u32,
+    /// PID that was the parent when the snapshot was taken.
+    pub parent_pid: u32,
+    /// Name of the parent process, if it can be resolved (empty if parent is dead).
+    pub parent_name: String,
+}
+
+/// Scan all conhost.exe processes on the system and return those whose parent
+/// process is no longer alive. These are likely orphans from dead ConPTY sessions.
+///
+/// Uses `CreateToolhelp32Snapshot` for a point-in-time snapshot — no sysinfo
+/// dependency, so it's lightweight and can be called frequently.
+#[cfg(windows)]
+pub fn find_orphan_conhosts() -> Vec<OrphanConhostInfo> {
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::tlhelp32::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+    };
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == winapi::um::handleapi::INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+
+    let mut entry: PROCESSENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
+
+    // First pass: collect all PIDs and identify conhost.exe processes.
+    let mut all_pids = std::collections::HashSet::new();
+    let mut conhosts: Vec<(u32, u32)> = Vec::new(); // (pid, parent_pid)
+    let mut parent_names: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+
+    if unsafe { Process32First(snapshot, &mut entry) } != 0 {
+        loop {
+            let name_bytes = &entry.szExeFile;
+            let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+            let name = String::from_utf8_lossy(
+                &name_bytes[..name_len].iter().map(|&c| c as u8).collect::<Vec<u8>>(),
+            )
+            .into_owned();
+
+            all_pids.insert(entry.th32ProcessID);
+            parent_names.insert(entry.th32ProcessID, name.clone());
+
+            if name.eq_ignore_ascii_case("conhost.exe") {
+                conhosts.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+
+            if unsafe { Process32Next(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+    }
+
+    unsafe { CloseHandle(snapshot) };
+
+    // Second pass: filter to conhosts whose parent PID is not in the live set.
+    conhosts
+        .into_iter()
+        .filter(|&(_, parent_pid)| !all_pids.contains(&parent_pid))
+        .map(|(pid, parent_pid)| OrphanConhostInfo {
+            pid,
+            parent_pid,
+            parent_name: parent_names.get(&parent_pid).cloned().unwrap_or_default(),
+        })
+        .collect()
 }
 
 #[cfg(windows)]

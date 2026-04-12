@@ -656,10 +656,16 @@ async fn test_kill_zombies_dry_run_with_no_zombies() {
             .kill_zombies
             .expect("kill_zombies payload missing")
             .zombies;
+        // Filter out orphan conhost.exe entries — those are ambient system
+        // state, not controlled by this test.
+        let registry_zombies: Vec<_> = zombies
+            .iter()
+            .filter(|z| z.command != "conhost.exe")
+            .collect();
         assert!(
-            zombies.is_empty(),
-            "expected no zombies in empty registry, got {}",
-            zombies.len()
+            registry_zombies.is_empty(),
+            "expected no registry zombies in empty registry, got {}",
+            registry_zombies.len()
         );
 
         // Clean up.
@@ -695,10 +701,15 @@ async fn test_kill_zombies_with_no_zombies() {
             .kill_zombies
             .expect("kill_zombies payload missing")
             .zombies;
+        // Filter out orphan conhost.exe entries — ambient system state.
+        let registry_zombies: Vec<_> = zombies
+            .iter()
+            .filter(|z| z.command != "conhost.exe")
+            .collect();
         assert!(
-            zombies.is_empty(),
-            "expected no zombies in empty registry, got {}",
-            zombies.len()
+            registry_zombies.is_empty(),
+            "expected no registry zombies in empty registry, got {}",
+            registry_zombies.len()
         );
 
         // Clean up.
@@ -835,15 +846,20 @@ async fn test_kill_zombies_finds_registered_dead_process() {
             .kill_zombies
             .expect("kill_zombies payload missing")
             .zombies;
+        // Filter out orphan conhost.exe entries — ambient system state.
+        let registry_zombies: Vec<_> = zombies
+            .iter()
+            .filter(|z| z.command != "conhost.exe")
+            .collect();
         assert_eq!(
-            zombies.len(),
+            registry_zombies.len(),
             1,
-            "expected 1 zombie for dead fake PID, got {}",
-            zombies.len()
+            "expected 1 registry zombie for dead fake PID, got {}",
+            registry_zombies.len()
         );
-        assert_eq!(zombies[0].pid, 4_000_050);
-        assert_eq!(zombies[0].command, "fake-dead-cmd");
-        assert!(!zombies[0].killed, "dry_run should not kill the process");
+        assert_eq!(registry_zombies[0].pid, 4_000_050);
+        assert_eq!(registry_zombies[0].command, "fake-dead-cmd");
+        assert!(!registry_zombies[0].killed, "dry_run should not kill the process");
 
         // The process should still be in the registry (dry-run does not remove).
         let list_resp = client.list_active().expect("list_active failed");
