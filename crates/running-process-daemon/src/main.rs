@@ -183,10 +183,7 @@ fn print_table(processes: &[TrackedProcess]) {
         return;
     }
 
-    println!(
-        "{:<8} {:<8} {:<12} {:<8} {}",
-        "PID", "STATE", "KIND", "UPTIME", "COMMAND"
-    );
+    println!("{:<8} {:<8} {:<12} {:<8} COMMAND", "PID", "STATE", "KIND", "UPTIME");
     for p in processes {
         println!(
             "{:<8} {:<8} {:<12} {:<8} {}",
