@@ -4,11 +4,17 @@
 //! reference, returning a fully-constructed [`DaemonResponse`].
 
 use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, PingResponse, ShutdownResponse, StatusCode, StatusResponse,
+    DaemonRequest, DaemonResponse, GetProcessTreeResponse, ListActiveResponse,
+    ListByOriginatorResponse, PingResponse, ProcessState, RegisterResponse, ShutdownResponse,
+    StatusCode, StatusResponse, TrackedProcess, UnregisterResponse,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
+use sysinfo::{Pid, System};
 use tokio::sync::watch;
+
+use crate::registry::{self, Registry, TrackedEntry};
 
 // ---------------------------------------------------------------------------
 // Shared daemon state
@@ -37,6 +43,8 @@ pub struct DaemonState {
     pub shutdown_tx: watch::Sender<bool>,
     /// Number of currently active client connections.
     pub active_connections: AtomicU32,
+    /// SQLite-backed process registry.
+    pub registry: Arc<Registry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +79,7 @@ pub fn handle_status(request: &DaemonRequest, state: &DaemonState) -> DaemonResp
         status: Some(StatusResponse {
             version: state.version.clone(),
             uptime_seconds: uptime,
-            tracked_process_count: 0, // Phase 2 will populate this
+            tracked_process_count: state.registry.count() as u32,
             active_connections: active,
             socket_path: state.socket_path.clone(),
             db_path: state.db_path.clone(),
@@ -97,18 +105,279 @@ pub fn handle_shutdown(request: &DaemonRequest, state: &DaemonState) -> DaemonRe
 }
 
 // ---------------------------------------------------------------------------
+// Entry ↔ Proto conversion
+// ---------------------------------------------------------------------------
+
+/// Convert a [`TrackedEntry`] to a proto [`TrackedProcess`].
+fn entry_to_tracked_process(entry: &TrackedEntry) -> TrackedProcess {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    let uptime = (now - entry.registered_at).max(0.0);
+
+    TrackedProcess {
+        pid: entry.pid,
+        created_at: entry.created_at_ms as f64 / 1000.0,
+        kind: entry.kind.clone(),
+        command: entry.command.clone(),
+        cwd: entry.cwd.clone(),
+        originator: entry.originator.clone(),
+        containment: entry.containment.clone(),
+        registered_at: entry.registered_at,
+        uptime_seconds: uptime,
+        parent_alive: true,                    // Phase 4 reaper will validate
+        state: ProcessState::Alive as i32,     // Phase 4 reaper will validate
+        last_validated_at: 0.0,                // Phase 4
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Register / Unregister / List / Tree handlers
+// ---------------------------------------------------------------------------
+
+/// Handle a `Register` request by adding a process to the registry.
+pub fn handle_register(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let Some(ref req) = request.register else {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "missing register payload".into(),
+        );
+    };
+
+    if req.pid == 0 {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "pid must be > 0".into(),
+        );
+    }
+    if req.command.is_empty() {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "command must not be empty".into(),
+        );
+    }
+
+    let created_at_ms = registry::created_at_to_ms(req.created_at);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+
+    let entry = TrackedEntry {
+        pid: req.pid,
+        created_at_ms,
+        kind: req.kind.clone(),
+        command: req.command.clone(),
+        cwd: req.cwd.clone(),
+        originator: req.originator.clone(),
+        containment: req.containment.clone(),
+        registered_at: now,
+    };
+
+    if let Err(e) = state.registry.register(entry) {
+        return error_response(
+            request.id,
+            StatusCode::Internal,
+            format!("registry error: {e}"),
+        );
+    }
+
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        message: String::new(),
+        register: Some(RegisterResponse {}),
+        ..Default::default()
+    }
+}
+
+/// Handle an `Unregister` request by removing a process from the registry.
+pub fn handle_unregister(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let Some(ref req) = request.unregister else {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "missing unregister payload".into(),
+        );
+    };
+
+    if state.registry.unregister(req.pid) {
+        DaemonResponse {
+            request_id: request.id,
+            code: StatusCode::Ok as i32,
+            message: String::new(),
+            unregister: Some(UnregisterResponse {}),
+            ..Default::default()
+        }
+    } else {
+        error_response(
+            request.id,
+            StatusCode::NotFound,
+            format!("pid {} not found in registry", req.pid),
+        )
+    }
+}
+
+/// Handle a `ListActive` request by returning all tracked processes.
+pub fn handle_list_active(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let entries = state.registry.list_all();
+    let processes: Vec<TrackedProcess> = entries.iter().map(entry_to_tracked_process).collect();
+
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        message: String::new(),
+        list_active: Some(ListActiveResponse { processes }),
+        ..Default::default()
+    }
+}
+
+/// Handle a `ListByOriginator` request by returning processes matching the tool prefix.
+pub fn handle_list_by_originator(
+    request: &DaemonRequest,
+    state: &DaemonState,
+) -> DaemonResponse {
+    let Some(ref req) = request.list_by_originator else {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "missing list_by_originator payload".into(),
+        );
+    };
+
+    let entries = state.registry.list_by_originator(&req.tool);
+    let processes: Vec<TrackedProcess> = entries.iter().map(entry_to_tracked_process).collect();
+
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        message: String::new(),
+        list_by_originator: Some(ListByOriginatorResponse { processes }),
+        ..Default::default()
+    }
+}
+
+/// Handle a `GetProcessTree` request by building a tree display string via sysinfo.
+pub fn handle_get_process_tree(
+    request: &DaemonRequest,
+    _state: &DaemonState,
+) -> DaemonResponse {
+    let Some(ref req) = request.get_process_tree else {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "missing get_process_tree payload".into(),
+        );
+    };
+
+    let tree_display = build_process_tree_display(req.pid);
+
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        message: String::new(),
+        get_process_tree: Some(GetProcessTreeResponse { tree_display }),
+        ..Default::default()
+    }
+}
+
+/// Build a human-readable process tree string rooted at `root_pid` using sysinfo.
+fn build_process_tree_display(root_pid: u32) -> String {
+    let mut sys = System::new();
+    sys.refresh_processes();
+
+    let sysinfo_pid = Pid::from_u32(root_pid);
+    let Some(root_proc) = sys.process(sysinfo_pid) else {
+        return format!("Process {root_pid} not found");
+    };
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "{} (pid={root_pid}) {}",
+        root_proc.name(),
+        root_proc
+            .cmd()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
+
+    // Collect children recursively.
+    fn collect_children(
+        sys: &System,
+        parent_pid: Pid,
+        prefix: &str,
+        lines: &mut Vec<String>,
+    ) {
+        let children: Vec<_> = sys
+            .processes()
+            .values()
+            .filter(|p| p.parent() == Some(parent_pid))
+            .collect();
+
+        for (i, child) in children.iter().enumerate() {
+            let is_last = i == children.len() - 1;
+            let connector = if is_last { "└── " } else { "├── " };
+            let child_prefix = if is_last { "    " } else { "│   " };
+
+            lines.push(format!(
+                "{prefix}{connector}{} (pid={})",
+                child.name(),
+                child.pid().as_u32()
+            ));
+
+            collect_children(
+                sys,
+                child.pid(),
+                &format!("{prefix}{child_prefix}"),
+                lines,
+            );
+        }
+    }
+
+    collect_children(&sys, sysinfo_pid, "", &mut lines);
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Build an error `DaemonResponse` with no payload.
+fn error_response(request_id: u64, code: StatusCode, message: String) -> DaemonResponse {
+    DaemonResponse {
+        request_id,
+        code: code as i32,
+        message,
+        ..Default::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use running_process_proto::daemon::{PingRequest, RequestType, ShutdownRequest, StatusRequest};
+    use running_process_proto::daemon::{
+        ListByOriginatorRequest, PingRequest, RegisterRequest, RequestType, ShutdownRequest,
+        StatusRequest, UnregisterRequest,
+    };
 
     /// Build a minimal `DaemonState` for testing.
-    fn test_state() -> DaemonState {
+    fn test_state() -> (DaemonState, tempfile::TempDir) {
         let (shutdown_tx, _rx) = watch::channel(false);
-        DaemonState {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let db_path = tmp_dir.path().join("test-handlers.db");
+        let registry = Arc::new(Registry::open(&db_path).unwrap());
+        let state = DaemonState {
             start_time: Instant::now(),
             version: "0.0.0-test".to_string(),
             socket_path: "/tmp/test.sock".to_string(),
@@ -118,7 +387,9 @@ mod tests {
             scope_cwd: "/tmp".to_string(),
             shutdown_tx,
             active_connections: AtomicU32::new(3),
-        }
+            registry,
+        };
+        (state, tmp_dir)
     }
 
     fn make_request(id: u64, rtype: RequestType) -> DaemonRequest {
@@ -133,7 +404,7 @@ mod tests {
 
     #[test]
     fn ping_returns_ok_with_server_time() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let mut req = make_request(1, RequestType::Ping);
         req.ping = Some(PingRequest {});
 
@@ -147,7 +418,7 @@ mod tests {
 
     #[test]
     fn status_returns_daemon_info() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let mut req = make_request(2, RequestType::Status);
         req.status = Some(StatusRequest {});
 
@@ -167,7 +438,7 @@ mod tests {
 
     #[test]
     fn shutdown_signals_channel() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         // Keep a receiver to check the shutdown signal.
         let rx = state.shutdown_tx.subscribe();
         let mut req = make_request(3, RequestType::Shutdown);
@@ -184,5 +455,191 @@ mod tests {
         assert!(resp.shutdown.is_some());
         // The channel should now hold `true`.
         assert!(rx.has_changed().unwrap_or(false) || *rx.borrow());
+    }
+
+    // -----------------------------------------------------------------------
+    // Register / Unregister / List handler tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_register_and_list_active() {
+        let (state, _tmp) = test_state();
+        let mut req = make_request(10, RequestType::Register);
+        req.register = Some(RegisterRequest {
+            pid: 12345,
+            created_at: 1000.5,
+            kind: "subprocess".into(),
+            command: "sleep 100".into(),
+            cwd: "/tmp".into(),
+            originator: "test:unit".into(),
+            containment: "contained".into(),
+        });
+
+        let resp = handle_register(&req, &state);
+        assert_eq!(resp.code, StatusCode::Ok as i32);
+        assert!(resp.register.is_some());
+
+        // Now list active and verify the registered process appears.
+        let list_req = make_request(11, RequestType::ListActive);
+        let list_resp = handle_list_active(&list_req, &state);
+        assert_eq!(list_resp.code, StatusCode::Ok as i32);
+
+        let active = list_resp.list_active.unwrap();
+        assert_eq!(active.processes.len(), 1);
+
+        let proc = &active.processes[0];
+        assert_eq!(proc.pid, 12345);
+        assert_eq!(proc.command, "sleep 100");
+        assert_eq!(proc.kind, "subprocess");
+        assert_eq!(proc.originator, "test:unit");
+        assert_eq!(proc.containment, "contained");
+        assert_eq!(proc.state, ProcessState::Alive as i32);
+    }
+
+    #[test]
+    fn test_register_missing_payload() {
+        let (state, _tmp) = test_state();
+        let req = make_request(20, RequestType::Register);
+        // No register payload set.
+
+        let resp = handle_register(&req, &state);
+        assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
+        assert!(resp.message.contains("missing register payload"));
+    }
+
+    #[test]
+    fn test_register_invalid_pid() {
+        let (state, _tmp) = test_state();
+        let mut req = make_request(21, RequestType::Register);
+        req.register = Some(RegisterRequest {
+            pid: 0,
+            created_at: 1000.0,
+            kind: "subprocess".into(),
+            command: "ls".into(),
+            ..Default::default()
+        });
+
+        let resp = handle_register(&req, &state);
+        assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
+        assert!(resp.message.contains("pid must be > 0"));
+    }
+
+    #[test]
+    fn test_register_empty_command() {
+        let (state, _tmp) = test_state();
+        let mut req = make_request(22, RequestType::Register);
+        req.register = Some(RegisterRequest {
+            pid: 1,
+            created_at: 1000.0,
+            kind: "subprocess".into(),
+            command: String::new(),
+            ..Default::default()
+        });
+
+        let resp = handle_register(&req, &state);
+        assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
+        assert!(resp.message.contains("command must not be empty"));
+    }
+
+    #[test]
+    fn test_unregister_not_found() {
+        let (state, _tmp) = test_state();
+        let mut req = make_request(30, RequestType::Unregister);
+        req.unregister = Some(UnregisterRequest { pid: 99999 });
+
+        let resp = handle_unregister(&req, &state);
+        assert_eq!(resp.code, StatusCode::NotFound as i32);
+        assert!(resp.message.contains("99999"));
+    }
+
+    #[test]
+    fn test_unregister_success() {
+        let (state, _tmp) = test_state();
+
+        // Register first.
+        let mut reg_req = make_request(31, RequestType::Register);
+        reg_req.register = Some(RegisterRequest {
+            pid: 5555,
+            created_at: 2000.0,
+            kind: "subprocess".into(),
+            command: "echo hi".into(),
+            cwd: "/tmp".into(),
+            originator: "test:unit".into(),
+            containment: "contained".into(),
+        });
+        let reg_resp = handle_register(&reg_req, &state);
+        assert_eq!(reg_resp.code, StatusCode::Ok as i32);
+
+        // Now unregister.
+        let mut unreg_req = make_request(32, RequestType::Unregister);
+        unreg_req.unregister = Some(UnregisterRequest { pid: 5555 });
+
+        let unreg_resp = handle_unregister(&unreg_req, &state);
+        assert_eq!(unreg_resp.code, StatusCode::Ok as i32);
+        assert!(unreg_resp.unregister.is_some());
+
+        // Verify list is now empty.
+        let list_req = make_request(33, RequestType::ListActive);
+        let list_resp = handle_list_active(&list_req, &state);
+        assert_eq!(list_resp.list_active.unwrap().processes.len(), 0);
+    }
+
+    #[test]
+    fn test_list_by_originator_filters() {
+        let (state, _tmp) = test_state();
+
+        // Register two processes with different originators.
+        let mut req1 = make_request(40, RequestType::Register);
+        req1.register = Some(RegisterRequest {
+            pid: 1001,
+            created_at: 1000.0,
+            kind: "subprocess".into(),
+            command: "cmd1".into(),
+            cwd: "/tmp".into(),
+            originator: "codeup:session-a".into(),
+            containment: "contained".into(),
+        });
+        assert_eq!(handle_register(&req1, &state).code, StatusCode::Ok as i32);
+
+        let mut req2 = make_request(41, RequestType::Register);
+        req2.register = Some(RegisterRequest {
+            pid: 1002,
+            created_at: 2000.0,
+            kind: "pty".into(),
+            command: "cmd2".into(),
+            cwd: "/home".into(),
+            originator: "other:session-b".into(),
+            containment: "detached".into(),
+        });
+        assert_eq!(handle_register(&req2, &state).code, StatusCode::Ok as i32);
+
+        // Filter by "codeup" — should return 1 process.
+        let mut list_req = make_request(42, RequestType::ListByOriginator);
+        list_req.list_by_originator = Some(ListByOriginatorRequest {
+            tool: "codeup".into(),
+        });
+        let resp = handle_list_by_originator(&list_req, &state);
+        assert_eq!(resp.code, StatusCode::Ok as i32);
+        let procs = resp.list_by_originator.unwrap().processes;
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].pid, 1001);
+
+        // Filter by "other" — should return 1 process.
+        let mut list_req2 = make_request(43, RequestType::ListByOriginator);
+        list_req2.list_by_originator = Some(ListByOriginatorRequest {
+            tool: "other".into(),
+        });
+        let resp2 = handle_list_by_originator(&list_req2, &state);
+        let procs2 = resp2.list_by_originator.unwrap().processes;
+        assert_eq!(procs2.len(), 1);
+        assert_eq!(procs2[0].pid, 1002);
+
+        // Filter by "nonexistent" — should return 0.
+        let mut list_req3 = make_request(44, RequestType::ListByOriginator);
+        list_req3.list_by_originator = Some(ListByOriginatorRequest {
+            tool: "nonexistent".into(),
+        });
+        let resp3 = handle_list_by_originator(&list_req3, &state);
+        assert_eq!(resp3.list_by_originator.unwrap().processes.len(), 0);
     }
 }

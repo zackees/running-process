@@ -22,6 +22,7 @@ use running_process_proto::daemon::{
 };
 
 use crate::handlers::{self, DaemonState};
+use crate::registry::Registry;
 
 // ---------------------------------------------------------------------------
 // Socket path
@@ -76,13 +77,17 @@ impl DaemonServer {
     /// `socket_path` is the IPC endpoint.  `db_path` is the SQLite tracking
     /// database.  `scope`, `scope_hash`, and `scope_cwd` describe the
     /// project scope the daemon manages.
+    ///
+    /// The registry is opened (and crash-recovered) from `db_path`.
     pub fn new(
         socket_path: String,
         db_path: String,
         scope: String,
         scope_hash: String,
         scope_cwd: String,
-    ) -> Self {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let registry = Arc::new(Registry::open(std::path::Path::new(&db_path))?);
+
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = Arc::new(DaemonState {
             start_time: std::time::Instant::now(),
@@ -94,8 +99,9 @@ impl DaemonServer {
             scope_cwd,
             shutdown_tx,
             active_connections: std::sync::atomic::AtomicU32::new(0),
+            registry,
         });
-        Self { state, shutdown_rx }
+        Ok(Self { state, shutdown_rx })
     }
 
     /// Signal all accept loops and connection handlers to stop.
@@ -326,6 +332,11 @@ fn dispatch_request(
         Ok(RequestType::Ping) => handlers::handle_ping(request, state),
         Ok(RequestType::Status) => handlers::handle_status(request, state),
         Ok(RequestType::Shutdown) => handlers::handle_shutdown(request, state),
+        Ok(RequestType::Register) => handlers::handle_register(request, state),
+        Ok(RequestType::Unregister) => handlers::handle_unregister(request, state),
+        Ok(RequestType::ListActive) => handlers::handle_list_active(request, state),
+        Ok(RequestType::ListByOriginator) => handlers::handle_list_by_originator(request, state),
+        Ok(RequestType::GetProcessTree) => handlers::handle_get_process_tree(request, state),
         Ok(rt) => {
             stub_response(request_id, rt)
         }

@@ -9,7 +9,8 @@ use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
 use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, PingRequest, RequestType, ShutdownRequest, StatusRequest,
+    DaemonRequest, DaemonResponse, ListActiveRequest, ListByOriginatorRequest, PingRequest,
+    RequestType, ShutdownRequest, StatusRequest,
 };
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -181,6 +182,34 @@ impl DaemonClient {
             protocol_version: 1,
             client_name: String::from("running-process-client"),
             status: Some(StatusRequest {}),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// List all active tracked processes.
+    pub fn list_active(&mut self) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ListActive.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            list_active: Some(ListActiveRequest {}),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// List tracked processes filtered by originator tool name.
+    pub fn list_by_originator(&mut self, tool: &str) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ListByOriginator.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            list_by_originator: Some(ListByOriginatorRequest {
+                tool: tool.to_string(),
+            }),
             ..Default::default()
         };
         self.send_request(request)
