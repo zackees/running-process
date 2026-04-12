@@ -121,10 +121,10 @@ def test_download_artifacts_fails_when_expected_artifact_directory_missing(
     monkeypatch.setattr(module, "run", fake_run)
 
     with pytest.raises(SystemExit) as exc:
-        module.download_artifacts("owner/repo", {"windows-x86.yml": 123})
+        module.download_artifacts("owner/repo", {"windows-x86-build.yml": 123})
 
     assert str(exc.value) == (
-        "windows-x86.yml did not produce expected artifact directory wheels-windows-x86"
+        "windows-x86-build.yml did not produce expected artifact directory wheels-windows-x86"
     )
 
 

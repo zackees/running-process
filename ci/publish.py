@@ -21,12 +21,12 @@ import tomllib
 ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = ROOT / "dist"
 WORKFLOWS = {
-    "linux-x86.yml": "wheels-linux-x86",
-    "linux-arm.yml": "wheels-linux-arm",
-    "windows-x86.yml": "wheels-windows-x86",
-    "windows-arm.yml": "wheels-windows-arm",
-    "macos-x86.yml": "wheels-macos-x86",
-    "macos-arm.yml": "wheels-macos-arm",
+    "linux-x86-build.yml": "wheels-linux-x86",
+    "linux-arm-build.yml": "wheels-linux-arm",
+    "windows-x86-build.yml": "wheels-windows-x86",
+    "windows-arm-build.yml": "wheels-windows-arm",
+    "macos-x86-build.yml": "wheels-macos-x86",
+    "macos-arm-build.yml": "wheels-macos-arm",
 }
 EXPECTED_ARTIFACT_GLOBS = (
     "{name}-{version}.tar.gz",
@@ -150,9 +150,7 @@ def trigger(repo: str, workflow_file: str) -> int:
             "--ref",
             branch,
             "-f",
-            "build_dist=true",
-            "-f",
-            "run_tests=false",
+            "build-mode=release",
         ]
     )
 
