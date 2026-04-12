@@ -16,7 +16,7 @@ originator-scan = ["sysinfo"]
 libc = "0.2"
 sysinfo = { version = "0.30", optional = true }
 thiserror = { workspace = true }
-winapi = { version = "0.3", features = ["handleapi", "jobapi2", "processthreadsapi", "winnt", "minwindef"] }
+winapi = { version = "0.3", features = ["handleapi", "jobapi2", "processthreadsapi", "winnt", "minwindef", "windef", "winuser"] }
 
 [dev-dependencies]
 serde_json = "1"

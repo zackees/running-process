@@ -8154,6 +8154,25 @@ fn py_find_processes_by_originator(tool: &str) -> Vec<PyOriginatorProcessInfo> {
         .collect()
 }
 
+/// Monitor for new visible windows that appear within the given duration.
+///
+/// Returns a list of dicts, each with keys: ``pid`` (int), ``title`` (str),
+/// ``hwnd`` (int).  On non-Windows platforms this always returns an empty list.
+#[pyfunction]
+fn monitor_console_windows(py: Python<'_>, duration_secs: f64) -> PyResult<PyObject> {
+    let duration = Duration::from_secs_f64(duration_secs);
+    let infos = running_process_core::monitor_console_windows(duration);
+    let list = PyList::empty(py);
+    for info in infos {
+        let dict = PyDict::new(py);
+        dict.set_item("pid", info.pid)?;
+        dict.set_item("title", &info.title)?;
+        dict.set_item("hwnd", info.hwnd)?;
+        list.append(dict)?;
+    }
+    Ok(list.into())
+}
+
 #[pymodule]
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyNativeProcess>()?;
@@ -8193,6 +8212,7 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     #[cfg(windows)]
     module.add_function(wrap_pyfunction!(native_test_hang_in_rust, module)?)?;
+    module.add_function(wrap_pyfunction!(monitor_console_windows, module)?)?;
     module.add("VERSION", PyString::new(_py, env!("CARGO_PKG_VERSION")))?;
     Ok(())
 }
