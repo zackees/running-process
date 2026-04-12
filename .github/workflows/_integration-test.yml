@@ -27,6 +27,15 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Cache venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ inputs.runs-on }}-py3.11-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-${{ inputs.runs-on }}-py3.11-
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -36,7 +45,7 @@ jobs:
         run: echo "RUSTUP_TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *\"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
       - name: Sync
-        run: uv sync --group dev
+        run: uv sync --frozen --group dev
 
       - name: Install Toolchain
         run: uv run --module ci.run_logged logs/install.log -- uv run --script install
