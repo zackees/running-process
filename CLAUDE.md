@@ -4,114 +4,112 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-This is a modern Python library for subprocess process management with the following core components:
+A Rust-backed Python library (v3.0.14) for subprocess and PTY process management across Windows, macOS, and Linux.
 
-- **RunningProcess**: Main class wrapping subprocess.Popen with enhanced features (output streaming, process tree management, timeout handling)
-- **ProcessOutputReader**: Dedicated threaded reader that drains process stdout/stderr to prevent blocking
-- **RunningProcessManager**: Thread-safe singleton registry for tracking active processes and debugging
-- **OutputFormatter**: Protocol for transforming process output (with NullOutputFormatter as default)
-- **process_utils**: Utilities for process tree operations (requires optional psutil dependency)
+### Layered Design
 
-The package follows a layered design where RunningProcess orchestrates ProcessOutputReader and integrates with RunningProcessManager for lifecycle management.
+**Python layer** (`src/running_process/`) provides high-level APIs:
+- **`RunningProcess`**: Pipe-backed subprocess wrapper with output streaming, process tree management, and timeout handling
+- **`PseudoTerminalProcess`**: PTY-backed process wrapper with expect patterns, idle detection, and terminal input relay
+- **`InteractiveProcess`**: Unified facade dispatching to either pipe or PTY backends
+- **`ProcessOutputReader`**: Threaded reader draining stdout/stderr to prevent blocking
+- **`RunningProcessManager`**: Thread-safe singleton registry for tracking active processes
 
-## Daemon Architecture
+**Rust layer** (`crates/`) provides native performance:
+- **`running-process-core`**: OS-level subprocess abstraction (`NativeProcess` — pipe I/O, signaling, Job Objects/process groups). No PTY.
+- **`running-process-py`**: PyO3 bindings. Contains `NativePtyProcess` (via `portable-pty` crate) alongside the pipe backend. Exposes a unified `PyNativeProcess` with `NativeProcessBackend` enum dispatching to either `NativeRunningProcess` or `NativePtyProcess`
+- **`running-process-proto`**: Protobuf schema for daemon IPC (`daemon.proto`). Field numbers in `RequestType` enum match payload field numbers.
+- **`running-process-daemon`**: Persistent daemon for process tracking (Tokio, SQLite registry, protobuf IPC)
+- **`daemon-trampoline`**: Minimal daemon launcher binary
 
-The project includes a Rust daemon (`running-process-daemon`) for persistent subprocess tracking:
+**Python-Rust bridge**: `running_process._native` module compiled via maturin. Python's `PseudoTerminalProcess.start()` calls `NativeProcess.for_pty()` which creates a `NativePtyProcess` on the Rust side.
 
-- **Proto schema**: `crates/running-process-proto/proto/daemon.proto` — protobuf IPC protocol
-- **Daemon binary**: `crates/running-process-daemon/` — server, client, registry, reaper
-- **PyO3 integration**: `crates/running-process-py/src/daemon_client.rs` — fire-and-forget IPC
+### Test Binaries
 
-**Key commands:**
-```bash
-running-process-daemon start          # Start daemon in background
-running-process-daemon status         # Show daemon info
-running-process-daemon list           # List tracked processes
-running-process-daemon list --json    # JSON output
-running-process-daemon kill-zombies   # Find and kill leaked processes
-running-process-daemon stop           # Stop daemon
-```
-
-**Environment variables:**
-- `RUNNING_PROCESS_NO_TRACKING=1` — disable daemon IPC
-- `RUNNING_PROCESS_DAEMON_SCOPE=dev` — CWD-scoped daemon for development
-- `RUST_LOG=debug` — daemon log level
+`testbins/` contains Rust binaries used as test fixtures: `env-reporter`, `sleeper`, `spawner`.
 
 ## Development Commands
 
+**Build (native extension):**
+```bash
+uv run build.py              # Dev wheel, reinstalls into venv (default)
+uv run build.py --release    # Publish-grade wheels in dist/
+```
+
 **Testing:**
 ```bash
-./test                    # Run all tests with pytest
-uv run pytest -n auto tests -v --durations=0  # Direct pytest command
+./test                                        # Full suite: Rust tests + dev build + pytest
+uv run pytest tests -v                        # Python tests only
+uv run pytest tests/test_foo.py -v            # Single test file
+uv run pytest tests/test_foo.py::TestClass::test_method -v  # Single test
+RUNNING_PROCESS_LIVE_TESTS=1 uv run pytest -m live tests -v  # Integration tests
 ```
 
 **Linting:**
 ```bash
-./lint                    # Run complete linting suite (ruff, black, isort, pyright)
-uv run ruff check --fix src tests  # Just ruff linting
-uv run black src tests    # Code formatting
-uv run pyright src tests  # Type checking
+./lint                           # Full suite: ruff + black + isort + pyright + KBI checker
+uv run ruff check --fix src tests
+uv run black src tests
+uv run pyright src tests
 ```
 
-**Environment Setup:**
+**Environment:**
 ```bash
-. ./activate.sh          # Activate development environment (requires git-bash on Windows)
+. ./activate.sh              # Activate dev environment (git-bash on Windows)
+./install                    # Bootstrap Rust toolchain (rustup + pinned version)
 ```
+
+## Daemon
+
+```bash
+running-process-daemon start|stop|status|list|kill-zombies
+```
+
+**Environment variables:**
+- `RUNNING_PROCESS_NO_TRACKING=1` — disable daemon IPC
+- `RUNNING_PROCESS_DAEMON_SCOPE=dev` — CWD-scoped daemon for test isolation
+- `RUST_LOG=debug` — daemon log level
+
+## CLIs
+
+Two entry points in `pyproject.toml`:
+- `running-process` → `running_process.cli:main` (daemon control, process listing)
+- `running-processor` → `running_process.processor_cli:main` (dashboard web UI)
 
 ## Agent Backlog
 
-- Active pending work lives in [docs/AGENT_TASKS.md](C:/Users/niteris/dev/running-process/docs/AGENT_TASKS.md)
-- Root-level scratch task files should be treated as redirects or historical breadcrumbs, not the source of truth
+Active pending work lives in [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md). Root-level scratch task files are historical breadcrumbs.
 
 ## Windows Native Build Rules
 
-**Do not treat this repo like a generic Rust build on Windows**:
-- The canonical local rebuild path is `uv run build.py`
-- `uv run build.py` defaults to building a dev wheel and reinstalling it into the repo venv
+- The canonical local rebuild path is `uv run build.py` — do not use raw `cargo build`
 - `uv run build.py --dev` and `uv run build.py --quick` are the same mode
-- Use `uv run build.py --release` when you need publish-grade wheels in `dist/`
-- Prefer the repo entrypoints (`./install`, `./test`, and the root trampolines like `./_cargo`) over ad hoc cargo commands
-- When a native dependency needs a C compiler, run the command from a Visual Studio developer shell or through `VsDevCmd.bat`
-- Force the build target to `x86_64-pc-windows-msvc` when the environment is ambiguous; otherwise crates such as `libsqlite3-sys` may incorrectly try the GNU toolchain and fail looking for `gcc.exe`
+- Prefer repo entrypoints (`./install`, `./test`, `./_cargo`) over ad hoc cargo commands
+- When a native dependency needs a C compiler, run from a Visual Studio developer shell or through `VsDevCmd.bat`
+- Force the build target to `x86_64-pc-windows-msvc` when the environment is ambiguous; otherwise crates like `libsqlite3-sys` may try the GNU toolchain and fail looking for `gcc.exe`
 - If a rebuild behaves like a GNU build on Windows, check the active shell environment before changing Rust code
 
-## Import Resolution Guidelines
+## Code Conventions
 
-**Use fully qualified absolute imports for all module resolution**:
-- Use `from package.module import Class` instead of relative imports `from .module import Class`
-- This ensures clear import paths and avoids ambiguity
-- Example: `from running_process.output_formatter import OutputFormatter` not `from .output_formatter import OutputFormatter`
-- Apply this rule to ALL imports within the package, including internal module imports
+**Imports**: Use fully qualified absolute imports (`from running_process.module import Class`, not relative `from .module import Class`)
 
-## Subprocess Command Guidelines
+**Subprocess commands**: Use `subprocess.list2cmdline()` instead of `str.join()` for proper shell escaping
 
-**Never use str.join() to convert subprocess command lists to command strings**:
-- Use `subprocess.list2cmdline()` instead of `str.join()` for proper shell escaping
-- This ensures proper handling of arguments containing spaces, quotes, and special characters
+**Output buffering**: `PYTHONUNBUFFERED=1` is automatically set for all spawned processes in `_create_process_with_pipe()` and `_create_process_with_pty()`
 
-## Python Subprocess Output Buffering
+**Testing**: Use `unittest` framework (TestCase, assertEqual, etc.). Pytest is only the runner — avoid pytest-specific fixtures and decorators.
 
-**PYTHONUNBUFFERED=1 is automatically set for all spawned processes**:
-- Python switches from line-buffered to fully-buffered mode when stdout is piped to another process
-- This causes multi-second delays (4-8KB buffer) before output appears when using tools like codeup
-- The fix is applied in `_create_process_with_pipe()` and `_create_process_with_pty()`
-- This ensures real-time output streaming regardless of how the process is invoked
-
-## Testing Framework Guidelines
-
-**Use unittest framework for all test code**:
-- Write tests using Python's standard `unittest` framework (TestCase, setUp, tearDown, etc.)
-- Use `unittest` assertions (assertEqual, assertTrue, assertRaises, etc.) instead of pytest-specific features
-- Pytest is used only as the test runner, not for test features
-- Avoid pytest-specific decorators, fixtures, and assertion styles
-- This ensures tests are portable and work with any test runner
+**Keyboard interrupts**: Use `handle_keyboard_interrupt(exception)` from `running_process.interrupt_handler` instead of directly calling `_thread.interrupt_main()`. The KBI linter (`ci/lint_python/keyboard_interrupt_checker.py`) enforces this.
 
 ## Code Quality Notes
 
-- **Complex Functions**: Three functions have high complexity and should be refactored if modified:
-  - `ProcessOutputReader.run()` (complexity 12)
-  - `RunningProcess.get_next_line()` (complexity 16)
-  - `RunningProcess.wait()` (complexity 20)
+- **Complex Functions** (refactor if modifying): `ProcessOutputReader.run()` (C12), `RunningProcess.get_next_line()` (C16), `RunningProcess.wait()` (C20)
 - **Print Statements**: Console output via print() is intentional for CLI functionality
 - **Exception Handling**: Broad exception handling is acceptable for process cleanup/recovery scenarios
 - **Cross-Platform**: Code must work on Windows (MSYS), macOS, and Linux
+
+## Workspace Config
+
+- Rust edition 2021, version 1.85+, shared workspace dependencies: `pyo3 0.23`, `rusqlite 0.32` (bundled), `thiserror 2`
+- Python requires >= 3.10, uses ABI3 stable API (`abi3-py310`)
+- Release profile: line-tables-only debug info, packed split-debuginfo, no stripping

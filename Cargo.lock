@@ -210,7 +210,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "daemon-trampoline"
-version = "3.0.13"
+version = "3.0.14"
 dependencies = [
  "libc",
  "serde",
@@ -1036,9 +1036,10 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "running-process-core"
-version = "3.0.13"
+version = "3.0.14"
 dependencies = [
  "libc",
+ "portable-pty",
  "serde_json",
  "sysinfo",
  "thiserror 2.0.18",
@@ -1047,7 +1048,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-daemon"
-version = "3.0.13"
+version = "3.0.14"
 dependencies = [
  "bytes",
  "clap",
@@ -1072,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-proto"
-version = "3.0.13"
+version = "3.0.14"
 dependencies = [
  "prost",
  "prost-build",
@@ -1082,11 +1083,10 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "3.0.13"
+version = "3.0.14"
 dependencies = [
  "interprocess",
  "libc",
- "portable-pty",
  "prost",
  "pyo3",
  "regex",
