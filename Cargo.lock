@@ -1084,11 +1084,14 @@ dependencies = [
 name = "running-process-py"
 version = "3.0.12"
 dependencies = [
+ "interprocess",
  "libc",
  "portable-pty",
+ "prost",
  "pyo3",
  "regex",
  "running-process-core",
+ "running-process-proto",
  "sysinfo",
  "winapi",
 ]
