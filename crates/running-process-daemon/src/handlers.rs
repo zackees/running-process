@@ -183,6 +183,6 @@ mod tests {
         assert_eq!(resp.message, "shutting down");
         assert!(resp.shutdown.is_some());
         // The channel should now hold `true`.
-        assert!(rx.has_changed().unwrap_or(false) || *rx.borrow() == true);
+        assert!(rx.has_changed().unwrap_or(false) || *rx.borrow());
     }
 }
