@@ -74,13 +74,21 @@ fn system_pid(pid: u32) -> Pid {
 }
 
 fn descendant_pids(system: &System, pid: Pid) -> Vec<Pid> {
+    // Build parent→children index in one pass.
+    let mut children_map: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for (child_pid, process) in system.processes() {
+        if let Some(parent) = process.parent() {
+            children_map.entry(parent).or_default().push(*child_pid);
+        }
+    }
+    // BFS from pid.
     let mut descendants = Vec::new();
     let mut stack = vec![pid];
     while let Some(current) = stack.pop() {
-        for (child_pid, process) in system.processes() {
-            if process.parent() == Some(current) {
-                descendants.push(*child_pid);
-                stack.push(*child_pid);
+        if let Some(children) = children_map.get(&current) {
+            for &child in children {
+                descendants.push(child);
+                stack.push(child);
             }
         }
     }
@@ -194,11 +202,7 @@ fn process_created_at(pid: u32) -> Option<f64> {
     let mut system = System::new();
     system.refresh_process_specifics(
         pid,
-        ProcessRefreshKind::new()
-            .with_cpu()
-            .with_disk_usage()
-            .with_memory()
-            .with_exe(UpdateKind::Never),
+        ProcessRefreshKind::new(),
     );
     system
         .process(pid)
@@ -288,18 +292,21 @@ fn native_unregister_process(pid: u32) -> PyResult<()> {
 
 #[pyfunction]
 fn list_tracked_processes() -> PyResult<Vec<TrackedProcessEntry>> {
-    let registry = active_process_registry()
-        .lock()
-        .expect("active process registry mutex poisoned");
-    let mut entries: Vec<_> = registry
-        .values()
+    let snapshot: Vec<ActiveProcessRecord> = {
+        let registry = active_process_registry()
+            .lock()
+            .expect("active process registry mutex poisoned");
+        registry.values().cloned().collect()
+    };
+    let mut entries: Vec<_> = snapshot
+        .into_iter()
         .map(|entry| {
             (
                 entry.pid,
                 process_created_at(entry.pid).unwrap_or(entry.started_at),
-                entry.kind.clone(),
-                entry.command.clone(),
-                entry.cwd.clone(),
+                entry.kind,
+                entry.command,
+                entry.cwd,
             )
         })
         .collect();
@@ -313,7 +320,8 @@ fn list_tracked_processes() -> PyResult<Vec<TrackedProcessEntry>> {
 }
 
 fn kill_process_tree_impl(pid: u32, timeout_seconds: f64) {
-    let mut system = System::new_all();
+    let mut system = System::new();
+    system.refresh_processes();
     let pid = system_pid(pid);
     let Some(_) = system.process(pid) else {
         return;
@@ -747,17 +755,21 @@ fn native_terminal_input_worker(
                     ));
                     break;
                 }
+                let mut batch = Vec::new();
                 for record in records.iter().take(read_count as usize) {
                     if record.EventType != KEY_EVENT {
                         continue;
                     }
                     let key_event = unsafe { record.Event.KeyEvent() };
                     if let Some(event) = translate_console_key_event(key_event) {
-                        let mut guard = state.lock().expect("terminal input mutex poisoned");
-                        guard.events.push_back(event);
-                        drop(guard);
-                        condvar.notify_all();
+                        batch.push(event);
                     }
+                }
+                if !batch.is_empty() {
+                    let mut guard = state.lock().expect("terminal input mutex poisoned");
+                    guard.events.extend(batch);
+                    drop(guard);
+                    condvar.notify_all();
                 }
             }
             WAIT_TIMEOUT => continue,
@@ -784,7 +796,8 @@ fn native_terminal_input_worker(
 
 #[pyfunction]
 fn native_get_process_tree_info(pid: u32) -> String {
-    let system = System::new_all();
+    let mut system = System::new();
+    system.refresh_processes();
     let pid = system_pid(pid);
     let Some(process) = system.process(pid) else {
         return format!("Could not get process info for PID {}", pid.as_u32());
@@ -1500,9 +1513,15 @@ impl NativePtyProcess {
 
     fn wait_impl(&self, timeout: Option<f64>) -> PyResult<i32> {
         running_process_core::rp_rust_debug_scope!("running_process_py::NativePtyProcess::wait");
+        // Fast path: already exited.
+        if let Some(code) = *self.returncode.lock().expect("pty returncode mutex poisoned") {
+            return Ok(code);
+        }
         let start = Instant::now();
         loop {
-            if let Some(code) = self.poll()? {
+            if let Some(code) = poll_pty_process(&self.handles, &self.returncode)
+                .map_err(to_py_err)?
+            {
                 return Ok(code);
             }
             if timeout.is_some_and(|limit| start.elapsed() >= Duration::from_secs_f64(limit)) {
@@ -2217,10 +2236,15 @@ impl NativeRunningProcess {
             None => self.captured_combined_text(py)?,
         };
         let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
+        let compiled_regex = if is_regex {
+            Some(Regex::new(pattern).map_err(to_py_err)?)
+        } else {
+            None
+        };
 
         loop {
             if let Some((matched, start, end, groups)) =
-                self.find_expect_match(&buffer, pattern, is_regex)?
+                self.find_expect_match(&buffer, pattern, compiled_regex.as_ref())?
             {
                 return Ok((
                     "match".to_string(),
@@ -3743,14 +3767,13 @@ impl NativeRunningProcess {
         if !self.text {
             return Ok(String::from_utf8_lossy(line).into_owned());
         }
+        let encoding = self.encoding.as_deref().unwrap_or("utf-8");
+        let errors = self.errors.as_deref().unwrap_or("replace");
+        if encoding == "utf-8" && errors == "replace" {
+            return Ok(String::from_utf8_lossy(line).into_owned());
+        }
         PyBytes::new(py, line)
-            .call_method1(
-                "decode",
-                (
-                    self.encoding.as_deref().unwrap_or("utf-8"),
-                    self.errors.as_deref().unwrap_or("replace"),
-                ),
-            )?
+            .call_method1("decode", (encoding, errors))?
             .extract()
     }
 
@@ -3800,9 +3823,10 @@ impl NativeRunningProcess {
         &self,
         buffer: &str,
         pattern: &str,
-        is_regex: bool,
+        compiled_regex: Option<&Regex>,
     ) -> PyResult<Option<ExpectDetails>> {
-        if !is_regex {
+        if compiled_regex.is_none() {
+            // Literal string match
             let Some(start) = buffer.find(pattern) else {
                 return Ok(None);
             };
@@ -3814,7 +3838,7 @@ impl NativeRunningProcess {
             )));
         }
 
-        let regex = Regex::new(pattern).map_err(to_py_err)?;
+        let regex = compiled_regex.unwrap();
         let Some(captures) = regex.captures(buffer) else {
             return Ok(None);
         };
@@ -3842,14 +3866,14 @@ impl NativeRunningProcess {
         if !self.text {
             return Ok(PyBytes::new(py, line).into_any().unbind());
         }
+        let encoding = self.encoding.as_deref().unwrap_or("utf-8");
+        let errors = self.errors.as_deref().unwrap_or("replace");
+        if encoding == "utf-8" && errors == "replace" {
+            let s = String::from_utf8_lossy(line);
+            return Ok(PyString::new(py, &s).into_any().unbind());
+        }
         Ok(PyBytes::new(py, line)
-            .call_method1(
-                "decode",
-                (
-                    self.encoding.as_deref().unwrap_or("utf-8"),
-                    self.errors.as_deref().unwrap_or("replace"),
-                ),
-            )?
+            .call_method1("decode", (encoding, errors))?
             .into_any()
             .unbind())
     }
@@ -3859,6 +3883,10 @@ impl NativePtyBuffer {
     fn decode_chunk(&self, py: Python<'_>, line: &[u8]) -> PyResult<Py<PyAny>> {
         if !self.text {
             return Ok(PyBytes::new(py, line).into_any().unbind());
+        }
+        if self.encoding == "utf-8" && self.errors == "replace" {
+            let s = String::from_utf8_lossy(line);
+            return Ok(PyString::new(py, &s).into_any().unbind());
         }
         Ok(PyBytes::new(py, line)
             .call_method1("decode", (&self.encoding, &self.errors))?
@@ -3988,7 +4016,11 @@ fn spawn_pty_reader(
     control_churn_bytes_total: Arc<AtomicUsize>,
 ) {
     running_process_core::rp_rust_debug_scope!("running_process_py::spawn_pty_reader");
-    let mut chunk = [0_u8; 4096];
+    let idle_detector_snapshot = idle_detector
+        .lock()
+        .expect("idle detector mutex poisoned")
+        .clone();
+    let mut chunk = vec![0_u8; 65536];
     loop {
         match reader.read(&mut chunk) {
             Ok(0) => break,
@@ -4008,11 +4040,7 @@ fn spawn_pty_reader(
                 }
 
                 // Feed idle detector directly (no GIL needed).
-                if let Some(detector) = idle_detector
-                    .lock()
-                    .expect("idle detector mutex poisoned")
-                    .as_ref()
-                {
+                if let Some(ref detector) = idle_detector_snapshot {
                     detector.record_output(data);
                 }
 
@@ -5758,7 +5786,7 @@ mod tests {
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
             let result = process
-                .find_expect_match("hello world", "world", false)
+                .find_expect_match("hello world", "world", None)
                 .unwrap();
             assert!(result.is_some());
             let (matched, start, end, groups) = result.unwrap();
@@ -5775,7 +5803,7 @@ mod tests {
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
             let result = process
-                .find_expect_match("hello world", "missing", false)
+                .find_expect_match("hello world", "missing", None)
                 .unwrap();
             assert!(result.is_none());
         });
@@ -5786,8 +5814,9 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
+            let re = Regex::new(r"\d+").unwrap();
             let result = process
-                .find_expect_match("hello 123 world", r"\d+", true)
+                .find_expect_match("hello 123 world", r"\d+", Some(&re))
                 .unwrap();
             assert!(result.is_some());
             let (matched, start, end, _) = result.unwrap();
@@ -5802,8 +5831,9 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
+            let re = Regex::new(r"(\d+) (\w+)").unwrap();
             let result = process
-                .find_expect_match("hello 123 world", r"(\d+) (\w+)", true)
+                .find_expect_match("hello 123 world", r"(\d+) (\w+)", Some(&re))
                 .unwrap();
             assert!(result.is_some());
             let (_, _, _, groups) = result.unwrap();
@@ -5818,8 +5848,9 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
             let process = make_test_running_process(py);
+            let re = Regex::new(r"\d+").unwrap();
             let result = process
-                .find_expect_match("hello world", r"\d+", true)
+                .find_expect_match("hello world", r"\d+", Some(&re))
                 .unwrap();
             assert!(result.is_none());
         });
@@ -5828,9 +5859,8 @@ mod tests {
     #[test]
     fn find_expect_match_invalid_regex_errors() {
         pyo3::prepare_freethreaded_python();
-        pyo3::Python::with_gil(|py| {
-            let process = make_test_running_process(py);
-            let result = process.find_expect_match("test", r"[invalid", true);
+        pyo3::Python::with_gil(|_py| {
+            let result = Regex::new(r"[invalid");
             assert!(result.is_err());
         });
     }
