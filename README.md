@@ -15,7 +15,7 @@
 
 ## Why?
 
-This project started off as a fix for python's sub process module. It was in python originally, but then moved to OS specific rust. Now it's blazing fast. It also has cross platform process tracking, pty generation. It has zombie process tracking. It also has builtin `expect` for keyword event triggers, `idle tracking` (great for agent CLI's that dont' notifiy when they are done, they just stop sending data).
+This project started off as a fix for python's sub process module. It was in python originally, but then moved to OS specific rust. Now it's blazing fast: using OS threads, atomics and proper signaling back to the python api. This library also allows stderr and stdout stream reading in parallel, something `subprocess` lacks. It also has cross platform process tracking, pty generation. It has zombie process tracking. It also has builtin `expect` for keyword event triggers, `idle tracking` (great for agent CLI's that dont' notifiy when they are done, they just stop sending data).
 
 This libary is design for speed and correctness and portability. Usually terminal utilities are for windows or linux/mac. This is designed to run everywhere.
 
