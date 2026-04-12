@@ -232,11 +232,17 @@ def ensure_rust_toolchain() -> int:
 
 
 def main() -> int:
-    if subprocess.run(["uv", "sync", "--group", "dev"]).returncode != 0:
-        return 1
+    in_ci = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+    # In CI, uv sync is already run by the Sync step; skip the redundant call.
+    if not in_ci:
+        if subprocess.run(["uv", "sync", "--group", "dev"]).returncode != 0:
+            return 1
     if ensure_rust_toolchain() != 0:
         return 1
     prepend_cargo_bin_to_path()
+    # In CI, cargo check is redundant — the next step (lint/build/test) compiles the workspace.
+    if in_ci:
+        return 0
     return subprocess.run(["cargo", "check", "--workspace"]).returncode
 
 

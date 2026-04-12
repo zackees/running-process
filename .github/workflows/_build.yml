@@ -66,15 +66,10 @@ jobs:
         run: echo "RUSTUP_TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *\"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
       - name: Sync
-        run: uv sync --frozen --group dev
+        run: uv sync --frozen --group dev --no-install-project -v
 
       - name: Install Toolchain
         run: uv run --module ci.run_logged logs/install.log -- uv run --script install
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: running-process-${{ inputs.runs-on }}
-          cache-targets: false
 
       - name: Build wheel (${{ inputs.build-mode || 'dev' }})
         run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
