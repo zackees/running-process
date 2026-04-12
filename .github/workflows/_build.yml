@@ -38,8 +38,6 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
       RUST_BACKTRACE: "1"
     steps:
       - uses: actions/checkout@v4
@@ -61,9 +59,10 @@ jobs:
           restore-keys: |
             venv-${{ inputs.runs-on }}-py3.11-
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-        continue-on-error: true
+      - name: Setup zccache
+        uses: zackees/zccache@main
+        with:
+          shared-key: ${{ inputs.runs-on }}
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -72,8 +71,6 @@ jobs:
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
-
-      - uses: Swatinem/rust-cache@v2
 
       - name: Build wheel (${{ inputs.build-mode || 'dev' }})
         run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
@@ -122,3 +119,7 @@ jobs:
           name: failure-logs-build-${{ inputs.artifact-name || inputs.runs-on }}
           path: logs/*
           if-no-files-found: warn
+
+      - name: Cleanup zccache
+        if: always()
+        uses: zackees/zccache/action/cleanup@main
