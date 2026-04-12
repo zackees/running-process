@@ -4,6 +4,15 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      build-mode:
+        description: "Build mode"
+        required: false
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - release
 
 jobs:
   call:
@@ -11,3 +20,4 @@ jobs:
     with:
       runs-on: ubuntu-24.04
       artifact-name: wheels-linux-x86
+      build-mode: ${{ inputs.build-mode || 'dev' }}

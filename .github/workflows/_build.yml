@@ -10,6 +10,20 @@ on:
         required: false
         type: string
         default: ""
+      build-mode:
+        required: false
+        type: string
+        default: "dev"
+  workflow_dispatch:
+    inputs:
+      build-mode:
+        description: "Build mode (dev or release)"
+        required: false
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - release
 
 jobs:
   build:
@@ -49,8 +63,8 @@ jobs:
           shared-key: running-process-${{ inputs.runs-on }}
           cache-targets: false
 
-      - name: Build wheel (dev)
-        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel --dev
+      - name: Build wheel (${{ inputs.build-mode || 'dev' }})
+        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
 
       - name: Upload dist artifacts
         if: ${{ inputs.artifact-name != '' }}
