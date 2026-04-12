@@ -4,7 +4,10 @@ use running_process_daemon::{client, paths, server};
 use running_process_proto::daemon::{StatusCode, TrackedProcess};
 
 #[derive(Parser)]
-#[command(name = "running-process-daemon", about = "Daemon for subprocess tracking")]
+#[command(
+    name = "running-process-daemon",
+    about = "Daemon for subprocess tracking"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -33,13 +36,9 @@ enum Commands {
         dry_run: bool,
     },
     /// Kill a specific process tree
-    Kill {
-        pid: u32,
-    },
+    Kill { pid: u32 },
     /// Show process tree
-    Tree {
-        pid: u32,
-    },
+    Tree { pid: u32 },
 }
 
 fn main() {
@@ -69,158 +68,132 @@ fn main() {
                 }
             });
         }
-        Commands::Stop => {
-            match client::DaemonClient::connect(None) {
-                Ok(mut c) => match c.shutdown(true, 5.0) {
-                    Ok(_resp) => println!("daemon is shutting down"),
-                    Err(e) => eprintln!("shutdown failed: {e}"),
-                },
-                Err(_) => eprintln!("daemon is not running"),
-            }
-        }
-        Commands::Ping => {
-            match client::DaemonClient::connect(None) {
-                Ok(mut c) => match c.ping() {
-                    Ok(resp) => println!(
-                        "pong (server time: {}ms)",
-                        resp.ping.map(|p| p.server_time_ms).unwrap_or(0)
-                    ),
-                    Err(e) => eprintln!("ping failed: {e}"),
-                },
-                Err(_) => eprintln!("daemon is not running"),
-            }
-        }
-        Commands::Status => {
-            match client::DaemonClient::connect(None) {
-                Ok(mut c) => match c.status() {
-                    Ok(resp) => {
-                        if let Some(s) = resp.status {
-                            println!("version:          {}", s.version);
-                            println!("uptime:           {}s", s.uptime_seconds);
-                            println!("tracked procs:    {}", s.tracked_process_count);
-                            println!("active conns:     {}", s.active_connections);
-                            println!("socket:           {}", s.socket_path);
-                            println!("db:               {}", s.db_path);
-                            if !s.scope.is_empty() {
-                                println!("scope:            {}", s.scope);
-                                println!("scope_hash:       {}", s.scope_hash);
-                                println!("scope_cwd:        {}", s.scope_cwd);
-                            }
-                        } else {
-                            println!("status: ok (no details)");
+        Commands::Stop => match client::DaemonClient::connect(None) {
+            Ok(mut c) => match c.shutdown(true, 5.0) {
+                Ok(_resp) => println!("daemon is shutting down"),
+                Err(e) => eprintln!("shutdown failed: {e}"),
+            },
+            Err(_) => eprintln!("daemon is not running"),
+        },
+        Commands::Ping => match client::DaemonClient::connect(None) {
+            Ok(mut c) => match c.ping() {
+                Ok(resp) => println!(
+                    "pong (server time: {}ms)",
+                    resp.ping.map(|p| p.server_time_ms).unwrap_or(0)
+                ),
+                Err(e) => eprintln!("ping failed: {e}"),
+            },
+            Err(_) => eprintln!("daemon is not running"),
+        },
+        Commands::Status => match client::DaemonClient::connect(None) {
+            Ok(mut c) => match c.status() {
+                Ok(resp) => {
+                    if let Some(s) = resp.status {
+                        println!("version:          {}", s.version);
+                        println!("uptime:           {}s", s.uptime_seconds);
+                        println!("tracked procs:    {}", s.tracked_process_count);
+                        println!("active conns:     {}", s.active_connections);
+                        println!("socket:           {}", s.socket_path);
+                        println!("db:               {}", s.db_path);
+                        if !s.scope.is_empty() {
+                            println!("scope:            {}", s.scope);
+                            println!("scope_hash:       {}", s.scope_hash);
+                            println!("scope_cwd:        {}", s.scope_cwd);
                         }
-                    }
-                    Err(e) => eprintln!("status failed: {e}"),
-                },
-                Err(_) => eprintln!("daemon is not running"),
-            }
-        }
-        Commands::List { json, originator } => {
-            match client::DaemonClient::connect(None) {
-                Ok(mut c) => {
-                    let resp = if let Some(tool) = &originator {
-                        c.list_by_originator(tool)
                     } else {
-                        c.list_active()
-                    };
-                    match resp {
-                        Ok(resp) if resp.code == StatusCode::Ok as i32 => {
-                            let processes = resp
-                                .list_active
-                                .map(|r| r.processes)
-                                .or_else(|| resp.list_by_originator.map(|r| r.processes))
-                                .unwrap_or_default();
+                        println!("status: ok (no details)");
+                    }
+                }
+                Err(e) => eprintln!("status failed: {e}"),
+            },
+            Err(_) => eprintln!("daemon is not running"),
+        },
+        Commands::List { json, originator } => match client::DaemonClient::connect(None) {
+            Ok(mut c) => {
+                let resp = if let Some(tool) = &originator {
+                    c.list_by_originator(tool)
+                } else {
+                    c.list_active()
+                };
+                match resp {
+                    Ok(resp) if resp.code == StatusCode::Ok as i32 => {
+                        let processes = resp
+                            .list_active
+                            .map(|r| r.processes)
+                            .or_else(|| resp.list_by_originator.map(|r| r.processes))
+                            .unwrap_or_default();
 
-                            if json {
-                                print_json(&processes);
+                        if json {
+                            print_json(&processes);
+                        } else {
+                            print_table(&processes);
+                        }
+                    }
+                    Ok(resp) => eprintln!("error: {}", resp.message),
+                    Err(e) => eprintln!("list failed: {e}"),
+                }
+            }
+            Err(_) => eprintln!("daemon is not running"),
+        },
+        Commands::KillZombies { dry_run } => match client::DaemonClient::connect(None) {
+            Ok(mut c) => match c.kill_zombies(dry_run) {
+                Ok(resp) if resp.code == StatusCode::Ok as i32 => {
+                    let zombies = resp.kill_zombies.map(|r| r.zombies).unwrap_or_default();
+                    if zombies.is_empty() {
+                        println!("no zombies found");
+                    } else {
+                        for z in &zombies {
+                            let action = if z.killed {
+                                "killed"
                             } else {
-                                print_table(&processes);
-                            }
+                                "found (dry-run)"
+                            };
+                            println!(
+                                "  PID {} — {} — {} [{}]",
+                                z.pid, z.command, z.reason, action
+                            );
                         }
-                        Ok(resp) => eprintln!("error: {}", resp.message),
-                        Err(e) => eprintln!("list failed: {e}"),
+                        println!(
+                            "{} zombie(s) {}",
+                            zombies.len(),
+                            if dry_run { "found" } else { "killed" }
+                        );
                     }
                 }
-                Err(_) => eprintln!("daemon is not running"),
-            }
-        }
-        Commands::KillZombies { dry_run } => {
-            match client::DaemonClient::connect(None) {
-                Ok(mut c) => {
-                    match c.kill_zombies(dry_run) {
-                        Ok(resp) if resp.code == StatusCode::Ok as i32 => {
-                            let zombies = resp
-                                .kill_zombies
-                                .map(|r| r.zombies)
-                                .unwrap_or_default();
-                            if zombies.is_empty() {
-                                println!("no zombies found");
-                            } else {
-                                for z in &zombies {
-                                    let action = if z.killed {
-                                        "killed"
-                                    } else {
-                                        "found (dry-run)"
-                                    };
-                                    println!(
-                                        "  PID {} — {} — {} [{}]",
-                                        z.pid, z.command, z.reason, action
-                                    );
-                                }
-                                println!(
-                                    "{} zombie(s) {}",
-                                    zombies.len(),
-                                    if dry_run { "found" } else { "killed" }
-                                );
-                            }
-                        }
-                        Ok(resp) => eprintln!("error: {}", resp.message),
-                        Err(e) => eprintln!("kill-zombies failed: {e}"),
+                Ok(resp) => eprintln!("error: {}", resp.message),
+                Err(e) => eprintln!("kill-zombies failed: {e}"),
+            },
+            Err(_) => eprintln!("daemon is not running"),
+        },
+        Commands::Kill { pid } => match client::DaemonClient::connect(None) {
+            Ok(mut c) => match c.kill_tree(pid, 3.0) {
+                Ok(resp) if resp.code == StatusCode::Ok as i32 => {
+                    let count = resp.kill_tree.map(|r| r.processes_killed).unwrap_or(0);
+                    println!("killed {} process(es) in tree for PID {}", count, pid);
+                }
+                Ok(resp) => eprintln!("error: {}", resp.message),
+                Err(e) => eprintln!("kill failed: {e}"),
+            },
+            Err(_) => eprintln!("daemon is not running"),
+        },
+        Commands::Tree { pid } => match client::DaemonClient::connect(None) {
+            Ok(mut c) => match c.get_process_tree(pid) {
+                Ok(resp) if resp.code == StatusCode::Ok as i32 => {
+                    let display = resp
+                        .get_process_tree
+                        .map(|r| r.tree_display)
+                        .unwrap_or_default();
+                    if display.is_empty() {
+                        println!("no process tree found for PID {}", pid);
+                    } else {
+                        println!("{}", display);
                     }
                 }
-                Err(_) => eprintln!("daemon is not running"),
-            }
-        }
-        Commands::Kill { pid } => {
-            match client::DaemonClient::connect(None) {
-                Ok(mut c) => {
-                    match c.kill_tree(pid, 3.0) {
-                        Ok(resp) if resp.code == StatusCode::Ok as i32 => {
-                            let count = resp
-                                .kill_tree
-                                .map(|r| r.processes_killed)
-                                .unwrap_or(0);
-                            println!("killed {} process(es) in tree for PID {}", count, pid);
-                        }
-                        Ok(resp) => eprintln!("error: {}", resp.message),
-                        Err(e) => eprintln!("kill failed: {e}"),
-                    }
-                }
-                Err(_) => eprintln!("daemon is not running"),
-            }
-        }
-        Commands::Tree { pid } => {
-            match client::DaemonClient::connect(None) {
-                Ok(mut c) => {
-                    match c.get_process_tree(pid) {
-                        Ok(resp) if resp.code == StatusCode::Ok as i32 => {
-                            let display = resp
-                                .get_process_tree
-                                .map(|r| r.tree_display)
-                                .unwrap_or_default();
-                            if display.is_empty() {
-                                println!("no process tree found for PID {}", pid);
-                            } else {
-                                println!("{}", display);
-                            }
-                        }
-                        Ok(resp) => eprintln!("error: {}", resp.message),
-                        Err(e) => eprintln!("tree failed: {e}"),
-                    }
-                }
-                Err(_) => eprintln!("daemon is not running"),
-            }
-        }
+                Ok(resp) => eprintln!("error: {}", resp.message),
+                Err(e) => eprintln!("tree failed: {e}"),
+            },
+            Err(_) => eprintln!("daemon is not running"),
+        },
     }
 }
 
@@ -257,7 +230,10 @@ fn print_table(processes: &[TrackedProcess]) {
         return;
     }
 
-    println!("{:<8} {:<8} {:<12} {:<8} COMMAND", "PID", "STATE", "KIND", "UPTIME");
+    println!(
+        "{:<8} {:<8} {:<12} {:<8} COMMAND",
+        "PID", "STATE", "KIND", "UPTIME"
+    );
     for p in processes {
         println!(
             "{:<8} {:<8} {:<12} {:<8} {}",

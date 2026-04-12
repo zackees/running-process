@@ -64,9 +64,7 @@ pub fn shadow_dir() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
         if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-            PathBuf::from(runtime)
-                .join("running-process")
-                .join("run")
+            PathBuf::from(runtime).join("running-process").join("run")
         } else {
             dirs::data_local_dir()
                 .unwrap_or_else(|| PathBuf::from("/tmp"))

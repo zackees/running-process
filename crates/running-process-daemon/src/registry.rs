@@ -260,7 +260,11 @@ impl Registry {
     pub fn list_all(&self) -> Vec<TrackedEntry> {
         let processes = self.processes.lock().unwrap();
         let mut entries: Vec<TrackedEntry> = processes.values().cloned().collect();
-        entries.sort_by(|a, b| a.registered_at.partial_cmp(&b.registered_at).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_by(|a, b| {
+            a.registered_at
+                .partial_cmp(&b.registered_at)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         entries
     }
 

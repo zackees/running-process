@@ -7117,8 +7117,9 @@ mod tests {
     fn running_process_kill_running() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
-            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(0.1)"])
-                .unwrap();
+            let cmd =
+                pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(0.1)"])
+                    .unwrap();
             let process = NativeRunningProcess::new(
                 cmd.as_any(),
                 None,
@@ -7144,8 +7145,9 @@ mod tests {
     fn running_process_terminate_running() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
-            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(0.1)"])
-                .unwrap();
+            let cmd =
+                pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(0.1)"])
+                    .unwrap();
             let process = NativeRunningProcess::new(
                 cmd.as_any(),
                 None,
@@ -7198,8 +7200,9 @@ mod tests {
     fn running_process_close_running() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
-            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(0.1)"])
-                .unwrap();
+            let cmd =
+                pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(0.1)"])
+                    .unwrap();
             let process = NativeRunningProcess::new(
                 cmd.as_any(),
                 None,

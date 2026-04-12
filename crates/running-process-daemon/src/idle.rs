@@ -101,9 +101,7 @@ mod tests {
         let handle = monitor.handle();
 
         // Store an old timestamp
-        monitor
-            .last_activity_ms
-            .store(1_000_000, Ordering::Relaxed);
+        monitor.last_activity_ms.store(1_000_000, Ordering::Relaxed);
 
         // Touch via handle
         handle.touch();
@@ -117,9 +115,7 @@ mod tests {
         let (tx, _rx) = watch::channel(false);
         let monitor = IdleMonitor::new(60, tx);
 
-        monitor
-            .last_activity_ms
-            .store(1_000_000, Ordering::Relaxed);
+        monitor.last_activity_ms.store(1_000_000, Ordering::Relaxed);
         monitor.touch();
 
         let updated = monitor.last_activity_ms.load(Ordering::Relaxed);

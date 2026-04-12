@@ -121,10 +121,7 @@ fn run() -> i32 {
             status.code().unwrap_or(1)
         }
         Err(e) => {
-            eprintln!(
-                "daemon-trampoline: failed to spawn '{}': {e}",
-                cfg.command
-            );
+            eprintln!("daemon-trampoline: failed to spawn '{}': {e}", cfg.command);
             1
         }
     }

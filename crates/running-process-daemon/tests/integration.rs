@@ -27,9 +27,7 @@ macro_rules! test_scope {
 /// join handle and the socket path it is listening on.
 fn start_server(scope: &str) -> (tokio::task::JoinHandle<()>, String) {
     let socket = paths::socket_path(Some(scope));
-    let db = paths::db_path(Some(scope))
-        .to_string_lossy()
-        .into_owned();
+    let db = paths::db_path(Some(scope)).to_string_lossy().into_owned();
 
     let server = DaemonServer::new(
         socket.clone(),
@@ -64,13 +62,18 @@ async fn test_start_ping_status_shutdown_roundtrip() {
 
     // Run blocking client calls on a dedicated thread.
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         // --- Ping ---
         let ping_resp = client.ping().expect("ping failed");
-        assert_eq!(ping_resp.code, StatusCode::Ok as i32, "ping code should be OK");
-        let ping_payload = ping_resp.ping.expect("ping response should have ping payload");
+        assert_eq!(
+            ping_resp.code,
+            StatusCode::Ok as i32,
+            "ping code should be OK"
+        );
+        let ping_payload = ping_resp
+            .ping
+            .expect("ping response should have ping payload");
         assert!(
             ping_payload.server_time_ms > 0,
             "server_time_ms should be positive"
@@ -96,9 +99,7 @@ async fn test_start_ping_status_shutdown_roundtrip() {
         );
 
         // --- Shutdown ---
-        let shutdown_resp = client
-            .shutdown(true, 5.0)
-            .expect("shutdown failed");
+        let shutdown_resp = client.shutdown(true, 5.0).expect("shutdown failed");
         assert_eq!(
             shutdown_resp.code,
             StatusCode::Ok as i32,
@@ -127,8 +128,7 @@ async fn test_unknown_request_type_returns_unknown_request() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         // Send a request with a bogus type value (999).
         let bad_request = DaemonRequest {
@@ -174,8 +174,7 @@ async fn test_multiple_pings() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         for i in 0..10 {
             let resp = client
@@ -222,8 +221,7 @@ async fn test_status_shows_active_connections() {
         let _ = client1.ping().expect("initial ping on client 1 failed");
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        let _client2 =
-            DaemonClient::connect_to(&socket_clone).expect("failed to connect client 2");
+        let _client2 = DaemonClient::connect_to(&socket_clone).expect("failed to connect client 2");
 
         // Give the server a moment to accept the second connection.
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -340,8 +338,7 @@ async fn test_register_list_unregister_roundtrip() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         // --- Register a process ---
         let reg_req = make_register_request(
@@ -388,7 +385,9 @@ async fn test_register_list_unregister_roundtrip() {
         );
 
         // --- ListActive: should now be empty ---
-        let list_resp2 = client.list_active().expect("list_active after unregister failed");
+        let list_resp2 = client
+            .list_active()
+            .expect("list_active after unregister failed");
         assert_eq!(list_resp2.code, StatusCode::Ok as i32);
         let active2 = list_resp2
             .list_active
@@ -420,12 +419,11 @@ async fn test_register_invalid_pid_returns_error() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         // Register with pid=0 -- should be rejected.
         let reg_req = make_register_request(
-            0,       // invalid
+            0, // invalid
             1000.0,
             "subprocess",
             "bad cmd",
@@ -462,8 +460,7 @@ async fn test_unregister_nonexistent_returns_not_found() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         // Unregister a pid that was never registered.
         let unreg_req = make_unregister_request(88888);
@@ -496,19 +493,30 @@ async fn test_list_by_originator_filters_correctly() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         // Register pid=10001 with originator "TOOL_A:1".
         let reg1 = make_register_request(
-            10001, 1000.0, "subprocess", "cmd_a", "/tmp", "TOOL_A:1", "contained",
+            10001,
+            1000.0,
+            "subprocess",
+            "cmd_a",
+            "/tmp",
+            "TOOL_A:1",
+            "contained",
         );
         let resp1 = client.send_request(reg1).expect("register 10001 failed");
         assert_eq!(resp1.code, StatusCode::Ok as i32);
 
         // Register pid=10002 with originator "TOOL_B:2".
         let reg2 = make_register_request(
-            10002, 2000.0, "subprocess", "cmd_b", "/tmp", "TOOL_B:2", "detached",
+            10002,
+            2000.0,
+            "subprocess",
+            "cmd_b",
+            "/tmp",
+            "TOOL_B:2",
+            "detached",
         );
         let resp2 = client.send_request(reg2).expect("register 10002 failed");
         assert_eq!(resp2.code, StatusCode::Ok as i32);
@@ -569,8 +577,7 @@ async fn test_status_shows_tracked_count() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         // Status before any registrations -> tracked_process_count == 0.
         let status0 = client.status().expect("status failed");
@@ -583,21 +590,28 @@ async fn test_status_shows_tracked_count() {
 
         // Register 2 processes.
         let reg1 = make_register_request(
-            20001, 1000.0, "subprocess", "proc1", "/tmp", "TOOL:1", "contained",
+            20001,
+            1000.0,
+            "subprocess",
+            "proc1",
+            "/tmp",
+            "TOOL:1",
+            "contained",
         );
         let resp1 = client.send_request(reg1).expect("register 20001 failed");
         assert_eq!(resp1.code, StatusCode::Ok as i32);
 
-        let reg2 = make_register_request(
-            20002, 2000.0, "pty", "proc2", "/home", "TOOL:2", "detached",
-        );
+        let reg2 =
+            make_register_request(20002, 2000.0, "pty", "proc2", "/home", "TOOL:2", "detached");
         let resp2 = client.send_request(reg2).expect("register 20002 failed");
         assert_eq!(resp2.code, StatusCode::Ok as i32);
 
         // Status after registrations -> tracked_process_count == 2.
         let status2 = client.status().expect("status after register failed");
         assert_eq!(status2.code, StatusCode::Ok as i32);
-        let s2 = status2.status.expect("status payload missing after register");
+        let s2 = status2
+            .status
+            .expect("status payload missing after register");
         assert_eq!(
             s2.tracked_process_count, 2,
             "expected 2 tracked processes after registering 2"

@@ -122,9 +122,8 @@ fn send_to_daemon(request: &DaemonRequest) {
     let payload = request.encode_to_vec();
     let len = (payload.len() as u32).to_be_bytes();
 
-    let ok = conn.write_all(&len).is_ok()
-        && conn.write_all(&payload).is_ok()
-        && conn.flush().is_ok();
+    let ok =
+        conn.write_all(&len).is_ok() && conn.write_all(&payload).is_ok() && conn.flush().is_ok();
 
     if !ok {
         // Connection broken — drop it so the next call retries.
@@ -137,13 +136,7 @@ fn send_to_daemon(request: &DaemonRequest) {
 // ---------------------------------------------------------------------------
 
 /// Notify the daemon that a process has been registered.  Fire-and-forget.
-pub fn daemon_register(
-    pid: u32,
-    created_at: f64,
-    kind: &str,
-    command: &str,
-    cwd: Option<&str>,
-) {
+pub fn daemon_register(pid: u32, created_at: f64, kind: &str, command: &str, cwd: Option<&str>) {
     let request = DaemonRequest {
         id: next_id(),
         r#type: RequestType::Register as i32,

@@ -932,4 +932,3 @@ fn returncode_auto_updates_without_poll() {
     );
     assert_eq!(process.returncode(), Some(0));
 }
-

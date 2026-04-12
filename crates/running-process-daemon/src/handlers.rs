@@ -127,9 +127,9 @@ fn entry_to_tracked_process(entry: &TrackedEntry) -> TrackedProcess {
         containment: entry.containment.clone(),
         registered_at: entry.registered_at,
         uptime_seconds: uptime,
-        parent_alive: true,                    // Phase 4 reaper will validate
-        state: ProcessState::Alive as i32,     // Phase 4 reaper will validate
-        last_validated_at: 0.0,                // Phase 4
+        parent_alive: true,                // Phase 4 reaper will validate
+        state: ProcessState::Alive as i32, // Phase 4 reaper will validate
+        last_validated_at: 0.0,            // Phase 4
     }
 }
 
@@ -239,10 +239,7 @@ pub fn handle_list_active(request: &DaemonRequest, state: &DaemonState) -> Daemo
 }
 
 /// Handle a `ListByOriginator` request by returning processes matching the tool prefix.
-pub fn handle_list_by_originator(
-    request: &DaemonRequest,
-    state: &DaemonState,
-) -> DaemonResponse {
+pub fn handle_list_by_originator(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
     let Some(ref req) = request.list_by_originator else {
         return error_response(
             request.id,
@@ -264,10 +261,7 @@ pub fn handle_list_by_originator(
 }
 
 /// Handle a `GetProcessTree` request by building a tree display string via sysinfo.
-pub fn handle_get_process_tree(
-    request: &DaemonRequest,
-    _state: &DaemonState,
-) -> DaemonResponse {
+pub fn handle_get_process_tree(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
     let Some(ref req) = request.get_process_tree else {
         return error_response(
             request.id,
@@ -310,12 +304,7 @@ fn build_process_tree_display(root_pid: u32) -> String {
     ));
 
     // Collect children recursively.
-    fn collect_children(
-        sys: &System,
-        parent_pid: Pid,
-        prefix: &str,
-        lines: &mut Vec<String>,
-    ) {
+    fn collect_children(sys: &System, parent_pid: Pid, prefix: &str, lines: &mut Vec<String>) {
         let children: Vec<_> = sys
             .processes()
             .values()
@@ -333,12 +322,7 @@ fn build_process_tree_display(root_pid: u32) -> String {
                 child.pid().as_u32()
             ));
 
-            collect_children(
-                sys,
-                child.pid(),
-                &format!("{prefix}{child_prefix}"),
-                lines,
-            );
+            collect_children(sys, child.pid(), &format!("{prefix}{child_prefix}"), lines);
         }
     }
 

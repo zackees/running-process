@@ -28,9 +28,8 @@ pub fn daemonize(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
 
-    cmd.spawn().map_err(|e| {
-        format!("failed to spawn detached daemon: {e}").to_string()
-    })?;
+    cmd.spawn()
+        .map_err(|e| format!("failed to spawn detached daemon: {e}").to_string())?;
 
     // The parent exits, returning the user to the shell.
     std::process::exit(0);

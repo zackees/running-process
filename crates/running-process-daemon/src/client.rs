@@ -100,10 +100,7 @@ impl DaemonClient {
     ///
     /// The request is length-prefixed (4-byte big-endian u32) then protobuf-encoded.
     /// The response uses the same framing.
-    pub fn send_request(
-        &mut self,
-        request: DaemonRequest,
-    ) -> Result<DaemonResponse, ClientError> {
+    pub fn send_request(&mut self, request: DaemonRequest) -> Result<DaemonResponse, ClientError> {
         // Encode
         let payload = request.encode_to_vec();
         let len = payload.len() as u32;
@@ -112,9 +109,7 @@ impl DaemonClient {
         self.writer
             .write_all(&len.to_be_bytes())
             .map_err(ClientError::Io)?;
-        self.writer
-            .write_all(&payload)
-            .map_err(ClientError::Io)?;
+        self.writer.write_all(&payload).map_err(ClientError::Io)?;
         self.writer.flush().map_err(ClientError::Io)?;
 
         // Read length prefix
