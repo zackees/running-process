@@ -421,30 +421,51 @@ pub fn handle_kill_zombies(request: &DaemonRequest, state: &DaemonState) -> Daem
     };
 
     let zombies = reaper::scan_for_zombies(state);
+    let orphan_conhosts = reaper::scan_for_orphan_conhosts();
 
-    let reports: Vec<ZombieReport> = if req.dry_run {
-        zombies
-            .iter()
-            .map(|z| ZombieReport {
-                pid: z.pid,
-                command: z.command.clone(),
-                reason: z.reason.clone(),
-                killed: false,
-            })
-            .collect()
+    let mut reports: Vec<ZombieReport> = Vec::new();
+
+    // Registry-based zombies.
+    if req.dry_run {
+        reports.extend(zombies.iter().map(|z| ZombieReport {
+            pid: z.pid,
+            command: z.command.clone(),
+            reason: z.reason.clone(),
+            killed: false,
+        }));
+        reports.extend(orphan_conhosts.iter().map(|z| ZombieReport {
+            pid: z.pid,
+            command: z.command.clone(),
+            reason: z.reason.clone(),
+            killed: false,
+        }));
     } else {
-        let results = reaper::kill_zombies(state, &zombies);
-        zombies
-            .iter()
-            .zip(results.iter())
-            .map(|(z, (_pid, killed))| ZombieReport {
-                pid: z.pid,
-                command: z.command.clone(),
-                reason: z.reason.clone(),
-                killed: *killed,
-            })
-            .collect()
-    };
+        let reg_results = reaper::kill_zombies(state, &zombies);
+        reports.extend(
+            zombies
+                .iter()
+                .zip(reg_results.iter())
+                .map(|(z, (_pid, killed))| ZombieReport {
+                    pid: z.pid,
+                    command: z.command.clone(),
+                    reason: z.reason.clone(),
+                    killed: *killed,
+                }),
+        );
+
+        let conhost_results = reaper::kill_conhosts(&orphan_conhosts);
+        reports.extend(
+            orphan_conhosts
+                .iter()
+                .zip(conhost_results.iter())
+                .map(|(z, (_pid, killed))| ZombieReport {
+                    pid: z.pid,
+                    command: z.command.clone(),
+                    reason: z.reason.clone(),
+                    killed: *killed,
+                }),
+        );
+    }
 
     DaemonResponse {
         request_id: request.id,

@@ -117,6 +117,33 @@ pub fn scan_for_zombies(state: &DaemonState) -> Vec<ZombieInfo> {
     zombies
 }
 
+/// Scan for orphaned conhost.exe processes system-wide.
+///
+/// These are conhost.exe instances whose parent process has died — typically
+/// leftovers from ConPTY sessions that were not properly cleaned up.
+/// Unlike registry-based zombie scanning, this uses a Toolhelp process snapshot
+/// and does not require prior registration.
+#[cfg(windows)]
+pub fn scan_for_orphan_conhosts() -> Vec<ZombieInfo> {
+    running_process_core::pty::find_orphan_conhosts()
+        .into_iter()
+        .map(|c| ZombieInfo {
+            pid: c.pid,
+            command: "conhost.exe".to_string(),
+            reason: format!(
+                "orphan conhost.exe — parent PID {} is dead",
+                c.parent_pid
+            ),
+        })
+        .collect()
+}
+
+/// No-op on non-Windows platforms.
+#[cfg(not(windows))]
+pub fn scan_for_orphan_conhosts() -> Vec<ZombieInfo> {
+    Vec::new()
+}
+
 /// Kill the given zombie processes and unregister them from the registry.
 ///
 /// Returns a vec of `(pid, killed)` tuples indicating whether each process was
@@ -155,6 +182,38 @@ pub fn kill_zombies(state: &DaemonState, zombies: &[ZombieInfo]) -> Vec<(u32, bo
     results
 }
 
+/// Kill orphaned conhost.exe processes (not in the registry, so no unregister needed).
+///
+/// Returns a vec of `(pid, killed)` tuples.
+pub fn kill_conhosts(conhosts: &[ZombieInfo]) -> Vec<(u32, bool)> {
+    let mut system = System::new();
+    let mut results = Vec::with_capacity(conhosts.len());
+
+    for z in conhosts {
+        let sysinfo_pid = Pid::from_u32(z.pid);
+        system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+
+        let killed = match system.process(sysinfo_pid) {
+            Some(proc) => {
+                let result = proc.kill_with(Signal::Kill).unwrap_or(false);
+                if result {
+                    info!(pid = z.pid, "killed orphan conhost.exe");
+                } else {
+                    warn!(pid = z.pid, "failed to kill orphan conhost.exe");
+                }
+                result
+            }
+            None => {
+                debug!(pid = z.pid, "orphan conhost.exe already dead");
+                true
+            }
+        };
+        results.push((z.pid, killed));
+    }
+
+    results
+}
+
 // ---------------------------------------------------------------------------
 // Background reaper loop
 // ---------------------------------------------------------------------------
@@ -175,20 +234,38 @@ pub async fn reaper_loop(state: Arc<DaemonState>, interval_secs: u64) {
                 // sysinfo calls are blocking, so run on a blocking thread.
                 let scan_state = Arc::clone(&state);
                 let result = tokio::task::spawn_blocking(move || {
+                    // Registry-based zombie scan.
                     let zombies = scan_for_zombies(&scan_state);
-                    if zombies.is_empty() {
-                        debug!("reaper scan: no zombies found");
-                        return;
+                    if !zombies.is_empty() {
+                        info!("reaper scan: found {} zombie(s)", zombies.len());
+                        let results = kill_zombies(&scan_state, &zombies);
+                        for (z, (_pid, killed)) in zombies.iter().zip(results.iter()) {
+                            info!(
+                                pid = z.pid,
+                                killed = killed,
+                                reason = %z.reason,
+                                "reaper: processed zombie"
+                            );
+                        }
                     }
-                    info!("reaper scan: found {} zombie(s)", zombies.len());
-                    let results = kill_zombies(&scan_state, &zombies);
-                    for (z, (_pid, killed)) in zombies.iter().zip(results.iter()) {
-                        info!(
-                            pid = z.pid,
-                            killed = killed,
-                            reason = %z.reason,
-                            "reaper: processed zombie"
-                        );
+
+                    // Orphan conhost.exe scan (Windows ConPTY cleanup).
+                    let orphan_conhosts = scan_for_orphan_conhosts();
+                    if !orphan_conhosts.is_empty() {
+                        info!("reaper scan: found {} orphan conhost(s)", orphan_conhosts.len());
+                        let results = kill_conhosts(&orphan_conhosts);
+                        for (z, (_pid, killed)) in orphan_conhosts.iter().zip(results.iter()) {
+                            info!(
+                                pid = z.pid,
+                                killed = killed,
+                                reason = %z.reason,
+                                "reaper: processed orphan conhost"
+                            );
+                        }
+                    }
+
+                    if zombies.is_empty() && orphan_conhosts.is_empty() {
+                        debug!("reaper scan: no zombies or orphan conhosts found");
                     }
                 })
                 .await;
