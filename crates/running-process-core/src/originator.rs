@@ -259,9 +259,7 @@ mod tests {
     #[test]
     fn is_parent_alive_returns_true_for_current_process() {
         let mut system = System::new();
-        system.refresh_processes_specifics(
-            ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
-        );
+        system.refresh_processes_specifics(ProcessRefreshKind::new().with_cmd(UpdateKind::Always));
         let my_pid = std::process::id();
         // Use a far-future child start time so the parent clearly started before it
         let result = is_parent_alive(&system, my_pid, u64::MAX);
@@ -271,9 +269,7 @@ mod tests {
     #[test]
     fn is_parent_alive_returns_false_for_nonexistent_pid() {
         let mut system = System::new();
-        system.refresh_processes_specifics(
-            ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
-        );
+        system.refresh_processes_specifics(ProcessRefreshKind::new().with_cmd(UpdateKind::Always));
         // PID 0 is the idle process on Windows / swapper on Linux — use a very
         // unlikely high PID instead.
         let result = is_parent_alive(&system, u32::MAX, 0);
@@ -283,9 +279,7 @@ mod tests {
     #[test]
     fn is_parent_alive_detects_pid_reuse() {
         let mut system = System::new();
-        system.refresh_processes_specifics(
-            ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
-        );
+        system.refresh_processes_specifics(ProcessRefreshKind::new().with_cmd(UpdateKind::Always));
         let my_pid = std::process::id();
         // Pretend the child started at time 0 (long before the current process).
         // The current process's start_time should be > 0, so this should detect

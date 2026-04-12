@@ -1266,14 +1266,17 @@ class PseudoTerminalProcess:
 
     def wait(self, timeout: float | None = None, *, raise_on_abnormal_exit: bool = False) -> int:
         self._ensure_started()
+        assert self._proc is not None
         try:
-            code = self._wait_for_exit_code(timeout=timeout)
+            code = self._proc.wait_and_drain(
+                timeout=timeout,
+                drain_timeout=_PTY_READER_NATIVE_CLOSE_WAIT_SECONDS,
+            )
         except TimeoutError:
             self.kill()
             self._finalize("timeout")
             raise TimeoutError("Pseudo-terminal process timed out") from None
 
-        self._drain_native_until_eof(timeout=_PTY_READER_NATIVE_CLOSE_WAIT_SECONDS)
         self._finalize("exit")
         self._exit_status = classify_exit_status(code, KEYBOARD_INTERRUPT_EXIT_CODES)
         if code in KEYBOARD_INTERRUPT_EXIT_CODES:
@@ -2135,10 +2138,10 @@ class PseudoTerminalProcess:
         if self._proc is not None:
             with suppress(RuntimeError):
                 self._proc.respond_to_queries(chunk)
-        control_bytes = _control_churn_bytes(chunk)
+        # Output accounting (visible bytes, control churn) is now tracked
+        # by the Rust reader thread via atomic counters.  Python only needs
+        # to update the activity timestamp and echo/buffer bookkeeping.
         self.last_activity_at = time.time()
-        self._pty_output_bytes_total += max(0, len(chunk) - control_bytes)
-        self._pty_control_churn_bytes_total += control_bytes
         self._pending_echo_chunks.append(chunk)
         if self._buffer is not None:
             self._buffer.record_output(chunk)
@@ -2212,12 +2215,21 @@ class PseudoTerminalProcess:
         else:
             process_alive = self.poll() is None
 
+        # Read output accounting from Rust reader thread (atomic counters).
+        output_bytes = self._pty_output_bytes_total
+        churn_bytes = self._pty_control_churn_bytes_total
+        if self._proc is not None:
+            with suppress(AttributeError):
+                output_bytes = int(self._proc.pty_output_bytes_total())
+            with suppress(AttributeError):
+                churn_bytes = int(self._proc.pty_control_churn_bytes_total())
+
         return _IdleSample(
             sampled_at=now,
             process_alive=process_alive,
             pty_input_bytes=self._pty_input_bytes_total,
-            pty_output_bytes=self._pty_output_bytes_total,
-            pty_control_churn_bytes=self._pty_control_churn_bytes_total,
+            pty_output_bytes=output_bytes,
+            pty_control_churn_bytes=churn_bytes,
             cpu_percent=cpu_percent,
             disk_io_bytes=disk_io_bytes,
             network_io_bytes=network_io_bytes,

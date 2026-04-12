@@ -1111,6 +1111,10 @@ struct NativePtyProcess {
     echo: Arc<AtomicBool>,
     /// When set, the reader thread feeds output directly to the idle detector.
     idle_detector: Arc<Mutex<Option<Arc<IdleDetectorCore>>>>,
+    /// Visible (non-control) output bytes seen by the reader thread.
+    output_bytes_total: Arc<AtomicUsize>,
+    /// Control churn bytes (ANSI escapes, BS, CR, DEL) seen by the reader.
+    control_churn_bytes_total: Arc<AtomicUsize>,
     #[cfg(windows)]
     terminal_input_relay_stop: Arc<AtomicBool>,
     #[cfg(windows)]
@@ -1418,8 +1422,17 @@ impl NativePtyProcess {
         let shared = Arc::clone(&self.reader);
         let echo = Arc::clone(&self.echo);
         let idle_detector = Arc::clone(&self.idle_detector);
+        let output_bytes = Arc::clone(&self.output_bytes_total);
+        let churn_bytes = Arc::clone(&self.control_churn_bytes_total);
         thread::spawn(move || {
-            spawn_pty_reader(reader, shared, echo, idle_detector);
+            spawn_pty_reader(
+                reader,
+                shared,
+                echo,
+                idle_detector,
+                output_bytes,
+                churn_bytes,
+            );
         });
 
         *guard = Some(NativePtyHandles {
@@ -2673,6 +2686,8 @@ impl NativePtyProcess {
             submit_events_total: Arc::new(AtomicUsize::new(0)),
             echo: Arc::new(AtomicBool::new(false)),
             idle_detector: Arc::new(Mutex::new(None)),
+            output_bytes_total: Arc::new(AtomicUsize::new(0)),
+            control_churn_bytes_total: Arc::new(AtomicUsize::new(0)),
             #[cfg(windows)]
             terminal_input_relay_stop: Arc::new(AtomicBool::new(false)),
             #[cfg(windows)]
@@ -2861,6 +2876,47 @@ impl NativePtyProcess {
 
     fn pty_submit_events_total(&self) -> usize {
         self.submit_events_total.load(Ordering::Acquire)
+    }
+
+    /// Visible (non-control) output bytes tracked by the reader thread.
+    fn pty_output_bytes_total(&self) -> usize {
+        self.output_bytes_total.load(Ordering::Acquire)
+    }
+
+    /// Control churn bytes (ANSI escapes, BS, CR, DEL) tracked by the reader thread.
+    fn pty_control_churn_bytes_total(&self) -> usize {
+        self.control_churn_bytes_total.load(Ordering::Acquire)
+    }
+
+    /// Wait for exit then drain remaining output.  Entire operation runs
+    /// in Rust with the GIL released.
+    #[pyo3(signature = (timeout=None, drain_timeout=2.0))]
+    fn wait_and_drain(
+        &self,
+        py: Python<'_>,
+        timeout: Option<f64>,
+        drain_timeout: f64,
+    ) -> PyResult<i32> {
+        py.allow_threads(|| {
+            // Wait for exit.
+            let code = self.wait_impl(timeout)?;
+            // Drain: wait for reader thread to close.
+            let deadline = Instant::now() + Duration::from_secs_f64(drain_timeout.max(0.0));
+            let mut guard = self.reader.state.lock().expect("pty read mutex poisoned");
+            while !guard.closed {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let result = self
+                    .reader
+                    .condvar
+                    .wait_timeout(guard, remaining)
+                    .expect("pty read mutex poisoned");
+                guard = result.0;
+            }
+            Ok(code)
+        })
     }
 
     /// Enable/disable echoing PTY output to stdout from the reader thread.
@@ -3869,6 +3925,8 @@ fn spawn_pty_reader(
     shared: Arc<PtyReadShared>,
     echo: Arc<AtomicBool>,
     idle_detector: Arc<Mutex<Option<Arc<IdleDetectorCore>>>>,
+    output_bytes_total: Arc<AtomicUsize>,
+    control_churn_bytes_total: Arc<AtomicUsize>,
 ) {
     running_process_core::rp_rust_debug_scope!("running_process_py::spawn_pty_reader");
     let mut chunk = [0_u8; 4096];
@@ -3877,6 +3935,12 @@ fn spawn_pty_reader(
             Ok(0) => break,
             Ok(n) => {
                 let data = &chunk[..n];
+
+                // Output accounting (no GIL needed).
+                let churn = control_churn_bytes(data);
+                let visible = data.len().saturating_sub(churn);
+                output_bytes_total.fetch_add(visible, Ordering::Relaxed);
+                control_churn_bytes_total.fetch_add(churn, Ordering::Relaxed);
 
                 // Echo to stdout if enabled (no GIL needed).
                 if echo.load(Ordering::Relaxed) {
@@ -7678,7 +7742,16 @@ mod tests {
         let reader: Box<dyn std::io::Read + Send> = Box::new(std::io::Cursor::new(data.to_vec()));
         let echo = Arc::new(AtomicBool::new(false));
         let idle = Arc::new(Mutex::new(None));
-        spawn_pty_reader(reader, Arc::clone(&shared), echo, idle);
+        let out_bytes = Arc::new(AtomicUsize::new(0));
+        let churn_bytes = Arc::new(AtomicUsize::new(0));
+        spawn_pty_reader(
+            reader,
+            Arc::clone(&shared),
+            echo,
+            idle,
+            out_bytes,
+            churn_bytes,
+        );
 
         // Wait for the reader thread to finish
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -7710,7 +7783,16 @@ mod tests {
         let reader: Box<dyn std::io::Read + Send> = Box::new(std::io::Cursor::new(Vec::new()));
         let echo = Arc::new(AtomicBool::new(false));
         let idle = Arc::new(Mutex::new(None));
-        spawn_pty_reader(reader, Arc::clone(&shared), echo, idle);
+        let out_bytes = Arc::new(AtomicUsize::new(0));
+        let churn_bytes = Arc::new(AtomicUsize::new(0));
+        spawn_pty_reader(
+            reader,
+            Arc::clone(&shared),
+            echo,
+            idle,
+            out_bytes,
+            churn_bytes,
+        );
 
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
