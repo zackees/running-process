@@ -32,7 +32,7 @@ on:
 jobs:
   build:
     runs-on: ${{ inputs.runs-on }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       CARGO_HOME: ${{ github.workspace }}/.cargo
       RUSTUP_HOME: ${{ github.workspace }}/.rustup

@@ -20,7 +20,7 @@ from ci.env import clean_env
 ROOT = Path(__file__).resolve().parent.parent
 
 _STACK_DUMP_TIMEOUT_ENV = "RUN_LOGGED_STACK_DUMP_SECONDS"
-_DEFAULT_STACK_DUMP_TIMEOUT_SECONDS = 60.0
+_DEFAULT_STACK_DUMP_TIMEOUT_SECONDS = 180.0
 
 
 def _write_console_line(line: str) -> None:
