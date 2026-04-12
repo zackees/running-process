@@ -102,16 +102,27 @@ def _force_kill(pid: int) -> None:
 def reap_zombies(label: str = "") -> list[int]:
     """Kill all tracked PIDs that are still alive.
 
-    Returns the list of PIDs that were killed.
+    Returns the list of PIDs that were killed.  Clears the PID log
+    afterwards so dead/killed PIDs are not re-checked by later callers.
     """
     pids = _read_pids()
     killed: list[int] = []
+    still_alive: list[int] = []
     for pid in pids:
         if pid_alive(pid):
             _force_kill(pid)
             killed.append(pid)
+            # Check if the process actually died after the kill attempt.
+            if pid_alive(pid):
+                still_alive.append(pid)
     if killed and label:
         _log(f"[pid-tracker] {label}: killed {len(killed)} zombie(s): {killed}")
+    # Rewrite the log with only stubbornly-alive PIDs so they can be
+    # retried later; all other PIDs (dead or successfully killed) are
+    # removed to prevent cascade failures in subsequent tests.
+    reset_log()
+    for pid in still_alive:
+        record_pid(pid)
     return killed
 
 

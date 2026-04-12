@@ -1268,15 +1268,13 @@ class PseudoTerminalProcess:
         self._ensure_started()
         assert self._proc is not None
         try:
-            code = self._proc.wait_and_drain(
-                timeout=timeout,
-                drain_timeout=_PTY_READER_NATIVE_CLOSE_WAIT_SECONDS,
-            )
+            code = self._wait_for_exit_code(timeout=timeout)
         except TimeoutError:
             self.kill()
             self._finalize("timeout")
             raise TimeoutError("Pseudo-terminal process timed out") from None
 
+        self._drain_native_until_eof(timeout=_PTY_READER_NATIVE_CLOSE_WAIT_SECONDS)
         self._finalize("exit")
         self._exit_status = classify_exit_status(code, KEYBOARD_INTERRUPT_EXIT_CODES)
         if code in KEYBOARD_INTERRUPT_EXIT_CODES:

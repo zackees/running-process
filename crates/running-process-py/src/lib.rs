@@ -2637,6 +2637,24 @@ impl PyNativeProcess {
     fn is_pty(&self) -> bool {
         matches!(self.backend, NativeProcessBackend::Pty(_))
     }
+
+    /// Wait for exit then drain remaining output (PTY only).
+    #[pyo3(signature = (timeout=None, drain_timeout=2.0))]
+    fn wait_and_drain(
+        &self,
+        py: Python<'_>,
+        timeout: Option<f64>,
+        drain_timeout: f64,
+    ) -> PyResult<i32> {
+        match &self.backend {
+            NativeProcessBackend::Pty(process) => {
+                process.wait_and_drain(py, timeout, drain_timeout)
+            }
+            NativeProcessBackend::Running(_) => Err(PyRuntimeError::new_err(
+                "wait_and_drain is only available for PTY-backed NativeProcess",
+            )),
+        }
+    }
 }
 
 #[pymethods]
