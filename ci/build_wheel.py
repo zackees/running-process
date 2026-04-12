@@ -14,6 +14,7 @@ from typing import Literal
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
+TRAMPOLINE_ASSETS = ROOT / "src" / "running_process" / "assets"
 
 BuildMode = Literal["dev", "release"]
 
@@ -84,6 +85,29 @@ def install_wheel(wheel: Path, *, env: dict[str, str]) -> int:
     return 0
 
 
+def build_trampoline(mode: BuildMode) -> int:
+    """Build the daemon-trampoline binary and copy it into package assets."""
+    import shutil
+
+    profile_args = ["--release"] if mode == "release" else []
+    result = subprocess.run(
+        ["cargo", "build", "-p", "daemon-trampoline", *profile_args],
+        cwd=ROOT,
+        check=False,
+    )
+    if result.returncode != 0:
+        return result.returncode
+
+    profile_dir = "release" if mode == "release" else "debug"
+    ext = ".exe" if platform.system() == "Windows" else ""
+    src = ROOT / "target" / profile_dir / f"daemon-trampoline{ext}"
+    dest = TRAMPOLINE_ASSETS / f"daemon-trampoline{ext}"
+    TRAMPOLINE_ASSETS.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    print(f"trampoline: {src} -> {dest}", file=sys.stderr, flush=True)
+    return 0
+
+
 def run_build(mode: BuildMode) -> int:
     from ci.env import build_env
     from ci.tiny_pdb import (
@@ -95,6 +119,11 @@ def run_build(mode: BuildMode) -> int:
         stripped_pdb_path,
     )
     from ci.verify_release_symbols import format_release_artifact_report, verify_release_artifact
+
+    rc = build_trampoline(mode)
+    if rc != 0:
+        print("trampoline build failed", file=sys.stderr, flush=True)
+        return rc
 
     env = build_env()
     rustc_args: list[str] = []

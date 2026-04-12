@@ -4,6 +4,7 @@ members = [
     "crates/running-process-core",
     "crates/running-process-proto",
     "crates/running-process-daemon",
+    "crates/daemon-trampoline",
     "crates/running-process-py",
     "testbins/env-reporter",
     "testbins/sleeper",
