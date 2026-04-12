@@ -13,12 +13,20 @@ ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process-core/src/lib.rs"),
     Path("crates/running-process-core/src/containment.rs"),
     Path("crates/running-process-py/src/lib.rs"),
+    # Daemon crate: process management for daemonize, shadow-copy, and auto-start
+    Path("crates/running-process-daemon/src/client.rs"),
+    Path("crates/running-process-daemon/src/platform/windows.rs"),
+    Path("crates/running-process-daemon/src/shadow.rs"),
 }
 
 ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-core/src/lib.rs"),
     Path("crates/running-process-core/src/containment.rs"),
     Path("crates/running-process-py/src/lib.rs"),
+    # Daemon crate: process management for daemonize, shadow-copy, and auto-start
+    Path("crates/running-process-daemon/src/client.rs"),
+    Path("crates/running-process-daemon/src/platform/windows.rs"),
+    Path("crates/running-process-daemon/src/shadow.rs"),
 }
 
 ALLOWED_PORTABLE_PTY = {

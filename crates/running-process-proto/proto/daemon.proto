@@ -1,0 +1,198 @@
+// Proto3 schema for running-process daemon IPC.
+//
+// Convention: RequestType enum values are chosen so that each value matches
+// the field number of the corresponding payload message inside DaemonRequest
+// and DaemonResponse.  For example, REGISTER = 10 corresponds to
+// `RegisterRequest register = 10;` in DaemonRequest and
+// `RegisterResponse register = 10;` in DaemonResponse.
+
+syntax = "proto3";
+package running_process.daemon.v1;
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum RequestType {
+  REQUEST_TYPE_UNSPECIFIED     = 0;
+  REQUEST_TYPE_REGISTER        = 10;
+  REQUEST_TYPE_UNREGISTER      = 11;
+  REQUEST_TYPE_LIST_ACTIVE     = 20;
+  REQUEST_TYPE_LIST_BY_ORIGINATOR = 21;
+  REQUEST_TYPE_GET_PROCESS_TREE = 22;
+  REQUEST_TYPE_KILL_ZOMBIES    = 30;
+  REQUEST_TYPE_KILL_TREE       = 31;
+  REQUEST_TYPE_PING            = 40;
+  REQUEST_TYPE_SHUTDOWN        = 41;
+  REQUEST_TYPE_STATUS          = 42;
+}
+
+enum StatusCode {
+  STATUS_CODE_OK               = 0;
+  STATUS_CODE_ERROR            = 1;
+  STATUS_CODE_UNKNOWN_REQUEST  = 2;
+  STATUS_CODE_INVALID_ARGUMENT = 3;
+  STATUS_CODE_NOT_FOUND        = 4;
+  STATUS_CODE_INTERNAL         = 5;
+  STATUS_CODE_UNAVAILABLE      = 6;
+  STATUS_CODE_VERSION_MISMATCH = 7;
+  STATUS_CODE_RATE_LIMITED     = 8;
+}
+
+enum ProcessState {
+  PROCESS_STATE_UNKNOWN = 0;
+  PROCESS_STATE_ALIVE   = 1;
+  PROCESS_STATE_DEAD    = 2;
+  PROCESS_STATE_ZOMBIE  = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Envelope messages
+// ---------------------------------------------------------------------------
+
+message DaemonRequest {
+  uint64      id               = 1;
+  RequestType type             = 2;
+  uint32      protocol_version = 3;
+  string      client_name      = 4;
+
+  // Payload fields — field numbers match RequestType enum values.
+  RegisterRequest         register          = 10;
+  UnregisterRequest       unregister        = 11;
+  ListActiveRequest       list_active       = 20;
+  ListByOriginatorRequest list_by_originator = 21;
+  GetProcessTreeRequest   get_process_tree  = 22;
+  KillZombiesRequest      kill_zombies      = 30;
+  KillTreeRequest         kill_tree         = 31;
+  PingRequest             ping              = 40;
+  ShutdownRequest         shutdown          = 41;
+  StatusRequest           status            = 42;
+}
+
+message DaemonResponse {
+  uint64     request_id = 1;
+  StatusCode code       = 2;
+  string     message    = 3;
+
+  // Payload fields — field numbers match RequestType enum values.
+  RegisterResponse         register          = 10;
+  UnregisterResponse       unregister        = 11;
+  ListActiveResponse       list_active       = 20;
+  ListByOriginatorResponse list_by_originator = 21;
+  GetProcessTreeResponse   get_process_tree  = 22;
+  KillZombiesResponse      kill_zombies      = 30;
+  KillTreeResponse         kill_tree         = 31;
+  PingResponse             ping              = 40;
+  ShutdownResponse         shutdown          = 41;
+  StatusResponse           status            = 42;
+}
+
+// ---------------------------------------------------------------------------
+// Payload messages
+// ---------------------------------------------------------------------------
+
+message RegisterRequest {
+  uint32 pid        = 1;
+  double created_at = 2;
+  string kind       = 3;
+  string command    = 4;
+  string cwd        = 5;
+  string originator = 6;
+  string containment = 7;
+}
+
+message RegisterResponse {}
+
+message UnregisterRequest {
+  uint32 pid = 1;
+}
+
+message UnregisterResponse {}
+
+message ListActiveRequest {}
+
+message ListActiveResponse {
+  repeated TrackedProcess processes = 1;
+}
+
+message ListByOriginatorRequest {
+  string tool = 1;
+}
+
+message ListByOriginatorResponse {
+  repeated TrackedProcess processes = 1;
+}
+
+message GetProcessTreeRequest {
+  uint32 pid = 1;
+}
+
+message GetProcessTreeResponse {
+  string tree_display = 1;
+}
+
+message KillZombiesRequest {
+  bool dry_run = 1;
+}
+
+message KillZombiesResponse {
+  repeated ZombieReport zombies = 1;
+}
+
+message ZombieReport {
+  uint32 pid     = 1;
+  string command = 2;
+  string reason  = 3;
+  bool   killed  = 4;
+}
+
+message KillTreeRequest {
+  uint32 pid             = 1;
+  double timeout_seconds = 2;
+}
+
+message KillTreeResponse {
+  uint32 processes_killed = 1;
+}
+
+message PingRequest {}
+
+message PingResponse {
+  int64 server_time_ms = 1;
+}
+
+message ShutdownRequest {
+  bool   graceful        = 1;
+  double timeout_seconds = 2;
+}
+
+message ShutdownResponse {}
+
+message StatusRequest {}
+
+message StatusResponse {
+  string version                = 1;
+  uint64 uptime_seconds         = 2;
+  uint32 tracked_process_count  = 3;
+  uint32 active_connections     = 4;
+  string socket_path            = 5;
+  string db_path                = 6;
+  string scope                  = 7;
+  string scope_hash             = 8;
+  string scope_cwd              = 9;
+}
+
+message TrackedProcess {
+  uint32       pid              = 1;
+  double       created_at       = 2;
+  string       kind             = 3;
+  string       command          = 4;
+  string       cwd              = 5;
+  string       originator       = 6;
+  string       containment      = 7;
+  double       registered_at    = 8;
+  double       uptime_seconds   = 9;
+  bool         parent_alive     = 10;
+  ProcessState state            = 11;
+  double       last_validated_at = 12;
+}
