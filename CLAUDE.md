@@ -14,6 +14,29 @@ This is a modern Python library for subprocess process management with the follo
 
 The package follows a layered design where RunningProcess orchestrates ProcessOutputReader and integrates with RunningProcessManager for lifecycle management.
 
+## Daemon Architecture
+
+The project includes a Rust daemon (`running-process-daemon`) for persistent subprocess tracking:
+
+- **Proto schema**: `crates/running-process-proto/proto/daemon.proto` — protobuf IPC protocol
+- **Daemon binary**: `crates/running-process-daemon/` — server, client, registry, reaper
+- **PyO3 integration**: `crates/running-process-py/src/daemon_client.rs` — fire-and-forget IPC
+
+**Key commands:**
+```bash
+running-process-daemon start          # Start daemon in background
+running-process-daemon status         # Show daemon info
+running-process-daemon list           # List tracked processes
+running-process-daemon list --json    # JSON output
+running-process-daemon kill-zombies   # Find and kill leaked processes
+running-process-daemon stop           # Stop daemon
+```
+
+**Environment variables:**
+- `RUNNING_PROCESS_NO_TRACKING=1` — disable daemon IPC
+- `RUNNING_PROCESS_DAEMON_SCOPE=dev` — CWD-scoped daemon for development
+- `RUST_LOG=debug` — daemon log level
+
 ## Development Commands
 
 **Testing:**

@@ -711,6 +711,21 @@ mod tests {
     }
 
     #[test]
+    fn request_type_enum_values_match_convention() {
+        // Verify the enum values we use in dispatch match expected values.
+        assert_eq!(RequestType::Register as i32, 10);
+        assert_eq!(RequestType::Unregister as i32, 11);
+        assert_eq!(RequestType::ListActive as i32, 20);
+        assert_eq!(RequestType::ListByOriginator as i32, 21);
+        assert_eq!(RequestType::GetProcessTree as i32, 22);
+        assert_eq!(RequestType::KillZombies as i32, 30);
+        assert_eq!(RequestType::KillTree as i32, 31);
+        assert_eq!(RequestType::Ping as i32, 40);
+        assert_eq!(RequestType::Shutdown as i32, 41);
+        assert_eq!(RequestType::Status as i32, 42);
+    }
+
+    #[test]
     fn test_list_by_originator_filters() {
         let (state, _tmp) = test_state();
 
