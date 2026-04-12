@@ -611,3 +611,227 @@ async fn test_status_shows_tracked_count() {
 
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
 }
+
+// ===========================================================================
+// Phase 4: Reaper, KillTree, KillZombies, GetProcessTree integration tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 10: kill_zombies dry_run with no zombies returns OK and empty list
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_kill_zombies_dry_run_with_no_zombies() {
+    let scope = format!("integ4-{}", line!());
+    let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client =
+            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+
+        let resp = client.kill_zombies(true).expect("kill_zombies dry_run failed");
+        assert_eq!(resp.code, StatusCode::Ok as i32, "kill_zombies should return OK");
+        let zombies = resp
+            .kill_zombies
+            .expect("kill_zombies payload missing")
+            .zombies;
+        assert!(
+            zombies.is_empty(),
+            "expected no zombies in empty registry, got {}",
+            zombies.len()
+        );
+
+        // Clean up.
+        let _ = client.shutdown(true, 5.0);
+    })
+    .await;
+    result.expect("client task panicked");
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: kill_zombies (non-dry-run) with no zombies returns OK and empty list
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_kill_zombies_with_no_zombies() {
+    let scope = format!("integ4-{}", line!());
+    let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client =
+            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+
+        let resp = client.kill_zombies(false).expect("kill_zombies failed");
+        assert_eq!(resp.code, StatusCode::Ok as i32, "kill_zombies should return OK");
+        let zombies = resp
+            .kill_zombies
+            .expect("kill_zombies payload missing")
+            .zombies;
+        assert!(
+            zombies.is_empty(),
+            "expected no zombies in empty registry, got {}",
+            zombies.len()
+        );
+
+        // Clean up.
+        let _ = client.shutdown(true, 5.0);
+    })
+    .await;
+    result.expect("client task panicked");
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: kill_tree for a nonexistent PID returns OK with 0 killed
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_kill_tree_nonexistent_pid() {
+    let scope = format!("integ4-{}", line!());
+    let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client =
+            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+
+        // Use a PID that almost certainly does not exist.
+        let resp = client
+            .kill_tree(4_000_099, 3.0)
+            .expect("kill_tree failed");
+        assert_eq!(resp.code, StatusCode::Ok as i32, "kill_tree should return OK");
+        let count = resp
+            .kill_tree
+            .expect("kill_tree payload missing")
+            .processes_killed;
+        assert_eq!(count, 0, "expected 0 processes killed for nonexistent PID");
+
+        // Clean up.
+        let _ = client.shutdown(true, 5.0);
+    })
+    .await;
+    result.expect("client task panicked");
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: get_process_tree for current process returns non-empty tree
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_get_process_tree_for_current_process() {
+    let scope = format!("integ4-{}", line!());
+    let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let current_pid = std::process::id();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client =
+            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+
+        let resp = client
+            .get_process_tree(current_pid)
+            .expect("get_process_tree failed");
+        assert_eq!(resp.code, StatusCode::Ok as i32, "get_process_tree should return OK");
+        let tree_display = resp
+            .get_process_tree
+            .expect("get_process_tree payload missing")
+            .tree_display;
+        assert!(
+            !tree_display.is_empty(),
+            "tree display should not be empty for current process"
+        );
+        assert!(
+            tree_display.contains(&format!("pid={current_pid}")),
+            "tree display should contain current PID, got: {tree_display}"
+        );
+
+        // Clean up.
+        let _ = client.shutdown(true, 5.0);
+    })
+    .await;
+    result.expect("client task panicked");
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: kill_zombies finds a registered dead process via dry-run
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_kill_zombies_finds_registered_dead_process() {
+    let scope = format!("integ4-{}", line!());
+    let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client =
+            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+
+        // Register a fake dead PID (4_000_050 is unlikely to be a real process).
+        let reg_req = make_register_request(
+            4_000_050,
+            1000.0,
+            "subprocess",
+            "fake-dead-cmd",
+            "/tmp",
+            "TEST:zombie",
+            "contained",
+        );
+        let reg_resp = client.send_request(reg_req).expect("register failed");
+        assert_eq!(reg_resp.code, StatusCode::Ok as i32, "register should succeed");
+
+        // Dry-run: should detect the dead process as a zombie.
+        let resp = client
+            .kill_zombies(true)
+            .expect("kill_zombies dry_run failed");
+        assert_eq!(resp.code, StatusCode::Ok as i32, "kill_zombies should return OK");
+        let zombies = resp
+            .kill_zombies
+            .expect("kill_zombies payload missing")
+            .zombies;
+        assert_eq!(
+            zombies.len(),
+            1,
+            "expected 1 zombie for dead fake PID, got {}",
+            zombies.len()
+        );
+        assert_eq!(zombies[0].pid, 4_000_050);
+        assert_eq!(zombies[0].command, "fake-dead-cmd");
+        assert!(
+            !zombies[0].killed,
+            "dry_run should not kill the process"
+        );
+
+        // The process should still be in the registry (dry-run does not remove).
+        let list_resp = client.list_active().expect("list_active failed");
+        let procs = list_resp
+            .list_active
+            .expect("list_active payload missing")
+            .processes;
+        assert_eq!(
+            procs.len(),
+            1,
+            "process should still be tracked after dry-run"
+        );
+
+        // Clean up.
+        let _ = client.shutdown(true, 5.0);
+    })
+    .await;
+    result.expect("client task panicked");
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+}
