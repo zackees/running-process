@@ -18,6 +18,10 @@ on:
         required: false
         type: boolean
         default: false
+      include-crates:
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       build-mode:
@@ -82,6 +86,20 @@ jobs:
         with:
           name: ${{ inputs.artifact-name }}
           path: dist/*
+          if-no-files-found: error
+
+      - name: Package Rust crates
+        if: ${{ inputs.include-crates }}
+        run: |
+          cargo package -p running-process-core --no-verify
+          cargo package -p running-process-py --no-verify
+
+      - name: Upload crate artifacts
+        if: ${{ inputs.include-crates && inputs.artifact-name != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: crates
+          path: target/package/*.crate
           if-no-files-found: error
 
       - name: Display timeout diagnostics
