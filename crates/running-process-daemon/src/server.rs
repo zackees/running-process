@@ -332,6 +332,11 @@ fn dispatch_request(
         Ok(RequestType::Ping) => handlers::handle_ping(request, state),
         Ok(RequestType::Status) => handlers::handle_status(request, state),
         Ok(RequestType::Shutdown) => handlers::handle_shutdown(request, state),
+        Ok(RequestType::Register) => handlers::handle_register(request, state),
+        Ok(RequestType::Unregister) => handlers::handle_unregister(request, state),
+        Ok(RequestType::ListActive) => handlers::handle_list_active(request, state),
+        Ok(RequestType::ListByOriginator) => handlers::handle_list_by_originator(request, state),
+        Ok(RequestType::GetProcessTree) => handlers::handle_get_process_tree(request, state),
         Ok(rt) => {
             stub_response(request_id, rt)
         }
