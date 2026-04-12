@@ -11,12 +11,14 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+pub mod console_detect;
 pub mod containment;
 #[cfg(feature = "originator-scan")]
 pub mod originator;
 mod public_symbols;
 mod rust_debug;
 
+pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedChild, ContainedProcessGroup, Containment, ORIGINATOR_ENV_VAR};
 #[cfg(feature = "originator-scan")]
 pub use originator::{find_processes_by_originator, OriginatorProcessInfo};
