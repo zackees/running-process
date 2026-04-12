@@ -1,9 +1,12 @@
 // Windows-specific daemon operations (DETACHED_PROCESS, named pipes)
 
 /// Creation flags for a fully detached background process.
+///
+/// Do NOT combine DETACHED_PROCESS with CREATE_NO_WINDOW — they conflict.
+/// DETACHED_PROCESS means "no console at all"; CREATE_NO_WINDOW means
+/// "create a console but don't show a window." Using both is undefined.
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Re-spawn the current executable as a detached background process.
 ///
@@ -18,7 +21,7 @@ pub fn daemonize(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(args);
     cmd.arg("--daemon-internal");
-    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
 
     // Redirect stdio to nul so the child is completely detached.
     cmd.stdin(std::process::Stdio::null());
