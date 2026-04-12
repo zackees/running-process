@@ -340,7 +340,15 @@ def publish_crates(*, dry_run: bool) -> None:
         cmd = ["cargo", "publish", "-p", crate, "--no-verify"]
         if dry_run:
             cmd.append("--dry-run")
-        run(cmd)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+        log(f"  $ {' '.join(cmd)}")
+        if result.returncode != 0:
+            if "already uploaded" in result.stderr.lower():
+                log(f"  {crate} already published, skipping")
+                continue
+            log(result.stderr)
+            raise subprocess.CalledProcessError(result.returncode, cmd)
+        log(result.stderr.rstrip())
         if not dry_run and crate != PUBLISHABLE_CRATES[-1]:
             log("  Waiting for crates.io to index...")
             time.sleep(30)
@@ -395,9 +403,8 @@ def main() -> int:
         return 0
 
     to_upload = filter_missing_artifacts(expected_artifacts, existing_files)
-    if not to_upload:
-        return 0
-    run(["uv", "publish", *[str(path) for path in to_upload]])
+    if to_upload:
+        run(["uv", "publish", *[str(path) for path in to_upload]])
 
     if not args.skip_rust:
         publish_crates(dry_run=False)
