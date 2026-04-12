@@ -214,6 +214,123 @@ class DaemonHandle:
 
 
 # ---------------------------------------------------------------------------
+# Environment building
+# ---------------------------------------------------------------------------
+
+# Variables to always strip from the daemon environment.
+# These leak venv, build tool, or dynamic linker state from the parent.
+_STRIP_ENV_VARS: set[str] = {
+    "VIRTUAL_ENV",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "CONDA_DEFAULT_ENV",
+    "CONDA_PREFIX",
+    "CONDA_PYTHON_EXE",
+    "CONDA_SHLVL",
+    "_CE_CONDA",
+    "_CE_M",
+    "PKG_CONFIG_PATH",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+}
+
+# Prefixes for variables to strip (e.g., PIP_INDEX_URL, PIP_REQUIRE_VIRTUALENV).
+_STRIP_ENV_PREFIXES: tuple[str, ...] = ("PIP_", "CONDA_")
+
+# PATH components that indicate a venv or build-tool bin directory.
+_VENV_PATH_MARKERS: tuple[str, ...] = (
+    "/.venv/",
+    "/venv/",
+    "/virtualenv/",
+    "\\venv\\",
+    "\\.venv\\",
+    "\\virtualenv\\",
+    "/Scripts",
+    "\\Scripts",
+)
+
+
+def _is_venv_path_component(component: str) -> bool:
+    """Return True if a PATH component looks like a venv bin directory."""
+    for marker in _VENV_PATH_MARKERS:
+        if marker in component:
+            return True
+    # Also check for the exact VIRTUAL_ENV/bin pattern
+    venv = os.environ.get("VIRTUAL_ENV", "")
+    if venv and component.startswith(venv):
+        return True
+    return False
+
+
+def _clean_path(raw_path: str) -> str:
+    """Remove venv/build-tool entries from a PATH string."""
+    sep = ";" if sys.platform == "win32" else ":"
+    cleaned = [c for c in raw_path.split(sep) if c and not _is_venv_path_component(c)]
+    return sep.join(cleaned)
+
+
+def _platform_default_path() -> str:
+    """Return a minimal platform-appropriate default PATH."""
+    if sys.platform == "win32":
+        sys_root = os.environ.get("SystemRoot", r"C:\Windows")
+        return ";".join([
+            os.path.join(sys_root, "system32"),
+            sys_root,
+            os.path.join(sys_root, "System32", "Wbem"),
+            os.path.join(sys_root, "System32", "WindowsPowerShell", "v1.0"),
+        ])
+    return "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def build_daemon_env(
+    caller_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a clean environment for a daemon process.
+
+    1. Start with the current process environment.
+    2. Strip venv/build-tool variables.
+    3. Clean PATH to remove venv bin directories.
+    4. Merge caller-specified overrides.
+    5. Forward RUNNING_PROCESS_* variables from the parent.
+
+    If the resulting PATH is empty after cleaning, use platform defaults.
+    """
+    # Start from current env.
+    env = dict(os.environ)
+
+    # Strip known venv/build-tool vars.
+    for key in list(env):
+        if key in _STRIP_ENV_VARS:
+            del env[key]
+        elif any(key.startswith(prefix) for prefix in _STRIP_ENV_PREFIXES):
+            del env[key]
+
+    # Also strip LD_LIBRARY_PATH / DYLD_LIBRARY_PATH on Unix.
+    if sys.platform != "win32":
+        env.pop("LD_LIBRARY_PATH", None)
+        env.pop("DYLD_LIBRARY_PATH", None)
+
+    # Clean PATH.
+    raw_path = env.get("PATH", env.get("Path", ""))
+    path_key = "Path" if "Path" in env else "PATH"
+    cleaned = _clean_path(raw_path)
+    if not cleaned:
+        cleaned = _platform_default_path()
+    env[path_key] = cleaned
+
+    # Merge caller overrides.
+    if caller_env:
+        env.update(caller_env)
+
+    # Forward RUNNING_PROCESS_* vars from the real parent environment.
+    for key, value in os.environ.items():
+        if key.startswith("RUNNING_PROCESS_"):
+            env.setdefault(key, value)
+
+    return env
+
+
+# ---------------------------------------------------------------------------
 # spawn_daemon
 # ---------------------------------------------------------------------------
 
@@ -245,8 +362,9 @@ def spawn_daemon(
     cwd:
         Working directory for the daemon (default: inherit caller).
     env:
-        Explicit environment variables for the daemon.  If ``None``, the
-        trampoline inherits the caller's environment.
+        Extra environment variables to merge into the daemon's clean
+        environment.  The daemon always starts with a clean env (venv and
+        build-tool vars stripped).  Pass explicit overrides here.
     log_path:
         Path to a log file.  The parent opens the file in append mode before
         spawning so permission errors are reported synchronously.  If ``None``,
@@ -260,16 +378,20 @@ def spawn_daemon(
         program = cmd[0]
         args = list(cmd[1:])
 
-    # 2. Prepare runtime directory.
+    # 2. Build a clean daemon environment.
+    daemon_env = build_daemon_env(caller_env=env)
+
+    # 3. Prepare runtime directory.
     rd = runtime_dir(name)
 
-    # 3. Write sidecar JSON.
-    write_sidecar(name, command=program, args=args, cwd=cwd, env=env)
+    # 4. Write sidecar JSON (always with explicit env so the trampoline
+    #    env_clear()s and applies only what's in the sidecar).
+    write_sidecar(name, command=program, args=args, cwd=cwd, env=daemon_env)
 
-    # 4. Hard-link the trampoline.
+    # 5. Hard-link the trampoline.
     trampoline = hard_link_trampoline(name)
 
-    # 5. Open log file if requested (parent opens for sync error reporting).
+    # 6. Open log file if requested (parent opens for sync error reporting).
     if log_path is not None:
         log_path = Path(log_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -281,7 +403,7 @@ def spawn_daemon(
         stdout_target = subprocess.DEVNULL
         stderr_target = subprocess.DEVNULL
 
-    # 6. Spawn the trampoline.
+    # 7. Spawn the trampoline.
     try:
         kwargs: dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
@@ -299,7 +421,7 @@ def spawn_daemon(
         if log_fd is not None:
             log_fd.close()
 
-    # 7. Write PID file.
+    # 8. Write PID file.
     pid_file = rd / "daemon.pid"
     pid_file.write_text(str(proc.pid), encoding="utf-8")
 
