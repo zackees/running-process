@@ -312,7 +312,7 @@ fn wait_timeout_returns_timeout_error() {
         CommandSpec::Argv(vec![
             "python".into(),
             "-c".into(),
-            "import time; time.sleep(0.1)".into(),
+            "import time; time.sleep(10)".into(),
         ]),
         false,
         StdinMode::Inherit,
