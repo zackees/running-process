@@ -22,6 +22,7 @@ fn sidecar_path(exe: &Path) -> PathBuf {
     exe.with_file_name(format!("{}.daemon.json", stem.to_string_lossy()))
 }
 
+#[allow(clippy::needless_return)]
 fn set_process_name(exe: &Path) {
     let stem = exe
         .file_stem()
