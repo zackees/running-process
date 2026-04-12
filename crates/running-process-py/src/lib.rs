@@ -1107,6 +1107,10 @@ struct NativePtyProcess {
     input_bytes_total: Arc<AtomicUsize>,
     newline_events_total: Arc<AtomicUsize>,
     submit_events_total: Arc<AtomicUsize>,
+    /// When true, the reader thread writes PTY output to stdout.
+    echo: Arc<AtomicBool>,
+    /// When set, the reader thread feeds output directly to the idle detector.
+    idle_detector: Arc<Mutex<Option<Arc<IdleDetectorCore>>>>,
     #[cfg(windows)]
     terminal_input_relay_stop: Arc<AtomicBool>,
     #[cfg(windows)]
@@ -1412,7 +1416,11 @@ impl NativePtyProcess {
         #[cfg(windows)]
         public_symbols::rp_apply_windows_pty_priority_public(child.as_raw_handle(), self.nice)?;
         let shared = Arc::clone(&self.reader);
-        thread::spawn(move || public_symbols::rp_spawn_pty_reader_public(reader, shared));
+        let echo = Arc::clone(&self.echo);
+        let idle_detector = Arc::clone(&self.idle_detector);
+        thread::spawn(move || {
+            spawn_pty_reader(reader, shared, echo, idle_detector);
+        });
 
         *guard = Some(NativePtyHandles {
             master: pair.master,
@@ -1643,8 +1651,9 @@ struct IdleMonitorState {
     interrupted: bool,
 }
 
-#[pyclass]
-struct NativeIdleDetector {
+/// Core idle detection logic, shareable across threads via Arc.
+/// The reader thread calls `record_output` directly without the GIL.
+struct IdleDetectorCore {
     timeout_seconds: f64,
     stability_window_seconds: f64,
     sample_interval_seconds: f64,
@@ -1654,6 +1663,111 @@ struct NativeIdleDetector {
     enabled: Arc<AtomicBool>,
     state: Mutex<IdleMonitorState>,
     condvar: Condvar,
+}
+
+impl IdleDetectorCore {
+    fn record_input(&self, byte_count: usize) {
+        if !self.reset_on_input || byte_count == 0 {
+            return;
+        }
+        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+        guard.last_reset_at = Instant::now();
+        self.condvar.notify_all();
+    }
+
+    fn record_output(&self, data: &[u8]) {
+        if !self.reset_on_output || data.is_empty() {
+            return;
+        }
+        let control_bytes = control_churn_bytes(data);
+        let visible_output_bytes = data.len().saturating_sub(control_bytes);
+        let active_output =
+            visible_output_bytes > 0 || (self.count_control_churn_as_output && control_bytes > 0);
+        if !active_output {
+            return;
+        }
+        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+        guard.last_reset_at = Instant::now();
+        self.condvar.notify_all();
+    }
+
+    fn mark_exit(&self, returncode: i32, interrupted: bool) {
+        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+        guard.returncode = Some(returncode);
+        guard.interrupted = interrupted;
+        self.condvar.notify_all();
+    }
+
+    fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    fn set_enabled(&self, enabled: bool) {
+        let was_enabled = self.enabled.swap(enabled, Ordering::AcqRel);
+        if enabled && !was_enabled {
+            let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+            guard.last_reset_at = Instant::now();
+        }
+        self.condvar.notify_all();
+    }
+
+    fn wait(&self, timeout: Option<f64>) -> (bool, String, f64, Option<i32>) {
+        let started = Instant::now();
+        let overall_timeout = timeout.map(Duration::from_secs_f64);
+        let min_idle = self.timeout_seconds.max(self.stability_window_seconds);
+        let sample_interval = Duration::from_secs_f64(self.sample_interval_seconds.max(0.001));
+
+        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
+        loop {
+            let now = Instant::now();
+            let idle_for = now.duration_since(guard.last_reset_at).as_secs_f64();
+
+            if let Some(returncode) = guard.returncode {
+                let reason = if guard.interrupted {
+                    "interrupt"
+                } else {
+                    "process_exit"
+                };
+                return (false, reason.to_string(), idle_for, Some(returncode));
+            }
+
+            let enabled = self.enabled.load(Ordering::Acquire);
+            if enabled && idle_for >= min_idle {
+                return (true, "idle_timeout".to_string(), idle_for, None);
+            }
+
+            if let Some(limit) = overall_timeout {
+                if now.duration_since(started) >= limit {
+                    return (false, "timeout".to_string(), idle_for, None);
+                }
+            }
+
+            let idle_remaining = if enabled {
+                (min_idle - idle_for).max(0.0)
+            } else {
+                sample_interval.as_secs_f64()
+            };
+            let mut wait_for =
+                sample_interval.min(Duration::from_secs_f64(idle_remaining.max(0.001)));
+            if let Some(limit) = overall_timeout {
+                let elapsed = now.duration_since(started);
+                if elapsed < limit {
+                    let remaining = limit - elapsed;
+                    wait_for = wait_for.min(remaining);
+                }
+            }
+            let result = self
+                .condvar
+                .wait_timeout(guard, wait_for)
+                .expect("idle monitor mutex poisoned");
+            guard = result.0;
+        }
+    }
+}
+
+#[pyclass]
+struct NativeIdleDetector {
+    core: Arc<IdleDetectorCore>,
 }
 
 struct PtyBufferState {
@@ -2557,6 +2671,8 @@ impl NativePtyProcess {
             input_bytes_total: Arc::new(AtomicUsize::new(0)),
             newline_events_total: Arc::new(AtomicUsize::new(0)),
             submit_events_total: Arc::new(AtomicUsize::new(0)),
+            echo: Arc::new(AtomicBool::new(false)),
+            idle_detector: Arc::new(Mutex::new(None)),
             #[cfg(windows)]
             terminal_input_relay_stop: Arc::new(AtomicBool::new(false)),
             #[cfg(windows)]
@@ -2745,6 +2861,84 @@ impl NativePtyProcess {
 
     fn pty_submit_events_total(&self) -> usize {
         self.submit_events_total.load(Ordering::Acquire)
+    }
+
+    /// Enable/disable echoing PTY output to stdout from the reader thread.
+    fn set_echo(&self, enabled: bool) {
+        self.echo.store(enabled, Ordering::Release);
+    }
+
+    fn echo_enabled(&self) -> bool {
+        self.echo.load(Ordering::Acquire)
+    }
+
+    /// Attach an idle detector so the reader thread feeds it directly.
+    fn attach_idle_detector(&self, detector: &NativeIdleDetector) {
+        let mut guard = self
+            .idle_detector
+            .lock()
+            .expect("idle detector mutex poisoned");
+        *guard = Some(Arc::clone(&detector.core));
+    }
+
+    /// Detach the idle detector from the reader thread.
+    fn detach_idle_detector(&self) {
+        let mut guard = self
+            .idle_detector
+            .lock()
+            .expect("idle detector mutex poisoned");
+        *guard = None;
+    }
+
+    /// Wait for idle entirely in Rust.  The reader thread feeds the
+    /// detector directly — no Python pumping needed.
+    #[pyo3(signature = (detector, timeout=None))]
+    fn wait_for_idle(
+        &self,
+        py: Python<'_>,
+        detector: &NativeIdleDetector,
+        timeout: Option<f64>,
+    ) -> PyResult<(bool, String, f64, Option<i32>)> {
+        // Wire the detector into the reader thread.
+        {
+            let mut guard = self
+                .idle_detector
+                .lock()
+                .expect("idle detector mutex poisoned");
+            *guard = Some(Arc::clone(&detector.core));
+        }
+
+        // Spawn exit watcher that marks the detector on process exit.
+        let handles = Arc::clone(&self.handles);
+        let returncode = Arc::clone(&self.returncode);
+        let core = Arc::clone(&detector.core);
+        let exit_watcher = thread::spawn(move || loop {
+            match poll_pty_process(&handles, &returncode) {
+                Ok(Some(code)) => {
+                    // Heuristic: codes typically used for keyboard interrupt
+                    let interrupted = code == -2 || code == 130;
+                    core.mark_exit(code, interrupted);
+                    return;
+                }
+                Ok(None) => {}
+                Err(_) => return,
+            }
+            thread::sleep(Duration::from_millis(1));
+        });
+
+        // Block in Rust (GIL released) until idle, exit, or timeout.
+        let result = py.allow_threads(|| detector.core.wait(timeout));
+
+        // Detach detector from reader thread.
+        {
+            let mut guard = self
+                .idle_detector
+                .lock()
+                .expect("idle detector mutex poisoned");
+            *guard = None;
+        }
+        let _ = exit_watcher.join();
+        Ok(result)
     }
 
     #[getter]
@@ -3581,123 +3775,49 @@ impl NativeIdleDetector {
             .unwrap_or(now);
         let enabled = enabled_signal.borrow(py).value.clone();
         Self {
-            timeout_seconds,
-            stability_window_seconds,
-            sample_interval_seconds,
-            reset_on_input,
-            reset_on_output,
-            count_control_churn_as_output,
-            enabled,
-            state: Mutex::new(IdleMonitorState {
-                last_reset_at,
-                returncode: None,
-                interrupted: false,
+            core: Arc::new(IdleDetectorCore {
+                timeout_seconds,
+                stability_window_seconds,
+                sample_interval_seconds,
+                reset_on_input,
+                reset_on_output,
+                count_control_churn_as_output,
+                enabled,
+                state: Mutex::new(IdleMonitorState {
+                    last_reset_at,
+                    returncode: None,
+                    interrupted: false,
+                }),
+                condvar: Condvar::new(),
             }),
-            condvar: Condvar::new(),
         }
     }
 
     #[getter]
     fn enabled(&self) -> bool {
-        self.enabled.load(Ordering::Acquire)
+        self.core.enabled()
     }
 
     #[setter]
     fn set_enabled(&self, enabled: bool) {
-        let was_enabled = self.enabled.swap(enabled, Ordering::AcqRel);
-        if enabled && !was_enabled {
-            let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
-            guard.last_reset_at = Instant::now();
-        }
-        self.condvar.notify_all();
+        self.core.set_enabled(enabled);
     }
 
     fn record_input(&self, byte_count: usize) {
-        if !self.reset_on_input || byte_count == 0 {
-            return;
-        }
-        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
-        guard.last_reset_at = Instant::now();
-        self.condvar.notify_all();
+        self.core.record_input(byte_count);
     }
 
     fn record_output(&self, data: &[u8]) {
-        if !self.reset_on_output || data.is_empty() {
-            return;
-        }
-        let control_bytes = control_churn_bytes(data);
-        let visible_output_bytes = data.len().saturating_sub(control_bytes);
-        let active_output =
-            visible_output_bytes > 0 || (self.count_control_churn_as_output && control_bytes > 0);
-        if !active_output {
-            return;
-        }
-        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
-        guard.last_reset_at = Instant::now();
-        self.condvar.notify_all();
+        self.core.record_output(data);
     }
 
     fn mark_exit(&self, returncode: i32, interrupted: bool) {
-        let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
-        guard.returncode = Some(returncode);
-        guard.interrupted = interrupted;
-        self.condvar.notify_all();
+        self.core.mark_exit(returncode, interrupted);
     }
 
     #[pyo3(signature = (timeout=None))]
     fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> (bool, String, f64, Option<i32>) {
-        py.allow_threads(|| {
-            let started = Instant::now();
-            let overall_timeout = timeout.map(Duration::from_secs_f64);
-            let min_idle = self.timeout_seconds.max(self.stability_window_seconds);
-            let sample_interval = Duration::from_secs_f64(self.sample_interval_seconds.max(0.001));
-
-            let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
-            loop {
-                let now = Instant::now();
-                let idle_for = now.duration_since(guard.last_reset_at).as_secs_f64();
-
-                if let Some(returncode) = guard.returncode {
-                    let reason = if guard.interrupted {
-                        "interrupt"
-                    } else {
-                        "process_exit"
-                    };
-                    return (false, reason.to_string(), idle_for, Some(returncode));
-                }
-
-                let enabled = self.enabled.load(Ordering::Acquire);
-                if enabled && idle_for >= min_idle {
-                    return (true, "idle_timeout".to_string(), idle_for, None);
-                }
-
-                if let Some(limit) = overall_timeout {
-                    if now.duration_since(started) >= limit {
-                        return (false, "timeout".to_string(), idle_for, None);
-                    }
-                }
-
-                let idle_remaining = if enabled {
-                    (min_idle - idle_for).max(0.0)
-                } else {
-                    sample_interval.as_secs_f64()
-                };
-                let mut wait_for =
-                    sample_interval.min(Duration::from_secs_f64(idle_remaining.max(0.001)));
-                if let Some(limit) = overall_timeout {
-                    let elapsed = now.duration_since(started);
-                    if elapsed < limit {
-                        let remaining = limit - elapsed;
-                        wait_for = wait_for.min(remaining);
-                    }
-                }
-                let result = self
-                    .condvar
-                    .wait_timeout(guard, wait_for)
-                    .expect("idle monitor mutex poisoned");
-                guard = result.0;
-            }
-        })
+        py.allow_threads(|| self.core.wait(timeout))
     }
 }
 
@@ -3744,15 +3864,37 @@ fn command_builder_from_argv(argv: &[String]) -> CommandBuilder {
 }
 
 #[inline(never)]
-fn spawn_pty_reader(mut reader: Box<dyn Read + Send>, shared: Arc<PtyReadShared>) {
+fn spawn_pty_reader(
+    mut reader: Box<dyn Read + Send>,
+    shared: Arc<PtyReadShared>,
+    echo: Arc<AtomicBool>,
+    idle_detector: Arc<Mutex<Option<Arc<IdleDetectorCore>>>>,
+) {
     running_process_core::rp_rust_debug_scope!("running_process_py::spawn_pty_reader");
     let mut chunk = [0_u8; 4096];
     loop {
         match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
+                let data = &chunk[..n];
+
+                // Echo to stdout if enabled (no GIL needed).
+                if echo.load(Ordering::Relaxed) {
+                    let _ = std::io::stdout().write_all(data);
+                    let _ = std::io::stdout().flush();
+                }
+
+                // Feed idle detector directly (no GIL needed).
+                if let Some(detector) = idle_detector
+                    .lock()
+                    .expect("idle detector mutex poisoned")
+                    .as_ref()
+                {
+                    detector.record_output(data);
+                }
+
                 let mut guard = shared.state.lock().expect("pty read mutex poisoned");
-                guard.chunks.push_back(chunk[..n].to_vec());
+                guard.chunks.push_back(data.to_vec());
                 shared.condvar.notify_all();
             }
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -5388,10 +5530,10 @@ mod tests {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
             let detector =
                 NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
-            let state_before = detector.state.lock().unwrap().last_reset_at;
+            let state_before = detector.core.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_output(b"\x1b[H");
-            let state_after = detector.state.lock().unwrap().last_reset_at;
+            let state_after = detector.core.state.lock().unwrap().last_reset_at;
             assert!(state_after > state_before);
         });
     }
@@ -5403,10 +5545,10 @@ mod tests {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
             let detector =
                 NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, false, 5.0);
-            let state_before = detector.state.lock().unwrap().last_reset_at;
+            let state_before = detector.core.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_output(b"\x1b[H");
-            let state_after = detector.state.lock().unwrap().last_reset_at;
+            let state_after = detector.core.state.lock().unwrap().last_reset_at;
             assert_eq!(state_before, state_after);
         });
     }
@@ -5418,10 +5560,10 @@ mod tests {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
             let detector =
                 NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, false, true, 5.0);
-            let state_before = detector.state.lock().unwrap().last_reset_at;
+            let state_before = detector.core.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_output(b"visible");
-            let state_after = detector.state.lock().unwrap().last_reset_at;
+            let state_after = detector.core.state.lock().unwrap().last_reset_at;
             assert_eq!(state_before, state_after);
         });
     }
@@ -5433,10 +5575,10 @@ mod tests {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
             let detector =
                 NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, false, true, true, 5.0);
-            let state_before = detector.state.lock().unwrap().last_reset_at;
+            let state_before = detector.core.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_input(100);
-            let state_after = detector.state.lock().unwrap().last_reset_at;
+            let state_after = detector.core.state.lock().unwrap().last_reset_at;
             assert_eq!(state_before, state_after);
         });
     }
@@ -5448,10 +5590,10 @@ mod tests {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
             let detector =
                 NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
-            let state_before = detector.state.lock().unwrap().last_reset_at;
+            let state_before = detector.core.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_input(100);
-            let state_after = detector.state.lock().unwrap().last_reset_at;
+            let state_after = detector.core.state.lock().unwrap().last_reset_at;
             assert!(state_after > state_before);
         });
     }
@@ -5463,10 +5605,10 @@ mod tests {
             let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
             let detector =
                 NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
-            let state_before = detector.state.lock().unwrap().last_reset_at;
+            let state_before = detector.core.state.lock().unwrap().last_reset_at;
             std::thread::sleep(std::time::Duration::from_millis(10));
             detector.record_output(b"visible output");
-            let state_after = detector.state.lock().unwrap().last_reset_at;
+            let state_after = detector.core.state.lock().unwrap().last_reset_at;
             assert!(state_after > state_before);
         });
     }
@@ -5479,7 +5621,7 @@ mod tests {
             let detector =
                 NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 0.0);
             detector.mark_exit(42, false);
-            let state = detector.state.lock().unwrap();
+            let state = detector.core.state.lock().unwrap();
             assert_eq!(state.returncode, Some(42));
             assert!(!state.interrupted);
         });
@@ -6785,8 +6927,7 @@ mod tests {
                 "-c".to_string(),
                 "import os; print(os.environ.get('RP_TEST_PTY', 'MISSING'))".to_string(),
             ];
-            let process =
-                NativePtyProcess::new(argv, None, Some(env), 24, 80, None).unwrap();
+            let process = NativePtyProcess::new(argv, None, Some(env), 24, 80, None).unwrap();
             process.start_impl().unwrap();
             assert!(process.close_impl().is_ok());
         });
@@ -7535,7 +7676,9 @@ mod tests {
 
         let data = b"hello from reader\n";
         let reader: Box<dyn std::io::Read + Send> = Box::new(std::io::Cursor::new(data.to_vec()));
-        spawn_pty_reader(reader, Arc::clone(&shared));
+        let echo = Arc::new(AtomicBool::new(false));
+        let idle = Arc::new(Mutex::new(None));
+        spawn_pty_reader(reader, Arc::clone(&shared), echo, idle);
 
         // Wait for the reader thread to finish
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -7565,7 +7708,9 @@ mod tests {
         });
 
         let reader: Box<dyn std::io::Read + Send> = Box::new(std::io::Cursor::new(Vec::new()));
-        spawn_pty_reader(reader, Arc::clone(&shared));
+        let echo = Arc::new(AtomicBool::new(false));
+        let idle = Arc::new(Mutex::new(None));
+        spawn_pty_reader(reader, Arc::clone(&shared), echo, idle);
 
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {

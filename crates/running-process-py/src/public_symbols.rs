@@ -228,8 +228,10 @@ pub extern "C" fn rp_pty_windows_kill_tree_public(process: &NativePtyProcess) ->
 pub extern "C" fn rp_spawn_pty_reader_public(
     reader: Box<dyn Read + Send>,
     shared: Arc<PtyReadShared>,
+    echo: Arc<AtomicBool>,
+    idle_detector: Arc<Mutex<Option<Arc<IdleDetectorCore>>>>,
 ) {
-    spawn_pty_reader(reader, shared);
+    spawn_pty_reader(reader, shared, echo, idle_detector);
 }
 
 #[cfg(windows)]
