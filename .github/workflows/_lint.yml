@@ -45,7 +45,11 @@ jobs:
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Lint
+        env:
+          RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS: "300"
         run: uv run --module ci.run_logged logs/lint.log -- uv run --module ci.lint
 
       - name: Display timeout diagnostics

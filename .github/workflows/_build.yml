@@ -67,6 +67,8 @@ jobs:
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build wheel (${{ inputs.build-mode || 'dev' }})
         run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
 
