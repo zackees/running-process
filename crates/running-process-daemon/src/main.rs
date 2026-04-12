@@ -1,6 +1,10 @@
 use clap::{Parser, Subcommand};
 
+pub mod client;
+pub mod paths;
 mod platform;
+pub mod server;
+pub mod shadow;
 
 #[derive(Parser)]
 #[command(name = "running-process-daemon", about = "Daemon for subprocess tracking")]

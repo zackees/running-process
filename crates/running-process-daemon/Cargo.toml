@@ -16,6 +16,8 @@ running-process-core = { path = "../running-process-core" }
 prost = "0.14"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+futures-util = { version = "0.3", features = ["sink"] }
 interprocess = { version = "2", features = ["tokio"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
@@ -26,3 +28,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 dirs = "6"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
