@@ -10,10 +10,8 @@ on:
 jobs:
   integration-test:
     runs-on: ${{ inputs.runs-on }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
-      CARGO_HOME: ${{ github.workspace }}/.cargo
-      RUSTUP_HOME: ${{ github.workspace }}/.rustup
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       RUNNING_PROCESS_LIVE_TESTS: "1"
@@ -27,24 +25,28 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Cache venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ inputs.runs-on }}-py3.11-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-${{ inputs.runs-on }}-py3.11-
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
-      - name: Set Rust toolchain env
-        shell: bash
-        run: echo "RUSTUP_TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *\"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
 
       - name: Sync
-        run: uv sync --group dev
-
-      - name: Install Toolchain
-        run: uv run --module ci.run_logged logs/install.log -- uv run --script install
+        run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: running-process-${{ inputs.runs-on }}
-          cache-targets: false
 
       - name: Dev build
         run: uv run --module ci.run_logged logs/dev-build.log -- uv run --module ci.build_wheel --dev
@@ -53,6 +55,17 @@ jobs:
         env:
           IN_RUNNING_PROCESS: running-process-cli
         run: uv run --module ci.run_logged logs/integration-test.log -- uv run pytest -m live -ra --strict-markers
+
+      - name: Display timeout diagnostics
+        if: always()
+        shell: bash
+        run: |
+          if [ -d logs/running-process ]; then
+            echo "::warning::Timeout diagnostics detected"
+            for f in logs/running-process/*.json; do
+              [ -f "$f" ] && echo "--- $f ---" && cat "$f"
+            done
+          fi
 
       - name: Upload failure logs
         if: ${{ failure() }}
