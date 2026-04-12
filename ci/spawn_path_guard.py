@@ -17,6 +17,8 @@ ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process-daemon/src/client.rs"),
     Path("crates/running-process-daemon/src/platform/windows.rs"),
     Path("crates/running-process-daemon/src/shadow.rs"),
+    # Daemon trampoline: reads sidecar JSON and spawns the target command
+    Path("crates/daemon-trampoline/src/main.rs"),
 }
 
 ALLOWED_RUST_SPAWN = {
@@ -27,6 +29,8 @@ ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-daemon/src/client.rs"),
     Path("crates/running-process-daemon/src/platform/windows.rs"),
     Path("crates/running-process-daemon/src/shadow.rs"),
+    # Daemon trampoline: reads sidecar JSON and spawns the target command
+    Path("crates/daemon-trampoline/src/main.rs"),
 }
 
 ALLOWED_PORTABLE_PTY = {

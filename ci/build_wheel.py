@@ -14,6 +14,7 @@ from typing import Literal
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
+TRAMPOLINE_ASSETS = ROOT / "src" / "running_process" / "assets"
 
 BuildMode = Literal["dev", "release"]
 
@@ -84,6 +85,53 @@ def install_wheel(wheel: Path, *, env: dict[str, str]) -> int:
     return 0
 
 
+def build_trampoline(mode: BuildMode) -> int:
+    """Build the daemon-trampoline binary and copy it into package assets."""
+    import json as json_mod
+    import shutil
+
+    profile_args = ["--release"] if mode == "release" else []
+    result = subprocess.run(
+        [
+            "cargo", "build", "-p", "daemon-trampoline",
+            "--message-format=json", *profile_args,
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr, flush=True)
+        return result.returncode
+
+    # Parse the JSON output to find the executable path.
+    src: Path | None = None
+    for line in result.stdout.splitlines():
+        msg = json_mod.loads(line)
+        if (
+            msg.get("reason") == "compiler-artifact"
+            and msg.get("target", {}).get("name") == "daemon-trampoline"
+            and msg.get("executable")
+        ):
+            src = Path(msg["executable"])
+            break
+
+    if src is None or not src.exists():
+        print(
+            f"trampoline binary not found in cargo output (searched {src})",
+            file=sys.stderr, flush=True,
+        )
+        print(f"cargo stderr:\n{result.stderr}", file=sys.stderr, flush=True)
+        return 1
+
+    dest = TRAMPOLINE_ASSETS / src.name
+    TRAMPOLINE_ASSETS.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    print(f"trampoline: {src} -> {dest}", file=sys.stderr, flush=True)
+    return 0
+
+
 def run_build(mode: BuildMode) -> int:
     from ci.env import build_env
     from ci.tiny_pdb import (
@@ -95,6 +143,11 @@ def run_build(mode: BuildMode) -> int:
         stripped_pdb_path,
     )
     from ci.verify_release_symbols import format_release_artifact_report, verify_release_artifact
+
+    rc = build_trampoline(mode)
+    if rc != 0:
+        print("trampoline build failed", file=sys.stderr, flush=True)
+        return rc
 
     env = build_env()
     rustc_args: list[str] = []
