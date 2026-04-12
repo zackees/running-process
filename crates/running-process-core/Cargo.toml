@@ -10,13 +10,14 @@ description = "Native process runtime for running-process"
 
 [features]
 default = []
-originator-scan = ["sysinfo"]
+originator-scan = []
 
 [dependencies]
 libc = "0.2"
-sysinfo = { version = "0.30", optional = true }
+portable-pty = "0.9"
+sysinfo = "0.30"
 thiserror = { workspace = true }
-winapi = { version = "0.3", features = ["handleapi", "jobapi2", "processthreadsapi", "winnt", "minwindef", "windef", "winuser"] }
+winapi = { version = "0.3", features = ["handleapi", "jobapi2", "processthreadsapi", "winnt", "minwindef", "windef", "winuser", "consoleapi", "processenv", "synchapi", "winbase", "wincon"] }
 
 [dev-dependencies]
 serde_json = "1"

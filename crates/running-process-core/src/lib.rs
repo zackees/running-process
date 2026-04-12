@@ -15,6 +15,7 @@ pub mod console_detect;
 pub mod containment;
 #[cfg(feature = "originator-scan")]
 pub mod originator;
+pub mod pty;
 mod public_symbols;
 mod rust_debug;
 
