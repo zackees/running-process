@@ -2,6 +2,8 @@
 
 [![PyPI](https://img.shields.io/pypi/v/running-process)](https://pypi.org/project/running-process/) [![Crates.io](https://img.shields.io/crates/v/running-process-core)](https://crates.io/crates/running-process-core) [![codecov](https://codecov.io/gh/zackees/running-process/graph/badge.svg)](https://codecov.io/gh/zackees/running-process)
 
+`running-process` is what you wished python's subprocess was. Blazing fast, highly concurrent, huge feature list, dead process tracking, pty support. Built in Rust with a thin python api.
+
 | Platform | Build | Lint | Unit Test | Integration Test |
 |----------|-------|------|-----------|------------------|
 | Linux x86 | [![Build](https://github.com/zackees/running-process/actions/workflows/linux-x86-build.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-x86-build.yml) | [![Lint](https://github.com/zackees/running-process/actions/workflows/linux-x86-lint.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-x86-lint.yml) | [![Unit Test](https://github.com/zackees/running-process/actions/workflows/linux-x86-unit-test.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-x86-unit-test.yml) | [![Integration Test](https://github.com/zackees/running-process/actions/workflows/linux-x86-integration-test.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-x86-integration-test.yml) |
@@ -11,7 +13,7 @@
 | macOS x86 | [![Build](https://github.com/zackees/running-process/actions/workflows/macos-x86-build.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-x86-build.yml) | [![Lint](https://github.com/zackees/running-process/actions/workflows/macos-x86-lint.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-x86-lint.yml) | [![Unit Test](https://github.com/zackees/running-process/actions/workflows/macos-x86-unit-test.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-x86-unit-test.yml) | [![Integration Test](https://github.com/zackees/running-process/actions/workflows/macos-x86-integration-test.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-x86-integration-test.yml) |
 | macOS ARM | [![Build](https://github.com/zackees/running-process/actions/workflows/macos-arm-build.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-arm-build.yml) | [![Lint](https://github.com/zackees/running-process/actions/workflows/macos-arm-lint.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-arm-lint.yml) | [![Unit Test](https://github.com/zackees/running-process/actions/workflows/macos-arm-unit-test.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-arm-unit-test.yml) | [![Integration Test](https://github.com/zackees/running-process/actions/workflows/macos-arm-integration-test.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/macos-arm-integration-test.yml) |
 
-`running-process` is a Rust-backed subprocess runtime with a thin Python API.
+
 
 ## Why?
 
