@@ -352,9 +352,6 @@ fn dispatch_request(
         Ok(RequestType::GetProcessTree) => handlers::handle_get_process_tree(request, state),
         Ok(RequestType::KillTree) => handlers::handle_kill_tree(request, state),
         Ok(RequestType::KillZombies) => handlers::handle_kill_zombies(request, state),
-        Ok(rt) => {
-            stub_response(request_id, rt)
-        }
         Err(_) => {
             error_response(
                 request_id,
@@ -367,16 +364,6 @@ fn dispatch_request(
     // Return a ready future so the signature is uniform for when real
     // async handlers are added later.
     std::future::ready(response)
-}
-
-/// Build a stub "not implemented" response for a known request type.
-fn stub_response(request_id: u64, rt: RequestType) -> DaemonResponse {
-    DaemonResponse {
-        request_id,
-        code: StatusCode::Unavailable.into(),
-        message: format!("{rt:?} not implemented yet"),
-        ..Default::default()
-    }
 }
 
 // ---------------------------------------------------------------------------
