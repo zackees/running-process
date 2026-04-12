@@ -304,13 +304,10 @@ def _expect_pattern_spec(pattern: ExpectPattern) -> tuple[str, bool]:
 
 class RunningProcess:
     KEYBOARD_INTERRUPT_EXIT_CODES: ClassVar[set[int]] = {
-        -2,
-        -11,
-        130,
-        255,
-        -1073741510,
-        3221225786,
-        4294967294,
+        -2,             # Unix: killed by SIGINT (negative signal number)
+        130,            # Unix: 128 + SIGINT(2) — shell convention
+        -1073741510,    # Windows: STATUS_CONTROL_C_EXIT (signed)
+        3221225786,     # Windows: STATUS_CONTROL_C_EXIT (unsigned)
     }
     SignalBool = SignalBool
     end_of_stream_type = EndOfStream
