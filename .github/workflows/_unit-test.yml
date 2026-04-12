@@ -60,6 +60,17 @@ jobs:
       - name: Unit Tests
         run: uv run --module ci.run_logged logs/test.log -- uv run --module ci.test
 
+      - name: Display timeout diagnostics
+        if: always()
+        shell: bash
+        run: |
+          if [ -d logs/running-process ]; then
+            echo "::warning::Timeout diagnostics detected"
+            for f in logs/running-process/*.json; do
+              [ -f "$f" ] && echo "--- $f ---" && cat "$f"
+            done
+          fi
+
       - name: Upload failure logs
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
