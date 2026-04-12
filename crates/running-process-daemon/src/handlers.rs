@@ -4,9 +4,9 @@
 //! reference, returning a fully-constructed [`DaemonResponse`].
 
 use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, GetProcessTreeResponse, ListActiveResponse,
-    ListByOriginatorResponse, PingResponse, ProcessState, RegisterResponse, ShutdownResponse,
-    StatusCode, StatusResponse, TrackedProcess, UnregisterResponse,
+    DaemonRequest, DaemonResponse, GetProcessTreeResponse, KillTreeResponse, KillZombiesResponse,
+    ListActiveResponse, ListByOriginatorResponse, PingResponse, ProcessState, RegisterResponse,
+    ShutdownResponse, StatusCode, StatusResponse, TrackedProcess, UnregisterResponse, ZombieReport,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -14,6 +14,7 @@ use std::time::Instant;
 use sysinfo::{Pid, System};
 use tokio::sync::watch;
 
+use crate::reaper;
 use crate::registry::{self, Registry, TrackedEntry};
 
 // ---------------------------------------------------------------------------
@@ -343,6 +344,131 @@ fn build_process_tree_display(root_pid: u32) -> String {
 
     collect_children(&sys, sysinfo_pid, "", &mut lines);
     lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// KillTree handler
+// ---------------------------------------------------------------------------
+
+/// Handle a `KillTree` request by killing a process and its descendants.
+pub fn handle_kill_tree(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let Some(ref req) = request.kill_tree else {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "missing kill_tree payload".into(),
+        );
+    };
+
+    let timeout = if req.timeout_seconds > 0.0 {
+        req.timeout_seconds
+    } else {
+        3.0
+    };
+    let killed = kill_process_tree_impl(req.pid, timeout);
+
+    // Unregister from registry (if tracked).
+    state.registry.unregister(req.pid);
+
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        message: String::new(),
+        kill_tree: Some(KillTreeResponse {
+            processes_killed: killed,
+        }),
+        ..Default::default()
+    }
+}
+
+/// Kill a process tree rooted at `pid`, returning the number of processes killed.
+///
+/// Collects all descendants via sysinfo, then kills them in reverse order
+/// (children before parent) so that parent processes do not respawn children.
+fn kill_process_tree_impl(pid: u32, _timeout_seconds: f64) -> u32 {
+    use sysinfo::Signal;
+
+    let mut sys = System::new();
+    sys.refresh_processes();
+
+    let target = Pid::from_u32(pid);
+
+    // Collect the root and all descendants.
+    let mut to_kill = Vec::new();
+    collect_descendants(&sys, target, &mut to_kill);
+    to_kill.push(target);
+
+    // Kill in reverse order (deepest children first, root last).
+    to_kill.reverse();
+
+    let mut killed_count = 0u32;
+    for &p in &to_kill {
+        if let Some(proc) = sys.process(p) {
+            if proc.kill_with(Signal::Kill).unwrap_or(false) {
+                killed_count += 1;
+            }
+        }
+    }
+    killed_count
+}
+
+/// Recursively collect all descendant PIDs of `parent_pid`.
+fn collect_descendants(sys: &System, parent_pid: Pid, result: &mut Vec<Pid>) {
+    for (child_pid, child_proc) in sys.processes() {
+        if child_proc.parent() == Some(parent_pid) {
+            result.push(*child_pid);
+            collect_descendants(sys, *child_pid, result);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KillZombies handler
+// ---------------------------------------------------------------------------
+
+/// Handle a `KillZombies` request by scanning for and optionally killing zombie processes.
+pub fn handle_kill_zombies(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let Some(ref req) = request.kill_zombies else {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "missing kill_zombies payload".into(),
+        );
+    };
+
+    let zombies = reaper::scan_for_zombies(state);
+
+    let reports: Vec<ZombieReport> = if req.dry_run {
+        zombies
+            .iter()
+            .map(|z| ZombieReport {
+                pid: z.pid,
+                command: z.command.clone(),
+                reason: z.reason.clone(),
+                killed: false,
+            })
+            .collect()
+    } else {
+        let results = reaper::kill_zombies(state, &zombies);
+        zombies
+            .iter()
+            .zip(results.iter())
+            .map(|(z, (_pid, killed))| ZombieReport {
+                pid: z.pid,
+                command: z.command.clone(),
+                reason: z.reason.clone(),
+                killed: *killed,
+            })
+            .collect()
+    };
+
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        message: String::new(),
+        kill_zombies: Some(KillZombiesResponse { zombies: reports }),
+        ..Default::default()
+    }
 }
 
 // ---------------------------------------------------------------------------

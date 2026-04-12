@@ -21,7 +21,9 @@ use running_process_proto::daemon::{
     DaemonRequest, DaemonResponse, RequestType, StatusCode,
 };
 
+use crate::config::DaemonConfig;
 use crate::handlers::{self, DaemonState};
+use crate::reaper;
 use crate::registry::Registry;
 
 // ---------------------------------------------------------------------------
@@ -139,6 +141,14 @@ impl DaemonServer {
 
         info!("daemon listening on {}", socket_path);
 
+        // Spawn the background reaper task.
+        let config = DaemonConfig::load();
+        let reaper_state = Arc::clone(&self.state);
+        let reaper_handle = tokio::spawn(reaper::reaper_loop(
+            reaper_state,
+            config.reaper_interval_secs,
+        ));
+
         let mut shutdown_rx = self.shutdown_rx.clone();
 
         loop {
@@ -169,6 +179,9 @@ impl DaemonServer {
                 }
             }
         }
+
+        // Wait for the reaper task to finish (it watches the same shutdown signal).
+        let _ = reaper_handle.await;
 
         // Cleanup socket file on Unix.
         #[cfg(unix)]
@@ -337,6 +350,8 @@ fn dispatch_request(
         Ok(RequestType::ListActive) => handlers::handle_list_active(request, state),
         Ok(RequestType::ListByOriginator) => handlers::handle_list_by_originator(request, state),
         Ok(RequestType::GetProcessTree) => handlers::handle_get_process_tree(request, state),
+        Ok(RequestType::KillTree) => handlers::handle_kill_tree(request, state),
+        Ok(RequestType::KillZombies) => handlers::handle_kill_zombies(request, state),
         Ok(rt) => {
             stub_response(request_id, rt)
         }

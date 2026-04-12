@@ -9,8 +9,9 @@ use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
 use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, ListActiveRequest, ListByOriginatorRequest, PingRequest,
-    RequestType, ShutdownRequest, StatusRequest,
+    DaemonRequest, DaemonResponse, GetProcessTreeRequest, KillTreeRequest, KillZombiesRequest,
+    ListActiveRequest, ListByOriginatorRequest, PingRequest, RequestType, ShutdownRequest,
+    StatusRequest,
 };
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -210,6 +211,52 @@ impl DaemonClient {
             list_by_originator: Some(ListByOriginatorRequest {
                 tool: tool.to_string(),
             }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Kill zombie processes tracked by the daemon.
+    pub fn kill_zombies(&mut self, dry_run: bool) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::KillZombies.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            kill_zombies: Some(KillZombiesRequest { dry_run }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Kill a process tree rooted at `pid`.
+    pub fn kill_tree(
+        &mut self,
+        pid: u32,
+        timeout_seconds: f64,
+    ) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::KillTree.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            kill_tree: Some(KillTreeRequest {
+                pid,
+                timeout_seconds,
+            }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Get the process tree display for a given PID.
+    pub fn get_process_tree(&mut self, pid: u32) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::GetProcessTree.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            get_process_tree: Some(GetProcessTreeRequest { pid }),
             ..Default::default()
         };
         self.send_request(request)

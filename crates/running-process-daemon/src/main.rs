@@ -144,9 +144,83 @@ fn main() {
                 Err(_) => eprintln!("daemon is not running"),
             }
         }
-        Commands::KillZombies { dry_run: _ } => println!("killing zombies..."),
-        Commands::Kill { pid } => println!("killing process tree {}...", pid),
-        Commands::Tree { pid } => println!("showing tree for {}...", pid),
+        Commands::KillZombies { dry_run } => {
+            match client::DaemonClient::connect(None) {
+                Ok(mut c) => {
+                    match c.kill_zombies(dry_run) {
+                        Ok(resp) if resp.code == StatusCode::Ok as i32 => {
+                            let zombies = resp
+                                .kill_zombies
+                                .map(|r| r.zombies)
+                                .unwrap_or_default();
+                            if zombies.is_empty() {
+                                println!("no zombies found");
+                            } else {
+                                for z in &zombies {
+                                    let action = if z.killed {
+                                        "killed"
+                                    } else {
+                                        "found (dry-run)"
+                                    };
+                                    println!(
+                                        "  PID {} — {} — {} [{}]",
+                                        z.pid, z.command, z.reason, action
+                                    );
+                                }
+                                println!(
+                                    "{} zombie(s) {}",
+                                    zombies.len(),
+                                    if dry_run { "found" } else { "killed" }
+                                );
+                            }
+                        }
+                        Ok(resp) => eprintln!("error: {}", resp.message),
+                        Err(e) => eprintln!("kill-zombies failed: {e}"),
+                    }
+                }
+                Err(_) => eprintln!("daemon is not running"),
+            }
+        }
+        Commands::Kill { pid } => {
+            match client::DaemonClient::connect(None) {
+                Ok(mut c) => {
+                    match c.kill_tree(pid, 3.0) {
+                        Ok(resp) if resp.code == StatusCode::Ok as i32 => {
+                            let count = resp
+                                .kill_tree
+                                .map(|r| r.processes_killed)
+                                .unwrap_or(0);
+                            println!("killed {} process(es) in tree for PID {}", count, pid);
+                        }
+                        Ok(resp) => eprintln!("error: {}", resp.message),
+                        Err(e) => eprintln!("kill failed: {e}"),
+                    }
+                }
+                Err(_) => eprintln!("daemon is not running"),
+            }
+        }
+        Commands::Tree { pid } => {
+            match client::DaemonClient::connect(None) {
+                Ok(mut c) => {
+                    match c.get_process_tree(pid) {
+                        Ok(resp) if resp.code == StatusCode::Ok as i32 => {
+                            let display = resp
+                                .get_process_tree
+                                .map(|r| r.tree_display)
+                                .unwrap_or_default();
+                            if display.is_empty() {
+                                println!("no process tree found for PID {}", pid);
+                            } else {
+                                println!("{}", display);
+                            }
+                        }
+                        Ok(resp) => eprintln!("error: {}", resp.message),
+                        Err(e) => eprintln!("tree failed: {e}"),
+                    }
+                }
+                Err(_) => eprintln!("daemon is not running"),
+            }
+        }
     }
 }
 
