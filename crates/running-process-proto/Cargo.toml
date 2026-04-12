@@ -1,0 +1,15 @@
+[package]
+name = "running-process-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Protobuf schema for running-process daemon IPC"
+
+[dependencies]
+prost = "0.14"
+prost-types = "0.14"
+
+[build-dependencies]
+prost-build = "0.14"
+protox = "0.9"

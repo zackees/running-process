@@ -1,0 +1,28 @@
+[package]
+name = "running-process-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Daemon for running-process subprocess tracking"
+
+[[bin]]
+name = "running-process-daemon"
+path = "src/main.rs"
+
+[dependencies]
+running-process-proto = { path = "../running-process-proto" }
+running-process-core = { path = "../running-process-core" }
+prost = "0.14"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+interprocess = { version = "2", features = ["tokio"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { workspace = true }
+sysinfo = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dirs = "6"
