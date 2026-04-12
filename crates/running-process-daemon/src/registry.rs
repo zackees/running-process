@@ -52,10 +52,12 @@ pub fn created_at_to_ms(created_at: f64) -> u64 {
     (created_at * 1000.0) as u64
 }
 
+/// Maps returned by [`load_from_db`]: primary `(pid, created_at_ms)` map
+/// and secondary `pid → created_at_ms` index.
+type RegistryMaps = (HashMap<(u32, u64), TrackedEntry>, HashMap<u32, u64>);
+
 /// Load all rows from the `tracked_processes` table into memory.
-fn load_from_db(
-    conn: &Connection,
-) -> Result<(HashMap<(u32, u64), TrackedEntry>, HashMap<u32, u64>), rusqlite::Error> {
+fn load_from_db(conn: &Connection) -> Result<RegistryMaps, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT pid, created_at_ms, kind, command, cwd, originator, containment, registered_at \
          FROM tracked_processes",
