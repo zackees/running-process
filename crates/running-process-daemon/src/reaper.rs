@@ -46,10 +46,7 @@ pub fn classify_process(entry: &TrackedEntry, system: &System) -> ProcessClassif
     let sysinfo_pid = Pid::from_u32(entry.pid);
 
     let Some(proc) = system.process(sysinfo_pid) else {
-        return ProcessClassification::Dead(format!(
-            "process {} no longer exists",
-            entry.pid
-        ));
+        return ProcessClassification::Dead(format!("process {} no longer exists", entry.pid));
     };
 
     // Check creation time with 2-second tolerance (same as registry recovery).

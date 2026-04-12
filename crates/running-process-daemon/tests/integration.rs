@@ -642,11 +642,16 @@ async fn test_kill_zombies_dry_run_with_no_zombies() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
-        let resp = client.kill_zombies(true).expect("kill_zombies dry_run failed");
-        assert_eq!(resp.code, StatusCode::Ok as i32, "kill_zombies should return OK");
+        let resp = client
+            .kill_zombies(true)
+            .expect("kill_zombies dry_run failed");
+        assert_eq!(
+            resp.code,
+            StatusCode::Ok as i32,
+            "kill_zombies should return OK"
+        );
         let zombies = resp
             .kill_zombies
             .expect("kill_zombies payload missing")
@@ -678,11 +683,14 @@ async fn test_kill_zombies_with_no_zombies() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         let resp = client.kill_zombies(false).expect("kill_zombies failed");
-        assert_eq!(resp.code, StatusCode::Ok as i32, "kill_zombies should return OK");
+        assert_eq!(
+            resp.code,
+            StatusCode::Ok as i32,
+            "kill_zombies should return OK"
+        );
         let zombies = resp
             .kill_zombies
             .expect("kill_zombies payload missing")
@@ -714,14 +722,15 @@ async fn test_kill_tree_nonexistent_pid() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         // Use a PID that almost certainly does not exist.
-        let resp = client
-            .kill_tree(4_000_099, 3.0)
-            .expect("kill_tree failed");
-        assert_eq!(resp.code, StatusCode::Ok as i32, "kill_tree should return OK");
+        let resp = client.kill_tree(4_000_099, 3.0).expect("kill_tree failed");
+        assert_eq!(
+            resp.code,
+            StatusCode::Ok as i32,
+            "kill_tree should return OK"
+        );
         let count = resp
             .kill_tree
             .expect("kill_tree payload missing")
@@ -750,13 +759,16 @@ async fn test_get_process_tree_for_current_process() {
 
     let current_pid = std::process::id();
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         let resp = client
             .get_process_tree(current_pid)
             .expect("get_process_tree failed");
-        assert_eq!(resp.code, StatusCode::Ok as i32, "get_process_tree should return OK");
+        assert_eq!(
+            resp.code,
+            StatusCode::Ok as i32,
+            "get_process_tree should return OK"
+        );
         let tree_display = resp
             .get_process_tree
             .expect("get_process_tree payload missing")
@@ -791,8 +803,7 @@ async fn test_kill_zombies_finds_registered_dead_process() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
+        let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
         // Register a fake dead PID (4_000_050 is unlikely to be a real process).
         let reg_req = make_register_request(
@@ -805,13 +816,21 @@ async fn test_kill_zombies_finds_registered_dead_process() {
             "contained",
         );
         let reg_resp = client.send_request(reg_req).expect("register failed");
-        assert_eq!(reg_resp.code, StatusCode::Ok as i32, "register should succeed");
+        assert_eq!(
+            reg_resp.code,
+            StatusCode::Ok as i32,
+            "register should succeed"
+        );
 
         // Dry-run: should detect the dead process as a zombie.
         let resp = client
             .kill_zombies(true)
             .expect("kill_zombies dry_run failed");
-        assert_eq!(resp.code, StatusCode::Ok as i32, "kill_zombies should return OK");
+        assert_eq!(
+            resp.code,
+            StatusCode::Ok as i32,
+            "kill_zombies should return OK"
+        );
         let zombies = resp
             .kill_zombies
             .expect("kill_zombies payload missing")
@@ -824,10 +843,7 @@ async fn test_kill_zombies_finds_registered_dead_process() {
         );
         assert_eq!(zombies[0].pid, 4_000_050);
         assert_eq!(zombies[0].command, "fake-dead-cmd");
-        assert!(
-            !zombies[0].killed,
-            "dry_run should not kill the process"
-        );
+        assert!(!zombies[0].killed, "dry_run should not kill the process");
 
         // The process should still be in the registry (dry-run does not remove).
         let list_resp = client.list_active().expect("list_active failed");

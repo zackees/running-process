@@ -5,21 +5,19 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use interprocess::local_socket::ListenerOptions;
+use interprocess::local_socket::tokio::prelude::*;
 #[cfg(unix)]
 use interprocess::local_socket::GenericFilePath;
 #[cfg(windows)]
 use interprocess::local_socket::GenericNamespaced;
-use interprocess::local_socket::tokio::prelude::*;
+use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, error, info, warn};
 
-use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, RequestType, StatusCode,
-};
+use running_process_proto::daemon::{DaemonRequest, DaemonResponse, RequestType, StatusCode};
 
 use crate::config::DaemonConfig;
 use crate::handlers::{self, DaemonState};
@@ -51,10 +49,7 @@ pub fn socket_path(scope_hash: Option<&str>) -> String {
             let uid = unsafe { libc::getuid() };
             std::path::PathBuf::from(format!("/tmp/running-process-{uid}"))
         };
-        format!(
-            "{}/daemon{suffix}.sock",
-            dir.display()
-        )
+        format!("{}/daemon{suffix}.sock", dir.display())
     }
 
     #[cfg(windows)]
@@ -127,9 +122,7 @@ impl DaemonServer {
 
         let name = self.create_socket_name()?;
 
-        let listener = ListenerOptions::new()
-            .name(name)
-            .create_tokio()?;
+        let listener = ListenerOptions::new().name(name).create_tokio()?;
 
         // On Unix, set socket file permissions to owner-only (0o600).
         #[cfg(unix)]
@@ -197,17 +190,27 @@ impl DaemonServer {
     /// On Windows, named pipes live in a namespace, so we use `ToNsName` with
     /// `GenericNamespaced`.  On Unix, sockets are filesystem paths, so we use
     /// `ToFsName` with `GenericFilePath`.
-    fn create_socket_name(&self) -> Result<interprocess::local_socket::Name<'_>, Box<dyn std::error::Error>> {
+    fn create_socket_name(
+        &self,
+    ) -> Result<interprocess::local_socket::Name<'_>, Box<dyn std::error::Error>> {
         #[cfg(unix)]
         {
             use interprocess::local_socket::ToFsName;
-            Ok(self.state.socket_path.as_str().to_fs_name::<GenericFilePath>()?)
+            Ok(self
+                .state
+                .socket_path
+                .as_str()
+                .to_fs_name::<GenericFilePath>()?)
         }
 
         #[cfg(windows)]
         {
             use interprocess::local_socket::ToNsName;
-            Ok(self.state.socket_path.as_str().to_ns_name::<GenericNamespaced>()?)
+            Ok(self
+                .state
+                .socket_path
+                .as_str()
+                .to_ns_name::<GenericNamespaced>()?)
         }
     }
 }
@@ -292,7 +295,11 @@ async fn handle_connection_inner(
             Ok(req) => req,
             Err(e) => {
                 warn!("protobuf decode error: {e}");
-                let resp = error_response(0, StatusCode::InvalidArgument, format!("protobuf decode error: {e}"));
+                let resp = error_response(
+                    0,
+                    StatusCode::InvalidArgument,
+                    format!("protobuf decode error: {e}"),
+                );
                 let _ = send_response(&mut framed, &resp).await;
                 continue;
             }
@@ -339,9 +346,11 @@ fn dispatch_request(
 
     // Try to decode the request type enum.
     let response = match RequestType::try_from(request_type) {
-        Ok(RequestType::Unspecified) => {
-            error_response(request_id, StatusCode::UnknownRequest, "unspecified request type".into())
-        }
+        Ok(RequestType::Unspecified) => error_response(
+            request_id,
+            StatusCode::UnknownRequest,
+            "unspecified request type".into(),
+        ),
         Ok(RequestType::Ping) => handlers::handle_ping(request, state),
         Ok(RequestType::Status) => handlers::handle_status(request, state),
         Ok(RequestType::Shutdown) => handlers::handle_shutdown(request, state),
@@ -352,13 +361,11 @@ fn dispatch_request(
         Ok(RequestType::GetProcessTree) => handlers::handle_get_process_tree(request, state),
         Ok(RequestType::KillTree) => handlers::handle_kill_tree(request, state),
         Ok(RequestType::KillZombies) => handlers::handle_kill_zombies(request, state),
-        Err(_) => {
-            error_response(
-                request_id,
-                StatusCode::UnknownRequest,
-                format!("unknown request type: {request_type}"),
-            )
-        }
+        Err(_) => error_response(
+            request_id,
+            StatusCode::UnknownRequest,
+            format!("unknown request type: {request_type}"),
+        ),
     };
 
     // Return a ready future so the signature is uniform for when real
