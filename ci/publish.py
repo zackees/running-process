@@ -28,6 +28,8 @@ WORKFLOWS = {
     "macos-x86-build.yml": "wheels-macos-x86",
     "macos-arm-build.yml": "wheels-macos-arm",
 }
+PUBLISHABLE_CRATES = ["running-process-core", "running-process-py"]
+
 EXPECTED_ARTIFACT_GLOBS = (
     "{name}-{version}.tar.gz",
     "{name}-{version}-*linux*_x86_64.whl",
@@ -331,6 +333,19 @@ def filter_missing_artifacts(artifacts: list[Path], existing_files: set[str]) ->
     return missing
 
 
+def publish_crates(*, dry_run: bool) -> None:
+    """Publish Rust crates to crates.io in dependency order."""
+    for crate in PUBLISHABLE_CRATES:
+        log(f"Publishing {crate} to crates.io")
+        cmd = ["cargo", "publish", "-p", crate, "--no-verify"]
+        if dry_run:
+            cmd.append("--dry-run")
+        run(cmd)
+        if not dry_run and crate != PUBLISHABLE_CRATES[-1]:
+            log("  Waiting for crates.io to index...")
+            time.sleep(30)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Publish running-process from remote GitHub builds"
@@ -339,7 +354,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-rust",
         action="store_true",
-        help="Accepted for compatibility; remote publish builds the configured artifacts.",
+        help="Skip publishing Rust crates to crates.io",
     )
     args = parser.parse_args()
 
@@ -375,12 +390,18 @@ def main() -> int:
         log("Dry run artifacts:")
         for artifact in expected_artifacts:
             log(f"  {artifact.name}")
+        if not args.skip_rust:
+            publish_crates(dry_run=True)
         return 0
 
     to_upload = filter_missing_artifacts(expected_artifacts, existing_files)
     if not to_upload:
         return 0
     run(["uv", "publish", *[str(path) for path in to_upload]])
+
+    if not args.skip_rust:
+        publish_crates(dry_run=False)
+
     return 0
 
 
