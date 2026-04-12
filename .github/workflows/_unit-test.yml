@@ -37,6 +37,7 @@ jobs:
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+        continue-on-error: true
 
       - uses: dtolnay/rust-toolchain@master
         with:
