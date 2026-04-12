@@ -5857,6 +5857,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::invalid_regex)]
     fn find_expect_match_invalid_regex_errors() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|_py| {
@@ -6648,7 +6649,7 @@ mod tests {
             let argv = vec![
                 "python".to_string(),
                 "-c".to_string(),
-                "import time; time.sleep(0.1)".to_string(),
+                "import time; time.sleep(10)".to_string(),
             ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
