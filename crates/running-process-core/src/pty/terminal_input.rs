@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 #[cfg(windows)]
 use std::fs::OpenOptions;
+#[cfg(windows)]
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -589,6 +590,12 @@ pub struct TerminalInputCore {
     pub worker: Mutex<Option<thread::JoinHandle<()>>>,
     #[cfg(windows)]
     pub console: Mutex<Option<ActiveTerminalInputCapture>>,
+}
+
+impl Default for TerminalInputCore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TerminalInputCore {
