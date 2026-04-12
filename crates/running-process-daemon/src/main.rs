@@ -41,10 +41,29 @@ enum Commands {
     Tree { pid: u32 },
 }
 
+/// Initialize structured logging via `tracing-subscriber`.
+///
+/// Logs go to stderr (standard daemon practice).  The level is controlled by
+/// the `RUST_LOG` environment variable and defaults to `info`.
+fn init_logging() {
+    use tracing_subscriber::EnvFilter;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .with_thread_ids(false)
+        .compact()
+        .init();
+}
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
         Commands::Start => {
+            init_logging();
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             rt.block_on(async {
                 let socket = paths::socket_path(None);
