@@ -92,32 +92,40 @@ def build_trampoline(mode: BuildMode) -> int:
 
     profile_args = ["--release"] if mode == "release" else []
     result = subprocess.run(
-        ["cargo", "build", "-p", "daemon-trampoline", *profile_args],
+        [
+            "cargo", "build", "-p", "daemon-trampoline",
+            "--message-format=json", *profile_args,
+        ],
         cwd=ROOT,
         check=False,
-    )
-    if result.returncode != 0:
-        return result.returncode
-
-    # Query cargo for the actual target directory (may differ on CI).
-    meta = subprocess.run(
-        ["cargo", "metadata", "--format-version=1", "--no-deps"],
-        cwd=ROOT,
         capture_output=True,
         text=True,
-        check=True,
     )
-    target_dir = Path(json_mod.loads(meta.stdout)["target_directory"])
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr, flush=True)
+        return result.returncode
 
-    # Cargo outputs to target/<profile>/ where profile is "release" or "debug"
-    # (the "dev" profile outputs to the "debug" directory).
-    profile_dir = "release" if mode == "release" else "debug"
-    ext = ".exe" if platform.system() == "Windows" else ""
-    src = target_dir / profile_dir / f"daemon-trampoline{ext}"
-    if not src.exists():
-        print(f"trampoline binary not found at {src}", file=sys.stderr, flush=True)
+    # Parse the JSON output to find the executable path.
+    src: Path | None = None
+    for line in result.stdout.splitlines():
+        msg = json_mod.loads(line)
+        if (
+            msg.get("reason") == "compiler-artifact"
+            and msg.get("target", {}).get("name") == "daemon-trampoline"
+            and msg.get("executable")
+        ):
+            src = Path(msg["executable"])
+            break
+
+    if src is None or not src.exists():
+        print(
+            f"trampoline binary not found in cargo output (searched {src})",
+            file=sys.stderr, flush=True,
+        )
+        print(f"cargo stderr:\n{result.stderr}", file=sys.stderr, flush=True)
         return 1
-    dest = TRAMPOLINE_ASSETS / f"daemon-trampoline{ext}"
+
+    dest = TRAMPOLINE_ASSETS / src.name
     TRAMPOLINE_ASSETS.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
     print(f"trampoline: {src} -> {dest}", file=sys.stderr, flush=True)

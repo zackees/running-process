@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 #[derive(serde::Deserialize)]
@@ -12,7 +12,7 @@ struct Sidecar {
     env: Option<HashMap<String, String>>,
 }
 
-fn sidecar_path(exe: &PathBuf) -> PathBuf {
+fn sidecar_path(exe: &Path) -> PathBuf {
     // Replace extension with `.daemon.json`.
     // On Windows: foo.exe -> foo.daemon.json
     // On Unix:    foo     -> foo.daemon.json
@@ -22,7 +22,7 @@ fn sidecar_path(exe: &PathBuf) -> PathBuf {
     exe.with_file_name(format!("{}.daemon.json", stem.to_string_lossy()))
 }
 
-fn set_process_name(exe: &PathBuf) {
+fn set_process_name(exe: &Path) {
     let stem = exe
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
