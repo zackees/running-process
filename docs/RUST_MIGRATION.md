@@ -24,7 +24,7 @@ Replace the Python subprocess implementation with a Rust core so stdout and stde
 
 ## Current Scope
 
-The migration is focused on the process runtime and the split-stream API. PTY support is currently exposed as unavailable in the Python layer rather than reimplemented on the Rust side.
+The migration is focused on the process runtime and the split-stream API. PTY idle detection and echo are now fully native — the reader thread feeds the idle detector and writes to stdout directly, with no GIL crossing. See [RUST_PYTHON_BOUNDARY.md](RUST_PYTHON_BOUNDARY.md) for the cross-boundary design patterns used.
 
 ## Validation
 

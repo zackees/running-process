@@ -12,20 +12,32 @@ This file is the active backlog for agent-driven work. Root-level scratch task f
 
 ### NativeProcess Migration
 
-Design reference:
+Design references:
+- [RUST_PYTHON_BOUNDARY.md](docs/RUST_PYTHON_BOUNDARY.md) — cross-boundary patterns (atomic flags, Arc-shared cores, event queues)
 - [REFACTOR_NATIVE_PROCESS.md](C:/Users/niteris/dev/running-process/REFACTOR_NATIVE_PROCESS.md)
 
-Remaining phases:
+Completed:
+- Phase 7: idle detection moved into native Rust (PR #26)
+  - `IdleDetectorCore` extracted as `Arc`-shareable struct
+  - PTY reader thread feeds idle detector directly (no GIL)
+  - `NativePtyProcess.wait_for_idle()` blocks entirely in Rust
+  - Echo output handled natively via `Arc<AtomicBool>` flag
+- Phase 7b: echo output moved into native Rust (same PR)
+  - Reader thread writes to stdout when `echo` flag is set
+  - No Python callback needed during idle wait
+
+Remaining (tracked in issue #25):
 - Phase 4: move output buffering, history, and checkpoints into `NativeProcess`
 - Phase 5: move `wait_for` orchestration into `NativeProcess`
 - Phase 6: move `expect` lifecycle and EOF handling deeper into native code
-- Phase 7: move idle detection into `NativeProcess`
 - Phase 8: simplify Python `RunningProcess` into a thin facade
+- Simplify Python `wait_for_idle()` to call `proc.wait_for_idle(detector, timeout)` directly
 
 Execution notes:
-- Rebuild with `./.venv/Scripts/python.exe build.py` before trusting Python test results.
+- Rebuild with `uv run --module ci.build_wheel --dev` before trusting Python test results.
 - Run targeted PTY and subprocess tests after each phase.
 - Keep phases small and coherent; do not start a new phase while the current one is unstable.
+- Follow patterns in [RUST_PYTHON_BOUNDARY.md](docs/RUST_PYTHON_BOUNDARY.md) for all new cross-boundary work.
 
 ## Archived Root Task Files
 
