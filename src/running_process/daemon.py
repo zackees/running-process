@@ -331,6 +331,27 @@ def build_daemon_env(
 
 
 # ---------------------------------------------------------------------------
+# PID tracking
+# ---------------------------------------------------------------------------
+
+_RUNNING_PROCESS_PIDS_ENV = "RUNNING_PROCESS_PIDS"
+
+
+def _register_daemon_pid(pid: int) -> None:
+    """Append *pid* to the RUNNING_PROCESS_PIDS env var (comma-separated)."""
+    current = os.environ.get(_RUNNING_PROCESS_PIDS_ENV, "")
+    pids = [p.strip() for p in current.split(",") if p.strip()]
+    pids.append(str(pid))
+    os.environ[_RUNNING_PROCESS_PIDS_ENV] = ",".join(pids)
+
+
+def get_tracked_daemon_pids() -> list[int]:
+    """Return the list of daemon PIDs registered via RUNNING_PROCESS_PIDS."""
+    raw = os.environ.get(_RUNNING_PROCESS_PIDS_ENV, "")
+    return [int(p.strip()) for p in raw.split(",") if p.strip()]
+
+
+# ---------------------------------------------------------------------------
 # spawn_daemon
 # ---------------------------------------------------------------------------
 
@@ -381,6 +402,11 @@ def spawn_daemon(
     # 2. Build a clean daemon environment.
     daemon_env = build_daemon_env(caller_env=env)
 
+    # 2b. Inject RUNNING_PROCESS_SPAWNED_BY so the daemon knows its parent.
+    parent_pid = os.getpid()
+    parent_name = Path(sys.argv[0]).stem if sys.argv else "unknown"
+    daemon_env["RUNNING_PROCESS_SPAWNED_BY"] = f"{parent_pid}:{parent_name}"
+
     # 3. Prepare runtime directory.
     rd = runtime_dir(name)
 
@@ -424,6 +450,9 @@ def spawn_daemon(
     # 8. Write PID file.
     pid_file = rd / "daemon.pid"
     pid_file.write_text(str(proc.pid), encoding="utf-8")
+
+    # 9. Register daemon PID in the parent's RUNNING_PROCESS_PIDS env var.
+    _register_daemon_pid(proc.pid)
 
     return DaemonHandle(
         pid=proc.pid,
