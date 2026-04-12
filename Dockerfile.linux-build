@@ -32,10 +32,17 @@ FROM python-tools AS rust-manifests
 COPY Cargo.toml Cargo.lock /work/
 COPY crates/running-process-core/Cargo.toml /work/crates/running-process-core/Cargo.toml
 COPY crates/running-process-py/Cargo.toml /work/crates/running-process-py/Cargo.toml
+COPY testbins/env-reporter/Cargo.toml /work/testbins/env-reporter/Cargo.toml
+COPY testbins/sleeper/Cargo.toml /work/testbins/sleeper/Cargo.toml
+COPY testbins/spawner/Cargo.toml /work/testbins/spawner/Cargo.toml
 
 RUN mkdir -p /work/crates/running-process-core/src /work/crates/running-process-py/src \
+    /work/testbins/env-reporter/src /work/testbins/sleeper/src /work/testbins/spawner/src \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-core/src/lib.rs \
- && printf "use pyo3::prelude::*;\n#[pymodule]\nfn _native(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> { Ok(()) }\n" > /work/crates/running-process-py/src/lib.rs
+ && printf "use pyo3::prelude::*;\n#[pymodule]\nfn _native(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> { Ok(()) }\n" > /work/crates/running-process-py/src/lib.rs \
+ && printf "fn main() {}\n" > /work/testbins/env-reporter/src/main.rs \
+ && printf "fn main() {}\n" > /work/testbins/sleeper/src/main.rs \
+ && printf "fn main() {}\n" > /work/testbins/spawner/src/main.rs
 
 FROM rust-manifests AS rust-deps
 
@@ -48,6 +55,7 @@ FROM python-tools AS build
 COPY --from=rust-deps /work/target /work/target
 COPY Cargo.toml Cargo.lock pyproject.toml README.md LICENSE /work/
 COPY crates /work/crates
+COPY testbins /work/testbins
 COPY src /work/src
 
 RUN --mount=type=cache,target=/root/.cargo/registry \

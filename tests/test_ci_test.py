@@ -24,6 +24,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
 
     monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.delenv(ci_test.SKIP_LINUX_DOCKER_ENV, raising=False)
     monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
@@ -280,6 +281,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
 
     monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.delenv(ci_test.SKIP_LINUX_DOCKER_ENV, raising=False)
     monkeypatch.setenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", "0")
     monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
     monkeypatch.setattr(ci_test.sys, "platform", "win32")
