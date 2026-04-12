@@ -187,7 +187,10 @@ fn test_find_processes_excludes_non_matching_tool() {
 
     let results = find_processes_by_originator("NONEXISTENT_TOOL_XYZ");
     let found = results.iter().any(|r| r.pid == child_pid);
-    assert!(!found, "should NOT find child PID {child_pid} with wrong tool");
+    assert!(
+        !found,
+        "should NOT find child PID {child_pid} with wrong tool"
+    );
 
     drop(group);
     force_kill(child_pid);

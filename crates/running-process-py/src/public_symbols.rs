@@ -230,8 +230,17 @@ pub extern "C" fn rp_spawn_pty_reader_public(
     shared: Arc<PtyReadShared>,
     echo: Arc<AtomicBool>,
     idle_detector: Arc<Mutex<Option<Arc<IdleDetectorCore>>>>,
+    output_bytes_total: Arc<AtomicUsize>,
+    control_churn_bytes_total: Arc<AtomicUsize>,
 ) {
-    spawn_pty_reader(reader, shared, echo, idle_detector);
+    spawn_pty_reader(
+        reader,
+        shared,
+        echo,
+        idle_detector,
+        output_bytes_total,
+        control_churn_bytes_total,
+    );
 }
 
 #[cfg(windows)]
