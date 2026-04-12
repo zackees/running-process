@@ -1,5 +1,7 @@
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -18,6 +20,8 @@ use tracing::{debug, error, info, warn};
 use running_process_proto::daemon::{
     DaemonRequest, DaemonResponse, RequestType, StatusCode,
 };
+
+use crate::handlers::{self, DaemonState};
 
 // ---------------------------------------------------------------------------
 // Socket path
@@ -62,36 +66,55 @@ pub fn socket_path(scope_hash: Option<&str>) -> String {
 // ---------------------------------------------------------------------------
 
 pub struct DaemonServer {
-    socket_path: String,
-    shutdown_tx: watch::Sender<bool>,
+    state: Arc<DaemonState>,
     shutdown_rx: watch::Receiver<bool>,
 }
 
 impl DaemonServer {
-    pub fn new(socket_path: String) -> Self {
+    /// Create a new daemon server.
+    ///
+    /// `socket_path` is the IPC endpoint.  `db_path` is the SQLite tracking
+    /// database.  `scope`, `scope_hash`, and `scope_cwd` describe the
+    /// project scope the daemon manages.
+    pub fn new(
+        socket_path: String,
+        db_path: String,
+        scope: String,
+        scope_hash: String,
+        scope_cwd: String,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        Self {
+        let state = Arc::new(DaemonState {
+            start_time: std::time::Instant::now(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             socket_path,
+            db_path,
+            scope,
+            scope_hash,
+            scope_cwd,
             shutdown_tx,
-            shutdown_rx,
-        }
+            active_connections: std::sync::atomic::AtomicU32::new(0),
+        });
+        Self { state, shutdown_rx }
     }
 
     /// Signal all accept loops and connection handlers to stop.
     pub fn shutdown(&self) {
-        let _ = self.shutdown_tx.send(true);
+        let _ = self.state.shutdown_tx.send(true);
     }
 
     /// Run the IPC server, blocking until shutdown is signalled.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let socket_path = &self.state.socket_path;
+
         // Platform-specific: create parent directory for Unix socket files.
         #[cfg(unix)]
         {
-            if let Some(parent) = std::path::Path::new(&self.socket_path).parent() {
+            if let Some(parent) = std::path::Path::new(socket_path).parent() {
                 std::fs::create_dir_all(parent)?;
             }
             // Remove stale socket file if present.
-            let _ = std::fs::remove_file(&self.socket_path);
+            let _ = std::fs::remove_file(socket_path);
         }
 
         let name = self.create_socket_name()?;
@@ -105,10 +128,10 @@ impl DaemonServer {
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&self.socket_path, perms)?;
+            std::fs::set_permissions(socket_path, perms)?;
         }
 
-        info!("daemon listening on {}", self.socket_path);
+        info!("daemon listening on {}", socket_path);
 
         let mut shutdown_rx = self.shutdown_rx.clone();
 
@@ -118,8 +141,9 @@ impl DaemonServer {
                     match result {
                         Ok(stream) => {
                             let peer_shutdown = self.shutdown_rx.clone();
+                            let peer_state = Arc::clone(&self.state);
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, peer_shutdown).await {
+                                if let Err(e) = handle_connection(stream, peer_shutdown, peer_state).await {
                                     warn!("connection handler error: {e}");
                                 }
                             });
@@ -143,7 +167,7 @@ impl DaemonServer {
         // Cleanup socket file on Unix.
         #[cfg(unix)]
         {
-            let _ = std::fs::remove_file(&self.socket_path);
+            let _ = std::fs::remove_file(socket_path);
         }
 
         Ok(())
@@ -158,13 +182,13 @@ impl DaemonServer {
         #[cfg(unix)]
         {
             use interprocess::local_socket::ToFsName;
-            Ok(self.socket_path.as_str().to_fs_name::<GenericFilePath>()?)
+            Ok(self.state.socket_path.as_str().to_fs_name::<GenericFilePath>()?)
         }
 
         #[cfg(windows)]
         {
             use interprocess::local_socket::ToNsName;
-            Ok(self.socket_path.as_str().to_ns_name::<GenericNamespaced>()?)
+            Ok(self.state.socket_path.as_str().to_ns_name::<GenericNamespaced>()?)
         }
     }
 }
@@ -182,6 +206,23 @@ const MAX_FRAME_LENGTH: usize = 4 * 1024 * 1024;
 async fn handle_connection(
     stream: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     mut shutdown_rx: watch::Receiver<bool>,
+    state: Arc<DaemonState>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Track this connection.
+    state.active_connections.fetch_add(1, Ordering::Relaxed);
+
+    let result = handle_connection_inner(stream, &mut shutdown_rx, &state).await;
+
+    // Always decrement on exit, regardless of success/failure.
+    state.active_connections.fetch_sub(1, Ordering::Relaxed);
+
+    result
+}
+
+async fn handle_connection_inner(
+    stream: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    shutdown_rx: &mut watch::Receiver<bool>,
+    state: &DaemonState,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let codec = LengthDelimitedCodec::builder()
         .big_endian()
@@ -241,7 +282,7 @@ async fn handle_connection(
         let request_id = request.id;
 
         // Layer 4: catch panics around the dispatch.
-        let response = match catch_unwind(AssertUnwindSafe(|| dispatch_request(&request))) {
+        let response = match catch_unwind(AssertUnwindSafe(|| dispatch_request(&request, state))) {
             Ok(future) => future.await,
             Err(_) => {
                 error!("panic in request handler for request_id={request_id}");
@@ -268,10 +309,11 @@ async fn handle_connection(
 
 /// Layer 3: dispatch based on `RequestType`.
 ///
-/// All handlers currently return a stub "not implemented" response with
-/// `StatusCode::Unavailable`. Real implementations come in later tasks.
+/// Ping, Status, and Shutdown are handled by real implementations.
+/// All other request types still return a stub "not implemented" response.
 fn dispatch_request(
     request: &DaemonRequest,
+    state: &DaemonState,
 ) -> impl Future<Output = DaemonResponse> + Send + 'static {
     let request_id = request.id;
     let request_type = request.r#type;
@@ -281,6 +323,9 @@ fn dispatch_request(
         Ok(RequestType::Unspecified) => {
             error_response(request_id, StatusCode::UnknownRequest, "unspecified request type".into())
         }
+        Ok(RequestType::Ping) => handlers::handle_ping(request, state),
+        Ok(RequestType::Status) => handlers::handle_status(request, state),
+        Ok(RequestType::Shutdown) => handlers::handle_shutdown(request, state),
         Ok(rt) => {
             stub_response(request_id, rt)
         }

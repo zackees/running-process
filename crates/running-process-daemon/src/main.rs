@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
 
 pub mod client;
+pub mod config;
+pub mod handlers;
+pub mod idle;
 pub mod paths;
 mod platform;
 pub mod server;
@@ -48,10 +51,70 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Start => println!("starting daemon..."),
-        Commands::Stop => println!("stopping daemon..."),
-        Commands::Ping => println!("pinging daemon..."),
-        Commands::Status => println!("daemon status..."),
+        Commands::Start => {
+            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            rt.block_on(async {
+                let socket = paths::socket_path(None);
+                let db = paths::db_path(None).to_string_lossy().into_owned();
+                let srv = server::DaemonServer::new(
+                    socket,
+                    db,
+                    "global".to_string(),
+                    String::new(),
+                    String::new(),
+                );
+                if let Err(e) = srv.run().await {
+                    eprintln!("daemon error: {e}");
+                    std::process::exit(1);
+                }
+            });
+        }
+        Commands::Stop => {
+            match client::DaemonClient::connect(None) {
+                Ok(mut c) => match c.shutdown(true, 5.0) {
+                    Ok(_resp) => println!("daemon is shutting down"),
+                    Err(e) => eprintln!("shutdown failed: {e}"),
+                },
+                Err(_) => eprintln!("daemon is not running"),
+            }
+        }
+        Commands::Ping => {
+            match client::DaemonClient::connect(None) {
+                Ok(mut c) => match c.ping() {
+                    Ok(resp) => println!(
+                        "pong (server time: {}ms)",
+                        resp.ping.map(|p| p.server_time_ms).unwrap_or(0)
+                    ),
+                    Err(e) => eprintln!("ping failed: {e}"),
+                },
+                Err(_) => eprintln!("daemon is not running"),
+            }
+        }
+        Commands::Status => {
+            match client::DaemonClient::connect(None) {
+                Ok(mut c) => match c.status() {
+                    Ok(resp) => {
+                        if let Some(s) = resp.status {
+                            println!("version:          {}", s.version);
+                            println!("uptime:           {}s", s.uptime_seconds);
+                            println!("tracked procs:    {}", s.tracked_process_count);
+                            println!("active conns:     {}", s.active_connections);
+                            println!("socket:           {}", s.socket_path);
+                            println!("db:               {}", s.db_path);
+                            if !s.scope.is_empty() {
+                                println!("scope:            {}", s.scope);
+                                println!("scope_hash:       {}", s.scope_hash);
+                                println!("scope_cwd:        {}", s.scope_cwd);
+                            }
+                        } else {
+                            println!("status: ok (no details)");
+                        }
+                    }
+                    Err(e) => eprintln!("status failed: {e}"),
+                },
+                Err(_) => eprintln!("daemon is not running"),
+            }
+        }
         Commands::List { json: _, originator: _ } => println!("listing processes..."),
         Commands::KillZombies { dry_run: _ } => println!("killing zombies..."),
         Commands::Kill { pid } => println!("killing process tree {}...", pid),
