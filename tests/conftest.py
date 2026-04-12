@@ -10,9 +10,9 @@ import pytest
 
 from tests.pid_tracker import (
     install_atexit_handler,
-    record_pid,
     reap_with_retry,
     reap_zombies,
+    record_pid,
     reset_log,
 )
 
