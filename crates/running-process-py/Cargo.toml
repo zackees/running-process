@@ -20,6 +20,6 @@ regex = "1"
 running-process-core = { path = "../running-process-core", version = "3.0.13", features = ["originator-scan"] }
 sysinfo = "0.30"
 winapi = { version = "0.3", features = ["consoleapi", "handleapi", "jobapi2", "processenv", "processthreadsapi", "synchapi", "winbase", "wincon", "winnt", "winuser"] }
-running-process-proto = { path = "../running-process-proto" }
+running-process-proto = { path = "../running-process-proto", version = "3.0.13" }
 prost = "0.14"
 interprocess = "2"

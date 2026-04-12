@@ -28,7 +28,7 @@ WORKFLOWS = {
     "macos-x86-build.yml": "wheels-macos-x86",
     "macos-arm-build.yml": "wheels-macos-arm",
 }
-PUBLISHABLE_CRATES = ["running-process-core", "running-process-py"]
+PUBLISHABLE_CRATES = ["running-process-core", "running-process-proto", "running-process-py"]
 
 EXPECTED_ARTIFACT_GLOBS = (
     "{name}-{version}.tar.gz",
