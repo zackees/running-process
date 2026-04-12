@@ -175,7 +175,7 @@ class TestSpawnDaemon(unittest.TestCase):
             self._kill_pid(handle.pid)
 
     def test_env_is_passed(self):
-        """spawn_daemon forwards env to the sidecar JSON."""
+        """spawn_daemon merges caller env into the clean daemon environment."""
         import json
 
         from running_process.daemon import spawn_daemon
@@ -190,7 +190,12 @@ class TestSpawnDaemon(unittest.TestCase):
         try:
             sidecar = handle.runtime_dir / f"{name}.daemon.json"
             data = json.loads(sidecar.read_text(encoding="utf-8"))
-            self.assertEqual(data["env"], test_env)
+            sidecar_env = data["env"]
+            # Caller vars are present in the sidecar env.
+            self.assertEqual(sidecar_env["MY_VAR"], "hello")
+            self.assertEqual(sidecar_env["OTHER"], "world")
+            # Venv vars should NOT be present (clean env).
+            self.assertNotIn("VIRTUAL_ENV", sidecar_env)
         finally:
             self._kill_pid(handle.pid)
 

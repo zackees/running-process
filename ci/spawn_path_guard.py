@@ -35,6 +35,8 @@ ALLOWED_RUST_SPAWN = {
 
 ALLOWED_PORTABLE_PTY = {
     Path("crates/running-process-py/src/lib.rs"),
+    # PTY module moved to core crate
+    Path("crates/running-process-core/src/pty/mod.rs"),
 }
 
 ALLOWED_PYTHON_POPEN = {

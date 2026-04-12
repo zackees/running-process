@@ -748,7 +748,7 @@ impl NativePtyProcess {
     }
 }
 
-// WindowsJobHandle is now in running_process_core::pty
+// WindowsJobHandle moved to running_process_core::pty
 
 fn parse_command(command: &Bound<'_, PyAny>, shell: bool) -> PyResult<CommandSpec> {
     if let Ok(command) = command.extract::<String>() {
@@ -2517,7 +2517,7 @@ mod tests {
     };
     #[cfg(windows)]
     use running_process_core::pty::{
-        assign_child_to_windows_kill_on_close_job, apply_windows_pty_priority, WindowsJobHandle,
+        assign_child_to_windows_kill_on_close_job, apply_windows_pty_priority,
     };
     #[cfg(windows)]
     use running_process_core::pty::terminal_input::{
