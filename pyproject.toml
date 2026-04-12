@@ -15,6 +15,7 @@ dependencies = []
 
 [project.scripts]
 running-process = "running_process.cli:main"
+running-process-dashboard = "running_process.dashboard:main"
 
 [project.urls]
 Homepage = "https://github.com/zackees/running-process"
