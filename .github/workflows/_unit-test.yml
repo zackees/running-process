@@ -51,8 +51,6 @@ jobs:
         run: uv run --module ci.run_logged logs/dev-build.log -- uv run --module ci.build_wheel --dev
 
       - name: Unit Tests
-        env:
-          RUNNING_PROCESS_TEST_COMMAND_TIMEOUT_SECONDS: "300"
         run: uv run --module ci.run_logged logs/test.log -- uv run --module ci.test
 
       - name: Display timeout diagnostics
