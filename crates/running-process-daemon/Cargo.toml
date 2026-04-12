@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 description = "Daemon for running-process subprocess tracking"
 
+[lib]
+name = "running_process_daemon"
+path = "src/lib.rs"
+
 [[bin]]
 name = "running-process-daemon"
 path = "src/main.rs"

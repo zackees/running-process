@@ -73,7 +73,15 @@ impl DaemonClient {
     /// dispatch matches the server via [`paths::make_socket_name`].
     pub fn connect(scope_hash: Option<&str>) -> Result<Self, ClientError> {
         let path = paths::socket_path(scope_hash);
-        let name = paths::make_socket_name(&path).map_err(ClientError::Connect)?;
+        Self::connect_to(&path)
+    }
+
+    /// Connect to a daemon listening at an explicit socket path.
+    ///
+    /// Use this when you already know the socket path (e.g. in integration
+    /// tests that start a server on a unique path).
+    pub fn connect_to(socket_path: &str) -> Result<Self, ClientError> {
+        let name = paths::make_socket_name(socket_path).map_err(ClientError::Connect)?;
 
         use interprocess::local_socket::traits::Stream as _;
         let stream = Stream::connect(name).map_err(ClientError::Connect)?;
