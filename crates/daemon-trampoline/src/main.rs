@@ -107,6 +107,18 @@ fn run() -> i32 {
 
     // 8. Inherit stdin/stdout/stderr (default behavior).
 
+    // 8b. On Windows, prevent the child from creating a visible console window.
+    //     The trampoline itself was spawned with DETACHED_PROCESS (no console).
+    //     Without explicit flags, Windows auto-creates a visible console for
+    //     console applications spawned by a consoleless parent.
+    //     CREATE_NO_WINDOW (0x0800_0000) gives the child a hidden console.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
     // 9. Spawn, wait, and exit with child's status code.
     match cmd.status() {
         Ok(status) => {
