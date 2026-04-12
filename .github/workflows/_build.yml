@@ -50,7 +50,7 @@ jobs:
           cache-targets: false
 
       - name: Build wheel (dev)
-        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run build.py --dev
+        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel --dev
 
       - name: Upload dist artifacts
         if: ${{ inputs.artifact-name != '' }}

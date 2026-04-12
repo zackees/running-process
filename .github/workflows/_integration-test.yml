@@ -50,6 +50,8 @@ jobs:
         run: uv run --module ci.run_logged logs/dev-build.log -- uv run --module ci.build_wheel --dev
 
       - name: Integration Tests
+        env:
+          IN_RUNNING_PROCESS: running-process-cli
         run: uv run --module ci.run_logged logs/integration-test.log -- uv run pytest -m live -ra --strict-markers
 
       - name: Upload failure logs

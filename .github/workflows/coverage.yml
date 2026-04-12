@@ -44,6 +44,9 @@ jobs:
           shared-key: running-process-ubuntu-24.04
           cache-targets: false
 
+      - name: Dev build
+        run: uv run --module ci.run_logged logs/dev-build.log -- uv run --module ci.build_wheel --dev
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
