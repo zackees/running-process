@@ -1672,11 +1672,11 @@ def test_pseudo_terminal_windows_native_input_relay_forwards_events_and_arms_idl
         def start(self) -> None:
             self.started = True
 
-        def read_event(self, timeout: float | None = None) -> SimpleNamespace:
+        def read_batch(self, timeout: float | None = None) -> tuple[bytes, bool]:
             del timeout
             self._reads += 1
             if self._reads == 1:
-                return SimpleNamespace(data=b"hello\r", submit=True)
+                return (b"hello\r", True)
             raise TimeoutError
 
         def close(self) -> None:
@@ -1800,36 +1800,11 @@ def test_pseudo_terminal_windows_native_input_relay_preserves_shift_enter_vs_ent
         def __init__(self) -> None:
             self.started = False
             self.closed = False
-            self._events = iter(
+            self._batches = iter(
                 [
-                    SimpleNamespace(
-                        data=b"hello",
-                        submit=False,
-                        shift=False,
-                        ctrl=False,
-                        alt=False,
-                    ),
-                    SimpleNamespace(
-                        data=b"\x1b[13;2u",
-                        submit=False,
-                        shift=True,
-                        ctrl=False,
-                        alt=False,
-                    ),
-                    SimpleNamespace(
-                        data=b"world",
-                        submit=False,
-                        shift=False,
-                        ctrl=False,
-                        alt=False,
-                    ),
-                    SimpleNamespace(
-                        data=b"\r",
-                        submit=True,
-                        shift=False,
-                        ctrl=False,
-                        alt=False,
-                    ),
+                    # read_batch merges all queued events in Rust; the relay
+                    # receives a single merged batch per call.
+                    (b"hello\x1b[13;2uworld\r", True),
                 ]
             )
             captures.append(self)
@@ -1837,10 +1812,10 @@ def test_pseudo_terminal_windows_native_input_relay_preserves_shift_enter_vs_ent
         def start(self) -> None:
             self.started = True
 
-        def read_event(self, timeout: float | None = None) -> SimpleNamespace:
+        def read_batch(self, timeout: float | None = None) -> tuple[bytes, bool]:
             del timeout
             try:
-                return next(self._events)
+                return next(self._batches)
             except StopIteration as exc:
                 raise TimeoutError from exc
 
@@ -1866,13 +1841,12 @@ def test_pseudo_terminal_windows_native_input_relay_preserves_shift_enter_vs_ent
     )
     process._proc = FakeProc(process)  # type: ignore[assignment]
     process.idle_timeout_enabled = False
-    writes: list[tuple[bytes, bool, bool]] = []
+    writes: list[tuple[bytes, bool]] = []
 
     def fake_write(data: str | bytes, *, submit: bool = False) -> None:
         raw = data.encode(process.encoding, process.errors) if isinstance(data, str) else data
-        writes.append((raw, submit, process.idle_timeout_enabled))
-        if len(writes) >= 4:
-            process._terminal_input_stop.set()
+        writes.append((raw, submit))
+        process._terminal_input_stop.set()
 
     process.write = fake_write  # type: ignore[method-assign]
     process.start_terminal_input_relay(arm_idle_timeout_on_submit=True)
@@ -1886,12 +1860,8 @@ def test_pseudo_terminal_windows_native_input_relay_preserves_shift_enter_vs_ent
 
     assert capture.started is True
     assert capture.closed is True
-    assert writes == [
-        (b"hello", False, False),
-        (b"\x1b[13;2u", False, False),
-        (b"world", False, False),
-        (b"\r", True, True),
-    ]
+    # All events batched into a single write; shift-enter sequence preserved.
+    assert writes == [(b"hello\x1b[13;2uworld\r", True)]
     assert process.idle_timeout_enabled is True
 
 

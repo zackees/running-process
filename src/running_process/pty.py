@@ -1124,18 +1124,15 @@ class PseudoTerminalProcess:
             try:
                 while not self._terminal_input_stop.is_set() and self.poll() is None:
                     try:
-                        event = capture.read_event(timeout=0.05)
+                        data, submit = capture.read_batch(timeout=0.05)
                     except TimeoutError:
                         continue
-                    data = event.data
                     if filter_ctrl_c:
                         data = data.replace(b"\x03", b"")
                         if not data:
                             continue
-                    self._maybe_arm_idle_timeout_from_terminal_input(
-                        submit=bool(getattr(event, "submit", False))
-                    )
-                    self.write(data, submit=bool(getattr(event, "submit", False)))
+                    self._maybe_arm_idle_timeout_from_terminal_input(submit=submit)
+                    self.write(data, submit=submit)
             finally:
                 with suppress(Exception):
                     capture.close()
@@ -1170,9 +1167,22 @@ class PseudoTerminalProcess:
                         return
                     if not ready:
                         continue
-                    data = os.read(stdin_fd, 1024)
+                    data = os.read(stdin_fd, 65536)
                     if not data:
                         continue
+                    # Drain any additional data already in the fd buffer
+                    # so large pastes arrive as a single write.
+                    while True:
+                        try:
+                            more_ready, _, _ = select.select([stdin_fd], [], [], 0)
+                        except (OSError, ValueError):
+                            break
+                        if not more_ready:
+                            break
+                        more = os.read(stdin_fd, 65536)
+                        if not more:
+                            break
+                        data += more
                     if filter_ctrl_c:
                         data = data.replace(b"\x03", b"")
                         if not data:

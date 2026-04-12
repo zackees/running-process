@@ -721,7 +721,7 @@ fn native_terminal_input_worker(
     use winapi::um::winnt::HANDLE;
 
     let handle = input_handle as HANDLE;
-    let mut records: [INPUT_RECORD; 16] = unsafe { std::mem::zeroed() };
+    let mut records: [INPUT_RECORD; 512] = unsafe { std::mem::zeroed() };
     append_native_terminal_input_trace_line(&format!(
         "[{:.6}] native_terminal_input worker_start handle={input_handle}",
         unix_now_seconds(),
@@ -3633,6 +3633,38 @@ impl NativeTerminalInput {
             .drain(..)
             .map(|event| Self::event_to_py(py, event))
             .collect()
+    }
+
+    /// Wait for at least one input event, then drain all queued events and
+    /// return their data merged into a single `bytes` object plus a `submit`
+    /// flag.  This avoids per-event Python round-trips during large pastes.
+    ///
+    /// Returns ``(data: bytes, submit: bool)``.
+    #[pyo3(signature = (timeout=None))]
+    fn read_batch(
+        &self,
+        py: Python<'_>,
+        timeout: Option<f64>,
+    ) -> PyResult<(Py<PyAny>, bool)> {
+        // Block (releasing the GIL) until the first event arrives.
+        let first = self.wait_for_event(py, timeout)?;
+
+        // Drain everything else already queued — single lock acquisition.
+        let mut guard = self.state.lock().expect("terminal input mutex poisoned");
+        let remaining: Vec<TerminalInputEventRecord> = guard.events.drain(..).collect();
+        drop(guard);
+
+        // Merge all data into one buffer.
+        let capacity = first.data.len() + remaining.iter().map(|e| e.data.len()).sum::<usize>();
+        let mut merged = Vec::with_capacity(capacity);
+        let mut submit = first.submit;
+        merged.extend_from_slice(&first.data);
+        for event in &remaining {
+            merged.extend_from_slice(&event.data);
+            submit = submit || event.submit;
+        }
+
+        Ok((PyBytes::new(py, &merged).into_any().unbind(), submit))
     }
 }
 
