@@ -931,7 +931,7 @@ def test_wait_raises_keyboard_interrupt_when_child_gets_sigint() -> None:
                 "import sys, time\n"
                 "print('ready', flush=True)\n"
                 "try:\n"
-                "    time.sleep(30)\n"
+                "    time.sleep(2)\n"
                 "except KeyboardInterrupt:\n"
                 "    print('child-interrupted', flush=True)\n"
                 "    raise\n"
@@ -958,7 +958,7 @@ def test_wait_raises_keyboard_interrupt_promptly_while_main_thread_is_blocked() 
                 "import time\n"
                 "print('ready', flush=True)\n"
                 "try:\n"
-                "    time.sleep(30)\n"
+                "    time.sleep(2)\n"
                 "except KeyboardInterrupt:\n"
                 "    raise\n"
             ),
@@ -1152,9 +1152,9 @@ import sys
 import time
 from running_process import RunningProcess
 
-process = RunningProcess([sys.executable, "-c", "import time; time.sleep(30)"])
+process = RunningProcess([sys.executable, "-c", "import time; time.sleep(2)"])
 print(process.pid, flush=True)
-time.sleep(30)
+time.sleep(2)
 """
     owner = subprocess.Popen(
         [sys.executable, "-c", script],
@@ -1218,7 +1218,7 @@ def test_allows_child_ctrl_c_false_child_does_not_see_sigint() -> None:
                 "    print('child-saw-sigint', flush=True)\n"
                 "signal.signal(signal.SIGINT, handler)\n"
                 "print('ready', flush=True)\n"
-                "time.sleep(30)\n"
+                "time.sleep(2)\n"
             ),
         ],
         allows_child_ctrl_c_interruption=False,
@@ -1243,7 +1243,7 @@ def test_allows_child_ctrl_c_false_process_group_isolation() -> None:
                 "import time\n"
                 "print('ready', flush=True)\n"
                 "try:\n"
-                "    time.sleep(30)\n"
+                "    time.sleep(2)\n"
                 "except KeyboardInterrupt:\n"
                 "    raise\n"
             ),
@@ -1265,7 +1265,7 @@ def test_allows_child_ctrl_c_false_wait_kills_on_keyboard_interrupt() -> None:
         [
             sys.executable,
             "-c",
-            "import time; print('ready', flush=True); time.sleep(60)",
+            "import time; print('ready', flush=True); time.sleep(2)",
         ],
         allows_child_ctrl_c_interruption=False,
         timeout=10,

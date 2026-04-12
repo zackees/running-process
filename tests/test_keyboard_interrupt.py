@@ -125,7 +125,7 @@ class TestSubprocessInterrupt(unittest.TestCase):
                     "print('ready', flush=True)\n"
                     "def h(s, f): sys.exit(130)\n"
                     "signal.signal(signal.SIGINT, h)\n"
-                    "time.sleep(30)\n"
+                    "time.sleep(2)\n"
                 ),
             ],
             creationflags=creationflags,

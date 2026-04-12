@@ -642,12 +642,12 @@ def test_pseudo_terminal_force_killed_parent_reaps_child() -> None:
         "        sys.executable,\n"
         "        '-c',\n"
         "        \"import sys, time; sys.stdout.write('username:'); sys.stdout.flush(); "
-        'sys.stdin.readline(); time.sleep(30)",\n'
+        'sys.stdin.readline(); time.sleep(2)",\n'
         "    ],\n"
         "    text=True,\n"
         ")\n"
         "print(process.pid, flush=True)\n"
-        "time.sleep(30)\n"
+        "time.sleep(2)\n"
     )
 
     owner = subprocess.Popen(
@@ -681,11 +681,11 @@ def test_interactive_force_killed_parent_reaps_child() -> None:
         "import sys, time\n"
         "from running_process import InteractiveMode, RunningProcess\n"
         "process = RunningProcess.interactive(\n"
-        "    [sys.executable, '-c', \"import time; time.sleep(30)\"],\n"
+        "    [sys.executable, '-c', \"import time; time.sleep(2)\"],\n"
         "    mode=InteractiveMode.CONSOLE_ISOLATED,\n"
         ")\n"
         "print(process.pid, flush=True)\n"
-        "time.sleep(30)\n"
+        "time.sleep(2)\n"
     )
 
     owner = subprocess.Popen(
@@ -724,7 +724,7 @@ def test_pseudo_terminal_interrupt_and_wait_reports_second_interrupt_success() -
                 "        raise KeyboardInterrupt\n"
                 "signal.signal(signal.SIGINT, handler)\n"
                 "print('ready>', flush=True)\n"
-                "time.sleep(30)\n"
+                "time.sleep(2)\n"
             ),
         ],
         text=True,
@@ -2004,7 +2004,7 @@ def test_interactive_wait_raises_keyboard_interrupt_on_sigint() -> None:
                 "import time\n"
                 "print('ready', flush=True)\n"
                 "try:\n"
-                "    time.sleep(30)\n"
+                "    time.sleep(2)\n"
                 "except KeyboardInterrupt:\n"
                 "    raise\n"
             ),

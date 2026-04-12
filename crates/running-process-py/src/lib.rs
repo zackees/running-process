@@ -6353,7 +6353,7 @@ mod tests {
             let argv = vec![
                 "python".to_string(),
                 "-c".to_string(),
-                "import time; time.sleep(30)".to_string(),
+                "import time; time.sleep(0.1)".to_string(),
             ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
@@ -6539,7 +6539,7 @@ mod tests {
             let argv = vec![
                 "python".to_string(),
                 "-c".to_string(),
-                "import time; time.sleep(60)".to_string(),
+                "import time; time.sleep(0.1)".to_string(),
             ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
@@ -6555,7 +6555,7 @@ mod tests {
             let argv = vec![
                 "python".to_string(),
                 "-c".to_string(),
-                "import time; time.sleep(60)".to_string(),
+                "import time; time.sleep(0.1)".to_string(),
             ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
@@ -6586,7 +6586,7 @@ mod tests {
             let argv = vec![
                 "python".to_string(),
                 "-c".to_string(),
-                "import time; time.sleep(60)".to_string(),
+                "import time; time.sleep(0.1)".to_string(),
             ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
@@ -6855,7 +6855,7 @@ mod tests {
             let argv = vec![
                 "python".to_string(),
                 "-c".to_string(),
-                "import time; time.sleep(60)".to_string(),
+                "import time; time.sleep(0.1)".to_string(),
             ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
@@ -6871,7 +6871,7 @@ mod tests {
             let argv = vec![
                 "python".to_string(),
                 "-c".to_string(),
-                "import time; time.sleep(60)".to_string(),
+                "import time; time.sleep(0.1)".to_string(),
             ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
@@ -6900,7 +6900,7 @@ mod tests {
             let argv = vec![
                 "python".to_string(),
                 "-c".to_string(),
-                "import time; time.sleep(30)".to_string(),
+                "import time; time.sleep(0.1)".to_string(),
             ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
@@ -6976,7 +6976,7 @@ mod tests {
             let argv = vec![
                 "python".to_string(),
                 "-c".to_string(),
-                "import time; time.sleep(60)".to_string(),
+                "import time; time.sleep(0.1)".to_string(),
             ];
             let process = NativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
@@ -7117,7 +7117,7 @@ mod tests {
     fn running_process_kill_running() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
-            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(60)"])
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(0.1)"])
                 .unwrap();
             let process = NativeRunningProcess::new(
                 cmd.as_any(),
@@ -7144,7 +7144,7 @@ mod tests {
     fn running_process_terminate_running() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
-            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(60)"])
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(0.1)"])
                 .unwrap();
             let process = NativeRunningProcess::new(
                 cmd.as_any(),
@@ -7198,7 +7198,7 @@ mod tests {
     fn running_process_close_running() {
         pyo3::prepare_freethreaded_python();
         pyo3::Python::with_gil(|py| {
-            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(60)"])
+            let cmd = pyo3::types::PyList::new(py, ["python", "-c", "import time; time.sleep(0.1)"])
                 .unwrap();
             let process = NativeRunningProcess::new(
                 cmd.as_any(),

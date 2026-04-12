@@ -231,7 +231,7 @@ fn start_twice_returns_already_started() {
         CommandSpec::Argv(vec![
             "python".into(),
             "-c".into(),
-            "import time; time.sleep(30)".into(),
+            "import time; time.sleep(0.1)".into(),
         ]),
         false,
         StdinMode::Inherit,
@@ -264,7 +264,7 @@ fn write_stdin_without_piped_returns_stdin_unavailable() {
         CommandSpec::Argv(vec![
             "python".into(),
             "-c".into(),
-            "import time; time.sleep(30)".into(),
+            "import time; time.sleep(0.1)".into(),
         ]),
         false,
         StdinMode::Inherit,
@@ -312,7 +312,7 @@ fn wait_timeout_returns_timeout_error() {
         CommandSpec::Argv(vec![
             "python".into(),
             "-c".into(),
-            "import time; time.sleep(30)".into(),
+            "import time; time.sleep(0.1)".into(),
         ]),
         false,
         StdinMode::Inherit,
@@ -607,7 +607,7 @@ fn close_kills_running_process() {
         CommandSpec::Argv(vec![
             "python".into(),
             "-c".into(),
-            "import time; time.sleep(30)".into(),
+            "import time; time.sleep(0.1)".into(),
         ]),
         false,
         StdinMode::Inherit,
@@ -638,7 +638,7 @@ fn terminate_kills_running_process() {
         CommandSpec::Argv(vec![
             "python".into(),
             "-c".into(),
-            "import time; time.sleep(30)".into(),
+            "import time; time.sleep(0.1)".into(),
         ]),
         false,
         StdinMode::Inherit,
@@ -657,7 +657,7 @@ fn pid_returns_some_after_start() {
         CommandSpec::Argv(vec![
             "python".into(),
             "-c".into(),
-            "import time; time.sleep(30)".into(),
+            "import time; time.sleep(0.1)".into(),
         ]),
         false,
         StdinMode::Inherit,
@@ -710,7 +710,7 @@ fn helper_force_killed_parent_reaps_native_child() {
             CommandSpec::Argv(vec![
                 "python".into(),
                 "-c".into(),
-                "import time; time.sleep(30)".into(),
+                "import time; time.sleep(0.1)".into(),
             ]),
             false,
             StdinMode::Inherit,
@@ -787,7 +787,7 @@ fn helper_force_killed_parent_logs_native_child() {
             CommandSpec::Argv(vec![
                 "python".into(),
                 "-c".into(),
-                "import time; time.sleep(30)".into(),
+                "import time; time.sleep(0.1)".into(),
             ]),
             false,
             StdinMode::Inherit,

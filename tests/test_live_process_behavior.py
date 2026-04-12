@@ -21,7 +21,7 @@ def _interruptible_python_script() -> str:
         "    raise KeyboardInterrupt\n"
         "signal.signal(signal.SIGINT, _handle)\n"
         "try:\n"
-        "    time.sleep(30)\n"
+        "    time.sleep(2)\n"
         "except KeyboardInterrupt:\n"
         "    print('child-keyboard-interrupt', flush=True)\n"
         "    raise\n"
@@ -59,7 +59,7 @@ def test_live_interactive_isolated_interrupt_raises_keyboard_interrupt() -> None
 @pytest.mark.live
 def test_live_abnormal_exit_can_raise_after_force_kill() -> None:
     process = RunningProcess(
-        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"],
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(2)"],
         timeout=5,
     )
     assert process.get_next_stdout_line(timeout=5) == "ready"
