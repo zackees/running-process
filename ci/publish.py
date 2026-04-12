@@ -343,7 +343,7 @@ def publish_crates(*, dry_run: bool) -> None:
         result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
         log(f"  $ {' '.join(cmd)}")
         if result.returncode != 0:
-            if "already uploaded" in result.stderr.lower():
+            if "already" in result.stderr.lower() and ("uploaded" in result.stderr.lower() or "exists" in result.stderr.lower()):
                 log(f"  {crate} already published, skipping")
                 continue
             log(result.stderr)
