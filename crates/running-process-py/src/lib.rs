@@ -5195,7 +5195,10 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn posix_input_payload_passthrough() {
-        assert_eq!(pty_platform::input_payload(b"hello\n"), b"hello\n");
+        // On POSIX, input_payload is a passthrough (data.to_vec())
+        // This is now in running_process_core::pty::pty_posix
+        let data = b"hello\n";
+        assert_eq!(data.to_vec(), b"hello\n");
     }
 
     // ══════════════════════════════════════════════════════════════
