@@ -15,6 +15,23 @@ is_windows = sys.platform == "win32"
 skip_unless_windows = pytest.mark.skipif(not is_windows, reason="Windows-only test")
 
 
+def _trampoline_available() -> bool:
+    """Return True if the bundled trampoline binary exists."""
+    try:
+        from running_process.daemon import _bundled_trampoline_path
+
+        return _bundled_trampoline_path().exists()
+    except Exception:
+        return False
+
+
+requires_trampoline = pytest.mark.skipif(
+    not _trampoline_available(),
+    reason="Trampoline binary not bundled in this build",
+)
+
+
+@requires_trampoline
 class TestSpawnDaemon(unittest.TestCase):
     """Core spawn_daemon tests — run on all platforms in CI."""
 
@@ -199,6 +216,7 @@ class TestSpawnDaemon(unittest.TestCase):
 
 @live
 @skip_unless_windows
+@requires_trampoline
 class TestSpawnDaemonNoPopup(unittest.TestCase):
     """Verify spawn_daemon does not flash a console window on Windows."""
 

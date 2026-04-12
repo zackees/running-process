@@ -39,6 +39,8 @@ ALLOWED_PORTABLE_PTY = {
 
 ALLOWED_PYTHON_POPEN = {
     Path("src/running_process/cli.py"),
+    # Daemon spawner: subprocess.Popen to launch the trampoline binary
+    Path("src/running_process/daemon.py"),
 }
 
 
