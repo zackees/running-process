@@ -277,7 +277,7 @@ impl NativeProcess {
                     return;
                 }
             }
-            thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_millis(10));
         });
     }
 
@@ -322,16 +322,45 @@ impl NativeProcess {
         if self.child.lock().expect("child mutex poisoned").is_none() {
             return self.returncode().ok_or(ProcessError::NotRunning);
         }
+        // Fast path: already exited.
+        if let Some(code) = self.returncode() {
+            public_symbols::rp_native_process_wait_for_capture_completion_public(self);
+            return Ok(code);
+        }
         let start = Instant::now();
+        let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
         loop {
-            if let Some(code) = self.poll()? {
+            // Check returncode (set by exit-waiter thread via atomic + condvar).
+            let rc = self.shared.returncode.load(Ordering::Acquire);
+            if rc != RETURNCODE_NOT_SET {
+                drop(guard);
+                let code = rc as i32;
                 public_symbols::rp_native_process_wait_for_capture_completion_public(self);
                 return Ok(code);
             }
-            if timeout.is_some_and(|limit| start.elapsed() >= limit) {
-                return Err(ProcessError::Timeout);
+            if let Some(limit) = timeout {
+                let elapsed = start.elapsed();
+                if elapsed >= limit {
+                    return Err(ProcessError::Timeout);
+                }
+                let remaining = limit - elapsed;
+                // Wait on condvar with timeout, capped at 50ms to recheck.
+                let wait_time = remaining.min(Duration::from_millis(50));
+                guard = self
+                    .shared
+                    .condvar
+                    .wait_timeout(guard, wait_time)
+                    .expect("queue mutex poisoned")
+                    .0;
+            } else {
+                // Wait on condvar with periodic recheck.
+                guard = self
+                    .shared
+                    .condvar
+                    .wait_timeout(guard, Duration::from_millis(50))
+                    .expect("queue mutex poisoned")
+                    .0;
             }
-            thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -714,19 +743,22 @@ impl NativeProcess {
         let shared = Arc::clone(&self.shared);
         thread::spawn(move || {
             let mut reader = pipe;
-            let mut chunk = [0_u8; 4096];
+            let mut chunk = vec![0_u8; 65536];
             let mut pending = Vec::new();
 
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
-                    Ok(n) => feed_chunk(&shared, visible_stream, &mut pending, &chunk[..n]),
+                    Ok(n) => {
+                        let lines = feed_chunk(&mut pending, &chunk[..n]);
+                        emit_lines(&shared, visible_stream, lines);
+                    }
                     Err(_) => break,
                 }
             }
 
             if !pending.is_empty() {
-                emit_line(&shared, visible_stream, std::mem::take(&mut pending));
+                emit_lines(&shared, visible_stream, vec![std::mem::take(&mut pending)]);
             }
 
             let mut guard = shared.queues.lock().expect("queue mutex poisoned");
@@ -850,7 +882,8 @@ fn assign_child_to_windows_kill_on_close_job_impl(
     Ok(WindowsJobHandle(job as usize))
 }
 
-fn feed_chunk(shared: &Arc<SharedState>, stream: StreamKind, pending: &mut Vec<u8>, chunk: &[u8]) {
+fn feed_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
+    let mut lines = Vec::new();
     let mut start = 0;
     let mut index = 0;
 
@@ -863,7 +896,7 @@ fn feed_chunk(shared: &Arc<SharedState>, stream: StreamKind, pending: &mut Vec<u
             };
             pending.extend_from_slice(&chunk[start..end]);
             if !pending.is_empty() {
-                emit_line(shared, stream, std::mem::take(pending));
+                lines.push(std::mem::take(pending));
             }
             start = index + 1;
         }
@@ -871,26 +904,33 @@ fn feed_chunk(shared: &Arc<SharedState>, stream: StreamKind, pending: &mut Vec<u
     }
 
     pending.extend_from_slice(&chunk[start..]);
+    lines
 }
 
-fn emit_line(shared: &Arc<SharedState>, stream: StreamKind, line: Vec<u8>) {
-    let event = StreamEvent { stream, line };
-    let mut guard = shared.queues.lock().expect("queue mutex poisoned");
-    match event.stream {
-        StreamKind::Stdout => {
-            guard.stdout_history_bytes += event.line.len();
-            guard.stdout_history.push_back(event.line.clone());
-            guard.stdout_queue.push_back(event.line.clone());
-        }
-        StreamKind::Stderr => {
-            guard.stderr_history_bytes += event.line.len();
-            guard.stderr_history.push_back(event.line.clone());
-            guard.stderr_queue.push_back(event.line.clone());
-        }
+fn emit_lines(shared: &Arc<SharedState>, stream: StreamKind, lines: Vec<Vec<u8>>) {
+    if lines.is_empty() {
+        return;
     }
-    guard.combined_history_bytes += event.line.len();
-    guard.combined_history.push_back(event.clone());
-    guard.combined_queue.push_back(event);
+    let mut guard = shared.queues.lock().expect("queue mutex poisoned");
+    for line in lines {
+        let line_len = line.len();
+        match stream {
+            StreamKind::Stdout => {
+                guard.stdout_history_bytes += line_len;
+                guard.stdout_history.push_back(line.clone());
+                guard.stdout_queue.push_back(line.clone());
+            }
+            StreamKind::Stderr => {
+                guard.stderr_history_bytes += line_len;
+                guard.stderr_history.push_back(line.clone());
+                guard.stderr_queue.push_back(line.clone());
+            }
+        }
+        let event = StreamEvent { stream, line };
+        guard.combined_history_bytes += line_len;
+        guard.combined_history.push_back(event.clone());
+        guard.combined_queue.push_back(event);
+    }
     shared.condvar.notify_all();
 }
 
@@ -1115,7 +1155,8 @@ mod tests {
     fn feed_chunk_single_line_with_newline() {
         let shared = Arc::new(SharedState::new(true));
         let mut pending = Vec::new();
-        feed_chunk(&shared, StreamKind::Stdout, &mut pending, b"hello\n");
+        let lines = feed_chunk(&mut pending, b"hello\n");
+        emit_lines(&shared, StreamKind::Stdout, lines);
         let queues = shared.queues.lock().unwrap();
         assert_eq!(queues.stdout_queue.len(), 1);
         assert_eq!(queues.stdout_queue[0], b"hello");
@@ -1126,7 +1167,8 @@ mod tests {
     fn feed_chunk_crlf_stripping() {
         let shared = Arc::new(SharedState::new(true));
         let mut pending = Vec::new();
-        feed_chunk(&shared, StreamKind::Stdout, &mut pending, b"hello\r\n");
+        let lines = feed_chunk(&mut pending, b"hello\r\n");
+        emit_lines(&shared, StreamKind::Stdout, lines);
         let queues = shared.queues.lock().unwrap();
         assert_eq!(queues.stdout_queue.len(), 1);
         assert_eq!(queues.stdout_queue[0], b"hello");
@@ -1136,7 +1178,8 @@ mod tests {
     fn feed_chunk_multiple_lines() {
         let shared = Arc::new(SharedState::new(true));
         let mut pending = Vec::new();
-        feed_chunk(&shared, StreamKind::Stdout, &mut pending, b"a\nb\nc\n");
+        let lines = feed_chunk(&mut pending, b"a\nb\nc\n");
+        emit_lines(&shared, StreamKind::Stdout, lines);
         let queues = shared.queues.lock().unwrap();
         assert_eq!(queues.stdout_queue.len(), 3);
         assert_eq!(queues.stdout_queue[0], b"a");
@@ -1146,11 +1189,9 @@ mod tests {
 
     #[test]
     fn feed_chunk_no_newline_stays_pending() {
-        let shared = Arc::new(SharedState::new(true));
         let mut pending = Vec::new();
-        feed_chunk(&shared, StreamKind::Stdout, &mut pending, b"partial");
-        let queues = shared.queues.lock().unwrap();
-        assert!(queues.stdout_queue.is_empty());
+        let lines = feed_chunk(&mut pending, b"partial");
+        assert!(lines.is_empty());
         assert_eq!(pending, b"partial");
     }
 
@@ -1158,8 +1199,10 @@ mod tests {
     fn feed_chunk_accumulates_pending() {
         let shared = Arc::new(SharedState::new(true));
         let mut pending = Vec::new();
-        feed_chunk(&shared, StreamKind::Stdout, &mut pending, b"hel");
-        feed_chunk(&shared, StreamKind::Stdout, &mut pending, b"lo\n");
+        let lines1 = feed_chunk(&mut pending, b"hel");
+        emit_lines(&shared, StreamKind::Stdout, lines1);
+        let lines2 = feed_chunk(&mut pending, b"lo\n");
+        emit_lines(&shared, StreamKind::Stdout, lines2);
         let queues = shared.queues.lock().unwrap();
         assert_eq!(queues.stdout_queue.len(), 1);
         assert_eq!(queues.stdout_queue[0], b"hello");
@@ -1170,7 +1213,8 @@ mod tests {
     fn feed_chunk_empty_line_not_emitted() {
         let shared = Arc::new(SharedState::new(true));
         let mut pending = Vec::new();
-        feed_chunk(&shared, StreamKind::Stdout, &mut pending, b"\n");
+        let lines = feed_chunk(&mut pending, b"\n");
+        emit_lines(&shared, StreamKind::Stdout, lines);
         let queues = shared.queues.lock().unwrap();
         assert!(queues.stdout_queue.is_empty());
     }
@@ -1179,19 +1223,20 @@ mod tests {
     fn feed_chunk_stderr_goes_to_stderr_queue() {
         let shared = Arc::new(SharedState::new(true));
         let mut pending = Vec::new();
-        feed_chunk(&shared, StreamKind::Stderr, &mut pending, b"error\n");
+        let lines = feed_chunk(&mut pending, b"error\n");
+        emit_lines(&shared, StreamKind::Stderr, lines);
         let queues = shared.queues.lock().unwrap();
         assert!(queues.stdout_queue.is_empty());
         assert_eq!(queues.stderr_queue.len(), 1);
         assert_eq!(queues.stderr_queue[0], b"error");
     }
 
-    // ── emit_line tests ──
+    // ── emit_lines tests ──
 
     #[test]
-    fn emit_line_updates_all_queues_and_history() {
+    fn emit_lines_updates_all_queues_and_history() {
         let shared = Arc::new(SharedState::new(true));
-        emit_line(&shared, StreamKind::Stdout, b"test".to_vec());
+        emit_lines(&shared, StreamKind::Stdout, vec![b"test".to_vec()]);
         let queues = shared.queues.lock().unwrap();
         assert_eq!(queues.stdout_queue.len(), 1);
         assert_eq!(queues.stdout_history.len(), 1);
@@ -1202,9 +1247,9 @@ mod tests {
     }
 
     #[test]
-    fn emit_line_stderr_updates_stderr_queues() {
+    fn emit_lines_stderr_updates_stderr_queues() {
         let shared = Arc::new(SharedState::new(true));
-        emit_line(&shared, StreamKind::Stderr, b"err".to_vec());
+        emit_lines(&shared, StreamKind::Stderr, vec![b"err".to_vec()]);
         let queues = shared.queues.lock().unwrap();
         assert_eq!(queues.stderr_queue.len(), 1);
         assert_eq!(queues.stderr_history.len(), 1);

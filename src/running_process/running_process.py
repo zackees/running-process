@@ -124,13 +124,14 @@ class _RunningProcessOutputIterator:
             return ProcessOutputEvent(EOS, EOS, exit_code)
 
         status, stream, line = self._process._proc.take_combined_line(self._timeout)
-        exit_code = self._process.poll()
         if status == "timeout":
             raise TimeoutError("No stdout or stderr available before timeout")
         if status == "line" and stream is not None and line is not None:
+            exit_code = self._process.returncode
             if stream == "stdout":
                 return ProcessOutputEvent(self._process._format(line), None, exit_code)
             return ProcessOutputEvent(None, self._process._format(line), exit_code)
+        exit_code = self._process.poll()
 
         self._streams_drained = True
         if exit_code is None:
@@ -597,18 +598,13 @@ class RunningProcess:
         return self.returncode is not None
 
     def _echo_streams(self, echo_callback: EchoCallback | None = None) -> None:
-        for line in self.drain_stdout():
+        for stream, line in self.drain_combined():
             if echo_callback is not None:
                 text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
                 echo_callback(text)
             else:
-                _safe_console_write(sys.stdout, line)
-        for line in self.drain_stderr():
-            if echo_callback is not None:
-                text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
-                echo_callback(text)
-            else:
-                _safe_console_write(sys.stderr, line)
+                target = sys.stdout if stream == "stdout" else sys.stderr
+                _safe_console_write(target, line)
 
     def _finalize_wait(self) -> None:
         self._output_formatter.end()

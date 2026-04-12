@@ -1085,6 +1085,9 @@ class PseudoTerminalProcess:
     def _sync_native_input_metrics(self) -> None:
         if self._proc is None or not hasattr(self._proc, "pty_input_bytes_total"):
             return
+        # Only sync when we need to detect submit events for idle timeout arming.
+        if not self._arm_idle_timeout_on_submit or self.idle_timeout_enabled:
+            return
         input_bytes_total = int(self._proc.pty_input_bytes_total())
         newline_events_total = int(self._proc.pty_newline_events_total())
         submit_events_total = int(self._proc.pty_submit_events_total())
@@ -1092,11 +1095,7 @@ class PseudoTerminalProcess:
         self._pty_input_bytes_total = input_bytes_total
         self._pty_newline_events_total = newline_events_total
         self._pty_submit_events_total = submit_events_total
-        if (
-            self._arm_idle_timeout_on_submit
-            and submit_delta > 0
-            and not self.idle_timeout_enabled
-        ):
+        if submit_delta > 0:
             self.idle_timeout_enabled = True
 
     def _maybe_arm_idle_timeout_from_terminal_input(self, *, submit: bool) -> None:
@@ -1124,18 +1123,15 @@ class PseudoTerminalProcess:
             try:
                 while not self._terminal_input_stop.is_set() and self.poll() is None:
                     try:
-                        event = capture.read_event(timeout=0.05)
+                        data, submit = capture.read_batch(timeout=0.05)
                     except TimeoutError:
                         continue
-                    data = event.data
                     if filter_ctrl_c:
                         data = data.replace(b"\x03", b"")
                         if not data:
                             continue
-                    self._maybe_arm_idle_timeout_from_terminal_input(
-                        submit=bool(getattr(event, "submit", False))
-                    )
-                    self.write(data, submit=bool(getattr(event, "submit", False)))
+                    self._maybe_arm_idle_timeout_from_terminal_input(submit=submit)
+                    self.write(data, submit=submit)
             finally:
                 with suppress(Exception):
                     capture.close()
@@ -1170,9 +1166,22 @@ class PseudoTerminalProcess:
                         return
                     if not ready:
                         continue
-                    data = os.read(stdin_fd, 1024)
+                    data = os.read(stdin_fd, 65536)
                     if not data:
                         continue
+                    # Drain any additional data already in the fd buffer
+                    # so large pastes arrive as a single write.
+                    while True:
+                        try:
+                            more_ready, _, _ = select.select([stdin_fd], [], [], 0)
+                        except (OSError, ValueError):
+                            break
+                        if not more_ready:
+                            break
+                        more = os.read(stdin_fd, 65536)
+                        if not more:
+                            break
+                        data += more
                     if filter_ctrl_c:
                         data = data.replace(b"\x03", b"")
                         if not data:
@@ -2285,7 +2294,7 @@ class PseudoTerminalProcess:
                 if code is not None:
                     detector.mark_exit(code, code in KEYBOARD_INTERRUPT_EXIT_CODES)
                     return
-                time.sleep(_PTY_POLL_INTERVAL_SECONDS)
+                time.sleep(0.05)  # 50ms — exit detection doesn't need 1ms precision
 
         self._native_exit_watcher = threading.Thread(
             target=watch_for_exit,
