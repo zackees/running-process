@@ -18,6 +18,7 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 DEFAULT_RUST_TEST_TIMEOUT_SECONDS = 60.0
 DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 180.0
 DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS = 600.0
+DEFAULT_PYTEST_TIMEOUT_SECONDS = 40.0
 COMMAND_TIMEOUT_ENV = "RUNNING_PROCESS_TEST_COMMAND_TIMEOUT_SECONDS"
 
 # pytest-cov args for the first pytest run (creates fresh .coverage)
@@ -70,17 +71,18 @@ def _supervised_pytest_command(
     python: Path,
     *pytest_args: str,
 ) -> list[str]:
-    return [
-        str(python),
-        "-m",
-        "running_process.cli",
-        "--",
+    # PTY-heavy Python suites can legitimately stay quiet for longer than the
+    # default 10-second command timeout on loaded CI runners, especially under
+    # coverage. Use the same wider window as the Linux docker path.
+    return supervised_command(
+        python,
         str(python),
         "-m",
         "pytest",
         "-vv",
         *pytest_args,
-    ]
+        timeout=DEFAULT_PYTEST_TIMEOUT_SECONDS,
+    )
 
 
 def _linux_unit_test_command(

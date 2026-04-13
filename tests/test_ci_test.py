@@ -47,6 +47,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     result = ci_test.main([])
 
     python = str(fake_python)
+    pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
     rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
     assert result == 0
@@ -57,6 +58,8 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
             python,
             "-m",
             "running_process.cli",
+            "--timeout",
+            pytest_timeout,
             "--",
             python,
             "-m",
@@ -83,6 +86,8 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
             python,
             "-m",
             "running_process.cli",
+            "--timeout",
+            pytest_timeout,
             "--",
             python,
             "-m",
@@ -130,6 +135,7 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     result = ci_test.main([])
 
     python = str(fake_python)
+    pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
     rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
@@ -139,6 +145,8 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
             python,
             "-m",
             "running_process.cli",
+            "--timeout",
+            pytest_timeout,
             "--",
             python,
             "-m",
@@ -151,6 +159,8 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
             python,
             "-m",
             "running_process.cli",
+            "--timeout",
+            pytest_timeout,
             "--",
             python,
             "-m",
@@ -178,6 +188,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     result = ci_test.main([])
 
     python = str(fake_python)
+    pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
     rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
@@ -187,6 +198,8 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
             python,
             "-m",
             "running_process.cli",
+            "--timeout",
+            pytest_timeout,
             "--",
             python,
             "-m",
@@ -199,6 +212,8 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
             python,
             "-m",
             "running_process.cli",
+            "--timeout",
+            pytest_timeout,
             "--",
             python,
             "-m",
@@ -295,6 +310,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     result = ci_test.main(["--no-skip"])
 
     python = str(fake_python)
+    pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
     rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
     release_timeout = str(ci_test.DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS)
@@ -307,6 +323,8 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
             python,
             "-m",
             "running_process.cli",
+            "--timeout",
+            pytest_timeout,
             "--",
             python,
             "-m",
@@ -344,6 +362,8 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
             python,
             "-m",
             "running_process.cli",
+            "--timeout",
+            pytest_timeout,
             "--",
             python,
             "-m",

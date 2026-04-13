@@ -123,6 +123,38 @@ fn active_process_registry() -> &'static Mutex<HashMap<u32, ActiveProcessRecord>
     ACTIVE_PROCESSES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(test)]
+fn test_env_lock() -> &'static Mutex<()> {
+    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    TEST_ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(test)]
+fn with_locked_env_var<T>(
+    key: &'static str,
+    value: Option<&str>,
+    f: impl FnOnce() -> T + std::panic::UnwindSafe,
+) -> T {
+    let _guard = test_env_lock().lock().unwrap();
+    let previous = std::env::var_os(key);
+    match value {
+        Some(value) => std::env::set_var(key, value),
+        None => std::env::remove_var(key),
+    }
+
+    let result = std::panic::catch_unwind(f);
+
+    match previous {
+        Some(previous) => std::env::set_var(key, previous),
+        None => std::env::remove_var(key),
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
 // unix_now_seconds is now in running_process_core::pty::terminal_input
 fn unix_now_seconds() -> f64 {
     core_terminal_input::unix_now_seconds()
@@ -3567,14 +3599,17 @@ mod tests {
 
     #[test]
     fn tracked_process_db_path_returns_ok() {
-        let path = tracked_process_db_path();
-        assert!(path.is_ok());
-        let path = path.unwrap();
-        assert!(
-            path.to_string_lossy().contains("tracked-pids.sqlite3"),
-            "path should contain expected filename: {:?}",
-            path
-        );
+        with_locked_env_var("RUNNING_PROCESS_PID_DB", None, || {
+            let path = tracked_process_db_path();
+            assert!(path.is_ok());
+            let path = path.unwrap();
+            assert_eq!(
+                path.file_name(),
+                Some(std::ffi::OsStr::new("tracked-pids.sqlite3")),
+                "path should use the default tracked pid database filename: {:?}",
+                path
+            );
+        });
     }
 
     // ── command_builder_from_argv tests ──
@@ -4465,23 +4500,28 @@ mod tests {
 
         #[test]
         fn trace_target_empty_env_returns_none() {
-            std::env::remove_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV);
-            assert!(native_terminal_input_trace_target().is_none());
+            with_locked_env_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV, None, || {
+                assert!(native_terminal_input_trace_target().is_none());
+            });
         }
 
         #[test]
         fn trace_target_whitespace_env_returns_none() {
-            std::env::set_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV, "   ");
-            assert!(native_terminal_input_trace_target().is_none());
-            std::env::remove_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV);
+            with_locked_env_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV, Some("   "), || {
+                assert!(native_terminal_input_trace_target().is_none());
+            });
         }
 
         #[test]
         fn trace_target_valid_env_returns_value() {
-            std::env::set_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV, "/tmp/trace.log");
-            let result = native_terminal_input_trace_target();
-            assert_eq!(result, Some("/tmp/trace.log".to_string()));
-            std::env::remove_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV);
+            with_locked_env_var(
+                NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV,
+                Some("/tmp/trace.log"),
+                || {
+                    let result = native_terminal_input_trace_target();
+                    assert_eq!(result, Some("/tmp/trace.log".to_string()));
+                },
+            );
         }
 
         // ── translate_console_key_event: key-up ignored ──
@@ -4601,19 +4641,22 @@ mod tests {
     #[test]
     fn tracked_process_db_path_with_env() {
         pyo3::prepare_freethreaded_python();
-        std::env::set_var("RUNNING_PROCESS_PID_DB", "/custom/path/db.sqlite3");
-        let result = tracked_process_db_path().unwrap();
-        assert_eq!(result, std::path::PathBuf::from("/custom/path/db.sqlite3"));
-        std::env::remove_var("RUNNING_PROCESS_PID_DB");
+        with_locked_env_var("RUNNING_PROCESS_PID_DB", Some("/custom/path/db.sqlite3"), || {
+            let result = tracked_process_db_path().unwrap();
+            assert_eq!(result, std::path::PathBuf::from("/custom/path/db.sqlite3"));
+        });
     }
 
     #[test]
     fn tracked_process_db_path_empty_env_falls_back() {
         pyo3::prepare_freethreaded_python();
-        std::env::set_var("RUNNING_PROCESS_PID_DB", "   ");
-        let result = tracked_process_db_path().unwrap();
-        assert!(!result.to_str().unwrap().trim().is_empty());
-        std::env::remove_var("RUNNING_PROCESS_PID_DB");
+        with_locked_env_var("RUNNING_PROCESS_PID_DB", Some("   "), || {
+            let result = tracked_process_db_path().unwrap();
+            assert_eq!(
+                result.file_name(),
+                Some(std::ffi::OsStr::new("tracked-pids.sqlite3"))
+            );
+        });
     }
 
     // ── NativePtyProcess: start_terminal_input_relay on non-windows ──
