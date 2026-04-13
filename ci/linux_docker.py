@@ -180,7 +180,8 @@ def build_export_shell_command() -> str:
 
 def pytest_shell_command(pytest_args: list[str]) -> str:
     return (
-        "mkdir -p /tmp/dist && "
+        "export RUNNING_PROCESS_TEST_TIMEOUT_SECONDS=40 && "
+        + "mkdir -p /tmp/dist && "
         + f"cp {wheel_glob()} /tmp/dist/ && "
         + "python -m pip install --force-reinstall /tmp/dist/running_process-*.whl"
         + " && "

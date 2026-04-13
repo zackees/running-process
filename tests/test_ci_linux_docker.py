@@ -200,6 +200,8 @@ def test_main_pytest_uses_existing_wheel_and_runtime_args(monkeypatch, tmp_path:
     assert seen[1][0:3] == ["docker", "run", "--rm"]
     assert any("cp /dist-dev/running_process-*.whl /tmp/dist/" in part for part in seen[1])
     assert any(
+        "export RUNNING_PROCESS_TEST_TIMEOUT_SECONDS=40" in part
+        and
         (
             "python -m running_process.cli -- python -m pytest "
             "tests/test_pty_support.py -k chain_next_expect -ra"

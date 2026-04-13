@@ -47,22 +47,21 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     result = ci_test.main([])
 
     python = str(fake_python)
-    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python, timeout),
+        _expected_cargo_test_cmd(python, rust_timeout),
         [
             python,
             "-m",
             "running_process.cli",
-            "--timeout",
-            timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "not live",
         ],
@@ -84,12 +83,11 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
             python,
             "-m",
             "running_process.cli",
-            "--timeout",
-            timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "live",
         ],
@@ -132,21 +130,20 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     result = ci_test.main([])
 
     python = str(fake_python)
-    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python, timeout),
+        _expected_cargo_test_cmd(python, rust_timeout),
         [
             python,
             "-m",
             "running_process.cli",
-            "--timeout",
-            timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "not live",
         ],
@@ -154,12 +151,11 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
             python,
             "-m",
             "running_process.cli",
-            "--timeout",
-            timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "live",
         ],
@@ -182,21 +178,20 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     result = ci_test.main([])
 
     python = str(fake_python)
-    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python, timeout),
+        _expected_cargo_test_cmd(python, rust_timeout),
         [
             python,
             "-m",
             "running_process.cli",
-            "--timeout",
-            timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "not live",
         ],
@@ -204,12 +199,11 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
             python,
             "-m",
             "running_process.cli",
-            "--timeout",
-            timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "live",
         ],
@@ -301,24 +295,23 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     result = ci_test.main(["--no-skip"])
 
     python = str(fake_python)
-    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
     release_timeout = str(ci_test.DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS)
     assert result == 0
     assert os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] == "1"
     assert commands == [
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python, timeout),
+        _expected_cargo_test_cmd(python, rust_timeout),
         [
             python,
             "-m",
             "running_process.cli",
-            "--timeout",
-            timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "not live",
         ],
@@ -351,12 +344,11 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
             python,
             "-m",
             "running_process.cli",
-            "--timeout",
-            timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "live",
         ],

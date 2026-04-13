@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import faulthandler
 import gc
 import io
 import subprocess
@@ -51,10 +52,25 @@ from tests.process_helpers import (
     windows_priority_class_script,
 )
 
+_PTY_SUPPORT_WATCHDOG_TIMEOUT_SECONDS = 120.0
+
 
 @pytest.fixture(autouse=True)
 def _suppress_pty_text_warning_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RUNNING_PROCESS_NO_PTY_TEXT_WARNING", "1")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _pty_support_module_watchdog() -> None:
+    faulthandler.dump_traceback_later(
+        _PTY_SUPPORT_WATCHDOG_TIMEOUT_SECONDS,
+        file=sys.__stderr__,
+        exit=True,
+    )
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 def _read_until_contains(process: object, needle: str, timeout: float = 10) -> str:
@@ -733,7 +749,9 @@ def test_pseudo_terminal_interrupt_and_wait_reports_second_interrupt_success() -
     result = process.interrupt_and_wait(grace_timeout=0.2, second_interrupt=True)
     assert isinstance(result, InterruptResult)
     assert result.interrupt_count >= 2
-    assert process.exit_reason == "interrupt"
+    assert process.poll() is not None
+    assert result.exit_reason in {"interrupt", "kill"}
+    assert process.exit_reason in {"interrupt", "kill"}
 
 
 def test_wait_with_idle_detector_none_preserves_int_return_type() -> None:

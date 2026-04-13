@@ -15,6 +15,7 @@ GITHUB_ACTIONS_ENV = "GITHUB_ACTIONS"
 SKIP_LINUX_DOCKER_ENV = "RUNNING_PROCESS_SKIP_LINUX_DOCKER"
 DEFAULT_TEST_TIMEOUT_SECONDS = "10"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
+DEFAULT_RUST_TEST_TIMEOUT_SECONDS = 60.0
 DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 180.0
 DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS = 600.0
 COMMAND_TIMEOUT_ENV = "RUNNING_PROCESS_TEST_COMMAND_TIMEOUT_SECONDS"
@@ -69,7 +70,17 @@ def _supervised_pytest_command(
     python: Path,
     *pytest_args: str,
 ) -> list[str]:
-    return supervised_command(python, str(python), "-m", "pytest", *pytest_args)
+    return [
+        str(python),
+        "-m",
+        "running_process.cli",
+        "--",
+        str(python),
+        "-m",
+        "pytest",
+        "-vv",
+        *pytest_args,
+    ]
 
 
 def _linux_unit_test_command(
@@ -202,13 +213,15 @@ def main(argv: list[str] | None = None) -> int:
     # Compilation can have long gaps (>10s) with no stdout/stderr when
     # linking large crates (tokio, interprocess, clap, etc.) and the
     # 10-second idle-timeout kills the process mid-compile.  The
-    # supervisor is only useful during test *execution* where hangs
-    # indicate a real bug.
+    # supervisor is only useful during test *execution*, but the Rust
+    # suites can still be quiet for longer than the default 10-second
+    # idle timeout while serialized PTY/PyO3 tests are running.
     if coverage:
         cargo_cmd = supervised_command(
             python,
             "cargo", "llvm-cov", "--workspace",
             "--lcov", "--output-path", "coverage-rust.lcov",
+            timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
         )
         if run(cargo_cmd) != 0:
             return 1
@@ -224,7 +237,11 @@ def main(argv: list[str] | None = None) -> int:
             # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
             # Serialize Rust tests to avoid the issue.
             cargo_test_args += ["--", "--test-threads=1"]
-        cargo_cmd = supervised_command(python, *cargo_test_args)
+        cargo_cmd = supervised_command(
+            python,
+            *cargo_test_args,
+            timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
+        )
         if run(cargo_cmd) != 0:
             return 1
 

@@ -10,16 +10,17 @@ pub(super) fn input_payload(data: &[u8]) -> Vec<u8> {
 pub(super) fn respond_to_queries(process: &NativePtyProcess, data: &[u8]) -> Result<(), PtyError> {
     crate::rp_rust_debug_scope!("running_process_core::pty_windows::respond_to_queries");
     let mut guard = process.handles.lock().expect("pty handles mutex poisoned");
-    let handles = guard
-        .as_mut()
-        .ok_or(PtyError::NotRunning)?;
+    let handles = guard.as_mut().ok_or(PtyError::NotRunning)?;
     let query = b"\x1b[6n";
     let count = data
         .windows(query.len())
         .filter(|window| *window == query)
         .count();
     for _ in 0..count {
-        handles.writer.write_all(b"\x1b[1;1R").map_err(PtyError::Io)?;
+        handles
+            .writer
+            .write_all(b"\x1b[1;1R")
+            .map_err(PtyError::Io)?;
     }
     handles.writer.flush().map_err(PtyError::Io)
 }
@@ -39,31 +40,10 @@ pub(super) fn terminate(process: &NativePtyProcess) -> Result<(), PtyError> {
 #[inline(never)]
 pub(super) fn kill(process: &NativePtyProcess) -> Result<(), PtyError> {
     crate::rp_rust_debug_scope!("running_process_core::pty_windows::kill");
-    let mut guard = process.handles.lock().expect("pty handles mutex poisoned");
-    let handles = guard
-        .take()
-        .ok_or(PtyError::NotRunning)?;
-    drop(guard);
-
-    let NativePtyHandles {
-        master,
-        writer,
-        mut child,
-        _job,
-    } = handles;
-
-    if let Err(err) = child.kill() {
-        if !is_ignorable_process_control_error(&err) {
-            return Err(PtyError::Io(err));
-        }
-    }
-    drop(writer);
-    drop(master);
-    let status = child.wait().map_err(PtyError::Io)?;
-    drop(child);
-    drop(_job);
-    process.store_returncode(portable_exit_code(status));
-    Ok(())
+    // On Windows/ConPTY, `close_impl()` is the stable teardown path because it
+    // closes the PTY endpoints before reaping the child. Reuse that behavior
+    // here instead of duplicating a more fragile kill sequence.
+    process.close_impl()
 }
 
 #[inline(never)]
