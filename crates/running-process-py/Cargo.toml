@@ -16,9 +16,10 @@ crate-type = ["cdylib", "lib"]
 libc = "0.2"
 pyo3 = { workspace = true }
 regex = "1"
-running-process-core = { path = "../running-process-core", version = "3.0.14", features = ["originator-scan"] }
+running-process-core = { path = "../running-process-core", version = "3.0.15", features = ["originator-scan"] }
 sysinfo = "0.30"
 winapi = { version = "0.3", features = ["consoleapi", "handleapi", "jobapi2", "processenv", "processthreadsapi", "synchapi", "winbase", "wincon", "winnt", "winuser"] }
-running-process-proto = { path = "../running-process-proto", version = "3.0.14" }
+running-process-proto = { path = "../running-process-proto", version = "3.0.15" }
+running-process-client = { path = "../running-process-client", version = "3.0.15" }
 prost = "0.14"
 interprocess = "2"
