@@ -210,7 +210,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "daemon-trampoline"
-version = "3.0.14"
+version = "3.0.15"
 dependencies = [
  "libc",
  "serde",
@@ -1035,8 +1035,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "running-process-client"
+version = "3.0.15"
+dependencies = [
+ "dirs",
+ "interprocess",
+ "libc",
+ "prost",
+ "running-process-proto",
+]
+
+[[package]]
 name = "running-process-core"
-version = "3.0.14"
+version = "3.0.15"
 dependencies = [
  "libc",
  "portable-pty",
@@ -1048,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-daemon"
-version = "3.0.14"
+version = "3.0.15"
 dependencies = [
  "bytes",
  "clap",
@@ -1057,6 +1068,7 @@ dependencies = [
  "interprocess",
  "libc",
  "prost",
+ "running-process-client",
  "running-process-core",
  "running-process-proto",
  "rusqlite",
@@ -1073,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-proto"
-version = "3.0.14"
+version = "3.0.15"
 dependencies = [
  "prost",
  "prost-build",
@@ -1083,13 +1095,14 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "3.0.14"
+version = "3.0.15"
 dependencies = [
  "interprocess",
  "libc",
  "prost",
  "pyo3",
  "regex",
+ "running-process-client",
  "running-process-core",
  "running-process-proto",
  "sysinfo",

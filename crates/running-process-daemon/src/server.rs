@@ -25,41 +25,6 @@ use crate::reaper;
 use crate::registry::Registry;
 
 // ---------------------------------------------------------------------------
-// Socket path
-// ---------------------------------------------------------------------------
-
-/// Returns the platform-appropriate IPC socket path.
-///
-/// - **Unix**: `$XDG_RUNTIME_DIR/running-process/daemon{-hash}.sock`
-///   (fallback: `/tmp/running-process-{uid}/daemon{-hash}.sock`)
-/// - **Windows**: `\\.\pipe\running-process-daemon-{username}{-hash}`
-///
-/// If `scope_hash` is `Some(h)`, appends `-{h}` to the base name.
-pub fn socket_path(scope_hash: Option<&str>) -> String {
-    let suffix = match scope_hash {
-        Some(h) => format!("-{h}"),
-        None => String::new(),
-    };
-
-    #[cfg(unix)]
-    {
-        let dir = if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            std::path::PathBuf::from(runtime_dir).join("running-process")
-        } else {
-            let uid = unsafe { libc::getuid() };
-            std::path::PathBuf::from(format!("/tmp/running-process-{uid}"))
-        };
-        format!("{}/daemon{suffix}.sock", dir.display())
-    }
-
-    #[cfg(windows)]
-    {
-        let username = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
-        format!(r"\\.\pipe\running-process-daemon-{username}{suffix}")
-    }
-}
-
-// ---------------------------------------------------------------------------
 // DaemonServer
 // ---------------------------------------------------------------------------
 

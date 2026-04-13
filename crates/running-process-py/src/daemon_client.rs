@@ -49,45 +49,14 @@ fn next_id() -> u64 {
 }
 
 /// Compute the daemon socket path for the global (un-scoped) daemon.
-///
-/// This duplicates the logic from `running-process-daemon/src/paths.rs`
-/// (`socket_path(None)`) so the PyO3 crate does not need a build-time
-/// dependency on the daemon crate.
 fn socket_path() -> String {
-    #[cfg(windows)]
-    {
-        let username = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
-        format!(r"\\.\pipe\running-process-daemon-{username}")
-    }
-
-    #[cfg(unix)]
-    {
-        let dir = if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            std::path::PathBuf::from(runtime_dir).join("running-process")
-        } else {
-            let uid = unsafe { libc::getuid() };
-            std::path::PathBuf::from(format!("/tmp/running-process-{uid}"))
-        };
-        format!("{}/daemon.sock", dir.display())
-    }
+    running_process_client::paths::socket_path(None)
 }
 
 /// Build an `interprocess` local-socket [`Name`] using the same name-type
 /// dispatch as the daemon server.
 fn make_socket_name(path: &str) -> std::io::Result<interprocess::local_socket::Name<'_>> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::GenericFilePath;
-        use interprocess::local_socket::ToFsName;
-        path.to_fs_name::<GenericFilePath>()
-    }
-
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::GenericNamespaced;
-        use interprocess::local_socket::ToNsName;
-        path.to_ns_name::<GenericNamespaced>()
-    }
+    running_process_client::paths::make_socket_name(path)
 }
 
 /// Attempt to open a connection to the daemon.
