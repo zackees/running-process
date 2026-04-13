@@ -63,6 +63,9 @@ jobs:
         uses: zackees/zccache@main
         with:
           shared-key: ${{ inputs.runs-on }}
+          cache-compilation: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+          cache-target: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+          save-cache: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
 
       - uses: dtolnay/rust-toolchain@master
         with:
