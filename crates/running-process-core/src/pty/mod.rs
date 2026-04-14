@@ -490,9 +490,18 @@ impl NativePtyProcess {
             }
         }
 
-        let reader = pair.master.try_clone_reader().map_err(|e| PtyError::Spawn(e.to_string()))?;
-        let writer = pair.master.take_writer().map_err(|e| PtyError::Spawn(e.to_string()))?;
-        let child = pair.slave.spawn_command(cmd).map_err(|e| PtyError::Spawn(e.to_string()))?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| PtyError::Spawn(e.to_string()))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| PtyError::Spawn(e.to_string()))?;
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| PtyError::Spawn(e.to_string()))?;
         #[cfg(windows)]
         let job = assign_child_to_windows_kill_on_close_job(child.as_raw_handle())?;
         #[cfg(windows)]
@@ -570,7 +579,11 @@ impl NativePtyProcess {
     pub fn wait_impl(&self, timeout: Option<f64>) -> Result<i32, PtyError> {
         crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::wait");
         // Fast path: already exited.
-        if let Some(code) = *self.returncode.lock().expect("pty returncode mutex poisoned") {
+        if let Some(code) = *self
+            .returncode
+            .lock()
+            .expect("pty returncode mutex poisoned")
+        {
             return Ok(code);
         }
         let start = Instant::now();
@@ -788,27 +801,6 @@ impl NativePtyProcess {
 
     pub fn pty_control_churn_bytes_total(&self) -> usize {
         self.control_churn_bytes_total.load(Ordering::Acquire)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::resolved_spawn_cwd;
-
-    #[test]
-    fn resolved_spawn_cwd_preserves_explicit_value() {
-        assert_eq!(
-            resolved_spawn_cwd(Some("C:\\temp\\explicit")),
-            Some("C:\\temp\\explicit".to_string())
-        );
-    }
-
-    #[test]
-    fn resolved_spawn_cwd_defaults_to_current_dir_when_unset() {
-        let expected = std::env::current_dir()
-            .ok()
-            .map(|cwd| cwd.to_string_lossy().to_string());
-        assert_eq!(resolved_spawn_cwd(None), expected);
     }
 }
 
@@ -1108,9 +1100,15 @@ pub fn find_child_processes(parent_pid: u32) -> Vec<ChildProcessInfo> {
         loop {
             if entry.th32ParentProcessID == parent_pid {
                 let name_bytes = &entry.szExeFile;
-                let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+                let name_len = name_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(name_bytes.len());
                 let name = String::from_utf8_lossy(
-                    &name_bytes[..name_len].iter().map(|&c| c as u8).collect::<Vec<u8>>(),
+                    &name_bytes[..name_len]
+                        .iter()
+                        .map(|&c| c as u8)
+                        .collect::<Vec<u8>>(),
                 )
                 .into_owned();
                 children.push(ChildProcessInfo {
@@ -1194,9 +1192,15 @@ pub fn find_orphan_conhosts() -> Vec<OrphanConhostInfo> {
     if unsafe { Process32First(snapshot, &mut entry) } != 0 {
         loop {
             let name_bytes = &entry.szExeFile;
-            let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+            let name_len = name_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(name_bytes.len());
             let name = String::from_utf8_lossy(
-                &name_bytes[..name_len].iter().map(|&c| c as u8).collect::<Vec<u8>>(),
+                &name_bytes[..name_len]
+                    .iter()
+                    .map(|&c| c as u8)
+                    .collect::<Vec<u8>>(),
             )
             .into_owned();
 
@@ -1258,4 +1262,25 @@ pub fn apply_windows_pty_priority(
         return Err(PtyError::Io(std::io::Error::last_os_error()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved_spawn_cwd;
+
+    #[test]
+    fn resolved_spawn_cwd_preserves_explicit_value() {
+        assert_eq!(
+            resolved_spawn_cwd(Some("C:\\temp\\explicit")),
+            Some("C:\\temp\\explicit".to_string())
+        );
+    }
+
+    #[test]
+    fn resolved_spawn_cwd_defaults_to_current_dir_when_unset() {
+        let expected = std::env::current_dir()
+            .ok()
+            .map(|cwd| cwd.to_string_lossy().to_string());
+        assert_eq!(resolved_spawn_cwd(None), expected);
+    }
 }
