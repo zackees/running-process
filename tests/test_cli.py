@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 from running_process import cli
 
@@ -83,6 +84,13 @@ def test_normalize_command_strips_separator() -> None:
     ]
 
 
+def test_parse_args_accepts_find_leaks_flag() -> None:
+    args = cli._parse_args(["--find-leaks", "--", "python", "-m", "ci.test"])
+
+    assert args.find_leaks is True
+    assert args.command == ["--", "python", "-m", "ci.test"]
+
+
 def test_cli_passes_in_running_process_to_child(monkeypatch) -> None:
     seen: dict[str, object] = {}
     fake_process = _FakeProcess(returncode=0)
@@ -111,6 +119,64 @@ def test_cli_passes_in_running_process_to_child(monkeypatch) -> None:
     )
     assert seen["stdout"] is cli.subprocess.PIPE
     assert seen["stderr"] is cli.subprocess.PIPE
+
+
+def test_find_leaks_sets_originator_env_and_reports_survivors(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+    stderr = io.StringIO()
+    fake_process = _FakeProcess(returncode=0)
+    fake_leak = SimpleNamespace(
+        pid=9001,
+        name="python",
+        command="python leaked_worker.py",
+        originator="ignored",
+        parent_pid=1234,
+        parent_alive=False,
+    )
+
+    def fake_popen(command, env, stdout, stderr):
+        seen["command"] = list(command)
+        seen["env"] = env
+        seen["stdout"] = stdout
+        seen["stderr"] = stderr
+        return fake_process
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        cli,
+        "_wait_for_child_with_activity_timeout",
+        lambda child, timeout: (0, False),
+    )
+    monkeypatch.setattr(cli.os, "getpid", lambda: 1234)
+    monkeypatch.setattr(cli, "_leak_originator_tool", lambda: "RUNNING_PROCESS_LEAK_TEST")
+    monkeypatch.setattr(cli, "find_processes_by_originator", lambda tool: [fake_leak])
+    monkeypatch.setattr(cli.sys, "stderr", stderr)
+
+    code = cli.run_command(["python", "-m", "ci.test"], find_leaks=True)
+
+    assert code == 0
+    assert seen["command"] == ["python", "-m", "ci.test"]
+    assert seen["env"][cli.ORIGINATOR_ENV_VAR] == "RUNNING_PROCESS_LEAK_TEST:1234"
+    rendered = stderr.getvalue()
+    assert "detected 1 leaked descendant process(es)" in rendered
+    assert "pid=9001" in rendered
+    assert "python leaked_worker.py" in rendered
+
+
+def test_find_process_leaks_returns_sorted_results(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "find_processes_by_originator",
+        lambda tool: [
+            SimpleNamespace(pid=7),
+            SimpleNamespace(pid=3),
+            SimpleNamespace(pid=5),
+        ],
+    )
+
+    leaks = cli._find_process_leaks("RUNNING_PROCESS_LEAK_TEST")
+
+    assert [leak.pid for leak in leaks] == [3, 5, 7]
 
 
 def test_timeout_collects_diagnostics_and_kills_child(monkeypatch, tmp_path: Path) -> None:

@@ -33,6 +33,18 @@ On those platforms, `RunningProcess.pseudo_terminal(...)`, `wait_for_expect(...)
 
 `Pty.is_available()` remains as a compatibility shim and only reports `False` on unsupported platforms.
 
+## CLI Helpers
+
+The package installs a `running-process` wrapper CLI for supervised command execution:
+
+```bash
+running-process --timeout 30 -- python -m pytest tests/test_cli.py
+running-process --find-leaks -- python worker.py
+```
+
+`--find-leaks` tags the wrapped process tree with a unique originator marker and reports any
+descendants still alive after the direct child exits.
+
 ## Pipe-backed API
 
 ```python
