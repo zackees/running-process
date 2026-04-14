@@ -58,6 +58,12 @@ jobs:
         if: always()
         shell: bash
         run: |
+          if ls logs/*.analytics.json >/dev/null 2>&1; then
+            echo "::warning::Failure analytics detected"
+            for f in logs/*.analytics.json; do
+              [ -f "$f" ] && echo "--- $f ---" && cat "$f"
+            done
+          fi
           if [ -d logs/running-process ]; then
             echo "::warning::Timeout diagnostics detected"
             for f in logs/running-process/*.json; do
