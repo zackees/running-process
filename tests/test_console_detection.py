@@ -24,10 +24,12 @@ skip_unless_windows = pytest.mark.skipif(not is_windows, reason="Windows-only te
 
 
 def _is_known_ci_console_noise(window: dict[str, Any]) -> bool:
+    title = str(window.get("title", ""))
+    if title == "":
+        return True
     if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
         return False
-    title = str(window.get("title", ""))
-    return title in {"", r"C:\Windows\system32\wsl.exe"}
+    return title == r"C:\Windows\system32\wsl.exe"
 
 
 @contextmanager

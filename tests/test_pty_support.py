@@ -1811,12 +1811,67 @@ def test_pseudo_terminal_wait_for_idle_honors_stability_window(
     assert result.idle_for_seconds >= 0.15
 
 
-def test_pseudo_terminal_wait_for_idle_passes_diff_and_context_to_predicate() -> None:
+def test_pseudo_terminal_wait_for_idle_passes_diff_and_context_to_predicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen: list[tuple[IdleDiff, IdleContext]] = []
+    last_snapshot = SimpleNamespace(
+        sampled_at=0.05,
+        process_alive=True,
+        pty_input_bytes=0,
+        pty_output_bytes=0,
+        pty_control_churn_bytes=0,
+        cpu_percent=0.0,
+        disk_io_bytes=0,
+        network_io_bytes=0,
+        returncode=None,
+    )
+    snapshots = iter(
+        [
+            SimpleNamespace(
+                sampled_at=0.00,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.02,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            last_snapshot,
+        ]
+    )
 
-    process = RunningProcess.pseudo_terminal(
-        [sys.executable, "-c", "import time; time.sleep(0.3)"],
-        text=True,
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
+        auto_run=False,
+    )
+    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+    fake_now = -0.01
+
+    def fake_time() -> float:
+        nonlocal fake_now
+        fake_now += 0.01
+        return fake_now
+
+    monkeypatch.setattr(pty_module.time, "time", fake_time)
+
+    monkeypatch.setattr(
+        process,
+        "_sample_idle_snapshot",
+        lambda process_cfg=None: next(snapshots, last_snapshot),
     )
 
     def capture(diff: IdleDiff, ctx: IdleContext) -> bool:
@@ -1836,7 +1891,8 @@ def test_pseudo_terminal_wait_for_idle_passes_diff_and_context_to_predicate() ->
     )
     assert result.exit_reason == "idle_timeout"
     assert seen
-    assert all(item[0].process_alive is True for item in seen[:1])
+    assert all(diff.process_alive is True for diff, _ctx in seen)
+    assert [ctx.sample_count for _diff, ctx in seen] == [0, 1]
 
 
 def test_idle_detection_rejects_conflicting_custom_callback_fields() -> None:
