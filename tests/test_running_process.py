@@ -39,7 +39,15 @@ from tests.process_helpers import (
     windows_priority_class_script,
 )
 
+live = pytest.mark.live
+skip_unless_github_actions = pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS", "").lower() != "true",
+    reason="requires GitHub Actions runner",
+)
 
+
+@live
+@skip_unless_github_actions
 def test_finished_becomes_true_without_poll() -> None:
     """Regression test for issue #7: .finished never becomes True without explicit .poll()."""
     timeout = 10
