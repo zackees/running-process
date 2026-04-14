@@ -740,7 +740,8 @@ def test_pseudo_terminal_interrupt_and_wait_reports_second_interrupt_success() -
                 "        raise KeyboardInterrupt\n"
                 "signal.signal(signal.SIGINT, handler)\n"
                 "print('ready>', flush=True)\n"
-                "time.sleep(2)\n"
+                "while True:\n"
+                "    time.sleep(0.1)\n"
             ),
         ],
         text=True,

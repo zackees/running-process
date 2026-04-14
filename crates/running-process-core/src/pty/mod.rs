@@ -548,7 +548,7 @@ impl NativePtyProcess {
                 self.join_reader_worker();
             }
             self.mark_reader_closed();
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(windows))]
@@ -575,7 +575,7 @@ impl NativePtyProcess {
                 self.join_reader_worker();
             }
             self.mark_reader_closed();
-            return Ok(());
+            Ok(())
         }
     }
 
@@ -788,7 +788,7 @@ impl NativePtyProcess {
             {
                 return Err(PtyError::NotRunning);
             }
-            return self.close_impl();
+            self.close_impl()
         }
 
         #[cfg(unix)]
@@ -809,7 +809,7 @@ impl NativePtyProcess {
             {
                 return Err(PtyError::NotRunning);
             }
-            return self.close_impl();
+            self.close_impl()
         }
 
         #[cfg(unix)]
