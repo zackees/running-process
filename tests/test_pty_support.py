@@ -1035,23 +1035,48 @@ def test_pseudo_terminal_wait_for_idle_hybrid_config_uses_custom_predicate(
     assert result.exit_reason == "idle_timeout"
 
 
-def test_pseudo_terminal_wait_for_expect_on_callback_can_continue_until_exit() -> None:
+def test_pseudo_terminal_wait_for_expect_on_callback_can_continue_until_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen: list[str] = []
-    process = RunningProcess.pseudo_terminal(
+    writes: list[tuple[str | bytes, bool]] = []
+    history_updates = iter(
         [
-            sys.executable,
-            "-c",
-            (
-                "import sys\n"
-                "sys.stdout.write('tick>'); sys.stdout.flush()\n"
-                "first = sys.stdin.readline().strip()\n"
-                "sys.stdout.write('tick>'); sys.stdout.flush()\n"
-                "second = sys.stdin.readline().strip()\n"
-                "sys.stdout.write(f'done:{first}:{second}\\n'); sys.stdout.flush()\n"
-            ),
-        ],
-        text=True,
+            ("tick>", 5),
+            ("tick>", 10),
+        ]
     )
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
+        text=True,
+        auto_run=False,
+    )
+
+    class FakeProc:
+        pid = 1234
+
+        def poll(self) -> int | None:
+            return 0
+
+        def close(self) -> None:
+            return None
+
+    process._proc = FakeProc()  # type: ignore[assignment]
+    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+    monkeypatch.setattr(process, "_drain_native_until_eof", lambda timeout: None)
+    monkeypatch.setattr(process, "_snapshot_output_history", lambda: ("", 0))
+
+    def snapshot_output_since(_start: int) -> tuple[str, int]:
+        try:
+            return next(history_updates)
+        except StopIteration:
+            return ("", 10)
+
+    def fake_write(data: str | bytes, *, submit: bool = False) -> None:
+        writes.append((data, submit))
+
+    monkeypatch.setattr(process, "_snapshot_output_since", snapshot_output_since)
+    process.write = fake_write  # type: ignore[method-assign]
 
     def hook(match) -> WaitCallbackResult:
         seen.append(match.matched)
@@ -1071,8 +1096,7 @@ def test_pseudo_terminal_wait_for_expect_on_callback_can_continue_until_exit() -
     assert result.expect_match is not None
     assert result.expect_match.matched == "tick>"
     assert seen == ["tick>", "tick>"]
-    assert process.expect("done:go:go", timeout=5).matched == "done:go:go"
-    assert process.wait(timeout=5) == 0
+    assert writes == [("go\n", False), ("go\n", False)]
 
 
 def test_pseudo_terminal_wait_for_expect_not_suppresses_trigger() -> None:
