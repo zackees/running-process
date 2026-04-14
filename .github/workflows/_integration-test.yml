@@ -14,6 +14,7 @@ jobs:
     env:
       RUST_BACKTRACE: "1"
       RUNNING_PROCESS_LIVE_TESTS: "1"
+      RUNNING_PROCESS_GH_PTY_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
 

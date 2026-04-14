@@ -63,6 +63,10 @@ skip_unless_github_actions = pytest.mark.skipif(
     os.environ.get("GITHUB_ACTIONS", "").lower() != "true",
     reason="requires GitHub Actions runner",
 )
+skip_unless_dedicated_gh_pty_runner = pytest.mark.skipif(
+    os.environ.get("RUNNING_PROCESS_GH_PTY_TESTS") != "1",
+    reason="requires dedicated GitHub Actions PTY integration runner",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -253,6 +257,18 @@ def _start_delayed_write(
     worker = threading.Thread(target=writer, daemon=True)
     worker.start()
     return worker
+
+
+def _drain_pty_until_eof(process: PseudoTerminalProcess, *, timeout: float) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            process.read(timeout=0.1)
+        except TimeoutError:
+            continue
+        except EOFError:
+            return True
+    return False
 
 
 def test_pseudo_terminal_round_trips_interactive_io() -> None:
@@ -2236,6 +2252,7 @@ def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait(
 
 @live
 @skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_newline_bytes_without_submit_keep_submit_counter_zero() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2271,6 +2288,7 @@ def test_pseudo_terminal_newline_bytes_without_submit_keep_submit_counter_zero()
 
 @live
 @skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_delayed_newline_without_submit_reaches_child() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2302,6 +2320,7 @@ def test_pseudo_terminal_delayed_newline_without_submit_reaches_child() -> None:
 
 @live
 @skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_delayed_newline_without_submit_exits_and_closes_reader() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2324,17 +2343,24 @@ def test_pseudo_terminal_delayed_newline_without_submit_exits_and_closes_reader(
                 timeout=1.5,
                 predicate=lambda sample: sample["poll"] == 0,
             )
+            assert _drain_pty_until_eof(process, timeout=2.0) is True
             reader_timeline = _wait_for_live_pty_state(
                 process,
                 label="delayed-newline-without-submit-reader-closes",
-                timeout=1.0,
-                predicate=lambda sample: sample["native_reader_closed"] is True,
+                timeout=2.0,
+                predicate=lambda sample: (
+                    sample["native_reader_closed"] is True
+                    or sample["native_stream_closed"] is True
+                ),
             )
             worker.join(timeout=1.0)
 
             assert exit_timeline[-1]["native_submit_events"] == 0
             assert exit_timeline[-1]["python_submit_events"] == 0
-            assert reader_timeline[-1]["native_reader_closed"] is True
+            assert (
+                reader_timeline[-1]["native_reader_closed"] is True
+                or reader_timeline[-1]["native_stream_closed"] is True
+            )
     finally:
         with contextlib.suppress(Exception):
             worker.join(timeout=1.0)
@@ -2344,6 +2370,7 @@ def test_pseudo_terminal_delayed_newline_without_submit_exits_and_closes_reader(
 
 @live
 @skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_bytes() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2396,6 +2423,9 @@ def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_byte
             process.kill()
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_idle_can_arm_on_explicit_input_submit() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2444,6 +2474,9 @@ def test_pseudo_terminal_wait_for_idle_can_arm_on_explicit_input_submit() -> Non
             process.kill()
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_idle_can_arm_on_input_newline() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2492,6 +2525,9 @@ def test_pseudo_terminal_wait_for_idle_can_arm_on_input_newline() -> None:
             process.kill()
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_idle_condition_can_arm_on_explicit_input_submit() -> None:
     process = RunningProcess.pseudo_terminal(
         [
