@@ -13,11 +13,19 @@ The fix: use `process.is_started` instead of `process.proc is None`.
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
 
 from running_process import RunningProcess
+
+live = pytest.mark.live
+skip_unless_github_actions = pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS", "").lower() != "true",
+    reason="requires GitHub Actions runner",
+)
+pytestmark = [live, skip_unless_github_actions]
 
 
 def test_wait_on_unstarted_process_raises() -> None:

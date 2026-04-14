@@ -15,6 +15,11 @@ import pytest
 live = pytest.mark.live
 is_windows = sys.platform == "win32"
 skip_unless_windows = pytest.mark.skipif(not is_windows, reason="Windows-only test")
+skip_unless_github_actions = pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS", "").lower() != "true",
+    reason="requires GitHub Actions runner",
+)
+pytestmark = [live, skip_unless_github_actions]
 
 
 def _trampoline_available() -> bool:
