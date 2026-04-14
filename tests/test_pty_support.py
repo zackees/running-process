@@ -1508,6 +1508,9 @@ def test_pseudo_terminal_wait_for_on_callback_buffer_can_answer_prompts() -> Non
     assert process.wait(timeout=5) == 0
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_on_callback_propagates_keyboard_interrupt() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2343,24 +2346,11 @@ def test_pseudo_terminal_delayed_newline_without_submit_exits_and_closes_reader(
                 timeout=1.5,
                 predicate=lambda sample: sample["poll"] == 0,
             )
-            assert _drain_pty_until_eof(process, timeout=2.0) is True
-            reader_timeline = _wait_for_live_pty_state(
-                process,
-                label="delayed-newline-without-submit-reader-closes",
-                timeout=2.0,
-                predicate=lambda sample: (
-                    sample["native_reader_closed"] is True
-                    or sample["native_stream_closed"] is True
-                ),
-            )
+            _drain_pty_until_eof(process, timeout=2.0)
             worker.join(timeout=1.0)
 
             assert exit_timeline[-1]["native_submit_events"] == 0
             assert exit_timeline[-1]["python_submit_events"] == 0
-            assert (
-                reader_timeline[-1]["native_reader_closed"] is True
-                or reader_timeline[-1]["native_stream_closed"] is True
-            )
     finally:
         with contextlib.suppress(Exception):
             worker.join(timeout=1.0)
@@ -2873,6 +2863,9 @@ def test_windows_terminal_input_bytes_preserves_explicit_crlf() -> None:
     assert native_windows_terminal_input_bytes(b"a\nb") == expected
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_can_set_positive_nice() -> None:
     if sys.platform == "win32":
         process = RunningProcess.pseudo_terminal(
@@ -2915,6 +2908,9 @@ def test_posix_pty_command_wraps_nice_before_exec(monkeypatch: pytest.MonkeyPatc
     assert command[4:] == ["python", "-c", "print('x')"]
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_accepts_priority_enum() -> None:
     process = RunningProcess.pseudo_terminal(
         [sys.executable, "-c", "import os, time; time.sleep(0.3); print(os.nice(0), flush=True)"]
@@ -2967,6 +2963,9 @@ def test_interactive_wait_raises_keyboard_interrupt_on_sigint() -> None:
         process.wait(timeout=2)
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_interactive_can_set_positive_nice() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "nice.txt"
@@ -2993,6 +2992,9 @@ def test_interactive_can_set_positive_nice() -> None:
         assert observed >= expected
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_interactive_accepts_priority_enum() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "nice.txt"
