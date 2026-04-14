@@ -34,3 +34,48 @@ pub fn is_process_alive(pid: u32) -> bool {
     sys.refresh_process(pid);
     sys.process(pid).is_some()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_and_read_pid_file_round_trip() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_path = temp.path().join("nested").join("daemon.pid");
+
+        write_pid_file(&pid_path).unwrap();
+
+        assert!(pid_path.exists());
+        assert_eq!(read_pid_file(&pid_path), Some(std::process::id()));
+    }
+
+    #[test]
+    fn read_pid_file_returns_none_for_missing_or_invalid_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing.pid");
+        let invalid = temp.path().join("invalid.pid");
+        std::fs::write(&invalid, "not-a-pid").unwrap();
+
+        assert_eq!(read_pid_file(&missing), None);
+        assert_eq!(read_pid_file(&invalid), None);
+    }
+
+    #[test]
+    fn remove_pid_file_ignores_missing_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_path = temp.path().join("daemon.pid");
+        std::fs::write(&pid_path, "1234").unwrap();
+
+        remove_pid_file(&pid_path);
+        remove_pid_file(&pid_path);
+
+        assert!(!pid_path.exists());
+    }
+
+    #[test]
+    fn is_process_alive_distinguishes_real_and_fake_pids() {
+        assert!(is_process_alive(std::process::id()));
+        assert!(!is_process_alive(4_000_000));
+    }
+}

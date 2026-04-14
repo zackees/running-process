@@ -454,17 +454,14 @@ pub fn handle_kill_zombies(request: &DaemonRequest, state: &DaemonState) -> Daem
         );
 
         let conhost_results = reaper::kill_conhosts(&orphan_conhosts);
-        reports.extend(
-            orphan_conhosts
-                .iter()
-                .zip(conhost_results.iter())
-                .map(|(z, (_pid, killed))| ZombieReport {
-                    pid: z.pid,
-                    command: z.command.clone(),
-                    reason: z.reason.clone(),
-                    killed: *killed,
-                }),
-        );
+        reports.extend(orphan_conhosts.iter().zip(conhost_results.iter()).map(
+            |(z, (_pid, killed))| ZombieReport {
+                pid: z.pid,
+                command: z.command.clone(),
+                reason: z.reason.clone(),
+                killed: *killed,
+            },
+        ));
     }
 
     DaemonResponse {
@@ -787,5 +784,49 @@ mod tests {
         });
         let resp3 = handle_list_by_originator(&list_req3, &state);
         assert_eq!(resp3.list_by_originator.unwrap().processes.len(), 0);
+    }
+
+    #[test]
+    fn test_list_by_originator_missing_payload() {
+        let (state, _tmp) = test_state();
+        let req = make_request(45, RequestType::ListByOriginator);
+
+        let resp = handle_list_by_originator(&req, &state);
+
+        assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
+        assert!(resp.message.contains("missing list_by_originator payload"));
+    }
+
+    #[test]
+    fn test_get_process_tree_missing_payload() {
+        let (state, _tmp) = test_state();
+        let req = make_request(46, RequestType::GetProcessTree);
+
+        let resp = handle_get_process_tree(&req, &state);
+
+        assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
+        assert!(resp.message.contains("missing get_process_tree payload"));
+    }
+
+    #[test]
+    fn test_kill_tree_missing_payload() {
+        let (state, _tmp) = test_state();
+        let req = make_request(47, RequestType::KillTree);
+
+        let resp = handle_kill_tree(&req, &state);
+
+        assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
+        assert!(resp.message.contains("missing kill_tree payload"));
+    }
+
+    #[test]
+    fn test_kill_zombies_missing_payload() {
+        let (state, _tmp) = test_state();
+        let req = make_request(48, RequestType::KillZombies);
+
+        let resp = handle_kill_zombies(&req, &state);
+
+        assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
+        assert!(resp.message.contains("missing kill_zombies payload"));
     }
 }
