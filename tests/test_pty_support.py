@@ -1931,12 +1931,40 @@ def test_idle_reached_callback_requires_idle_decision_result() -> None:
     process.kill()
 
 
-def test_running_process_interactive_launches_console_mode() -> None:
+def test_running_process_interactive_launches_console_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProc:
+        def __init__(self, command: object, **kwargs: object) -> None:
+            captured["command"] = command
+            captured.update(kwargs)
+
+        def start(self) -> None:
+            captured["started"] = True
+
+        def poll(self) -> int | None:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            captured["timeout"] = timeout
+            return 0
+
+        def kill(self) -> None:
+            return None
+
+    monkeypatch.setattr(pty_module, "NativeProcess", FakeProc)
+
     process = RunningProcess.interactive(
         [sys.executable, "-c", "print('interactive')"],
         mode=InteractiveMode.CONSOLE_SHARED,
     )
     assert process.wait(timeout=5) == 0
+    assert process.launch_spec.mode is InteractiveMode.CONSOLE_SHARED
+    assert captured["capture"] is False
+    assert captured["started"] is True
+    assert captured["timeout"] == 5
 
 
 def test_running_process_signal_bool_shadows_python_reads() -> None:
@@ -1956,20 +1984,85 @@ def test_running_process_signal_bool_shadows_python_reads() -> None:
     assert signal.value is False
 
 
-def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait() -> None:
-    process = RunningProcess.pseudo_terminal(
-        [sys.executable, "-c", "import time; time.sleep(1.5)"],
-        text=True,
+def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots = iter(
+        [
+            SimpleNamespace(
+                sampled_at=0.00,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.10,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.35,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.55,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+        ]
+    )
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
+        auto_run=False,
     )
     process.idle_timeout_enabled = False
+    fake_now = -0.05
+    pump_calls = 0
 
-    def enable_later() -> None:
-        time.sleep(0.3)
-        process.idle_timeout_enabled = True
+    def fake_time() -> float:
+        nonlocal fake_now
+        fake_now += 0.05
+        return fake_now
 
-    worker = threading.Thread(target=enable_later, daemon=True)
-    worker.start()
-    started = time.time()
+    def fake_pump(timeout: float, consume_all: bool) -> None:
+        nonlocal pump_calls
+        pump_calls += 1
+        if pump_calls == 1:
+            process.idle_timeout_enabled = True
+
+    monkeypatch.setattr(pty_module.time, "time", fake_time)
+    monkeypatch.setattr(process, "_pump_native_output", fake_pump)
+    monkeypatch.setattr(
+        process,
+        "_sample_idle_snapshot",
+        lambda process_cfg=None: next(snapshots),
+    )
+
     result = process.wait_for_idle(
         IdleDetection(
             timing=IdleTiming(
@@ -1980,13 +2073,12 @@ def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait() -> N
         ),
         timeout=2.0,
     )
-    elapsed = time.time() - started
-    worker.join(timeout=2.0)
 
     assert result.idle_detected is True
     assert result.exit_reason == "idle_timeout"
-    assert elapsed >= 0.3
-    process.kill()
+    assert result.idle_for_seconds >= 0.2
+    assert process.idle_timeout_enabled is True
+    assert pump_calls >= 1
 
 
 def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_bytes() -> None:
