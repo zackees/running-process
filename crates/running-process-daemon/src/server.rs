@@ -364,3 +364,50 @@ fn error_response(request_id: u64, code: StatusCode, message: String) -> DaemonR
         ..Default::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::sync::watch;
+
+    fn test_state() -> (DaemonState, tempfile::TempDir) {
+        let (shutdown_tx, _rx) = watch::channel(false);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let db_path = tmp_dir.path().join("test-server.db");
+        let registry = Arc::new(Registry::open(&db_path).unwrap());
+        let state = DaemonState {
+            start_time: Instant::now(),
+            version: "0.0.0-test".to_string(),
+            socket_path: "/tmp/test.sock".to_string(),
+            db_path: db_path.display().to_string(),
+            scope: "global".to_string(),
+            scope_hash: "0000000000000000".to_string(),
+            scope_cwd: "/tmp".to_string(),
+            shutdown_tx,
+            active_connections: AtomicU32::new(0),
+            registry,
+        };
+        (state, tmp_dir)
+    }
+
+    #[tokio::test]
+    async fn dispatch_request_rejects_unspecified_request_type() {
+        let (state, _tmp) = test_state();
+        let request = DaemonRequest {
+            id: 77,
+            r#type: RequestType::Unspecified as i32,
+            protocol_version: 1,
+            client_name: "test".to_string(),
+            ..Default::default()
+        };
+
+        let response = dispatch_request(&request, &state).await;
+
+        assert_eq!(response.request_id, 77);
+        assert_eq!(response.code, StatusCode::UnknownRequest as i32);
+        assert_eq!(response.message, "unspecified request type");
+    }
+}
