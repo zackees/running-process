@@ -3125,6 +3125,9 @@ def test_pseudo_terminal_send_interrupt_delegates_to_native_process() -> None:
     assert process.interrupted_by_caller is True
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_running_process_use_pty_remains_constructor_compatible() -> None:
     process = RunningProcess(
         [sys.executable, "-c", "print('pty compat')"],

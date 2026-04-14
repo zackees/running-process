@@ -9,6 +9,7 @@ import faulthandler
 import json
 import os
 import queue
+import re
 import shlex
 import subprocess
 import sys
@@ -27,6 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 _STACK_DUMP_TIMEOUT_ENV = "RUN_LOGGED_STACK_DUMP_SECONDS"
 _DEFAULT_STACK_DUMP_TIMEOUT_SECONDS = 180.0
 _TAIL_LINE_LIMIT = 20
+_PYTEST_NODEID_RE = re.compile(r"((?:tests|src)[^\s]+::[^\s]+)")
 
 
 @dataclass
@@ -39,6 +41,7 @@ class RunAnalytics:
     idle_dump_count: int = 0
     max_idle_seconds: float = 0.0
     first_output_seconds: float | None = None
+    last_test_nodeid: str | None = None
     tail_lines: deque[str] = field(
         default_factory=lambda: deque(maxlen=_TAIL_LINE_LIMIT)
     )
@@ -96,6 +99,9 @@ def _record_output_line(
     analytics.line_count += 1
     analytics.byte_count += len(line.encode("utf-8", errors="replace"))
     analytics.tail_lines.append(line.rstrip("\r\n"))
+    match = _PYTEST_NODEID_RE.search(line)
+    if match is not None:
+        analytics.last_test_nodeid = match.group(1)
     return now
 
 
@@ -126,6 +132,7 @@ def _build_failure_analytics(
             if analytics.first_output_seconds is None
             else round(analytics.first_output_seconds, 3)
         ),
+        "last_test_nodeid": analytics.last_test_nodeid,
         "last_idle_seconds": round(last_idle_seconds, 3),
         "max_idle_seconds": round(max_idle_seconds, 3),
         "tail_lines": list(analytics.tail_lines),
@@ -140,6 +147,7 @@ def _render_failure_summary(report: dict[str, object]) -> str:
         f"  exit_code: {report['exit_code']}",
         f"  duration_seconds: {report['duration_seconds']}",
         f"  first_output_seconds: {report['first_output_seconds']}",
+        f"  last_test_nodeid: {report['last_test_nodeid']}",
         f"  last_idle_seconds: {report['last_idle_seconds']}",
         f"  max_idle_seconds: {report['max_idle_seconds']}",
         f"  idle_dump_count: {report['idle_dump_count']}",

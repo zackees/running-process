@@ -190,7 +190,7 @@ class DaemonHandle:
             os.kill(self.pid, 0)
         except OSError:
             return False
-        return True
+        return _posix_process_state(self.pid) != "Z"
 
     def _is_running_win32(self) -> bool:
         """Windows-specific liveness check using GetExitCodeProcess."""
@@ -218,6 +218,21 @@ class DaemonHandle:
         else:
             msg += "No log file was configured."
         raise DaemonOutputNotAvailableError(msg)
+
+
+def _posix_process_state(pid: int) -> str | None:
+    """Return the /proc process state marker for *pid* when available."""
+    if sys.platform == "win32":
+        return None
+    stat_path = Path(f"/proc/{pid}/stat")
+    try:
+        stat_text = stat_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    close_paren = stat_text.rfind(")")
+    if close_paren == -1 or close_paren + 2 >= len(stat_text):
+        return None
+    return stat_text[close_paren + 2]
 
 
 # ---------------------------------------------------------------------------

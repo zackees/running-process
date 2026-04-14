@@ -79,9 +79,19 @@ jobs:
             done
           fi
           if [ -d logs/running-process ]; then
-            echo "::warning::Timeout diagnostics detected"
-            for f in logs/running-process/*.json; do
-              [ -f "$f" ] && echo "--- $f ---" && cat "$f"
+            echo "::warning::running-process diagnostics detected"
+            for f in logs/running-process/*; do
+              [ -f "$f" ] || continue
+              case "$f" in
+                *.json)
+                  echo "--- $f ---"
+                  cat "$f"
+                  ;;
+                *.log)
+                  echo "--- $f (tail -200) ---"
+                  tail -n 200 "$f"
+                  ;;
+              esac
             done
           fi
           echo "::group::Rust toolchain diagnostics"
