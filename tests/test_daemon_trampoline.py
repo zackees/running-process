@@ -173,6 +173,23 @@ class TestDaemonHelpers(unittest.TestCase):
         finally:
             cleanup_runtime(name)
 
+    def test_write_sidecar_gc_metadata(self) -> None:
+        from running_process.daemon import cleanup_runtime, write_sidecar
+
+        name = "test-sidecar-gc-metadata"
+        try:
+            path = write_sidecar(
+                name,
+                command="echo",
+                spawned_at_unix_ms=1234,
+                last_seen_unix_ms=5678,
+            )
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["spawned_at_unix_ms"], 1234)
+            self.assertEqual(data["last_seen_unix_ms"], 5678)
+        finally:
+            cleanup_runtime(name)
+
     def test_runtime_dir_creates_path(self) -> None:
         from running_process.daemon import cleanup_runtime, runtime_dir
 

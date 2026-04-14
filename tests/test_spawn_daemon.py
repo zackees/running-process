@@ -223,6 +223,26 @@ class TestSpawnDaemon(unittest.TestCase):
                 time.sleep(0.1)
             else:
                 self.fail(f"Could not resolve process name for daemon pid {handle.pid}")
+
+    def test_sidecar_includes_gc_timestamps(self):
+        """spawn_daemon writes sidecar timestamps for runtime-dir GC."""
+        import json
+
+        from running_process.daemon import spawn_daemon
+
+        name = self._unique_name("gctimestamps")
+        handle = spawn_daemon(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            name=name,
+        )
+        try:
+            sidecar = handle.runtime_dir / f"{name}.daemon.json"
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            self.assertIn("spawned_at_unix_ms", data)
+            self.assertIn("last_seen_unix_ms", data)
+            self.assertIsInstance(data["spawned_at_unix_ms"], int)
+            self.assertIsInstance(data["last_seen_unix_ms"], int)
+            self.assertGreaterEqual(data["last_seen_unix_ms"], data["spawned_at_unix_ms"])
         finally:
             self._kill_pid(handle.pid)
 

@@ -23,6 +23,7 @@ use crate::config::DaemonConfig;
 use crate::handlers::{self, DaemonState};
 use crate::reaper;
 use crate::registry::Registry;
+use crate::runtime_gc;
 
 // ---------------------------------------------------------------------------
 // DaemonServer
@@ -106,6 +107,12 @@ impl DaemonServer {
             reaper_state,
             config.reaper_interval_secs,
         ));
+        let runtime_gc_state = Arc::clone(&self.state);
+        let runtime_gc_handle = tokio::spawn(runtime_gc::runtime_gc_loop(
+            runtime_gc_state,
+            config.runtime_gc_interval_secs,
+            config.runtime_gc_stale_after_secs,
+        ));
 
         let mut shutdown_rx = self.shutdown_rx.clone();
 
@@ -140,6 +147,7 @@ impl DaemonServer {
 
         // Wait for the reaper task to finish (it watches the same shutdown signal).
         let _ = reaper_handle.await;
+        let _ = runtime_gc_handle.await;
 
         // Cleanup socket file on Unix.
         #[cfg(unix)]
