@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub struct DaemonConfig {
     pub idle_timeout_secs: u64,
     pub reaper_interval_secs: u64,
+    pub runtime_gc_interval_secs: u64,
+    pub runtime_gc_stale_after_secs: u64,
     pub connection_idle_timeout_secs: u64,
     pub max_connections: usize,
     pub dev: DevConfig,
@@ -22,6 +24,8 @@ impl Default for DaemonConfig {
         Self {
             idle_timeout_secs: 600, // 10 minutes
             reaper_interval_secs: 30,
+            runtime_gc_interval_secs: 300,
+            runtime_gc_stale_after_secs: 6 * 60 * 60,
             connection_idle_timeout_secs: 60,
             max_connections: 64,
             dev: DevConfig::default(),
@@ -95,6 +99,8 @@ mod tests {
         let cfg = DaemonConfig::default();
         assert_eq!(cfg.idle_timeout_secs, 600);
         assert_eq!(cfg.reaper_interval_secs, 30);
+        assert_eq!(cfg.runtime_gc_interval_secs, 300);
+        assert_eq!(cfg.runtime_gc_stale_after_secs, 21_600);
         assert_eq!(cfg.connection_idle_timeout_secs, 60);
         assert_eq!(cfg.max_connections, 64);
         assert_eq!(cfg.dev.idle_timeout_secs, 120);
@@ -128,6 +134,8 @@ idle_timeout_secs = 300
         assert_eq!(cfg.idle_timeout_secs, 300);
         // Other fields should get defaults via #[serde(default)]
         assert_eq!(cfg.reaper_interval_secs, 30);
+        assert_eq!(cfg.runtime_gc_interval_secs, 300);
+        assert_eq!(cfg.runtime_gc_stale_after_secs, 21_600);
         assert_eq!(cfg.dev.idle_timeout_secs, 120);
     }
 
@@ -136,6 +144,8 @@ idle_timeout_secs = 300
         let toml_str = r#"
 idle_timeout_secs = 900
 reaper_interval_secs = 15
+runtime_gc_interval_secs = 120
+runtime_gc_stale_after_secs = 7200
 connection_idle_timeout_secs = 120
 max_connections = 32
 
@@ -145,6 +155,8 @@ idle_timeout_secs = 60
         let cfg: DaemonConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.idle_timeout_secs, 900);
         assert_eq!(cfg.reaper_interval_secs, 15);
+        assert_eq!(cfg.runtime_gc_interval_secs, 120);
+        assert_eq!(cfg.runtime_gc_stale_after_secs, 7200);
         assert_eq!(cfg.connection_idle_timeout_secs, 120);
         assert_eq!(cfg.max_connections, 32);
         assert_eq!(cfg.dev.idle_timeout_secs, 60);

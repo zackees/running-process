@@ -7,5 +7,6 @@ pub mod idle;
 pub mod platform;
 pub mod reaper;
 pub mod registry;
+pub mod runtime_gc;
 pub mod server;
 pub mod shadow;
