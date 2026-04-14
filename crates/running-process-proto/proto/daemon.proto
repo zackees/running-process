@@ -17,6 +17,7 @@ enum RequestType {
   REQUEST_TYPE_UNSPECIFIED     = 0;
   REQUEST_TYPE_REGISTER        = 10;
   REQUEST_TYPE_UNREGISTER      = 11;
+  REQUEST_TYPE_SPAWN_DAEMON    = 12;
   REQUEST_TYPE_LIST_ACTIVE     = 20;
   REQUEST_TYPE_LIST_BY_ORIGINATOR = 21;
   REQUEST_TYPE_GET_PROCESS_TREE = 22;
@@ -59,6 +60,7 @@ message DaemonRequest {
   // Payload fields — field numbers match RequestType enum values.
   RegisterRequest         register          = 10;
   UnregisterRequest       unregister        = 11;
+  SpawnDaemonRequest      spawn_daemon      = 12;
   ListActiveRequest       list_active       = 20;
   ListByOriginatorRequest list_by_originator = 21;
   GetProcessTreeRequest   get_process_tree  = 22;
@@ -77,6 +79,7 @@ message DaemonResponse {
   // Payload fields — field numbers match RequestType enum values.
   RegisterResponse         register          = 10;
   UnregisterResponse       unregister        = 11;
+  SpawnDaemonResponse      spawn_daemon      = 12;
   ListActiveResponse       list_active       = 20;
   ListByOriginatorResponse list_by_originator = 21;
   GetProcessTreeResponse   get_process_tree  = 22;
@@ -108,6 +111,22 @@ message UnregisterRequest {
 }
 
 message UnregisterResponse {}
+
+message SpawnDaemonRequest {
+  string command = 1;
+  string cwd = 2;
+  map<string, string> env = 3;
+  string originator = 4;
+}
+
+message SpawnDaemonResponse {
+  uint32 pid = 1;
+  double created_at = 2;
+  string command = 3;
+  string cwd = 4;
+  string originator = 5;
+  string containment = 6;
+}
 
 message ListActiveRequest {}
 

@@ -256,6 +256,33 @@ impl Registry {
         true
     }
 
+    /// Unregister a tracked process only if the creation time still matches.
+    ///
+    /// This is used by background child waiters so a fast PID reuse does not
+    /// accidentally remove a newer process registration.
+    pub fn unregister_exact(&self, pid: u32, created_at_ms: u64) -> bool {
+        let mut by_pid = self.by_pid.lock().unwrap();
+        let mut processes = self.processes.lock().unwrap();
+        let db = self.db.lock().unwrap();
+
+        let removed = processes.remove(&(pid, created_at_ms)).is_some();
+        if !removed {
+            return false;
+        }
+
+        if by_pid.get(&pid) == Some(&created_at_ms) {
+            by_pid.remove(&pid);
+        }
+
+        db.execute(
+            "DELETE FROM tracked_processes WHERE pid = ?1 AND created_at_ms = ?2",
+            params![pid, created_at_ms],
+        )
+        .ok();
+
+        true
+    }
+
     /// Return a clone of all tracked entries, sorted by `registered_at`.
     pub fn list_all(&self) -> Vec<TrackedEntry> {
         let processes = self.processes.lock().unwrap();
@@ -389,6 +416,24 @@ mod tests {
         // Unregister again returns false.
         let removed_again = reg.unregister(42);
         assert!(!removed_again);
+    }
+
+    #[test]
+    fn test_unregister_exact_preserves_newer_pid_reuse() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let reg = Registry::open(&db).unwrap();
+
+        reg.register(make_entry(77, 1000, "old")).unwrap();
+        reg.register(make_entry(77, 2000, "new")).unwrap();
+
+        assert!(!reg.unregister_exact(77, 1000));
+        let all = reg.list_all();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].created_at_ms, 2000);
+
+        assert!(reg.unregister_exact(77, 2000));
+        assert_eq!(reg.count(), 0);
     }
 
     #[test]
