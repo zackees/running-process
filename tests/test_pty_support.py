@@ -1083,29 +1083,15 @@ def test_pseudo_terminal_wait_for_expect_not_suppresses_trigger() -> None:
             (
                 "import sys\n"
                 "sys.stdout.write('ERROR>'); sys.stdout.flush()\n"
-                "sys.stdin.readline()\n"
                 "sys.stdout.write('DONE>'); sys.stdout.flush()\n"
-                "sys.stdin.readline()\n"
             ),
         ],
         text=True,
     )
-
-    writer = threading.Thread(
-        target=lambda: (
-            time.sleep(0.05),
-            process.write("\n"),
-            time.sleep(0.05),
-            process.write("\n"),
-        ),
-        daemon=True,
-    )
-    writer.start()
     result = process.wait_for(
         Expect("DONE>", NOT="ERROR>"),
         timeout=5.0,
     )
-    writer.join(timeout=1.0)
 
     assert result.matched is False
     assert result.exit_reason == "process_exit"
