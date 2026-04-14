@@ -881,17 +881,61 @@ def test_pseudo_terminal_wait_for_idle_uses_callable_predicate(
     assert all(item.delta_seconds >= 0.0 for item in seen)
 
 
-def test_idle_reached_callback_accumulates_diff_when_callback_is_slow() -> None:
+def test_idle_reached_callback_accumulates_diff_when_callback_is_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen: list[IdleInfoDiff] = []
+    snapshots = iter(
+        [
+            SimpleNamespace(
+                sampled_at=0.00,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.01,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.06,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+        ]
+    )
 
-    process = RunningProcess.pseudo_terminal(
-        [sys.executable, "-c", "import time; time.sleep(0.18)"],
-        text=True,
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
+        auto_run=False,
+    )
+    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+    monkeypatch.setattr(
+        process,
+        "_sample_idle_snapshot",
+        lambda process_cfg=None: next(snapshots),
     )
 
     def capture(diff: IdleInfoDiff) -> IdleDecision:
         seen.append(diff)
-        time.sleep(0.05)
         return IdleDecision.BEGIN_IDLE
 
     result = process.wait_for_idle(
@@ -907,7 +951,6 @@ def test_idle_reached_callback_accumulates_diff_when_callback_is_slow() -> None:
     )
     assert result.idle_detected is True
     assert any(item.delta_seconds >= 0.03 for item in seen)
-    process.kill()
 
 
 def test_pseudo_terminal_wait_for_idle_hybrid_config_uses_custom_predicate() -> None:
