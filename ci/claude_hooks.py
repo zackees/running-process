@@ -3,12 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 BUILD_TOOL_PREFIXES = (
-    "cargo",
-    "maturin",
     "rustc",
     "rustfmt",
     "clippy-driver",
 )
+SUPPORTED_CARGO_SUBCOMMANDS = ("build", "check", "test", "package", "publish")
 ALLOW_PREFIXES = (
     "uvx soldr ",
     "uvx soldr.exe ",
@@ -41,10 +40,17 @@ def _starts_with_any(command: str, prefixes: tuple[str, ...]) -> bool:
 
 def _contains_raw_build_tool(command: str) -> bool:
     lowered = command.lower()
+    for subcommand in SUPPORTED_CARGO_SUBCOMMANDS:
+        if lowered.startswith(f"cargo {subcommand} "):
+            return True
+        if lowered == f"cargo {subcommand}":
+            return True
+        if any(f"{sep} cargo {subcommand} " in lowered for sep in ("&&", "||", ";", "|")):
+            return True
+        if f"\ncargo {subcommand} " in lowered:
+            return True
     for tool in BUILD_TOOL_PREFIXES:
         if lowered.startswith(f"{tool} ") or lowered == tool:
-            return True
-        if f" {tool} " in lowered:
             return True
         if any(f"{sep} {tool} " in lowered for sep in ("&&", "||", ";", "|")):
             return True
@@ -56,6 +62,9 @@ def _contains_raw_build_tool(command: str) -> bool:
 def _rewrite_direct_command(command: str) -> str | None:
     stripped = command.lstrip()
     leading = command[: len(command) - len(stripped)]
+    for subcommand in SUPPORTED_CARGO_SUBCOMMANDS:
+        if stripped == f"cargo {subcommand}" or stripped.startswith(f"cargo {subcommand} "):
+            return f"{leading}uvx soldr {stripped}"
     for tool in BUILD_TOOL_PREFIXES:
         if stripped == tool or stripped.startswith(f"{tool} "):
             return f"{leading}uvx soldr {stripped}"

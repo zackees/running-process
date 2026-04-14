@@ -59,7 +59,7 @@ uv run pyright src tests
 ./install                    # Bootstrap Rust toolchain; builders use uvx soldr
 ```
 
-Project hook policy: `.claude/settings.json` rewrites direct build-tool Bash commands through `uvx soldr` and blocks compound raw `cargo` / `maturin` build commands that bypass `uvx soldr` or the higher-level repo entrypoints.
+Project hook policy: `.claude/settings.json` rewrites direct soldr-supported Bash build commands through `uvx soldr` and blocks compound raw build commands that bypass `uvx soldr` or the higher-level repo entrypoints.
 
 ## Daemon
 

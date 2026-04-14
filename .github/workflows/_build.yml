@@ -80,7 +80,7 @@ jobs:
 
       - name: Build sdist
         if: ${{ inputs.include-sdist }}
-        run: uvx soldr maturin sdist --out dist
+        run: uv run maturin sdist --out dist
 
       - name: Upload dist artifacts
         if: ${{ inputs.artifact-name != '' }}

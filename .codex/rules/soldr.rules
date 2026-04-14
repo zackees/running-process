@@ -1,13 +1,11 @@
 # Require soldr for direct Rust build-chain commands in this repo.
 
 prefix_rule(
-    pattern = ["cargo"],
+    pattern = ["cargo", "build"],
     decision = "forbidden",
-    justification = "Use `uvx soldr cargo ...` instead of raw `cargo`.",
+    justification = "Use `uvx soldr cargo build ...` instead of raw `cargo build`.",
     match = [
         "cargo build --workspace",
-        "cargo test --workspace",
-        "cargo fmt --all",
     ],
     not_match = [
         "uvx soldr cargo build --workspace",
@@ -16,65 +14,49 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["maturin"],
+    pattern = ["cargo", "test"],
     decision = "forbidden",
-    justification = "Use `uvx soldr maturin ...` instead of raw `maturin`.",
+    justification = "Use `uvx soldr cargo test ...` instead of raw `cargo test`.",
     match = [
-        "maturin build --release",
-        "maturin sdist --out dist",
+        "cargo test --workspace",
     ],
     not_match = [
-        "uvx soldr maturin build --release",
-        "python -m maturin build --release",
+        "uvx soldr cargo test --workspace",
     ],
 )
 
 prefix_rule(
-    pattern = ["python", "-m", "maturin"],
+    pattern = ["cargo", "check"],
     decision = "forbidden",
-    justification = "Use `uvx soldr maturin ...` instead of `python -m maturin`.",
+    justification = "Use `uvx soldr cargo check ...` instead of raw `cargo check`.",
     match = [
-        "python -m maturin build --release",
+        "cargo check --workspace",
     ],
     not_match = [
-        "uvx soldr maturin build --release",
-        "python build.py --release",
+        "uvx soldr cargo check --workspace",
     ],
 )
 
 prefix_rule(
-    pattern = [["python3", "py"], "-m", "maturin"],
+    pattern = ["cargo", "package"],
     decision = "forbidden",
-    justification = "Use `uvx soldr maturin ...` instead of raw `*-m maturin` invocations.",
+    justification = "Use `uvx soldr cargo package ...` instead of raw `cargo package`.",
     match = [
-        "python3 -m maturin build --release",
-        "py -m maturin build --release",
+        "cargo package -p running-process-core --no-verify",
     ],
     not_match = [
-        "uvx soldr maturin build --release",
+        "uvx soldr cargo package -p running-process-core --no-verify",
     ],
 )
 
 prefix_rule(
-    pattern = ["rustc"],
+    pattern = ["cargo", "publish"],
     decision = "forbidden",
-    justification = "Use `uvx soldr rustc ...` instead of raw `rustc`.",
+    justification = "Use `uvx soldr cargo publish ...` instead of raw `cargo publish`.",
     match = [
-        "rustc --version",
+        "cargo publish -p running-process-core --no-verify",
     ],
     not_match = [
-        "uvx soldr rustc --version",
-    ],
-)
-
-prefix_rule(
-    pattern = ["rustfmt"],
-    decision = "forbidden",
-    justification = "Use `uvx soldr rustfmt ...` instead of raw `rustfmt`.",
-    match = [
-        "rustfmt --version",
-    ],
-    not_match = [
-        "uvx soldr rustfmt --version",
+        "uvx soldr cargo publish -p running-process-core --no-verify",
     ],
 )

@@ -6,6 +6,7 @@ from functools import lru_cache
 
 DISABLE_SOLDR_ENV = "RUNNING_PROCESS_DISABLE_SOLDR"
 FORCE_SOLDR_ENV = "RUNNING_PROCESS_FORCE_SOLDR"
+UNSUPPORTED_CARGO_SUBCOMMANDS = {"clippy", "fmt", "llvm-cov"}
 
 
 def _truthy_env(name: str) -> bool:
@@ -25,6 +26,8 @@ def soldr_prefix() -> tuple[str, ...] | None:
 
 
 def cargo_command(*args: str) -> list[str]:
+    if args and args[0] in UNSUPPORTED_CARGO_SUBCOMMANDS:
+        return ["cargo", *args]
     prefix = soldr_prefix()
     if prefix:
         return [*prefix, "cargo", *args]
@@ -32,7 +35,4 @@ def cargo_command(*args: str) -> list[str]:
 
 
 def maturin_command(python: str, *args: str) -> list[str]:
-    prefix = soldr_prefix()
-    if prefix:
-        return [*prefix, "maturin", *args]
     return [python, "-m", "maturin", *args]

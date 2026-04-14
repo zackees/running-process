@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from ci.soldr import cargo_command, maturin_command
+from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
@@ -22,14 +22,7 @@ BuildMode = Literal["dev", "release"]
 
 
 def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> list[str]:
-    cmd = maturin_command(
-        sys.executable,
-        "build",
-        "--interpreter",
-        sys.executable,
-        "--out",
-        str(DIST),
-    )
+    cmd = [sys.executable, "-m", "maturin", "build", "--interpreter", sys.executable, "--out", str(DIST)]
     if mode == "dev":
         cmd.extend(["--profile", "dev"])
     else:
