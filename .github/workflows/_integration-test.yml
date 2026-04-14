@@ -43,6 +43,19 @@ jobs:
           cache-target: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
           save-cache: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
 
+      - name: Reset pinned Rust toolchain on macOS ARM
+        if: ${{ runner.os == 'macOS' && runner.arch == 'ARM64' }}
+        shell: bash
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            exit 0
+          fi
+          rustup toolchain list | awk '$1 ~ /^1\.94\.1/ {print $1}' | while read -r toolchain; do
+            [ -n "$toolchain" ] || continue
+            echo "Removing stale toolchain: $toolchain"
+            rustup toolchain uninstall "$toolchain" || true
+          done
+
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.1"
@@ -59,8 +72,8 @@ jobs:
           IN_RUNNING_PROCESS: running-process-cli
         run: uv run --module ci.run_logged logs/integration-test.log -- uv run pytest -m live -ra --strict-markers
 
-      - name: Display timeout diagnostics
-        if: always()
+      - name: Display failure diagnostics
+        if: ${{ failure() || cancelled() }}
         shell: bash
         run: |
           if ls logs/*.analytics.json >/dev/null 2>&1; then
@@ -75,6 +88,13 @@ jobs:
               [ -f "$f" ] && echo "--- $f ---" && cat "$f"
             done
           fi
+          echo "::group::Rust toolchain diagnostics"
+          command -v rustup >/dev/null 2>&1 && rustup show || true
+          command -v rustup >/dev/null 2>&1 && rustup toolchain list || true
+          command -v rustc >/dev/null 2>&1 && rustc -Vv || true
+          command -v cargo >/dev/null 2>&1 && cargo -V || true
+          command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
+          echo "::endgroup::"
 
       - name: Upload failure logs
         if: ${{ failure() }}
