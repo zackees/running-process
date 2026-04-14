@@ -1578,7 +1578,6 @@ def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     writes: list[tuple[str | bytes, bool]] = []
-    fake_now = -0.01
     callback_started = threading.Event()
 
     process = PseudoTerminalProcess(
@@ -1599,16 +1598,15 @@ def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect(
 
     fake_proc = FakeProc()
     process._proc = fake_proc  # type: ignore[assignment]
-    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+    monkeypatch.setattr(
+        process,
+        "_pump_native_output",
+        lambda timeout, consume_all: time.sleep(min(timeout, 0.01)),
+    )
     monkeypatch.setattr(process, "_snapshot_output_history", lambda: ("", 0))
 
-    def fake_time() -> float:
-        nonlocal fake_now
-        fake_now += 0.02
-        return fake_now
-
     def snapshot_output_since(start: int) -> tuple[str, int]:
-        if start == 0:
+        if start == 0 and callback_started.is_set():
             return ("ready>", 6)
         return ("", start)
 
@@ -1618,17 +1616,16 @@ def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect(
 
     def slow_false() -> bool:
         callback_started.set()
-        time.sleep(0.2)
+        time.sleep(0.05)
         return False
 
-    monkeypatch.setattr(pty_module.time, "time", fake_time)
     monkeypatch.setattr(process, "_snapshot_output_since", snapshot_output_since)
     process.write = fake_write  # type: ignore[method-assign]
 
     result = process.wait_for(
         Expect("ready>", action="\n"),
         slow_false,
-        timeout=5.0,
+        timeout=1.0,
     )
 
     assert callback_started.is_set()
