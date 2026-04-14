@@ -1579,6 +1579,7 @@ def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect(
 ) -> None:
     writes: list[tuple[str | bytes, bool]] = []
     callback_started = threading.Event()
+    callback_release = threading.Event()
 
     process = PseudoTerminalProcess(
         [sys.executable, "-c", "print('x')"],
@@ -1613,10 +1614,11 @@ def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect(
     def fake_write(data: str | bytes, *, submit: bool = False) -> None:
         writes.append((data, submit))
         fake_proc.exited = True
+        callback_release.set()
 
     def slow_false() -> bool:
         callback_started.set()
-        time.sleep(0.05)
+        callback_release.wait(timeout=0.2)
         return False
 
     monkeypatch.setattr(process, "_snapshot_output_since", snapshot_output_since)
