@@ -13,6 +13,8 @@ ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process-core/src/lib.rs"),
     Path("crates/running-process-core/src/containment.rs"),
     Path("crates/running-process-py/src/lib.rs"),
+    # Client crate: auto-starts the daemon process when connecting.
+    Path("crates/running-process-client/src/client.rs"),
     # Daemon crate: process management for daemonize, shadow-copy, and auto-start
     Path("crates/running-process-daemon/src/client.rs"),
     Path("crates/running-process-daemon/src/platform/windows.rs"),
@@ -25,6 +27,8 @@ ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-core/src/lib.rs"),
     Path("crates/running-process-core/src/containment.rs"),
     Path("crates/running-process-py/src/lib.rs"),
+    # Client crate: auto-starts the daemon process when connecting.
+    Path("crates/running-process-client/src/client.rs"),
     # Daemon crate: process management for daemonize, shadow-copy, and auto-start
     Path("crates/running-process-daemon/src/client.rs"),
     Path("crates/running-process-daemon/src/platform/windows.rs"),
