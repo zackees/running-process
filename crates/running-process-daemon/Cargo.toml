@@ -15,9 +15,9 @@ name = "running-process-daemon"
 path = "src/main.rs"
 
 [dependencies]
-running-process-proto = { path = "../running-process-proto", version = "3.0.16" }
-running-process-core = { path = "../running-process-core", version = "3.0.16" }
-running-process-client = { path = "../running-process-client", version = "3.0.16" }
+running-process-proto = { path = "../running-process-proto", version = "3.0.17" }
+running-process-core = { path = "../running-process-core", version = "3.0.17" }
+running-process-client = { path = "../running-process-client", version = "3.0.17" }
 prost = "0.14"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
