@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "3.0.16"
+__version__ = "3.0.17"
 
 from running_process._native import (
     ContainedProcessGroup,

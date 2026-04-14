@@ -688,15 +688,15 @@ def _normalize_wait_conditions(
 ) -> list[WaitCondition]:
     normalized: list[WaitCondition] = []
     for condition in conditions:
-        if isinstance(condition, (Idle, Expect, Callback)):
+        if isinstance(condition, Idle | Expect | Callback):
             normalized.append(condition)
             continue
         if callable(condition):
             normalized.append(Callback(condition))
             continue
-        if isinstance(condition, (list, tuple)):
+        if isinstance(condition, list | tuple):
             for nested in condition:
-                if isinstance(nested, (Idle, Expect, Callback)):
+                if isinstance(nested, Idle | Expect | Callback):
                     normalized.append(nested)
                     continue
                 if callable(nested):

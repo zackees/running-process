@@ -259,6 +259,14 @@ pub struct NativePtyProcess {
     pub terminal_input_relay_worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
+fn resolved_spawn_cwd(cwd: Option<&str>) -> Option<String> {
+    cwd.map(str::to_owned).or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|cwd| cwd.to_string_lossy().to_string())
+    })
+}
+
 impl NativePtyProcess {
     pub fn new(
         argv: Vec<String>,
@@ -644,7 +652,8 @@ impl NativePtyProcess {
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
 
         let mut cmd = command_builder_from_argv(&self.argv);
-        if let Some(cwd) = &self.cwd {
+        let cwd = resolved_spawn_cwd(self.cwd.as_deref());
+        if let Some(cwd) = &cwd {
             cmd.cwd(cwd);
         }
         if let Some(env) = &self.env {
@@ -1706,4 +1715,25 @@ pub fn apply_windows_pty_priority(
         return Err(PtyError::Io(std::io::Error::last_os_error()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved_spawn_cwd;
+
+    #[test]
+    fn resolved_spawn_cwd_preserves_explicit_value() {
+        assert_eq!(
+            resolved_spawn_cwd(Some("C:\\temp\\explicit")),
+            Some("C:\\temp\\explicit".to_string())
+        );
+    }
+
+    #[test]
+    fn resolved_spawn_cwd_defaults_to_current_dir_when_unset() {
+        let expected = std::env::current_dir()
+            .ok()
+            .map(|cwd| cwd.to_string_lossy().to_string());
+        assert_eq!(resolved_spawn_cwd(None), expected);
+    }
 }
