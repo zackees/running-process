@@ -725,34 +725,30 @@ def test_interactive_force_killed_parent_reaps_child() -> None:
             owner.wait(timeout=1)
 
 
-def test_pseudo_terminal_interrupt_and_wait_reports_second_interrupt_success() -> None:
-    process = RunningProcess.pseudo_terminal(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import signal, sys, time\n"
-                "count = {'value': 0}\n"
-                "def handler(sig, frame):\n"
-                "    count['value'] += 1\n"
-                "    print(f'interrupt:{count[\"value\"]}', flush=True)\n"
-                "    if count['value'] >= 2:\n"
-                "        raise KeyboardInterrupt\n"
-                "signal.signal(signal.SIGINT, handler)\n"
-                "print('ready>', flush=True)\n"
-                "while True:\n"
-                "    time.sleep(0.1)\n"
-            ),
-        ],
-        text=True,
+def test_pseudo_terminal_interrupt_and_wait_reports_second_interrupt_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[str] = []
+    waits = iter([False, True])
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
+        auto_run=False,
     )
-    process.expect("ready>", timeout=5)
+    process._proc = SimpleNamespace(send_interrupt=lambda: sent.append("interrupt"))
+    monkeypatch.setattr(process, "_wait_until_exit", lambda timeout: next(waits))
+    monkeypatch.setattr(process, "poll", lambda: 130 if len(sent) >= 2 else None)
+    monkeypatch.setattr(process, "_drain_native_until_eof", lambda timeout: None)
+    monkeypatch.setattr(process, "_finalize", lambda reason: None)
+
     result = process.interrupt_and_wait(grace_timeout=0.2, second_interrupt=True)
+
     assert isinstance(result, InterruptResult)
+    assert sent == ["interrupt", "interrupt"]
     assert result.interrupt_count >= 2
-    assert process.poll() is not None
-    assert result.exit_reason in {"interrupt", "kill"}
-    assert process.exit_reason in {"interrupt", "kill"}
+    assert result.returncode == 130
+    assert result.exit_reason == "interrupt"
+    assert process.exit_reason == "interrupt"
 
 
 def test_wait_with_idle_detector_none_preserves_int_return_type() -> None:
@@ -2142,6 +2138,21 @@ def test_pseudo_terminal_kill_uses_killpg_on_posix(monkeypatch: pytest.MonkeyPat
     process.kill()
 
     assert calls == [(2468, pty_module.signal.SIGKILL)]
+
+
+def test_pseudo_terminal_send_interrupt_delegates_to_native_process() -> None:
+    calls: list[str] = []
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
+        auto_run=False,
+    )
+    process._proc = SimpleNamespace(send_interrupt=lambda: calls.append("interrupt"))
+
+    process.send_interrupt()
+
+    assert calls == ["interrupt"]
+    assert process.interrupt_count == 1
+    assert process.interrupted_by_caller is True
 
 
 def test_running_process_use_pty_remains_constructor_compatible() -> None:
