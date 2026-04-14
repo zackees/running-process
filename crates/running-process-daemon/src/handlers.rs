@@ -130,7 +130,7 @@ fn shell_command(command: &str) -> Command {
     {
         use std::os::windows::process::CommandExt;
 
-        let mut cmd = Command::new("cmd");
+        let mut cmd = Command::new("cmd.exe");
         cmd.raw_arg("/D /S /C \"");
         cmd.raw_arg(command);
         cmd.raw_arg("\"");
@@ -194,9 +194,12 @@ fn spawn_and_track_detached(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        // `cmd.exe` will flash a console window when launched with the
+        // detached-console flag. Use a hidden console instead so shell-backed
+        // daemon spawns stay invisible to the user.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     }
 
     let mut detached = command
