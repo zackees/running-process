@@ -22,7 +22,16 @@ BuildMode = Literal["dev", "release"]
 
 
 def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> list[str]:
-    cmd = [sys.executable, "-m", "maturin", "build", "--interpreter", sys.executable, "--out", str(DIST)]
+    cmd = [
+        sys.executable,
+        "-m",
+        "maturin",
+        "build",
+        "--interpreter",
+        sys.executable,
+        "--out",
+        str(DIST),
+    ]
     if mode == "dev":
         cmd.extend(["--profile", "dev"])
     else:

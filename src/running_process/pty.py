@@ -1259,10 +1259,6 @@ class PseudoTerminalProcess:
         self.interrupt_count += 1
         self.interrupted_by_caller = True
         assert self._proc is not None
-        if sys.platform != "win32" and self.pid is not None:
-            with suppress(OSError, AttributeError):
-                os.killpg(self.pid, signal.SIGINT)
-                return
         self._proc.send_interrupt()
 
     def poll(self) -> int | None:

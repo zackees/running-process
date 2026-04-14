@@ -52,7 +52,8 @@ def test_codex_pre_tool_use_blocks_compound_raw_build_command() -> None:
                 "permissionDecision": "deny",
                 "permissionDecisionReason": (
                     "Build-related shell commands in this repo must run through `uvx soldr` "
-                    "or the higher-level repo entrypoints (`uv run build.py`, `./install`, `./lint`, `./test`)."
+                    "or the higher-level repo entrypoints "
+                    "(`uv run build.py`, `./install`, `./lint`, `./test`)."
                 ),
             }
         }

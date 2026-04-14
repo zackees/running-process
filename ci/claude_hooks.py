@@ -76,12 +76,15 @@ def evaluate_bash_command(command: str) -> HookDecision | None:
         return None
     if _starts_with_any(command, ALLOW_PREFIXES):
         return None
-    if _contains_raw_build_tool(command) and any(separator in command for separator in SHELL_SEPARATORS):
+    if _contains_raw_build_tool(command) and any(
+        separator in command for separator in SHELL_SEPARATORS
+    ):
         return HookDecision(
             permission_decision="deny",
             reason=(
                 "Build-related shell commands in this repo must run through `uvx soldr` "
-                "or the higher-level repo entrypoints (`uv run build.py`, `./install`, `./lint`, `./test`)."
+                "or the higher-level repo entrypoints "
+                "(`uv run build.py`, `./install`, `./lint`, `./test`)."
             ),
         )
     rewritten = _rewrite_direct_command(command)
