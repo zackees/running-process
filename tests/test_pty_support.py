@@ -1574,24 +1574,56 @@ def test_pseudo_terminal_constructor_can_mix_expect_rule_and_registered_expect()
     assert process.wait(timeout=5) == 0
 
 
-def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect() -> None:
-    process = RunningProcess.pseudo_terminal(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys, time\n"
-                "time.sleep(0.02)\n"
-                "sys.stdout.write('ready>'); sys.stdout.flush()\n"
-                "sys.stdin.readline()\n"
-            ),
-        ],
+def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[tuple[str | bytes, bool]] = []
+    fake_now = -0.01
+    callback_started = threading.Event()
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
         text=True,
+        auto_run=False,
     )
 
+    class FakeProc:
+        pid = 1234
+        exited = False
+
+        def poll(self) -> int | None:
+            return 0 if self.exited else None
+
+        def close(self) -> None:
+            return None
+
+    fake_proc = FakeProc()
+    process._proc = fake_proc  # type: ignore[assignment]
+    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+    monkeypatch.setattr(process, "_snapshot_output_history", lambda: ("", 0))
+
+    def fake_time() -> float:
+        nonlocal fake_now
+        fake_now += 0.02
+        return fake_now
+
+    def snapshot_output_since(start: int) -> tuple[str, int]:
+        if start == 0:
+            return ("ready>", 6)
+        return ("", start)
+
+    def fake_write(data: str | bytes, *, submit: bool = False) -> None:
+        writes.append((data, submit))
+        fake_proc.exited = True
+
     def slow_false() -> bool:
-        time.sleep(0.3)
+        callback_started.set()
+        time.sleep(0.2)
         return False
+
+    monkeypatch.setattr(pty_module.time, "time", fake_time)
+    monkeypatch.setattr(process, "_snapshot_output_since", snapshot_output_since)
+    process.write = fake_write  # type: ignore[method-assign]
 
     result = process.wait_for(
         Expect("ready>", action="\n"),
@@ -1599,11 +1631,13 @@ def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect() -> 
         timeout=5.0,
     )
 
+    assert callback_started.is_set()
     assert result.matched is True
     assert isinstance(result.condition, Expect)
     assert result.expect_match is not None
     assert result.expect_match.matched == "ready>"
-    assert process.wait(timeout=5) == 0
+    assert result.returncode == 0
+    assert writes == [("\n", False)]
 
 
 def test_pseudo_terminal_wait_for_idle_reports_process_exit_before_idle() -> None:
