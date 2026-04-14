@@ -2941,6 +2941,9 @@ def test_interactive_kill_waits_for_exit() -> None:
     assert process.poll() is not None
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_interactive_wait_raises_keyboard_interrupt_on_sigint() -> None:
     process = RunningProcess.interactive(
         [
