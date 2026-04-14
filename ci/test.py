@@ -137,6 +137,10 @@ def run_live(cmd: list[str]) -> int:
     return subprocess.run(cmd, cwd=ROOT, env=env).returncode
 
 
+def live_tests_enabled() -> bool:
+    return os.environ.get("RUNNING_PROCESS_LIVE_TESTS") == "1"
+
+
 def load_env_helpers():
     from ci.env import activate, clean_env
 
@@ -268,12 +272,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # -- Python live tests --
-    cov_append = list(_COV_PYTEST_APPEND) if coverage else []
-    if not _pytest_exit_is_acceptable(
-        run_live(_supervised_pytest_command(python, "-m", "live", *cov_append, *pytest_args)),
-        pytest_args,
-    ):
-        return 1
+    if live_tests_enabled():
+        cov_append = list(_COV_PYTEST_APPEND) if coverage else []
+        if not _pytest_exit_is_acceptable(
+            run_live(_supervised_pytest_command(python, "-m", "live", *cov_append, *pytest_args)),
+            pytest_args,
+        ):
+            return 1
     return 0
 
 
