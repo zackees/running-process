@@ -4,17 +4,22 @@ import contextlib
 import faulthandler
 import gc
 import io
+import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from running_process._native import native_windows_terminal_input_bytes
+from running_process._native import (
+    native_dump_rust_debug_traces,
+    native_windows_terminal_input_bytes,
+)
 
 import running_process.pty as pty_module
 import running_process.running_process as running_process_module
@@ -53,6 +58,11 @@ from tests.process_helpers import (
 )
 
 _PTY_SUPPORT_WATCHDOG_TIMEOUT_SECONDS = 120.0
+live = pytest.mark.live
+skip_unless_github_actions = pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS", "").lower() != "true",
+    reason="requires GitHub Actions runner",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +100,7 @@ def _read_until_contains(process: object, needle: str, timeout: float = 10) -> s
     raise AssertionError(f"Did not observe {needle!r} in PTY output: {''.join(chunks)!r}")
 
 
-def _capture_wait_echo_bytes(process: RunningProcess) -> bytes:
+def _capture_wait_echo_bytes(process: RunningProcess | PseudoTerminalProcess) -> bytes:
     fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
     original_stdout = sys.stdout
     sys.stdout = fake_stdout
@@ -100,6 +110,149 @@ def _capture_wait_echo_bytes(process: RunningProcess) -> bytes:
         return fake_stdout.buffer.getvalue()
     finally:
         sys.stdout = original_stdout
+
+
+def _idle_start_trigger_probe_script(
+    *,
+    emit_ack: bool = False,
+    exit_delay_seconds: float = 0.3,
+) -> str:
+    ack = (
+        "sys.stdout.write('accepted\\n')\n"
+        "sys.stdout.flush()\n"
+        if emit_ack
+        else ""
+    )
+    return (
+        "import sys, time\n"
+        "sys.stdout.write('ready>')\n"
+        "sys.stdout.flush()\n"
+        "sys.stdin.readline()\n"
+        f"{ack}"
+        f"time.sleep({exit_delay_seconds})\n"
+    )
+
+
+def _sample_live_pty_state(process: PseudoTerminalProcess) -> dict[str, object]:
+    proc = process._proc
+    assert proc is not None
+    native_output_bytes = process._pty_output_bytes_total
+    native_control_churn_bytes = process._pty_control_churn_bytes_total
+    with contextlib.suppress(AttributeError):
+        native_output_bytes = proc.pty_output_bytes_total()
+    with contextlib.suppress(AttributeError):
+        native_control_churn_bytes = proc.pty_control_churn_bytes_total()
+    state: dict[str, object] = {
+        "poll": process.poll(),
+        "idle_timeout_enabled": process.idle_timeout_enabled,
+        "native_reader_closed": proc.wait_for_pty_reader_closed(timeout=0.0),
+        "native_input_bytes": proc.pty_input_bytes_total(),
+        "native_newline_events": proc.pty_newline_events_total(),
+        "native_submit_events": proc.pty_submit_events_total(),
+        "native_output_bytes": native_output_bytes,
+        "native_control_churn_bytes": native_control_churn_bytes,
+        "python_input_bytes": process._pty_input_bytes_total,
+        "python_newline_events": process._pty_newline_events_total,
+        "python_submit_events": process._pty_submit_events_total,
+        "native_stream_closed": process._native_stream_closed,
+    }
+    if process.capture:
+        buffer, history_bytes = process._snapshot_output_history()
+        state["history_bytes"] = history_bytes
+        state["history_tail"] = buffer[-200:]
+    return state
+
+
+def _render_live_pty_timeline(timeline: list[dict[str, object]]) -> str:
+    lines = []
+    for sample in timeline:
+        lines.append(
+            "elapsed={elapsed:.3f}s poll={poll!r} reader_closed={native_reader_closed!r} "
+            "submit={native_submit_events!r}/{python_submit_events!r} "
+            "newline={native_newline_events!r}/{python_newline_events!r} "
+            "input={native_input_bytes!r}/{python_input_bytes!r} "
+            "output={native_output_bytes!r} churn={native_control_churn_bytes!r} "
+            "stream_closed={native_stream_closed!r} idle_enabled={idle_timeout_enabled!r} "
+            "tail={history_tail!r}".format(**sample)
+        )
+    return "\n".join(lines)
+
+
+def _dump_live_pty_failure_diagnostics(
+    process: PseudoTerminalProcess,
+    *,
+    label: str,
+    timeline: list[dict[str, object]] | None = None,
+) -> None:
+    lines = [f"[running-process live pty debug] {label}"]
+    with contextlib.suppress(Exception):
+        state = _sample_live_pty_state(process)
+        lines.append("current state:")
+        for key, value in state.items():
+            lines.append(f"  {key}={value!r}")
+    if timeline:
+        lines.append("timeline:")
+        lines.append(_render_live_pty_timeline(timeline))
+    with contextlib.suppress(Exception):
+        rust_dump = native_dump_rust_debug_traces().strip()
+        if rust_dump:
+            lines.append("[running-process rust debug trace]")
+            lines.append(rust_dump)
+    os.write(2, ("\n".join(lines) + "\n").encode("utf-8", errors="replace"))
+
+
+def _wait_for_live_pty_state(
+    process: PseudoTerminalProcess,
+    *,
+    label: str,
+    timeout: float,
+    predicate,
+    interval: float = 0.01,
+) -> list[dict[str, object]]:
+    deadline = time.time() + timeout
+    started = time.time()
+    timeline: list[dict[str, object]] = []
+    while True:
+        sample = _sample_live_pty_state(process)
+        sample["elapsed"] = time.time() - started
+        timeline.append(sample)
+        if predicate(sample):
+            return timeline
+        if time.time() >= deadline:
+            _dump_live_pty_failure_diagnostics(process, label=label, timeline=timeline)
+            raise AssertionError(
+                f"{label} timed out after {timeout:.2f}s\n{_render_live_pty_timeline(timeline)}"
+            )
+        time.sleep(interval)
+
+
+@contextlib.contextmanager
+def _dump_live_pty_debug_on_failure(
+    process: PseudoTerminalProcess,
+    *,
+    label: str,
+) -> Iterator[None]:
+    try:
+        yield
+    except BaseException:
+        _dump_live_pty_failure_diagnostics(process, label=label)
+        raise
+
+
+def _start_delayed_write(
+    process: PseudoTerminalProcess,
+    *,
+    data: str = "hello\n",
+    submit: bool = False,
+    delay_seconds: float = 0.12,
+) -> threading.Thread:
+    def writer() -> None:
+        time.sleep(delay_seconds)
+        process.write(data, submit=submit)
+
+    worker = threading.Thread(target=writer, daemon=True)
+    worker.start()
+    return worker
 
 
 def test_pseudo_terminal_round_trips_interactive_io() -> None:
@@ -2081,6 +2234,116 @@ def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait(
     assert pump_calls >= 1
 
 
+@live
+@skip_unless_github_actions
+def test_pseudo_terminal_newline_bytes_without_submit_keep_submit_counter_zero() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            _idle_start_trigger_probe_script(exit_delay_seconds=0.05),
+        ],
+        text=True,
+    )
+
+    try:
+        with _dump_live_pty_debug_on_failure(
+            process,
+            label="newline-bytes-without-submit-keep-submit-counter-zero",
+        ):
+            _read_until_contains(process, "ready>")
+            process.write("hello\n")
+            timeline = _wait_for_live_pty_state(
+                process,
+                label="newline-bytes-without-submit-keep-submit-counter-zero",
+                timeout=0.5,
+                predicate=lambda sample: sample["native_input_bytes"] == 6,
+            )
+            final = timeline[-1]
+            assert final["native_newline_events"] == 1
+            assert final["native_submit_events"] == 0
+            assert final["python_newline_events"] == 1
+            assert final["python_submit_events"] == 0
+    finally:
+        with contextlib.suppress(Exception):
+            process.kill()
+
+
+@live
+@skip_unless_github_actions
+def test_pseudo_terminal_delayed_newline_without_submit_reaches_child() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            _idle_start_trigger_probe_script(emit_ack=True, exit_delay_seconds=0.3),
+        ],
+        text=True,
+    )
+
+    worker = _start_delayed_write(process, submit=False)
+    try:
+        with _dump_live_pty_debug_on_failure(
+            process,
+            label="delayed-newline-without-submit-reaches-child",
+        ):
+            output = _read_until_contains(process, "accepted", timeout=1.0)
+            worker.join(timeout=1.0)
+            assert "accepted" in output
+            state = _sample_live_pty_state(process)
+            assert state["native_submit_events"] == 0
+            assert state["python_submit_events"] == 0
+    finally:
+        with contextlib.suppress(Exception):
+            worker.join(timeout=1.0)
+        with contextlib.suppress(Exception):
+            process.kill()
+
+
+@live
+@skip_unless_github_actions
+def test_pseudo_terminal_delayed_newline_without_submit_exits_and_closes_reader() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            _idle_start_trigger_probe_script(exit_delay_seconds=0.3),
+        ],
+        text=True,
+    )
+
+    worker = _start_delayed_write(process, submit=False)
+    try:
+        with _dump_live_pty_debug_on_failure(
+            process,
+            label="delayed-newline-without-submit-exits-and-closes-reader",
+        ):
+            exit_timeline = _wait_for_live_pty_state(
+                process,
+                label="delayed-newline-without-submit-exits",
+                timeout=1.5,
+                predicate=lambda sample: sample["poll"] == 0,
+            )
+            reader_timeline = _wait_for_live_pty_state(
+                process,
+                label="delayed-newline-without-submit-reader-closes",
+                timeout=1.0,
+                predicate=lambda sample: sample["native_reader_closed"] is True,
+            )
+            worker.join(timeout=1.0)
+
+            assert exit_timeline[-1]["native_submit_events"] == 0
+            assert exit_timeline[-1]["python_submit_events"] == 0
+            assert reader_timeline[-1]["native_reader_closed"] is True
+    finally:
+        with contextlib.suppress(Exception):
+            worker.join(timeout=1.0)
+        with contextlib.suppress(Exception):
+            process.kill()
+
+
+@live
+@skip_unless_github_actions
 def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_bytes() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2104,24 +2367,28 @@ def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_byte
     worker = threading.Thread(target=submit_later, daemon=True)
     worker.start()
     try:
-        started = time.time()
-        result = process.wait_for_idle(
-            IdleDetection(
-                timing=IdleTiming(
-                    timeout_seconds=0.05,
-                    stability_window_seconds=0.02,
-                    sample_interval_seconds=0.01,
+        with _dump_live_pty_debug_on_failure(
+            process,
+            label="wait-for-idle-does-not-arm-input-submit-on-newline-bytes",
+        ):
+            started = time.time()
+            result = process.wait_for_idle(
+                IdleDetection(
+                    timing=IdleTiming(
+                        timeout_seconds=0.05,
+                        stability_window_seconds=0.02,
+                        sample_interval_seconds=0.01,
+                    ),
+                    pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
                 ),
-                pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
-            ),
-            timeout=0.8,
-        )
-        elapsed = time.time() - started
-        worker.join(timeout=1.0)
+                timeout=0.8,
+            )
+            elapsed = time.time() - started
+            worker.join(timeout=1.0)
 
-        assert result.idle_detected is False
-        assert result.exit_reason == "process_exit"
-        assert elapsed >= 0.25
+            assert result.idle_detected is False
+            assert result.exit_reason == "process_exit"
+            assert elapsed >= 0.25
     finally:
         with contextlib.suppress(Exception):
             worker.join(timeout=1.0)
