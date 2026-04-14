@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from ci.dev_build import ensure_dev_wheel
+from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
 IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
@@ -221,20 +222,25 @@ def main(argv: list[str] | None = None) -> int:
     if coverage:
         cargo_cmd = supervised_command(
             python,
-            "cargo", "llvm-cov", "--workspace",
-            "--lcov", "--output-path", "coverage-rust.lcov",
+            *cargo_command(
+                "llvm-cov",
+                "--workspace",
+                "--lcov",
+                "--output-path",
+                "coverage-rust.lcov",
+            ),
             timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
         )
         if run(cargo_cmd) != 0:
             return 1
     else:
         # Step 1: compile all test binaries (no supervisor, no timeout)
-        build_args = ["cargo", "test", "--workspace", "--no-run"]
+        build_args = cargo_command("test", "--workspace", "--no-run")
         if run(build_args) != 0:
             return 1
 
         # Step 2: run the pre-built tests under the supervisor
-        cargo_test_args = ["cargo", "test", "--workspace"]
+        cargo_test_args = cargo_command("test", "--workspace")
         if sys.platform == "win32":
             # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
             # Serialize Rust tests to avoid the issue.

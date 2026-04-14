@@ -56,8 +56,10 @@ uv run pyright src tests
 **Environment:**
 ```bash
 . ./activate.sh              # Activate dev environment (git-bash on Windows)
-./install                    # Bootstrap Rust toolchain (rustup + pinned version)
+./install                    # Bootstrap Rust toolchain; builders use uvx soldr
 ```
+
+Project hook policy: `.claude/settings.json` rewrites direct build-tool Bash commands through `uvx soldr` and blocks compound raw `cargo` / `maturin` build commands that bypass `uvx soldr` or the higher-level repo entrypoints.
 
 ## Daemon
 
@@ -84,7 +86,7 @@ Active pending work lives in [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md). Root-le
 
 - The canonical local rebuild path is `uv run build.py` — do not use raw `cargo build`
 - `uv run build.py --dev` and `uv run build.py --quick` are the same mode
-- Prefer repo entrypoints (`./install`, `./test`, `./_cargo`) over ad hoc cargo commands
+- Prefer repo entrypoints (`./install`, `./test`, `./lint`, `uv run build.py`) over ad hoc cargo commands
 - When a native dependency needs a C compiler, run from a Visual Studio developer shell or through `VsDevCmd.bat`
 - Force the build target to `x86_64-pc-windows-msvc` when the environment is ambiguous; otherwise crates like `libsqlite3-sys` may try the GNU toolchain and fail looking for `gcc.exe`
 - If a rebuild behaves like a GNU build on Windows, check the active shell environment before changing Rust code

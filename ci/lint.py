@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from ci.dev_build import repo_python
+from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
@@ -59,18 +60,19 @@ def main() -> int:
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.spawn_path_guard")) != 0:
         return 1
-    if run(supervised_command(python, "cargo", "fmt", "--all")) != 0:
+    if run(supervised_command(python, *cargo_command("fmt", "--all"))) != 0:
         return 1
     if run(
         supervised_command(
             python,
-            "cargo",
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--",
-            "-D",
-            "warnings",
+            *cargo_command(
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ),
         )
     ) != 0:
         return 1

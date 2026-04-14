@@ -80,7 +80,7 @@ jobs:
 
       - name: Build sdist
         if: ${{ inputs.include-sdist }}
-        run: uv run maturin sdist --out dist
+        run: uvx soldr maturin sdist --out dist
 
       - name: Upload dist artifacts
         if: ${{ inputs.artifact-name != '' }}
@@ -93,8 +93,8 @@ jobs:
       - name: Package Rust crates
         if: ${{ inputs.include-crates }}
         run: |
-          cargo package -p running-process-core --no-verify
-          cargo package -p running-process-py --no-verify || echo "::warning::running-process-py packaging skipped (running-process-core not yet on crates.io)"
+          uvx soldr cargo package -p running-process-core --no-verify
+          uvx soldr cargo package -p running-process-py --no-verify || echo "::warning::running-process-py packaging skipped (running-process-core not yet on crates.io)"
 
       - name: Upload crate artifacts
         if: ${{ inputs.include-crates }}

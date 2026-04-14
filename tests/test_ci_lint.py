@@ -10,6 +10,7 @@ def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> Non
         "repo_python",
         lambda: ci_lint.ROOT / ".venv" / "Scripts" / "python.exe",
     )
+    monkeypatch.setattr(ci_lint, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_lint, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(
         ci_lint,

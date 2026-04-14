@@ -1,0 +1,80 @@
+# Require soldr for direct Rust build-chain commands in this repo.
+
+prefix_rule(
+    pattern = ["cargo"],
+    decision = "forbidden",
+    justification = "Use `uvx soldr cargo ...` instead of raw `cargo`.",
+    match = [
+        "cargo build --workspace",
+        "cargo test --workspace",
+        "cargo fmt --all",
+    ],
+    not_match = [
+        "uvx soldr cargo build --workspace",
+        "python build.py --release",
+    ],
+)
+
+prefix_rule(
+    pattern = ["maturin"],
+    decision = "forbidden",
+    justification = "Use `uvx soldr maturin ...` instead of raw `maturin`.",
+    match = [
+        "maturin build --release",
+        "maturin sdist --out dist",
+    ],
+    not_match = [
+        "uvx soldr maturin build --release",
+        "python -m maturin build --release",
+    ],
+)
+
+prefix_rule(
+    pattern = ["python", "-m", "maturin"],
+    decision = "forbidden",
+    justification = "Use `uvx soldr maturin ...` instead of `python -m maturin`.",
+    match = [
+        "python -m maturin build --release",
+    ],
+    not_match = [
+        "uvx soldr maturin build --release",
+        "python build.py --release",
+    ],
+)
+
+prefix_rule(
+    pattern = [["python3", "py"], "-m", "maturin"],
+    decision = "forbidden",
+    justification = "Use `uvx soldr maturin ...` instead of raw `*-m maturin` invocations.",
+    match = [
+        "python3 -m maturin build --release",
+        "py -m maturin build --release",
+    ],
+    not_match = [
+        "uvx soldr maturin build --release",
+    ],
+)
+
+prefix_rule(
+    pattern = ["rustc"],
+    decision = "forbidden",
+    justification = "Use `uvx soldr rustc ...` instead of raw `rustc`.",
+    match = [
+        "rustc --version",
+    ],
+    not_match = [
+        "uvx soldr rustc --version",
+    ],
+)
+
+prefix_rule(
+    pattern = ["rustfmt"],
+    decision = "forbidden",
+    justification = "Use `uvx soldr rustfmt ...` instead of raw `rustfmt`.",
+    match = [
+        "rustfmt --version",
+    ],
+    not_match = [
+        "uvx soldr rustfmt --version",
+    ],
+)
