@@ -1416,50 +1416,111 @@ def test_pseudo_terminal_wait_for_expect_can_chain_next_expect() -> None:
     assert process.wait(timeout=5) == 0
 
 
-def test_pseudo_terminal_wait_for_expect_timeout_preserves_registered_expect() -> None:
-    process = RunningProcess.pseudo_terminal(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys, time\n"
-                "time.sleep(0.15)\n"
-                "sys.stdout.write('ready>'); sys.stdout.flush()\n"
-                "sys.stdin.readline()\n"
-            ),
-        ],
+def test_pseudo_terminal_wait_for_expect_timeout_preserves_registered_expect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[tuple[str | bytes, bool]] = []
+    stage = "first"
+    fake_now = -0.01
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
         text=True,
+        auto_run=False,
         expect=[Expect("ready>", action="\n")],
     )
+
+    class FakeProc:
+        pid = 1234
+        exited = False
+
+        def poll(self) -> int | None:
+            return 0 if self.exited else None
+
+        def close(self) -> None:
+            return None
+
+    fake_proc = FakeProc()
+    process._proc = fake_proc  # type: ignore[assignment]
+    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+    monkeypatch.setattr(process, "_snapshot_output_history", lambda: ("", 0))
+
+    def fake_time() -> float:
+        nonlocal fake_now
+        fake_now += 0.02
+        return fake_now
+
+    def snapshot_output_since(start: int) -> tuple[str, int]:
+        if stage == "second" and start == 0:
+            return ("ready>", 6)
+        return ("", start)
+
+    def fake_write(data: str | bytes, *, submit: bool = False) -> None:
+        writes.append((data, submit))
+        fake_proc.exited = True
+
+    monkeypatch.setattr(pty_module.time, "time", fake_time)
+    monkeypatch.setattr(process, "_snapshot_output_since", snapshot_output_since)
+    process.write = fake_write  # type: ignore[method-assign]
 
     first = process.wait_for_expect(timeout=0.05)
     assert first.matched is False
     assert first.exit_reason == "timeout"
 
+    stage = "second"
     second = process.wait_for_expect(timeout=5.0)
     assert second.matched is True
     assert second.expect_match is not None
     assert second.expect_match.matched == "ready>"
-    assert process.wait(timeout=5) == 0
+    assert writes == [("\n", False)]
+    assert process._registered_expect_conditions == []
 
 
-def test_pseudo_terminal_wait_for_expect_timeout_does_not_arm_next_expect() -> None:
-    process = RunningProcess.pseudo_terminal(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys, time\n"
-                "time.sleep(0.12)\n"
-                "sys.stdout.write('username:'); sys.stdout.flush()\n"
-                "sys.stdin.readline()\n"
-                "sys.stdout.write('password:'); sys.stdout.flush()\n"
-                "sys.stdin.readline()\n"
-            ),
-        ],
+def test_pseudo_terminal_wait_for_expect_timeout_does_not_arm_next_expect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[tuple[str | bytes, bool]] = []
+    stage = "first"
+    fake_now = -0.01
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
         text=True,
+        auto_run=False,
         expect=[Expect("username:", action="alice\n")],
     )
+
+    class FakeProc:
+        pid = 1234
+
+        def poll(self) -> int | None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    process._proc = FakeProc()  # type: ignore[assignment]
+    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+    monkeypatch.setattr(process, "_snapshot_output_history", lambda: ("", 0))
+
+    def fake_time() -> float:
+        nonlocal fake_now
+        fake_now += 0.02
+        return fake_now
+
+    def snapshot_output_since(start: int) -> tuple[str, int]:
+        if stage == "second" and start == 0:
+            return ("username:", 9)
+        if stage == "third" and start == 0:
+            return ("password:", 9)
+        return ("", start)
+
+    def fake_write(data: str | bytes, *, submit: bool = False) -> None:
+        writes.append((data, submit))
+
+    monkeypatch.setattr(pty_module.time, "time", fake_time)
+    monkeypatch.setattr(process, "_snapshot_output_since", snapshot_output_since)
+    process.write = fake_write  # type: ignore[method-assign]
 
     first = process.wait_for_expect(
         next_expect=Expect("password:", action="secret\n"),
@@ -1468,11 +1529,13 @@ def test_pseudo_terminal_wait_for_expect_timeout_does_not_arm_next_expect() -> N
     assert first.matched is False
     assert first.exit_reason == "timeout"
 
+    stage = "second"
     second = process.wait_for_expect(timeout=5.0)
     assert second.matched is True
     assert second.expect_match is not None
     assert second.expect_match.matched == "username:"
 
+    stage = "third"
     third = process.wait_for_expect(
         next_expect=Expect("password:", action="secret\n"),
         timeout=5.0,
@@ -1480,7 +1543,7 @@ def test_pseudo_terminal_wait_for_expect_timeout_does_not_arm_next_expect() -> N
     assert third.matched is True
     assert third.expect_match is not None
     assert third.expect_match.matched == "password:"
-    assert process.wait(timeout=5) == 0
+    assert writes == [("alice\n", False), ("secret\n", False)]
 
 
 def test_pseudo_terminal_constructor_can_mix_expect_rule_and_registered_expect() -> None:
