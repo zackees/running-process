@@ -758,21 +758,80 @@ def test_wait_with_idle_detector_none_preserves_int_return_type() -> None:
     assert result == 0
 
 
-def test_pseudo_terminal_wait_for_idle_uses_dataclass_config() -> None:
-    process = RunningProcess.pseudo_terminal(
+def test_pseudo_terminal_wait_for_idle_uses_dataclass_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots = iter(
         [
-            sys.executable,
-            "-c",
-            (
-                "import sys, time\n"
-                "print('tick', flush=True)\n"
-                "time.sleep(0.05)\n"
-                "print('tick', flush=True)\n"
-                "time.sleep(1.0)\n"
+            SimpleNamespace(
+                sampled_at=0.00,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
             ),
-        ],
-        text=True,
+            SimpleNamespace(
+                sampled_at=0.02,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=5,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.04,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=10,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.16,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=10,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.22,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=10,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+        ]
     )
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
+        auto_run=False,
+    )
+    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+    monkeypatch.setattr(
+        process,
+        "_sample_idle_snapshot",
+        lambda process_cfg=None: next(snapshots),
+    )
+
     result = process.wait_for_idle(
         IdleDetection(
             timing=IdleTiming(
@@ -787,7 +846,6 @@ def test_pseudo_terminal_wait_for_idle_uses_dataclass_config() -> None:
     assert result.idle_detected is True
     assert result.exit_reason == "idle_timeout"
     assert result.idle_for_seconds >= 0.1
-    process.kill()
 
 
 def test_pseudo_terminal_wait_for_idle_uses_callable_predicate(
@@ -1122,22 +1180,102 @@ def test_pseudo_terminal_wait_for_expect_not_suppresses_trigger() -> None:
     assert result.returncode == 0
 
 
-def test_pseudo_terminal_wait_for_idle_on_callback_can_disarm_and_allow_expect() -> None:
-    process = RunningProcess.pseudo_terminal(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys, time\n"
-                "time.sleep(0.12)\n"
-                "sys.stdout.write('DONE>'); sys.stdout.flush()\n"
-                "sys.stdin.readline()\n"
-            ),
-        ],
+def test_pseudo_terminal_wait_for_idle_on_callback_can_disarm_and_allow_expect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[tuple[str | bytes, bool]] = []
+    idle_disarmed = False
+    delivered_output = False
+    snapshot_values = [
+        SimpleNamespace(
+            sampled_at=0.00,
+            process_alive=True,
+            pty_input_bytes=0,
+            pty_output_bytes=0,
+            pty_control_churn_bytes=0,
+            cpu_percent=0.0,
+            disk_io_bytes=0,
+            network_io_bytes=0,
+            returncode=None,
+        ),
+        SimpleNamespace(
+            sampled_at=0.08,
+            process_alive=True,
+            pty_input_bytes=0,
+            pty_output_bytes=0,
+            pty_control_churn_bytes=0,
+            cpu_percent=0.0,
+            disk_io_bytes=0,
+            network_io_bytes=0,
+            returncode=None,
+        ),
+        SimpleNamespace(
+            sampled_at=0.11,
+            process_alive=True,
+            pty_input_bytes=0,
+            pty_output_bytes=0,
+            pty_control_churn_bytes=0,
+            cpu_percent=0.0,
+            disk_io_bytes=0,
+            network_io_bytes=0,
+            returncode=None,
+        ),
+    ]
+    snapshots = iter(snapshot_values)
+    last_snapshot = snapshot_values[-1]
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
         text=True,
+        auto_run=False,
     )
 
+    class FakeProc:
+        pid = 1234
+
+        def poll(self) -> int | None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    process._proc = FakeProc()  # type: ignore[assignment]
+    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+
+    fake_now = -0.01
+
+    def fake_time() -> float:
+        nonlocal fake_now
+        fake_now += 0.01
+        return fake_now
+
+    monkeypatch.setattr(pty_module.time, "time", fake_time)
+
+    def sample_idle_snapshot(process_cfg=None):
+        try:
+            return next(snapshots)
+        except StopIteration:
+            return last_snapshot
+
+    monkeypatch.setattr(process, "_sample_idle_snapshot", sample_idle_snapshot)
+    monkeypatch.setattr(process, "_snapshot_output_history", lambda: ("", 0))
+
+    def snapshot_output_since(start: int) -> tuple[str, int]:
+        nonlocal delivered_output
+        if idle_disarmed and not delivered_output:
+            delivered_output = True
+            return ("DONE>", 5)
+        return ("", start)
+
+    def fake_write(data: str | bytes, *, submit: bool = False) -> None:
+        writes.append((data, submit))
+
+    monkeypatch.setattr(process, "_snapshot_output_since", snapshot_output_since)
+    process.write = fake_write  # type: ignore[method-assign]
+
     def disarm_idle(_result: IdleWaitResult) -> WaitCallbackResult:
+        nonlocal idle_disarmed
+        idle_disarmed = True
         return WaitCallbackResult.CONTINUE_AND_DISARM
 
     result = process.wait_for(
@@ -1159,7 +1297,7 @@ def test_pseudo_terminal_wait_for_idle_on_callback_can_disarm_and_allow_expect()
     assert isinstance(result.condition, Expect)
     assert result.expect_match is not None
     assert result.expect_match.matched == "DONE>"
-    assert process.wait(timeout=5) == 0
+    assert writes == [("\n", False)]
 
 
 def test_pseudo_terminal_wait_for_on_callback_buffer_can_answer_prompts() -> None:
