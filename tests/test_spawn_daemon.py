@@ -4,9 +4,11 @@ Non-live tests run in CI.  The Windows console popup test is @live only.
 """
 
 import os
+import subprocess
 import sys
 import time
 import unittest
+from pathlib import Path
 
 import pytest
 
@@ -199,13 +201,36 @@ class TestSpawnDaemon(unittest.TestCase):
         finally:
             self._kill_pid(handle.pid)
 
+    def test_process_name_matches_requested_name(self):
+        """spawn_daemon appears under the requested OS-visible process name."""
+        from running_process.daemon import spawn_daemon
+
+        # Keep the name short so Linux /proc/<pid>/comm truncation does not
+        # hide the intended executable name.
+        name = f"rpd{os.getpid() % 10000}"
+        self._daemon_name = name
+        handle = spawn_daemon(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            name=name,
+        )
+        try:
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                actual = self._process_name(handle.pid)
+                if actual is not None:
+                    self.assertEqual(actual, name)
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail(f"Could not resolve process name for daemon pid {handle.pid}")
+        finally:
+            self._kill_pid(handle.pid)
+
     @staticmethod
     def _kill_pid(pid: int) -> None:
         """Best-effort kill of a process by PID."""
         try:
             if sys.platform == "win32":
-                import subprocess
-
                 subprocess.run(
                     ["taskkill", "/F", "/PID", str(pid)],
                     capture_output=True,
@@ -217,6 +242,45 @@ class TestSpawnDaemon(unittest.TestCase):
                 os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
+
+    @staticmethod
+    def _process_name(pid: int) -> str | None:
+        """Return the OS-visible executable/process name for *pid*."""
+        if sys.platform == "win32":
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-Process -Id {pid} -ErrorAction SilentlyContinue).ProcessName",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            name = result.stdout.strip()
+            return name or None
+
+        if sys.platform.startswith("linux"):
+            comm = Path(f"/proc/{pid}/comm")
+            try:
+                name = comm.read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+            return name or None
+
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        name = result.stdout.strip()
+        return Path(name).name or None
 
 
 @live
