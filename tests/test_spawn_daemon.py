@@ -223,6 +223,8 @@ class TestSpawnDaemon(unittest.TestCase):
                 time.sleep(0.1)
             else:
                 self.fail(f"Could not resolve process name for daemon pid {handle.pid}")
+        finally:
+            self._kill_pid(handle.pid)
 
     def test_sidecar_includes_gc_timestamps(self):
         """spawn_daemon writes sidecar timestamps for runtime-dir GC."""
