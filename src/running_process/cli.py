@@ -16,10 +16,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
+from running_process import OriginatorProcessInfo, find_processes_by_originator
 from running_process.process_utils import kill_process_tree
 
 IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
 IN_RUNNING_PROCESS_VALUE = "running-process-cli"
+ORIGINATOR_ENV_VAR = "RUNNING_PROCESS_ORIGINATOR"
 RUNNING_PROCESS_STACK_DUMP_DIR_ENV = "RUNNING_PROCESS_STACK_DUMP_DIR"
 DEFAULT_STACK_DUMP_TIMEOUT_EXIT_CODE = 124
 _PY_SPY_DUMP_TIMEOUT_SECONDS = 10.0
@@ -51,6 +53,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Directory for diagnostic dump artifacts. Defaults to logs/running-process.",
     )
     parser.add_argument(
+        "--find-leaks",
+        action="store_true",
+        help=(
+            "Tag the wrapped process tree and report descendants still alive "
+            "after the direct child exits."
+        ),
+    )
+    parser.add_argument(
         "command",
         nargs=argparse.REMAINDER,
         help="Command to run. Use `--` before the command to avoid option parsing.",
@@ -67,11 +77,46 @@ def _normalize_command(command: Sequence[str]) -> list[str]:
     return normalized
 
 
-def _child_env() -> dict[str, str]:
+def _child_env(originator_tool: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env[IN_RUNNING_PROCESS_ENV] = IN_RUNNING_PROCESS_VALUE
     env.setdefault("PYTHONFAULTHANDLER", "1")
+    if originator_tool is None:
+        env.pop(ORIGINATOR_ENV_VAR, None)
+    else:
+        env[ORIGINATOR_ENV_VAR] = f"{originator_tool}:{os.getpid()}"
     return env
+
+
+def _leak_originator_tool() -> str:
+    return f"RUNNING_PROCESS_LEAK_{os.getpid()}_{time.time_ns()}"
+
+
+def _find_process_leaks(originator_tool: str | None) -> list[OriginatorProcessInfo]:
+    if originator_tool is None:
+        return []
+    leaks = find_processes_by_originator(originator_tool)
+    return sorted(leaks, key=lambda info: info.pid)
+
+
+def _report_process_leaks(originator_tool: str | None, stream: TextIO) -> None:
+    leaks = _find_process_leaks(originator_tool)
+    if not leaks:
+        return
+    _safe_write(
+        stream,
+        f"[running-process] detected {len(leaks)} leaked descendant process(es):\n",
+    )
+    for leak in leaks:
+        _safe_write(
+            stream,
+            "  "
+            f"pid={leak.pid} "
+            f"name={leak.name!r} "
+            f"parent_pid={leak.parent_pid} "
+            f"parent_alive={leak.parent_alive} "
+            f"command={leak.command!r}\n",
+        )
 
 
 def _stack_dump_dir(override: Path | None) -> Path:
@@ -438,10 +483,12 @@ def run_command(
     timeout: float | None = None,
     auto_stack_dumping: bool = True,
     stack_dump_dir: Path | None = None,
+    find_leaks: bool = False,
 ) -> int:
+    originator_tool = _leak_originator_tool() if find_leaks else None
     child = subprocess.Popen(
         command,
-        env=_child_env(),
+        env=_child_env(originator_tool),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -462,6 +509,7 @@ def run_command(
                 f"[running-process] timeout diagnostics written to {metadata_path}\n",
             )
         _kill_supervised_process(child)
+        _report_process_leaks(originator_tool, sys.stderr)
         return DEFAULT_STACK_DUMP_TIMEOUT_EXIT_CODE
 
     if returncode != 0 and auto_stack_dumping:
@@ -477,6 +525,7 @@ def run_command(
             sys.stderr,
             f"[running-process] abnormal-exit diagnostics written to {metadata_path}\n",
         )
+    _report_process_leaks(originator_tool, sys.stderr)
     return int(returncode)
 
 
@@ -488,6 +537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout=args.timeout,
         auto_stack_dumping=not args.no_auto_stack_dumping,
         stack_dump_dir=args.stack_dump_dir,
+        find_leaks=args.find_leaks,
     )
 
 
