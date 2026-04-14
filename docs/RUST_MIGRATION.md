@@ -29,6 +29,6 @@ The migration is focused on the process runtime and the split-stream API. PTY su
 ## Validation
 
 - `./install`
-- `./_cargo test --workspace`
+- `uvx soldr cargo test --workspace`
 - `uv run --module ci.lint`
 - `uv run --module ci.test`

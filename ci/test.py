@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from ci.dev_build import ensure_dev_wheel
+from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
 IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
@@ -15,8 +16,10 @@ GITHUB_ACTIONS_ENV = "GITHUB_ACTIONS"
 SKIP_LINUX_DOCKER_ENV = "RUNNING_PROCESS_SKIP_LINUX_DOCKER"
 DEFAULT_TEST_TIMEOUT_SECONDS = "10"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
+DEFAULT_RUST_TEST_TIMEOUT_SECONDS = 60.0
 DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 180.0
 DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS = 600.0
+DEFAULT_PYTEST_TIMEOUT_SECONDS = 40.0
 COMMAND_TIMEOUT_ENV = "RUNNING_PROCESS_TEST_COMMAND_TIMEOUT_SECONDS"
 
 # pytest-cov args for the first pytest run (creates fresh .coverage)
@@ -69,7 +72,18 @@ def _supervised_pytest_command(
     python: Path,
     *pytest_args: str,
 ) -> list[str]:
-    return supervised_command(python, str(python), "-m", "pytest", *pytest_args)
+    # PTY-heavy Python suites can legitimately stay quiet for longer than the
+    # default 10-second command timeout on loaded CI runners, especially under
+    # coverage. Use the same wider window as the Linux docker path.
+    return supervised_command(
+        python,
+        str(python),
+        "-m",
+        "pytest",
+        "-vv",
+        *pytest_args,
+        timeout=DEFAULT_PYTEST_TIMEOUT_SECONDS,
+    )
 
 
 def _linux_unit_test_command(
@@ -202,29 +216,40 @@ def main(argv: list[str] | None = None) -> int:
     # Compilation can have long gaps (>10s) with no stdout/stderr when
     # linking large crates (tokio, interprocess, clap, etc.) and the
     # 10-second idle-timeout kills the process mid-compile.  The
-    # supervisor is only useful during test *execution* where hangs
-    # indicate a real bug.
+    # supervisor is only useful during test *execution*, but the Rust
+    # suites can still be quiet for longer than the default 10-second
+    # idle timeout while serialized PTY/PyO3 tests are running.
     if coverage:
         cargo_cmd = supervised_command(
             python,
-            "cargo", "llvm-cov", "--workspace",
-            "--lcov", "--output-path", "coverage-rust.lcov",
+            *cargo_command(
+                "llvm-cov",
+                "--workspace",
+                "--lcov",
+                "--output-path",
+                "coverage-rust.lcov",
+            ),
+            timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
         )
         if run(cargo_cmd) != 0:
             return 1
     else:
         # Step 1: compile all test binaries (no supervisor, no timeout)
-        build_args = ["cargo", "test", "--workspace", "--no-run"]
+        build_args = cargo_command("test", "--workspace", "--no-run")
         if run(build_args) != 0:
             return 1
 
         # Step 2: run the pre-built tests under the supervisor
-        cargo_test_args = ["cargo", "test", "--workspace"]
+        cargo_test_args = cargo_command("test", "--workspace")
         if sys.platform == "win32":
             # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
             # Serialize Rust tests to avoid the issue.
             cargo_test_args += ["--", "--test-threads=1"]
-        cargo_cmd = supervised_command(python, *cargo_test_args)
+        cargo_cmd = supervised_command(
+            python,
+            *cargo_test_args,
+            timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
+        )
         if run(cargo_cmd) != 0:
             return 1
 

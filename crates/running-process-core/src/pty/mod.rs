@@ -253,11 +253,9 @@ pub struct NativePtyProcess {
     pub output_bytes_total: Arc<AtomicUsize>,
     /// Control churn bytes (ANSI escapes, BS, CR, DEL) seen by the reader.
     pub control_churn_bytes_total: Arc<AtomicUsize>,
-    #[cfg(windows)]
+    pub reader_worker: Mutex<Option<thread::JoinHandle<()>>>,
     pub terminal_input_relay_stop: Arc<AtomicBool>,
-    #[cfg(windows)]
     pub terminal_input_relay_active: Arc<AtomicBool>,
-    #[cfg(windows)]
     pub terminal_input_relay_worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
@@ -307,11 +305,9 @@ impl NativePtyProcess {
             idle_detector: Arc::new(Mutex::new(None)),
             output_bytes_total: Arc::new(AtomicUsize::new(0)),
             control_churn_bytes_total: Arc::new(AtomicUsize::new(0)),
-            #[cfg(windows)]
+            reader_worker: Mutex::new(None),
             terminal_input_relay_stop: Arc::new(AtomicBool::new(false)),
-            #[cfg(windows)]
             terminal_input_relay_active: Arc::new(AtomicBool::new(false)),
-            #[cfg(windows)]
             terminal_input_relay_worker: Mutex::new(None),
         })
     }
@@ -324,6 +320,17 @@ impl NativePtyProcess {
 
     pub fn store_returncode(&self, code: i32) {
         store_pty_returncode(&self.returncode, code);
+    }
+
+    fn join_reader_worker(&self) {
+        if let Some(worker) = self
+            .reader_worker
+            .lock()
+            .expect("pty reader worker mutex poisoned")
+            .take()
+        {
+            let _ = worker.join();
+        }
     }
 
     pub fn record_input_metrics(&self, data: &[u8], submit: bool) {
@@ -342,7 +349,6 @@ impl NativePtyProcess {
         Ok(())
     }
 
-    #[cfg(windows)]
     pub fn request_terminal_input_relay_stop(&self) {
         self.terminal_input_relay_stop
             .store(true, Ordering::Release);
@@ -350,7 +356,100 @@ impl NativePtyProcess {
             .store(false, Ordering::Release);
     }
 
-    #[cfg(windows)]
+    pub fn start_terminal_input_relay_impl(&self) -> Result<(), PtyError> {
+        let mut worker_guard = self
+            .terminal_input_relay_worker
+            .lock()
+            .expect("pty terminal input relay mutex poisoned");
+        if worker_guard.is_some() && self.terminal_input_relay_active() {
+            return Ok(());
+        }
+        if self
+            .handles
+            .lock()
+            .expect("pty handles mutex poisoned")
+            .is_none()
+        {
+            return Err(PtyError::NotRunning);
+        }
+
+        self.terminal_input_relay_stop
+            .store(false, Ordering::Release);
+        self.terminal_input_relay_active
+            .store(true, Ordering::Release);
+
+        let handles = Arc::clone(&self.handles);
+        let returncode = Arc::clone(&self.returncode);
+        let input_bytes_total = Arc::clone(&self.input_bytes_total);
+        let newline_events_total = Arc::clone(&self.newline_events_total);
+        let submit_events_total = Arc::clone(&self.submit_events_total);
+        let stop = Arc::clone(&self.terminal_input_relay_stop);
+        let active = Arc::clone(&self.terminal_input_relay_active);
+
+        #[cfg(windows)]
+        {
+            let capture = terminal_input::TerminalInputCore::new();
+            capture.start_impl().map_err(PtyError::Io)?;
+            *worker_guard = Some(thread::spawn(move || {
+                loop {
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    match poll_pty_process(&handles, &returncode) {
+                        Ok(Some(_)) => break,
+                        Ok(None) => {}
+                        Err(_) => break,
+                    }
+                    match terminal_input::wait_for_terminal_input_event(
+                        &capture.state,
+                        &capture.condvar,
+                        Some(Duration::from_millis(50)),
+                    ) {
+                        terminal_input::TerminalInputWaitOutcome::Event(event) => {
+                            record_pty_input_metrics(
+                                &input_bytes_total,
+                                &newline_events_total,
+                                &submit_events_total,
+                                &event.data,
+                                event.submit,
+                            );
+                            if write_pty_input(&handles, &event.data).is_err() {
+                                break;
+                            }
+                        }
+                        terminal_input::TerminalInputWaitOutcome::Timeout => continue,
+                        terminal_input::TerminalInputWaitOutcome::Closed => break,
+                    }
+                }
+                active.store(false, Ordering::Release);
+                let _ = capture.stop_impl();
+            }));
+            Ok(())
+        }
+
+        #[cfg(unix)]
+        {
+            if unsafe { libc::isatty(libc::STDIN_FILENO) } != 1 {
+                self.terminal_input_relay_active
+                    .store(false, Ordering::Release);
+                return Ok(());
+            }
+
+            *worker_guard = Some(thread::spawn(move || {
+                posix_terminal_input_relay_worker(
+                    handles,
+                    returncode,
+                    input_bytes_total,
+                    newline_events_total,
+                    submit_events_total,
+                    stop,
+                    active,
+                );
+            }));
+            Ok(())
+        }
+    }
+
     pub fn stop_terminal_input_relay_impl(&self) {
         self.request_terminal_input_relay_stop();
         if let Some(worker) = self
@@ -363,8 +462,9 @@ impl NativePtyProcess {
         }
     }
 
-    #[cfg(not(windows))]
-    pub fn stop_terminal_input_relay_impl(&self) {}
+    pub fn terminal_input_relay_active(&self) -> bool {
+        self.terminal_input_relay_active.load(Ordering::Acquire)
+    }
 
     /// Synchronously tear down the PTY and reap the child.
     #[inline(never)]
@@ -392,26 +492,99 @@ impl NativePtyProcess {
             mut child,
         } = handles;
 
-        if let Err(err) = child.kill() {
-            if !is_ignorable_process_control_error(&err) {
-                return Err(PtyError::Io(err));
+        #[cfg(windows)]
+        {
+            {
+                crate::rp_rust_debug_scope!(
+                    "running_process_core::NativePtyProcess::close_impl.drop_job"
+                );
+                drop(_job);
             }
+
+            {
+                crate::rp_rust_debug_scope!(
+                    "running_process_core::NativePtyProcess::close_impl.wait_job_exit"
+                );
+                let wait_deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            let code = portable_exit_code(status);
+                            self.store_returncode(code);
+                            break;
+                        }
+                        Ok(None) if Instant::now() < wait_deadline => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Ok(None) => {
+                            if let Err(err) = child.kill() {
+                                if !is_ignorable_process_control_error(&err) {
+                                    return Err(PtyError::Io(err));
+                                }
+                            }
+                            let code = match child.wait() {
+                                Ok(status) => portable_exit_code(status),
+                                Err(_) => -9,
+                            };
+                            self.store_returncode(code);
+                            break;
+                        }
+                        Err(_) => {
+                            self.store_returncode(-9);
+                            break;
+                        }
+                    }
+                }
+            }
+            {
+                crate::rp_rust_debug_scope!(
+                    "running_process_core::NativePtyProcess::close_impl.drop_writer"
+                );
+                drop(writer);
+            }
+            {
+                crate::rp_rust_debug_scope!(
+                    "running_process_core::NativePtyProcess::close_impl.drop_master"
+                );
+                drop(master);
+            }
+            drop(child);
+            {
+                crate::rp_rust_debug_scope!(
+                    "running_process_core::NativePtyProcess::close_impl.join_reader"
+                );
+                self.join_reader_worker();
+            }
+            self.mark_reader_closed();
+            Ok(())
         }
 
-        drop(writer);
-        drop(master);
+        #[cfg(not(windows))]
+        {
+            drop(writer);
+            drop(master);
 
-        let code = match child.wait() {
-            Ok(status) => portable_exit_code(status),
-            Err(_) => -9,
-        };
-        drop(child);
-        #[cfg(windows)]
-        drop(_job);
+            let code = {
+                crate::rp_rust_debug_scope!(
+                    "running_process_core::NativePtyProcess::close_impl.wait_child"
+                );
+                match child.wait() {
+                    Ok(status) => portable_exit_code(status),
+                    Err(_) => -9,
+                }
+            };
+            drop(child);
 
-        self.store_returncode(code);
-        self.mark_reader_closed();
-        Ok(())
+            self.store_returncode(code);
+            {
+                crate::rp_rust_debug_scope!(
+                    "running_process_core::NativePtyProcess::close_impl.join_reader"
+                );
+                self.join_reader_worker();
+            }
+            self.mark_reader_closed();
+            Ok(())
+        }
     }
 
     /// Best-effort, non-blocking teardown for use from `Drop`.
@@ -513,7 +686,7 @@ impl NativePtyProcess {
         let idle_detector = Arc::clone(&self.idle_detector);
         let output_bytes = Arc::clone(&self.output_bytes_total);
         let churn_bytes = Arc::clone(&self.control_churn_bytes_total);
-        thread::spawn(move || {
+        let reader_worker = thread::spawn(move || {
             spawn_pty_reader(
                 reader,
                 shared,
@@ -523,6 +696,10 @@ impl NativePtyProcess {
                 churn_bytes,
             );
         });
+        *self
+            .reader_worker
+            .lock()
+            .expect("pty reader worker mutex poisoned") = Some(reader_worker);
 
         *guard = Some(NativePtyHandles {
             master: pair.master,
@@ -550,6 +727,16 @@ impl NativePtyProcess {
         crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::resize");
         let guard = self.handles.lock().expect("pty handles mutex poisoned");
         if let Some(handles) = guard.as_ref() {
+            #[cfg(windows)]
+            {
+                let _ = (rows, cols, handles);
+                // ConPTY resize can leave ClosePseudoConsole blocked during
+                // teardown on Windows. Keep resize as a no-op until the
+                // backend can cancel the outstanding PTY read safely.
+                return Ok(());
+            }
+
+            #[cfg(not(windows))]
             handles
                 .master
                 .resize(PtySize {
@@ -602,7 +789,15 @@ impl NativePtyProcess {
         crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::terminate");
         #[cfg(windows)]
         {
-            pty_windows::terminate(self)
+            if self
+                .handles
+                .lock()
+                .expect("pty handles mutex poisoned")
+                .is_none()
+            {
+                return Err(PtyError::NotRunning);
+            }
+            self.close_impl()
         }
 
         #[cfg(unix)]
@@ -615,7 +810,15 @@ impl NativePtyProcess {
         crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::kill");
         #[cfg(windows)]
         {
-            pty_windows::kill(self)
+            if self
+                .handles
+                .lock()
+                .expect("pty handles mutex poisoned")
+                .is_none()
+            {
+                return Err(PtyError::NotRunning);
+            }
+            self.close_impl()
         }
 
         #[cfg(unix)]
@@ -804,6 +1007,127 @@ impl NativePtyProcess {
     }
 }
 
+/// Safe defaults for a real interactive PTY session.
+///
+/// The helper turns on the parts that a terminal-style session usually needs:
+/// output echo, terminal input relay, and automatic PTY query replies.
+#[derive(Debug, Clone, Copy)]
+pub struct InteractivePtyOptions {
+    pub echo_output: bool,
+    pub relay_terminal_input: bool,
+    pub respond_to_queries: bool,
+}
+
+impl Default for InteractivePtyOptions {
+    fn default() -> Self {
+        Self {
+            echo_output: true,
+            relay_terminal_input: true,
+            respond_to_queries: true,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InteractivePtyPumpResult {
+    pub chunks: Vec<Vec<u8>>,
+    pub stream_closed: bool,
+}
+
+/// Canonical interactive PTY recipe for downstream Rust consumers.
+///
+/// `NativePtyProcess` remains the low-level primitive. This wrapper owns the
+/// interactive setup that callers commonly forget to assemble correctly.
+pub struct InteractivePtySession {
+    process: NativePtyProcess,
+    options: InteractivePtyOptions,
+}
+
+impl InteractivePtySession {
+    pub fn new(process: NativePtyProcess) -> Self {
+        Self::with_options(process, InteractivePtyOptions::default())
+    }
+
+    pub fn with_options(process: NativePtyProcess, options: InteractivePtyOptions) -> Self {
+        Self { process, options }
+    }
+
+    pub fn process(&self) -> &NativePtyProcess {
+        &self.process
+    }
+
+    pub fn start(&self) -> Result<(), PtyError> {
+        self.process.set_echo(self.options.echo_output);
+        self.process.start_impl()?;
+        if self.options.relay_terminal_input {
+            self.process.start_terminal_input_relay_impl()?;
+        }
+        Ok(())
+    }
+
+    pub fn pump_output(
+        &self,
+        timeout: Option<f64>,
+        consume_all: bool,
+    ) -> Result<InteractivePtyPumpResult, PtyError> {
+        let mut pumped = InteractivePtyPumpResult::default();
+        let mut next_timeout = timeout;
+        loop {
+            match self.process.read_chunk_impl(next_timeout) {
+                Ok(Some(chunk)) => {
+                    if self.options.respond_to_queries {
+                        self.process.respond_to_queries_impl(&chunk)?;
+                    }
+                    pumped.chunks.push(chunk);
+                    if !consume_all {
+                        break;
+                    }
+                    next_timeout = Some(0.0);
+                }
+                Ok(None) => break,
+                Err(PtyError::Other(message)) if message == "Pseudo-terminal stream is closed" => {
+                    pumped.stream_closed = true;
+                    break;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(pumped)
+    }
+
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<(), PtyError> {
+        self.process.resize_impl(rows, cols)
+    }
+
+    pub fn send_interrupt(&self) -> Result<(), PtyError> {
+        self.process.send_interrupt_impl()
+    }
+
+    pub fn wait(&self, timeout: Option<f64>) -> Result<i32, PtyError> {
+        self.process.wait_impl(timeout)
+    }
+
+    pub fn wait_and_drain(
+        &self,
+        timeout: Option<f64>,
+        drain_timeout: f64,
+    ) -> Result<i32, PtyError> {
+        self.process.wait_and_drain_impl(timeout, drain_timeout)
+    }
+
+    pub fn terminate(&self) -> Result<(), PtyError> {
+        self.process.terminate_impl()
+    }
+
+    pub fn kill(&self) -> Result<(), PtyError> {
+        self.process.kill_impl()
+    }
+
+    pub fn close(&self) -> Result<(), PtyError> {
+        self.process.close_impl()
+    }
+}
+
 impl Drop for NativePtyProcess {
     fn drop(&mut self) {
         self.close_nonblocking();
@@ -924,6 +1248,135 @@ pub fn portable_exit_code(status: portable_pty::ExitStatus) -> i32 {
 
 pub fn input_contains_newline(data: &[u8]) -> bool {
     data.iter().any(|byte| matches!(*byte, b'\r' | b'\n'))
+}
+
+#[cfg(unix)]
+struct PosixTerminalModeGuard {
+    stdin_fd: i32,
+    original_mode: libc::termios,
+}
+
+#[cfg(unix)]
+impl Drop for PosixTerminalModeGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::tcsetattr(self.stdin_fd, libc::TCSANOW, &self.original_mode);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn acquire_posix_terminal_mode_guard() -> Result<PosixTerminalModeGuard, std::io::Error> {
+    let stdin_fd = libc::STDIN_FILENO;
+    let mut original_mode = unsafe { std::mem::zeroed::<libc::termios>() };
+    if unsafe { libc::tcgetattr(stdin_fd, &mut original_mode) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut raw_mode = original_mode;
+    unsafe {
+        libc::cfmakeraw(&mut raw_mode);
+    }
+    if unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &raw_mode) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(PosixTerminalModeGuard {
+        stdin_fd,
+        original_mode,
+    })
+}
+
+#[cfg(unix)]
+#[inline(never)]
+fn posix_terminal_input_relay_worker(
+    handles: Arc<Mutex<Option<NativePtyHandles>>>,
+    returncode: Arc<Mutex<Option<i32>>>,
+    input_bytes_total: Arc<AtomicUsize>,
+    newline_events_total: Arc<AtomicUsize>,
+    submit_events_total: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
+) {
+    let _terminal_guard = match acquire_posix_terminal_mode_guard() {
+        Ok(guard) => guard,
+        Err(_) => {
+            active.store(false, Ordering::Release);
+            return;
+        }
+    };
+
+    let stdin_fd = libc::STDIN_FILENO;
+    let mut buffer = vec![0_u8; 65536];
+    loop {
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        match poll_pty_process(&handles, &returncode) {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(_) => break,
+        }
+
+        let mut pollfd = libc::pollfd {
+            fd: stdin_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let poll_result = unsafe { libc::poll(&mut pollfd, 1, 50) };
+        if poll_result < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        if poll_result == 0 || pollfd.revents & libc::POLLIN == 0 {
+            continue;
+        }
+
+        let read_result = unsafe { libc::read(stdin_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+        if read_result < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        if read_result == 0 {
+            continue;
+        }
+
+        let mut data = buffer[..read_result as usize].to_vec();
+        loop {
+            let mut drain_pollfd = libc::pollfd {
+                fd: stdin_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let drain_ready = unsafe { libc::poll(&mut drain_pollfd, 1, 0) };
+            if drain_ready <= 0 || drain_pollfd.revents & libc::POLLIN == 0 {
+                break;
+            }
+            let drain_result =
+                unsafe { libc::read(stdin_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+            if drain_result <= 0 {
+                break;
+            }
+            data.extend_from_slice(&buffer[..drain_result as usize]);
+        }
+
+        record_pty_input_metrics(
+            &input_bytes_total,
+            &newline_events_total,
+            &submit_events_total,
+            &data,
+            input_contains_newline(&data),
+        );
+        if write_pty_input(&handles, &data).is_err() {
+            break;
+        }
+    }
+
+    active.store(false, Ordering::Release);
 }
 
 pub fn record_pty_input_metrics(

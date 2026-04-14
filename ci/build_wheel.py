@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Literal
 
+from ci.soldr import cargo_command
+
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 TRAMPOLINE_ASSETS = ROOT / "src" / "running_process" / "assets"
@@ -24,16 +26,12 @@ def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> li
         sys.executable,
         "-m",
         "maturin",
+        "build",
+        "--interpreter",
+        sys.executable,
+        "--out",
+        str(DIST),
     ]
-    cmd.extend(
-        [
-            "build",
-            "--interpreter",
-            sys.executable,
-            "--out",
-            str(DIST),
-        ]
-    )
     if mode == "dev":
         cmd.extend(["--profile", "dev"])
     else:
@@ -92,10 +90,13 @@ def build_trampoline(mode: BuildMode) -> int:
 
     profile_args = ["--release"] if mode == "release" else []
     result = subprocess.run(
-        [
-            "cargo", "build", "-p", "daemon-trampoline",
-            "--message-format=json", *profile_args,
-        ],
+        cargo_command(
+            "build",
+            "-p",
+            "daemon-trampoline",
+            "--message-format=json",
+            *profile_args,
+        ),
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -108,14 +109,18 @@ def build_trampoline(mode: BuildMode) -> int:
     # Parse the JSON output to find the executable path.
     src: Path | None = None
     for line in result.stdout.splitlines():
-        msg = json_mod.loads(line)
-        if (
-            msg.get("reason") == "compiler-artifact"
-            and msg.get("target", {}).get("name") == "daemon-trampoline"
-            and msg.get("executable")
-        ):
-            src = Path(msg["executable"])
-            break
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        with contextlib.suppress(json_mod.JSONDecodeError):
+            msg = json_mod.loads(line)
+            if (
+                msg.get("reason") == "compiler-artifact"
+                and msg.get("target", {}).get("name") == "daemon-trampoline"
+                and msg.get("executable")
+            ):
+                src = Path(msg["executable"])
+                break
 
     if src is None or not src.exists():
         print(

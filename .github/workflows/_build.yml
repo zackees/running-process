@@ -63,6 +63,9 @@ jobs:
         uses: zackees/zccache@main
         with:
           shared-key: ${{ inputs.runs-on }}
+          cache-compilation: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+          cache-target: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+          save-cache: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -90,8 +93,8 @@ jobs:
       - name: Package Rust crates
         if: ${{ inputs.include-crates }}
         run: |
-          cargo package -p running-process-core --no-verify
-          cargo package -p running-process-py --no-verify || echo "::warning::running-process-py packaging skipped (running-process-core not yet on crates.io)"
+          uvx soldr cargo package -p running-process-core --no-verify
+          uvx soldr cargo package -p running-process-py --no-verify || echo "::warning::running-process-py packaging skipped (running-process-core not yet on crates.io)"
 
       - name: Upload crate artifacts
         if: ${{ inputs.include-crates }}

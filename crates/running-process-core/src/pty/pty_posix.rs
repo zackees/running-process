@@ -53,15 +53,16 @@ pub(super) fn input_payload(data: &[u8]) -> Vec<u8> {
     data.to_vec()
 }
 
-pub(super) fn respond_to_queries(_process: &NativePtyProcess, _data: &[u8]) -> Result<(), PtyError> {
+pub(super) fn respond_to_queries(
+    _process: &NativePtyProcess,
+    _data: &[u8],
+) -> Result<(), PtyError> {
     Ok(())
 }
 
 pub(super) fn send_interrupt(process: &NativePtyProcess) -> Result<(), PtyError> {
     let guard = process.handles.lock().expect("pty handles mutex poisoned");
-    let handles = guard
-        .as_ref()
-        .ok_or(PtyError::NotRunning)?;
+    let handles = guard.as_ref().ok_or(PtyError::NotRunning)?;
     if let Some(pid) = handles.master.process_group_leader() {
         unix_signal_process_group(pid, UnixSignal::Interrupt)?;
         return Ok(());
@@ -72,22 +73,15 @@ pub(super) fn send_interrupt(process: &NativePtyProcess) -> Result<(), PtyError>
 
 pub(super) fn terminate(process: &NativePtyProcess) -> Result<(), PtyError> {
     let mut guard = process.handles.lock().expect("pty handles mutex poisoned");
-    let handles = guard
-        .as_mut()
-        .ok_or(PtyError::NotRunning)?;
-    let pid = handles
-        .child
-        .process_id()
-        .ok_or(PtyError::NotRunning)?;
+    let handles = guard.as_mut().ok_or(PtyError::NotRunning)?;
+    let pid = handles.child.process_id().ok_or(PtyError::NotRunning)?;
     unix_signal_process(pid, UnixSignal::Terminate)?;
     Ok(())
 }
 
 pub(super) fn kill(process: &NativePtyProcess) -> Result<(), PtyError> {
     let mut guard = process.handles.lock().expect("pty handles mutex poisoned");
-    let handles = guard
-        .take()
-        .ok_or(PtyError::NotRunning)?;
+    let handles = guard.take().ok_or(PtyError::NotRunning)?;
     drop(guard);
 
     let NativePtyHandles {
@@ -106,21 +100,19 @@ pub(super) fn kill(process: &NativePtyProcess) -> Result<(), PtyError> {
     let status = child.wait().map_err(PtyError::Io)?;
     drop(child);
     process.store_returncode(portable_exit_code(status));
+    process.join_reader_worker();
+    process.mark_reader_closed();
     Ok(())
 }
 
 pub(super) fn terminate_tree(process: &NativePtyProcess) -> Result<(), PtyError> {
-    let pid = process
-        .pid()?
-        .ok_or(PtyError::NotRunning)?;
+    let pid = process.pid()?.ok_or(PtyError::NotRunning)?;
     signal_tree(pid, UnixSignal::Terminate)?;
     Ok(())
 }
 
 pub(super) fn kill_tree(process: &NativePtyProcess) -> Result<(), PtyError> {
-    let pid = process
-        .pid()?
-        .ok_or(PtyError::NotRunning)?;
+    let pid = process.pid()?.ok_or(PtyError::NotRunning)?;
     signal_tree(pid, UnixSignal::Kill)?;
     Ok(())
 }

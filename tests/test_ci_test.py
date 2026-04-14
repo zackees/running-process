@@ -31,6 +31,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
     monkeypatch.delenv(ci_test.SKIP_LINUX_DOCKER_ENV, raising=False)
     monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(
@@ -47,22 +48,24 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     result = ci_test.main([])
 
     python = str(fake_python)
-    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
+    rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python, timeout),
+        _expected_cargo_test_cmd(python, rust_timeout),
         [
             python,
             "-m",
             "running_process.cli",
             "--timeout",
-            timeout,
+            pytest_timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "not live",
         ],
@@ -85,11 +88,12 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
             "-m",
             "running_process.cli",
             "--timeout",
-            timeout,
+            pytest_timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "live",
         ],
@@ -106,6 +110,7 @@ def test_main_skips_dev_wheel_reinstall_when_running_under_cli(monkeypatch) -> N
         return "built"
 
     monkeypatch.setenv(ci_test.IN_RUNNING_PROCESS_ENV, ci_test.IN_RUNNING_PROCESS_VALUE)
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", fake_ensure_dev_wheel)
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(ci_test, "run", lambda cmd: 0)
@@ -124,6 +129,7 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     monkeypatch.setenv(ci_test.GITHUB_ACTIONS_ENV, "true")
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
     monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
@@ -132,21 +138,23 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     result = ci_test.main([])
 
     python = str(fake_python)
-    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
+    rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python, timeout),
+        _expected_cargo_test_cmd(python, rust_timeout),
         [
             python,
             "-m",
             "running_process.cli",
             "--timeout",
-            timeout,
+            pytest_timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "not live",
         ],
@@ -155,11 +163,12 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
             "-m",
             "running_process.cli",
             "--timeout",
-            timeout,
+            pytest_timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "live",
         ],
@@ -174,6 +183,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
     monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
@@ -182,21 +192,23 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     result = ci_test.main([])
 
     python = str(fake_python)
-    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
+    rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python, timeout),
+        _expected_cargo_test_cmd(python, rust_timeout),
         [
             python,
             "-m",
             "running_process.cli",
             "--timeout",
-            timeout,
+            pytest_timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "not live",
         ],
@@ -205,11 +217,12 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
             "-m",
             "running_process.cli",
             "--timeout",
-            timeout,
+            pytest_timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "live",
         ],
@@ -273,6 +286,7 @@ def test_main_allows_targeted_live_selection_with_no_matching_tests(monkeypatch)
     monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
     monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(ci_test, "run", lambda cmd: 0)
@@ -293,6 +307,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     monkeypatch.setenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", "0")
     monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
     monkeypatch.setattr(ci_test.sys, "platform", "win32")
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
@@ -301,24 +316,26 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     result = ci_test.main(["--no-skip"])
 
     python = str(fake_python)
-    timeout = str(ci_test.DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
+    rust_timeout = str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
     linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
     release_timeout = str(ci_test.DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS)
     assert result == 0
     assert os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] == "1"
     assert commands == [
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python, timeout),
+        _expected_cargo_test_cmd(python, rust_timeout),
         [
             python,
             "-m",
             "running_process.cli",
             "--timeout",
-            timeout,
+            pytest_timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "not live",
         ],
@@ -352,11 +369,12 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
             "-m",
             "running_process.cli",
             "--timeout",
-            timeout,
+            pytest_timeout,
             "--",
             python,
             "-m",
             "pytest",
+            "-vv",
             "-m",
             "live",
         ],

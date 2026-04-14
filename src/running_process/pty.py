@@ -1259,10 +1259,6 @@ class PseudoTerminalProcess:
         self.interrupt_count += 1
         self.interrupted_by_caller = True
         assert self._proc is not None
-        if sys.platform != "win32" and self.pid is not None:
-            with suppress(OSError, AttributeError):
-                os.killpg(self.pid, signal.SIGINT)
-                return
         self._proc.send_interrupt()
 
     def poll(self) -> int | None:
@@ -1482,8 +1478,12 @@ class PseudoTerminalProcess:
             return self._interrupt_result("interrupt")
         if second_interrupt:
             self.send_interrupt()
-            if self._wait_until_exit(grace_timeout):
+            second_interrupt_timeout = max(grace_timeout, 1.0)
+            if self._wait_until_exit(second_interrupt_timeout):
                 return self._interrupt_result("interrupt")
+            if terminate_timeout is None and kill_timeout is None:
+                self.kill()
+                return self._interrupt_result("kill")
         if terminate_timeout is not None:
             self.terminate()
             if self._wait_until_exit(terminate_timeout):

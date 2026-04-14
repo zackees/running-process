@@ -2,9 +2,9 @@ use std::collections::{HashMap, VecDeque};
 #[cfg(windows)]
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
@@ -15,22 +15,22 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use regex::Regex;
+#[cfg(all(windows, test))]
+use running_process_core::pty::terminal_input::{
+    wait_for_terminal_input_event, TerminalInputWaitOutcome,
+};
+use running_process_core::pty::{
+    self as core_pty,
+    terminal_input::{
+        self as core_terminal_input, TerminalInputCore, TerminalInputError,
+        TerminalInputEventRecord,
+    },
+    IdleDetectorCore, IdleMonitorState, NativePtyProcess as CoreNativePtyProcess, PtyError,
+};
 use running_process_core::{
     find_processes_by_originator, render_rust_debug_traces, CommandSpec, ContainedChild,
     ContainedProcessGroup, Containment, NativeProcess, OriginatorProcessInfo, ProcessConfig,
     ProcessError, ReadStatus, StderrMode, StdinMode, StreamEvent, StreamKind,
-};
-use running_process_core::pty::{
-    self as core_pty, IdleDetectorCore, IdleMonitorState, NativePtyProcess as CoreNativePtyProcess,
-    PtyError,
-    terminal_input::{
-        self as core_terminal_input, TerminalInputCore, TerminalInputEventRecord,
-        TerminalInputError,
-    },
-};
-#[cfg(windows)]
-use running_process_core::pty::terminal_input::{
-    TerminalInputWaitOutcome, wait_for_terminal_input_event,
 };
 #[cfg(unix)]
 use running_process_core::{
@@ -123,6 +123,38 @@ fn active_process_registry() -> &'static Mutex<HashMap<u32, ActiveProcessRecord>
     ACTIVE_PROCESSES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(test)]
+fn test_env_lock() -> &'static Mutex<()> {
+    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    TEST_ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(test)]
+fn with_locked_env_var<T>(
+    key: &'static str,
+    value: Option<&str>,
+    f: impl FnOnce() -> T + std::panic::UnwindSafe,
+) -> T {
+    let _guard = test_env_lock().lock().unwrap();
+    let previous = std::env::var_os(key);
+    match value {
+        Some(value) => std::env::set_var(key, value),
+        None => std::env::remove_var(key),
+    }
+
+    let result = std::panic::catch_unwind(f);
+
+    match previous {
+        Some(previous) => std::env::set_var(key, previous),
+        None => std::env::remove_var(key),
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
 // unix_now_seconds is now in running_process_core::pty::terminal_input
 fn unix_now_seconds() -> f64 {
     core_terminal_input::unix_now_seconds()
@@ -171,10 +203,7 @@ fn unregister_active_process(pid: u32) {
 fn process_created_at(pid: u32) -> Option<f64> {
     let pid = system_pid(pid);
     let mut system = System::new();
-    system.refresh_process_specifics(
-        pid,
-        ProcessRefreshKind::new(),
-    );
+    system.refresh_process_specifics(pid, ProcessRefreshKind::new());
     system
         .process(pid)
         .map(|process| process.start_time() as f64)
@@ -660,91 +689,10 @@ impl NativePtyProcess {
         }
     }
 
-    #[cfg(windows)]
     fn start_terminal_input_relay_py(&self) -> PyResult<()> {
-        let mut worker_guard = self
-            .inner
-            .terminal_input_relay_worker
-            .lock()
-            .expect("pty terminal input relay mutex poisoned");
-        if worker_guard.is_some()
-            && self.inner.terminal_input_relay_active.load(Ordering::Acquire)
-        {
-            return Ok(());
-        }
-        if self
-            .inner
-            .handles
-            .lock()
-            .expect("pty handles mutex poisoned")
-            .is_none()
-        {
-            return Err(PyRuntimeError::new_err(
-                "Pseudo-terminal process is not running",
-            ));
-        }
-
-        let capture = TerminalInputCore::new();
-        capture.start_impl().map_err(to_py_err)?;
-
         self.inner
-            .terminal_input_relay_stop
-            .store(false, Ordering::Release);
-        self.inner
-            .terminal_input_relay_active
-            .store(true, Ordering::Release);
-
-        let handles = Arc::clone(&self.inner.handles);
-        let returncode = Arc::clone(&self.inner.returncode);
-        let input_bytes_total = Arc::clone(&self.inner.input_bytes_total);
-        let newline_events_total = Arc::clone(&self.inner.newline_events_total);
-        let submit_events_total = Arc::clone(&self.inner.submit_events_total);
-        let stop = Arc::clone(&self.inner.terminal_input_relay_stop);
-        let active = Arc::clone(&self.inner.terminal_input_relay_active);
-
-        *worker_guard = Some(thread::spawn(move || {
-            loop {
-                if stop.load(Ordering::Acquire) {
-                    break;
-                }
-                match core_pty::poll_pty_process(&handles, &returncode) {
-                    Ok(Some(_)) => break,
-                    Ok(None) => {}
-                    Err(_) => break,
-                }
-                match wait_for_terminal_input_event(
-                    &capture.state,
-                    &capture.condvar,
-                    Some(Duration::from_millis(50)),
-                ) {
-                    TerminalInputWaitOutcome::Event(event) => {
-                        core_pty::record_pty_input_metrics(
-                            &input_bytes_total,
-                            &newline_events_total,
-                            &submit_events_total,
-                            &event.data,
-                            event.submit,
-                        );
-                        if core_pty::write_pty_input(&handles, &event.data).is_err() {
-                            break;
-                        }
-                    }
-                    TerminalInputWaitOutcome::Timeout => continue,
-                    TerminalInputWaitOutcome::Closed => break,
-                }
-            }
-            stop.store(true, Ordering::Release);
-            active.store(false, Ordering::Release);
-            let _ = capture.stop_impl();
-        }));
-        Ok(())
-    }
-
-    #[cfg(not(windows))]
-    fn start_terminal_input_relay_py(&self) -> PyResult<()> {
-        Err(PyRuntimeError::new_err(
-            "Native PTY terminal input relay is only available on Windows consoles",
-        ))
+            .start_terminal_input_relay_impl()
+            .map_err(Self::pty_err_to_py)
     }
 }
 
@@ -1289,17 +1237,17 @@ impl PyNativeProcess {
         }
     }
 
-    fn kill(&self) -> PyResult<()> {
+    fn kill(&self, py: Python<'_>) -> PyResult<()> {
         match &self.backend {
             NativeProcessBackend::Running(process) => process.kill(),
-            NativeProcessBackend::Pty(process) => process.kill(),
+            NativeProcessBackend::Pty(process) => process.kill(py),
         }
     }
 
-    fn terminate(&self) -> PyResult<()> {
+    fn terminate(&self, py: Python<'_>) -> PyResult<()> {
         match &self.backend {
             NativeProcessBackend::Running(process) => process.terminate(),
-            NativeProcessBackend::Pty(process) => process.terminate(),
+            NativeProcessBackend::Pty(process) => process.terminate(py),
         }
     }
 
@@ -1658,26 +1606,33 @@ impl NativePtyProcess {
 
     #[pyo3(signature = (data, submit=false))]
     fn write(&self, data: &[u8], submit: bool) -> PyResult<()> {
-        self.inner.write_impl(data, submit).map_err(Self::pty_err_to_py)
+        self.inner
+            .write_impl(data, submit)
+            .map_err(Self::pty_err_to_py)
     }
 
     fn respond_to_queries(&self, data: &[u8]) -> PyResult<()> {
-        self.inner.respond_to_queries_impl(data).map_err(Self::pty_err_to_py)
+        self.inner
+            .respond_to_queries_impl(data)
+            .map_err(Self::pty_err_to_py)
     }
 
     #[inline(never)]
     fn resize(&self, rows: u16, cols: u16) -> PyResult<()> {
-        self.inner.resize_impl(rows, cols).map_err(Self::pty_err_to_py)
+        self.inner
+            .resize_impl(rows, cols)
+            .map_err(Self::pty_err_to_py)
     }
 
     #[inline(never)]
     fn send_interrupt(&self) -> PyResult<()> {
-        self.inner.send_interrupt_impl().map_err(Self::pty_err_to_py)
+        self.inner
+            .send_interrupt_impl()
+            .map_err(Self::pty_err_to_py)
     }
 
     fn poll(&self) -> PyResult<Option<i32>> {
-        core_pty::poll_pty_process(&self.inner.handles, &self.inner.returncode)
-            .map_err(to_py_err)
+        core_pty::poll_pty_process(&self.inner.handles, &self.inner.returncode).map_err(to_py_err)
     }
 
     #[pyo3(signature = (timeout=None))]
@@ -1687,18 +1642,20 @@ impl NativePtyProcess {
     }
 
     #[inline(never)]
-    fn terminate(&self) -> PyResult<()> {
-        self.inner.terminate_impl().map_err(Self::pty_err_to_py)
+    fn terminate(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.terminate_impl().map_err(Self::pty_err_to_py))
     }
 
     #[inline(never)]
-    fn kill(&self) -> PyResult<()> {
-        self.inner.kill_impl().map_err(Self::pty_err_to_py)
+    fn kill(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.kill_impl().map_err(Self::pty_err_to_py))
     }
 
     #[inline(never)]
     fn terminate_tree(&self) -> PyResult<()> {
-        self.inner.terminate_tree_impl().map_err(Self::pty_err_to_py)
+        self.inner
+            .terminate_tree_impl()
+            .map_err(Self::pty_err_to_py)
     }
 
     #[inline(never)]
@@ -1715,15 +1672,7 @@ impl NativePtyProcess {
     }
 
     fn terminal_input_relay_active(&self) -> bool {
-        #[cfg(windows)]
-        {
-            self.inner.terminal_input_relay_active.load(Ordering::Acquire)
-        }
-
-        #[cfg(not(windows))]
-        {
-            false
-        }
+        self.inner.terminal_input_relay_active()
     }
 
     fn pty_input_bytes_total(&self) -> usize {
@@ -2022,17 +1971,15 @@ impl NativeTerminalInput {
         timeout: Option<f64>,
     ) -> PyResult<TerminalInputEventRecord> {
         py.allow_threads(|| {
-            self.inner
-                .wait_for_event(timeout)
-                .map_err(|err| match err {
-                    TerminalInputError::Closed => {
-                        PyRuntimeError::new_err("Native terminal input is closed")
-                    }
-                    TerminalInputError::Timeout => PyTimeoutError::new_err(
-                        "No terminal input available before timeout",
-                    ),
-                    other => to_py_err(other),
-                })
+            self.inner.wait_for_event(timeout).map_err(|err| match err {
+                TerminalInputError::Closed => {
+                    PyRuntimeError::new_err("Native terminal input is closed")
+                }
+                TerminalInputError::Timeout => {
+                    PyTimeoutError::new_err("No terminal input available before timeout")
+                }
+                other => to_py_err(other),
+            })
         })
     }
 }
@@ -2211,11 +2158,7 @@ impl NativeTerminalInput {
     ///
     /// Returns ``(data: bytes, submit: bool)``.
     #[pyo3(signature = (timeout=None))]
-    fn read_batch(
-        &self,
-        py: Python<'_>,
-        timeout: Option<f64>,
-    ) -> PyResult<(Py<PyAny>, bool)> {
+    fn read_batch(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<(Py<PyAny>, bool)> {
         // Block (releasing the GIL) until the first event arrives.
         let first = self.wait_for_event(py, timeout)?;
 
@@ -2511,23 +2454,20 @@ impl NativeIdleDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use running_process_core::pty::{
-        self as core_pty, NativePtyHandles, NativePtyProcess as CoreNativePtyProcess, PtyReadShared,
-        PtyReadState,
-    };
-    #[cfg(windows)]
-    use running_process_core::pty::{
-        assign_child_to_windows_kill_on_close_job, apply_windows_pty_priority,
-    };
     #[cfg(windows)]
     use running_process_core::pty::terminal_input::{
-        TerminalInputState,
-        native_terminal_input_trace_target,
-        format_terminal_input_bytes,
-        native_terminal_input_mode, terminal_input_modifier_parameter,
-        repeat_terminal_input_bytes, repeated_modified_sequence, repeated_tilde_sequence,
-        control_character_for_unicode,
-        translate_console_key_event,
+        control_character_for_unicode, format_terminal_input_bytes, native_terminal_input_mode,
+        native_terminal_input_trace_target, repeat_terminal_input_bytes,
+        repeated_modified_sequence, repeated_tilde_sequence, terminal_input_modifier_parameter,
+        translate_console_key_event, TerminalInputState,
+    };
+    use running_process_core::pty::{
+        self as core_pty, NativePtyHandles, NativePtyProcess as CoreNativePtyProcess,
+        PtyReadShared, PtyReadState,
+    };
+    #[cfg(windows)]
+    use running_process_core::pty::{
+        apply_windows_pty_priority, assign_child_to_windows_kill_on_close_job,
     };
 
     #[cfg(windows)]
@@ -3488,13 +3428,15 @@ mod tests {
 
     #[test]
     fn portable_exit_code_normal_exit_zero() {
-        let status = running_process_core::pty::reexports::portable_pty::ExitStatus::with_exit_code(0);
+        let status =
+            running_process_core::pty::reexports::portable_pty::ExitStatus::with_exit_code(0);
         assert_eq!(core_pty::portable_exit_code(status), 0);
     }
 
     #[test]
     fn portable_exit_code_normal_exit_nonzero() {
-        let status = running_process_core::pty::reexports::portable_pty::ExitStatus::with_exit_code(42);
+        let status =
+            running_process_core::pty::reexports::portable_pty::ExitStatus::with_exit_code(42);
         assert_eq!(core_pty::portable_exit_code(status), 42);
     }
 
@@ -3544,7 +3486,13 @@ mod tests {
         let newline_events = Arc::new(AtomicUsize::new(0));
         let submit_events = Arc::new(AtomicUsize::new(0));
 
-        core_pty::record_pty_input_metrics(&input_bytes, &newline_events, &submit_events, b"\r", true);
+        core_pty::record_pty_input_metrics(
+            &input_bytes,
+            &newline_events,
+            &submit_events,
+            b"\r",
+            true,
+        );
 
         assert_eq!(input_bytes.load(Ordering::Acquire), 1);
         assert_eq!(newline_events.load(Ordering::Acquire), 1);
@@ -3557,8 +3505,20 @@ mod tests {
         let newline_events = Arc::new(AtomicUsize::new(0));
         let submit_events = Arc::new(AtomicUsize::new(0));
 
-        core_pty::record_pty_input_metrics(&input_bytes, &newline_events, &submit_events, b"ab", false);
-        core_pty::record_pty_input_metrics(&input_bytes, &newline_events, &submit_events, b"cd\n", true);
+        core_pty::record_pty_input_metrics(
+            &input_bytes,
+            &newline_events,
+            &submit_events,
+            b"ab",
+            false,
+        );
+        core_pty::record_pty_input_metrics(
+            &input_bytes,
+            &newline_events,
+            &submit_events,
+            b"cd\n",
+            true,
+        );
 
         assert_eq!(input_bytes.load(Ordering::Acquire), 5);
         assert_eq!(newline_events.load(Ordering::Acquire), 1);
@@ -3639,14 +3599,17 @@ mod tests {
 
     #[test]
     fn tracked_process_db_path_returns_ok() {
-        let path = tracked_process_db_path();
-        assert!(path.is_ok());
-        let path = path.unwrap();
-        assert!(
-            path.to_string_lossy().contains("tracked-pids.sqlite3"),
-            "path should contain expected filename: {:?}",
-            path
-        );
+        with_locked_env_var("RUNNING_PROCESS_PID_DB", None, || {
+            let path = tracked_process_db_path();
+            assert!(path.is_ok());
+            let path = path.unwrap();
+            assert_eq!(
+                path.file_name(),
+                Some(std::ffi::OsStr::new("tracked-pids.sqlite3")),
+                "path should use the default tracked pid database filename: {:?}",
+                path
+            );
+        });
     }
 
     // ── command_builder_from_argv tests ──
@@ -4537,23 +4500,28 @@ mod tests {
 
         #[test]
         fn trace_target_empty_env_returns_none() {
-            std::env::remove_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV);
-            assert!(native_terminal_input_trace_target().is_none());
+            with_locked_env_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV, None, || {
+                assert!(native_terminal_input_trace_target().is_none());
+            });
         }
 
         #[test]
         fn trace_target_whitespace_env_returns_none() {
-            std::env::set_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV, "   ");
-            assert!(native_terminal_input_trace_target().is_none());
-            std::env::remove_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV);
+            with_locked_env_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV, Some("   "), || {
+                assert!(native_terminal_input_trace_target().is_none());
+            });
         }
 
         #[test]
         fn trace_target_valid_env_returns_value() {
-            std::env::set_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV, "/tmp/trace.log");
-            let result = native_terminal_input_trace_target();
-            assert_eq!(result, Some("/tmp/trace.log".to_string()));
-            std::env::remove_var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV);
+            with_locked_env_var(
+                NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV,
+                Some("/tmp/trace.log"),
+                || {
+                    let result = native_terminal_input_trace_target();
+                    assert_eq!(result, Some("/tmp/trace.log".to_string()));
+                },
+            );
         }
 
         // ── translate_console_key_event: key-up ignored ──
@@ -4673,19 +4641,22 @@ mod tests {
     #[test]
     fn tracked_process_db_path_with_env() {
         pyo3::prepare_freethreaded_python();
-        std::env::set_var("RUNNING_PROCESS_PID_DB", "/custom/path/db.sqlite3");
-        let result = tracked_process_db_path().unwrap();
-        assert_eq!(result, std::path::PathBuf::from("/custom/path/db.sqlite3"));
-        std::env::remove_var("RUNNING_PROCESS_PID_DB");
+        with_locked_env_var("RUNNING_PROCESS_PID_DB", Some("/custom/path/db.sqlite3"), || {
+            let result = tracked_process_db_path().unwrap();
+            assert_eq!(result, std::path::PathBuf::from("/custom/path/db.sqlite3"));
+        });
     }
 
     #[test]
     fn tracked_process_db_path_empty_env_falls_back() {
         pyo3::prepare_freethreaded_python();
-        std::env::set_var("RUNNING_PROCESS_PID_DB", "   ");
-        let result = tracked_process_db_path().unwrap();
-        assert!(!result.to_str().unwrap().trim().is_empty());
-        std::env::remove_var("RUNNING_PROCESS_PID_DB");
+        with_locked_env_var("RUNNING_PROCESS_PID_DB", Some("   "), || {
+            let result = tracked_process_db_path().unwrap();
+            assert_eq!(
+                result.file_name(),
+                Some(std::ffi::OsStr::new("tracked-pids.sqlite3"))
+            );
+        });
     }
 
     // ── NativePtyProcess: start_terminal_input_relay on non-windows ──
@@ -4857,7 +4828,11 @@ mod tests {
             ];
             let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
-            assert!(core_pty::poll_pty_process(&process.handles, &process.returncode).unwrap().is_none());
+            assert!(
+                core_pty::poll_pty_process(&process.handles, &process.returncode)
+                    .unwrap()
+                    .is_none()
+            );
             let _ = process.close_impl();
         });
     }
@@ -5243,7 +5218,11 @@ mod tests {
             ];
             let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
             process.start_impl().unwrap();
-            assert!(core_pty::poll_pty_process(&process.handles, &process.returncode).unwrap().is_none());
+            assert!(
+                core_pty::poll_pty_process(&process.handles, &process.returncode)
+                    .unwrap()
+                    .is_none()
+            );
             let _ = process.close_impl();
         });
     }

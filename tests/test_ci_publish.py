@@ -170,3 +170,38 @@ def test_select_expected_artifacts_skips_missing_files_on_disk(tmp_path: Path) -
 
     assert [path.name for path in selected] == ["running_process-3.0.3.tar.gz"]
     assert "running_process-3.0.3-*-win_amd64.whl" in missing
+
+
+def test_publishable_crates_include_client_before_py() -> None:
+    module = _load_publish_module()
+
+    assert module.PUBLISHABLE_CRATES == [
+        "running-process-core",
+        "running-process-proto",
+        "running-process-client",
+        "running-process-py",
+    ]
+
+
+def test_publish_crates_runs_in_dependency_order(monkeypatch) -> None:
+    module = _load_publish_module()
+    seen: list[list[str]] = []
+    sleeps: list[int] = []
+
+    def fake_run(cmd, capture_output=True, text=True, errors="replace"):
+        del capture_output, text, errors
+        seen.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    module.publish_crates(dry_run=False)
+
+    assert seen == [
+        ["cargo", "publish", "-p", "running-process-core", "--no-verify"],
+        ["cargo", "publish", "-p", "running-process-proto", "--no-verify"],
+        ["cargo", "publish", "-p", "running-process-client", "--no-verify"],
+        ["cargo", "publish", "-p", "running-process-py", "--no-verify"],
+    ]
+    assert sleeps == [30, 30, 30]

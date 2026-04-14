@@ -28,7 +28,14 @@ WORKFLOWS = {
     "macos-x86-build.yml": "wheels-macos-x86",
     "macos-arm-build.yml": "wheels-macos-arm",
 }
-PUBLISHABLE_CRATES = ["running-process-core", "running-process-proto", "running-process-py"]
+# Publish Rust crates in dependency order so crates.io can resolve each local
+# path dependency by version when the next crate is packaged.
+PUBLISHABLE_CRATES = [
+    "running-process-core",
+    "running-process-proto",
+    "running-process-client",
+    "running-process-py",
+]
 
 EXPECTED_ARTIFACT_GLOBS = (
     "{name}-{version}.tar.gz",
