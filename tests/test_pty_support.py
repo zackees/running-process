@@ -953,20 +953,69 @@ def test_idle_reached_callback_accumulates_diff_when_callback_is_slow(
     assert any(item.delta_seconds >= 0.03 for item in seen)
 
 
-def test_pseudo_terminal_wait_for_idle_hybrid_config_uses_custom_predicate() -> None:
-    process = RunningProcess.pseudo_terminal(
+def test_pseudo_terminal_wait_for_idle_hybrid_config_uses_custom_predicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots = iter(
         [
-            sys.executable,
-            "-c",
-            (
-                "import sys, time\n"
-                "time.sleep(0.12)\n"
-                "print('visible output', flush=True)\n"
-                "time.sleep(0.5)\n"
+            SimpleNamespace(
+                sampled_at=0.00,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=0,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
             ),
-        ],
-        text=True,
+            SimpleNamespace(
+                sampled_at=0.02,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=5,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.04,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=5,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+            SimpleNamespace(
+                sampled_at=0.10,
+                process_alive=True,
+                pty_input_bytes=0,
+                pty_output_bytes=5,
+                pty_control_churn_bytes=0,
+                cpu_percent=0.0,
+                disk_io_bytes=0,
+                network_io_bytes=0,
+                returncode=None,
+            ),
+        ]
     )
+
+    process = PseudoTerminalProcess(
+        [sys.executable, "-c", "print('x')"],
+        auto_run=False,
+    )
+    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
+    monkeypatch.setattr(
+        process,
+        "_sample_idle_snapshot",
+        lambda process_cfg=None: next(snapshots),
+    )
+
     result = process.wait_for_idle(
         IdleDetection(
             timing=IdleTiming(
@@ -984,7 +1033,6 @@ def test_pseudo_terminal_wait_for_idle_hybrid_config_uses_custom_predicate() -> 
     )
     assert result.idle_detected is True
     assert result.exit_reason == "idle_timeout"
-    process.kill()
 
 
 def test_pseudo_terminal_wait_for_expect_on_callback_can_continue_until_exit() -> None:
