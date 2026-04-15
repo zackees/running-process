@@ -155,6 +155,29 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _write_dump_metadata(
+    *,
+    metadata_path: Path,
+    reason: str,
+    command: Sequence[str],
+    pid: int | None,
+    returncode: int | None,
+    timeout_seconds: float | None,
+    extra_metadata: dict[str, object] | None = None,
+) -> None:
+    metadata = {
+        "reason": reason,
+        "command": list(command),
+        "pid": pid,
+        "returncode": returncode,
+        "timeout_seconds": timeout_seconds,
+        "timestamp_utc": _utc_now_iso(),
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+
+
 class _BoundedTailBuffer:
     def __init__(self, limit_bytes: int) -> None:
         self._limit_bytes = limit_bytes
@@ -236,29 +259,6 @@ def _child_output_metadata(child: object) -> dict[str, object] | None:
     if not isinstance(diagnostics, _ChildOutputDiagnostics):
         return None
     return diagnostics.as_metadata()
-
-
-def _write_dump_metadata(
-    *,
-    metadata_path: Path,
-    reason: str,
-    command: Sequence[str],
-    pid: int | None,
-    returncode: int | None,
-    timeout_seconds: float | None,
-    extra_metadata: dict[str, object] | None = None,
-) -> None:
-    metadata = {
-        "reason": reason,
-        "command": list(command),
-        "pid": pid,
-        "returncode": returncode,
-        "timeout_seconds": timeout_seconds,
-        "timestamp_utc": _utc_now_iso(),
-    }
-    if extra_metadata:
-        metadata.update(extra_metadata)
-    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _run_py_spy_dump(*, pid: int | None, log_path: Path) -> bool:
@@ -496,9 +496,9 @@ def _stream_reader(
             chunk = read_chunk(4096)
             if not chunk:
                 break
-            _write_stream_bytes(sink, chunk)
             if capture is not None:
                 capture.record(chunk)
+            _write_stream_bytes(sink, chunk)
             touch_activity()
     finally:
         if capture is not None:
@@ -527,14 +527,20 @@ def _wait_for_child_with_activity_timeout(
     stdout_thread = threading.Thread(
         target=_stream_reader,
         args=(getattr(child, "stdout", None), sys.stdout),
-        kwargs={"touch_activity": touch_activity, "capture": diagnostics.stdout},
+        kwargs={
+            "touch_activity": touch_activity,
+            "capture": diagnostics.stdout,
+        },
         name="running-process-stdout-reader",
         daemon=True,
     )
     stderr_thread = threading.Thread(
         target=_stream_reader,
         args=(getattr(child, "stderr", None), sys.stderr),
-        kwargs={"touch_activity": touch_activity, "capture": diagnostics.stderr},
+        kwargs={
+            "touch_activity": touch_activity,
+            "capture": diagnostics.stderr,
+        },
         name="running-process-stderr-reader",
         daemon=True,
     )
@@ -614,7 +620,9 @@ def run_command(
             }
             if extra_metadata is not None:
                 dump_kwargs["extra_metadata"] = extra_metadata
-            metadata_path = _dump_diagnostics(**dump_kwargs)
+            metadata_path = _dump_diagnostics(
+                **dump_kwargs,
+            )
             _safe_write(
                 sys.stderr,
                 f"[running-process] timeout diagnostics written to {metadata_path}\n",
@@ -634,7 +642,9 @@ def run_command(
         }
         if extra_metadata is not None:
             dump_kwargs["extra_metadata"] = extra_metadata
-        metadata_path = _dump_diagnostics(**dump_kwargs)
+        metadata_path = _dump_diagnostics(
+            **dump_kwargs,
+        )
         _safe_write(
             sys.stderr,
             f"[running-process] abnormal-exit diagnostics written to {metadata_path}\n",

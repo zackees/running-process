@@ -8,14 +8,21 @@ from running_process import cli
 
 
 class _FakeProcess:
-    def __init__(self, *, pid: int = 4321, returncode: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        pid: int = 4321,
+        returncode: int = 0,
+        stdout_bytes: bytes = b"",
+        stderr_bytes: bytes = b"",
+    ) -> None:
         self.pid = pid
         self.returncode = returncode
         self.kill_called = False
         self.wait_calls = 0
         self.poll_calls = 0
-        self.stdout = io.BytesIO()
-        self.stderr = io.BytesIO()
+        self.stdout = io.BytesIO(stdout_bytes)
+        self.stderr = io.BytesIO(stderr_bytes)
 
     def poll(self) -> int | None:
         self.poll_calls += 1
@@ -306,6 +313,61 @@ def test_abnormal_exit_collects_diagnostics(monkeypatch, tmp_path: Path) -> None
     }
 
 
+def test_abnormal_exit_attaches_child_output_metadata(monkeypatch, tmp_path: Path) -> None:
+    fake_process = _FakeProcess(
+        returncode=3,
+        stdout_bytes=b"last stdout line\n",
+        stderr_bytes=b"last stderr line\n",
+    )
+    seen: dict[str, object] = {}
+    stdout = _BufferedTextStream()
+    stderr = _BufferedTextStream()
+
+    def fake_popen(command, env, stdout, stderr):
+        seen["command"] = list(command)
+        seen["env"] = env
+        seen["stdout"] = stdout
+        seen["stderr"] = stderr
+        return fake_process
+
+    def fake_dump(**kwargs):
+        seen["dump"] = kwargs
+        return tmp_path / "abnormal.json"
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(cli.sys, "stdout", stdout)
+    monkeypatch.setattr(cli.sys, "stderr", stderr)
+    monkeypatch.setattr(cli, "_dump_diagnostics", fake_dump)
+
+    code = cli.run_command(
+        ["python", "-m", "ci.test"],
+        stack_dump_dir=tmp_path,
+    )
+
+    assert code == 3
+    child_output = seen["dump"]["extra_metadata"]["child_output"]
+    assert child_output["returncode"] == 3
+    assert child_output["timed_out"] is False
+    assert child_output["idle_for_seconds"] is not None
+    assert child_output["tail_limit_bytes"] > 0
+    assert child_output["stdout"] == {
+        "total_bytes": 17,
+        "chunk_count": 1,
+        "closed": True,
+        "last_chunk_utc": child_output["stdout"]["last_chunk_utc"],
+        "tail_truncated": False,
+        "tail_text": "last stdout line\n",
+    }
+    assert child_output["stderr"] == {
+        "total_bytes": 17,
+        "chunk_count": 1,
+        "closed": True,
+        "last_chunk_utc": child_output["stderr"]["last_chunk_utc"],
+        "tail_truncated": False,
+        "tail_text": "last stderr line\n",
+    }
+
+
 def test_wait_for_child_timeout_is_based_on_output_activity(monkeypatch) -> None:
     process = _PollingProcess(polls_before_exit=20)
     monotonic_values = iter([0.0, 0.0, 0.02, 0.04, 0.06, 0.08, 0.11, 0.13])
@@ -420,7 +482,11 @@ def test_dump_diagnostics_writes_metadata_and_py_spy_log(monkeypatch, tmp_path: 
         dump_dir=tmp_path,
         extra_metadata={
             "child_output": {
-                "stdout": {"tail_text": "tests/test_pty_support.py::test_example FAILED\n"},
+                "stdout": {
+                    "bytes_seen": 4,
+                    "tail": "tail",
+                    "truncated": False,
+                }
             }
         },
     )
@@ -430,7 +496,7 @@ def test_dump_diagnostics_writes_metadata_and_py_spy_log(monkeypatch, tmp_path: 
     metadata = metadata_path.read_text(encoding="utf-8")
     assert '"reason": "timeout"' in metadata
     assert '"pid": 77' in metadata
-    assert "tests/test_pty_support.py::test_example FAILED" in metadata
+    assert '"child_output"' in metadata
     assert any(path.name.endswith(".py-spy.log") for path in tmp_path.iterdir())
     assert any(path.name.endswith(".native-debugger.log") for path in tmp_path.iterdir())
 

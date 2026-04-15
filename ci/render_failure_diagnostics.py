@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
 
 TAIL_LINE_LIMIT = 40
+_PYTEST_FAILURE_LINE_LIMIT = 80
+_PYTEST_FAILURE_HEADER = re.compile(r"=+\s+FAILURES\s+=+")
+_PYTEST_SUMMARY_HEADER = re.compile(r"=+\s+short test summary info\s+=+")
+_PYTEST_ERROR_LINE = re.compile(r"^E\s{2,}")
+_PYTEST_FAILED_LINE = re.compile(r"^(FAILED\s+tests[\\/]|tests[\\/].+\s+FAILED\s+\[)")
 
 
 def _escape_annotation(text: str) -> str:
@@ -48,6 +54,28 @@ def _tail_text_file(path: Path) -> list[str]:
     return lines[-TAIL_LINE_LIMIT:]
 
 
+def _extract_pytest_failure_excerpt(lines: list[str]) -> list[str]:
+    if not lines:
+        return []
+    for index, line in enumerate(lines):
+        if _PYTEST_FAILURE_HEADER.search(line):
+            return lines[index : index + _PYTEST_FAILURE_LINE_LIMIT]
+    for index, line in enumerate(lines):
+        if _PYTEST_SUMMARY_HEADER.search(line):
+            start = max(0, index - 20)
+            return lines[start : index + _PYTEST_FAILURE_LINE_LIMIT]
+    hit_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if _PYTEST_ERROR_LINE.search(line) or _PYTEST_FAILED_LINE.search(line)
+    ]
+    if not hit_indexes:
+        return []
+    start = max(0, hit_indexes[0] - 8)
+    end = min(len(lines), hit_indexes[-1] + 16)
+    return lines[start:end]
+
+
 def _render_analytics(path: Path) -> list[str]:
     data = _load_json(path)
     if data is None:
@@ -81,6 +109,11 @@ def _render_analytics(path: Path) -> list[str]:
         rendered.append("")
         rendered.append("fault_lines:")
         rendered.extend(fault_lines)
+    failure_excerpt = _extract_pytest_failure_excerpt(tail_lines)
+    if failure_excerpt:
+        rendered.append("")
+        rendered.append("pytest_failure_excerpt:")
+        rendered.extend(failure_excerpt)
     if tail_lines:
         rendered.append("")
         rendered.append("tail_lines:")
@@ -95,6 +128,11 @@ def _render_analytics(path: Path) -> list[str]:
         summary.append(f"- Last pytest nodeid: `{last_test_nodeid}`")
     if last_nonempty_line:
         summary.append(f"- Last output line: `{last_nonempty_line}`")
+    if failure_excerpt:
+        summary.append("")
+        summary.append("```text")
+        summary.extend(failure_excerpt)
+        summary.append("```")
     summary.append("")
     summary.append("```text")
     summary.extend(tail_lines or ["(no tail lines captured)"])
@@ -131,12 +169,18 @@ def _render_running_process_dump(path: Path) -> list[str]:
             stream = child_output.get(stream_name)
             if not isinstance(stream, dict):
                 continue
-            tail = str(stream.get("tail", "")).splitlines()[-TAIL_LINE_LIMIT:]
+            tail_text = str(stream.get("tail", stream.get("tail_text", "")))
+            tail = tail_text.splitlines()[-TAIL_LINE_LIMIT:]
+            failure_excerpt = _extract_pytest_failure_excerpt(tail_text.splitlines())
             rendered.append("")
             rendered.append(
-                f"child_output.{stream_name}: bytes_seen={stream.get('bytes_seen')} "
-                f"truncated={stream.get('truncated')}"
+                f"child_output.{stream_name}: bytes_seen="
+                f"{stream.get('bytes_seen', stream.get('total_bytes'))} "
+                f"truncated={stream.get('truncated', stream.get('tail_truncated'))}"
             )
+            if failure_excerpt:
+                rendered.append("pytest_failure_excerpt:")
+                rendered.extend(failure_excerpt)
             rendered.extend(tail or ["(no captured output)"])
 
     for suffix in (".py-spy.log", ".native-debugger.log"):
@@ -160,7 +204,15 @@ def _render_running_process_dump(path: Path) -> list[str]:
             stream = child_output.get(stream_name)
             if not isinstance(stream, dict):
                 continue
-            tail = str(stream.get("tail", "")).splitlines()[-TAIL_LINE_LIMIT:]
+            tail_text = str(stream.get("tail", stream.get("tail_text", "")))
+            tail = tail_text.splitlines()[-TAIL_LINE_LIMIT:]
+            failure_excerpt = _extract_pytest_failure_excerpt(tail_text.splitlines())
+            if failure_excerpt:
+                summary.append(f"#### Child {stream_name} failure excerpt")
+                summary.append("```text")
+                summary.extend(failure_excerpt)
+                summary.append("```")
+                summary.append("")
             summary.append(f"#### Child {stream_name} tail")
             summary.append("```text")
             summary.extend(tail or ["(no captured output)"])
