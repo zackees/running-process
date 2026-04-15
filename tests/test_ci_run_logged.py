@@ -90,12 +90,15 @@ def test_run_analytics_captures_pytest_failure_excerpt() -> None:
     module = _load_run_logged_module()
     analytics = module.RunAnalytics(command=["pytest", "-vv"], pid=456)
 
-    analytics.record_line("tests/test_cli.py::test_target_case FAILED [ 50%]\n")
-    analytics.record_line("=================================== FAILURES ===================================\n")
-    analytics.record_line("________________________ test_target_case ________________________\n")
-    analytics.record_line("E       assert left == right\n")
-    analytics.record_line("tests/test_cli.py:42: AssertionError\n")
-    analytics.record_line("later summary noise\n")
+    for line in (
+        "tests/test_cli.py::test_target_case FAILED [ 50%]\n",
+        "=================================== FAILURES ===================================\n",
+        "________________________ test_target_case ________________________\n",
+        "E       assert left == right\n",
+        "tests/test_cli.py:42: AssertionError\n",
+        "later summary noise\n",
+    ):
+        analytics.record_line(line)
 
     assert list(analytics.pytest_failure_excerpt) == [
         "tests/test_cli.py::test_target_case FAILED [ 50%]",
