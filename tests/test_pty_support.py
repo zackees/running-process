@@ -1718,6 +1718,9 @@ def test_pseudo_terminal_wait_for_expect_timeout_does_not_arm_next_expect(
     assert writes == [("alice\n", False), ("secret\n", False)]
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_constructor_can_mix_expect_rule_and_registered_expect() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2932,6 +2935,9 @@ def test_pseudo_terminal_accepts_priority_enum() -> None:
     assert process.wait(timeout=5) == 0
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_interactive_kill_waits_for_exit() -> None:
     process = RunningProcess.interactive(
         [sys.executable, "-c", "import time; time.sleep(10)"],

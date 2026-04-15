@@ -186,11 +186,17 @@ class DaemonHandle:
         """Return True if the daemon process is still alive."""
         if sys.platform == "win32":
             return self._is_running_win32()
+        child_running = _posix_child_running(self.pid)
+        if child_running is not None:
+            return child_running
         try:
             os.kill(self.pid, 0)
         except OSError:
             return False
-        return _posix_process_state(self.pid) != "Z"
+        state = _posix_process_state(self.pid)
+        if state is None:
+            state = _posix_ps_process_state(self.pid)
+        return state != "Z"
 
     def _is_running_win32(self) -> bool:
         """Windows-specific liveness check using GetExitCodeProcess."""
@@ -233,6 +239,45 @@ def _posix_process_state(pid: int) -> str | None:
     if close_paren == -1 or close_paren + 2 >= len(stat_text):
         return None
     return stat_text[close_paren + 2]
+
+
+def _posix_ps_process_state(pid: int) -> str | None:
+    """Return the leading ``ps`` status marker for *pid* when available."""
+    if sys.platform == "win32":
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    status = result.stdout.strip()
+    if not status:
+        return None
+    return status[0]
+
+
+def _posix_child_running(pid: int) -> bool | None:
+    """Return child liveness via ``waitpid(WNOHANG)`` when *pid* is our child."""
+    if sys.platform == "win32":
+        return None
+    try:
+        waited_pid, _status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return None
+    except OSError:
+        return None
+    if waited_pid == 0:
+        return True
+    if waited_pid == pid:
+        return False
+    return None
 
 
 # ---------------------------------------------------------------------------
