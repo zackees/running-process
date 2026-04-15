@@ -64,7 +64,9 @@ jobs:
         with:
           shared-key: ${{ inputs.runs-on }}
           cache-compilation: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
-          cache-target: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+          # target metadata is reused across workflows for the same commit key,
+          # which can restore stale Rust fingerprints into later jobs.
+          cache-target: "false"
           save-cache: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
 
       - name: Reset pinned Rust toolchain on macOS ARM
