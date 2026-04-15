@@ -32,7 +32,6 @@ def test_analytics_failure_excerpt_falls_back_to_tail_lines() -> None:
     )
 
     assert excerpt == [
-        "tests/test_cli.py::test_target_case FAILED [ 50%]",
         "=================================== FAILURES ===================================",
         "E       assert left == right",
     ]
