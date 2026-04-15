@@ -76,6 +76,14 @@ def _extract_pytest_failure_excerpt(lines: list[str]) -> list[str]:
     return lines[start:end]
 
 
+def _analytics_failure_excerpt(data: dict[str, object]) -> list[str]:
+    explicit_excerpt = [str(line) for line in data.get("pytest_failure_excerpt", [])]
+    if explicit_excerpt:
+        return explicit_excerpt[-_PYTEST_FAILURE_LINE_LIMIT:]
+    tail_lines = [str(line) for line in data.get("tail_lines", [])][-TAIL_LINE_LIMIT:]
+    return _extract_pytest_failure_excerpt(tail_lines)
+
+
 def _render_analytics(path: Path) -> list[str]:
     data = _load_json(path)
     if data is None:
@@ -109,7 +117,7 @@ def _render_analytics(path: Path) -> list[str]:
         rendered.append("")
         rendered.append("fault_lines:")
         rendered.extend(fault_lines)
-    failure_excerpt = _extract_pytest_failure_excerpt(tail_lines)
+    failure_excerpt = _analytics_failure_excerpt(data)
     if failure_excerpt:
         rendered.append("")
         rendered.append("pytest_failure_excerpt:")

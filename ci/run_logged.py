@@ -26,8 +26,14 @@ _STACK_DUMP_TIMEOUT_ENV = "RUN_LOGGED_STACK_DUMP_SECONDS"
 _DEFAULT_STACK_DUMP_TIMEOUT_SECONDS = 180.0
 _TAIL_LINE_LIMIT = 80
 _SUMMARY_TAIL_LINE_LIMIT = 40
+_PYTEST_FAILURE_PRE_CONTEXT_LINE_LIMIT = 8
+_PYTEST_FAILURE_LINE_LIMIT = 80
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _PYTEST_NODEID = re.compile(r"^(tests[\\/][^\s]+::[^\s]+)")
+_PYTEST_FAILURE_HEADER = re.compile(r"=+\s+FAILURES\s+=+")
+_PYTEST_SUMMARY_HEADER = re.compile(r"=+\s+short test summary info\s+=+")
+_PYTEST_ERROR_LINE = re.compile(r"^E\s{2,}")
+_PYTEST_FAILED_LINE = re.compile(r"^(FAILED\s+tests[\\/]|tests[\\/].+\s+FAILED\s+\[)")
 _FAULT_PATTERNS = (
     re.compile(r"Traceback \(most recent call last\):"),
     re.compile(r"\bFAILED\b"),
@@ -81,6 +87,10 @@ class RunAnalytics:
         self.line_count = 0
         self.byte_count = 0
         self.tail_lines: deque[str] = deque(maxlen=_TAIL_LINE_LIMIT)
+        self._recent_lines: deque[str] = deque(maxlen=_PYTEST_FAILURE_PRE_CONTEXT_LINE_LIMIT)
+        self.pytest_failure_excerpt: deque[str] = deque(maxlen=_PYTEST_FAILURE_LINE_LIMIT)
+        self._capturing_pytest_failure = False
+        self._failure_capture_remaining = 0
         self.fault_lines: deque[str] = deque(maxlen=20)
         self.last_test_nodeid: str | None = None
         self.last_nonempty_line: str | None = None
@@ -96,6 +106,7 @@ class RunAnalytics:
         nodeid = _extract_pytest_nodeid(cleaned)
         if nodeid is not None:
             self.last_test_nodeid = nodeid
+        _track_pytest_failure_excerpt(self, cleaned)
         if _looks_like_fault_line(cleaned):
             self.fault_lines.append(cleaned)
 
@@ -111,6 +122,7 @@ class RunAnalytics:
             "byte_count": self.byte_count,
             "last_test_nodeid": self.last_test_nodeid,
             "last_nonempty_line": self.last_nonempty_line,
+            "pytest_failure_excerpt": list(self.pytest_failure_excerpt),
             "tail_lines": list(self.tail_lines),
             "fault_lines": list(self.fault_lines),
         }
@@ -125,6 +137,35 @@ def _extract_pytest_nodeid(line: str) -> str | None:
     if match is None:
         return None
     return match.group(1)
+
+
+def _looks_like_pytest_failure_start(line: str) -> bool:
+    return any(
+        pattern.search(line) is not None
+        for pattern in (
+            _PYTEST_FAILURE_HEADER,
+            _PYTEST_SUMMARY_HEADER,
+            _PYTEST_ERROR_LINE,
+            _PYTEST_FAILED_LINE,
+        )
+    )
+
+
+def _track_pytest_failure_excerpt(analytics: RunAnalytics, line: str) -> None:
+    analytics._recent_lines.append(line)
+    if _looks_like_pytest_failure_start(line):
+        if not analytics.pytest_failure_excerpt:
+            analytics.pytest_failure_excerpt.extend(analytics._recent_lines)
+        elif analytics.pytest_failure_excerpt[-1] != line:
+            analytics.pytest_failure_excerpt.append(line)
+        analytics._capturing_pytest_failure = True
+        analytics._failure_capture_remaining = (
+            _PYTEST_FAILURE_LINE_LIMIT - len(analytics.pytest_failure_excerpt)
+        )
+        return
+    if analytics._capturing_pytest_failure and analytics._failure_capture_remaining > 0:
+        analytics.pytest_failure_excerpt.append(line)
+        analytics._failure_capture_remaining -= 1
 
 
 def _looks_like_fault_line(line: str) -> bool:
@@ -172,6 +213,10 @@ def _emit_failure_summary(
     if analytics.fault_lines:
         _write_console_line("[run_logged] fault-marked output lines:\n")
         for line in list(analytics.fault_lines)[-_SUMMARY_TAIL_LINE_LIMIT:]:
+            _write_console_line(f"{line}\n")
+    if analytics.pytest_failure_excerpt:
+        _write_console_line("[run_logged] pytest failure excerpt:\n")
+        for line in list(analytics.pytest_failure_excerpt)[-_SUMMARY_TAIL_LINE_LIMIT:]:
             _write_console_line(f"{line}\n")
     _write_console_line(f"[run_logged] tail of {log_path}:\n")
     for line in list(analytics.tail_lines)[-_SUMMARY_TAIL_LINE_LIMIT:]:

@@ -86,8 +86,34 @@ def test_write_analytics_persists_failure_tail(tmp_path: Path) -> None:
     assert payload["fault_lines"] == ["spawn-path guard failed:"]
 
 
+def test_run_analytics_captures_pytest_failure_excerpt() -> None:
+    module = _load_run_logged_module()
+    analytics = module.RunAnalytics(command=["pytest", "-vv"], pid=456)
+
+    analytics.record_line("tests/test_cli.py::test_target_case FAILED [ 50%]\n")
+    analytics.record_line("=================================== FAILURES ===================================\n")
+    analytics.record_line("________________________ test_target_case ________________________\n")
+    analytics.record_line("E       assert left == right\n")
+    analytics.record_line("tests/test_cli.py:42: AssertionError\n")
+    analytics.record_line("later summary noise\n")
+
+    assert list(analytics.pytest_failure_excerpt) == [
+        "tests/test_cli.py::test_target_case FAILED [ 50%]",
+        "=================================== FAILURES ===================================",
+        "________________________ test_target_case ________________________",
+        "E       assert left == right",
+        "tests/test_cli.py:42: AssertionError",
+        "later summary noise",
+    ]
+
+
 def test_fault_marker_avoids_false_positive_substrings() -> None:
     module = _load_run_logged_module()
 
-    assert module._looks_like_fault_line("test tests::process_metrics_prime_no_panic ... ok") is False
+    assert (
+        module._looks_like_fault_line(
+            "test tests::process_metrics_prime_no_panic ... ok"
+        )
+        is False
+    )
     assert module._looks_like_fault_line("Traceback (most recent call last):") is True

@@ -83,6 +83,31 @@ class _Read1OnlyStream:
         self.closed = True
 
 
+def _seed_child_output_diagnostics(
+    child: object,
+    *,
+    stdout_bytes: bytes = b"",
+    stderr_bytes: bytes = b"",
+    timed_out: bool,
+    returncode: int | None,
+    idle_for_seconds: float = 0.0,
+) -> cli._ChildOutputDiagnostics:
+    diagnostics = cli._attach_child_output_diagnostics(child)
+    if stdout_bytes:
+        diagnostics.stdout.record(stdout_bytes)
+    if stderr_bytes:
+        diagnostics.stderr.record(stderr_bytes)
+    diagnostics.stdout.closed = True
+    diagnostics.stderr.closed = True
+    cli._finalize_child_output_diagnostics(
+        diagnostics,
+        idle_for_seconds=idle_for_seconds,
+        timed_out=timed_out,
+        returncode=returncode,
+    )
+    return diagnostics
+
+
 def test_normalize_command_strips_separator() -> None:
     assert cli._normalize_command(["--", "python", "-m", "ci.test"]) == [
         "python",
@@ -96,6 +121,93 @@ def test_parse_args_accepts_find_leaks_flag() -> None:
 
     assert args.find_leaks is True
     assert args.command == ["--", "python", "-m", "ci.test"]
+
+
+def test_bounded_tail_buffer_truncates_old_bytes() -> None:
+    buffer = cli._BoundedTailBuffer(5)
+
+    buffer.append(b"abc")
+    buffer.append(b"def")
+
+    assert buffer.truncated is True
+    assert buffer.decode() == "bcdef"
+
+
+def test_child_stream_diagnostics_records_chunk_metadata() -> None:
+    diagnostics = cli._ChildStreamDiagnostics()
+
+    diagnostics.record(b"alpha")
+    diagnostics.record(b"beta")
+    diagnostics.closed = True
+
+    metadata = diagnostics.as_metadata()
+
+    assert metadata["total_bytes"] == 9
+    assert metadata["chunk_count"] == 2
+    assert metadata["closed"] is True
+    assert metadata["last_chunk_utc"] is not None
+    assert metadata["tail_truncated"] is False
+    assert metadata["tail_text"] == "alphabeta"
+
+
+def test_build_child_output_extra_metadata_wraps_diagnostics() -> None:
+    child = _FakeProcess()
+
+    _seed_child_output_diagnostics(
+        child,
+        stdout_bytes=b"stdout\n",
+        stderr_bytes=b"stderr\n",
+        timed_out=False,
+        returncode=3,
+        idle_for_seconds=0.25,
+    )
+
+    extra_metadata = cli._build_child_output_extra_metadata(child)
+
+    assert extra_metadata is not None
+    assert extra_metadata["child_output"]["returncode"] == 3
+    assert extra_metadata["child_output"]["stdout"]["tail_text"] == "stdout\n"
+    assert extra_metadata["child_output"]["stderr"]["tail_text"] == "stderr\n"
+
+
+def test_build_child_output_extra_metadata_returns_none_without_diagnostics() -> None:
+    assert cli._build_child_output_extra_metadata(_FakeProcess()) is None
+
+
+def test_build_diagnostic_dump_kwargs_omits_empty_extra_metadata(tmp_path: Path) -> None:
+    dump_kwargs = cli._build_diagnostic_dump_kwargs(
+        reason="timeout",
+        command=["python", "-m", "ci.test"],
+        pid=77,
+        returncode=None,
+        timeout_seconds=1.5,
+        dump_dir=tmp_path,
+        extra_metadata=None,
+    )
+
+    assert dump_kwargs == {
+        "reason": "timeout",
+        "command": ["python", "-m", "ci.test"],
+        "pid": 77,
+        "returncode": None,
+        "timeout_seconds": 1.5,
+        "dump_dir": tmp_path,
+    }
+
+
+def test_finalize_child_output_diagnostics_clamps_negative_idle_time() -> None:
+    diagnostics = cli._ChildOutputDiagnostics()
+
+    cli._finalize_child_output_diagnostics(
+        diagnostics,
+        idle_for_seconds=-1.0,
+        timed_out=False,
+        returncode=0,
+    )
+
+    assert diagnostics.idle_for_seconds == 0.0
+    assert diagnostics.timed_out is False
+    assert diagnostics.returncode == 0
 
 
 def test_cli_passes_in_running_process_to_child(monkeypatch) -> None:
@@ -233,6 +345,48 @@ def test_timeout_collects_diagnostics_and_kills_child(monkeypatch, tmp_path: Pat
     }
 
 
+def test_timeout_attaches_child_output_metadata(monkeypatch, tmp_path: Path) -> None:
+    fake_process = _FakeProcess()
+    seen: dict[str, object] = {}
+
+    def fake_popen(command, env, stdout, stderr):
+        del command, env, stdout, stderr
+        return fake_process
+
+    def fake_wait(child, timeout):
+        del timeout
+        _seed_child_output_diagnostics(
+            child,
+            stdout_bytes=b"last stdout line\n",
+            stderr_bytes=b"last stderr line\n",
+            timed_out=True,
+            returncode=None,
+            idle_for_seconds=1.5,
+        )
+        return None, True
+
+    def fake_dump(**kwargs):
+        seen["dump"] = kwargs
+        return tmp_path / "timeout.json"
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(cli, "_wait_for_child_with_activity_timeout", fake_wait)
+    monkeypatch.setattr(cli, "_dump_diagnostics", fake_dump)
+
+    code = cli.run_command(
+        ["python", "-m", "ci.test"],
+        timeout=1.5,
+        stack_dump_dir=tmp_path,
+    )
+
+    assert code == cli.DEFAULT_STACK_DUMP_TIMEOUT_EXIT_CODE
+    child_output = seen["dump"]["extra_metadata"]["child_output"]
+    assert child_output["timed_out"] is True
+    assert child_output["returncode"] is None
+    assert child_output["stdout"]["tail_text"] == "last stdout line\n"
+    assert child_output["stderr"]["tail_text"] == "last stderr line\n"
+
+
 def test_timeout_can_disable_auto_stack_dumping(monkeypatch, tmp_path: Path) -> None:
     fake_process = _FakeProcess()
     dump_called = False
@@ -314,14 +468,8 @@ def test_abnormal_exit_collects_diagnostics(monkeypatch, tmp_path: Path) -> None
 
 
 def test_abnormal_exit_attaches_child_output_metadata(monkeypatch, tmp_path: Path) -> None:
-    fake_process = _FakeProcess(
-        returncode=3,
-        stdout_bytes=b"last stdout line\n",
-        stderr_bytes=b"last stderr line\n",
-    )
+    fake_process = _FakeProcess(returncode=3)
     seen: dict[str, object] = {}
-    stdout = _BufferedTextStream()
-    stderr = _BufferedTextStream()
 
     def fake_popen(command, env, stdout, stderr):
         seen["command"] = list(command)
@@ -330,13 +478,24 @@ def test_abnormal_exit_attaches_child_output_metadata(monkeypatch, tmp_path: Pat
         seen["stderr"] = stderr
         return fake_process
 
+    def fake_wait(child, timeout):
+        del timeout
+        _seed_child_output_diagnostics(
+            child,
+            stdout_bytes=b"last stdout line\n",
+            stderr_bytes=b"last stderr line\n",
+            timed_out=False,
+            returncode=3,
+            idle_for_seconds=0.25,
+        )
+        return 3, False
+
     def fake_dump(**kwargs):
         seen["dump"] = kwargs
         return tmp_path / "abnormal.json"
 
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(cli.sys, "stdout", stdout)
-    monkeypatch.setattr(cli.sys, "stderr", stderr)
+    monkeypatch.setattr(cli, "_wait_for_child_with_activity_timeout", fake_wait)
     monkeypatch.setattr(cli, "_dump_diagnostics", fake_dump)
 
     code = cli.run_command(

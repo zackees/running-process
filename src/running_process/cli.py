@@ -261,6 +261,48 @@ def _child_output_metadata(child: object) -> dict[str, object] | None:
     return diagnostics.as_metadata()
 
 
+def _build_child_output_extra_metadata(child: object) -> dict[str, object] | None:
+    child_output = _child_output_metadata(child)
+    if child_output is None:
+        return None
+    return {"child_output": child_output}
+
+
+def _build_diagnostic_dump_kwargs(
+    *,
+    reason: str,
+    command: Sequence[str],
+    pid: int | None,
+    returncode: int | None,
+    timeout_seconds: float | None,
+    dump_dir: Path,
+    extra_metadata: dict[str, object] | None,
+) -> dict[str, object]:
+    dump_kwargs: dict[str, object] = {
+        "reason": reason,
+        "command": command,
+        "pid": pid,
+        "returncode": returncode,
+        "timeout_seconds": timeout_seconds,
+        "dump_dir": dump_dir,
+    }
+    if extra_metadata is not None:
+        dump_kwargs["extra_metadata"] = extra_metadata
+    return dump_kwargs
+
+
+def _finalize_child_output_diagnostics(
+    diagnostics: _ChildOutputDiagnostics,
+    *,
+    idle_for_seconds: float,
+    timed_out: bool,
+    returncode: int | None,
+) -> None:
+    diagnostics.idle_for_seconds = max(0.0, idle_for_seconds)
+    diagnostics.timed_out = timed_out
+    diagnostics.returncode = returncode
+
+
 def _run_py_spy_dump(*, pid: int | None, log_path: Path) -> bool:
     if pid is None:
         log_path.write_text("py-spy unavailable: child pid is unknown\n", encoding="utf-8")
@@ -581,9 +623,13 @@ def _wait_for_child_with_activity_timeout(
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
         with activity_lock:
-            diagnostics.idle_for_seconds = max(0.0, time.monotonic() - last_output_at)
-        diagnostics.timed_out = timed_out
-        diagnostics.returncode = returncode
+            idle_for_seconds = time.monotonic() - last_output_at
+        _finalize_child_output_diagnostics(
+            diagnostics,
+            idle_for_seconds=idle_for_seconds,
+            timed_out=timed_out,
+            returncode=returncode,
+        )
     return returncode, timed_out
 
 
@@ -604,24 +650,19 @@ def run_command(
     )
     dump_dir = _stack_dump_dir(stack_dump_dir)
     returncode, timed_out = _wait_for_child_with_activity_timeout(child, timeout=timeout)
-    extra_metadata = None
-    child_output = _child_output_metadata(child)
-    if child_output is not None:
-        extra_metadata = {"child_output": child_output}
+    extra_metadata = _build_child_output_extra_metadata(child)
     if timed_out:
         if auto_stack_dumping:
-            dump_kwargs: dict[str, object] = {
-                "reason": "timeout",
-                "command": command,
-                "pid": child.pid,
-                "returncode": None,
-                "timeout_seconds": timeout,
-                "dump_dir": dump_dir,
-            }
-            if extra_metadata is not None:
-                dump_kwargs["extra_metadata"] = extra_metadata
             metadata_path = _dump_diagnostics(
-                **dump_kwargs,
+                **_build_diagnostic_dump_kwargs(
+                    reason="timeout",
+                    command=command,
+                    pid=child.pid,
+                    returncode=None,
+                    timeout_seconds=timeout,
+                    dump_dir=dump_dir,
+                    extra_metadata=extra_metadata,
+                )
             )
             _safe_write(
                 sys.stderr,
@@ -632,18 +673,16 @@ def run_command(
         return DEFAULT_STACK_DUMP_TIMEOUT_EXIT_CODE
 
     if returncode != 0 and auto_stack_dumping:
-        dump_kwargs = {
-            "reason": "abnormal-exit",
-            "command": command,
-            "pid": child.pid,
-            "returncode": returncode,
-            "timeout_seconds": timeout,
-            "dump_dir": dump_dir,
-        }
-        if extra_metadata is not None:
-            dump_kwargs["extra_metadata"] = extra_metadata
         metadata_path = _dump_diagnostics(
-            **dump_kwargs,
+            **_build_diagnostic_dump_kwargs(
+                reason="abnormal-exit",
+                command=command,
+                pid=child.pid,
+                returncode=returncode,
+                timeout_seconds=timeout,
+                dump_dir=dump_dir,
+                extra_metadata=extra_metadata,
+            )
         )
         _safe_write(
             sys.stderr,
