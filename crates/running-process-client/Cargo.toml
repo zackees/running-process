@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "Lightweight synchronous IPC client for the running-process daemon"
 
 [dependencies]
-running-process-proto = { path = "../running-process-proto", version = "3.0.17" }
+running-process-proto = { path = "../running-process-proto", version = "3.1.0" }
 prost = "0.14"
 interprocess = "2"
 dirs = "6"
