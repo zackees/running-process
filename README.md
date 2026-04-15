@@ -301,6 +301,10 @@ That defaults to building a dev-profile wheel and reinstalling it into the repo'
 uv run build.py --release
 ```
 
+On non-musl Linux, release wheels are pinned to `manylinux2014`, which means a
+glibc 2.17 baseline. This is the oldest supported Rust/maturin floor for the
+repo's non-musl wheel path; `manylinux2010` is not supported there.
+
 ## Process Containment
 
 `ContainedProcessGroup` ensures all child processes are killed when the group is dropped, using OS-level mechanisms (Job Objects on Windows, process groups + `SIGKILL` on Unix).

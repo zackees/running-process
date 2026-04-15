@@ -17,8 +17,20 @@ from ci.soldr import cargo_command
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 TRAMPOLINE_ASSETS = ROOT / "src" / "running_process" / "assets"
+LINUX_GLIBC_COMPATIBILITY = "manylinux2014"
+LINUX_GLIBC_MIN_VERSION = "2.17"
 
 BuildMode = Literal["dev", "release"]
+
+
+def linux_release_compatibility_args() -> list[str]:
+    """Return the oldest supported non-musl Linux wheel compatibility target.
+
+    maturin's Rust wheel support does not allow manylinux1 or manylinux2010, so
+    manylinux2014/glibc 2.17 is the practical lower floor for our non-musl
+    Linux release wheel.
+    """
+    return ["--zig", "--compatibility", LINUX_GLIBC_COMPATIBILITY]
 
 
 def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> list[str]:
@@ -37,7 +49,7 @@ def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> li
     else:
         cmd.append("--release")
         if platform.system() == "Linux":
-            cmd.extend(["--zig", "--compatibility", "manylinux2014"])
+            cmd.extend(linux_release_compatibility_args())
         else:
             cmd.extend(["--compatibility", "pypi"])
     if rustc_args:
