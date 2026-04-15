@@ -167,7 +167,7 @@ fn spawn_and_track_detached(
     }
     if !env.is_empty() {
         command.env_clear();
-        command.envs(env.iter().map(|(key, value)| (key, value)));
+        command.envs(env.iter());
     }
     if !originator.is_empty() {
         command.env(ORIGINATOR_ENV_VAR, originator);

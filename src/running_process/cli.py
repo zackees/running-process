@@ -604,7 +604,7 @@ def run_command(
         extra_metadata = {"child_output": child_output}
     if timed_out:
         if auto_stack_dumping:
-            dump_kwargs = {
+            dump_kwargs: dict[str, object] = {
                 "reason": "timeout",
                 "command": command,
                 "pid": child.pid,

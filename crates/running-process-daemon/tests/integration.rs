@@ -711,7 +711,11 @@ async fn test_spawn_daemon_tracks_spawned_process_and_context() {
     );
 
     let cwd_contents = std::fs::read_to_string(&cwd_file).expect("cwd file should exist");
-    assert_eq!(cwd_contents.trim(), workdir_string);
+    let observed_cwd = std::fs::canonicalize(cwd_contents.trim())
+        .unwrap_or_else(|_| std::path::PathBuf::from(cwd_contents.trim()));
+    let expected_cwd = std::fs::canonicalize(workdir.path())
+        .unwrap_or_else(|_| std::path::PathBuf::from(&workdir_string));
+    assert_eq!(observed_cwd, expected_cwd);
 
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
 }
