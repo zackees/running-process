@@ -5,7 +5,7 @@ use std::env;
 #[cfg(windows)]
 use std::fs;
 #[cfg(windows)]
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(windows)]
 use std::path::PathBuf;
 #[cfg(windows)]

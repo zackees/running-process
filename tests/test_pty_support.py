@@ -5,6 +5,7 @@ import faulthandler
 import gc
 import io
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -66,6 +67,10 @@ skip_unless_github_actions = pytest.mark.skipif(
 skip_unless_dedicated_gh_pty_runner = pytest.mark.skipif(
     os.environ.get("RUNNING_PROCESS_GH_PTY_TESTS") != "1",
     reason="requires dedicated GitHub Actions PTY integration runner",
+)
+skip_on_macos_arm = pytest.mark.skipif(
+    sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"},
+    reason="flaky on macOS ARM GitHub PTY runner",
 )
 
 
@@ -2476,6 +2481,7 @@ def test_pseudo_terminal_wait_for_idle_can_arm_on_explicit_input_submit() -> Non
 @live
 @skip_unless_github_actions
 @skip_unless_dedicated_gh_pty_runner
+@skip_on_macos_arm
 def test_pseudo_terminal_wait_for_idle_can_arm_on_input_newline() -> None:
     process = RunningProcess.pseudo_terminal(
         [
