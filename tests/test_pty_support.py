@@ -1469,6 +1469,9 @@ def test_pseudo_terminal_wait_for_idle_on_callback_can_disarm_and_allow_expect(
     assert writes == [("\n", False)]
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_on_callback_buffer_can_answer_prompts() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -1539,6 +1542,9 @@ def test_pseudo_terminal_wait_for_on_callback_propagates_keyboard_interrupt() ->
             process.kill()
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_expect_can_chain_next_expect() -> None:
     def send_username(_match, buffer) -> WaitCallbackResult:
         buffer.write("alice\n")
@@ -3116,6 +3122,9 @@ def test_pseudo_terminal_kill_uses_killpg_on_posix(monkeypatch: pytest.MonkeyPat
     assert calls == [(2468, pty_module.signal.SIGKILL)]
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_send_interrupt_delegates_to_native_process() -> None:
     calls: list[str] = []
     process = PseudoTerminalProcess(
