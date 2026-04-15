@@ -45,7 +45,7 @@ fn app_root() -> PathBuf {
             .map(PathBuf::from)
             .or_else(|| dirs::home_dir().map(|home| home.join("AppData").join("Local")))
             .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-        return base.join("running-process");
+        base.join("running-process")
     }
 
     #[cfg(target_os = "macos")]
@@ -53,7 +53,7 @@ fn app_root() -> PathBuf {
         let base = dirs::home_dir()
             .map(|home| home.join("Library").join("Application Support"))
             .unwrap_or_else(|| PathBuf::from("/tmp"));
-        return base.join("running-process");
+        base.join("running-process")
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

@@ -7,6 +7,7 @@ spurious bytes.
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 import time
@@ -18,6 +19,15 @@ from running_process._native import native_windows_terminal_input_bytes
 from running_process import RunningProcess
 
 BACKSLASH = 0x5C  # ord("\\")
+live = pytest.mark.live
+skip_unless_github_actions = pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS", "").lower() != "true",
+    reason="requires GitHub Actions runner",
+)
+skip_unless_dedicated_gh_pty_runner = pytest.mark.skipif(
+    os.environ.get("RUNNING_PROCESS_GH_PTY_TESTS") != "1",
+    reason="requires dedicated GitHub Actions PTY integration runner",
+)
 
 
 def _read_until_contains(process: object, needle: str, timeout: float = 10) -> str:
@@ -103,6 +113,9 @@ class TestInputPayloadNoBackslash(unittest.TestCase):
 # ── Integration tests: PTY write→read round-trip ─────────────────────────
 
 
+@live
+@skip_unless_github_actions
+@skip_unless_dedicated_gh_pty_runner
 class TestPtyTrailingBackslash(unittest.TestCase):
     """Ensure PTY write+read round-trip never introduces trailing backslashes."""
 

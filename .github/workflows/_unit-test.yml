@@ -41,6 +41,19 @@ jobs:
           cache-target: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
           save-cache: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
 
+      - name: Reset pinned Rust toolchain on macOS ARM
+        if: ${{ runner.os == 'macOS' && runner.arch == 'ARM64' }}
+        shell: bash
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            exit 0
+          fi
+          rustup toolchain list | awk '$1 ~ /^1\.94\.1/ {print $1}' | while read -r toolchain; do
+            [ -n "$toolchain" ] || continue
+            echo "Removing stale toolchain: $toolchain"
+            rustup toolchain uninstall "$toolchain" || true
+          done
+
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.1"
@@ -55,16 +68,39 @@ jobs:
       - name: Unit Tests
         run: uv run --module ci.run_logged logs/test.log -- uv run --module ci.test
 
-      - name: Display timeout diagnostics
-        if: always()
+      - name: Display failure diagnostics
+        if: ${{ failure() || cancelled() }}
         shell: bash
         run: |
-          if [ -d logs/running-process ]; then
-            echo "::warning::Timeout diagnostics detected"
-            for f in logs/running-process/*.json; do
+          if ls logs/*.analytics.json >/dev/null 2>&1; then
+            echo "::warning::Failure analytics detected"
+            for f in logs/*.analytics.json; do
               [ -f "$f" ] && echo "--- $f ---" && cat "$f"
             done
           fi
+          if [ -d logs/running-process ]; then
+            echo "::warning::running-process diagnostics detected"
+            for f in logs/running-process/*; do
+              [ -f "$f" ] || continue
+              case "$f" in
+                *.json)
+                  echo "--- $f ---"
+                  cat "$f"
+                  ;;
+                *.log)
+                  echo "--- $f (tail -200) ---"
+                  tail -n 200 "$f"
+                  ;;
+              esac
+            done
+          fi
+          echo "::group::Rust toolchain diagnostics"
+          command -v rustup >/dev/null 2>&1 && rustup show || true
+          command -v rustup >/dev/null 2>&1 && rustup toolchain list || true
+          command -v rustc >/dev/null 2>&1 && rustc -Vv || true
+          command -v cargo >/dev/null 2>&1 && cargo -V || true
+          command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
+          echo "::endgroup::"
 
       - name: Upload failure logs
         if: ${{ failure() }}

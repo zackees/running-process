@@ -347,6 +347,35 @@ def test_wait_for_child_returns_after_exit_and_stream_drain(monkeypatch) -> None
     assert stdout.buffer.getvalue() == b"tick\n"
 
 
+def test_wait_for_child_records_recent_output_tail(monkeypatch) -> None:
+    process = _PollingProcess(polls_before_exit=1)
+    call_count = [0]
+
+    def fake_monotonic():
+        val = call_count[0] * 0.02
+        call_count[0] += 1
+        return val
+
+    monkeypatch.setattr(cli.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(cli.sys, "stdout", _BufferedTextStream())
+    monkeypatch.setattr(cli.sys, "stderr", _BufferedTextStream())
+
+    returncode, timed_out = cli._wait_for_child_with_activity_timeout(process, timeout=0.5)
+
+    metadata = cli._child_output_metadata(process)
+
+    assert timed_out is False
+    assert returncode == 0
+    assert metadata is not None
+    assert metadata["returncode"] == 0
+    assert metadata["timed_out"] is False
+    assert metadata["stdout"]["total_bytes"] == len(b"tick\n")
+    assert metadata["stdout"]["tail_text"] == "tick\n"
+    assert metadata["stderr"]["tail_text"] == ""
+    assert metadata["idle_for_seconds"] is not None
+
+
 def test_stream_reader_prefers_read1_for_pipe_like_streams() -> None:
     source = _Read1OnlyStream([b"alpha", b"beta"])
     sink = _BufferedTextStream()
@@ -389,6 +418,11 @@ def test_dump_diagnostics_writes_metadata_and_py_spy_log(monkeypatch, tmp_path: 
         returncode=None,
         timeout_seconds=5.0,
         dump_dir=tmp_path,
+        extra_metadata={
+            "child_output": {
+                "stdout": {"tail_text": "tests/test_pty_support.py::test_example FAILED\n"},
+            }
+        },
     )
 
     assert metadata_path.is_file()
@@ -396,6 +430,7 @@ def test_dump_diagnostics_writes_metadata_and_py_spy_log(monkeypatch, tmp_path: 
     metadata = metadata_path.read_text(encoding="utf-8")
     assert '"reason": "timeout"' in metadata
     assert '"pid": 77' in metadata
+    assert "tests/test_pty_support.py::test_example FAILED" in metadata
     assert any(path.name.endswith(".py-spy.log") for path in tmp_path.iterdir())
     assert any(path.name.endswith(".native-debugger.log") for path in tmp_path.iterdir())
 

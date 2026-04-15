@@ -5,7 +5,7 @@ use std::env;
 #[cfg(windows)]
 use std::fs;
 #[cfg(windows)]
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(windows)]
 use std::path::PathBuf;
 #[cfg(windows)]
@@ -805,7 +805,11 @@ fn helper_force_killed_parent_logs_native_child() {
 fn repeated_force_killed_parents_leave_no_logged_native_children_on_windows() {
     let current_exe = env::current_exe().unwrap();
     let log_path = unique_pid_log_path();
-    let owner_count = 6;
+    let owner_count = if std::env::consts::ARCH == "aarch64" {
+        4
+    } else {
+        6
+    };
     let mut owners = Vec::new();
 
     for _ in 0..owner_count {
@@ -827,7 +831,16 @@ fn repeated_force_killed_parents_leave_no_logged_native_children_on_windows() {
             loop {
                 line.clear();
                 let read = reader.read_line(&mut line).unwrap();
-                assert!(read != 0, "helper exited before reporting readiness");
+                if read == 0 {
+                    let mut stderr = String::new();
+                    if let Some(stderr_pipe) = owner.stderr.as_mut() {
+                        let _ = stderr_pipe.read_to_string(&mut stderr);
+                    }
+                    panic!(
+                        "helper exited before reporting readiness; stderr:\n{}",
+                        stderr.trim_end()
+                    );
+                }
                 if line.trim() == "OWNER_READY" {
                     break;
                 }

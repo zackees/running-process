@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -137,6 +138,84 @@ class TestTrampolineBinary(unittest.TestCase):
 
 class TestDaemonHelpers(unittest.TestCase):
     """Test the Python daemon helper functions."""
+
+    def test_posix_process_state_parses_proc_stat(self) -> None:
+        from running_process import daemon
+
+        with (
+            mock.patch.object(daemon.sys, "platform", "linux"),
+            mock.patch.object(
+                daemon.Path,
+                "read_text",
+                return_value="1234 (daemon name) Z 1 2 3 4 5\n",
+            ),
+        ):
+            self.assertEqual(daemon._posix_process_state(1234), "Z")
+
+    def test_daemon_handle_treats_posix_zombie_as_not_running(self) -> None:
+        from running_process import daemon
+
+        handle = daemon.DaemonHandle(
+            pid=1234,
+            name="test-daemon",
+            runtime_dir=Path("."),
+            log_path=None,
+        )
+        with (
+            mock.patch.object(daemon.sys, "platform", "linux"),
+            mock.patch.object(daemon, "_posix_child_running", return_value=None),
+            mock.patch.object(daemon.os, "kill", return_value=None),
+            mock.patch.object(daemon, "_posix_process_state", return_value="Z"),
+        ):
+            self.assertFalse(handle.is_running())
+
+    def test_posix_ps_process_state_parses_ps_output(self) -> None:
+        from running_process import daemon
+
+        completed = subprocess.CompletedProcess(
+            args=["ps"],
+            returncode=0,
+            stdout="Z+\n",
+            stderr="",
+        )
+        with (
+            mock.patch.object(daemon.sys, "platform", "darwin"),
+            mock.patch.object(daemon.subprocess, "run", return_value=completed),
+        ):
+            self.assertEqual(daemon._posix_ps_process_state(1234), "Z")
+
+    def test_daemon_handle_uses_waitpid_for_reaped_posix_child(self) -> None:
+        from running_process import daemon
+
+        handle = daemon.DaemonHandle(
+            pid=1234,
+            name="test-daemon",
+            runtime_dir=Path("."),
+            log_path=None,
+        )
+        with (
+            mock.patch.object(daemon.sys, "platform", "darwin"),
+            mock.patch.object(daemon, "_posix_child_running", return_value=False),
+        ):
+            self.assertFalse(handle.is_running())
+
+    def test_daemon_handle_falls_back_to_ps_zombie_state_when_needed(self) -> None:
+        from running_process import daemon
+
+        handle = daemon.DaemonHandle(
+            pid=1234,
+            name="test-daemon",
+            runtime_dir=Path("."),
+            log_path=None,
+        )
+        with (
+            mock.patch.object(daemon.sys, "platform", "darwin"),
+            mock.patch.object(daemon, "_posix_child_running", return_value=None),
+            mock.patch.object(daemon.os, "kill", return_value=None),
+            mock.patch.object(daemon, "_posix_process_state", return_value=None),
+            mock.patch.object(daemon, "_posix_ps_process_state", return_value="Z"),
+        ):
+            self.assertFalse(handle.is_running())
 
     def test_write_sidecar_basic(self) -> None:
         from running_process.daemon import cleanup_runtime, write_sidecar

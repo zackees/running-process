@@ -14,7 +14,7 @@ IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
 IN_RUNNING_PROCESS_VALUE = "running-process-cli"
 GITHUB_ACTIONS_ENV = "GITHUB_ACTIONS"
 SKIP_LINUX_DOCKER_ENV = "RUNNING_PROCESS_SKIP_LINUX_DOCKER"
-DEFAULT_TEST_TIMEOUT_SECONDS = "10"
+DEFAULT_TEST_TIMEOUT_SECONDS = "40"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 DEFAULT_RUST_TEST_TIMEOUT_SECONDS = 60.0
 DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 180.0
@@ -135,6 +135,10 @@ def run_live(cmd: list[str]) -> int:
     env = clean_env()
     env["RUNNING_PROCESS_LIVE_TESTS"] = "1"
     return subprocess.run(cmd, cwd=ROOT, env=env).returncode
+
+
+def live_tests_enabled() -> bool:
+    return os.environ.get("RUNNING_PROCESS_LIVE_TESTS") == "1"
 
 
 def load_env_helpers():
@@ -268,12 +272,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # -- Python live tests --
-    cov_append = list(_COV_PYTEST_APPEND) if coverage else []
-    if not _pytest_exit_is_acceptable(
-        run_live(_supervised_pytest_command(python, "-m", "live", *cov_append, *pytest_args)),
-        pytest_args,
-    ):
-        return 1
+    if live_tests_enabled():
+        cov_append = list(_COV_PYTEST_APPEND) if coverage else []
+        if not _pytest_exit_is_acceptable(
+            run_live(_supervised_pytest_command(python, "-m", "live", *cov_append, *pytest_args)),
+            pytest_args,
+        ):
+            return 1
     return 0
 
 

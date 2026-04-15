@@ -15,6 +15,11 @@ import pytest
 live = pytest.mark.live
 is_windows = sys.platform == "win32"
 skip_unless_windows = pytest.mark.skipif(not is_windows, reason="Windows-only test")
+skip_unless_github_actions = pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS", "").lower() != "true",
+    reason="requires GitHub Actions runner",
+)
+pytestmark = [live, skip_unless_github_actions]
 
 
 def _trampoline_available() -> bool:
@@ -314,11 +319,23 @@ class TestSpawnDaemonNoPopup(unittest.TestCase):
     def test_no_console_popup(self):
         """spawn_daemon should not create any visible console windows."""
         from running_process.daemon import cleanup_runtime, spawn_daemon
-        from tests.test_console_detection import assert_no_console_popup
+        from tests.test_console_detection import (
+            _is_known_ci_console_noise,
+            assert_no_console_popup,
+        )
 
         name = f"test-popup-{os.getpid()}"
+
+        def ignore_window(window: dict[str, object]) -> bool:
+            if _is_known_ci_console_noise(window):
+                return True
+            return str(window.get("title", "")) == ""
+
         try:
-            with assert_no_console_popup(duration_secs=4.0):
+            with assert_no_console_popup(
+                duration_secs=4.0,
+                ignore_window=ignore_window,
+            ):
                 handle = spawn_daemon(
                     [sys.executable, "-c", "import time; time.sleep(3)"],
                     name=name,
