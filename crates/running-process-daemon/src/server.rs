@@ -308,8 +308,7 @@ async fn handle_connection_inner(
 
 /// Layer 3: dispatch based on `RequestType`.
 ///
-/// Ping, Status, and Shutdown are handled by real implementations.
-/// All other request types still return a stub "not implemented" response.
+/// Request types dispatch to their concrete handlers.
 fn dispatch_request(
     request: &DaemonRequest,
     state: &DaemonState,
@@ -329,6 +328,7 @@ fn dispatch_request(
         Ok(RequestType::Shutdown) => handlers::handle_shutdown(request, state),
         Ok(RequestType::Register) => handlers::handle_register(request, state),
         Ok(RequestType::Unregister) => handlers::handle_unregister(request, state),
+        Ok(RequestType::SpawnDaemon) => handlers::handle_spawn_daemon(request, state),
         Ok(RequestType::ListActive) => handlers::handle_list_active(request, state),
         Ok(RequestType::ListByOriginator) => handlers::handle_list_by_originator(request, state),
         Ok(RequestType::GetProcessTree) => handlers::handle_get_process_tree(request, state),

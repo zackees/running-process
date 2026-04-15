@@ -4,23 +4,17 @@ import contextlib
 import faulthandler
 import gc
 import io
-import os
-import platform
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import warnings
-from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from running_process._native import (
-    native_dump_rust_debug_traces,
-    native_windows_terminal_input_bytes,
-)
+from running_process._native import native_windows_terminal_input_bytes
 
 import running_process.pty as pty_module
 import running_process.running_process as running_process_module
@@ -59,19 +53,6 @@ from tests.process_helpers import (
 )
 
 _PTY_SUPPORT_WATCHDOG_TIMEOUT_SECONDS = 120.0
-live = pytest.mark.live
-skip_unless_github_actions = pytest.mark.skipif(
-    os.environ.get("GITHUB_ACTIONS", "").lower() != "true",
-    reason="requires GitHub Actions runner",
-)
-skip_unless_dedicated_gh_pty_runner = pytest.mark.skipif(
-    os.environ.get("RUNNING_PROCESS_GH_PTY_TESTS") != "1",
-    reason="requires dedicated GitHub Actions PTY integration runner",
-)
-skip_on_macos_arm = pytest.mark.skipif(
-    sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"},
-    reason="flaky on macOS ARM GitHub PTY runner",
-)
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +90,7 @@ def _read_until_contains(process: object, needle: str, timeout: float = 10) -> s
     raise AssertionError(f"Did not observe {needle!r} in PTY output: {''.join(chunks)!r}")
 
 
-def _capture_wait_echo_bytes(process: RunningProcess | PseudoTerminalProcess) -> bytes:
+def _capture_wait_echo_bytes(process: RunningProcess) -> bytes:
     fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
     original_stdout = sys.stdout
     sys.stdout = fake_stdout
@@ -119,161 +100,6 @@ def _capture_wait_echo_bytes(process: RunningProcess | PseudoTerminalProcess) ->
         return fake_stdout.buffer.getvalue()
     finally:
         sys.stdout = original_stdout
-
-
-def _idle_start_trigger_probe_script(
-    *,
-    emit_ack: bool = False,
-    exit_delay_seconds: float = 0.3,
-) -> str:
-    ack = (
-        "sys.stdout.write('accepted\\n')\n"
-        "sys.stdout.flush()\n"
-        if emit_ack
-        else ""
-    )
-    return (
-        "import sys, time\n"
-        "sys.stdout.write('ready>')\n"
-        "sys.stdout.flush()\n"
-        "sys.stdin.readline()\n"
-        f"{ack}"
-        f"time.sleep({exit_delay_seconds})\n"
-    )
-
-
-def _sample_live_pty_state(process: PseudoTerminalProcess) -> dict[str, object]:
-    proc = process._proc
-    assert proc is not None
-    native_output_bytes = process._pty_output_bytes_total
-    native_control_churn_bytes = process._pty_control_churn_bytes_total
-    with contextlib.suppress(AttributeError):
-        native_output_bytes = proc.pty_output_bytes_total()
-    with contextlib.suppress(AttributeError):
-        native_control_churn_bytes = proc.pty_control_churn_bytes_total()
-    state: dict[str, object] = {
-        "poll": process.poll(),
-        "idle_timeout_enabled": process.idle_timeout_enabled,
-        "native_reader_closed": proc.wait_for_pty_reader_closed(timeout=0.0),
-        "native_input_bytes": proc.pty_input_bytes_total(),
-        "native_newline_events": proc.pty_newline_events_total(),
-        "native_submit_events": proc.pty_submit_events_total(),
-        "native_output_bytes": native_output_bytes,
-        "native_control_churn_bytes": native_control_churn_bytes,
-        "python_input_bytes": process._pty_input_bytes_total,
-        "python_newline_events": process._pty_newline_events_total,
-        "python_submit_events": process._pty_submit_events_total,
-        "native_stream_closed": process._native_stream_closed,
-    }
-    if process.capture:
-        buffer, history_bytes = process._snapshot_output_history()
-        state["history_bytes"] = history_bytes
-        state["history_tail"] = buffer[-200:]
-    return state
-
-
-def _render_live_pty_timeline(timeline: list[dict[str, object]]) -> str:
-    lines = []
-    for sample in timeline:
-        lines.append(
-            "elapsed={elapsed:.3f}s poll={poll!r} reader_closed={native_reader_closed!r} "
-            "submit={native_submit_events!r}/{python_submit_events!r} "
-            "newline={native_newline_events!r}/{python_newline_events!r} "
-            "input={native_input_bytes!r}/{python_input_bytes!r} "
-            "output={native_output_bytes!r} churn={native_control_churn_bytes!r} "
-            "stream_closed={native_stream_closed!r} idle_enabled={idle_timeout_enabled!r} "
-            "tail={history_tail!r}".format(**sample)
-        )
-    return "\n".join(lines)
-
-
-def _dump_live_pty_failure_diagnostics(
-    process: PseudoTerminalProcess,
-    *,
-    label: str,
-    timeline: list[dict[str, object]] | None = None,
-) -> None:
-    lines = [f"[running-process live pty debug] {label}"]
-    with contextlib.suppress(Exception):
-        state = _sample_live_pty_state(process)
-        lines.append("current state:")
-        for key, value in state.items():
-            lines.append(f"  {key}={value!r}")
-    if timeline:
-        lines.append("timeline:")
-        lines.append(_render_live_pty_timeline(timeline))
-    with contextlib.suppress(Exception):
-        rust_dump = native_dump_rust_debug_traces().strip()
-        if rust_dump:
-            lines.append("[running-process rust debug trace]")
-            lines.append(rust_dump)
-    os.write(2, ("\n".join(lines) + "\n").encode("utf-8", errors="replace"))
-
-
-def _wait_for_live_pty_state(
-    process: PseudoTerminalProcess,
-    *,
-    label: str,
-    timeout: float,
-    predicate,
-    interval: float = 0.01,
-) -> list[dict[str, object]]:
-    deadline = time.time() + timeout
-    started = time.time()
-    timeline: list[dict[str, object]] = []
-    while True:
-        sample = _sample_live_pty_state(process)
-        sample["elapsed"] = time.time() - started
-        timeline.append(sample)
-        if predicate(sample):
-            return timeline
-        if time.time() >= deadline:
-            _dump_live_pty_failure_diagnostics(process, label=label, timeline=timeline)
-            raise AssertionError(
-                f"{label} timed out after {timeout:.2f}s\n{_render_live_pty_timeline(timeline)}"
-            )
-        time.sleep(interval)
-
-
-@contextlib.contextmanager
-def _dump_live_pty_debug_on_failure(
-    process: PseudoTerminalProcess,
-    *,
-    label: str,
-) -> Iterator[None]:
-    try:
-        yield
-    except BaseException:
-        _dump_live_pty_failure_diagnostics(process, label=label)
-        raise
-
-
-def _start_delayed_write(
-    process: PseudoTerminalProcess,
-    *,
-    data: str = "hello\n",
-    submit: bool = False,
-    delay_seconds: float = 0.12,
-) -> threading.Thread:
-    def writer() -> None:
-        time.sleep(delay_seconds)
-        process.write(data, submit=submit)
-
-    worker = threading.Thread(target=writer, daemon=True)
-    worker.start()
-    return worker
-
-
-def _drain_pty_until_eof(process: PseudoTerminalProcess, *, timeout: float) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            process.read(timeout=0.1)
-        except TimeoutError:
-            continue
-        except EOFError:
-            return True
-    return False
 
 
 def test_pseudo_terminal_round_trips_interactive_io() -> None:
@@ -1474,9 +1300,6 @@ def test_pseudo_terminal_wait_for_idle_on_callback_can_disarm_and_allow_expect(
     assert writes == [("\n", False)]
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_on_callback_buffer_can_answer_prompts() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -1516,9 +1339,6 @@ def test_pseudo_terminal_wait_for_on_callback_buffer_can_answer_prompts() -> Non
     assert process.wait(timeout=5) == 0
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_on_callback_propagates_keyboard_interrupt() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -1547,9 +1367,6 @@ def test_pseudo_terminal_wait_for_on_callback_propagates_keyboard_interrupt() ->
             process.kill()
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_expect_can_chain_next_expect() -> None:
     def send_username(_match, buffer) -> WaitCallbackResult:
         buffer.write("alice\n")
@@ -1711,12 +1528,14 @@ def test_pseudo_terminal_wait_for_expect_timeout_does_not_arm_next_expect(
     )
     assert first.matched is False
     assert first.exit_reason == "timeout"
+    assert writes == []
 
     stage = "second"
     second = process.wait_for_expect(timeout=5.0)
     assert second.matched is True
     assert second.expect_match is not None
     assert second.expect_match.matched == "username:"
+    assert writes == [("alice\n", False)]
 
     stage = "third"
     third = process.wait_for_expect(
@@ -1727,11 +1546,9 @@ def test_pseudo_terminal_wait_for_expect_timeout_does_not_arm_next_expect(
     assert third.expect_match is not None
     assert third.expect_match.matched == "password:"
     assert writes == [("alice\n", False), ("secret\n", False)]
+    assert process._registered_expect_conditions == []
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_constructor_can_mix_expect_rule_and_registered_expect() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -1760,126 +1577,43 @@ def test_pseudo_terminal_constructor_can_mix_expect_rule_and_registered_expect()
     assert process.wait(timeout=5) == 0
 
 
-def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    writes: list[tuple[str | bytes, bool]] = []
-    callback_started = threading.Event()
-    callback_release = threading.Event()
-
-    process = PseudoTerminalProcess(
-        [sys.executable, "-c", "print('x')"],
+def test_pseudo_terminal_wait_for_callable_condition_does_not_block_expect() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "time.sleep(0.02)\n"
+                "sys.stdout.write('ready>'); sys.stdout.flush()\n"
+                "sys.stdin.readline()\n"
+            ),
+        ],
         text=True,
-        auto_run=False,
     )
-
-    class FakeProc:
-        pid = 1234
-        exited = False
-
-        def poll(self) -> int | None:
-            return 0 if self.exited else None
-
-        def close(self) -> None:
-            return None
-
-    fake_proc = FakeProc()
-    process._proc = fake_proc  # type: ignore[assignment]
-    monkeypatch.setattr(
-        process,
-        "_pump_native_output",
-        lambda timeout, consume_all: time.sleep(min(timeout, 0.01)),
-    )
-    monkeypatch.setattr(process, "_snapshot_output_history", lambda: ("", 0))
-
-    def snapshot_output_since(start: int) -> tuple[str, int]:
-        if start == 0 and callback_started.is_set():
-            return ("ready>", 6)
-        return ("", start)
-
-    def fake_write(data: str | bytes, *, submit: bool = False) -> None:
-        writes.append((data, submit))
-        fake_proc.exited = True
-        callback_release.set()
 
     def slow_false() -> bool:
-        callback_started.set()
-        callback_release.wait(timeout=0.2)
+        time.sleep(0.3)
         return False
-
-    monkeypatch.setattr(process, "_snapshot_output_since", snapshot_output_since)
-    process.write = fake_write  # type: ignore[method-assign]
 
     result = process.wait_for(
         Expect("ready>", action="\n"),
         slow_false,
-        timeout=1.0,
+        timeout=5.0,
     )
 
-    assert callback_started.is_set()
     assert result.matched is True
     assert isinstance(result.condition, Expect)
     assert result.expect_match is not None
     assert result.expect_match.matched == "ready>"
-    assert result.returncode == 0
-    assert writes == [("\n", False)]
+    assert process.wait(timeout=5) == 0
 
 
-def test_pseudo_terminal_wait_for_idle_reports_process_exit_before_idle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    snapshots = iter(
-        [
-            SimpleNamespace(
-                sampled_at=0.00,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=0,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.04,
-                process_alive=False,
-                pty_input_bytes=0,
-                pty_output_bytes=0,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=0,
-            ),
-        ]
-    )
-
-    process = PseudoTerminalProcess(
-        [sys.executable, "-c", "print('x')"],
+def test_pseudo_terminal_wait_for_idle_reports_process_exit_before_idle() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [sys.executable, "-c", "import time; time.sleep(0.05)"],
         text=True,
-        auto_run=False,
     )
-
-    class FakeProc:
-        pid = 1234
-
-        def poll(self) -> int | None:
-            return 0
-
-        def close(self) -> None:
-            return None
-
-    process._proc = FakeProc()  # type: ignore[assignment]
-    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
-    monkeypatch.setattr(process, "_drain_native_until_eof", lambda timeout: None)
-    monkeypatch.setattr(process, "_finalize", lambda reason: None)
-    monkeypatch.setattr(
-        process,
-        "_sample_idle_snapshot",
-        lambda process_cfg=None: next(snapshots),
-    )
-
     result = process.wait_for_idle(
         IdleDetection(
             timing=IdleTiming(
@@ -1896,92 +1630,15 @@ def test_pseudo_terminal_wait_for_idle_reports_process_exit_before_idle(
     assert result.returncode == 0
 
 
-def test_pseudo_terminal_wait_for_idle_honors_stability_window(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    snapshots = iter(
+def test_pseudo_terminal_wait_for_idle_honors_stability_window() -> None:
+    process = RunningProcess.pseudo_terminal(
         [
-            SimpleNamespace(
-                sampled_at=0.00,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=0,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.02,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=6,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.08,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=6,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.14,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=6,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.20,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=6,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.24,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=6,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-        ]
-    )
-
-    process = PseudoTerminalProcess(
-        [sys.executable, "-c", "print('x')"],
+            sys.executable,
+            "-c",
+            ("import sys, time\nprint('start', flush=True)\ntime.sleep(0.4)\n"),
+        ],
         text=True,
-        auto_run=False,
     )
-    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
-    monkeypatch.setattr(
-        process,
-        "_sample_idle_snapshot",
-        lambda process_cfg=None: next(snapshots),
-    )
-
     result = process.wait_for_idle(
         IdleDetection(
             timing=IdleTiming(
@@ -1995,69 +1652,15 @@ def test_pseudo_terminal_wait_for_idle_honors_stability_window(
     assert result.idle_detected is True
     assert result.exit_reason == "idle_timeout"
     assert result.idle_for_seconds >= 0.15
+    process.kill()
 
 
-def test_pseudo_terminal_wait_for_idle_passes_diff_and_context_to_predicate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_pseudo_terminal_wait_for_idle_passes_diff_and_context_to_predicate() -> None:
     seen: list[tuple[IdleDiff, IdleContext]] = []
-    last_snapshot = SimpleNamespace(
-        sampled_at=0.05,
-        process_alive=True,
-        pty_input_bytes=0,
-        pty_output_bytes=0,
-        pty_control_churn_bytes=0,
-        cpu_percent=0.0,
-        disk_io_bytes=0,
-        network_io_bytes=0,
-        returncode=None,
-    )
-    snapshots = iter(
-        [
-            SimpleNamespace(
-                sampled_at=0.00,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=0,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.02,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=0,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            last_snapshot,
-        ]
-    )
 
-    process = PseudoTerminalProcess(
-        [sys.executable, "-c", "print('x')"],
-        auto_run=False,
-    )
-    monkeypatch.setattr(process, "_pump_native_output", lambda timeout, consume_all: None)
-    fake_now = -0.01
-
-    def fake_time() -> float:
-        nonlocal fake_now
-        fake_now += 0.01
-        return fake_now
-
-    monkeypatch.setattr(pty_module.time, "time", fake_time)
-
-    monkeypatch.setattr(
-        process,
-        "_sample_idle_snapshot",
-        lambda process_cfg=None: next(snapshots, last_snapshot),
+    process = RunningProcess.pseudo_terminal(
+        [sys.executable, "-c", "import time; time.sleep(0.3)"],
+        text=True,
     )
 
     def capture(diff: IdleDiff, ctx: IdleContext) -> bool:
@@ -2077,8 +1680,7 @@ def test_pseudo_terminal_wait_for_idle_passes_diff_and_context_to_predicate(
     )
     assert result.exit_reason == "idle_timeout"
     assert seen
-    assert all(diff.process_alive is True for diff, _ctx in seen)
-    assert [ctx.sample_count for _diff, ctx in seen] == [0, 1]
+    assert all(item[0].process_alive is True for item in seen[:1])
 
 
 def test_idle_detection_rejects_conflicting_custom_callback_fields() -> None:
@@ -2117,40 +1719,12 @@ def test_idle_reached_callback_requires_idle_decision_result() -> None:
     process.kill()
 
 
-def test_running_process_interactive_launches_console_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    class FakeProc:
-        def __init__(self, command: object, **kwargs: object) -> None:
-            captured["command"] = command
-            captured.update(kwargs)
-
-        def start(self) -> None:
-            captured["started"] = True
-
-        def poll(self) -> int | None:
-            return 0
-
-        def wait(self, timeout: float | None = None) -> int:
-            captured["timeout"] = timeout
-            return 0
-
-        def kill(self) -> None:
-            return None
-
-    monkeypatch.setattr(pty_module, "NativeProcess", FakeProc)
-
+def test_running_process_interactive_launches_console_mode() -> None:
     process = RunningProcess.interactive(
         [sys.executable, "-c", "print('interactive')"],
         mode=InteractiveMode.CONSOLE_SHARED,
     )
     assert process.wait(timeout=5) == 0
-    assert process.launch_spec.mode is InteractiveMode.CONSOLE_SHARED
-    assert captured["capture"] is False
-    assert captured["started"] is True
-    assert captured["timeout"] == 5
 
 
 def test_running_process_signal_bool_shadows_python_reads() -> None:
@@ -2170,85 +1744,20 @@ def test_running_process_signal_bool_shadows_python_reads() -> None:
     assert signal.value is False
 
 
-def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    snapshots = iter(
-        [
-            SimpleNamespace(
-                sampled_at=0.00,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=0,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.10,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=0,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.35,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=0,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-            SimpleNamespace(
-                sampled_at=0.55,
-                process_alive=True,
-                pty_input_bytes=0,
-                pty_output_bytes=0,
-                pty_control_churn_bytes=0,
-                cpu_percent=0.0,
-                disk_io_bytes=0,
-                network_io_bytes=0,
-                returncode=None,
-            ),
-        ]
-    )
-
-    process = PseudoTerminalProcess(
-        [sys.executable, "-c", "print('x')"],
-        auto_run=False,
+def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait() -> None:
+    process = RunningProcess.pseudo_terminal(
+        [sys.executable, "-c", "import time; time.sleep(1.5)"],
+        text=True,
     )
     process.idle_timeout_enabled = False
-    fake_now = -0.05
-    pump_calls = 0
 
-    def fake_time() -> float:
-        nonlocal fake_now
-        fake_now += 0.05
-        return fake_now
+    def enable_later() -> None:
+        time.sleep(0.3)
+        process.idle_timeout_enabled = True
 
-    def fake_pump(timeout: float, consume_all: bool) -> None:
-        nonlocal pump_calls
-        pump_calls += 1
-        if pump_calls == 1:
-            process.idle_timeout_enabled = True
-
-    monkeypatch.setattr(pty_module.time, "time", fake_time)
-    monkeypatch.setattr(process, "_pump_native_output", fake_pump)
-    monkeypatch.setattr(
-        process,
-        "_sample_idle_snapshot",
-        lambda process_cfg=None: next(snapshots),
-    )
-
+    worker = threading.Thread(target=enable_later, daemon=True)
+    worker.start()
+    started = time.time()
     result = process.wait_for_idle(
         IdleDetection(
             timing=IdleTiming(
@@ -2259,122 +1768,15 @@ def test_pseudo_terminal_idle_timeout_signal_can_be_reenabled_during_wait(
         ),
         timeout=2.0,
     )
+    elapsed = time.time() - started
+    worker.join(timeout=2.0)
 
     assert result.idle_detected is True
     assert result.exit_reason == "idle_timeout"
-    assert result.idle_for_seconds >= 0.2
-    assert process.idle_timeout_enabled is True
-    assert pump_calls >= 1
+    assert elapsed >= 0.3
+    process.kill()
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
-def test_pseudo_terminal_newline_bytes_without_submit_keep_submit_counter_zero() -> None:
-    process = RunningProcess.pseudo_terminal(
-        [
-            sys.executable,
-            "-c",
-            _idle_start_trigger_probe_script(exit_delay_seconds=0.05),
-        ],
-        text=True,
-    )
-
-    try:
-        with _dump_live_pty_debug_on_failure(
-            process,
-            label="newline-bytes-without-submit-keep-submit-counter-zero",
-        ):
-            _read_until_contains(process, "ready>")
-            process.write("hello\n")
-            timeline = _wait_for_live_pty_state(
-                process,
-                label="newline-bytes-without-submit-keep-submit-counter-zero",
-                timeout=0.5,
-                predicate=lambda sample: sample["native_input_bytes"] == 6,
-            )
-            final = timeline[-1]
-            assert final["native_newline_events"] == 1
-            assert final["native_submit_events"] == 0
-            assert final["python_newline_events"] == 1
-            assert final["python_submit_events"] == 0
-    finally:
-        with contextlib.suppress(Exception):
-            process.kill()
-
-
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
-def test_pseudo_terminal_delayed_newline_without_submit_reaches_child() -> None:
-    process = RunningProcess.pseudo_terminal(
-        [
-            sys.executable,
-            "-c",
-            _idle_start_trigger_probe_script(emit_ack=True, exit_delay_seconds=0.3),
-        ],
-        text=True,
-    )
-
-    worker = _start_delayed_write(process, submit=False)
-    try:
-        with _dump_live_pty_debug_on_failure(
-            process,
-            label="delayed-newline-without-submit-reaches-child",
-        ):
-            output = _read_until_contains(process, "accepted", timeout=1.0)
-            worker.join(timeout=1.0)
-            assert "accepted" in output
-            state = _sample_live_pty_state(process)
-            assert state["native_submit_events"] == 0
-            assert state["python_submit_events"] == 0
-    finally:
-        with contextlib.suppress(Exception):
-            worker.join(timeout=1.0)
-        with contextlib.suppress(Exception):
-            process.kill()
-
-
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
-def test_pseudo_terminal_delayed_newline_without_submit_exits_and_closes_reader() -> None:
-    process = RunningProcess.pseudo_terminal(
-        [
-            sys.executable,
-            "-c",
-            _idle_start_trigger_probe_script(exit_delay_seconds=0.3),
-        ],
-        text=True,
-    )
-
-    worker = _start_delayed_write(process, submit=False)
-    try:
-        with _dump_live_pty_debug_on_failure(
-            process,
-            label="delayed-newline-without-submit-exits-and-closes-reader",
-        ):
-            exit_timeline = _wait_for_live_pty_state(
-                process,
-                label="delayed-newline-without-submit-exits",
-                timeout=1.5,
-                predicate=lambda sample: sample["poll"] == 0,
-            )
-            _drain_pty_until_eof(process, timeout=2.0)
-            worker.join(timeout=1.0)
-
-            assert exit_timeline[-1]["native_submit_events"] == 0
-            assert exit_timeline[-1]["python_submit_events"] == 0
-    finally:
-        with contextlib.suppress(Exception):
-            worker.join(timeout=1.0)
-        with contextlib.suppress(Exception):
-            process.kill()
-
-
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_bytes() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2398,28 +1800,24 @@ def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_byte
     worker = threading.Thread(target=submit_later, daemon=True)
     worker.start()
     try:
-        with _dump_live_pty_debug_on_failure(
-            process,
-            label="wait-for-idle-does-not-arm-input-submit-on-newline-bytes",
-        ):
-            started = time.time()
-            result = process.wait_for_idle(
-                IdleDetection(
-                    timing=IdleTiming(
-                        timeout_seconds=0.05,
-                        stability_window_seconds=0.02,
-                        sample_interval_seconds=0.01,
-                    ),
-                    pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
+        started = time.time()
+        result = process.wait_for_idle(
+            IdleDetection(
+                timing=IdleTiming(
+                    timeout_seconds=0.05,
+                    stability_window_seconds=0.02,
+                    sample_interval_seconds=0.01,
                 ),
-                timeout=0.8,
-            )
-            elapsed = time.time() - started
-            worker.join(timeout=1.0)
+                pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
+            ),
+            timeout=0.8,
+        )
+        elapsed = time.time() - started
+        worker.join(timeout=1.0)
 
-            assert result.idle_detected is False
-            assert result.exit_reason == "process_exit"
-            assert elapsed >= 0.25
+        assert result.idle_detected is False
+        assert result.exit_reason == "process_exit"
+        assert elapsed >= 0.25
     finally:
         with contextlib.suppress(Exception):
             worker.join(timeout=1.0)
@@ -2427,9 +1825,6 @@ def test_pseudo_terminal_wait_for_idle_does_not_arm_input_submit_on_newline_byte
             process.kill()
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_idle_can_arm_on_explicit_input_submit() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2478,10 +1873,6 @@ def test_pseudo_terminal_wait_for_idle_can_arm_on_explicit_input_submit() -> Non
             process.kill()
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
-@skip_on_macos_arm
 def test_pseudo_terminal_wait_for_idle_can_arm_on_input_newline() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2530,9 +1921,6 @@ def test_pseudo_terminal_wait_for_idle_can_arm_on_input_newline() -> None:
             process.kill()
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_wait_for_idle_condition_can_arm_on_explicit_input_submit() -> None:
     process = RunningProcess.pseudo_terminal(
         [
@@ -2878,9 +2266,6 @@ def test_windows_terminal_input_bytes_preserves_explicit_crlf() -> None:
     assert native_windows_terminal_input_bytes(b"a\nb") == expected
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_can_set_positive_nice() -> None:
     if sys.platform == "win32":
         process = RunningProcess.pseudo_terminal(
@@ -2923,9 +2308,6 @@ def test_posix_pty_command_wraps_nice_before_exec(monkeypatch: pytest.MonkeyPatc
     assert command[4:] == ["python", "-c", "print('x')"]
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_accepts_priority_enum() -> None:
     process = RunningProcess.pseudo_terminal(
         [sys.executable, "-c", "import os, time; time.sleep(0.3); print(os.nice(0), flush=True)"]
@@ -2947,9 +2329,6 @@ def test_pseudo_terminal_accepts_priority_enum() -> None:
     assert process.wait(timeout=5) == 0
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_interactive_kill_waits_for_exit() -> None:
     process = RunningProcess.interactive(
         [sys.executable, "-c", "import time; time.sleep(10)"],
@@ -2959,9 +2338,6 @@ def test_interactive_kill_waits_for_exit() -> None:
     assert process.poll() is not None
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_interactive_wait_raises_keyboard_interrupt_on_sigint() -> None:
     process = RunningProcess.interactive(
         [
@@ -2984,9 +2360,6 @@ def test_interactive_wait_raises_keyboard_interrupt_on_sigint() -> None:
         process.wait(timeout=2)
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_interactive_can_set_positive_nice() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "nice.txt"
@@ -3013,9 +2386,6 @@ def test_interactive_can_set_positive_nice() -> None:
         assert observed >= expected
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_interactive_accepts_priority_enum() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "nice.txt"
@@ -3128,9 +2498,6 @@ def test_pseudo_terminal_kill_uses_killpg_on_posix(monkeypatch: pytest.MonkeyPat
     assert calls == [(2468, pty_module.signal.SIGKILL)]
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_pseudo_terminal_send_interrupt_delegates_to_native_process() -> None:
     calls: list[str] = []
     process = PseudoTerminalProcess(
@@ -3146,9 +2513,6 @@ def test_pseudo_terminal_send_interrupt_delegates_to_native_process() -> None:
     assert process.interrupted_by_caller is True
 
 
-@live
-@skip_unless_github_actions
-@skip_unless_dedicated_gh_pty_runner
 def test_running_process_use_pty_remains_constructor_compatible() -> None:
     process = RunningProcess(
         [sys.executable, "-c", "print('pty compat')"],

@@ -11,9 +11,10 @@ use prost::Message;
 use running_process_proto::daemon::{
     DaemonRequest, DaemonResponse, GetProcessTreeRequest, KillTreeRequest, KillZombiesRequest,
     ListActiveRequest, ListByOriginatorRequest, PingRequest, RequestType, ShutdownRequest,
-    StatusRequest,
+    SpawnDaemonRequest as ProtoSpawnDaemonRequest, StatusCode, StatusRequest,
 };
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,8 @@ pub enum ClientError {
     Io(std::io::Error),
     /// Failed to decode a protobuf response.
     Decode(prost::DecodeError),
+    /// The daemon returned an application-level error response.
+    Server { code: StatusCode, message: String },
     /// The daemon is not running and could not be started.
     DaemonNotRunning,
 }
@@ -39,6 +42,9 @@ impl std::fmt::Display for ClientError {
             ClientError::Connect(e) => write!(f, "failed to connect to daemon: {e}"),
             ClientError::Io(e) => write!(f, "daemon I/O error: {e}"),
             ClientError::Decode(e) => write!(f, "failed to decode daemon response: {e}"),
+            ClientError::Server { code, message } => {
+                write!(f, "daemon returned {:?}: {}", code, message)
+            }
             ClientError::DaemonNotRunning => write!(f, "daemon is not running"),
         }
     }
@@ -49,9 +55,99 @@ impl std::error::Error for ClientError {
         match self {
             ClientError::Connect(e) | ClientError::Io(e) => Some(e),
             ClientError::Decode(e) => Some(e),
-            ClientError::DaemonNotRunning => None,
+            ClientError::Server { .. } | ClientError::DaemonNotRunning => None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Spawn API
+// ---------------------------------------------------------------------------
+
+/// Request to spawn a detached daemonized shell command under daemon control.
+#[derive(Debug, Clone)]
+pub struct SpawnCommandRequest {
+    pub command: String,
+    pub cwd: Option<PathBuf>,
+    pub env: Vec<(String, String)>,
+    pub originator: Option<String>,
+}
+
+impl SpawnCommandRequest {
+    fn default_originator() -> String {
+        let caller = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().into_owned()))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "running-process-client".to_string());
+        format!("{caller}:{}", std::process::id())
+    }
+
+    /// Build a shell-command request using the caller's current working
+    /// directory and environment.
+    pub fn shell(command: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+            cwd: std::env::current_dir().ok(),
+            env: std::env::vars().collect(),
+            originator: Some(Self::default_originator()),
+        }
+    }
+
+    /// Override the working directory used for the spawned command.
+    pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
+
+    /// Replace the environment block sent to the daemon.
+    pub fn with_envs<I, K, V>(mut self, env: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.env = env
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect();
+        self
+    }
+
+    /// Add or replace a single environment variable while keeping the rest
+    /// of the existing environment block intact.
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let key = key.into();
+        let value = value.into();
+        if let Some((_, existing)) = self
+            .env
+            .iter_mut()
+            .find(|(existing_key, _)| *existing_key == key)
+        {
+            *existing = value;
+        } else {
+            self.env.push((key, value));
+        }
+        self
+    }
+
+    /// Set the originator value stored in the daemon registry and injected
+    /// into the spawned child environment.
+    pub fn with_originator(mut self, originator: impl Into<String>) -> Self {
+        self.originator = Some(originator.into());
+        self
+    }
+}
+
+/// Information about a daemonized process spawned by the service.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnedDaemon {
+    pub pid: u32,
+    pub created_at: f64,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub originator: Option<String>,
+    pub containment: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +231,18 @@ impl DaemonClient {
     /// Allocate the next request ID.
     fn next_request_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn ensure_ok(&self, response: &DaemonResponse) -> Result<(), ClientError> {
+        if response.code == StatusCode::Ok as i32 {
+            return Ok(());
+        }
+
+        let code = StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
+        Err(ClientError::Server {
+            code,
+            message: response.message.clone(),
+        })
     }
 
     /// Ping the daemon to check liveness.
@@ -256,6 +364,55 @@ impl DaemonClient {
         };
         self.send_request(request)
     }
+
+    /// Ask the daemon to spawn and track a detached shell command.
+    pub fn spawn_command(
+        &mut self,
+        request: &SpawnCommandRequest,
+    ) -> Result<SpawnedDaemon, ClientError> {
+        let daemon_request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::SpawnDaemon.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            spawn_daemon: Some(ProtoSpawnDaemonRequest {
+                command: request.command.clone(),
+                cwd: request
+                    .cwd
+                    .as_ref()
+                    .map(|cwd| cwd.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                env: request.env.iter().cloned().collect(),
+                originator: request.originator.clone().unwrap_or_default(),
+            }),
+            ..Default::default()
+        };
+
+        let response = self.send_request(daemon_request)?;
+        self.ensure_ok(&response)?;
+
+        let payload = response.spawn_daemon.ok_or_else(|| ClientError::Server {
+            code: StatusCode::Internal,
+            message: "spawn response missing payload".to_string(),
+        })?;
+
+        Ok(SpawnedDaemon {
+            pid: payload.pid,
+            created_at: payload.created_at,
+            command: payload.command,
+            cwd: if payload.cwd.is_empty() {
+                None
+            } else {
+                Some(payload.cwd)
+            },
+            originator: if payload.originator.is_empty() {
+                None
+            } else {
+                Some(payload.originator)
+            },
+            containment: payload.containment,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +444,13 @@ pub fn connect_or_start(scope_hash: Option<&str>) -> Result<DaemonClient, Client
     }
 
     Err(ClientError::DaemonNotRunning)
+}
+
+/// Convenience helper that connects to the daemon and asks it to daemonize
+/// the provided shell command under the caller's current cwd/environment.
+pub fn daemonize_command(command: &str) -> Result<SpawnedDaemon, ClientError> {
+    let mut client = connect_or_start(None)?;
+    client.spawn_command(&SpawnCommandRequest::shell(command))
 }
 
 /// Spawn the daemon binary as a detached background process.

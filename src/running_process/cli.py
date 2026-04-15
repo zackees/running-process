@@ -155,6 +155,29 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _write_dump_metadata(
+    *,
+    metadata_path: Path,
+    reason: str,
+    command: Sequence[str],
+    pid: int | None,
+    returncode: int | None,
+    timeout_seconds: float | None,
+    extra_metadata: dict[str, object] | None = None,
+) -> None:
+    metadata = {
+        "reason": reason,
+        "command": list(command),
+        "pid": pid,
+        "returncode": returncode,
+        "timeout_seconds": timeout_seconds,
+        "timestamp_utc": _utc_now_iso(),
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+
+
 class _BoundedTailBuffer:
     def __init__(self, limit_bytes: int) -> None:
         self._limit_bytes = limit_bytes
@@ -238,27 +261,46 @@ def _child_output_metadata(child: object) -> dict[str, object] | None:
     return diagnostics.as_metadata()
 
 
-def _write_dump_metadata(
+def _build_child_output_extra_metadata(child: object) -> dict[str, object] | None:
+    child_output = _child_output_metadata(child)
+    if child_output is None:
+        return None
+    return {"child_output": child_output}
+
+
+def _build_diagnostic_dump_kwargs(
     *,
-    metadata_path: Path,
     reason: str,
     command: Sequence[str],
     pid: int | None,
     returncode: int | None,
     timeout_seconds: float | None,
-    extra_metadata: dict[str, object] | None = None,
-) -> None:
-    metadata = {
+    dump_dir: Path,
+    extra_metadata: dict[str, object] | None,
+) -> dict[str, object]:
+    dump_kwargs: dict[str, object] = {
         "reason": reason,
-        "command": list(command),
+        "command": command,
         "pid": pid,
         "returncode": returncode,
         "timeout_seconds": timeout_seconds,
-        "timestamp_utc": _utc_now_iso(),
+        "dump_dir": dump_dir,
     }
-    if extra_metadata:
-        metadata.update(extra_metadata)
-    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    if extra_metadata is not None:
+        dump_kwargs["extra_metadata"] = extra_metadata
+    return dump_kwargs
+
+
+def _finalize_child_output_diagnostics(
+    diagnostics: _ChildOutputDiagnostics,
+    *,
+    idle_for_seconds: float,
+    timed_out: bool,
+    returncode: int | None,
+) -> None:
+    diagnostics.idle_for_seconds = max(0.0, idle_for_seconds)
+    diagnostics.timed_out = timed_out
+    diagnostics.returncode = returncode
 
 
 def _run_py_spy_dump(*, pid: int | None, log_path: Path) -> bool:
@@ -496,9 +538,9 @@ def _stream_reader(
             chunk = read_chunk(4096)
             if not chunk:
                 break
-            _write_stream_bytes(sink, chunk)
             if capture is not None:
                 capture.record(chunk)
+            _write_stream_bytes(sink, chunk)
             touch_activity()
     finally:
         if capture is not None:
@@ -527,14 +569,20 @@ def _wait_for_child_with_activity_timeout(
     stdout_thread = threading.Thread(
         target=_stream_reader,
         args=(getattr(child, "stdout", None), sys.stdout),
-        kwargs={"touch_activity": touch_activity, "capture": diagnostics.stdout},
+        kwargs={
+            "touch_activity": touch_activity,
+            "capture": diagnostics.stdout,
+        },
         name="running-process-stdout-reader",
         daemon=True,
     )
     stderr_thread = threading.Thread(
         target=_stream_reader,
         args=(getattr(child, "stderr", None), sys.stderr),
-        kwargs={"touch_activity": touch_activity, "capture": diagnostics.stderr},
+        kwargs={
+            "touch_activity": touch_activity,
+            "capture": diagnostics.stderr,
+        },
         name="running-process-stderr-reader",
         daemon=True,
     )
@@ -575,9 +623,13 @@ def _wait_for_child_with_activity_timeout(
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
         with activity_lock:
-            diagnostics.idle_for_seconds = max(0.0, time.monotonic() - last_output_at)
-        diagnostics.timed_out = timed_out
-        diagnostics.returncode = returncode
+            idle_for_seconds = time.monotonic() - last_output_at
+        _finalize_child_output_diagnostics(
+            diagnostics,
+            idle_for_seconds=idle_for_seconds,
+            timed_out=timed_out,
+            returncode=returncode,
+        )
     return returncode, timed_out
 
 
@@ -598,23 +650,20 @@ def run_command(
     )
     dump_dir = _stack_dump_dir(stack_dump_dir)
     returncode, timed_out = _wait_for_child_with_activity_timeout(child, timeout=timeout)
-    extra_metadata = None
-    child_output = _child_output_metadata(child)
-    if child_output is not None:
-        extra_metadata = {"child_output": child_output}
+    extra_metadata = _build_child_output_extra_metadata(child)
     if timed_out:
         if auto_stack_dumping:
-            dump_kwargs = {
-                "reason": "timeout",
-                "command": command,
-                "pid": child.pid,
-                "returncode": None,
-                "timeout_seconds": timeout,
-                "dump_dir": dump_dir,
-            }
-            if extra_metadata is not None:
-                dump_kwargs["extra_metadata"] = extra_metadata
-            metadata_path = _dump_diagnostics(**dump_kwargs)
+            metadata_path = _dump_diagnostics(
+                **_build_diagnostic_dump_kwargs(
+                    reason="timeout",
+                    command=command,
+                    pid=child.pid,
+                    returncode=None,
+                    timeout_seconds=timeout,
+                    dump_dir=dump_dir,
+                    extra_metadata=extra_metadata,
+                )
+            )
             _safe_write(
                 sys.stderr,
                 f"[running-process] timeout diagnostics written to {metadata_path}\n",
@@ -624,17 +673,17 @@ def run_command(
         return DEFAULT_STACK_DUMP_TIMEOUT_EXIT_CODE
 
     if returncode != 0 and auto_stack_dumping:
-        dump_kwargs = {
-            "reason": "abnormal-exit",
-            "command": command,
-            "pid": child.pid,
-            "returncode": returncode,
-            "timeout_seconds": timeout,
-            "dump_dir": dump_dir,
-        }
-        if extra_metadata is not None:
-            dump_kwargs["extra_metadata"] = extra_metadata
-        metadata_path = _dump_diagnostics(**dump_kwargs)
+        metadata_path = _dump_diagnostics(
+            **_build_diagnostic_dump_kwargs(
+                reason="abnormal-exit",
+                command=command,
+                pid=child.pid,
+                returncode=returncode,
+                timeout_seconds=timeout,
+                dump_dir=dump_dir,
+                extra_metadata=extra_metadata,
+            )
+        )
         _safe_write(
             sys.stderr,
             f"[running-process] abnormal-exit diagnostics written to {metadata_path}\n",

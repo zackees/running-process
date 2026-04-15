@@ -3,15 +3,18 @@
 //! Each handler receives a [`DaemonRequest`] and a shared [`DaemonState`]
 //! reference, returning a fully-constructed [`DaemonResponse`].
 
+use running_process_core::ORIGINATOR_ENV_VAR;
 use running_process_proto::daemon::{
     DaemonRequest, DaemonResponse, GetProcessTreeResponse, KillTreeResponse, KillZombiesResponse,
     ListActiveResponse, ListByOriginatorResponse, PingResponse, ProcessState, RegisterResponse,
-    ShutdownResponse, StatusCode, StatusResponse, TrackedProcess, UnregisterResponse, ZombieReport,
+    ShutdownResponse, SpawnDaemonResponse, StatusCode, StatusResponse, TrackedProcess,
+    UnregisterResponse, ZombieReport,
 };
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, System};
 use tokio::sync::watch;
 
 use crate::reaper;
@@ -108,6 +111,180 @@ pub fn handle_shutdown(request: &DaemonRequest, state: &DaemonState) -> DaemonRe
 // ---------------------------------------------------------------------------
 // Entry ↔ Proto conversion
 // ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct SpawnedChild {
+    pid: u32,
+    created_at: f64,
+}
+
+fn unix_now_seconds() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
+fn shell_command(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let mut cmd = Command::new("cmd.exe");
+        cmd.raw_arg("/D /S /C \"");
+        cmd.raw_arg(command);
+        cmd.raw_arg("\"");
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-lc").arg(command);
+        cmd
+    }
+}
+
+fn process_created_at(pid: u32) -> Option<f64> {
+    let mut system = System::new();
+    let sysinfo_pid = Pid::from_u32(pid);
+    system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+    system
+        .process(sysinfo_pid)
+        .map(|process| process.start_time() as f64)
+}
+
+fn spawn_and_track_detached(
+    command_text: &str,
+    cwd: &str,
+    env: &std::collections::HashMap<String, String>,
+    originator: &str,
+    state: &DaemonState,
+) -> Result<SpawnedChild, String> {
+    let mut command = shell_command(command_text);
+
+    if !cwd.is_empty() {
+        command.current_dir(cwd);
+    }
+    if !env.is_empty() {
+        command.env_clear();
+        command.envs(env.iter());
+    }
+    if !originator.is_empty() {
+        command.env(ORIGINATOR_ENV_VAR, originator);
+    }
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // `cmd.exe` will flash a console window when launched with the
+        // detached-console flag. Use a hidden console instead so shell-backed
+        // daemon spawns stay invisible to the user.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    }
+
+    let mut detached = command
+        .spawn()
+        .map_err(|e| format!("failed to spawn detached command: {e}"))?;
+
+    let pid = detached.id();
+    let created_at = process_created_at(pid).unwrap_or_else(unix_now_seconds);
+    let created_at_ms = registry::created_at_to_ms(created_at);
+
+    let entry = TrackedEntry {
+        pid,
+        created_at_ms,
+        kind: "subprocess".to_string(),
+        command: command_text.to_string(),
+        cwd: cwd.to_string(),
+        originator: originator.to_string(),
+        containment: "detached".to_string(),
+        registered_at: unix_now_seconds(),
+    };
+
+    if let Err(e) = state.registry.register(entry) {
+        let _ = detached.kill();
+        let _ = detached.wait();
+        return Err(format!("registry error: {e}"));
+    }
+
+    let registry = Arc::clone(&state.registry);
+    std::thread::spawn(move || {
+        let _ = detached.wait();
+        let _ = registry.unregister_exact(pid, created_at_ms);
+    });
+
+    Ok(SpawnedChild { pid, created_at })
+}
+
+/// Handle a `SpawnDaemon` request by spawning and tracking a detached command.
+pub fn handle_spawn_daemon(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let Some(ref req) = request.spawn_daemon else {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "missing spawn_daemon payload".into(),
+        );
+    };
+
+    let command_text = req.command.trim();
+    if command_text.is_empty() {
+        return error_response(
+            request.id,
+            StatusCode::InvalidArgument,
+            "command must not be empty".into(),
+        );
+    }
+
+    let effective_originator = if req.originator.trim().is_empty() {
+        request.client_name.clone()
+    } else {
+        req.originator.clone()
+    };
+
+    match spawn_and_track_detached(
+        command_text,
+        &req.cwd,
+        &req.env,
+        &effective_originator,
+        state,
+    ) {
+        Ok(spawned) => DaemonResponse {
+            request_id: request.id,
+            code: StatusCode::Ok as i32,
+            message: String::new(),
+            spawn_daemon: Some(SpawnDaemonResponse {
+                pid: spawned.pid,
+                created_at: spawned.created_at,
+                command: command_text.to_string(),
+                cwd: req.cwd.clone(),
+                originator: effective_originator,
+                containment: "detached".to_string(),
+            }),
+            ..Default::default()
+        },
+        Err(message) => error_response(request.id, StatusCode::Internal, message),
+    }
+}
 
 /// Convert a [`TrackedEntry`] to a proto [`TrackedProcess`].
 fn entry_to_tracked_process(entry: &TrackedEntry) -> TrackedProcess {
@@ -496,7 +673,7 @@ mod tests {
     use super::*;
     use running_process_proto::daemon::{
         ListByOriginatorRequest, PingRequest, RegisterRequest, RequestType, ShutdownRequest,
-        StatusRequest, UnregisterRequest,
+        SpawnDaemonRequest, StatusRequest, UnregisterRequest,
     };
 
     /// Build a minimal `DaemonState` for testing.
@@ -713,10 +890,35 @@ mod tests {
     }
 
     #[test]
+    fn test_spawn_daemon_missing_payload() {
+        let (state, _tmp) = test_state();
+        let req = make_request(34, RequestType::SpawnDaemon);
+
+        let resp = handle_spawn_daemon(&req, &state);
+        assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
+        assert!(resp.message.contains("missing spawn_daemon payload"));
+    }
+
+    #[test]
+    fn test_spawn_daemon_empty_command() {
+        let (state, _tmp) = test_state();
+        let mut req = make_request(35, RequestType::SpawnDaemon);
+        req.spawn_daemon = Some(SpawnDaemonRequest {
+            command: "   ".into(),
+            ..Default::default()
+        });
+
+        let resp = handle_spawn_daemon(&req, &state);
+        assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
+        assert!(resp.message.contains("command must not be empty"));
+    }
+
+    #[test]
     fn request_type_enum_values_match_convention() {
         // Verify the enum values we use in dispatch match expected values.
         assert_eq!(RequestType::Register as i32, 10);
         assert_eq!(RequestType::Unregister as i32, 11);
+        assert_eq!(RequestType::SpawnDaemon as i32, 12);
         assert_eq!(RequestType::ListActive as i32, 20);
         assert_eq!(RequestType::ListByOriginator as i32, 21);
         assert_eq!(RequestType::GetProcessTree as i32, 22);

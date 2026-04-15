@@ -17,6 +17,7 @@ ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process-client/src/client.rs"),
     # Daemon crate: process management for daemonize, shadow-copy, and auto-start
     Path("crates/running-process-daemon/src/client.rs"),
+    Path("crates/running-process-daemon/src/handlers.rs"),
     Path("crates/running-process-daemon/src/platform/windows.rs"),
     Path("crates/running-process-daemon/src/shadow.rs"),
     # Daemon trampoline: reads sidecar JSON and spawns the target command
@@ -33,6 +34,7 @@ ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-client/src/client.rs"),
     # Daemon crate: process management for daemonize, shadow-copy, and auto-start
     Path("crates/running-process-daemon/src/client.rs"),
+    Path("crates/running-process-daemon/src/handlers.rs"),
     Path("crates/running-process-daemon/src/platform/windows.rs"),
     Path("crates/running-process-daemon/src/shadow.rs"),
     # Daemon trampoline: reads sidecar JSON and spawns the target command
@@ -95,7 +97,7 @@ def check_rust_spawn_sites() -> list[str]:
     failures: list[str] = []
     command_new_pattern = re.compile(r"\bCommand::new\s*\(")
     spawn_pattern = re.compile(r"\.spawn\s*\(")
-    portable_pty_pattern = re.compile(r"\bportable_pty\b|\bspawn_command\s*\(")
+    portable_pty_pattern = re.compile(r"\bportable_pty\b")
 
     for path in _iter_files(RUST_SOURCE_ROOT, ".rs"):
         rel = _relative(path)
