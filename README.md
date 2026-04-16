@@ -186,6 +186,10 @@ PTY behavior:
 
 There is also a compatibility alias: `RunningProcess.psuedo_terminal(...)`.
 
+Rust consumers should make the same transport choice explicitly: use `NativeProcess` for
+one-shot noninteractive work and `InteractivePtySession` / `NativePtyProcess` only for real
+terminal sessions. See [docs/RUST_PTY.md](C:/Users/niteris/dev/running-process/docs/RUST_PTY.md).
+
 You can also inspect the intended interactive launch semantics without launching a child:
 
 ```python
@@ -269,7 +273,7 @@ PTY mode is intentionally more conservative:
 ./test
 ```
 
-`./install` bootstraps `rustup` into the shared user locations (`~/.cargo` and `~/.rustup`, or `CARGO_HOME` / `RUSTUP_HOME` if you override them), then installs the exact toolchain pinned in `rust-toolchain.toml`. Toolchain installs are serialized with a lock so concurrent repo bootstraps do not race the same shared version.
+`./install` bootstraps `rustup` into the shared user locations (`~/.cargo` and `~/.rustup`, or `CARGO_HOME` / `RUSTUP_HOME` if you override them) and installs the exact toolchain pinned in `rust-toolchain.toml`. Rust builders run through `uvx soldr`, so there is no separate `soldr` install step to maintain.
 
 `./lint` applies `cargo fmt` and Ruff autofixes before running the remaining lint checks, so fixable issues are rewritten in place.
 
@@ -277,15 +281,27 @@ PTY mode is intentionally more conservative:
 
 On local developer machines, `./test` also runs the Linux Docker preflight so Windows and macOS development catches Linux wheel, lint, and non-live pytest regressions before push. GitHub-hosted Actions skip that Docker-only preflight and run the native platform suite directly.
 
-If you want to invoke pytest directly, set `RUNNING_PROCESS_LIVE_TESTS=1` and run `uv run pytest -m live`.
-
-For direct Rust commands, prefer the repo trampolines, which prepend the shared `rustup` proxy location:
+If you want a live-only test run with the timeout crash watchdog and automatic thread dumps still enabled, use:
 
 ```bash
-./_cargo check --workspace
-./_cargo fmt --all --check
-./_cargo clippy --workspace --all-targets -- -D warnings
+uv run -m ci.test --live-only
 ```
+
+For a narrower live-only selection, pass pytest targets and selectors through the same entrypoint:
+
+```bash
+uv run -m ci.test --live-only tests/test_pty_support.py interrupt
+```
+
+For direct Cargo build commands, use `uvx soldr` directly:
+
+```bash
+uvx soldr cargo check --workspace
+uvx soldr cargo test --workspace
+uvx soldr cargo package -p running-process-core --no-verify
+```
+
+Keep `maturin`, `cargo fmt`, and `cargo clippy` on their normal entrypoints. This repo's high-level scripts already choose the compatible path for those tools.
 
 On Windows, native rebuilds that compile bundled C code should run from a Visual Studio developer shell. When the environment is ambiguous, point `maturin` at the MSVC toolchain binaries directly rather than relying on the generic cargo proxy.
 

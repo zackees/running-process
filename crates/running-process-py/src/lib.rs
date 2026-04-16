@@ -4641,10 +4641,14 @@ mod tests {
     #[test]
     fn tracked_process_db_path_with_env() {
         pyo3::prepare_freethreaded_python();
-        with_locked_env_var("RUNNING_PROCESS_PID_DB", Some("/custom/path/db.sqlite3"), || {
-            let result = tracked_process_db_path().unwrap();
-            assert_eq!(result, std::path::PathBuf::from("/custom/path/db.sqlite3"));
-        });
+        with_locked_env_var(
+            "RUNNING_PROCESS_PID_DB",
+            Some("/custom/path/db.sqlite3"),
+            || {
+                let result = tracked_process_db_path().unwrap();
+                assert_eq!(result, std::path::PathBuf::from("/custom/path/db.sqlite3"));
+            },
+        );
     }
 
     #[test]

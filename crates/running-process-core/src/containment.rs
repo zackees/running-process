@@ -132,6 +132,8 @@ impl ContainedProcessGroup {
     fn inject_originator_env(&self, command: &mut Command) {
         if let Some(ref originator) = self.originator {
             command.env(ORIGINATOR_ENV_VAR, format_originator_value(originator));
+        } else {
+            command.env_remove(ORIGINATOR_ENV_VAR);
         }
     }
 

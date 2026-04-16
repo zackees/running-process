@@ -130,10 +130,7 @@ pub fn scan_for_orphan_conhosts() -> Vec<ZombieInfo> {
         .map(|c| ZombieInfo {
             pid: c.pid,
             command: "conhost.exe".to_string(),
-            reason: format!(
-                "orphan conhost.exe — parent PID {} is dead",
-                c.parent_pid
-            ),
+            reason: format!("orphan conhost.exe — parent PID {} is dead", c.parent_pid),
         })
         .collect()
 }

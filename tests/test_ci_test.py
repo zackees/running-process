@@ -194,7 +194,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
 def test_parse_args_converts_target_and_selector_to_pytest_k_expr(monkeypatch) -> None:
     monkeypatch.delenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", raising=False)
 
-    pytest_args, require_symbols, coverage = ci_test.parse_args(
+    pytest_args, require_symbols, coverage, live_only = ci_test.parse_args(
         ["tests/test_pty_support.py", "timeout_does_not_arm_next_expect"]
     )
 
@@ -205,10 +205,11 @@ def test_parse_args_converts_target_and_selector_to_pytest_k_expr(monkeypatch) -
     ]
     assert require_symbols is False
     assert coverage is False
+    assert live_only is False
 
 
 def test_parse_args_preserves_explicit_pytest_flags() -> None:
-    pytest_args, require_symbols, coverage = ci_test.parse_args(
+    pytest_args, require_symbols, coverage, live_only = ci_test.parse_args(
         ["tests/test_pty_support.py", "-k", "timeout_does_not_arm_next_expect", "-ra"]
     )
 
@@ -220,19 +221,32 @@ def test_parse_args_preserves_explicit_pytest_flags() -> None:
     ]
     assert require_symbols is False
     assert coverage is False
+    assert live_only is False
 
 
 def test_parse_args_tracks_no_skip_without_mutating_env(monkeypatch) -> None:
     monkeypatch.delenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", raising=False)
 
-    pytest_args, require_symbols, coverage = ci_test.parse_args(
+    pytest_args, require_symbols, coverage, live_only = ci_test.parse_args(
         ["--no-skip", "tests/test_version.py"]
     )
 
     assert pytest_args == ["tests/test_version.py"]
     assert require_symbols is True
     assert coverage is False
+    assert live_only is False
     assert "RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS" not in os.environ
+
+
+def test_parse_args_tracks_live_only_flag() -> None:
+    pytest_args, require_symbols, coverage, live_only = ci_test.parse_args(
+        ["--live-only", "tests/test_pty_support.py"]
+    )
+
+    assert pytest_args == ["tests/test_pty_support.py"]
+    assert require_symbols is False
+    assert coverage is False
+    assert live_only is True
 
 
 def test_pytest_exit_is_acceptable_only_allows_no_tests_for_targeted_runs() -> None:
@@ -258,6 +272,46 @@ def test_main_allows_targeted_live_selection_with_no_matching_tests(monkeypatch)
     result = ci_test.main(["tests/test_pty_support.py"])
 
     assert result == 0
+
+
+def test_main_live_only_runs_only_live_pytest_through_cli(monkeypatch) -> None:
+    commands: list[list[str]] = []
+    fake_python = Path("/tmp/fake-venv/bin/python")
+
+    monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
+    monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.delenv(ci_test.SKIP_LINUX_DOCKER_ENV, raising=False)
+    monkeypatch.delenv("RUNNING_PROCESS_LIVE_TESTS", raising=False)
+    monkeypatch.setattr(ci_test.sys, "executable", str(fake_python))
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
+    monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
+    monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
+    monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(["RUN", *cmd]) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(["LIVE", *cmd]) or 0)
+
+    result = ci_test.main(["--live-only", "tests/test_pty_support.py"])
+
+    python = str(fake_python)
+    pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
+    assert result == 0
+    assert commands == [
+        [
+            "LIVE",
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            pytest_timeout,
+            "--",
+            python,
+            "-m",
+            "pytest",
+            "-vv",
+            "-m",
+            "live",
+            "tests/test_pty_support.py",
+        ],
+    ]
 
 
 def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monkeypatch) -> None:

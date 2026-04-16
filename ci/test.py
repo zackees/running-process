@@ -182,11 +182,12 @@ def _pytest_exit_is_acceptable(returncode: int, pytest_args: list[str]) -> bool:
     return returncode == 5 and bool(pytest_args)
 
 
-def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool]:
+def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool, bool]:
     argv = list(sys.argv[1:] if argv is None else argv)
     raw_pytest_args: list[str] = []
     require_symbols = False
     coverage = False
+    live_only = False
     while argv:
         current = argv.pop(0)
         if current == "--no-skip":
@@ -195,16 +196,21 @@ def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool]:
         if current == "--coverage":
             coverage = True
             continue
+        if current == "--live-only":
+            live_only = True
+            continue
         raw_pytest_args.append(current)
-    return _normalize_pytest_args(raw_pytest_args), require_symbols, coverage
+    return _normalize_pytest_args(raw_pytest_args), require_symbols, coverage, live_only
 
 
 def main(argv: list[str] | None = None) -> int:
-    pytest_args, require_symbols, coverage = parse_args(argv)
+    pytest_args, require_symbols, coverage, live_only = parse_args(argv)
     activate, _ = load_env_helpers()
     activate()
     if require_symbols:
         os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] = "1"
+    if live_only:
+        os.environ["RUNNING_PROCESS_LIVE_TESTS"] = "1"
     os.environ.setdefault("RUNNING_PROCESS_TEST_TIMEOUT_SECONDS", DEFAULT_TEST_TIMEOUT_SECONDS)
     python = Path(sys.executable)
     if os.environ.get(IN_RUNNING_PROCESS_ENV) != IN_RUNNING_PROCESS_VALUE:
@@ -223,53 +229,54 @@ def main(argv: list[str] | None = None) -> int:
     # supervisor is only useful during test *execution*, but the Rust
     # suites can still be quiet for longer than the default 10-second
     # idle timeout while serialized PTY/PyO3 tests are running.
-    if coverage:
-        cargo_cmd = supervised_command(
-            python,
-            *cargo_command(
-                "llvm-cov",
-                "--workspace",
-                "--lcov",
-                "--output-path",
-                "coverage-rust.lcov",
-            ),
-            timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
-        )
-        if run(cargo_cmd) != 0:
-            return 1
-    else:
-        # Step 1: compile all test binaries (no supervisor, no timeout)
-        build_args = cargo_command("test", "--workspace", "--no-run")
-        if run(build_args) != 0:
-            return 1
+    if not live_only:
+        if coverage:
+            cargo_cmd = supervised_command(
+                python,
+                *cargo_command(
+                    "llvm-cov",
+                    "--workspace",
+                    "--lcov",
+                    "--output-path",
+                    "coverage-rust.lcov",
+                ),
+                timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
+            )
+            if run(cargo_cmd) != 0:
+                return 1
+        else:
+            # Step 1: compile all test binaries (no supervisor, no timeout)
+            build_args = cargo_command("test", "--workspace", "--no-run")
+            if run(build_args) != 0:
+                return 1
 
-        # Step 2: run the pre-built tests under the supervisor
-        cargo_test_args = cargo_command("test", "--workspace")
-        if sys.platform == "win32":
-            # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
-            # Serialize Rust tests to avoid the issue.
-            cargo_test_args += ["--", "--test-threads=1"]
-        cargo_cmd = supervised_command(
-            python,
-            *cargo_test_args,
-            timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
-        )
-        if run(cargo_cmd) != 0:
-            return 1
+            # Step 2: run the pre-built tests under the supervisor
+            cargo_test_args = cargo_command("test", "--workspace")
+            if sys.platform == "win32":
+                # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
+                # Serialize Rust tests to avoid the issue.
+                cargo_test_args += ["--", "--test-threads=1"]
+            cargo_cmd = supervised_command(
+                python,
+                *cargo_test_args,
+                timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
+            )
+            if run(cargo_cmd) != 0:
+                return 1
 
-    # -- Python non-live tests --
-    cov_first = list(_COV_PYTEST_FIRST) if coverage else []
-    if not _pytest_exit_is_acceptable(
-        run(_supervised_pytest_command(python, "-m", "not live", *cov_first, *pytest_args)),
-        pytest_args,
-    ):
-        return 1
-    if not running_on_github_actions() and not skip_linux_docker_preflight():
-        if run(_linux_unit_test_command(python, *pytest_args)) != 0:
+        # -- Python non-live tests --
+        cov_first = list(_COV_PYTEST_FIRST) if coverage else []
+        if not _pytest_exit_is_acceptable(
+            run(_supervised_pytest_command(python, "-m", "not live", *cov_first, *pytest_args)),
+            pytest_args,
+        ):
             return 1
-    if require_symbols and sys.platform == "win32":
-        if run(_release_build_command(python)) != 0:
-            return 1
+        if not running_on_github_actions() and not skip_linux_docker_preflight():
+            if run(_linux_unit_test_command(python, *pytest_args)) != 0:
+                return 1
+        if require_symbols and sys.platform == "win32":
+            if run(_release_build_command(python)) != 0:
+                return 1
 
     # -- Python live tests --
     if live_tests_enabled():
