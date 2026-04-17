@@ -23,7 +23,7 @@ Repository = "https://github.com/zackees/running-process"
 Issues = "https://github.com/zackees/running-process/issues"
 
 [dependency-groups]
-dev = ["maturin[zig]>=1.7,<2", "pytest>=8.0.0", "pytest-cov>=6.0.0", "ruff>=0.8.0"]
+dev = ["maturin[zig]>=1.7,<2", "pytest>=8.0.0", "pytest-cov>=6.0.0", "ruff>=0.8.0", "soldr>=0.7.0"]
 
 [tool.maturin]
 manifest-path = "crates/running-process-py/Cargo.toml"

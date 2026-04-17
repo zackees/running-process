@@ -53,6 +53,8 @@ uv run black src tests
 uv run pyright src tests
 ```
 
+**Wrong toolchain?** Use `./_cargo`, `./_rustc`, `./_rustfmt` — these route through [soldr](https://github.com/zackees/soldr) (pulled via dev deps) which resolves the rustup-managed toolchain via `rustup which`. Handy on Windows where chocolatey cargo or other stale shims can take precedence on PATH. `soldr cargo ...` works directly too.
+
 **Environment:**
 ```bash
 . ./activate.sh              # Activate dev environment (git-bash on Windows)
