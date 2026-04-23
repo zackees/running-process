@@ -77,7 +77,10 @@ impl SpawnCommandRequest {
     fn default_originator() -> String {
         let caller = std::env::current_exe()
             .ok()
-            .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().into_owned()))
+            .and_then(|path| {
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            })
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "running-process-client".to_string());
         format!("{caller}:{}", std::process::id())
@@ -446,11 +449,22 @@ pub fn connect_or_start(scope_hash: Option<&str>) -> Result<DaemonClient, Client
     Err(ClientError::DaemonNotRunning)
 }
 
-/// Convenience helper that connects to the daemon and asks it to daemonize
-/// the provided shell command under the caller's current cwd/environment.
-pub fn daemonize_command(command: &str) -> Result<SpawnedDaemon, ClientError> {
+/// Launch a detached shell command through the running-process daemon.
+///
+/// The daemon owns process tracking after launch, so this helper returns as
+/// soon as the child has been spawned and registered.
+pub fn launch_detached(command: &str) -> Result<SpawnedDaemon, ClientError> {
     let mut client = connect_or_start(None)?;
     client.spawn_command(&SpawnCommandRequest::shell(command))
+}
+
+/// Convenience helper that connects to the daemon and asks it to daemonize
+/// the provided shell command under the caller's current cwd/environment.
+///
+/// Prefer [`launch_detached`] in new code; this name is kept for existing
+/// callers.
+pub fn daemonize_command(command: &str) -> Result<SpawnedDaemon, ClientError> {
+    launch_detached(command)
 }
 
 /// Spawn the daemon binary as a detached background process.
@@ -504,4 +518,34 @@ fn daemon_exe_path() -> String {
     }
     // Fallback: assume it is on PATH.
     String::from("running-process-daemon")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_detached_has_public_sync_signature() {
+        let _api: fn(&str) -> Result<SpawnedDaemon, ClientError> = launch_detached;
+    }
+
+    #[test]
+    fn spawn_command_request_builder_sets_detached_launch_context() {
+        let request = SpawnCommandRequest::shell("echo hello")
+            .with_cwd("work")
+            .with_envs([("A", "1")])
+            .with_env("B", "2")
+            .with_originator("tool:123");
+
+        assert_eq!(request.command, "echo hello");
+        assert_eq!(request.cwd.as_deref(), Some(std::path::Path::new("work")));
+        assert_eq!(
+            request.env,
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "2".to_string())
+            ]
+        );
+        assert_eq!(request.originator.as_deref(), Some("tool:123"));
+    }
 }

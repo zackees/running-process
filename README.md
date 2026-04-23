@@ -333,6 +333,24 @@ for info in stale:
 
 The env var `RUNNING_PROCESS_ORIGINATOR=TOOL:PID` is inherited by all descendants. The scanner uses process start times to guard against PID reuse.
 
+## Detached Launches
+
+Use `launch_detached(...)` when a caller needs to start a daemon-tracked shell command and return immediately:
+
+```python
+from running_process import launch_detached
+
+handle = launch_detached(
+    "python worker.py",
+    cwd=".",
+    env={"WORKER_MODE": "background"},
+    originator="mytool:session-1",
+)
+print(handle.pid)
+```
+
+This path uses the running-process daemon for launch/tracking. It is separate from `running_process.daemon.spawn_daemon(...)`, which keeps the trampoline-based process-name behavior.
+
 ## Tracked PID Cleanup
 
 `RunningProcess`, `InteractiveProcess`, and PTY-backed launches register their live PIDs in a SQLite database. The default location is:
