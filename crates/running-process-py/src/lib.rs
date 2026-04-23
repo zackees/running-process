@@ -108,6 +108,7 @@ struct ActiveProcessRecord {
 
 type TrackedProcessEntry = (u32, f64, String, String, Option<String>);
 type ActiveProcessEntry = (u32, String, String, Option<String>, f64);
+type DetachedLaunchEntry = (u32, f64, String, Option<String>, Option<String>, String);
 type ExpectDetails = (String, usize, usize, Vec<String>);
 type ExpectResult = (
     String,
@@ -460,6 +461,58 @@ fn native_list_active_processes() -> Vec<ActiveProcessEntry> {
             .then_with(|| left.0.cmp(&right.0))
     });
     items
+}
+
+#[pyfunction]
+#[pyo3(signature = (command, cwd=None, env=None, originator=None))]
+fn native_launch_detached(
+    py: Python<'_>,
+    command: String,
+    cwd: Option<String>,
+    env: Option<Bound<'_, PyDict>>,
+    originator: Option<String>,
+) -> PyResult<DetachedLaunchEntry> {
+    let command = command.trim().to_string();
+    if command.is_empty() {
+        return Err(PyValueError::new_err("command must not be empty"));
+    }
+
+    let env_pairs = env
+        .map(|mapping| {
+            mapping
+                .iter()
+                .map(|(key, value)| Ok((key.extract::<String>()?, value.extract::<String>()?)))
+                .collect::<PyResult<Vec<(String, String)>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    let spawned = py
+        .allow_threads(move || {
+            let mut request = running_process_client::SpawnCommandRequest::shell(command);
+            if let Some(cwd) = cwd {
+                request = request.with_cwd(cwd);
+            }
+            for (key, value) in env_pairs {
+                request = request.with_env(key, value);
+            }
+            if let Some(originator) = originator {
+                request = request.with_originator(originator);
+            }
+
+            let mut client = running_process_client::connect_or_start(None)?;
+            client.spawn_command(&request)
+        })
+        .map_err(to_py_err)?;
+
+    Ok((
+        spawned.pid,
+        spawned.created_at,
+        spawned.command,
+        spawned.cwd,
+        spawned.originator,
+        spawned.containment,
+    ))
 }
 
 #[pyfunction]
@@ -2481,6 +2534,16 @@ mod tests {
     };
     #[cfg(windows)]
     use winapi::um::winuser::{VK_RETURN, VK_TAB, VK_UP};
+
+    #[test]
+    fn native_launch_detached_rejects_empty_command_without_daemon() {
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let err = native_launch_detached(py, "   ".to_string(), None, None, None)
+                .expect_err("empty commands should be rejected before daemon IPC");
+            assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+        });
+    }
 
     #[cfg(windows)]
     fn key_event(
@@ -6513,6 +6576,7 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(native_unregister_process, module)?)?;
     module.add_function(wrap_pyfunction!(list_tracked_processes, module)?)?;
     module.add_function(wrap_pyfunction!(native_list_active_processes, module)?)?;
+    module.add_function(wrap_pyfunction!(native_launch_detached, module)?)?;
     module.add_function(wrap_pyfunction!(native_get_process_tree_info, module)?)?;
     module.add_function(wrap_pyfunction!(native_kill_process_tree, module)?)?;
     module.add_function(wrap_pyfunction!(native_process_created_at, module)?)?;

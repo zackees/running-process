@@ -22,6 +22,7 @@ from running_process.compat import (
 )
 from running_process.exit_status import ExitStatus, ProcessAbnormalExit
 from running_process.expect import ExpectMatch, ExpectRule
+from running_process.launch import DetachedProcess, launch_detached
 from running_process.output_formatter import (
     NullOutputFormatter,
     OutputFormatter,
@@ -73,6 +74,7 @@ from running_process.running_process_manager import (
 __all__ = [
     "CREATE_NEW_PROCESS_GROUP",
     "DEVNULL",
+    "DetachedProcess",
     "EOS",
     "PIPE",
     "STDOUT",
@@ -126,5 +128,6 @@ __all__ = [
     "find_processes_by_originator",
     "get_process_tree_info",
     "kill_process_tree",
+    "launch_detached",
     "subprocess_run",
 ]
