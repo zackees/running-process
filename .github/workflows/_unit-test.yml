@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "1"
+      RUNNING_PROCESS_FORCE_SOLDR: soldr
     steps:
       - uses: actions/checkout@v4
 
@@ -33,33 +34,11 @@ jobs:
           restore-keys: |
             venv-${{ inputs.runs-on }}-py3.11-
 
-      - name: Setup zccache
-        uses: zackees/zccache@main
-        with:
-          shared-key: ${{ inputs.runs-on }}
-          cache-compilation: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
-          # target metadata is reused across workflows for the same commit key,
-          # which can restore stale Rust fingerprints into later jobs.
-          cache-target: "false"
-          save-cache: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
-
-      - name: Reset pinned Rust toolchain on macOS ARM
-        if: ${{ runner.os == 'macOS' && runner.arch == 'ARM64' }}
-        shell: bash
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            exit 0
-          fi
-          rustup toolchain list | awk '$1 ~ /^1\.94\.1/ {print $1}' | while read -r toolchain; do
-            [ -n "$toolchain" ] || continue
-            echo "Removing stale toolchain: $toolchain"
-            rustup toolchain uninstall "$toolchain" || true
-          done
-
-      - uses: dtolnay/rust-toolchain@master
+      - name: Setup soldr
+        uses: zackees/setup-soldr@main
         with:
           toolchain: "1.94.1"
-          components: clippy, rustfmt
+          cache-key-suffix: ${{ inputs.runs-on }}
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
@@ -102,6 +81,7 @@ jobs:
           command -v rustc >/dev/null 2>&1 && rustc -Vv || true
           command -v cargo >/dev/null 2>&1 && cargo -V || true
           command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
+          command -v soldr >/dev/null 2>&1 && soldr version || true
           echo "::endgroup::"
 
       - name: Upload failure logs
@@ -111,7 +91,3 @@ jobs:
           name: failure-logs-unit-test-${{ inputs.runs-on }}
           path: logs/*
           if-no-files-found: warn
-
-      - name: Cleanup zccache
-        if: always()
-        uses: zackees/zccache/action/cleanup@main
