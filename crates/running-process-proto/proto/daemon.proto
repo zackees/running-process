@@ -26,6 +26,17 @@ enum RequestType {
   REQUEST_TYPE_PING            = 40;
   REQUEST_TYPE_SHUTDOWN        = 41;
   REQUEST_TYPE_STATUS          = 42;
+  // Service supervision (runpm) — Phase 1 ships stubs that respond OK.
+  REQUEST_TYPE_SERVICE_START     = 50;
+  REQUEST_TYPE_SERVICE_STOP      = 51;
+  REQUEST_TYPE_SERVICE_RESTART   = 52;
+  REQUEST_TYPE_SERVICE_DELETE    = 53;
+  REQUEST_TYPE_SERVICE_LIST      = 54;
+  REQUEST_TYPE_SERVICE_DESCRIBE  = 55;
+  REQUEST_TYPE_SERVICE_LOGS      = 56;
+  REQUEST_TYPE_SERVICE_FLUSH     = 57;
+  REQUEST_TYPE_SERVICE_SAVE      = 58;
+  REQUEST_TYPE_SERVICE_RESURRECT = 59;
 }
 
 enum StatusCode {
@@ -69,6 +80,16 @@ message DaemonRequest {
   PingRequest             ping              = 40;
   ShutdownRequest         shutdown          = 41;
   StatusRequest           status            = 42;
+  ServiceStartRequest     service_start     = 50;
+  ServiceStopRequest      service_stop      = 51;
+  ServiceRestartRequest   service_restart   = 52;
+  ServiceDeleteRequest    service_delete    = 53;
+  ServiceListRequest      service_list      = 54;
+  ServiceDescribeRequest  service_describe  = 55;
+  ServiceLogsRequest      service_logs      = 56;
+  ServiceFlushRequest     service_flush     = 57;
+  ServiceSaveRequest      service_save      = 58;
+  ServiceResurrectRequest service_resurrect = 59;
 }
 
 message DaemonResponse {
@@ -88,6 +109,16 @@ message DaemonResponse {
   PingResponse             ping              = 40;
   ShutdownResponse         shutdown          = 41;
   StatusResponse           status            = 42;
+  ServiceStartResponse     service_start     = 50;
+  ServiceStopResponse      service_stop      = 51;
+  ServiceRestartResponse   service_restart   = 52;
+  ServiceDeleteResponse    service_delete    = 53;
+  ServiceListResponse      service_list      = 54;
+  ServiceDescribeResponse  service_describe  = 55;
+  ServiceLogsResponse      service_logs      = 56;
+  ServiceFlushResponse     service_flush     = 57;
+  ServiceSaveResponse      service_save      = 58;
+  ServiceResurrectResponse service_resurrect = 59;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,4 +245,102 @@ message TrackedProcess {
   bool         parent_alive     = 10;
   ProcessState state            = 11;
   double       last_validated_at = 12;
+}
+
+// ---------------------------------------------------------------------------
+// Service supervision (runpm) — Phase 1
+//
+// All handlers in Phase 1 return STATUS_CODE_OK with empty/default payloads.
+// Real lifecycle, restart policy, and persistence land in Phase 2.
+// ---------------------------------------------------------------------------
+
+message ServiceConfig {
+  string              name           = 1;
+  repeated string     cmd            = 2;
+  string              cwd            = 3;
+  map<string, string> env            = 4;
+  bool                autorestart    = 5;
+  uint32              max_restarts   = 6;
+  uint32              restart_delay_ms = 7;
+  uint32              kill_timeout_ms  = 8;
+  uint32              min_uptime_ms    = 9;
+}
+
+message ServiceState {
+  string         name             = 1;
+  uint32         id               = 2;
+  string         status           = 3;  // "online" | "stopped" | "errored" | "starting"
+  uint32         pid              = 4;
+  uint32         restart_count    = 5;
+  double         last_started_at  = 6;
+  double         last_exited_at   = 7;
+  int32          last_exit_code   = 8;
+  ServiceConfig  config           = 9;
+}
+
+message ServiceStartRequest {
+  ServiceConfig config = 1;
+}
+message ServiceStartResponse {
+  ServiceState service = 1;
+}
+
+message ServiceStopRequest {
+  string target = 1;  // name | id | "all"
+}
+message ServiceStopResponse {
+  uint32 stopped_count = 1;
+}
+
+message ServiceRestartRequest {
+  string target = 1;
+}
+message ServiceRestartResponse {
+  uint32 restarted_count = 1;
+}
+
+message ServiceDeleteRequest {
+  string target = 1;
+}
+message ServiceDeleteResponse {
+  uint32 deleted_count = 1;
+}
+
+message ServiceListRequest {}
+message ServiceListResponse {
+  repeated ServiceState services = 1;
+}
+
+message ServiceDescribeRequest {
+  string target = 1;
+}
+message ServiceDescribeResponse {
+  ServiceState service = 1;
+}
+
+message ServiceLogsRequest {
+  string target = 1;  // name | id | "" for all
+  uint32 lines  = 2;
+  bool   follow = 3;
+}
+message ServiceLogsResponse {
+  string log_text = 1;
+}
+
+message ServiceFlushRequest {
+  string target = 1;
+}
+message ServiceFlushResponse {
+  uint32 flushed_count = 1;
+}
+
+message ServiceSaveRequest {}
+message ServiceSaveResponse {
+  string snapshot_path = 1;
+  uint32 service_count = 2;
+}
+
+message ServiceResurrectRequest {}
+message ServiceResurrectResponse {
+  uint32 restored_count = 1;
 }
