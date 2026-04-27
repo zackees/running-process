@@ -48,6 +48,7 @@ addopts = ["-ra", "--strict-markers"]
 testpaths = ["tests"]
 markers = [
     "live: exercises real OS process and signal behavior; skipped unless RUNNING_PROCESS_LIVE_TESTS=1",
+    "windows_encoding: exercises every captured-output path on Windows against UTF-8 payloads under a cp1252 console; skipped unless RUNNING_PROCESS_WINDOWS_ENCODING_TESTS=1 and sys.platform == 'win32'. Run via: pytest -m windows_encoding tests/encoding",
 ]
 
 [tool.ruff]

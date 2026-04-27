@@ -15,6 +15,7 @@ from typing import Any, ClassVar, NamedTuple
 
 from running_process._native import NativeProcess
 from running_process.command_render import list2cmdline
+from running_process.console_encoding import detect_console_encoding, sanitize_for_encoding
 from running_process.compat import (
     CREATE_NEW_PROCESS_GROUP,
     DEVNULL,
@@ -364,7 +365,7 @@ class RunningProcess:
         self.nice = normalize_nice(nice)
         requested_text = text or universal_newlines
         self.text = requested_text
-        self.encoding = encoding or "utf-8"
+        self.encoding = detect_console_encoding(encoding)
         self.errors = errors or "replace"
         self.relay_terminal_input = bool(relay_terminal_input)
         self.arm_idle_timeout_on_submit = bool(arm_idle_timeout_on_submit)
@@ -436,7 +437,7 @@ class RunningProcess:
 
     def _format(self, line: EchoValue) -> EchoValue:
         if isinstance(line, str):
-            return self._output_formatter.transform(line)
+            return sanitize_for_encoding(self._output_formatter.transform(line), self.encoding)
         return line
 
     def _create_process_info(self) -> ProcessInfo:
@@ -1032,7 +1033,9 @@ class RunningProcess:
             lines = self._proc.captured_stderr()
         else:
             lines = [line for _stream, line in self._proc.captured_combined()]
-        return "\n".join(lines) if self.text else b"\n".join(lines)
+        if self.text:
+            return sanitize_for_encoding("\n".join(lines), self.encoding)
+        return b"\n".join(lines)
 
     def discard_captured_output(self, stream: str = "combined") -> int:
         stream = _validate_expect_stream(stream)

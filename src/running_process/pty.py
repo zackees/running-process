@@ -29,6 +29,7 @@ from running_process._native import (
 )
 from running_process.command_render import list2cmdline as render_command_list
 from running_process.compat import CREATE_NEW_PROCESS_GROUP
+from running_process.console_encoding import detect_console_encoding, sanitize_for_encoding
 from running_process.exit_status import ExitStatus, ProcessAbnormalExit, classify_exit_status
 from running_process.expect import (
     ExpectAction,
@@ -850,7 +851,7 @@ class PseudoTerminalProcess:
         shell: bool | None = None,
         env: Mapping[str, str] | None = None,
         text: bool = False,
-        encoding: str = "utf-8",
+        encoding: str | None = None,
         errors: str = "replace",
         rows: int = 24,
         cols: int = 80,
@@ -877,7 +878,7 @@ class PseudoTerminalProcess:
         self.cwd = str(cwd) if cwd is not None else None
         self.env = dict(env) if env is not None else os.environ.copy()
         self.text = False
-        self.encoding = encoding
+        self.encoding = detect_console_encoding(encoding)
         self.errors = errors
         self.rows = rows
         self.cols = cols
@@ -995,6 +996,19 @@ class PseudoTerminalProcess:
             if "stream is closed" in str(exc):
                 raise EOFError("Pseudo-terminal stream is closed") from exc
             raise
+
+    def read_text(self, timeout: float | None = None) -> str:
+        """Like ``read()`` but always returns ``str``, decoded and sanitized for the parent console.
+
+        Use this when the result will be printed to ``sys.stdout``: the value is
+        round-tripped through the auto-detected console encoding with
+        ``errors='replace'``, so writing it to a cp1252 console will not raise
+        ``UnicodeEncodeError`` even when the child emitted UTF-8.
+        """
+        chunk = self.read(timeout=timeout)
+        if isinstance(chunk, bytes):
+            chunk = chunk.decode(self.encoding, self.errors)
+        return sanitize_for_encoding(chunk, self.encoding)
 
     def drain(self) -> list[str | bytes]:
         if not self.capture:
@@ -1351,7 +1365,22 @@ class PseudoTerminalProcess:
             self._pump_native_output(timeout=0.0, consume_all=True)
             return b""
         self._pump_native_output(timeout=0.0, consume_all=True)
-        return self._buffer.output()
+        value = self._buffer.output()
+        if isinstance(value, str):
+            return sanitize_for_encoding(value, self.encoding)
+        return value
+
+    @property
+    def output_text(self) -> str:
+        """Captured output decoded to ``str`` and sanitized for the parent console.
+
+        Always safe to ``print()`` even when the parent console is cp1252 and
+        the child emitted UTF-8.
+        """
+        raw = self.output
+        if isinstance(raw, bytes):
+            raw = raw.decode(self.encoding, self.errors)
+        return sanitize_for_encoding(raw, self.encoding)
 
     def checkpoint(self) -> WaitCheckpoint:
         if not self.capture:
