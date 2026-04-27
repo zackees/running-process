@@ -10,7 +10,10 @@ use interprocess::TryClone;
 use prost::Message;
 use running_process_proto::daemon::{
     DaemonRequest, DaemonResponse, GetProcessTreeRequest, KillTreeRequest, KillZombiesRequest,
-    ListActiveRequest, ListByOriginatorRequest, PingRequest, RequestType, ShutdownRequest,
+    ListActiveRequest, ListByOriginatorRequest, PingRequest, RequestType, ServiceConfig,
+    ServiceDeleteRequest, ServiceDescribeRequest, ServiceFlushRequest, ServiceListRequest,
+    ServiceLogsRequest, ServiceRestartRequest, ServiceResurrectRequest, ServiceSaveRequest,
+    ServiceStartRequest, ServiceStopRequest, ShutdownRequest,
     SpawnDaemonRequest as ProtoSpawnDaemonRequest, StatusCode, StatusRequest,
 };
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -415,6 +418,159 @@ impl DaemonClient {
             },
             containment: payload.containment,
         })
+    }
+
+    // --- service supervision (runpm) — Phase 1 ---
+
+    /// Start a supervised service from a [`ServiceConfig`].
+    pub fn service_start(&mut self, config: ServiceConfig) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceStart.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_start: Some(ServiceStartRequest {
+                config: Some(config),
+            }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Stop a supervised service identified by name, id, or `"all"`.
+    pub fn service_stop(&mut self, target: &str) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceStop.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_stop: Some(ServiceStopRequest {
+                target: target.to_string(),
+            }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Restart a supervised service identified by name, id, or `"all"`.
+    pub fn service_restart(&mut self, target: &str) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceRestart.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_restart: Some(ServiceRestartRequest {
+                target: target.to_string(),
+            }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Delete a supervised service from the registry.
+    pub fn service_delete(&mut self, target: &str) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceDelete.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_delete: Some(ServiceDeleteRequest {
+                target: target.to_string(),
+            }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// List all supervised services known to the daemon.
+    pub fn service_list(&mut self) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceList.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_list: Some(ServiceListRequest {}),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Describe a single supervised service in detail.
+    pub fn service_describe(&mut self, target: &str) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceDescribe.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_describe: Some(ServiceDescribeRequest {
+                target: target.to_string(),
+            }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Fetch buffered log output for a supervised service.
+    pub fn service_logs(
+        &mut self,
+        target: &str,
+        lines: u32,
+        follow: bool,
+    ) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceLogs.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_logs: Some(ServiceLogsRequest {
+                target: target.to_string(),
+                lines,
+                follow,
+            }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Flush buffered logs for a supervised service.
+    pub fn service_flush(&mut self, target: &str) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceFlush.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_flush: Some(ServiceFlushRequest {
+                target: target.to_string(),
+            }),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Persist the current set of supervised services to a snapshot.
+    pub fn service_save(&mut self) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceSave.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_save: Some(ServiceSaveRequest {}),
+            ..Default::default()
+        };
+        self.send_request(request)
+    }
+
+    /// Restore supervised services from the most recent snapshot.
+    pub fn service_resurrect(&mut self) -> Result<DaemonResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ServiceResurrect.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            service_resurrect: Some(ServiceResurrectRequest {}),
+            ..Default::default()
+        };
+        self.send_request(request)
     }
 }
 

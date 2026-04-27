@@ -1,0 +1,17 @@
+[package]
+name = "runpm-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PM2-style process supervisor CLI for running-process (see issue #106)"
+
+[[bin]]
+name = "runpm"
+path = "src/main.rs"
+
+[dependencies]
+running-process-client = { path = "../running-process-client", version = "3.1.0" }
+running-process-proto = { path = "../running-process-proto", version = "3.1.0" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

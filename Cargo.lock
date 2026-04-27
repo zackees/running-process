@@ -1110,6 +1110,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "runpm-cli"
+version = "3.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "running-process-client",
+ "running-process-proto",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
