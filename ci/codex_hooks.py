@@ -21,7 +21,7 @@ def pre_tool_use_response(payload: dict[str, object]) -> dict[str, object] | Non
     reason = decision.reason
     if decision.updated_command is not None:
         reason = (
-            "This repo requires build-related shell commands to go through `uvx soldr`. "
+            "This repo requires build-related shell commands to go through `soldr`. "
             f"Run `{decision.updated_command}` instead."
         )
 

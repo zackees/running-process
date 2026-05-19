@@ -9,8 +9,8 @@ BUILD_TOOL_PREFIXES = (
 )
 SUPPORTED_CARGO_SUBCOMMANDS = ("build", "check", "test", "package", "publish")
 ALLOW_PREFIXES = (
-    "uvx soldr ",
-    "uvx soldr.exe ",
+    "soldr ",
+    "soldr.exe ",
     "uv run build.py",
     "uv run --module ci.build_wheel",
     "uv run -m ci.build_wheel",
@@ -64,10 +64,10 @@ def _rewrite_direct_command(command: str) -> str | None:
     leading = command[: len(command) - len(stripped)]
     for subcommand in SUPPORTED_CARGO_SUBCOMMANDS:
         if stripped == f"cargo {subcommand}" or stripped.startswith(f"cargo {subcommand} "):
-            return f"{leading}uvx soldr {stripped}"
+            return f"{leading}soldr {stripped}"
     for tool in BUILD_TOOL_PREFIXES:
         if stripped == tool or stripped.startswith(f"{tool} "):
-            return f"{leading}uvx soldr {stripped}"
+            return f"{leading}soldr {stripped}"
     return None
 
 
@@ -82,7 +82,7 @@ def evaluate_bash_command(command: str) -> HookDecision | None:
         return HookDecision(
             permission_decision="deny",
             reason=(
-                "Build-related shell commands in this repo must run through `uvx soldr` "
+                "Build-related shell commands in this repo must run through `soldr` "
                 "or the higher-level repo entrypoints "
                 "(`uv run build.py`, `./install`, `./lint`, `./test`)."
             ),
@@ -91,7 +91,7 @@ def evaluate_bash_command(command: str) -> HookDecision | None:
     if rewritten is not None:
         return HookDecision(
             permission_decision="allow",
-            reason="Rewriting build command through uvx soldr",
+            reason="Rewriting build command through soldr",
             updated_command=rewritten,
         )
     return None

@@ -58,10 +58,10 @@ uv run pyright src tests
 **Environment:**
 ```bash
 . ./activate.sh              # Activate dev environment (git-bash on Windows)
-./install                    # Bootstrap Rust toolchain; builders use uvx soldr
+./install                    # Bootstrap Rust toolchain; builders use soldr
 ```
 
-Project hook policy: `.claude/settings.json` rewrites direct soldr-supported Bash build commands through `uvx soldr` and blocks compound raw build commands that bypass `uvx soldr` or the higher-level repo entrypoints.
+Project hook policy: `.claude/settings.json` rewrites direct soldr-supported Bash build commands through `soldr` (the globally installed binary) and blocks compound raw build commands that bypass `soldr` or the higher-level repo entrypoints.
 
 ## Daemon
 
