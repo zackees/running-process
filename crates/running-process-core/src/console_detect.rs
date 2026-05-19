@@ -76,10 +76,7 @@ mod imp {
     /// 3. Any HWND not present in the initial snapshot is collected.
     pub fn monitor_console_windows(duration: Duration) -> Vec<ConsoleWindowInfo> {
         // Initial snapshot — these windows already existed before monitoring.
-        let baseline: HashSet<u64> = enumerate_visible_windows()
-            .iter()
-            .map(|w| w.hwnd)
-            .collect();
+        let baseline: HashSet<u64> = enumerate_visible_windows().iter().map(|w| w.hwnd).collect();
 
         let mut seen_new: HashSet<u64> = HashSet::new();
         let mut new_windows: Vec<ConsoleWindowInfo> = Vec::new();

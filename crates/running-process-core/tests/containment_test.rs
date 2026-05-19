@@ -328,7 +328,10 @@ mod sanitized_pipe_helpers {
             )
         };
         assert!(ok != FALSE, "CreatePipe failed");
-        InheritablePipe { read_end, write_end }
+        InheritablePipe {
+            read_end,
+            write_end,
+        }
     }
 
     /// Close a single handle.

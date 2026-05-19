@@ -74,7 +74,6 @@ from running_process.running_process_manager import (
 __all__ = [
     "CREATE_NEW_PROCESS_GROUP",
     "DEVNULL",
-    "DetachedProcess",
     "EOS",
     "PIPE",
     "STDOUT",
@@ -83,6 +82,7 @@ __all__ = [
     "CompletedProcess",
     "ContainedProcessGroup",
     "CpuPriority",
+    "DetachedProcess",
     "EchoCallback",
     "EndOfStream",
     "ExitStatus",

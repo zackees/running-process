@@ -22,10 +22,10 @@ pub mod sanitized;
 
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedChild, ContainedProcessGroup, Containment, ORIGINATOR_ENV_VAR};
-pub use sanitized::SanitizedChild;
 #[cfg(feature = "originator-scan")]
 pub use originator::{find_processes_by_originator, OriginatorProcessInfo};
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
+pub use sanitized::SanitizedChild;
 
 #[macro_export]
 macro_rules! rp_rust_debug_scope {

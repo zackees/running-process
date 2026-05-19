@@ -125,8 +125,8 @@ mod windows {
     use winapi::um::minwinbase::SECURITY_ATTRIBUTES;
     use winapi::um::processthreadsapi::{
         CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, TerminateProcess,
-        UpdateProcThreadAttribute, PROCESS_INFORMATION,
+        InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute,
+        LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
     };
     use winapi::um::synchapi::WaitForSingleObject;
     use winapi::um::winbase::{
@@ -222,9 +222,12 @@ mod windows {
             Some(build_env_block(envs))
         };
 
-        let cwd_w: Option<Vec<u16>> = command
-            .get_current_dir()
-            .map(|p| OsStr::new(p).encode_wide().chain(std::iter::once(0)).collect());
+        let cwd_w: Option<Vec<u16>> = command.get_current_dir().map(|p| {
+            OsStr::new(p)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        });
 
         // 3. Initialize the proc-thread attribute list.
         let mut size: usize = 0;
@@ -361,10 +364,7 @@ mod windows {
         }
     }
 
-    fn build_command_line<'a>(
-        program: &OsStr,
-        args: impl Iterator<Item = &'a OsStr>,
-    ) -> Vec<u16> {
+    fn build_command_line<'a>(program: &OsStr, args: impl Iterator<Item = &'a OsStr>) -> Vec<u16> {
         let mut s = String::new();
         s.push_str(&quote(&program.to_string_lossy()));
         for a in args {
@@ -507,8 +507,7 @@ mod unix {
             ))]
             {
                 const SYS_CLOSE_RANGE: libc::c_long = 436;
-                let rc =
-                    libc::syscall(SYS_CLOSE_RANGE, 3u32, libc::c_uint::MAX, 0u32);
+                let rc = libc::syscall(SYS_CLOSE_RANGE, 3u32, libc::c_uint::MAX, 0u32);
                 if rc == 0 {
                     return;
                 }

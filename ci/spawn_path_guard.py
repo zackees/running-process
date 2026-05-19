@@ -29,6 +29,9 @@ ALLOWED_RUST_COMMAND_NEW = {
 ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-core/src/lib.rs"),
     Path("crates/running-process-core/src/containment.rs"),
+    # Sanitized daemon-spawn path: CreateProcessW on Windows, pre_exec
+    # closing extra fds on Unix.  See issue #110.
+    Path("crates/running-process-core/src/sanitized.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Client crate: auto-starts the daemon process when connecting.
     Path("crates/running-process-client/src/client.rs"),

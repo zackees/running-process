@@ -15,7 +15,6 @@ from typing import Any, ClassVar, NamedTuple
 
 from running_process._native import NativeProcess
 from running_process.command_render import list2cmdline
-from running_process.console_encoding import detect_console_encoding, sanitize_for_encoding
 from running_process.compat import (
     CREATE_NEW_PROCESS_GROUP,
     DEVNULL,
@@ -26,6 +25,7 @@ from running_process.compat import (
     TimeoutExpired,
     make_completed_process,
 )
+from running_process.console_encoding import detect_console_encoding, sanitize_for_encoding
 from running_process.exit_status import ExitStatus, ProcessAbnormalExit, classify_exit_status
 from running_process.expect import (
     ExpectAction,
