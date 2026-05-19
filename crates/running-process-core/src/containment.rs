@@ -164,6 +164,27 @@ impl ContainedProcessGroup {
             self.spawn_unix(command, containment)
         }
     }
+
+    /// Spawn a detached child with **no orphaned inheritable handles** from
+    /// the parent's table.  Use this for daemon launchers — especially when
+    /// the spawning process may have ancestors that redirected stdio to a
+    /// pipe (Python `subprocess.Popen(stdout=PIPE)`, IDE language-server
+    /// hosts, CI runners, etc.).
+    ///
+    /// The returned [`super::SanitizedChild`] does NOT belong to this
+    /// group's Job Object on Windows and survives the group being dropped,
+    /// matching `Containment::Detached` semantics. Stdio is always
+    /// connected to the platform null device.
+    ///
+    /// See [`super::sanitized`] for the cross-platform mechanism. Issue
+    /// <https://github.com/zackees/running-process/issues/110>.
+    pub fn spawn_sanitized(
+        &self,
+        command: &mut Command,
+    ) -> Result<super::SanitizedChild, std::io::Error> {
+        self.inject_originator_env(command);
+        super::sanitized::spawn(command)
+    }
 }
 
 // ── Windows implementation ──────────────────────────────────────────────────
