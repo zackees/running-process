@@ -4,6 +4,8 @@
 //! - Contained children die when the group is dropped.
 //! - Grandchildren (spawned by children) also die.
 //! - Detached children survive the group being dropped.
+//! - Sanitized spawns do not duplicate orphaned inheritable handles
+//!   from the parent into the child (issue #110).
 //!
 //! Run with `--test-threads=1` on Windows to avoid Job Object conflicts.
 
@@ -282,4 +284,253 @@ fn test_detached_survives_group_drop() {
     // Clean up.
     force_kill(detached_pid);
     wait_until_dead(detached_pid, Duration::from_secs(5));
+}
+
+// ── Sanitized-spawn handle-leak tests (issue #110) ──────────────────────────
+//
+// Goal: prove that `spawn_sanitized` does NOT duplicate orphaned inheritable
+// handles from the parent's table into the child. If the parent has an
+// inheritable pipe write-end sitting around, and the parent later closes its
+// own copy, the pipe reader must see EOF promptly — meaning no copy survived
+// in the child.
+
+#[cfg(windows)]
+mod sanitized_pipe_helpers {
+    use std::os::windows::io::RawHandle;
+    use std::time::Duration;
+
+    use winapi::shared::minwindef::{BOOL, DWORD, FALSE, TRUE};
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::minwinbase::SECURITY_ATTRIBUTES;
+    use winapi::um::namedpipeapi::CreatePipe;
+    use winapi::um::winnt::HANDLE;
+
+    pub struct InheritablePipe {
+        pub read_end: HANDLE,
+        pub write_end: HANDLE,
+    }
+
+    /// Create an anonymous pipe whose write-end is marked inheritable.
+    pub fn create_inheritable_pipe() -> InheritablePipe {
+        let mut sa: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
+        sa.nLength = std::mem::size_of::<SECURITY_ATTRIBUTES>() as DWORD;
+        sa.bInheritHandle = TRUE as BOOL;
+        sa.lpSecurityDescriptor = std::ptr::null_mut();
+
+        let mut read_end: HANDLE = std::ptr::null_mut();
+        let mut write_end: HANDLE = std::ptr::null_mut();
+        let ok = unsafe {
+            CreatePipe(
+                &mut read_end as *mut HANDLE,
+                &mut write_end as *mut HANDLE,
+                &mut sa as *mut SECURITY_ATTRIBUTES,
+                0,
+            )
+        };
+        assert!(ok != FALSE, "CreatePipe failed");
+        InheritablePipe {
+            read_end,
+            write_end,
+        }
+    }
+
+    /// Close a single handle.
+    pub fn close(h: HANDLE) {
+        if !h.is_null() {
+            unsafe {
+                CloseHandle(h);
+            }
+        }
+    }
+
+    /// Try to read 1 byte from `read_end` with the given timeout.
+    /// Returns `Ok(0)` on EOF (write end closed by every process holding it),
+    /// `Err(...)` on timeout.
+    pub fn read_one_byte_with_timeout(
+        read_end: HANDLE,
+        timeout: Duration,
+    ) -> Result<usize, &'static str> {
+        // Use a thread + channel: ReadFile on a blocking handle has no native
+        // timeout, so we read on a worker thread and wait for it.
+        let h = read_end as RawHandle as usize;
+        let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<usize>>();
+        std::thread::spawn(move || {
+            let h = h as RawHandle;
+            let mut buf = [0u8; 1];
+            let mut got: DWORD = 0;
+            let ok = unsafe {
+                winapi::um::fileapi::ReadFile(
+                    h as HANDLE,
+                    buf.as_mut_ptr().cast(),
+                    1,
+                    &mut got as *mut DWORD,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == FALSE {
+                let err = std::io::Error::last_os_error();
+                // ERROR_BROKEN_PIPE means the other end closed → EOF.
+                if err.raw_os_error() == Some(109) {
+                    let _ = tx.send(Ok(0));
+                } else {
+                    let _ = tx.send(Err(err));
+                }
+            } else {
+                let _ = tx.send(Ok(got as usize));
+            }
+        });
+
+        match rx.recv_timeout(timeout) {
+            Ok(Ok(n)) => Ok(n),
+            Ok(Err(_)) => Err("read failed"),
+            Err(_) => Err("timed out"),
+        }
+    }
+}
+
+#[cfg(unix)]
+mod sanitized_pipe_helpers {
+    use std::os::fd::RawFd;
+    use std::time::Duration;
+
+    pub struct InheritablePipe {
+        pub read_end: RawFd,
+        pub write_end: RawFd,
+    }
+
+    pub fn create_inheritable_pipe() -> InheritablePipe {
+        let mut fds = [0 as libc::c_int; 2];
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert!(rc == 0, "pipe() failed");
+        // Default Unix pipe() leaves CLOEXEC unset, so both ends are
+        // inheritable across exec — matching the "legacy daemon" pattern.
+        InheritablePipe {
+            read_end: fds[0],
+            write_end: fds[1],
+        }
+    }
+
+    pub fn close(fd: RawFd) {
+        unsafe {
+            libc::close(fd);
+        }
+    }
+
+    pub fn read_one_byte_with_timeout(
+        read_end: RawFd,
+        timeout: Duration,
+    ) -> Result<usize, &'static str> {
+        let mut pfd = libc::pollfd {
+            fd: read_end,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
+        let n = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, ms) };
+        if n == 0 {
+            return Err("timed out");
+        }
+        if n < 0 {
+            return Err("poll failed");
+        }
+        let mut buf = [0u8; 1];
+        let r = unsafe { libc::read(read_end, buf.as_mut_ptr().cast(), 1) };
+        if r < 0 {
+            return Err("read failed");
+        }
+        Ok(r as usize)
+    }
+}
+
+/// `spawn_sanitized` must not duplicate orphaned inheritable handles
+/// from the parent's handle table into the child.
+///
+/// Issue: zackees/running-process#110.
+#[test]
+fn test_sanitized_does_not_leak_inheritable_handles() {
+    use sanitized_pipe_helpers::*;
+
+    let sleeper = testbin_path("testbin-sleeper");
+    let group = ContainedProcessGroup::new().expect("create group");
+
+    // 1. Create a pipe whose write-end is inheritable.
+    let pipe = create_inheritable_pipe();
+
+    // 2. Spawn a long-lived child via the sanitized path. The child should
+    //    NOT receive a duplicate of `pipe.write_end`.
+    let mut cmd = Command::new(&sleeper);
+    let mut child = group.spawn_sanitized(&mut cmd).expect("spawn sanitized");
+    let child_pid = child.id();
+    assert!(child_pid != 0, "child PID should be non-zero");
+
+    // 3. Close the parent's only copy of the write-end. If the child also
+    //    received a duplicate, the kernel reference count stays > 0 and the
+    //    reader will block. If sanitized worked, refcount drops to zero and
+    //    the reader sees EOF promptly.
+    close(pipe.write_end);
+
+    // 4. Reader must see EOF within ~1s.
+    let start = Instant::now();
+    let result = read_one_byte_with_timeout(pipe.read_end, Duration::from_secs(2));
+    let elapsed = start.elapsed();
+    close(pipe.read_end);
+
+    // Clean up the child before asserting (so failure doesn't strand it).
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        matches!(result, Ok(0)),
+        "expected EOF on read end, got {result:?} after {elapsed:?} — \
+         child likely inherited an orphaned copy of the pipe write-end"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "EOF should be prompt; took {elapsed:?}"
+    );
+}
+
+/// Control test: prove the leak detection actually works. The default
+/// `spawn_detached` path uses Rust's `Command::spawn()` which calls
+/// `CreateProcessW(bInheritHandles=TRUE)` on Windows and leaves
+/// non-`O_CLOEXEC` fds open across `exec` on Unix. Either way, an
+/// inheritable pipe write-end IS duplicated into the child — so closing
+/// our copy must NOT produce EOF.
+///
+/// This test exists to make sure the sanitized-spawn test above is
+/// actually proving something. If this test ever starts failing it means
+/// the leak no longer reproduces and the sanitized test's value is
+/// reduced.
+#[test]
+fn test_default_spawn_leaks_inheritable_handles_control() {
+    use sanitized_pipe_helpers::*;
+
+    let sleeper = testbin_path("testbin-sleeper");
+    let group = ContainedProcessGroup::new().expect("create group");
+
+    let pipe = create_inheritable_pipe();
+
+    // Spawn through the leaky path.
+    let mut cmd = Command::new(&sleeper);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let contained = group.spawn_detached(&mut cmd).expect("spawn detached");
+    let child_pid = contained.child.id();
+
+    close(pipe.write_end);
+
+    // Reader should NOT see EOF — the child holds a duplicate.
+    let result = read_one_byte_with_timeout(pipe.read_end, Duration::from_millis(500));
+    close(pipe.read_end);
+
+    // Kill the child to release the duplicate.
+    force_kill(child_pid);
+    wait_until_dead(child_pid, Duration::from_secs(5));
+
+    assert!(
+        result.is_err(),
+        "default spawn should leak the pipe handle into the child, \
+         keeping reader blocked; instead got {result:?}"
+    );
 }

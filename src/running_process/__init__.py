@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 from running_process._native import (
     ContainedProcessGroup,
@@ -74,7 +74,6 @@ from running_process.running_process_manager import (
 __all__ = [
     "CREATE_NEW_PROCESS_GROUP",
     "DEVNULL",
-    "DetachedProcess",
     "EOS",
     "PIPE",
     "STDOUT",
@@ -83,6 +82,7 @@ __all__ = [
     "CompletedProcess",
     "ContainedProcessGroup",
     "CpuPriority",
+    "DetachedProcess",
     "EchoCallback",
     "EndOfStream",
     "ExitStatus",
