@@ -51,7 +51,112 @@ fn set_process_name(exe: &Path) {
     }
 }
 
+/// Reopen stdin/stdout/stderr to the platform null device (`/dev/null` on
+/// Unix, `NUL` on Windows) and close the inherited file descriptors /
+/// handles. Released handles include any pipe write ends the trampoline
+/// inherited from the process that invoked `launch_detached(...)`.
+///
+/// Without this, a grandparent process that reads the caller's stdio via
+/// a pipe — e.g. Python's
+/// `subprocess.Popen(["mytool"], stdout=PIPE)` where `mytool` internally
+/// calls `launch_detached(...)` — never observes EOF after the immediate
+/// caller exits, because the orphaned trampoline + the child it spawned
+/// keep the pipe's write end alive indefinitely. See issue #108.
+///
+/// Runs *before* the child `Command` is spawned so the child inherits the
+/// null device too. `DETACHED_PROCESS` / `CREATE_NO_WINDOW` on Windows
+/// only severs the console; arbitrary inherited pipe handles survive
+/// those flags and must be closed explicitly.
+///
+/// Best-effort — failures are silent. A failed detach is no worse than
+/// the pre-fix behavior; the only way the underlying syscalls can fail
+/// here is if the null device is unopenable, on which platform the pipe
+/// inheritance problem could not have arisen anyway.
+fn detach_stdio() {
+    #[cfg(unix)]
+    detach_stdio_unix();
+
+    #[cfg(windows)]
+    detach_stdio_windows();
+}
+
+#[cfg(unix)]
+fn detach_stdio_unix() {
+    // SAFETY: open/dup2/close are async-signal-safe and we're single-
+    // threaded this early in startup. Failures are deliberately silent —
+    // we cannot use stderr to report them (that's exactly what we're
+    // detaching from).
+    unsafe {
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+        if null < 0 {
+            return;
+        }
+        let _ = libc::dup2(null, libc::STDIN_FILENO);
+        let _ = libc::dup2(null, libc::STDOUT_FILENO);
+        let _ = libc::dup2(null, libc::STDERR_FILENO);
+        if null > libc::STDERR_FILENO {
+            let _ = libc::close(null);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn detach_stdio_windows() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::processenv::{GetStdHandle, SetStdHandle};
+    use winapi::um::winbase::{STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+    use winapi::um::winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, GENERIC_WRITE};
+
+    let nul: Vec<u16> = OsStr::new("NUL").encode_wide().chain(Some(0)).collect();
+
+    // Open a fresh NUL handle per slot so closing the previous handle
+    // (which on consoles may alias siblings) doesn't invalidate the
+    // others.
+    for (slot, access) in [
+        (STD_INPUT_HANDLE, GENERIC_READ),
+        (STD_OUTPUT_HANDLE, GENERIC_WRITE),
+        (STD_ERROR_HANDLE, GENERIC_WRITE),
+    ] {
+        // SAFETY: the std-handle slots belong to this process; no other
+        // thread is touching them this early in startup.
+        unsafe {
+            let nul_handle = CreateFileW(
+                nul.as_ptr(),
+                access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            );
+            if nul_handle.is_null() || nul_handle == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            let old = GetStdHandle(slot);
+            let _ = SetStdHandle(slot, nul_handle);
+            // GetStdHandle returns NULL when no handle is set and
+            // INVALID_HANDLE_VALUE on error; neither is closeable.
+            if !old.is_null() && old != INVALID_HANDLE_VALUE {
+                let _ = CloseHandle(old);
+            }
+        }
+    }
+}
+
 fn run() -> i32 {
+    // FIRST thing: drop any stdio handles we inherited from the process
+    // that spawned this trampoline. Otherwise both the trampoline and the
+    // child it's about to spawn keep the caller's pipe write ends alive,
+    // and any grandparent reading those pipes hangs indefinitely after
+    // the immediate caller exits. See issue #108. Must run before the
+    // `process::Command` below so the child inherits NUL instead of the
+    // original pipes.
+    detach_stdio();
+
     // 1. Determine our own exe path.
     let exe = match std::env::current_exe() {
         Ok(p) => p,
