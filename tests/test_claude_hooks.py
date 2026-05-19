@@ -8,15 +8,15 @@ def test_evaluate_bash_command_rewrites_direct_cargo() -> None:
 
     assert decision is not None
     assert decision.permission_decision == "allow"
-    assert decision.updated_command == "uvx soldr cargo build --workspace"
+    assert decision.updated_command == "soldr cargo build --workspace"
 
 
 def test_evaluate_bash_command_rewrites_direct_maturin() -> None:
     assert evaluate_bash_command("maturin build --release") is None
 
 
-def test_evaluate_bash_command_allows_uvx_soldr() -> None:
-    assert evaluate_bash_command("uvx soldr cargo test --workspace") is None
+def test_evaluate_bash_command_allows_soldr() -> None:
+    assert evaluate_bash_command("soldr cargo test --workspace") is None
 
 
 def test_evaluate_bash_command_blocks_compound_raw_build_command() -> None:
@@ -46,9 +46,9 @@ def test_pre_tool_use_response_rewrites_bash_input() -> None:
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
-            "permissionDecisionReason": "Rewriting build command through uvx soldr",
+            "permissionDecisionReason": "Rewriting build command through soldr",
             "updatedInput": {
-                "command": "uvx soldr cargo build --workspace",
+                "command": "soldr cargo build --workspace",
                 "description": "build rust",
             },
         }
