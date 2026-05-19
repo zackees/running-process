@@ -515,7 +515,7 @@ mod unix {
         }
 
         // 2. Walk /dev/fd (works on Linux via /proc symlink and on macOS / BSD).
-        let dir = libc::opendir(b"/dev/fd\0".as_ptr() as *const libc::c_char);
+        let dir = libc::opendir(c"/dev/fd".as_ptr());
         if !dir.is_null() {
             let dir_fd = libc::dirfd(dir);
             loop {
