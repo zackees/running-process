@@ -98,6 +98,43 @@ jobs:
           path: target/package/*.crate
           if-no-files-found: warn
 
+      # ── zccache-daemon orphan workaround ─────────────────────────────
+      # Imported verbatim from zackees/zccache PR #299 — the same hack
+      # the zccache repo uses in `.github/actions/build-target/action.yml`.
+      #
+      # setup-soldr currently ships a managed zccache binary built from a
+      # pre-#291 release whose `spawn_daemon` path inherits the parent's
+      # inheritable handles via `CreateProcessW(bInheritHandles=TRUE)`.
+      # The daemon survives a graceful `zccache stop` (a new daemon
+      # respawns on connection, or a child holds the IPC handle), and on
+      # Windows it can hold file locks long enough to hang the build
+      # itself or break `actions/upload-artifact`. Symptoms locally and
+      # on Windows runners include:
+      #
+      #   soldr: zccache session-start ... failed:
+      #          zccache: lost connection to daemon (no response received)
+      #
+      # The force-kill below guarantees zero `zccache-daemon` processes
+      # at end-of-job. `if: always()` so it runs even on build failure.
+      #
+      # Remove this block once setup-soldr bumps its managed zccache to
+      # >= 1.7.0 (which includes the PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+      # fix from zccache#291). Tracked locally as a follow-up issue;
+      # zccache-side tracker is zackees/zccache#299.
+      - name: Shutdown zccache daemon before cache save
+        if: always()
+        shell: bash
+        run: |
+          zccache stop || true
+          case "$RUNNER_OS" in
+            Windows)
+              taskkill //F //IM zccache-daemon.exe //T 2>/dev/null || true
+              ;;
+            Linux|macOS)
+              pkill -KILL -x zccache-daemon 2>/dev/null || true
+              ;;
+          esac
+
       - name: Display failure diagnostics
         if: ${{ failure() || cancelled() }}
         shell: bash
