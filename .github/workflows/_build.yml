@@ -59,11 +59,17 @@ jobs:
           restore-keys: |
             venv-${{ inputs.runs-on }}-py3.11-
 
-      - name: Setup soldr
-        uses: zackees/setup-soldr@main
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.94.1"
-          cache-key-suffix: ${{ inputs.runs-on }}
+          components: clippy, rustfmt
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.runs-on }}-${{ inputs.build-mode || 'dev' }}
+          cache-on-failure: true
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
@@ -86,8 +92,8 @@ jobs:
       - name: Package Rust crates
         if: ${{ inputs.include-crates }}
         run: |
-          soldr cargo package -p running-process-core --no-verify
-          soldr cargo package -p running-process-py --no-verify || echo "::warning::running-process-py packaging skipped (running-process-core not yet on crates.io)"
+          cargo package -p running-process-core --no-verify
+          cargo package -p running-process-py --no-verify || echo "::warning::running-process-py packaging skipped (running-process-core not yet on crates.io)"
 
       - name: Upload crate artifacts
         if: ${{ inputs.include-crates }}
@@ -96,43 +102,6 @@ jobs:
           name: crates
           path: target/package/*.crate
           if-no-files-found: warn
-
-      # ── zccache-daemon orphan workaround ─────────────────────────────
-      # Imported verbatim from zackees/zccache PR #299 — the same hack
-      # the zccache repo uses in `.github/actions/build-target/action.yml`.
-      #
-      # setup-soldr currently ships a managed zccache binary built from a
-      # pre-#291 release whose `spawn_daemon` path inherits the parent's
-      # inheritable handles via `CreateProcessW(bInheritHandles=TRUE)`.
-      # The daemon survives a graceful `zccache stop` (a new daemon
-      # respawns on connection, or a child holds the IPC handle), and on
-      # Windows it can hold file locks long enough to hang the build
-      # itself or break `actions/upload-artifact`. Symptoms locally and
-      # on Windows runners include:
-      #
-      #   soldr: zccache session-start ... failed:
-      #          zccache: lost connection to daemon (no response received)
-      #
-      # The force-kill below guarantees zero `zccache-daemon` processes
-      # at end-of-job. `if: always()` so it runs even on build failure.
-      #
-      # Remove this block once setup-soldr bumps its managed zccache to
-      # >= 1.7.0 (which includes the PROC_THREAD_ATTRIBUTE_HANDLE_LIST
-      # fix from zccache#291). Tracked locally as a follow-up issue;
-      # zccache-side tracker is zackees/zccache#299.
-      - name: Shutdown zccache daemon before cache save
-        if: always()
-        shell: bash
-        run: |
-          zccache stop || true
-          case "$RUNNER_OS" in
-            Windows)
-              taskkill //F //IM zccache-daemon.exe //T 2>/dev/null || true
-              ;;
-            Linux|macOS)
-              pkill -KILL -x zccache-daemon 2>/dev/null || true
-              ;;
-          esac
 
       - name: Display failure diagnostics
         if: ${{ failure() || cancelled() }}
@@ -166,7 +135,6 @@ jobs:
           command -v rustc >/dev/null 2>&1 && rustc -Vv || true
           command -v cargo >/dev/null 2>&1 && cargo -V || true
           command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
-          command -v soldr >/dev/null 2>&1 && soldr version || true
           echo "::endgroup::"
 
       - name: Upload failure logs
