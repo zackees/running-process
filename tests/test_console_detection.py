@@ -152,8 +152,14 @@ class TestConsoleDetection(unittest.TestCase):
 
     def test_assert_no_console_popup_helper(self):
         """The assert_no_console_popup context manager works correctly."""
-        # Should NOT raise -- no windows spawned
-        with assert_no_console_popup(duration_secs=1.0):
+        # Should NOT raise -- no windows spawned by us. The GH
+        # `windows-11-arm` image keeps a `wsl.exe` console window
+        # around persistently; pass the same filter the rest of the
+        # tests in this file use so it doesn't trip the assertion.
+        with assert_no_console_popup(
+            duration_secs=1.0,
+            ignore_window=_is_known_ci_console_noise,
+        ):
             time.sleep(0.5)
 
 
