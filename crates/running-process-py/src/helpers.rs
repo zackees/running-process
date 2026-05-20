@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 #[cfg(test)]
-use std::sync::OnceLock;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
@@ -14,21 +13,6 @@ use sysinfo::{Pid, System};
 
 pub(crate) fn to_py_err(err: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(err.to_string())
-}
-
-#[cfg(test)]
-pub(crate) fn is_ignorable_process_control_error(err: &std::io::Error) -> bool {
-    if matches!(
-        err.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput
-    ) {
-        return true;
-    }
-    #[cfg(unix)]
-    if err.raw_os_error() == Some(libc::ESRCH) {
-        return true;
-    }
-    false
 }
 
 pub(crate) fn process_err_to_py(err: ProcessError) -> PyErr {

@@ -40,11 +40,7 @@ pub(crate) use pid_tracking::{
     native_register_process, native_unregister_process, track_process_pid, tracked_pid_db_path_py,
     untrack_process_pid,
 };
-pub(crate) use priority::{native_apply_process_nice, native_apply_process_nice_impl};
-#[cfg(windows)]
-pub(crate) use priority::{
-    windows_apply_process_priority_impl, windows_generate_console_ctrl_break_impl,
-};
+pub(crate) use priority::native_apply_process_nice;
 pub(crate) use process::NativeRunningProcess;
 pub(crate) use process_tree::{
     native_get_process_tree_info, native_is_same_process, native_kill_process_tree,

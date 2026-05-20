@@ -1,9 +1,9 @@
 //! Continuation of integration tests — split for file-size budget.
 
 use running_process_daemon::client::{DaemonClient, SpawnCommandRequest};
-use running_process_proto::daemon::{DaemonRequest, RequestType, StatusCode};
+use running_process_proto::daemon::StatusCode;
 
-use super::{make_register_request, make_unregister_request, start_server_with_tempdb};
+use super::{make_register_request, start_server_with_tempdb};
 
 // ---------------------------------------------------------------------------
 // Test 9: status shows tracked_process_count

@@ -1,18 +1,15 @@
 use std::collections::VecDeque;
-use std::ffi::OsString;
-use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, PtySize};
 
 use super::{
-    command_builder_from_argv, control_churn_bytes, input_contains_newline,
-    is_ignorable_process_control_error, poll_pty_process, portable_exit_code,
-    record_pty_input_metrics, spawn_pty_reader, store_pty_returncode, write_pty_input,
-    IdleDetectorCore, IdleMonitorState, NativePtyHandles, PtyError, PtyReadShared, PtyReadState,
+    command_builder_from_argv, is_ignorable_process_control_error, poll_pty_process,
+    portable_exit_code, record_pty_input_metrics, spawn_pty_reader, store_pty_returncode,
+    write_pty_input, IdleDetectorCore, NativePtyHandles, PtyError, PtyReadShared, PtyReadState,
 };
 #[cfg(unix)]
 use super::posix_terminal_input_relay_worker;
@@ -20,7 +17,6 @@ use super::posix_terminal_input_relay_worker;
 use super::{
     apply_windows_pty_priority, assign_child_to_windows_kill_on_close_job,
     assign_conpty_conhost_to_job, conhost_children_of_current_process,
-    windows_terminal_input_payload, WindowsJobHandle,
 };
 
 #[cfg(unix)]
@@ -119,7 +115,7 @@ impl NativePtyProcess {
         store_pty_returncode(&self.returncode, code);
     }
 
-    fn join_reader_worker(&self) {
+    pub(super) fn join_reader_worker(&self) {
         if let Some(worker) = self
             .reader_worker
             .lock()

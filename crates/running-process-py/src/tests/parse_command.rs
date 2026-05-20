@@ -1,3 +1,4 @@
+use pyo3::IntoPyObject;
 use running_process_core::pty as core_pty;
 use running_process_core::{CommandSpec, StderrMode, StdinMode, StreamKind};
 

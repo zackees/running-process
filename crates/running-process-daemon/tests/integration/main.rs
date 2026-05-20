@@ -9,7 +9,7 @@
 //! threaded runtime would deadlock (the blocking client call would prevent
 //! the server task from making progress on the same thread).
 
-use running_process_daemon::client::{DaemonClient, SpawnCommandRequest};
+use running_process_daemon::client::DaemonClient;
 use running_process_daemon::paths;
 use running_process_daemon::server::DaemonServer;
 use running_process_proto::daemon::{
