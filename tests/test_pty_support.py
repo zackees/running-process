@@ -4,6 +4,7 @@ import contextlib
 import faulthandler
 import gc
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -1874,6 +1875,21 @@ def test_pseudo_terminal_wait_for_idle_can_arm_on_explicit_input_submit() -> Non
 
 
 def test_pseudo_terminal_wait_for_idle_can_arm_on_input_newline() -> None:
+    # PTY scheduling on macOS CI runners adds tens of ms of jitter to
+    # write→subprocess delivery and to "idle" sampling. On a dev laptop
+    # the sub-100 ms idle window resolves cleanly; on macos-15 GH it
+    # tightropes the deadline and intermittently misses. Scale every
+    # coordinated timing by 5x when GITHUB_ACTIONS=true so the test
+    # still exercises the same behaviour with realistic margins.
+    scale = 5 if os.environ.get("GITHUB_ACTIONS") == "true" else 1
+    sleep_after = 0.3 * scale
+    submit_delay = 0.12 * scale
+    idle_timeout = 0.05 * scale
+    idle_stability = 0.02 * scale
+    idle_sample = 0.01 * scale
+    outer_timeout = 0.35 * scale
+    min_elapsed = 0.15 * scale
+
     process = RunningProcess.pseudo_terminal(
         [
             sys.executable,
@@ -1883,14 +1899,14 @@ def test_pseudo_terminal_wait_for_idle_can_arm_on_input_newline() -> None:
                 "sys.stdout.write('ready>')\n"
                 "sys.stdout.flush()\n"
                 "sys.stdin.readline()\n"
-                "time.sleep(0.3)\n"
+                f"time.sleep({sleep_after})\n"
             ),
         ],
         text=True,
     )
 
     def submit_later() -> None:
-        time.sleep(0.12)
+        time.sleep(submit_delay)
         process.write("hello\n")
 
     worker = threading.Thread(target=submit_later, daemon=True)
@@ -1900,20 +1916,20 @@ def test_pseudo_terminal_wait_for_idle_can_arm_on_input_newline() -> None:
         result = process.wait_for_idle(
             IdleDetection(
                 timing=IdleTiming(
-                    timeout_seconds=0.05,
-                    stability_window_seconds=0.02,
-                    sample_interval_seconds=0.01,
+                    timeout_seconds=idle_timeout,
+                    stability_window_seconds=idle_stability,
+                    sample_interval_seconds=idle_sample,
                 ),
                 pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_NEWLINE),
             ),
-            timeout=0.35,
+            timeout=outer_timeout,
         )
         elapsed = time.time() - started
         worker.join(timeout=1.0)
 
         assert result.idle_detected is True
         assert result.exit_reason == "idle_timeout"
-        assert elapsed >= 0.15
+        assert elapsed >= min_elapsed
     finally:
         with contextlib.suppress(Exception):
             worker.join(timeout=1.0)
