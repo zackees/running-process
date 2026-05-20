@@ -13,7 +13,6 @@ jobs:
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "1"
-      RUNNING_PROCESS_FORCE_SOLDR: soldr
       RUNNING_PROCESS_LIVE_TESTS: "1"
       RUNNING_PROCESS_GH_PTY_TESTS: "1"
     steps:

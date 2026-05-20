@@ -12,7 +12,6 @@ jobs:
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "1"
-      RUNNING_PROCESS_FORCE_SOLDR: soldr
     steps:
       - uses: actions/checkout@v4
 

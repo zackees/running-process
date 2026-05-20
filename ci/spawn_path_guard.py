@@ -177,7 +177,10 @@ def check_rust_spawn_sites() -> list[str]:
                     _format_hits(
                         path,
                         command_new_hits,
-                        "Command::new outside the native spawn layer requires review and allowlisting",
+                        (
+                            "Command::new outside the native spawn layer "
+                            "requires review and allowlisting"
+                        ),
                     )
                 )
 

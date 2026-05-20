@@ -53,7 +53,7 @@ uv run black src tests
 uv run pyright src tests
 ```
 
-**Wrong toolchain?** Use `./_cargo`, `./_rustc`, `./_rustfmt` — these route through [soldr](https://github.com/zackees/soldr) (pulled via dev deps) which resolves the rustup-managed toolchain via `rustup which`. Handy on Windows where chocolatey cargo or other stale shims can take precedence on PATH. `soldr cargo ...` works directly too.
+**Wrong toolchain?** Use `./_cargo`, `./_rustc`, `./_rustfmt` — these route through the globally installed [soldr](https://github.com/zackees/soldr) binary, which resolves the rustup-managed toolchain via `rustup which`. Handy on Windows where chocolatey cargo or other stale shims can take precedence on PATH. `soldr cargo ...` works directly too. Install soldr globally (it is no longer pulled in as a uv dev dep) — e.g. `pipx install soldr` or `cargo install soldr`.
 
 **Environment:**
 ```bash
@@ -61,7 +61,7 @@ uv run pyright src tests
 ./install                    # Bootstrap Rust toolchain; builders use soldr
 ```
 
-Project hook policy: `.claude/settings.json` rewrites direct soldr-supported Bash build commands through `soldr` (the globally installed binary) and blocks compound raw build commands that bypass `soldr` or the higher-level repo entrypoints.
+Project hook policy: `.claude/settings.json` mandates that direct soldr-supported Bash build commands (`cargo build|check|test|package|publish`, `rustc`, `rustfmt`, `clippy-driver`) are prefixed with `soldr` (the globally installed binary). Raw commands are denied — use `soldr cargo ...` or one of the higher-level repo entrypoints (`uv run build.py`, `./install`, `./lint`, `./test`).
 
 ## Daemon
 

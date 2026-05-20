@@ -24,13 +24,17 @@ ALLOW_PREFIXES = (
     ".\\test",
 )
 SHELL_SEPARATORS = ("&&", "||", "|", ";", "\n")
+MANDATE_REASON = (
+    "Build-related shell commands in this repo MUST be prefixed with `soldr` "
+    "(the globally installed binary), or use the higher-level repo entrypoints "
+    "(`uv run build.py`, `./install`, `./lint`, `./test`)."
+)
 
 
 @dataclass(frozen=True)
 class HookDecision:
     permission_decision: str
     reason: str
-    updated_command: str | None = None
 
 
 def _starts_with_any(command: str, prefixes: tuple[str, ...]) -> bool:
@@ -59,40 +63,15 @@ def _contains_raw_build_tool(command: str) -> bool:
     return False
 
 
-def _rewrite_direct_command(command: str) -> str | None:
-    stripped = command.lstrip()
-    leading = command[: len(command) - len(stripped)]
-    for subcommand in SUPPORTED_CARGO_SUBCOMMANDS:
-        if stripped == f"cargo {subcommand}" or stripped.startswith(f"cargo {subcommand} "):
-            return f"{leading}soldr {stripped}"
-    for tool in BUILD_TOOL_PREFIXES:
-        if stripped == tool or stripped.startswith(f"{tool} "):
-            return f"{leading}soldr {stripped}"
-    return None
-
-
 def evaluate_bash_command(command: str) -> HookDecision | None:
     if not command.strip():
         return None
     if _starts_with_any(command, ALLOW_PREFIXES):
         return None
-    if _contains_raw_build_tool(command) and any(
-        separator in command for separator in SHELL_SEPARATORS
-    ):
+    if _contains_raw_build_tool(command):
         return HookDecision(
             permission_decision="deny",
-            reason=(
-                "Build-related shell commands in this repo must run through `soldr` "
-                "or the higher-level repo entrypoints "
-                "(`uv run build.py`, `./install`, `./lint`, `./test`)."
-            ),
-        )
-    rewritten = _rewrite_direct_command(command)
-    if rewritten is not None:
-        return HookDecision(
-            permission_decision="allow",
-            reason="Rewriting build command through soldr",
-            updated_command=rewritten,
+            reason=MANDATE_REASON,
         )
     return None
 
@@ -111,13 +90,10 @@ def pre_tool_use_response(payload: dict[str, object]) -> dict[str, object] | Non
     if decision is None:
         return None
 
-    hook_output: dict[str, object] = {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": decision.permission_decision,
-        "permissionDecisionReason": decision.reason,
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision.permission_decision,
+            "permissionDecisionReason": decision.reason,
+        }
     }
-    if decision.updated_command is not None:
-        updated_input = dict(tool_input)
-        updated_input["command"] = decision.updated_command
-        hook_output["updatedInput"] = updated_input
-    return {"hookSpecificOutput": hook_output}
