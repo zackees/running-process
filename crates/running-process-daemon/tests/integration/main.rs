@@ -276,6 +276,32 @@ pub fn scaled(d: std::time::Duration) -> std::time::Duration {
     d.saturating_mul(latency_multiplier())
 }
 
+/// Best-effort liveness check on an arbitrary PID. Used by test debug
+/// instrumentation to distinguish "process exited" from "process alive
+/// but not visible to the daemon's tracker".
+#[cfg(windows)]
+pub fn is_pid_alive(pid: u32) -> bool {
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::processthreadsapi::{GetExitCodeProcess, OpenProcess};
+    use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
+    const STILL_ACTIVE: u32 = 259;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE
+    }
+}
+
+#[cfg(unix)]
+pub fn is_pid_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
 /// Helper: start a `DaemonServer` backed by a temp directory for the SQLite DB.
 ///
 /// Returns the join handle, socket path, and the `TempDir` (which must be kept

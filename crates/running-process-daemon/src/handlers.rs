@@ -130,12 +130,17 @@ fn unix_now_seconds() -> f64 {
 fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-
+        // IMPORTANT: do NOT use `raw_arg` here. running_process_core's
+        // sanitized spawn rebuilds the Win32 command line from
+        // `cmd.get_program()` + `cmd.get_args()` (it can't reach
+        // Rust stdlib's internal `raw_arg` storage), so any
+        // raw_arg-only args are LOST and cmd.exe is launched with
+        // zero arguments — it exits immediately with no output and
+        // never appears in `list_active`. Use regular `arg()` and
+        // let Rust's CRT-escape rule + cmd's `/S` flag strip the
+        // outer quotes again on the cmd side.
         let mut cmd = Command::new("cmd.exe");
-        cmd.raw_arg("/D /S /C \"");
-        cmd.raw_arg(command);
-        cmd.raw_arg("\"");
+        cmd.arg("/D").arg("/S").arg("/C").arg(command);
         cmd
     }
     #[cfg(not(windows))]
@@ -168,7 +173,13 @@ fn spawn_and_track_detached(
         command.current_dir(cwd);
     }
     if !env.is_empty() {
-        command.env_clear();
+        // Layer the caller-supplied env vars ON TOP of the daemon's
+        // inherited env — do NOT env_clear(). On Windows, wiping the
+        // env removes SystemRoot/PATH/etc. and cmd.exe (spawned via
+        // `cmd /D /S /C "..."`) loses access to ping, echo redirection
+        // semantics, and even its own DLL loader, exiting instantly
+        // with no observable output and never appearing in
+        // `list_active`.
         command.envs(env.iter());
     }
     if !originator.is_empty() {

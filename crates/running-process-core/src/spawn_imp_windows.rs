@@ -26,10 +26,10 @@ use winapi::um::processthreadsapi::{
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT, FILE_FLAG_FIRST_PIPE_INSTANCE,
-    FILE_FLAG_OVERLAPPED, INFINITE, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, WAIT_OBJECT_0,
+    EXTENDED_STARTUPINFO_PRESENT, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, INFINITE,
+    PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_WAIT, STARTF_USESTDHANDLES, STARTUPINFOEXW, STD_ERROR_HANDLE,
+    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, WAIT_OBJECT_0,
 };
 use winapi::um::winnt::{
     JobObjectExtendedLimitInformation, DUPLICATE_SAME_ACCESS, FILE_SHARE_READ,
@@ -581,10 +581,19 @@ fn create_process_inner(
     let mut flags: DWORD = EXTENDED_STARTUPINFO_PRESENT;
     match mode {
         CreateMode::Daemon => {
-            // Daemons always run without a console window and are placed
-            // in a new process group so Ctrl-C / Ctrl-Break delivered to
-            // the parent's console group never reaches them.
-            flags |= CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+            // Daemons run with no visible console window and in a new
+            // process group so Ctrl-C / Ctrl-Break delivered to the
+            // parent's console group never reaches them.
+            //
+            // We intentionally do NOT add DETACHED_PROCESS. The
+            // CREATE_NO_WINDOW + DETACHED_PROCESS combo is documented
+            // as inconsistent by MS (both touch the same console
+            // inheritance machinery): cmd.exe spawned with both
+            // attaches no console, errors on its first builtin, and
+            // exits immediately with no output. CREATE_NO_WINDOW alone
+            // gives the child a non-visible console which is what
+            // cmd-shell scripts and most console tools actually need.
+            flags |= CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
         }
         CreateMode::Contained { show_console } => {
             // We need to assign to a Job Object before the child runs.
@@ -716,16 +725,65 @@ fn try_wait_inner(handle: &OwnedHandle) -> io::Result<Option<i32>> {
 }
 
 fn build_command_line<'a>(program: &OsStr, args: impl Iterator<Item = &'a OsStr>) -> Vec<u16> {
+    let program_str = program.to_string_lossy().into_owned();
+    let is_cmd = is_cmd_exe(&program_str);
+
+    let arg_strs: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
+
     let mut s = String::new();
-    s.push_str(&quote(&program.to_string_lossy()));
-    for a in args {
+    s.push_str(&quote(&program_str));
+
+    // Special case for cmd.exe: when an arg of `/C` or `/K`
+    // (case-insensitive) is followed by what we treat as the script,
+    // do NOT apply CRT-style escaping to the script. cmd.exe parses
+    // `\"` literally as backslash + quote, so the CRT's `"` → `\"`
+    // escape rule corrupts paths inside the script (the redirect
+    // target `"C:\path"` becomes `\"C:\path\"` which is no longer a
+    // valid filename to cmd). With `/S`, cmd strips the outermost
+    // pair of quotes around the whole script; everything else we
+    // pass through untouched. See PR #116 for the diagnostic trail.
+    let mut script_consumed = false;
+    let mut i = 0;
+    while i < arg_strs.len() {
+        let a = &arg_strs[i];
         s.push(' ');
-        s.push_str(&quote(&a.to_string_lossy()));
+        if is_cmd && !script_consumed && is_cmd_script_switch(a) {
+            // Emit the switch itself unquoted (it has no special chars),
+            // then the remaining args concatenated with spaces, wrapped
+            // in a single pair of outer quotes that `/S` will strip.
+            s.push_str(a);
+            let script = arg_strs[i + 1..].join(" ");
+            if !script.is_empty() {
+                s.push(' ');
+                s.push('"');
+                s.push_str(&script);
+                s.push('"');
+            }
+            script_consumed = true;
+            break;
+        }
+        s.push_str(&quote(a));
+        i += 1;
     }
+
     OsStr::new(&s)
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
+}
+
+fn is_cmd_exe(program: &str) -> bool {
+    // Match `cmd`, `cmd.exe`, or any path ending in those (case-insensitive).
+    let lower = program.to_ascii_lowercase();
+    let tail = std::path::Path::new(&lower)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or(lower);
+    tail == "cmd" || tail == "cmd.exe"
+}
+
+fn is_cmd_script_switch(arg: &str) -> bool {
+    matches!(arg.to_ascii_lowercase().as_str(), "/c" | "/k")
 }
 
 fn quote(arg: &str) -> String {
