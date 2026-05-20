@@ -11,7 +11,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      RUST_BACKTRACE: "1"
+      RUST_BACKTRACE: "full"
+      RUST_LIB_BACKTRACE: "full"
+      RUST_LOG: "debug"
+      RUNNING_PROCESS_TEST_NOCAPTURE: "1"
     steps:
       - uses: actions/checkout@v4
 

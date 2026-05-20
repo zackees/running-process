@@ -12,7 +12,8 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     env:
-      RUST_BACKTRACE: "1"
+      RUST_BACKTRACE: "full"
+      RUST_LIB_BACKTRACE: "full"
     steps:
       - uses: actions/checkout@v4
 
