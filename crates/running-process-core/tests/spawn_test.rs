@@ -42,6 +42,13 @@ fn testbin_path(name: &str) -> PathBuf {
             {
                 if let Some(exe) = v["executable"].as_str() {
                     let p = PathBuf::from(exe);
+                    // Retry the existence check briefly — concurrent
+                    // `cargo build` calls from sibling test threads can
+                    // race the artifact rename on macOS CI.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !p.exists() && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
                     assert!(p.exists(), "cargo reported {p:?} but it does not exist");
                     return p;
                 }

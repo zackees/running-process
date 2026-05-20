@@ -50,6 +50,17 @@ fn testbin_path(name: &str) -> PathBuf {
             {
                 if let Some(exe) = v["executable"].as_str() {
                     let p = PathBuf::from(exe);
+                    // Concurrent test threads each invoke `cargo build`
+                    // on overlapping target dirs. The other build's
+                    // file-lock release races against our exists()
+                    // check — cargo has reported the artifact but the
+                    // file rename to the final path may not have
+                    // committed yet (observed on macOS in CI). Retry
+                    // for up to 5s before giving up.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !p.exists() && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
                     assert!(p.exists(), "cargo reported {p:?} but it does not exist");
                     return p;
                 }
