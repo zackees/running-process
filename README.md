@@ -309,7 +309,7 @@ Releases are cut by the **Auto Release** GitHub Actions workflow. Bump `project.
 - Publish `running-process-{proto, core, client, py}` to crates.io in dependency order (requires the repo secret `CARGO_REGISTRY_TOKEN`).
 - Build standalone `runpm` and `running-process-daemon` binaries for each target and attach them — alongside the wheels, `install.sh`, `install.ps1`, and `SHA256SUMS` — to a new GitHub Release.
 
-You can also fire the workflow manually with `gh workflow run release-auto.yml`, or by pushing a `vX.Y.Z` tag.
+You can also fire the workflow manually with `gh workflow run auto-release.yml`, or by pushing a `vX.Y.Z` tag.
 
 The standalone binaries can be installed without `pip`:
 
