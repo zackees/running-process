@@ -11,6 +11,7 @@ members = [
     "crates/test-watchdog",
     "testbins/cwd-reporter",
     "testbins/dies_after_spawn",
+    "testbins/env-dump",
     "testbins/env-reporter",
     "testbins/sleeper",
     "testbins/spawner",

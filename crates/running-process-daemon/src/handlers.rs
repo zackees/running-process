@@ -164,6 +164,7 @@ fn spawn_and_track_detached(
     command_text: &str,
     cwd: &str,
     env: &std::collections::HashMap<String, String>,
+    clear_inherited_env: bool,
     originator: &str,
     state: &DaemonState,
 ) -> Result<SpawnedChild, String> {
@@ -172,26 +173,38 @@ fn spawn_and_track_detached(
     if !cwd.is_empty() {
         command.current_dir(cwd);
     }
+    // Two env modes, gated on `clear_inherited_env`:
+    //
+    // - false (default, backward-compatible): LAYER the caller's env on
+    //   top of the daemon's inherited env. The subprocess sees
+    //   <daemon env> ∪ <env>, the caller's map winning ties.
+    //
+    // - true: REPLACE — the subprocess sees ONLY the caller's env. The
+    //   daemon's env is not inherited. Mirrors Python's
+    //   `subprocess.Popen(env=…)` semantic; useful for sandbox-style
+    //   compiler wrapping where you want a deterministic env. Windows
+    //   callers will typically still need SystemRoot in this map so
+    //   `cmd.exe` can load its DLLs (see #115/PR review for context).
+    if clear_inherited_env {
+        command.env_clear();
+    }
     if !env.is_empty() {
-        // Layer the caller-supplied env vars ON TOP of the daemon's
-        // inherited env — do NOT env_clear(). On Windows, wiping the
-        // env removes SystemRoot/PATH/etc. and cmd.exe (spawned via
-        // `cmd /D /S /C "..."`) loses access to ping, echo redirection
-        // semantics, and even its own DLL loader, exiting instantly
-        // with no observable output and never appearing in
-        // `list_active`.
         command.envs(env.iter());
     }
     if !originator.is_empty() {
         command.env(ORIGINATOR_ENV_VAR, originator);
     }
 
-    // Route through `spawn_daemon` so the child gets the structurally-safe
-    // sanitized handle list (no orphan inheritable handles), NUL stdio,
-    // CREATE_NO_WINDOW + CREATE_NEW_PROCESS_GROUP on Windows (no console
-    // popup, ignores parent's Ctrl-C), and setsid + close-extra-fds on Unix.
-    let mut detached = running_process_core::spawn_daemon(&mut command)
-        .map_err(|e| format!("failed to spawn detached command: {e}"))?;
+    // Route through `spawn_daemon_with_clear_env` so the child gets the
+    // structurally-safe sanitized handle list (no orphan inheritable
+    // handles), NUL stdio, CREATE_NO_WINDOW + CREATE_NEW_PROCESS_GROUP
+    // on Windows (no console popup, ignores parent's Ctrl-C), and setsid
+    // + close-extra-fds on Unix. The `clear_env` flag is the bit that
+    // makes Rust stdlib's `command.env_clear()` actually observable
+    // through our manual CreateProcessW path on Windows.
+    let mut detached =
+        running_process_core::spawn_daemon_with_clear_env(&mut command, clear_inherited_env)
+            .map_err(|e| format!("failed to spawn detached command: {e}"))?;
 
     let pid = detached.id();
     let created_at = process_created_at(pid).unwrap_or_else(unix_now_seconds);
@@ -252,6 +265,7 @@ pub fn handle_spawn_daemon(request: &DaemonRequest, state: &DaemonState) -> Daem
         command_text,
         &req.cwd,
         &req.env,
+        req.clear_inherited_env,
         &effective_originator,
         state,
     ) {

@@ -25,7 +25,10 @@ pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
 #[cfg(feature = "originator-scan")]
 pub use originator::{find_processes_by_originator, OriginatorProcessInfo};
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
-pub use spawn::{spawn, spawn_daemon, DaemonChild, SpawnStdio, SpawnedChild, StdioSource};
+pub use spawn::{
+    spawn, spawn_daemon, spawn_daemon_with_clear_env, DaemonChild, SpawnStdio, SpawnedChild,
+    StdioSource,
+};
 
 #[macro_export]
 macro_rules! rp_rust_debug_scope {

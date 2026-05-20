@@ -393,12 +393,18 @@ impl SpawnedInner {
     }
 }
 
-pub fn spawn_daemon(command: &mut Command) -> io::Result<super::DaemonChild> {
+pub fn spawn_daemon(command: &mut Command, clear_env: bool) -> io::Result<super::DaemonChild> {
     let stdin = open_nul(false)?;
     let stdout = open_nul(true)?;
     let stderr = open_nul(true)?;
-    let (handle, _thread, pid) =
-        create_process_inner(command, &stdin, &stdout, &stderr, CreateMode::Daemon)?;
+    let (handle, _thread, pid) = create_process_inner(
+        command,
+        &stdin,
+        &stdout,
+        &stderr,
+        CreateMode::Daemon,
+        clear_env,
+    )?;
     Ok(super::DaemonChild {
         pid,
         handle: OwnedHandle(handle),
@@ -421,6 +427,11 @@ pub fn spawn(
         CreateMode::Contained {
             show_console: stdio.show_console,
         },
+        // Contained-mode spawn doesn't currently support env_clear via
+        // an extra arg — callers using `spawn` set env via the regular
+        // Command::env(...) API and inheritance follows the standard
+        // CRT contract.
+        false,
     )?;
 
     // Build the per-spawn Job Object and assign BEFORE ResumeThread so
@@ -517,6 +528,7 @@ fn create_process_inner(
     stdout: &OwnedHandle,
     stderr: &OwnedHandle,
     mode: CreateMode,
+    clear_env: bool,
 ) -> io::Result<(HANDLE, HANDLE, u32)> {
     let mut cmdline = build_command_line(command.get_program(), command.get_args());
 
@@ -524,10 +536,15 @@ fn create_process_inner(
         .get_envs()
         .map(|(k, v)| (k.to_os_string(), v.map(|v| v.to_os_string())))
         .collect();
-    let env_block = if envs.is_empty() {
+    let env_block = if envs.is_empty() && !clear_env {
+        // No overrides AND no clear → let the kernel inherit the
+        // parent's env block (lpEnvironment=NULL).
         None
     } else {
-        Some(build_env_block(envs))
+        // Either we have overrides, or the caller asked to clear
+        // inherited env. In both cases we must build the block
+        // ourselves and pass it explicitly.
+        Some(build_env_block(envs, clear_env))
     };
 
     let cwd_w: Option<Vec<u16>> = command.get_current_dir().map(|p| {
@@ -823,12 +840,21 @@ fn quote(arg: &str) -> String {
     out
 }
 
-fn build_env_block(overrides: Vec<(OsString, Option<OsString>)>) -> Vec<u16> {
+fn build_env_block(
+    overrides: Vec<(OsString, Option<OsString>)>,
+    clear_env: bool,
+) -> Vec<u16> {
     use std::collections::BTreeMap;
     let mut env: BTreeMap<OsString, OsString> = BTreeMap::new();
-    for (k, v) in std::env::vars_os() {
-        env.insert(k, v);
+    if !clear_env {
+        // Default: start from the daemon's inherited env, then layer
+        // overrides on top.
+        for (k, v) in std::env::vars_os() {
+            env.insert(k, v);
+        }
     }
+    // When clear_env=true we start from an empty map; the env block
+    // we hand `CreateProcessW` contains ONLY the overrides.
     for (k, v) in overrides {
         match v {
             Some(val) => {

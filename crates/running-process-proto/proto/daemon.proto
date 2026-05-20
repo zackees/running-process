@@ -146,8 +146,24 @@ message UnregisterResponse {}
 message SpawnDaemonRequest {
   string command = 1;
   string cwd = 2;
+  // Environment variables to apply to the spawned subprocess. Default
+  // behaviour (clear_inherited_env=false) is to LAYER these on top of
+  // the daemon's own inherited env — the subprocess sees
+  // <daemon env> ∪ <this map>, with this map winning ties.
+  //
+  // When clear_inherited_env=true, the subprocess sees ONLY this map,
+  // nothing inherited from the daemon. This mirrors Python's
+  // `subprocess.Popen(env=…)` semantic: `env=None` (the field unset +
+  // clear_inherited_env=false) inherits, `env=<dict>` (with
+  // clear_inherited_env=true) replaces.
+  //
+  // Practical note for Windows callers: `cmd.exe` needs SystemRoot in
+  // its env to load DLLs; when using replace mode on Windows you'll
+  // typically want to copy SystemRoot (and any other essentials) into
+  // this map yourself.
   map<string, string> env = 3;
   string originator = 4;
+  bool clear_inherited_env = 5;
 }
 
 message SpawnDaemonResponse {

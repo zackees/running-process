@@ -249,13 +249,32 @@ impl Drop for SpawnedChild {
 /// avoid crashing on later `println!`/`eprintln!` after the parent
 /// closes its handles.
 pub fn spawn_daemon(command: &mut Command) -> std::io::Result<DaemonChild> {
+    spawn_daemon_with_clear_env(command, false)
+}
+
+/// Like [`spawn_daemon`] but with explicit control over whether the
+/// daemon's inherited env is passed through to the child.
+///
+/// `clear_env = false` (default for [`spawn_daemon`]): child inherits the
+/// current process's env, layered with anything set via
+/// `command.env(...)`.
+///
+/// `clear_env = true`: child sees ONLY the explicit `command.env(...)`
+/// entries. Mirrors `command.env_clear()` semantics for callers using
+/// the manual `CreateProcessW` path (Rust stdlib's `env_clear` flag
+/// isn't observable through `Command::get_envs`, so our sanitized
+/// spawn machinery can't otherwise honour it).
+pub fn spawn_daemon_with_clear_env(
+    command: &mut Command,
+    clear_env: bool,
+) -> std::io::Result<DaemonChild> {
     #[cfg(windows)]
     {
-        imp::spawn_daemon(command)
+        imp::spawn_daemon(command, clear_env)
     }
     #[cfg(unix)]
     {
-        unix_impl::spawn_daemon(command)
+        unix_impl::spawn_daemon(command, clear_env)
     }
 }
 

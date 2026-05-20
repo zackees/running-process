@@ -65,8 +65,16 @@ fn slot_to_stdio(slot: &super::StdioSource<'_>) -> io::Result<Stdio> {
     }
 }
 
-pub fn spawn_daemon(command: &mut Command) -> io::Result<super::DaemonChild> {
+pub fn spawn_daemon(command: &mut Command, clear_env: bool) -> io::Result<super::DaemonChild> {
     use std::os::unix::process::CommandExt;
+
+    if clear_env {
+        // Rust stdlib's Command::env_clear is honoured natively here
+        // because we call command.spawn() rather than building the
+        // env block ourselves. On the Windows side we have to do this
+        // explicitly via build_env_block(clear_env=true).
+        command.env_clear();
+    }
 
     command
         .stdin(Stdio::null())

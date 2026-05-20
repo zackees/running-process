@@ -74,6 +74,12 @@ pub struct SpawnCommandRequest {
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
     pub originator: Option<String>,
+    /// When `true`, the daemon clears the inherited env before applying
+    /// [`Self::env`], so the subprocess sees ONLY the supplied map.
+    /// Mirrors Python's `subprocess.Popen(env=…)` replace semantic.
+    /// Default `false` keeps the historic "layer on top of inherited"
+    /// behaviour.
+    pub clear_inherited_env: bool,
 }
 
 impl SpawnCommandRequest {
@@ -97,6 +103,7 @@ impl SpawnCommandRequest {
             cwd: std::env::current_dir().ok(),
             env: std::env::vars().collect(),
             originator: Some(Self::default_originator()),
+            clear_inherited_env: false,
         }
     }
 
@@ -106,7 +113,9 @@ impl SpawnCommandRequest {
         self
     }
 
-    /// Replace the environment block sent to the daemon.
+    /// Replace the environment block sent to the daemon (layered on top
+    /// of the daemon's inherited env, unless [`Self::with_env_replace`]
+    /// is used instead).
     pub fn with_envs<I, K, V>(mut self, env: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -117,6 +126,32 @@ impl SpawnCommandRequest {
             .into_iter()
             .map(|(key, value)| (key.into(), value.into()))
             .collect();
+        self
+    }
+
+    /// Set the env block AND tell the daemon to clear the inherited
+    /// env first — the subprocess will see ONLY the supplied map.
+    ///
+    /// Mirrors Python's `subprocess.Popen(env=…)` semantic:
+    ///
+    /// ```python
+    /// subprocess.Popen(["..."], env=None)        # inherits
+    /// subprocess.Popen(["..."], env={"K": "V"})  # replaces
+    /// ```
+    ///
+    /// On Windows you typically still want to include `SystemRoot` in
+    /// the supplied map so `cmd.exe` can load its DLLs.
+    pub fn with_env_replace<I, K, V>(mut self, env: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.env = env
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect();
+        self.clear_inherited_env = true;
         self
     }
 
@@ -390,6 +425,7 @@ impl DaemonClient {
                     .unwrap_or_default(),
                 env: request.env.iter().cloned().collect(),
                 originator: request.originator.clone().unwrap_or_default(),
+                clear_inherited_env: request.clear_inherited_env,
             }),
             ..Default::default()
         };
