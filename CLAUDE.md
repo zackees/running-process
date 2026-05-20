@@ -82,9 +82,9 @@ Two entry points in `pyproject.toml`:
 
 ## Releasing
 
-Releases are driven by the **Auto Release** workflow (`.github/workflows/release-auto.yml`).
+Releases are driven by the **Auto Release** workflow (`.github/workflows/auto-release.yml`).
 
-**Trigger**: push a `pyproject.toml` `project.version` bump to `main`, push a `vX.Y.Z` or `X.Y.Z` tag, or fire the workflow manually with `gh workflow run release-auto.yml`.
+**Trigger**: push a `pyproject.toml` `project.version` bump to `main`, push a `vX.Y.Z` or `X.Y.Z` tag, or fire the workflow manually with `gh workflow run auto-release.yml`.
 
 **Required**:
 - `pyproject.toml` `project.version` and `Cargo.toml` `workspace.package.version` must match — preflight fails otherwise.
