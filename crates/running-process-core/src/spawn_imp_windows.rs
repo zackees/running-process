@@ -393,12 +393,18 @@ impl SpawnedInner {
     }
 }
 
-pub fn spawn_daemon(command: &mut Command) -> io::Result<super::DaemonChild> {
+pub fn spawn_daemon(command: &mut Command, clear_env: bool) -> io::Result<super::DaemonChild> {
     let stdin = open_nul(false)?;
     let stdout = open_nul(true)?;
     let stderr = open_nul(true)?;
-    let (handle, _thread, pid) =
-        create_process_inner(command, &stdin, &stdout, &stderr, CreateMode::Daemon)?;
+    let (handle, _thread, pid) = create_process_inner(
+        command,
+        &stdin,
+        &stdout,
+        &stderr,
+        CreateMode::Daemon,
+        clear_env,
+    )?;
     Ok(super::DaemonChild {
         pid,
         handle: OwnedHandle(handle),
@@ -421,6 +427,11 @@ pub fn spawn(
         CreateMode::Contained {
             show_console: stdio.show_console,
         },
+        // Contained-mode spawn doesn't currently support env_clear via
+        // an extra arg — callers using `spawn` set env via the regular
+        // Command::env(...) API and inheritance follows the standard
+        // CRT contract.
+        false,
     )?;
 
     // Build the per-spawn Job Object and assign BEFORE ResumeThread so
@@ -517,6 +528,7 @@ fn create_process_inner(
     stdout: &OwnedHandle,
     stderr: &OwnedHandle,
     mode: CreateMode,
+    clear_env: bool,
 ) -> io::Result<(HANDLE, HANDLE, u32)> {
     let mut cmdline = build_command_line(command.get_program(), command.get_args());
 
@@ -524,10 +536,15 @@ fn create_process_inner(
         .get_envs()
         .map(|(k, v)| (k.to_os_string(), v.map(|v| v.to_os_string())))
         .collect();
-    let env_block = if envs.is_empty() {
+    let env_block = if envs.is_empty() && !clear_env {
+        // No overrides AND no clear → let the kernel inherit the
+        // parent's env block (lpEnvironment=NULL).
         None
     } else {
-        Some(build_env_block(envs))
+        // Either we have overrides, or the caller asked to clear
+        // inherited env. In both cases we must build the block
+        // ourselves and pass it explicitly.
+        Some(build_env_block(envs, clear_env))
     };
 
     let cwd_w: Option<Vec<u16>> = command.get_current_dir().map(|p| {
@@ -823,24 +840,61 @@ fn quote(arg: &str) -> String {
     out
 }
 
-fn build_env_block(overrides: Vec<(OsString, Option<OsString>)>) -> Vec<u16> {
+fn build_env_block(
+    overrides: Vec<(OsString, Option<OsString>)>,
+    clear_env: bool,
+) -> Vec<u16> {
     use std::collections::BTreeMap;
-    let mut env: BTreeMap<OsString, OsString> = BTreeMap::new();
-    for (k, v) in std::env::vars_os() {
-        env.insert(k, v);
+    // Windows env var names are case-INSENSITIVE at the kernel level
+    // (CreateProcessW + the env block accept any case but
+    // `GetEnvironmentVariable` lookups uppercase the name). If we dedup
+    // case-sensitively, an inherited "Path" and a caller override of
+    // "PATH" (or vice versa) end up as TWO entries in the block; the
+    // kernel picks one (whichever sorts first) and the override is
+    // silently dropped.
+    //
+    // Use the uppercased UTF-16 form as the canonical key. Preserve
+    // the original case of the most recent insert for emit.
+    let upper_key = |k: &OsStr| -> Vec<u16> {
+        // Simple ASCII upper-fold via OsStr→u16 chain. Windows
+        // CompareStringOrdinal uses a locale-independent uppercase
+        // fold; for env-var names (overwhelmingly ASCII) the simple
+        // version suffices and avoids a Win32 round-trip. Non-ASCII
+        // keys still dedup as long as their bytes match exactly.
+        k.encode_wide()
+            .map(|c| {
+                if (b'a' as u16..=b'z' as u16).contains(&c) {
+                    c - (b'a' as u16 - b'A' as u16)
+                } else {
+                    c
+                }
+            })
+            .collect()
+    };
+
+    let mut env: BTreeMap<Vec<u16>, (OsString, OsString)> = BTreeMap::new();
+    if !clear_env {
+        // Default: start from the daemon's inherited env, then layer
+        // overrides on top.
+        for (k, v) in std::env::vars_os() {
+            env.insert(upper_key(&k), (k, v));
+        }
     }
+    // When clear_env=true we start from an empty map; the env block
+    // we hand `CreateProcessW` contains ONLY the overrides.
     for (k, v) in overrides {
+        let ck = upper_key(&k);
         match v {
             Some(val) => {
-                env.insert(k, val);
+                env.insert(ck, (k, val));
             }
             None => {
-                env.remove(&k);
+                env.remove(&ck);
             }
         }
     }
     let mut block: Vec<u16> = Vec::new();
-    for (k, v) in env {
+    for (_ck, (k, v)) in env {
         block.extend(k.encode_wide());
         block.push(b'=' as u16);
         block.extend(v.encode_wide());
