@@ -145,7 +145,11 @@ fn shell_command(command: &str) -> Command {
     }
     #[cfg(not(windows))]
     {
-        let mut cmd = Command::new("sh");
+        // Use absolute /bin/sh so callers that override PATH via
+        // SpawnCommandRequest::with_env (or with_env_replace) don't
+        // break shell resolution. POSIX mandates /bin/sh; both Linux
+        // and macOS satisfy this.
+        let mut cmd = Command::new("/bin/sh");
         cmd.arg("-lc").arg(command);
         cmd
     }
