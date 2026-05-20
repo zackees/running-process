@@ -65,16 +65,21 @@ fn slot_to_stdio(slot: &super::StdioSource<'_>) -> io::Result<Stdio> {
     }
 }
 
-pub fn spawn_daemon(command: &mut Command, clear_env: bool) -> io::Result<super::DaemonChild> {
+pub fn spawn_daemon(command: &mut Command, _clear_env: bool) -> io::Result<super::DaemonChild> {
     use std::os::unix::process::CommandExt;
 
-    if clear_env {
-        // Rust stdlib's Command::env_clear is honoured natively here
-        // because we call command.spawn() rather than building the
-        // env block ourselves. On the Windows side we have to do this
-        // explicitly via build_env_block(clear_env=true).
-        command.env_clear();
-    }
+    // `_clear_env` is intentionally ignored on Unix. The reason: on
+    // Unix we hand the Command to `command.spawn()` which natively
+    // honours `Command::env_clear()` — so the caller is expected to
+    // have called `env_clear()` BEFORE adding their env overrides via
+    // `command.envs(...)`. Calling `env_clear()` HERE would wipe the
+    // overrides too (`CommandEnv::clear()` resets the vars vec along
+    // with the clear flag), which silently broke the daemon's
+    // env-replace path on Linux until this was found.
+    //
+    // On Windows the equivalent signal is needed because our manual
+    // `build_env_block` doesn't see Rust stdlib's clear flag through
+    // `Command::get_envs()`; that path consumes the bool explicitly.
 
     command
         .stdin(Stdio::null())
