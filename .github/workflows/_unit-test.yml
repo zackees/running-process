@@ -12,8 +12,16 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     env:
-      RUST_BACKTRACE: "1"
-      RUNNING_PROCESS_FORCE_SOLDR: soldr
+      # Full diagnostics on CI: capture every frame on panic and tell
+      # cargo test to forward println!/eprintln! through (`--nocapture`)
+      # so a hung or panicking Rust test leaves a usable trail. NOTE:
+      # we do NOT set RUST_LOG=debug — uv (a Rust binary itself) and
+      # other tooling we shell out to in pytest will start dumping
+      # tracing output into captured stdout and break assertions that
+      # compare against fixed expected strings.
+      RUST_BACKTRACE: "full"
+      RUST_LIB_BACKTRACE: "full"
+      RUNNING_PROCESS_TEST_NOCAPTURE: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -34,11 +42,17 @@ jobs:
           restore-keys: |
             venv-${{ inputs.runs-on }}-py3.11-
 
-      - name: Setup soldr
-        uses: zackees/setup-soldr@main
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.94.1"
-          cache-key-suffix: ${{ inputs.runs-on }}
+          components: clippy, rustfmt
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.runs-on }}-unit
+          cache-on-failure: true
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
@@ -81,7 +95,6 @@ jobs:
           command -v rustc >/dev/null 2>&1 && rustc -Vv || true
           command -v cargo >/dev/null 2>&1 && cargo -V || true
           command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
-          command -v soldr >/dev/null 2>&1 && soldr version || true
           echo "::endgroup::"
 
       - name: Upload failure logs

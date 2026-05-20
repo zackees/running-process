@@ -12,8 +12,8 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     env:
-      RUST_BACKTRACE: "1"
-      RUNNING_PROCESS_FORCE_SOLDR: soldr
+      RUST_BACKTRACE: "full"
+      RUST_LIB_BACKTRACE: "full"
     steps:
       - uses: actions/checkout@v4
 
@@ -34,11 +34,17 @@ jobs:
           restore-keys: |
             venv-${{ inputs.runs-on }}-py3.11-
 
-      - name: Setup soldr
-        uses: zackees/setup-soldr@main
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.94.1"
-          cache-key-suffix: ${{ inputs.runs-on }}
+          components: clippy, rustfmt
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.runs-on }}-lint
+          cache-on-failure: true
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
@@ -80,7 +86,6 @@ jobs:
           command -v rustc >/dev/null 2>&1 && rustc -Vv || true
           command -v cargo >/dev/null 2>&1 && cargo -V || true
           command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
-          command -v soldr >/dev/null 2>&1 && soldr version || true
           echo "::endgroup::"
 
       - name: Upload failure logs

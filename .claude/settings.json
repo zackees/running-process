@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -c \"import os, runpy; runpy.run_path(os.path.join(os.environ['CLAUDE_PROJECT_DIR'], '.claude', 'hooks', 'force_uvx_soldr.py'), run_name='__main__')\""
+            "command": "python -c \"import os, runpy; runpy.run_path(os.path.join(os.environ['CLAUDE_PROJECT_DIR'], '.claude', 'hooks', 'force_soldr.py'), run_name='__main__')\""
           }
         ]
       }

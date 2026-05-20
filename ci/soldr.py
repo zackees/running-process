@@ -1,36 +1,17 @@
+"""Cargo / maturin command helpers.
+
+Historical note: this module wrapped cargo with `soldr cargo …` so CI
+runners would route through soldr's managed toolchain + zccache.
+After zccache caused macOS-only build-script failures (PR #116), CI was
+switched to the standard `dtolnay/rust-toolchain` + `Swatinem/rust-cache`
+combo, and `cargo_command` was reduced to a passthrough. Local developers
+who want soldr can still invoke `./_cargo` from the repo root.
+"""
+
 from __future__ import annotations
-
-import os
-import shutil
-from functools import lru_cache
-
-DISABLE_SOLDR_ENV = "RUNNING_PROCESS_DISABLE_SOLDR"
-FORCE_SOLDR_ENV = "RUNNING_PROCESS_FORCE_SOLDR"
-UNSUPPORTED_CARGO_SUBCOMMANDS = {"clippy", "fmt", "llvm-cov"}
-
-
-def _truthy_env(name: str) -> bool:
-    return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
-
-
-@lru_cache(maxsize=1)
-def soldr_prefix() -> tuple[str, ...] | None:
-    forced = os.environ.get(FORCE_SOLDR_ENV)
-    if forced:
-        return (forced,)
-    if _truthy_env(DISABLE_SOLDR_ENV):
-        return None
-    if shutil.which("uvx"):
-        return ("uvx", "soldr")
-    return None
 
 
 def cargo_command(*args: str) -> list[str]:
-    if args and args[0] in UNSUPPORTED_CARGO_SUBCOMMANDS:
-        return ["cargo", *args]
-    prefix = soldr_prefix()
-    if prefix:
-        return [*prefix, "cargo", *args]
     return ["cargo", *args]
 
 

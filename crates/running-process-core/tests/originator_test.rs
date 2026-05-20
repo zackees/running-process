@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use running_process_core::originator::find_processes_by_originator;
-use running_process_core::ContainedProcessGroup;
+use running_process_core::{ContainedProcessGroup, SpawnStdio, SpawnedChild, StdioSource};
 
 /// Build and locate a test binary from the workspace.
 fn testbin_path(name: &str) -> PathBuf {
@@ -67,10 +67,8 @@ fn force_kill(pid: u32) {
     }
 }
 
-fn read_until_ready(
-    child: &mut running_process_core::ContainedChild,
-) -> (Option<u32>, Option<String>) {
-    let stdout = child.child.stdout.take().expect("stdout");
+fn read_until_ready(child: &mut SpawnedChild) -> (Option<u32>, Option<String>) {
+    let stdout = child.stdout.take().expect("stdout");
     let reader = BufReader::new(stdout);
 
     let mut pid: Option<u32> = None;
@@ -94,14 +92,23 @@ fn read_until_ready(
     (pid, originator)
 }
 
+fn pipe_stdio() -> SpawnStdio<'static> {
+    SpawnStdio {
+        stdin: StdioSource::Null,
+        stdout: StdioSource::Pipe,
+        stderr: StdioSource::Parent,
+        drain_timeout: Some(Duration::from_secs(5)),
+        show_console: false,
+    }
+}
+
 #[test]
 fn test_originator_env_var_is_set_on_child() {
     let env_reporter = testbin_path("testbin-env-reporter");
     let group = ContainedProcessGroup::with_originator("TESTOOL").expect("create group");
 
     let mut cmd = Command::new(&env_reporter);
-    cmd.stdout(std::process::Stdio::piped());
-    let mut child = group.spawn(&mut cmd).expect("spawn");
+    let mut child = group.spawn(&mut cmd, pipe_stdio()).expect("spawn");
 
     let (child_pid, originator) = read_until_ready(&mut child);
     assert!(child_pid.is_some(), "should get child PID");
@@ -122,8 +129,7 @@ fn test_no_originator_env_var_without_originator() {
     let group = ContainedProcessGroup::new().expect("create group");
 
     let mut cmd = Command::new(&env_reporter);
-    cmd.stdout(std::process::Stdio::piped());
-    let mut child = group.spawn(&mut cmd).expect("spawn");
+    let mut child = group.spawn(&mut cmd, pipe_stdio()).expect("spawn");
 
     let (child_pid, originator) = read_until_ready(&mut child);
     assert!(child_pid.is_some(), "should get child PID");
@@ -145,9 +151,8 @@ fn test_find_processes_by_originator_finds_child() {
     let group = ContainedProcessGroup::with_originator(&tool_name).expect("create group");
 
     let mut cmd = Command::new(&sleeper);
-    cmd.stdout(std::process::Stdio::piped());
-    let child = group.spawn(&mut cmd).expect("spawn");
-    let child_pid = child.child.id();
+    let child = group.spawn(&mut cmd, pipe_stdio()).expect("spawn");
+    let child_pid = child.id();
 
     std::thread::sleep(Duration::from_millis(500));
 
@@ -179,9 +184,8 @@ fn test_find_processes_excludes_non_matching_tool() {
     let group = ContainedProcessGroup::with_originator(&tool_name).expect("create group");
 
     let mut cmd = Command::new(&sleeper);
-    cmd.stdout(std::process::Stdio::piped());
-    let child = group.spawn(&mut cmd).expect("spawn");
-    let child_pid = child.child.id();
+    let child = group.spawn(&mut cmd, pipe_stdio()).expect("spawn");
+    let child_pid = child.id();
 
     std::thread::sleep(Duration::from_millis(500));
 

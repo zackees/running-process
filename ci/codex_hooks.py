@@ -18,17 +18,10 @@ def pre_tool_use_response(payload: dict[str, object]) -> dict[str, object] | Non
     if decision is None:
         return None
 
-    reason = decision.reason
-    if decision.updated_command is not None:
-        reason = (
-            "This repo requires build-related shell commands to go through `soldr`. "
-            f"Run `{decision.updated_command}` instead."
-        )
-
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
+            "permissionDecision": decision.permission_decision,
+            "permissionDecisionReason": decision.reason,
         }
     }

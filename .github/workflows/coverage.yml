@@ -11,8 +11,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      RUST_BACKTRACE: "1"
-      RUNNING_PROCESS_FORCE_SOLDR: soldr
+      # RUST_LOG intentionally NOT set — uv subprocesses spawned by
+      # pytest will dump debug output into captured stdout and break
+      # assertions that compare against fixed strings.
+      RUST_BACKTRACE: "full"
+      RUST_LIB_BACKTRACE: "full"
+      RUNNING_PROCESS_TEST_NOCAPTURE: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -33,11 +37,17 @@ jobs:
           restore-keys: |
             venv-ubuntu-24.04-py3.11-
 
-      - name: Setup soldr
-        uses: zackees/setup-soldr@main
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.94.1"
-          cache-key-suffix: ubuntu-24.04
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-24.04-coverage
+          cache-on-failure: true
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
@@ -108,7 +118,6 @@ jobs:
           command -v rustc >/dev/null 2>&1 && rustc -Vv || true
           command -v cargo >/dev/null 2>&1 && cargo -V || true
           command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
-          command -v soldr >/dev/null 2>&1 && soldr version || true
           echo "::endgroup::"
 
       - name: Upload failure logs

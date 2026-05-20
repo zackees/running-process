@@ -4,7 +4,22 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 from ci import test as ci_test
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every test in this module hermetic w.r.t. CI diagnostics envs.
+
+    `RUNNING_PROCESS_TEST_NOCAPTURE=1` is set by the GH Actions
+    workflows so cargo test forwards println!s through. When this env
+    var leaks into the test process, `ci/test.py` appends `--nocapture`
+    to the cargo test invocation and the static command-shape assertions
+    in this module no longer match.
+    """
+    monkeypatch.delenv("RUNNING_PROCESS_TEST_NOCAPTURE", raising=False)
 
 
 def _expected_cargo_build_tests_cmd() -> list[str]:

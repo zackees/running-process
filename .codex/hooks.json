@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$(git rev-parse --show-toplevel)/.codex/hooks/force_uvx_soldr.py\"",
+            "command": "python \"$(git rev-parse --show-toplevel)/.codex/hooks/force_soldr.py\"",
             "statusMessage": "Checking build command policy"
           }
         ]

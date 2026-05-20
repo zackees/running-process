@@ -245,10 +245,18 @@ def main(argv: list[str] | None = None) -> int:
 
         # Step 2: run the pre-built tests under the supervisor
         cargo_test_args = cargo_command("test", "--workspace")
+        # Collect any libtest harness flags after a `--` separator.
+        harness_args: list[str] = []
         if sys.platform == "win32":
             # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
             # Serialize Rust tests to avoid the issue.
-            cargo_test_args += ["--", "--test-threads=1"]
+            harness_args.append("--test-threads=1")
+        if os.environ.get("RUNNING_PROCESS_TEST_NOCAPTURE"):
+            # CI-only: surface println!/eprintln! from Rust tests so
+            # hangs and panics leave a usable trail in the GH log.
+            harness_args.append("--nocapture")
+        if harness_args:
+            cargo_test_args += ["--", *harness_args]
         cargo_cmd = supervised_command(
             python,
             *cargo_test_args,
