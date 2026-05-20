@@ -486,23 +486,17 @@ jobs:
             running-process-py
           )
 
+          # `cargo publish` already waits for the published crate to appear
+          # in the sparse index before returning success — that's the index
+          # the NEXT `cargo publish` reads when resolving deps, so cargo's
+          # own wait is sufficient. We don't add a second poll against the
+          # JSON API at /api/v1/crates/$name/$version because that endpoint
+          # propagates separately and can lag the index by several minutes,
+          # which would cause a spurious timeout (saw this on
+          # run 26152536023 with proto v3.2.1).
           crate_visible() {
             local name="$1" version="$2"
             curl -sf "https://crates.io/api/v1/crates/$name/$version" >/dev/null
-          }
-
-          wait_for_visible() {
-            local name="$1" version="$2"
-            local deadline=$(( $(date +%s) + 300 ))
-            while [ "$(date +%s)" -lt "$deadline" ]; do
-              if crate_visible "$name" "$version"; then
-                echo "  $name $version is visible on crates.io"
-                return 0
-              fi
-              sleep 10
-            done
-            echo "::error::timed out waiting for $name $version to appear on crates.io" >&2
-            return 1
           }
 
           for crate in "${PUBLISH_ORDER[@]}"; do
@@ -512,7 +506,6 @@ jobs:
             fi
             echo "publishing $crate $RP_VERSION"
             cargo publish --allow-dirty --no-verify -p "$crate"
-            wait_for_visible "$crate" "$RP_VERSION"
           done
 
   publish-release:
