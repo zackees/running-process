@@ -12,9 +12,11 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     env:
+      # RUST_LOG intentionally NOT set — uv subprocesses spawned by
+      # pytest will dump debug output into captured stdout and break
+      # assertions that compare against fixed strings.
       RUST_BACKTRACE: "full"
       RUST_LIB_BACKTRACE: "full"
-      RUST_LOG: "debug"
       RUNNING_PROCESS_TEST_NOCAPTURE: "1"
       RUNNING_PROCESS_LIVE_TESTS: "1"
       RUNNING_PROCESS_GH_PTY_TESTS: "1"

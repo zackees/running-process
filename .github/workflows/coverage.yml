@@ -11,9 +11,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      # RUST_LOG intentionally NOT set — uv subprocesses spawned by
+      # pytest will dump debug output into captured stdout and break
+      # assertions that compare against fixed strings.
       RUST_BACKTRACE: "full"
       RUST_LIB_BACKTRACE: "full"
-      RUST_LOG: "debug"
       RUNNING_PROCESS_TEST_NOCAPTURE: "1"
     steps:
       - uses: actions/checkout@v4

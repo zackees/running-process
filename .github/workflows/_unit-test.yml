@@ -12,13 +12,15 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     env:
-      # Full diagnostics on CI: capture every frame on panic (in test
-      # threads AND the std panic hook), surface debug-level logs, and
-      # tell cargo test to forward println!/eprintln! through (`--nocapture`)
-      # so a hung or panicking Rust test leaves us a usable trail.
+      # Full diagnostics on CI: capture every frame on panic and tell
+      # cargo test to forward println!/eprintln! through (`--nocapture`)
+      # so a hung or panicking Rust test leaves a usable trail. NOTE:
+      # we do NOT set RUST_LOG=debug — uv (a Rust binary itself) and
+      # other tooling we shell out to in pytest will start dumping
+      # tracing output into captured stdout and break assertions that
+      # compare against fixed expected strings.
       RUST_BACKTRACE: "full"
       RUST_LIB_BACKTRACE: "full"
-      RUST_LOG: "debug"
       RUNNING_PROCESS_TEST_NOCAPTURE: "1"
     steps:
       - uses: actions/checkout@v4
