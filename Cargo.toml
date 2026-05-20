@@ -9,6 +9,7 @@ members = [
     "crates/running-process-py",
     "crates/runpm-cli",
     "crates/test-watchdog",
+    "testbins/cwd-reporter",
     "testbins/dies_after_spawn",
     "testbins/env-reporter",
     "testbins/sleeper",

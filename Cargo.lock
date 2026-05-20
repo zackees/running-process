@@ -1053,6 +1053,7 @@ dependencies = [
  "portable-pty",
  "serde_json",
  "sysinfo",
+ "tempfile",
  "test-watchdog",
  "thiserror 2.0.18",
  "winapi",
@@ -1354,6 +1355,10 @@ dependencies = [
 
 [[package]]
 name = "test-watchdog"
+version = "0.0.0"
+
+[[package]]
+name = "testbin-cwd-reporter"
 version = "0.0.0"
 
 [[package]]
