@@ -1,0 +1,504 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "[0-9]*"
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Optional tag to publish, for example 3.2.1 or v3.2.1. Leave empty to use the current pyproject version.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  detect-bump:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Determine whether to proceed
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          read_version() {
+            python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          }
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "manual dispatch — proceeding"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEW_VERSION="$(read_version)"
+
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_TYPE" = "branch" ]; then
+            OLD_VERSION="$(git show HEAD^:pyproject.toml 2>/dev/null \
+              | python3 -c "import sys, tomllib; print(tomllib.loads(sys.stdin.read())['project']['version'])" 2>/dev/null \
+              || echo "")"
+            if [ -z "$OLD_VERSION" ] || [ "$NEW_VERSION" = "$OLD_VERSION" ]; then
+              echo "no pyproject version change ($NEW_VERSION) — skipping release"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "version bumped: $OLD_VERSION -> $NEW_VERSION"
+          fi
+
+          for CANDIDATE in "$NEW_VERSION" "v$NEW_VERSION"; do
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$CANDIDATE" >/dev/null 2>&1; then
+              echo "release $CANDIDATE already exists — skipping"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    needs: detect-bump
+    if: needs.detect-bump.outputs.should_release == 'true'
+    outputs:
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      version: ${{ steps.meta.outputs.version }}
+      pypi_complete: ${{ steps.registries.outputs.pypi_complete }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref_name || github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Validate version consistency between pyproject.toml and Cargo.toml
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          py = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))
+          py_version = py["project"]["version"]
+          cargo_version = cargo["workspace"]["package"]["version"]
+          if py_version != cargo_version:
+              print(
+                  f"pyproject.toml version ({py_version}) does not match "
+                  f"Cargo.toml workspace version ({cargo_version})",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          print(f"version consistency OK: {py_version}")
+          PY
+
+      - name: Resolve release version and fail on already-published release
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RAW_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )"
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME#refs/tags/}"
+            CHECKOUT_REF="$TAG"
+          else
+            TAG="${RAW_TAG#refs/tags/}"
+            if [ -z "$TAG" ]; then
+              if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+                TAG="$VERSION"
+                CHECKOUT_REF="$VERSION"
+              elif git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+                TAG="v$VERSION"
+                CHECKOUT_REF="$TAG"
+              else
+                TAG="$VERSION"
+                CHECKOUT_REF="$GITHUB_SHA"
+              fi
+            else
+              if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+                CHECKOUT_REF="$TAG"
+              else
+                CHECKOUT_REF="$GITHUB_SHA"
+              fi
+            fi
+          fi
+
+          NORMALIZED_TAG="${TAG#v}"
+
+          if [ "$NORMALIZED_TAG" != "$VERSION" ]; then
+            echo "Tag $TAG does not match pyproject version $VERSION" >&2
+            exit 1
+          fi
+
+          SEEN=""
+          for CANDIDATE in "$TAG" "$NORMALIZED_TAG" "v$NORMALIZED_TAG"; do
+            [ -z "$CANDIDATE" ] && continue
+            case " $SEEN " in
+              *" $CANDIDATE "*) continue ;;
+            esac
+            SEEN="$SEEN $CANDIDATE"
+
+            RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$CANDIDATE" 2>/dev/null || true)"
+            [ -z "$RELEASE_JSON" ] && continue
+
+            PUBLISHED_AT="$(RELEASE_JSON="$RELEASE_JSON" python3 - <<'PY'
+          import json
+          import os
+
+          data = json.loads(os.environ["RELEASE_JSON"])
+          print(data.get("published_at") or "")
+          PY
+            )"
+            if [ -n "$PUBLISHED_AT" ]; then
+              echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
+              exit 1
+            fi
+          done
+
+          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check PyPI publish status
+        id: registries
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          PYPI_COMPLETE="$(python3 - <<PY
+          import json
+          import urllib.error
+          import urllib.request
+
+          version = "$VERSION"
+          url = f"https://pypi.org/pypi/running_process/{version}/json"
+          try:
+              with urllib.request.urlopen(url, timeout=10) as resp:
+                  data = json.loads(resp.read())
+              urls = data.get("urls") or []
+              # consider PyPI complete if at least one wheel and one sdist are present
+              has_wheel = any(u.get("packagetype") == "bdist_wheel" for u in urls)
+              has_sdist = any(u.get("packagetype") == "sdist" for u in urls)
+              print("true" if (has_wheel and has_sdist) else "false")
+          except urllib.error.HTTPError as exc:
+              if exc.code == 404:
+                  print("false")
+              else:
+                  raise
+          PY
+          )"
+          echo "pypi_complete=$PYPI_COMPLETE" >> "$GITHUB_OUTPUT"
+          echo "PyPI complete: $PYPI_COMPLETE"
+
+  build-wheels-linux-x86:
+    name: Build wheels (linux x86)
+    needs: preflight
+    if: needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: ubuntu-24.04
+      artifact-name: wheels-linux-x86
+      build-mode: release
+      include-sdist: true
+
+  build-wheels-linux-arm:
+    name: Build wheels (linux arm)
+    needs: preflight
+    if: needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: ubuntu-24.04-arm
+      artifact-name: wheels-linux-arm
+      build-mode: release
+
+  build-wheels-macos-x86:
+    name: Build wheels (macos x86)
+    needs: preflight
+    if: needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: macos-15-intel
+      artifact-name: wheels-macos-x86
+      build-mode: release
+
+  build-wheels-macos-arm:
+    name: Build wheels (macos arm)
+    needs: preflight
+    if: needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: macos-15
+      artifact-name: wheels-macos-arm
+      build-mode: release
+
+  build-wheels-windows-x86:
+    name: Build wheels (windows x86)
+    needs: preflight
+    if: needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: windows-2025
+      artifact-name: wheels-windows-x86
+      build-mode: release
+
+  build-wheels-windows-arm:
+    name: Build wheels (windows arm)
+    needs: preflight
+    if: needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: windows-11-arm
+      artifact-name: wheels-windows-arm
+      build-mode: release
+
+  build-binaries:
+    name: Build standalone binaries (${{ matrix.target }})
+    needs: preflight
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            archive_ext: tar.gz
+            binary_ext: ""
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            archive_ext: tar.gz
+            binary_ext: ""
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            archive_ext: tar.gz
+            binary_ext: ""
+          - target: aarch64-apple-darwin
+            os: macos-15
+            archive_ext: tar.gz
+            binary_ext: ""
+          - target: x86_64-pc-windows-msvc
+            os: windows-2025
+            archive_ext: zip
+            binary_ext: ".exe"
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            archive_ext: zip
+            binary_ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-binaries-${{ matrix.target }}
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --target ${{ matrix.target }} \
+            -p runpm-cli \
+            -p running-process-daemon
+
+      - name: Stage release artifacts
+        id: stage
+        shell: bash
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          BINARY_EXT: ${{ matrix.binary_ext }}
+          ARCHIVE_EXT: ${{ matrix.archive_ext }}
+        run: |
+          set -euo pipefail
+          STAGE="staging/running-process-${VERSION}-${TARGET}"
+          mkdir -p "$STAGE"
+          cp "target/${TARGET}/release/runpm${BINARY_EXT}" "$STAGE/"
+          cp "target/${TARGET}/release/running-process-daemon${BINARY_EXT}" "$STAGE/"
+          cp LICENSE "$STAGE/" 2>/dev/null || true
+          cp README.md "$STAGE/" 2>/dev/null || true
+
+          ARCHIVE_BASENAME="running-process-${VERSION}-${TARGET}"
+          mkdir -p dist-binaries
+          cd staging
+          if [ "$ARCHIVE_EXT" = "zip" ]; then
+            7z a -tzip "../dist-binaries/${ARCHIVE_BASENAME}.zip" "running-process-${VERSION}-${TARGET}"
+          else
+            tar -czf "../dist-binaries/${ARCHIVE_BASENAME}.tar.gz" "running-process-${VERSION}-${TARGET}"
+          fi
+          echo "archive=dist-binaries/${ARCHIVE_BASENAME}.${ARCHIVE_EXT}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: ${{ steps.stage.outputs.archive }}
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish PyPI
+    runs-on: ubuntu-latest
+    needs:
+      - preflight
+      - build-wheels-linux-x86
+      - build-wheels-linux-arm
+      - build-wheels-macos-x86
+      - build-wheels-macos-arm
+      - build-wheels-windows-x86
+      - build-wheels-windows-arm
+    if: needs.preflight.outputs.pypi_complete != 'true'
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List wheel artifacts
+        shell: bash
+        run: ls -la dist
+
+      - name: Publish wheel distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          print-hash: true
+          skip-existing: true
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - preflight
+      - build-wheels-linux-x86
+      - build-wheels-linux-arm
+      - build-wheels-macos-x86
+      - build-wheels-macos-arm
+      - build-wheels-windows-x86
+      - build-wheels-windows-arm
+      - build-binaries
+      - publish-pypi
+    if: |
+      always()
+      && needs.preflight.result == 'success'
+      && needs.build-binaries.result == 'success'
+      && (needs.build-wheels-linux-x86.result == 'success' || needs.build-wheels-linux-x86.result == 'skipped')
+      && (needs.build-wheels-linux-arm.result == 'success' || needs.build-wheels-linux-arm.result == 'skipped')
+      && (needs.build-wheels-macos-x86.result == 'success' || needs.build-wheels-macos-x86.result == 'skipped')
+      && (needs.build-wheels-macos-arm.result == 'success' || needs.build-wheels-macos-arm.result == 'skipped')
+      && (needs.build-wheels-windows-x86.result == 'success' || needs.build-wheels-windows-x86.result == 'skipped')
+      && (needs.build-wheels-windows-arm.result == 'success' || needs.build-wheels-windows-arm.result == 'skipped')
+      && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: release-assets/wheels
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Flatten wheels into release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d release-assets/wheels ]; then
+            mv release-assets/wheels/* release-assets/ 2>/dev/null || true
+            rmdir release-assets/wheels 2>/dev/null || true
+          fi
+          ls -la release-assets
+
+      - name: Add installer scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp install.sh release-assets/install.sh
+          cp install.ps1 release-assets/install.ps1
+          chmod 755 release-assets/install.sh
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.preflight.outputs.release_tag }}
+          name: running-process ${{ needs.preflight.outputs.version }}
+          body: |
+            ## Install (Python package)
+
+            ```bash
+            pip install running-process==${{ needs.preflight.outputs.version }}
+            ```
+
+            ## Install (standalone `runpm` / `running-process-daemon` binaries)
+
+            ```bash
+            curl -LsSf https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh
+            ```
+
+            ```powershell
+            powershell -ExecutionPolicy Bypass -c "irm https://github.com/${{ github.repository }}/releases/latest/download/install.ps1 | iex"
+            ```
+          files: release-assets/*
+          fail_on_unmatched_files: true
