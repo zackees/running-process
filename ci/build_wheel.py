@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
@@ -88,15 +87,25 @@ def build_trampoline(mode: BuildMode) -> int:
     import json as json_mod
     import shutil
 
+    # Use bare `cargo` here (NOT `soldr cargo ...`). soldr's managed
+    # zccache 1.7.2 currently injects itself as `RUSTC_WRAPPER` and on
+    # macOS rejects every build-script rustc invocation with the
+    # original error swallowed — see e.g. PR #116. The wheel build
+    # below goes through maturin which invokes cargo directly without
+    # the wrapper, which is why the wheel succeeds while the trampoline
+    # build fails on the same runner. setup-soldr still owns the
+    # toolchain (RUSTUP_HOME, RUSTUP_TOOLCHAIN), so plain `cargo` picks
+    # up the correct rustc.
     profile_args = ["--release"] if mode == "release" else []
     result = subprocess.run(
-        cargo_command(
+        [
+            "cargo",
             "build",
             "-p",
             "daemon-trampoline",
             "--message-format=json",
             *profile_args,
-        ),
+        ],
         cwd=ROOT,
         check=False,
         capture_output=True,
