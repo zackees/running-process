@@ -26,7 +26,7 @@ impl SpawnedInner {
     pub fn wait(&self) -> io::Result<i32> {
         let mut guard = self.child.lock().expect("child mutex poisoned");
         let Some(child) = guard.as_mut() else {
-            return Err(io::Error::new(io::ErrorKind::Other, "child handle absent"));
+            return Err(io::Error::other("child handle absent"));
         };
         let status = child.wait()?;
         Ok(super::unix_exit_code(status))
