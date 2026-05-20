@@ -123,7 +123,7 @@ impl NativeTerminalInput {
         }
     }
 
-    fn start(&self) -> PyResult<()> {
+    pub(crate) fn start(&self) -> PyResult<()> {
         #[cfg(windows)]
         {
             self.inner.start_impl().map_err(to_py_err)
