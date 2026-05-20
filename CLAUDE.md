@@ -89,14 +89,16 @@ Releases are driven by the **Auto Release** workflow (`.github/workflows/release
 **Required**:
 - `pyproject.toml` `project.version` and `Cargo.toml` `workspace.package.version` must match — preflight fails otherwise.
 - A PyPI trusted-publisher GitHub environment named `pypi` must exist for this workflow with `id-token: write`.
+- A repo-level secret `CARGO_REGISTRY_TOKEN` (a crates.io API token) is required for the crates.io publish step.
 
 **What it does**:
 1. `detect-bump` short-circuits if there is no version change on a branch push, or if a GitHub Release already exists for the version.
-2. `preflight` resolves the version + tag and queries PyPI to set `pypi_complete` so re-runs are idempotent.
+2. `preflight` resolves the version + tag and queries PyPI and crates.io to set `pypi_complete` / `crates_complete` so re-runs are idempotent.
 3. Wheels are built for all six platforms via the existing `_build.yml` (linux-x86 also emits the sdist).
 4. Standalone `runpm` and `running-process-daemon` archives are built natively on each runner.
 5. PyPI publish uses `pypa/gh-action-pypi-publish` with `skip-existing: true`.
-6. GitHub Release attaches wheels, binary archives, `install.sh`, `install.ps1`, and `SHA256SUMS`.
+6. crates.io publish iterates `running-process-{proto, core, client, py}` in dependency order, skipping versions already on the registry and waiting for each to be indexed before the next dep publishes.
+7. GitHub Release attaches wheels, binary archives, `install.sh`, `install.ps1`, and `SHA256SUMS`.
 
 Per-platform dev-mode build workflows (`linux-x86-build.yml`, etc.) still run on every push to `main` independently of the release workflow.
 
