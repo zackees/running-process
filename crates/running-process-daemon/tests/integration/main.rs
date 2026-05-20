@@ -615,6 +615,7 @@ async fn test_list_by_originator_filters_correctly() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
 }
 
+mod compiler_wrap_seam_test;
 mod env_replace_test;
 mod more_tests;
 mod stdout_seam_test;

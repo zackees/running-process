@@ -1369,6 +1369,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "testbin-emitter"
+version = "0.0.0"
+
+[[package]]
 name = "testbin-env-dump"
 version = "0.0.0"
 
@@ -1385,6 +1389,13 @@ name = "testbin-spawner"
 version = "0.0.0"
 dependencies = [
  "running-process-core",
+]
+
+[[package]]
+name = "testbin-stubborn"
+version = "0.0.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
