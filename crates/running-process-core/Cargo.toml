@@ -21,3 +21,4 @@ winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi"
 
 [dev-dependencies]
 serde_json = "1"
+test-watchdog = { path = "../test-watchdog" }

@@ -8,13 +8,15 @@ members = [
     "crates/daemon-trampoline",
     "crates/running-process-py",
     "crates/runpm-cli",
+    "crates/test-watchdog",
+    "testbins/dies_after_spawn",
     "testbins/env-reporter",
     "testbins/sleeper",
     "testbins/spawner",
 ]
 
 [workspace.package]
-version = "3.2.0"
+version = "3.2.1"
 edition = "2021"
 rust-version = "1.85"
 license = "BSD-3-Clause"
@@ -27,6 +29,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
 
 [profile.release]
-debug = "line-tables-only"
-split-debuginfo = "packed"
+debug = true
+strip = "none"
+
+[profile.dev]
+debug = true
 strip = "none"
