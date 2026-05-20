@@ -301,6 +301,25 @@ That defaults to building a dev-profile wheel and reinstalling it into the repo'
 uv run build.py --release
 ```
 
+## Release
+
+Releases are cut by the **Auto Release** GitHub Actions workflow. Bump `project.version` in `pyproject.toml` (and match `workspace.package.version` in `Cargo.toml`), push the commit to `main`, and the workflow will:
+
+- Build wheels for linux x86/arm, macOS x86/arm, and Windows x86/arm and publish them to PyPI via trusted publishing.
+- Build standalone `runpm` and `running-process-daemon` binaries for each target and attach them — alongside the wheels, `install.sh`, `install.ps1`, and `SHA256SUMS` — to a new GitHub Release.
+
+You can also fire the workflow manually with `gh workflow run release-auto.yml`, or by pushing a `vX.Y.Z` tag.
+
+The standalone binaries can be installed without `pip`:
+
+```bash
+curl -LsSf https://github.com/zackees/running-process/releases/latest/download/install.sh | sh
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/zackees/running-process/releases/latest/download/install.ps1 | iex"
+```
+
 ## Process Containment
 
 `ContainedProcessGroup` ensures all child processes are killed when the group is dropped, using OS-level mechanisms (Job Objects on Windows, process groups + `SIGKILL` on Unix).

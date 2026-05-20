@@ -80,6 +80,26 @@ Two entry points in `pyproject.toml`:
 - `running-process` → `running_process.cli:main` (daemon control, process listing)
 - `running-processor` → `running_process.processor_cli:main` (dashboard web UI)
 
+## Releasing
+
+Releases are driven by the **Auto Release** workflow (`.github/workflows/release-auto.yml`).
+
+**Trigger**: push a `pyproject.toml` `project.version` bump to `main`, push a `vX.Y.Z` or `X.Y.Z` tag, or fire the workflow manually with `gh workflow run release-auto.yml`.
+
+**Required**:
+- `pyproject.toml` `project.version` and `Cargo.toml` `workspace.package.version` must match — preflight fails otherwise.
+- A PyPI trusted-publisher GitHub environment named `pypi` must exist for this workflow with `id-token: write`.
+
+**What it does**:
+1. `detect-bump` short-circuits if there is no version change on a branch push, or if a GitHub Release already exists for the version.
+2. `preflight` resolves the version + tag and queries PyPI to set `pypi_complete` so re-runs are idempotent.
+3. Wheels are built for all six platforms via the existing `_build.yml` (linux-x86 also emits the sdist).
+4. Standalone `runpm` and `running-process-daemon` archives are built natively on each runner.
+5. PyPI publish uses `pypa/gh-action-pypi-publish` with `skip-existing: true`.
+6. GitHub Release attaches wheels, binary archives, `install.sh`, `install.ps1`, and `SHA256SUMS`.
+
+Per-platform dev-mode build workflows (`linux-x86-build.yml`, etc.) still run on every push to `main` independently of the release workflow.
+
 ## Agent Backlog
 
 Active pending work lives in [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md). Root-level scratch task files are historical breadcrumbs.
