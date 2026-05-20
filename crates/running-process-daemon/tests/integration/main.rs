@@ -616,3 +616,4 @@ async fn test_list_by_originator_filters_correctly() {
 }
 
 mod more_tests;
+mod stdout_seam_test;
