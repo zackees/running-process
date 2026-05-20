@@ -845,28 +845,56 @@ fn build_env_block(
     clear_env: bool,
 ) -> Vec<u16> {
     use std::collections::BTreeMap;
-    let mut env: BTreeMap<OsString, OsString> = BTreeMap::new();
+    // Windows env var names are case-INSENSITIVE at the kernel level
+    // (CreateProcessW + the env block accept any case but
+    // `GetEnvironmentVariable` lookups uppercase the name). If we dedup
+    // case-sensitively, an inherited "Path" and a caller override of
+    // "PATH" (or vice versa) end up as TWO entries in the block; the
+    // kernel picks one (whichever sorts first) and the override is
+    // silently dropped.
+    //
+    // Use the uppercased UTF-16 form as the canonical key. Preserve
+    // the original case of the most recent insert for emit.
+    let upper_key = |k: &OsStr| -> Vec<u16> {
+        // Simple ASCII upper-fold via OsStr→u16 chain. Windows
+        // CompareStringOrdinal uses a locale-independent uppercase
+        // fold; for env-var names (overwhelmingly ASCII) the simple
+        // version suffices and avoids a Win32 round-trip. Non-ASCII
+        // keys still dedup as long as their bytes match exactly.
+        k.encode_wide()
+            .map(|c| {
+                if (b'a' as u16..=b'z' as u16).contains(&c) {
+                    c - (b'a' as u16 - b'A' as u16)
+                } else {
+                    c
+                }
+            })
+            .collect()
+    };
+
+    let mut env: BTreeMap<Vec<u16>, (OsString, OsString)> = BTreeMap::new();
     if !clear_env {
         // Default: start from the daemon's inherited env, then layer
         // overrides on top.
         for (k, v) in std::env::vars_os() {
-            env.insert(k, v);
+            env.insert(upper_key(&k), (k, v));
         }
     }
     // When clear_env=true we start from an empty map; the env block
     // we hand `CreateProcessW` contains ONLY the overrides.
     for (k, v) in overrides {
+        let ck = upper_key(&k);
         match v {
             Some(val) => {
-                env.insert(k, val);
+                env.insert(ck, (k, val));
             }
             None => {
-                env.remove(&k);
+                env.remove(&ck);
             }
         }
     }
     let mut block: Vec<u16> = Vec::new();
-    for (k, v) in env {
+    for (_ck, (k, v)) in env {
         block.extend(k.encode_wide());
         block.push(b'=' as u16);
         block.extend(v.encode_wide());
