@@ -5,12 +5,13 @@
 
 use running_process_core::ORIGINATOR_ENV_VAR;
 use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, GetProcessTreeResponse, KillTreeResponse, KillZombiesResponse,
-    ListActiveResponse, ListByOriginatorResponse, PingResponse, ProcessState, RegisterResponse,
-    ServiceDeleteResponse, ServiceDescribeResponse, ServiceFlushResponse, ServiceListResponse,
-    ServiceLogsResponse, ServiceRestartResponse, ServiceResurrectResponse, ServiceSaveResponse,
-    ServiceStartResponse, ServiceStopResponse, ShutdownResponse, SpawnDaemonResponse, StatusCode,
-    StatusResponse, TrackedProcess, UnregisterResponse, ZombieReport,
+    DaemonRequest, DaemonResponse, GetProcessTreeResponse, KeyValue, KillTreeResponse,
+    KillZombiesResponse, ListActiveResponse, ListByOriginatorResponse, PingResponse, ProcessState,
+    RegisterResponse, ServiceDeleteResponse, ServiceDescribeResponse, ServiceFlushResponse,
+    ServiceListResponse, ServiceLogsResponse, ServiceRestartResponse, ServiceResurrectResponse,
+    ServiceSaveResponse, ServiceStartResponse, ServiceStopResponse, ShutdownResponse,
+    SpawnDaemonResponse, StatusCode, StatusResponse, TrackedProcess, UnregisterResponse,
+    ZombieReport,
 };
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -171,10 +172,44 @@ fn process_created_at(pid: u32) -> Option<f64> {
         .map(|process| process.start_time() as f64)
 }
 
+/// Normalize the caller-supplied env list into a deterministic
+/// `(key, value)` sequence ready for `Command::envs`.
+///
+/// On Windows, env var names are case-insensitive at the kernel level but
+/// Rust's `Command::env` collapses duplicates via a case-insensitive
+/// `EnvKey` with **last-write-wins** semantics. If a caller passes both
+/// `("PATH", inherited)` and `("Path", override)` and we hand them to
+/// `Command::envs` in iteration order, whichever was inserted last wins —
+/// and HashMap / protobuf-map iteration order would race that.
+///
+/// We dedup case-insensitively here, preserving the LAST entry per
+/// case-folded key, so the caller's intended override always wins
+/// regardless of upstream ordering.
+fn canonical_env_pairs(env: &[KeyValue]) -> Vec<(String, String)> {
+    #[cfg(windows)]
+    {
+        use std::collections::BTreeMap;
+        let mut seen: BTreeMap<String, (String, String)> = BTreeMap::new();
+        for kv in env {
+            seen.insert(
+                kv.key.to_ascii_uppercase(),
+                (kv.key.clone(), kv.value.clone()),
+            );
+        }
+        seen.into_values().collect()
+    }
+    #[cfg(not(windows))]
+    {
+        env.iter()
+            .map(|kv| (kv.key.clone(), kv.value.clone()))
+            .collect()
+    }
+}
+
 fn spawn_and_track_detached(
     command_text: &str,
     cwd: &str,
-    env: &std::collections::HashMap<String, String>,
+    env: &[KeyValue],
     clear_inherited_env: bool,
     originator: &str,
     state: &DaemonState,
@@ -188,19 +223,19 @@ fn spawn_and_track_detached(
     //
     // - false (default, backward-compatible): LAYER the caller's env on
     //   top of the daemon's inherited env. The subprocess sees
-    //   <daemon env> ∪ <env>, the caller's map winning ties.
+    //   <daemon env> ∪ <env>, the caller's entries winning ties.
     //
     // - true: REPLACE — the subprocess sees ONLY the caller's env. The
     //   daemon's env is not inherited. Mirrors Python's
     //   `subprocess.Popen(env=…)` semantic; useful for sandbox-style
     //   compiler wrapping where you want a deterministic env. Windows
-    //   callers will typically still need SystemRoot in this map so
+    //   callers will typically still need SystemRoot in this list so
     //   `cmd.exe` can load its DLLs (see #115/PR review for context).
     if clear_inherited_env {
         command.env_clear();
     }
     if !env.is_empty() {
-        command.envs(env.iter());
+        command.envs(canonical_env_pairs(env));
     }
     if !originator.is_empty() {
         command.env(ORIGINATOR_ENV_VAR, originator);

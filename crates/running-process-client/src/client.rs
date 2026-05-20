@@ -9,11 +9,11 @@ use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
 use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, GetProcessTreeRequest, KillTreeRequest, KillZombiesRequest,
-    ListActiveRequest, ListByOriginatorRequest, PingRequest, RequestType, ServiceConfig,
-    ServiceDeleteRequest, ServiceDescribeRequest, ServiceFlushRequest, ServiceListRequest,
-    ServiceLogsRequest, ServiceRestartRequest, ServiceResurrectRequest, ServiceSaveRequest,
-    ServiceStartRequest, ServiceStopRequest, ShutdownRequest,
+    DaemonRequest, DaemonResponse, GetProcessTreeRequest, KeyValue, KillTreeRequest,
+    KillZombiesRequest, ListActiveRequest, ListByOriginatorRequest, PingRequest, RequestType,
+    ServiceConfig, ServiceDeleteRequest, ServiceDescribeRequest, ServiceFlushRequest,
+    ServiceListRequest, ServiceLogsRequest, ServiceRestartRequest, ServiceResurrectRequest,
+    ServiceSaveRequest, ServiceStartRequest, ServiceStopRequest, ShutdownRequest,
     SpawnDaemonRequest as ProtoSpawnDaemonRequest, StatusCode, StatusRequest,
 };
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -423,7 +423,14 @@ impl DaemonClient {
                     .as_ref()
                     .map(|cwd| cwd.to_string_lossy().into_owned())
                     .unwrap_or_default(),
-                env: request.env.iter().cloned().collect(),
+                env: request
+                    .env
+                    .iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k.clone(),
+                        value: v.clone(),
+                    })
+                    .collect(),
                 originator: request.originator.clone().unwrap_or_default(),
                 clear_inherited_env: request.clear_inherited_env,
             }),
