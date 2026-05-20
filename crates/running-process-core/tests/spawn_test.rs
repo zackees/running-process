@@ -8,7 +8,9 @@
 //! 4. test_spawn_child_exit_bounded_drain — child writes & exits, parent reads
 //!    after delay then EOFs.
 
-use std::io::{BufRead, BufReader, Read};
+#[cfg(not(target_os = "macos"))]
+use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -49,7 +51,7 @@ fn testbin_path(name: &str) -> PathBuf {
     panic!("`cargo build -p {name}` succeeded but no binary artifact found");
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(target_os = "macos")))]
 fn is_pid_alive(pid: u32) -> bool {
     unsafe {
         let handle = winapi::um::processthreadsapi::OpenProcess(
@@ -71,7 +73,7 @@ fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn is_pid_alive(pid: u32) -> bool {
     unsafe {
         let mut status: i32 = 0;
@@ -83,6 +85,7 @@ fn is_pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn wait_until_dead(pid: u32, timeout: Duration) -> bool {
     let start = Instant::now();
     while is_pid_alive(pid) {
@@ -94,7 +97,7 @@ fn wait_until_dead(pid: u32, timeout: Duration) -> bool {
     true
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(target_os = "macos")))]
 fn force_kill(pid: u32) {
     unsafe {
         let handle = winapi::um::processthreadsapi::OpenProcess(
@@ -109,13 +112,14 @@ fn force_kill(pid: u32) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn force_kill(pid: u32) {
     unsafe {
         libc::kill(pid as i32, libc::SIGKILL);
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn parse_pid_line(line: &str, prefix: &str) -> Option<u32> {
     line.strip_prefix(prefix)
         .and_then(|s| s.trim().parse::<u32>().ok())
