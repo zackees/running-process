@@ -3,7 +3,7 @@
 use running_process_daemon::client::{DaemonClient, SpawnCommandRequest};
 use running_process_proto::daemon::StatusCode;
 
-use super::{make_register_request, start_server_with_tempdb};
+use super::{make_register_request, scaled, start_server_with_tempdb};
 
 // ---------------------------------------------------------------------------
 // Test 9: status shows tracked_process_count
@@ -75,7 +75,7 @@ async fn test_spawn_daemon_tracks_spawned_process_and_context() {
     let scope = format!("integ-spawn-{}", line!());
     let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(scaled(std::time::Duration::from_millis(300))).await;
 
     let workdir = tempfile::tempdir().expect("failed to create temp dir");
     let workdir_path = workdir.path().to_path_buf();
@@ -119,7 +119,7 @@ async fn test_spawn_daemon_tracks_spawned_process_and_context() {
         );
         assert_eq!(spawned.containment, "detached");
 
-        std::thread::sleep(std::time::Duration::from_millis(600));
+        std::thread::sleep(scaled(std::time::Duration::from_millis(600)));
 
         let list_resp = client.list_active().expect("list_active failed");
         let processes = list_resp
@@ -169,7 +169,7 @@ async fn test_spawned_process_survives_daemon_shutdown() {
     let scope = format!("integ-spawn-survive-{}", line!());
     let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(scaled(std::time::Duration::from_millis(300))).await;
 
     let workdir = tempfile::tempdir().expect("failed to create temp dir");
     let marker = workdir.path().join("survived.txt");
@@ -209,12 +209,12 @@ async fn test_spawned_process_survives_daemon_shutdown() {
     .await;
     result.expect("client task panicked");
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), server_handle)
+    tokio::time::timeout(scaled(std::time::Duration::from_secs(5)), server_handle)
         .await
-        .expect("server did not stop within 5 seconds")
+        .expect("server did not stop in time")
         .expect("server task panicked");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    let deadline = std::time::Instant::now() + scaled(std::time::Duration::from_secs(6));
     while !marker.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }

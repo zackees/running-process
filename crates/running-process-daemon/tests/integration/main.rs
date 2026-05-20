@@ -252,6 +252,30 @@ async fn test_status_shows_active_connections() {
 // Phase 2: Registry operation integration tests
 // ===========================================================================
 
+/// Multiplier for sleep / poll durations in these integration tests. On
+/// GitHub-hosted runners (especially `windows-11-arm`) the daemon's
+/// process tracking and the spawned shell helpers run noticeably
+/// slower than on dev laptops, and asserts that pass locally in 600 ms
+/// regularly miss their deadline in CI. Scale generously on GitHub
+/// Actions; keep tests fast locally. `RUNNING_PROCESS_TEST_LATENCY_X`
+/// overrides explicitly if a developer needs to reproduce the slow path.
+pub fn latency_multiplier() -> u32 {
+    if let Ok(value) = std::env::var("RUNNING_PROCESS_TEST_LATENCY_X") {
+        if let Ok(n) = value.parse::<u32>() {
+            return n.max(1);
+        }
+    }
+    if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
+        return 5;
+    }
+    1
+}
+
+/// Scale a `Duration` by [`latency_multiplier`].
+pub fn scaled(d: std::time::Duration) -> std::time::Duration {
+    d.saturating_mul(latency_multiplier())
+}
+
 /// Helper: start a `DaemonServer` backed by a temp directory for the SQLite DB.
 ///
 /// Returns the join handle, socket path, and the `TempDir` (which must be kept
