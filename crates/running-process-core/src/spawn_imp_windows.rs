@@ -742,12 +742,11 @@ fn build_command_line<'a>(program: &OsStr, args: impl Iterator<Item = &'a OsStr>
     // valid filename to cmd). With `/S`, cmd strips the outermost
     // pair of quotes around the whole script; everything else we
     // pass through untouched. See PR #116 for the diagnostic trail.
-    let mut script_consumed = false;
     let mut i = 0;
     while i < arg_strs.len() {
         let a = &arg_strs[i];
         s.push(' ');
-        if is_cmd && !script_consumed && is_cmd_script_switch(a) {
+        if is_cmd && is_cmd_script_switch(a) {
             // Emit the switch itself unquoted (it has no special chars),
             // then the remaining args concatenated with spaces, wrapped
             // in a single pair of outer quotes that `/S` will strip.
@@ -759,7 +758,6 @@ fn build_command_line<'a>(program: &OsStr, args: impl Iterator<Item = &'a OsStr>
                 s.push_str(&script);
                 s.push('"');
             }
-            script_consumed = true;
             break;
         }
         s.push_str(&quote(a));
