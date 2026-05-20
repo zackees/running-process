@@ -149,8 +149,15 @@ fn shell_command(command: &str) -> Command {
         // SpawnCommandRequest::with_env (or with_env_replace) don't
         // break shell resolution. POSIX mandates /bin/sh; both Linux
         // and macOS satisfy this.
+        //
+        // `-c` (not `-lc`): we deliberately avoid login-shell mode so
+        // /etc/profile and /etc/profile.d/*.sh don't post-mutate the
+        // env the caller set. On Ubuntu CI runners /etc/profile.d
+        // prepends /snap/bin to PATH, which would silently override
+        // a caller's PATH override. Matches Python's
+        // subprocess.Popen(shell=True) behavior.
         let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-lc").arg(command);
+        cmd.arg("-c").arg(command);
         cmd
     }
 }
