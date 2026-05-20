@@ -20,7 +20,7 @@ use winapi::um::wincontypes::{
 #[cfg(windows)]
 use winapi::um::winuser::{VK_RETURN, VK_TAB, VK_UP};
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 use crate::helpers::with_locked_env_var;
 use crate::terminal_input::{NativeTerminalInput, NativeTerminalInputEvent};
 
