@@ -37,14 +37,22 @@ enum RequestType {
   REQUEST_TYPE_SERVICE_FLUSH     = 57;
   REQUEST_TYPE_SERVICE_SAVE      = 58;
   REQUEST_TYPE_SERVICE_RESURRECT = 59;
-  // Detachable PTY sessions (issue #130) — milestone 2 scaffold.
-  // Handlers currently return STATUS_CODE_UNIMPLEMENTED; behavior lands in
-  // follow-up commits on this branch.
+  // Detachable PTY sessions (issue #130 milestone 2).
   REQUEST_TYPE_SPAWN_PTY_SESSION     = 60;
   REQUEST_TYPE_ATTACH_PTY_SESSION    = 61;
   REQUEST_TYPE_DETACH_PTY_SESSION    = 62;
   REQUEST_TYPE_LIST_PTY_SESSIONS     = 63;
   REQUEST_TYPE_TERMINATE_PTY_SESSION = 64;
+  // Detachable pipe-backed sessions (issue #130 milestone 3).
+  // Pipe sessions own three independently-attachable streams (stdin is
+  // write-only, exposed as WRITE_PIPE_STDIN; stdout and stderr are
+  // streaming attaches via ATTACH_PIPE_STREAM with a stream selector).
+  REQUEST_TYPE_SPAWN_PIPE_SESSION     = 65;
+  REQUEST_TYPE_ATTACH_PIPE_STREAM     = 66;
+  REQUEST_TYPE_DETACH_PIPE_STREAM     = 67;
+  REQUEST_TYPE_LIST_PIPE_SESSIONS     = 68;
+  REQUEST_TYPE_TERMINATE_PIPE_SESSION = 69;
+  REQUEST_TYPE_WRITE_PIPE_STDIN       = 70;
 }
 
 enum StatusCode {
@@ -105,6 +113,12 @@ message DaemonRequest {
   DetachPtySessionRequest    detach_pty_session    = 62;
   ListPtySessionsRequest     list_pty_sessions     = 63;
   TerminatePtySessionRequest terminate_pty_session = 64;
+  SpawnPipeSessionRequest     spawn_pipe_session     = 65;
+  AttachPipeStreamRequest     attach_pipe_stream     = 66;
+  DetachPipeStreamRequest     detach_pipe_stream     = 67;
+  ListPipeSessionsRequest     list_pipe_sessions     = 68;
+  TerminatePipeSessionRequest terminate_pipe_session = 69;
+  WritePipeStdinRequest       write_pipe_stdin       = 70;
 }
 
 message DaemonResponse {
@@ -139,6 +153,12 @@ message DaemonResponse {
   DetachPtySessionResponse    detach_pty_session    = 62;
   ListPtySessionsResponse     list_pty_sessions     = 63;
   TerminatePtySessionResponse terminate_pty_session = 64;
+  SpawnPipeSessionResponse     spawn_pipe_session     = 65;
+  AttachPipeStreamResponse     attach_pipe_stream     = 66;
+  DetachPipeStreamResponse     detach_pipe_stream     = 67;
+  ListPipeSessionsResponse     list_pipe_sessions     = 68;
+  TerminatePipeSessionResponse terminate_pipe_session = 69;
+  WritePipeStdinResponse       write_pipe_stdin       = 70;
 }
 
 // ---------------------------------------------------------------------------
@@ -541,4 +561,118 @@ message PtyInputFrame {
 message PtyResize {
   uint32 rows = 1;
   uint32 cols = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Detachable pipe-backed sessions (issue #130 milestone 3).
+//
+// A pipe session is the daemon-owned analog of `subprocess.Popen` with
+// stdin/stdout/stderr each independently attachable. Stdin is write-only
+// (no streaming attach — clients call WritePipeStdin). Stdout and stderr
+// use AttachPipeStream with a `stream` selector and receive PipeStreamFrame
+// payloads on the same socket after the response.
+//
+// Design parity with PTY sessions (M2): daemon owns the child process and
+// pipe handles; clients never receive raw OS handles. Ring buffer per
+// stream with drop-oldest semantics. Single attachment per stream;
+// `steal=true` evicts the existing attachment.
+// ---------------------------------------------------------------------------
+
+enum PipeStreamKind {
+  PIPE_STREAM_KIND_UNSPECIFIED = 0;
+  PIPE_STREAM_KIND_STDOUT      = 1;
+  PIPE_STREAM_KIND_STDERR      = 2;
+}
+
+message SpawnPipeSessionRequest {
+  repeated string argv = 1;
+  string cwd = 2;
+  repeated KeyValue env = 3;
+  bool clear_inherited_env = 4;
+  string originator = 5;
+  // Capture stderr separately (default) or merge into stdout.
+  bool merge_stderr_into_stdout = 6;
+}
+
+message SpawnPipeSessionResponse {
+  string session_id = 1;
+  uint32 pid        = 2;
+  double created_at = 3;
+}
+
+message AttachPipeStreamRequest {
+  string         session_id = 1;
+  PipeStreamKind stream     = 2;
+  // If true, evict any currently-attached client on this stream.
+  bool steal = 3;
+}
+
+message AttachPipeStreamResponse {
+  // Initial backlog the client missed before this attach. Same semantics
+  // as AttachPtySessionResponse: empty if nothing has been emitted yet.
+  bytes  backlog          = 1;
+  bool   backlog_truncated = 2;
+  uint64 bytes_missed      = 3;
+}
+
+message DetachPipeStreamRequest {
+  string         session_id = 1;
+  PipeStreamKind stream     = 2;
+}
+message DetachPipeStreamResponse {}
+
+message ListPipeSessionsRequest {
+  string originator = 1;
+}
+
+message ListPipeSessionsResponse {
+  repeated PipeSessionInfo sessions = 1;
+}
+
+message PipeSessionInfo {
+  string session_id = 1;
+  uint32 pid        = 2;
+  string command    = 3;
+  string cwd        = 4;
+  string originator = 5;
+  double created_at = 6;
+  bool   stdout_attached = 7;
+  bool   stderr_attached = 8;
+  bool   exited     = 9;
+  int32  exit_code  = 10;
+  double exited_at  = 11;
+  bool   merge_stderr_into_stdout = 12;
+}
+
+message TerminatePipeSessionRequest {
+  string session_id = 1;
+  uint32 grace_ms   = 2;
+}
+message TerminatePipeSessionResponse {}
+
+message WritePipeStdinRequest {
+  string session_id = 1;
+  bytes  data       = 2;
+  // If true, close stdin after writing the supplied bytes. Subsequent
+  // writes to the same session return STATUS_CODE_INVALID_ARGUMENT.
+  bool   close      = 3;
+}
+message WritePipeStdinResponse {
+  uint64 bytes_written = 1;
+}
+
+// Daemon -> client stream frame for an attached stdout/stderr.
+message PipeStreamFrame {
+  oneof frame {
+    bytes  bytes        = 1;
+    // The child closed this stream (EOF). Terminal frame for the
+    // attachment; the daemon will close the stream connection after.
+    bool   eof          = 2;
+    // The child has exited; the int payload is the exit code. Terminal
+    // frame.
+    int32  exit_code    = 3;
+    uint64 missed_bytes = 4;
+    string error        = 5;
+    string stolen_by    = 6;
+  }
 }

@@ -295,6 +295,29 @@ impl NativeProcess {
         Ok(())
     }
 
+    /// Write to the child's stdin without closing it afterwards, so the
+    /// caller can issue additional writes. Used by interactive
+    /// pipe-backed sessions (#130 milestone 3) where the daemon keeps
+    /// stdin open across multiple client input frames.
+    pub fn write_stdin_streaming(&self, data: &[u8]) -> Result<(), ProcessError> {
+        let mut guard = self.child.lock().expect("child mutex poisoned");
+        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
+        let stdin = child.stdin.as_mut().ok_or(ProcessError::StdinUnavailable)?;
+        use std::io::Write;
+        stdin.write_all(data).map_err(ProcessError::Io)?;
+        stdin.flush().map_err(ProcessError::Io)?;
+        Ok(())
+    }
+
+    /// Explicitly close the child's stdin (signals EOF to the child).
+    /// Idempotent: returns Ok if stdin was already closed.
+    pub fn close_stdin(&self) -> Result<(), ProcessError> {
+        let mut guard = self.child.lock().expect("child mutex poisoned");
+        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
+        drop(child.stdin.take());
+        Ok(())
+    }
+
     pub fn poll(&self) -> Result<Option<i32>, ProcessError> {
         // Fast path: check atomic set by background waiter thread.
         if let Some(code) = self.returncode() {
