@@ -381,6 +381,25 @@ impl PtySessionRegistry {
         self.sessions.lock().unwrap().remove(id)
     }
 
+    /// Remove every session in the registry that has already exited.
+    /// Returns the number of removed entries. Optionally filtered by
+    /// originator (empty matches all).
+    pub fn purge_exited(&self, originator: &str) -> usize {
+        let mut guard = self.sessions.lock().unwrap();
+        let to_remove: Vec<String> = guard
+            .iter()
+            .filter(|(_, s)| {
+                s.exit_state().is_some()
+                    && (originator.is_empty() || s.originator == originator)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in &to_remove {
+            guard.remove(k);
+        }
+        to_remove.len()
+    }
+
     fn next_session_id(&self) -> String {
         // pty-<daemon-start-nanos>-<counter>. Uniqueness is per daemon
         // lifetime; that is enough because pty sessions do not survive
