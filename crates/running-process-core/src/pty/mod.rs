@@ -21,7 +21,9 @@ pub(super) mod pty_windows;
 
 pub mod terminal_input;
 
+mod detachable_pty_session;
 mod native_pty_process;
+pub use detachable_pty_session::{DetachablePtyAttachment, DetachablePtySession};
 pub use native_pty_process::{
     InteractivePtyOptions, InteractivePtyPumpResult, InteractivePtySession, NativePtyProcess,
 };
