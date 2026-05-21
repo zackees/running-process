@@ -308,11 +308,12 @@ impl PipeSessionRegistry {
                 StderrMode::Pipe
             },
             creationflags: None,
-            // Put each pipe-backed child in its own process group on
-            // POSIX so `kill(-pid, SIGTERM)` reaches the whole tree
-            // (used by terminate's soft step). On Windows this is a
-            // no-op; Job Object kill-on-close handles teardown.
-            create_process_group: cfg!(unix),
+            // Put each pipe-backed child in its own process group so
+            // both the POSIX SIGTERM path (kill(-pgid, SIGTERM)) and
+            // the Windows CTRL_BREAK_EVENT path
+            // (GenerateConsoleCtrlEvent with CREATE_NEW_PROCESS_GROUP)
+            // route to the child's own tree and not the daemon's.
+            create_process_group: true,
             stdin_mode: StdinMode::Piped,
             nice: None,
         };
