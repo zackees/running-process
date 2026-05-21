@@ -16,6 +16,7 @@ members = [
     "testbins/env-reporter",
     "testbins/sleeper",
     "testbins/spawner",
+    "testbins/stubborn",
 ]
 
 [workspace.package]
