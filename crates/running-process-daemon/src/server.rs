@@ -462,6 +462,9 @@ fn dispatch_request(
         Ok(RequestType::BulkTerminateSessions) => {
             handlers::handle_bulk_terminate_sessions(request, state)
         }
+        Ok(RequestType::ResizePtySession) => {
+            handlers::handle_resize_pty_session(request, state)
+        }
         Err(_) => error_response(
             request_id,
             StatusCode::UnknownRequest,
