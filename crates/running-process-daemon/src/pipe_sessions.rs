@@ -415,17 +415,21 @@ fn reader_loop(session: Arc<OwnedPipeSession>, stream: PipeStreamSelect) {
             .process
             .read_stream(stream_kind, Some(Duration::from_millis(100)))
         {
-            ReadStatus::Line(bytes) if !bytes.is_empty() => {
+            ReadStatus::Line(bytes) => {
+                // NativeProcess::read_stream returns one line at a
+                // time with the trailing newline already stripped. Add
+                // a single '\n' back so the backlog preserves line
+                // structure - downstream consumers expect to see the
+                // bytes as the child wrote them.
                 let state = session.stream_state(stream);
-                state.backlog.lock().unwrap().push(&bytes);
+                let mut with_lf = bytes;
+                with_lf.push(b'\n');
+                state.backlog.lock().unwrap().push(&with_lf);
                 if let Some(client) = state.attached.lock().unwrap().as_ref() {
-                    for slice in bytes.chunks(STREAM_CHUNK_BYTES) {
+                    for slice in with_lf.chunks(STREAM_CHUNK_BYTES) {
                         let _ = client.sender.send(OutboundFrame::Output(slice.to_vec()));
                     }
                 }
-            }
-            ReadStatus::Line(_) => {
-                // Empty line; skip.
             }
             ReadStatus::Timeout => {
                 // No data within the window; loop.
