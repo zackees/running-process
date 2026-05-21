@@ -8,10 +8,10 @@ use running_process_proto::daemon::{
     AttachPtySessionResponse, DaemonRequest, DaemonResponse, DetachPtySessionResponse,
     GetProcessTreeResponse, KeyValue, KillTreeResponse, KillZombiesResponse, ListActiveResponse,
     ListByOriginatorResponse, ListPtySessionsResponse, PingResponse, ProcessState,
-    RegisterResponse, ServiceDeleteResponse, ServiceDescribeResponse, ServiceFlushResponse,
-    ServiceListResponse, ServiceLogsResponse, ServiceRestartResponse, ServiceResurrectResponse,
-    ServiceSaveResponse, ServiceStartResponse, ServiceStopResponse, ShutdownResponse,
-    SpawnDaemonResponse, SpawnPtySessionResponse, StatusCode, StatusResponse,
+    PtySessionInfo, RegisterResponse, ServiceDeleteResponse, ServiceDescribeResponse,
+    ServiceFlushResponse, ServiceListResponse, ServiceLogsResponse, ServiceRestartResponse,
+    ServiceResurrectResponse, ServiceSaveResponse, ServiceStartResponse, ServiceStopResponse,
+    ShutdownResponse, SpawnDaemonResponse, SpawnPtySessionResponse, StatusCode, StatusResponse,
     TerminatePtySessionResponse, TrackedProcess, UnregisterResponse, ZombieReport,
 };
 use std::process::Command;
@@ -21,6 +21,7 @@ use std::time::Instant;
 use sysinfo::{Pid, ProcessRefreshKind, System};
 use tokio::sync::watch;
 
+use crate::pty_sessions::PtySessionRegistry;
 use crate::reaper;
 use crate::registry::{self, Registry, TrackedEntry};
 
@@ -53,6 +54,8 @@ pub struct DaemonState {
     pub active_connections: AtomicU32,
     /// SQLite-backed process registry.
     pub registry: Arc<Registry>,
+    /// In-memory registry of daemon-owned PTY sessions (issue #130 M2).
+    pub pty_sessions: Arc<PtySessionRegistry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -830,62 +833,241 @@ pub fn handle_service_resurrect(request: &DaemonRequest, _state: &DaemonState) -
 }
 
 // ---------------------------------------------------------------------------
-// Detachable PTY sessions (issue #130) — milestone 2 scaffold.
+// Detachable PTY sessions (issue #130 milestone 2).
 //
-// Every handler in this block responds with STATUS_CODE_UNIMPLEMENTED. The
-// real `pty_sessions` module (daemon-owned PTY master + ring buffer +
-// reader task + IPC stream multiplexing) lands in follow-up commits on
-// this branch. The scaffold exists so:
-//   - The proto schema is locked early (downstream clients can codegen).
-//   - The dispatcher path is wired so behavior tests can be added without
-//     touching the dispatch table again.
+// The daemon owns each PTY child + master via [`PtySessionRegistry`]. These
+// non-streaming handlers cover Spawn / Detach / List / Terminate; Attach is
+// handled separately in `server.rs::handle_attach_streaming` because it
+// takes ownership of the IPC framed stream after the response is sent.
 // ---------------------------------------------------------------------------
 
-fn unimplemented_pty_response(request_id: u64) -> DaemonResponse {
+fn error_pty_response(request_id: u64, code: StatusCode, message: String) -> DaemonResponse {
     DaemonResponse {
         request_id,
-        code: StatusCode::Unimplemented as i32,
-        message: "PTY session RPCs are scaffolded but not yet implemented (issue #130 milestone 2)"
-            .into(),
+        code: code as i32,
+        message,
         ..Default::default()
     }
 }
 
-pub fn handle_spawn_pty_session(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
-    DaemonResponse {
-        spawn_pty_session: Some(SpawnPtySessionResponse::default()),
-        ..unimplemented_pty_response(request.id)
+pub fn handle_spawn_pty_session(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let req = match request.spawn_pty_session.as_ref() {
+        Some(r) => r,
+        None => {
+            return error_pty_response(
+                request.id,
+                StatusCode::InvalidArgument,
+                "spawn_pty_session payload missing".into(),
+            );
+        }
+    };
+
+    let rows = if req.rows == 0 { 24 } else { req.rows as u16 };
+    let cols = if req.cols == 0 { 80 } else { req.cols as u16 };
+
+    let cwd = if req.cwd.is_empty() {
+        None
+    } else {
+        Some(req.cwd.clone())
+    };
+
+    // Build env. If `clear_inherited_env` is false, layer the supplied env
+    // on top of the daemon's; otherwise use only the supplied entries. The
+    // case-insensitive dedup that `SpawnDaemon` does on Windows is not
+    // re-implemented here because `NativePtyProcess` does not collapse env
+    // keys the way `Command::env` does — every KV pair survives.
+    let env = if req.env.is_empty() && !req.clear_inherited_env {
+        None
+    } else {
+        let mut pairs: Vec<(String, String)> = if req.clear_inherited_env {
+            Vec::new()
+        } else {
+            std::env::vars().collect()
+        };
+        for KeyValue { key, value } in &req.env {
+            // Overwrite if key already present.
+            if let Some((_, v)) = pairs.iter_mut().find(|(k, _)| k == key) {
+                *v = value.clone();
+            } else {
+                pairs.push((key.clone(), value.clone()));
+            }
+        }
+        Some(pairs)
+    };
+
+    let command_display = req.argv.join(" ");
+    let originator = if req.originator.is_empty() {
+        format!("client:{}", request.client_name)
+    } else {
+        req.originator.clone()
+    };
+
+    match state.pty_sessions.spawn(
+        req.argv.clone(),
+        cwd,
+        env,
+        rows,
+        cols,
+        originator,
+        command_display,
+    ) {
+        Ok(session) => DaemonResponse {
+            request_id: request.id,
+            code: StatusCode::Ok as i32,
+            message: String::new(),
+            spawn_pty_session: Some(SpawnPtySessionResponse {
+                session_id: session.id.clone(),
+                pid: session.pid,
+                created_at: session.created_at_unix,
+            }),
+            ..Default::default()
+        },
+        Err(e) => error_pty_response(request.id, StatusCode::Internal, e.to_string()),
     }
 }
 
-pub fn handle_attach_pty_session(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
-    DaemonResponse {
-        attach_pty_session: Some(AttachPtySessionResponse::default()),
-        ..unimplemented_pty_response(request.id)
-    }
-}
+pub fn handle_detach_pty_session(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let req = match request.detach_pty_session.as_ref() {
+        Some(r) => r,
+        None => {
+            return error_pty_response(
+                request.id,
+                StatusCode::InvalidArgument,
+                "detach_pty_session payload missing".into(),
+            );
+        }
+    };
 
-pub fn handle_detach_pty_session(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
+    let session = match state.pty_sessions.get(&req.session_id) {
+        Some(s) => s,
+        None => {
+            return error_pty_response(
+                request.id,
+                StatusCode::NotFound,
+                format!("session not found: {}", req.session_id),
+            );
+        }
+    };
+
+    // Notify the attached client and drop the slot.
+    session.notify_attached(crate::pty_sessions::OutboundFrame::Ended(
+        crate::pty_sessions::AttachmentEnded::Detached,
+    ));
+    session.clear_attachment();
+
     DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        message: String::new(),
         detach_pty_session: Some(DetachPtySessionResponse::default()),
-        ..unimplemented_pty_response(request.id)
+        ..Default::default()
     }
 }
 
-pub fn handle_list_pty_sessions(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
+pub fn handle_list_pty_sessions(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let originator_filter = request
+        .list_pty_sessions
+        .as_ref()
+        .map(|r| r.originator.clone())
+        .unwrap_or_default();
+
+    let mut infos = Vec::new();
+    for session in state.pty_sessions.list() {
+        if !originator_filter.is_empty() && session.originator != originator_filter {
+            continue;
+        }
+        let exit = session.exit_state();
+        let (exited, exit_code, exited_at) = match exit {
+            Some(s) => (true, s.exit_code, s.exited_at_unix),
+            None => (false, 0, 0.0),
+        };
+        infos.push(PtySessionInfo {
+            session_id: session.id.clone(),
+            pid: session.pid,
+            command: session.command.clone(),
+            cwd: session.cwd.clone(),
+            originator: session.originator.clone(),
+            created_at: session.created_at_unix,
+            attached: session.is_attached(),
+            exited,
+            exit_code,
+            exited_at,
+            rows: session.rows() as u32,
+            cols: session.cols() as u32,
+        });
+    }
+
     DaemonResponse {
-        list_pty_sessions: Some(ListPtySessionsResponse::default()),
-        ..unimplemented_pty_response(request.id)
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        message: String::new(),
+        list_pty_sessions: Some(ListPtySessionsResponse { sessions: infos }),
+        ..Default::default()
     }
 }
 
 pub fn handle_terminate_pty_session(
     request: &DaemonRequest,
-    _state: &DaemonState,
+    state: &DaemonState,
 ) -> DaemonResponse {
+    let req = match request.terminate_pty_session.as_ref() {
+        Some(r) => r,
+        None => {
+            return error_pty_response(
+                request.id,
+                StatusCode::InvalidArgument,
+                "terminate_pty_session payload missing".into(),
+            );
+        }
+    };
+
+    let session = match state.pty_sessions.get(&req.session_id) {
+        Some(s) => s,
+        None => {
+            return error_pty_response(
+                request.id,
+                StatusCode::NotFound,
+                format!("session not found: {}", req.session_id),
+            );
+        }
+    };
+
+    // M4 will turn this into a configurable soft-then-hard schedule.
+    // For M2 we issue an immediate terminate and let the reader thread
+    // observe the exit + record exit state.
+    let grace_ms = if req.grace_ms == 0 { 2000 } else { req.grace_ms };
+    if let Err(e) = session.terminate(std::time::Duration::from_millis(grace_ms as u64)) {
+        return error_pty_response(request.id, StatusCode::Internal, e.to_string());
+    }
+
+    // Notify any attached client.
+    session.notify_attached(crate::pty_sessions::OutboundFrame::Ended(
+        crate::pty_sessions::AttachmentEnded::Terminated,
+    ));
+
     DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        message: String::new(),
         terminate_pty_session: Some(TerminatePtySessionResponse::default()),
-        ..unimplemented_pty_response(request.id)
+        ..Default::default()
+    }
+}
+
+/// Stub for the attach handler. The actual attach work happens in
+/// `server.rs::handle_attach_streaming` because it needs ownership of the
+/// IPC framed stream after the response is sent. This stub exists so the
+/// dispatcher table stays uniform; it should never be reached because the
+/// server-side connection loop intercepts `ATTACH_PTY_SESSION` before
+/// dispatch.
+pub fn handle_attach_pty_session(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Internal as i32,
+        message: "attach_pty_session must be intercepted by the streaming server path"
+            .into(),
+        attach_pty_session: Some(AttachPtySessionResponse::default()),
+        ..Default::default()
     }
 }
 

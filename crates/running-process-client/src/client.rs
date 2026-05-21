@@ -270,7 +270,7 @@ impl DaemonClient {
     // -----------------------------------------------------------------------
 
     /// Allocate the next request ID.
-    fn next_request_id(&self) -> u64 {
+    pub(crate) fn next_request_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 

@@ -19,8 +19,10 @@ use tracing::{debug, error, info, warn};
 
 use running_process_proto::daemon::{DaemonRequest, DaemonResponse, RequestType, StatusCode};
 
+use crate::attach_stream;
 use crate::config::DaemonConfig;
 use crate::handlers::{self, DaemonState};
+use crate::pty_sessions::PtySessionRegistry;
 use crate::reaper;
 use crate::registry::Registry;
 use crate::runtime_gc;
@@ -50,6 +52,7 @@ impl DaemonServer {
         scope_cwd: String,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let registry = Arc::new(Registry::open(std::path::Path::new(&db_path))?);
+        let pty_sessions = Arc::new(PtySessionRegistry::new());
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = Arc::new(DaemonState {
@@ -63,6 +66,7 @@ impl DaemonServer {
             shutdown_tx,
             active_connections: std::sync::atomic::AtomicU32::new(0),
             registry,
+            pty_sessions,
         });
         Ok(Self { state, shutdown_rx })
     }
@@ -217,7 +221,7 @@ async fn handle_connection(
 async fn handle_connection_inner(
     stream: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     shutdown_rx: &mut watch::Receiver<bool>,
-    state: &DaemonState,
+    state: &Arc<DaemonState>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let codec = LengthDelimitedCodec::builder()
         .big_endian()
@@ -279,6 +283,21 @@ async fn handle_connection_inner(
         };
 
         let request_id = request.id;
+
+        // Intercept ATTACH_PTY_SESSION: the request switches the connection
+        // into streaming mode for the rest of its lifetime, so we hand the
+        // framed transport off to the streaming handler and return when it
+        // finishes. The handler is responsible for sending the response.
+        if RequestType::try_from(request.r#type) == Ok(RequestType::AttachPtySession) {
+            let attach_req = request.attach_pty_session.clone().unwrap_or_default();
+            let state_arc = Arc::clone(state);
+            if let Err(e) =
+                attach_stream::run_attach_stream(framed, request_id, attach_req, state_arc).await
+            {
+                warn!("attach stream ended with error: {e}");
+            }
+            return Ok(());
+        }
 
         // Layer 4: catch panics around the dispatch.
         let response = match catch_unwind(AssertUnwindSafe(|| dispatch_request(&request, state))) {
@@ -403,6 +422,7 @@ mod tests {
         let tmp_dir = tempfile::TempDir::new().unwrap();
         let db_path = tmp_dir.path().join("test-server.db");
         let registry = Arc::new(Registry::open(&db_path).unwrap());
+        let pty_sessions = Arc::new(crate::pty_sessions::PtySessionRegistry::new());
         let state = DaemonState {
             start_time: Instant::now(),
             version: "0.0.0-test".to_string(),
@@ -414,6 +434,7 @@ mod tests {
             shutdown_tx,
             active_connections: AtomicU32::new(0),
             registry,
+            pty_sessions,
         };
         (state, tmp_dir)
     }
@@ -436,23 +457,24 @@ mod tests {
         assert_eq!(response.message, "unspecified request type");
     }
 
-    /// PTY-session scaffold (#130 milestone 2): every new request type
-    /// must reach the dispatcher and respond `UNIMPLEMENTED` rather than
-    /// `UNKNOWN_REQUEST`. This locks the dispatch wiring so behaviour can
-    /// be added in follow-up commits without re-touching the dispatch
-    /// table.
+    /// PTY-session handlers (#130 milestone 2): missing-payload requests
+    /// must reach the handler (not return UNKNOWN_REQUEST from dispatch)
+    /// and report INVALID_ARGUMENT — the dispatch table is correctly
+    /// routing the new request types. The full handler behaviour is
+    /// exercised by `tests/pty_session_attach_test.rs`.
     #[tokio::test]
-    async fn pty_session_scaffold_dispatches_to_unimplemented_stubs() {
+    async fn pty_session_handlers_route_via_dispatcher() {
         let (state, _tmp) = test_state();
-        let pty_request_types = [
+
+        // Handlers that take a payload return INVALID_ARGUMENT when called
+        // with no payload — that proves the dispatcher delivered the
+        // request and the handler ran.
+        let payload_required = [
             RequestType::SpawnPtySession,
-            RequestType::AttachPtySession,
             RequestType::DetachPtySession,
-            RequestType::ListPtySessions,
             RequestType::TerminatePtySession,
         ];
-
-        for (i, rt) in pty_request_types.iter().enumerate() {
+        for (i, rt) in payload_required.iter().enumerate() {
             let request = DaemonRequest {
                 id: 100 + i as u64,
                 r#type: *rt as i32,
@@ -460,17 +482,45 @@ mod tests {
                 client_name: "test".to_string(),
                 ..Default::default()
             };
-
             let response = dispatch_request(&request, &state).await;
-
             assert_eq!(response.request_id, 100 + i as u64);
             assert_eq!(
                 response.code,
-                StatusCode::Unimplemented as i32,
-                "request type {rt:?} should respond UNIMPLEMENTED, not {} (msg: {:?})",
+                StatusCode::InvalidArgument as i32,
+                "{rt:?} should reach handler and report INVALID_ARGUMENT for missing payload; got code={} msg={:?}",
                 response.code,
                 response.message,
             );
         }
+
+        // ListPtySessions has no required payload fields; a default
+        // request returns OK with an empty list.
+        let list_request = DaemonRequest {
+            id: 200,
+            r#type: RequestType::ListPtySessions as i32,
+            protocol_version: 1,
+            client_name: "test".to_string(),
+            ..Default::default()
+        };
+        let list_response = dispatch_request(&list_request, &state).await;
+        assert_eq!(list_response.code, StatusCode::Ok as i32);
+        let payload = list_response
+            .list_pty_sessions
+            .expect("list response has payload");
+        assert!(payload.sessions.is_empty());
+
+        // AttachPtySession is intercepted by the streaming server before
+        // it reaches `dispatch_request`. Calling the dispatcher directly
+        // exercises the stub which returns INTERNAL to make accidental
+        // direct dispatch loud.
+        let attach_request = DaemonRequest {
+            id: 300,
+            r#type: RequestType::AttachPtySession as i32,
+            protocol_version: 1,
+            client_name: "test".to_string(),
+            ..Default::default()
+        };
+        let attach_response = dispatch_request(&attach_request, &state).await;
+        assert_eq!(attach_response.code, StatusCode::Internal as i32);
     }
 }
