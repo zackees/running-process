@@ -153,6 +153,13 @@ impl DaemonServer {
             }
         }
 
+        // #130 M8: reap any surviving daemon-owned sessions before exiting.
+        // Without this step, PTY and pipe children would either die from
+        // Windows Job-Object KILL_ON_JOB_CLOSE (acceptable) or survive as
+        // orphans on POSIX (not acceptable). Doing the explicit terminate
+        // here makes the cleanup deterministic on both platforms.
+        reap_all_sessions(&self.state).await;
+
         // Wait for the reaper task to finish (it watches the same shutdown signal).
         let _ = reaper_handle.await;
         let _ = runtime_gc_handle.await;
@@ -194,6 +201,58 @@ impl DaemonServer {
                 .to_ns_name::<GenericNamespaced>()?)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Session reap on daemon shutdown (#130 M8)
+// ---------------------------------------------------------------------------
+
+/// Terminate every PTY and pipe session the daemon currently owns. Called
+/// once after the accept loop stops on shutdown so the daemon does not
+/// leak orphaned child processes on POSIX. On Windows the Job Object
+/// kill-on-close fires anyway as the daemon exits, but the explicit
+/// terminate makes the cleanup observable in tests and consistent across
+/// platforms.
+async fn reap_all_sessions(state: &DaemonState) {
+    let mut pids_to_wait = Vec::new();
+
+    for session in state.pty_sessions.list() {
+        if session.exit_state().is_some() {
+            continue;
+        }
+        if let Err(e) = session.process.kill_tree_impl() {
+            warn!(session_id = %session.id, error = %e, "kill_tree on shutdown failed");
+        }
+        if session.pid != 0 {
+            pids_to_wait.push(session.pid);
+        }
+    }
+    for session in state.pipe_sessions.list() {
+        if session.exit_state().is_some() {
+            continue;
+        }
+        if let Err(e) = session.process.kill() {
+            warn!(session_id = %session.id, error = %e, "process.kill on shutdown failed");
+        }
+        if session.pid != 0 {
+            pids_to_wait.push(session.pid);
+        }
+    }
+
+    if pids_to_wait.is_empty() {
+        return;
+    }
+    info!(
+        "reaping {} sessions on shutdown ({} PIDs)",
+        pids_to_wait.len(),
+        pids_to_wait.len()
+    );
+
+    // Brief wait so the child exits actually propagate; we do not
+    // strictly need this for correctness (the children are dead) but
+    // tests that observe `Get-Process` immediately after Shutdown
+    // benefit from it.
+    tokio::time::sleep(Duration::from_millis(150)).await;
 }
 
 // ---------------------------------------------------------------------------

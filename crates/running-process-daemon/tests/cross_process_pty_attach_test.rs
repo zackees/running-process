@@ -237,6 +237,94 @@ fn pty_session_survives_first_client_disconnect_then_second_client_attaches() {
 }
 
 #[test]
+fn daemon_shutdown_reaps_sessions_no_orphans(
+) {
+    // #130 M8: when the daemon shuts down, every session it owns must
+    // be torn down. On Windows the Job Object kill-on-close handles
+    // this implicitly, but on POSIX the daemon must explicitly issue
+    // kill_tree before exiting or the children become orphans. This
+    // test passes on both platforms with the explicit reap path in
+    // `server::reap_all_sessions`.
+    let scope = format!("cross-proc-reap-{}-{}", std::process::id(), line!());
+    let mut guard = DaemonGuard::new(scope);
+    let socket = guard.socket().to_string();
+    let sleeper = sleeper_binary();
+
+    let child_pid = {
+        let mut client = DaemonClient::connect_to(&socket).expect("connect");
+        let session = client
+            .spawn_pty_session(
+                &PtySpawnRequest::new([sleeper.to_string_lossy().into_owned()])
+                    .with_originator("reap-test"),
+            )
+            .expect("spawn");
+        assert!(session.pid > 0);
+        session.pid
+    };
+
+    // Sanity: the PID is alive before shutdown.
+    assert!(pid_is_alive(child_pid));
+
+    // Shut the daemon down via its polite RPC. The guard's drop will
+    // verify the process exited; we additionally verify the child PID
+    // is gone.
+    {
+        let mut client = DaemonClient::connect_to(&socket).expect("connect");
+        let _ = client.shutdown(true, 5.0);
+    }
+
+    // Give the daemon a moment to finish reaping + exit.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut child_gone = false;
+    while Instant::now() < deadline {
+        if !pid_is_alive(child_pid) {
+            child_gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        child_gone,
+        "child PID {child_pid} should not be alive after daemon shutdown"
+    );
+
+    guard.shutdown();
+}
+
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    use std::ptr;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::shared::ntdef::NULL;
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::processthreadsapi::{GetExitCodeProcess, OpenProcess};
+    use winapi::um::winnt::PROCESS_QUERY_INFORMATION;
+
+    const STILL_ACTIVE: DWORD = 259;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid);
+        if handle == NULL {
+            return false;
+        }
+        let mut exit_code: DWORD = 0;
+        let ok = GetExitCodeProcess(handle, &mut exit_code as *mut _);
+        CloseHandle(handle);
+        ok != 0 && exit_code == STILL_ACTIVE
+    }
+}
+
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    use libc::{kill, ESRCH};
+    unsafe {
+        if kill(pid as i32, 0) == 0 {
+            return true;
+        }
+        *libc::__errno_location() != ESRCH
+    }
+}
+
+#[test]
 fn concurrent_attach_attempts_resolve_to_exactly_one_winner() {
     let scope = format!("cross-proc-race-{}-{}", std::process::id(), line!());
     let mut guard = DaemonGuard::new(scope);
