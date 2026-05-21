@@ -54,6 +54,38 @@ enum Commands {
     Kill { pid: u32 },
     /// Show process tree
     Tree { pid: u32 },
+    /// Detachable PTY and pipe sessions (issue #130)
+    Sessions {
+        #[command(subcommand)]
+        command: SessionsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionsCommand {
+    /// List PTY and pipe sessions owned by the daemon.
+    List {
+        /// Filter by originator string. Empty matches all.
+        #[arg(long, default_value = "")]
+        originator: String,
+        /// Show only PTY sessions.
+        #[arg(long, conflicts_with = "pipe")]
+        pty: bool,
+        /// Show only pipe sessions.
+        #[arg(long, conflicts_with = "pty")]
+        pipe: bool,
+    },
+    /// Schedule termination of a session.
+    Terminate {
+        session_id: String,
+        /// Soft signal grace window before hard kill (milliseconds).
+        #[arg(long, default_value = "2000")]
+        grace_ms: u32,
+        /// Force pipe-session interpretation. Default: try PTY first,
+        /// fall back to pipe.
+        #[arg(long)]
+        pipe: bool,
+    },
 }
 
 /// Initialize structured logging via `tracing-subscriber`.
@@ -241,6 +273,128 @@ fn main() {
             },
             Err(_) => eprintln!("daemon is not running"),
         },
+        Commands::Sessions { command } => run_sessions_command(command),
+    }
+}
+
+fn run_sessions_command(command: SessionsCommand) {
+    let mut client = match client::DaemonClient::connect(None) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("daemon is not running");
+            std::process::exit(1);
+        }
+    };
+    match command {
+        SessionsCommand::List {
+            originator,
+            pty,
+            pipe,
+        } => {
+            let show_pty = pty || (!pty && !pipe);
+            let show_pipe = pipe || (!pty && !pipe);
+            if show_pty {
+                match client.list_pty_sessions(&originator) {
+                    Ok(sessions) => print_pty_session_table(&sessions),
+                    Err(e) => eprintln!("list_pty_sessions failed: {e}"),
+                }
+            }
+            if show_pipe {
+                match client.list_pipe_sessions(&originator) {
+                    Ok(sessions) => print_pipe_session_table(&sessions),
+                    Err(e) => eprintln!("list_pipe_sessions failed: {e}"),
+                }
+            }
+        }
+        SessionsCommand::Terminate {
+            session_id,
+            grace_ms,
+            pipe,
+        } => {
+            if pipe {
+                match client.terminate_pipe_session(&session_id, grace_ms) {
+                    Ok(()) => println!("pipe session {session_id} terminate scheduled"),
+                    Err(e) => {
+                        eprintln!("terminate_pipe_session failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                // Try PTY first, fall back to pipe on NotFound.
+                match client.terminate_pty_session(&session_id, grace_ms) {
+                    Ok(()) => println!("pty session {session_id} terminate scheduled"),
+                    Err(client::ClientError::Server { code, .. })
+                        if code == StatusCode::NotFound =>
+                    {
+                        match client.terminate_pipe_session(&session_id, grace_ms) {
+                            Ok(()) => {
+                                println!("pipe session {session_id} terminate scheduled")
+                            }
+                            Err(e) => {
+                                eprintln!("terminate failed: {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("terminate_pty_session failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn print_pty_session_table(sessions: &[running_process_proto::daemon::PtySessionInfo]) {
+    if sessions.is_empty() {
+        println!("no PTY sessions");
+        return;
+    }
+    println!("PTY sessions:");
+    println!(
+        "  {:<48} {:<7} {:<10} {:<10} {}",
+        "SESSION_ID", "PID", "STATE", "ATTACHED", "COMMAND"
+    );
+    for s in sessions {
+        let state = if s.exited {
+            format!("exit({})", s.exit_code)
+        } else {
+            "running".into()
+        };
+        let attached = if s.attached { "yes" } else { "no" };
+        println!(
+            "  {:<48} {:<7} {:<10} {:<10} {}",
+            s.session_id, s.pid, state, attached, s.command
+        );
+    }
+}
+
+fn print_pipe_session_table(sessions: &[running_process_proto::daemon::PipeSessionInfo]) {
+    if sessions.is_empty() {
+        println!("no pipe sessions");
+        return;
+    }
+    println!("Pipe sessions:");
+    println!(
+        "  {:<48} {:<7} {:<10} {:<12} {}",
+        "SESSION_ID", "PID", "STATE", "OUT/ERR ATT", "COMMAND"
+    );
+    for s in sessions {
+        let state = if s.exited {
+            format!("exit({})", s.exit_code)
+        } else {
+            "running".into()
+        };
+        let attached = format!(
+            "{}/{}",
+            if s.stdout_attached { "y" } else { "n" },
+            if s.stderr_attached { "y" } else { "n" }
+        );
+        println!(
+            "  {:<48} {:<7} {:<10} {:<12} {}",
+            s.session_id, s.pid, state, attached, s.command
+        );
     }
 }
 
