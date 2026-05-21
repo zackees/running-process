@@ -5,13 +5,14 @@
 
 use running_process_core::ORIGINATOR_ENV_VAR;
 use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, GetProcessTreeResponse, KeyValue, KillTreeResponse,
-    KillZombiesResponse, ListActiveResponse, ListByOriginatorResponse, PingResponse, ProcessState,
+    AttachPtySessionResponse, DaemonRequest, DaemonResponse, DetachPtySessionResponse,
+    GetProcessTreeResponse, KeyValue, KillTreeResponse, KillZombiesResponse, ListActiveResponse,
+    ListByOriginatorResponse, ListPtySessionsResponse, PingResponse, ProcessState,
     RegisterResponse, ServiceDeleteResponse, ServiceDescribeResponse, ServiceFlushResponse,
     ServiceListResponse, ServiceLogsResponse, ServiceRestartResponse, ServiceResurrectResponse,
     ServiceSaveResponse, ServiceStartResponse, ServiceStopResponse, ShutdownResponse,
-    SpawnDaemonResponse, StatusCode, StatusResponse, TrackedProcess, UnregisterResponse,
-    ZombieReport,
+    SpawnDaemonResponse, SpawnPtySessionResponse, StatusCode, StatusResponse,
+    TerminatePtySessionResponse, TrackedProcess, UnregisterResponse, ZombieReport,
 };
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -825,6 +826,66 @@ pub fn handle_service_resurrect(request: &DaemonRequest, _state: &DaemonState) -
         message: String::new(),
         service_resurrect: Some(ServiceResurrectResponse::default()),
         ..Default::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Detachable PTY sessions (issue #130) — milestone 2 scaffold.
+//
+// Every handler in this block responds with STATUS_CODE_UNIMPLEMENTED. The
+// real `pty_sessions` module (daemon-owned PTY master + ring buffer +
+// reader task + IPC stream multiplexing) lands in follow-up commits on
+// this branch. The scaffold exists so:
+//   - The proto schema is locked early (downstream clients can codegen).
+//   - The dispatcher path is wired so behavior tests can be added without
+//     touching the dispatch table again.
+// ---------------------------------------------------------------------------
+
+fn unimplemented_pty_response(request_id: u64) -> DaemonResponse {
+    DaemonResponse {
+        request_id,
+        code: StatusCode::Unimplemented as i32,
+        message: "PTY session RPCs are scaffolded but not yet implemented (issue #130 milestone 2)"
+            .into(),
+        ..Default::default()
+    }
+}
+
+pub fn handle_spawn_pty_session(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
+    DaemonResponse {
+        spawn_pty_session: Some(SpawnPtySessionResponse::default()),
+        ..unimplemented_pty_response(request.id)
+    }
+}
+
+pub fn handle_attach_pty_session(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
+    DaemonResponse {
+        attach_pty_session: Some(AttachPtySessionResponse::default()),
+        ..unimplemented_pty_response(request.id)
+    }
+}
+
+pub fn handle_detach_pty_session(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
+    DaemonResponse {
+        detach_pty_session: Some(DetachPtySessionResponse::default()),
+        ..unimplemented_pty_response(request.id)
+    }
+}
+
+pub fn handle_list_pty_sessions(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
+    DaemonResponse {
+        list_pty_sessions: Some(ListPtySessionsResponse::default()),
+        ..unimplemented_pty_response(request.id)
+    }
+}
+
+pub fn handle_terminate_pty_session(
+    request: &DaemonRequest,
+    _state: &DaemonState,
+) -> DaemonResponse {
+    DaemonResponse {
+        terminate_pty_session: Some(TerminatePtySessionResponse::default()),
+        ..unimplemented_pty_response(request.id)
     }
 }
 

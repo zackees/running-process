@@ -344,6 +344,13 @@ fn dispatch_request(
         Ok(RequestType::ServiceFlush) => handlers::handle_service_flush(request, state),
         Ok(RequestType::ServiceSave) => handlers::handle_service_save(request, state),
         Ok(RequestType::ServiceResurrect) => handlers::handle_service_resurrect(request, state),
+        Ok(RequestType::SpawnPtySession) => handlers::handle_spawn_pty_session(request, state),
+        Ok(RequestType::AttachPtySession) => handlers::handle_attach_pty_session(request, state),
+        Ok(RequestType::DetachPtySession) => handlers::handle_detach_pty_session(request, state),
+        Ok(RequestType::ListPtySessions) => handlers::handle_list_pty_sessions(request, state),
+        Ok(RequestType::TerminatePtySession) => {
+            handlers::handle_terminate_pty_session(request, state)
+        }
         Err(_) => error_response(
             request_id,
             StatusCode::UnknownRequest,
@@ -427,5 +434,43 @@ mod tests {
         assert_eq!(response.request_id, 77);
         assert_eq!(response.code, StatusCode::UnknownRequest as i32);
         assert_eq!(response.message, "unspecified request type");
+    }
+
+    /// PTY-session scaffold (#130 milestone 2): every new request type
+    /// must reach the dispatcher and respond `UNIMPLEMENTED` rather than
+    /// `UNKNOWN_REQUEST`. This locks the dispatch wiring so behaviour can
+    /// be added in follow-up commits without re-touching the dispatch
+    /// table.
+    #[tokio::test]
+    async fn pty_session_scaffold_dispatches_to_unimplemented_stubs() {
+        let (state, _tmp) = test_state();
+        let pty_request_types = [
+            RequestType::SpawnPtySession,
+            RequestType::AttachPtySession,
+            RequestType::DetachPtySession,
+            RequestType::ListPtySessions,
+            RequestType::TerminatePtySession,
+        ];
+
+        for (i, rt) in pty_request_types.iter().enumerate() {
+            let request = DaemonRequest {
+                id: 100 + i as u64,
+                r#type: *rt as i32,
+                protocol_version: 1,
+                client_name: "test".to_string(),
+                ..Default::default()
+            };
+
+            let response = dispatch_request(&request, &state).await;
+
+            assert_eq!(response.request_id, 100 + i as u64);
+            assert_eq!(
+                response.code,
+                StatusCode::Unimplemented as i32,
+                "request type {rt:?} should respond UNIMPLEMENTED, not {} (msg: {:?})",
+                response.code,
+                response.message,
+            );
+        }
     }
 }

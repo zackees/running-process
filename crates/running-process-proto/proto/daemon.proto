@@ -37,6 +37,14 @@ enum RequestType {
   REQUEST_TYPE_SERVICE_FLUSH     = 57;
   REQUEST_TYPE_SERVICE_SAVE      = 58;
   REQUEST_TYPE_SERVICE_RESURRECT = 59;
+  // Detachable PTY sessions (issue #130) — milestone 2 scaffold.
+  // Handlers currently return STATUS_CODE_UNIMPLEMENTED; behavior lands in
+  // follow-up commits on this branch.
+  REQUEST_TYPE_SPAWN_PTY_SESSION     = 60;
+  REQUEST_TYPE_ATTACH_PTY_SESSION    = 61;
+  REQUEST_TYPE_DETACH_PTY_SESSION    = 62;
+  REQUEST_TYPE_LIST_PTY_SESSIONS     = 63;
+  REQUEST_TYPE_TERMINATE_PTY_SESSION = 64;
 }
 
 enum StatusCode {
@@ -49,6 +57,8 @@ enum StatusCode {
   STATUS_CODE_UNAVAILABLE      = 6;
   STATUS_CODE_VERSION_MISMATCH = 7;
   STATUS_CODE_RATE_LIMITED     = 8;
+  STATUS_CODE_UNIMPLEMENTED    = 9;
+  STATUS_CODE_ALREADY_ATTACHED = 10;
 }
 
 enum ProcessState {
@@ -90,6 +100,11 @@ message DaemonRequest {
   ServiceFlushRequest     service_flush     = 57;
   ServiceSaveRequest      service_save      = 58;
   ServiceResurrectRequest service_resurrect = 59;
+  SpawnPtySessionRequest     spawn_pty_session     = 60;
+  AttachPtySessionRequest    attach_pty_session    = 61;
+  DetachPtySessionRequest    detach_pty_session    = 62;
+  ListPtySessionsRequest     list_pty_sessions     = 63;
+  TerminatePtySessionRequest terminate_pty_session = 64;
 }
 
 message DaemonResponse {
@@ -119,6 +134,11 @@ message DaemonResponse {
   ServiceFlushResponse     service_flush     = 57;
   ServiceSaveResponse      service_save      = 58;
   ServiceResurrectResponse service_resurrect = 59;
+  SpawnPtySessionResponse     spawn_pty_session     = 60;
+  AttachPtySessionResponse    attach_pty_session    = 61;
+  DetachPtySessionResponse    detach_pty_session    = 62;
+  ListPtySessionsResponse     list_pty_sessions     = 63;
+  TerminatePtySessionResponse terminate_pty_session = 64;
 }
 
 // ---------------------------------------------------------------------------
@@ -374,4 +394,151 @@ message ServiceSaveResponse {
 message ServiceResurrectRequest {}
 message ServiceResurrectResponse {
   uint32 restored_count = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Detachable PTY sessions (issue #130) — milestone 2 scaffold.
+//
+// Wire protocol for AttachPtySession is intentionally not finalized in this
+// scaffold. The default plan is to multiplex PtyStreamFrame/PtyInputFrame
+// over the same socket after the AttachPtySessionResponse is sent; the
+// alternative is a per-attachment socket path returned in the response.
+// The choice will be made in the milestone 2 implementation commit; for
+// now the handler responds with STATUS_CODE_UNIMPLEMENTED.
+//
+// Design decision (see plan docs): the daemon owns the ConPTY / PTY
+// master and the child process. Clients never receive raw OS handles —
+// they receive bytes over IPC and submit bytes/resize/interrupt via RPC.
+// This sidesteps DuplicateHandle and POSIX controlling-terminal handoff.
+// ---------------------------------------------------------------------------
+
+message SpawnPtySessionRequest {
+  // Argv. argv[0] is the program; remaining are arguments.
+  repeated string argv = 1;
+  string cwd = 2;
+  // Environment for the spawned child. Same layering semantics as
+  // SpawnDaemonRequest.env: ordered repeated KeyValue with case-insensitive
+  // last-wins dedup on Windows.
+  repeated KeyValue env = 3;
+  bool clear_inherited_env = 4;
+  // Initial terminal size. 0 = use daemon defaults (24x80).
+  uint32 rows = 5;
+  uint32 cols = 6;
+  // Originator tag, e.g. "clud". Stored in registry for discovery.
+  string originator = 7;
+}
+
+message SpawnPtySessionResponse {
+  // UUID v4 string. Used as the handle for subsequent Attach/Detach/Terminate.
+  string session_id = 1;
+  uint32 pid        = 2;
+  double created_at = 3;
+}
+
+message AttachPtySessionRequest {
+  string session_id = 1;
+  // Client-side terminal dimensions; daemon resizes the PTY to match.
+  uint32 rows = 2;
+  uint32 cols = 3;
+  // If true, evict any currently-attached client. Default false: a second
+  // attach attempt fails with STATUS_CODE_ALREADY_ATTACHED.
+  bool steal = 4;
+  // Terminal capabilities for renegotiation; informational only for now.
+  string term            = 5;
+  bool   is_tty          = 6;
+}
+
+message AttachPtySessionResponse {
+  // If the wire protocol ends up using a per-attachment socket, this is
+  // the path / pipe name to connect to. Empty string means "multiplex on
+  // the existing socket" (default plan).
+  string stream_endpoint = 1;
+  // Bytes the client missed while detached; included as a one-shot
+  // backlog before the live stream starts. Bounded by daemon config.
+  bytes  backlog         = 2;
+  // True if the backlog ring buffer dropped bytes before this attach.
+  // Client should render a "missed N bytes" indicator.
+  bool   backlog_truncated = 3;
+  uint64 bytes_missed     = 4;
+}
+
+message DetachPtySessionRequest {
+  string session_id = 1;
+}
+message DetachPtySessionResponse {}
+
+message ListPtySessionsRequest {
+  // Optional originator filter; empty string returns all sessions in scope.
+  string originator = 1;
+}
+
+message ListPtySessionsResponse {
+  repeated PtySessionInfo sessions = 1;
+}
+
+message PtySessionInfo {
+  string session_id = 1;
+  uint32 pid        = 2;
+  string command    = 3;
+  string cwd        = 4;
+  string originator = 5;
+  double created_at = 6;
+  bool   attached   = 7;
+  // Populated only after the child has exited.
+  bool   exited     = 8;
+  int32  exit_code  = 9;
+  double exited_at  = 10;
+  uint32 rows       = 11;
+  uint32 cols       = 12;
+}
+
+message TerminatePtySessionRequest {
+  string session_id = 1;
+  // Soft-then-hard schedule. Daemon sends SIGTERM/CTRL_BREAK_EVENT,
+  // waits up to grace_ms, then escalates to SIGKILL / Job-Object kill.
+  // Fire-and-forget from the client's perspective: response returns as
+  // soon as the schedule is accepted, not when the child has exited.
+  uint32 grace_ms = 2;
+}
+
+message TerminatePtySessionResponse {}
+
+// Frame envelopes for the bidirectional attach stream. Not part of the
+// request/response envelope above; sent after attach succeeds.
+//
+// Daemon -> client.
+message PtyStreamFrame {
+  oneof frame {
+    // Raw bytes from the PTY master (output).
+    bytes  output       = 1;
+    // Child exited; final exit code. Always followed by stream close.
+    int32  exit_code    = 2;
+    // Daemon dropped this many bytes from the head of the ring buffer
+    // before this point. Client should render a "missed N bytes" marker.
+    uint64 missed_bytes = 3;
+    // Error during streaming; daemon will close the stream after sending.
+    string error        = 4;
+    // Sent when the attached client was evicted via a steal from a peer.
+    string stolen_by    = 5;
+  }
+}
+
+// Client -> daemon.
+message PtyInputFrame {
+  oneof frame {
+    // Raw bytes to write to the PTY master (stdin).
+    bytes  input     = 1;
+    // Terminal resize; daemon applies via portable-pty resize.
+    PtyResize resize = 2;
+    // Send SIGINT / CTRL_C_EVENT to the child process group.
+    bool   interrupt = 3;
+    // Clean detach. Daemon keeps the session alive but releases this
+    // attachment.
+    bool   detach    = 4;
+  }
+}
+
+message PtyResize {
+  uint32 rows = 1;
+  uint32 cols = 2;
 }
