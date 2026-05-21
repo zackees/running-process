@@ -11,6 +11,52 @@ pub struct DaemonConfig {
     pub connection_idle_timeout_secs: u64,
     pub max_connections: usize,
     pub dev: DevConfig,
+    /// Sessions to spawn automatically on daemon startup (#130 M7 B3).
+    /// Each entry is spawned once when the server starts; no restart
+    /// policy is implemented today (the runpm follow-up will own
+    /// supervised lifecycle).
+    pub autostart: Vec<AutostartSession>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct AutostartSession {
+    /// Either `"pty"` or `"pipe"`. Defaults to `"pipe"`.
+    pub kind: String,
+    /// Argv list. First element is the program; the rest are
+    /// arguments. Required (empty argv is rejected at startup).
+    pub argv: Vec<String>,
+    /// Working directory; defaults to the daemon's own CWD.
+    pub cwd: Option<String>,
+    /// Environment overlay. Layered on the daemon's env unless
+    /// `clear_env` is true.
+    pub env: std::collections::HashMap<String, String>,
+    pub clear_env: bool,
+    /// Originator tag stored in the session record. Defaults to
+    /// `"autostart"`.
+    pub originator: String,
+    /// PTY-only. Initial dimensions. Zero means daemon defaults
+    /// (24×80).
+    pub rows: u16,
+    pub cols: u16,
+    /// Pipe-only. Merge stderr into stdout at spawn time.
+    pub merge_stderr: bool,
+}
+
+impl Default for AutostartSession {
+    fn default() -> Self {
+        Self {
+            kind: "pipe".to_string(),
+            argv: Vec::new(),
+            cwd: None,
+            env: std::collections::HashMap::new(),
+            clear_env: false,
+            originator: "autostart".to_string(),
+            rows: 0,
+            cols: 0,
+            merge_stderr: false,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +75,7 @@ impl Default for DaemonConfig {
             connection_idle_timeout_secs: 60,
             max_connections: 64,
             dev: DevConfig::default(),
+            autostart: Vec::new(),
         }
     }
 }
@@ -180,5 +227,35 @@ idle_timeout_secs = 60
     #[test]
     fn is_tracking_disabled_default() {
         let _ = is_tracking_disabled();
+    }
+
+    #[test]
+    fn parse_toml_with_autostart_entries() {
+        let toml_str = r#"
+[[autostart]]
+kind = "pty"
+argv = ["sleeper"]
+rows = 30
+cols = 100
+
+[[autostart]]
+kind = "pipe"
+argv = ["echo", "hi"]
+originator = "boot"
+merge_stderr = true
+"#;
+        let cfg: DaemonConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.autostart.len(), 2);
+        assert_eq!(cfg.autostart[0].kind, "pty");
+        assert_eq!(cfg.autostart[0].argv, vec!["sleeper".to_string()]);
+        assert_eq!(cfg.autostart[0].rows, 30);
+        assert_eq!(cfg.autostart[0].cols, 100);
+        assert_eq!(cfg.autostart[1].kind, "pipe");
+        assert_eq!(
+            cfg.autostart[1].argv,
+            vec!["echo".to_string(), "hi".to_string()]
+        );
+        assert_eq!(cfg.autostart[1].originator, "boot");
+        assert!(cfg.autostart[1].merge_stderr);
     }
 }

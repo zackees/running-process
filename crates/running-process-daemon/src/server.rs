@@ -110,6 +110,9 @@ impl DaemonServer {
 
         // Spawn the background reaper task.
         let config = DaemonConfig::load();
+        if !config.autostart.is_empty() {
+            spawn_autostart_sessions(&self.state, &config.autostart);
+        }
         let reaper_state = Arc::clone(&self.state);
         let reaper_handle = tokio::spawn(reaper::reaper_loop(
             reaper_state,
@@ -199,6 +202,102 @@ impl DaemonServer {
                 .socket_path
                 .as_str()
                 .to_ns_name::<GenericNamespaced>()?)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Autostart sessions on daemon startup (#130 M7 B3)
+// ---------------------------------------------------------------------------
+
+/// Spawn every `AutostartSession` declared in the daemon's TOML config.
+/// Failures are logged at warn level so a single bad entry does not
+/// prevent the daemon from starting; the rest of the autostart list
+/// still runs.
+pub fn spawn_autostart_sessions(
+    state: &DaemonState,
+    entries: &[crate::config::AutostartSession],
+) {
+    for entry in entries {
+        if entry.argv.is_empty() {
+            warn!("autostart entry has empty argv; skipping");
+            continue;
+        }
+
+        // Build env overlay. Layer on daemon env unless clear_env.
+        let env = if entry.env.is_empty() && !entry.clear_env {
+            None
+        } else {
+            let mut pairs: Vec<(String, String)> = if entry.clear_env {
+                Vec::new()
+            } else {
+                std::env::vars().collect()
+            };
+            for (k, v) in &entry.env {
+                if let Some((_, existing)) = pairs.iter_mut().find(|(ek, _)| ek == k) {
+                    *existing = v.clone();
+                } else {
+                    pairs.push((k.clone(), v.clone()));
+                }
+            }
+            Some(pairs)
+        };
+
+        let originator = if entry.originator.is_empty() {
+            "autostart".to_string()
+        } else {
+            entry.originator.clone()
+        };
+        let command_display = entry.argv.join(" ");
+
+        match entry.kind.as_str() {
+            "pty" => {
+                let rows = if entry.rows == 0 { 24 } else { entry.rows };
+                let cols = if entry.cols == 0 { 80 } else { entry.cols };
+                match state.pty_sessions.spawn(
+                    entry.argv.clone(),
+                    entry.cwd.clone(),
+                    env,
+                    rows,
+                    cols,
+                    originator,
+                    command_display.clone(),
+                ) {
+                    Ok(s) => info!(
+                        "autostart: spawned PTY session {} pid={} cmd={:?}",
+                        s.id, s.pid, command_display
+                    ),
+                    Err(e) => warn!(
+                        "autostart: failed to spawn PTY session cmd={:?}: {e}",
+                        command_display
+                    ),
+                }
+            }
+            other => {
+                if other != "pipe" {
+                    warn!(
+                        "autostart: unknown kind {other:?}, defaulting to pipe (cmd={:?})",
+                        command_display
+                    );
+                }
+                match state.pipe_sessions.spawn(
+                    entry.argv.clone(),
+                    entry.cwd.clone(),
+                    env,
+                    originator,
+                    command_display.clone(),
+                    entry.merge_stderr,
+                ) {
+                    Ok(s) => info!(
+                        "autostart: spawned pipe session {} pid={} cmd={:?}",
+                        s.id, s.pid, command_display
+                    ),
+                    Err(e) => warn!(
+                        "autostart: failed to spawn pipe session cmd={:?}: {e}",
+                        command_display
+                    ),
+                }
+            }
         }
     }
 }
