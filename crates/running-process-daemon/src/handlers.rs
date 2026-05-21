@@ -5,11 +5,12 @@
 
 use running_process_core::ORIGINATOR_ENV_VAR;
 use running_process_proto::daemon::{
-    AttachPipeStreamResponse, AttachPtySessionResponse, DaemonRequest, DaemonResponse,
-    DetachPipeStreamResponse, DetachPtySessionResponse, GetProcessTreeResponse,
-    GetSessionBacklogResponse, KeyValue, KillTreeResponse, KillZombiesResponse, ListActiveResponse,
-    ListByOriginatorResponse, ListPipeSessionsResponse, ListPtySessionsResponse, PingResponse,
-    PipeSessionInfo, PipeStreamKind, ProcessState, PtySessionInfo, RegisterResponse,
+    AttachPipeStreamResponse, AttachPtySessionResponse,
+    BulkTerminateSessionsResponse, DaemonRequest, DaemonResponse, DetachPipeStreamResponse,
+    DetachPtySessionResponse, GetProcessTreeResponse, GetSessionBacklogResponse, KeyValue,
+    KillTreeResponse, KillZombiesResponse, ListActiveResponse, ListByOriginatorResponse,
+    ListPipeSessionsResponse, ListPtySessionsResponse, PingResponse, PipeSessionInfo,
+    PipeStreamKind, ProcessState, PtySessionInfo, PurgeExitedSessionsResponse, RegisterResponse,
     ServiceDeleteResponse, ServiceDescribeResponse, ServiceFlushResponse, ServiceListResponse,
     ServiceLogsResponse, ServiceRestartResponse, ServiceResurrectResponse, ServiceSaveResponse,
     ServiceStartResponse, ServiceStopResponse, ShutdownResponse, SpawnDaemonResponse,
@@ -1332,6 +1333,100 @@ pub fn handle_attach_pipe_stream(request: &DaemonRequest, _state: &DaemonState) 
         code: StatusCode::Internal as i32,
         message: "attach_pipe_stream must be intercepted by the streaming server path".into(),
         attach_pipe_stream: Some(AttachPipeStreamResponse::default()),
+        ..Default::default()
+    }
+}
+
+/// Purge exited sessions from both registries (#130 M9 H4). Live
+/// sessions are untouched. Returns counts so callers can report how
+/// much was reaped.
+pub fn handle_purge_exited_sessions(
+    request: &DaemonRequest,
+    state: &DaemonState,
+) -> DaemonResponse {
+    let originator = request
+        .purge_exited_sessions
+        .as_ref()
+        .map(|r| r.originator.clone())
+        .unwrap_or_default();
+    let pty_purged = state.pty_sessions.purge_exited(&originator) as u32;
+    let pipe_purged = state.pipe_sessions.purge_exited(&originator) as u32;
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        purge_exited_sessions: Some(PurgeExitedSessionsResponse {
+            pty_purged,
+            pipe_purged,
+        }),
+        ..Default::default()
+    }
+}
+
+/// Terminate every session whose age is strictly greater than the
+/// requested threshold (#130 M9 H4). Each session keeps its own
+/// soft-then-hard schedule; this handler just issues the terminate
+/// signal and returns counts. Use `older_than_secs=0` to terminate
+/// everything in scope.
+pub fn handle_bulk_terminate_sessions(
+    request: &DaemonRequest,
+    state: &DaemonState,
+) -> DaemonResponse {
+    let req = match request.bulk_terminate_sessions.as_ref() {
+        Some(r) => r,
+        None => {
+            return error_pty_response(
+                request.id,
+                StatusCode::InvalidArgument,
+                "bulk_terminate_sessions payload missing".into(),
+            )
+        }
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let threshold = req.older_than_secs as f64;
+    let grace = std::time::Duration::from_millis(req.grace_ms.max(1) as u64);
+
+    let mut pty_terminated: u32 = 0;
+    for session in state.pty_sessions.list() {
+        if session.exit_state().is_some() {
+            continue;
+        }
+        if !req.originator.is_empty() && session.originator != req.originator {
+            continue;
+        }
+        if (now - session.created_at_unix) <= threshold {
+            continue;
+        }
+        if session.terminate(grace).is_ok() {
+            pty_terminated += 1;
+        }
+    }
+
+    let mut pipe_terminated: u32 = 0;
+    for session in state.pipe_sessions.list() {
+        if session.exit_state().is_some() {
+            continue;
+        }
+        if !req.originator.is_empty() && session.originator != req.originator {
+            continue;
+        }
+        if (now - session.created_at_unix) <= threshold {
+            continue;
+        }
+        if session.terminate(grace).is_ok() {
+            pipe_terminated += 1;
+        }
+    }
+
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        bulk_terminate_sessions: Some(BulkTerminateSessionsResponse {
+            pty_terminated,
+            pipe_terminated,
+        }),
         ..Default::default()
     }
 }

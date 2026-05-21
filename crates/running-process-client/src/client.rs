@@ -9,12 +9,13 @@ use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
 use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, GetProcessTreeRequest, GetSessionBacklogRequest,
-    GetSessionBacklogResponse, KeyValue, KillTreeRequest, KillZombiesRequest, ListActiveRequest,
-    ListByOriginatorRequest, PingRequest, PipeStreamKind, RequestType, ServiceConfig,
-    ServiceDeleteRequest, ServiceDescribeRequest, ServiceFlushRequest, ServiceListRequest,
-    ServiceLogsRequest, ServiceRestartRequest, ServiceResurrectRequest, ServiceSaveRequest,
-    ServiceStartRequest, ServiceStopRequest, ShutdownRequest,
+    BulkTerminateSessionsRequest, BulkTerminateSessionsResponse, DaemonRequest, DaemonResponse,
+    GetProcessTreeRequest, GetSessionBacklogRequest, GetSessionBacklogResponse, KeyValue,
+    KillTreeRequest, KillZombiesRequest, ListActiveRequest, ListByOriginatorRequest, PingRequest,
+    PipeStreamKind, PurgeExitedSessionsRequest, PurgeExitedSessionsResponse, RequestType,
+    ServiceConfig, ServiceDeleteRequest, ServiceDescribeRequest, ServiceFlushRequest,
+    ServiceListRequest, ServiceLogsRequest, ServiceRestartRequest, ServiceResurrectRequest,
+    ServiceSaveRequest, ServiceStartRequest, ServiceStopRequest, ShutdownRequest,
     SpawnDaemonRequest as ProtoSpawnDaemonRequest, StatusCode, StatusRequest,
 };
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -615,6 +616,76 @@ impl DaemonClient {
             ..Default::default()
         };
         self.send_request(request)
+    }
+
+    /// Purge exited sessions from both daemon-side registries (#130 M9
+    /// H4). Returns counts of PTY and pipe sessions reaped.
+    pub fn purge_exited_sessions(
+        &mut self,
+        originator: &str,
+    ) -> Result<PurgeExitedSessionsResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::PurgeExitedSessions.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            purge_exited_sessions: Some(PurgeExitedSessionsRequest {
+                originator: originator.into(),
+            }),
+            ..Default::default()
+        };
+        let response = self.send_request(request)?;
+        if response.code != StatusCode::Ok as i32 {
+            let code =
+                StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
+            return Err(ClientError::Server {
+                code,
+                message: response.message,
+            });
+        }
+        response
+            .purge_exited_sessions
+            .ok_or_else(|| ClientError::Server {
+                code: StatusCode::Internal,
+                message: "purge_exited_sessions response missing payload".into(),
+            })
+    }
+
+    /// Schedule termination of every session older than the threshold
+    /// (#130 M9 H4). `older_than_secs=0` terminates everything in scope.
+    pub fn bulk_terminate_sessions(
+        &mut self,
+        older_than_secs: u64,
+        originator: &str,
+        grace_ms: u32,
+    ) -> Result<BulkTerminateSessionsResponse, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::BulkTerminateSessions.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            bulk_terminate_sessions: Some(BulkTerminateSessionsRequest {
+                older_than_secs,
+                originator: originator.into(),
+                grace_ms,
+            }),
+            ..Default::default()
+        };
+        let response = self.send_request(request)?;
+        if response.code != StatusCode::Ok as i32 {
+            let code =
+                StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
+            return Err(ClientError::Server {
+                code,
+                message: response.message,
+            });
+        }
+        response
+            .bulk_terminate_sessions
+            .ok_or_else(|| ClientError::Server {
+                code: StatusCode::Internal,
+                message: "bulk_terminate_sessions response missing payload".into(),
+            })
     }
 
     /// Snapshot a PTY or pipe session's output backlog without consuming

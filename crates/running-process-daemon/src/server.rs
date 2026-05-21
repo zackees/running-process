@@ -456,6 +456,12 @@ fn dispatch_request(
         Ok(RequestType::GetSessionBacklog) => {
             handlers::handle_get_session_backlog(request, state)
         }
+        Ok(RequestType::PurgeExitedSessions) => {
+            handlers::handle_purge_exited_sessions(request, state)
+        }
+        Ok(RequestType::BulkTerminateSessions) => {
+            handlers::handle_bulk_terminate_sessions(request, state)
+        }
         Err(_) => error_response(
             request_id,
             StatusCode::UnknownRequest,

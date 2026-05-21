@@ -58,6 +58,9 @@ enum RequestType {
   // without consuming them — same buffer continues to fill, and a real
   // attach later still sees the same backlog.
   REQUEST_TYPE_GET_SESSION_BACKLOG    = 71;
+  // Bulk session ops (#130 milestone 9 H4).
+  REQUEST_TYPE_PURGE_EXITED_SESSIONS  = 72;
+  REQUEST_TYPE_BULK_TERMINATE_SESSIONS = 73;
 }
 
 enum StatusCode {
@@ -125,6 +128,8 @@ message DaemonRequest {
   TerminatePipeSessionRequest terminate_pipe_session = 69;
   WritePipeStdinRequest       write_pipe_stdin       = 70;
   GetSessionBacklogRequest    get_session_backlog    = 71;
+  PurgeExitedSessionsRequest  purge_exited_sessions  = 72;
+  BulkTerminateSessionsRequest bulk_terminate_sessions = 73;
 }
 
 message DaemonResponse {
@@ -166,6 +171,8 @@ message DaemonResponse {
   TerminatePipeSessionResponse terminate_pipe_session = 69;
   WritePipeStdinResponse       write_pipe_stdin       = 70;
   GetSessionBacklogResponse    get_session_backlog    = 71;
+  PurgeExitedSessionsResponse  purge_exited_sessions  = 72;
+  BulkTerminateSessionsResponse bulk_terminate_sessions = 73;
 }
 
 // ---------------------------------------------------------------------------
@@ -683,6 +690,29 @@ message GetSessionBacklogResponse {
   bool   exited           = 4;
   int32  exit_code        = 5;
   double exited_at        = 6;
+}
+
+message PurgeExitedSessionsRequest {
+  // Filter by originator. Empty matches all.
+  string originator = 1;
+}
+message PurgeExitedSessionsResponse {
+  uint32 pty_purged  = 1;
+  uint32 pipe_purged = 2;
+}
+
+message BulkTerminateSessionsRequest {
+  // Terminate every session whose age is strictly greater than this
+  // many seconds. Zero terminates everything in scope.
+  uint64 older_than_secs = 1;
+  // Filter by originator. Empty matches all.
+  string originator      = 2;
+  // Soft-signal grace window before hard kill.
+  uint32 grace_ms        = 3;
+}
+message BulkTerminateSessionsResponse {
+  uint32 pty_terminated  = 1;
+  uint32 pipe_terminated = 2;
 }
 
 // Daemon -> client stream frame for an attached stdout/stderr.

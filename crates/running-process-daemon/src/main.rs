@@ -95,6 +95,49 @@ enum SessionsCommand {
         #[arg(long, value_parser = ["stdout", "stderr"], default_value = "stdout")]
         stream: String,
     },
+    /// Remove exited sessions from the daemon registry (#130 M9 H4).
+    Purge {
+        /// Filter by originator. Empty matches all.
+        #[arg(long, default_value = "")]
+        originator: String,
+    },
+    /// Terminate every session older than a threshold (#130 M9 H4).
+    /// Accepts plain seconds, or human-readable suffixes: `s`, `m`,
+    /// `h`, `d` (e.g. `--older-than 1d`).
+    KillOlder {
+        /// Threshold age. `0` terminates everything in scope.
+        #[arg(long, default_value = "0")]
+        older_than: String,
+        /// Filter by originator. Empty matches all.
+        #[arg(long, default_value = "")]
+        originator: String,
+        /// Soft-signal grace window before hard kill (milliseconds).
+        #[arg(long, default_value = "2000")]
+        grace_ms: u32,
+    },
+}
+
+fn parse_duration_secs(value: &str) -> Result<u64, String> {
+    let v = value.trim();
+    if v.is_empty() {
+        return Err("empty duration".into());
+    }
+    let (digits, unit_secs) = if let Some(num) = v.strip_suffix('d') {
+        (num, 86_400)
+    } else if let Some(num) = v.strip_suffix('h') {
+        (num, 3600)
+    } else if let Some(num) = v.strip_suffix('m') {
+        (num, 60)
+    } else if let Some(num) = v.strip_suffix('s') {
+        (num, 1)
+    } else {
+        (v, 1)
+    };
+    let n: u64 = digits
+        .trim()
+        .parse()
+        .map_err(|e| format!("could not parse duration {value:?}: {e}"))?;
+    Ok(n.saturating_mul(unit_secs))
 }
 
 /// Initialize structured logging via `tracing-subscriber`.
@@ -312,6 +355,45 @@ fn run_sessions_command(command: SessionsCommand) {
                 match client.list_pipe_sessions(&originator) {
                     Ok(sessions) => print_pipe_session_table(&sessions),
                     Err(e) => eprintln!("list_pipe_sessions failed: {e}"),
+                }
+            }
+        }
+        SessionsCommand::Purge { originator } => {
+            match client.purge_exited_sessions(&originator) {
+                Ok(payload) => {
+                    println!(
+                        "purged {} PTY + {} pipe exited sessions",
+                        payload.pty_purged, payload.pipe_purged
+                    );
+                }
+                Err(e) => {
+                    eprintln!("purge_exited_sessions failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        SessionsCommand::KillOlder {
+            older_than,
+            originator,
+            grace_ms,
+        } => {
+            let secs = match parse_duration_secs(&older_than) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }
+            };
+            match client.bulk_terminate_sessions(secs, &originator, grace_ms) {
+                Ok(payload) => {
+                    println!(
+                        "terminated {} PTY + {} pipe sessions older than {}s",
+                        payload.pty_terminated, payload.pipe_terminated, secs
+                    );
+                }
+                Err(e) => {
+                    eprintln!("bulk_terminate_sessions failed: {e}");
+                    std::process::exit(1);
                 }
             }
         }
