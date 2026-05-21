@@ -10,12 +10,12 @@ use running_process_proto::daemon::{
     GetProcessTreeResponse, GetSessionBacklogResponse, KeyValue, KillTreeResponse,
     KillZombiesResponse, ListActiveResponse, ListByOriginatorResponse, ListPipeSessionsResponse,
     ListPtySessionsResponse, PingResponse, PipeSessionInfo, PipeStreamKind, ProcessState,
-    PtySessionInfo, PurgeExitedSessionsResponse, RegisterResponse, ServiceDeleteResponse,
-    ServiceDescribeResponse, ServiceFlushResponse, ServiceListResponse, ServiceLogsResponse,
-    ServiceRestartResponse, ServiceResurrectResponse, ServiceSaveResponse, ServiceStartResponse,
-    ServiceStopResponse, ShutdownResponse, SpawnDaemonResponse, SpawnPipeSessionResponse,
-    SpawnPtySessionResponse, StatusCode, StatusResponse, TerminatePipeSessionResponse,
-    TerminatePtySessionResponse,
+    PtySessionInfo, PurgeExitedSessionsResponse, RegisterResponse, ResizePtySessionResponse,
+    ServiceDeleteResponse, ServiceDescribeResponse, ServiceFlushResponse, ServiceListResponse,
+    ServiceLogsResponse, ServiceRestartResponse, ServiceResurrectResponse, ServiceSaveResponse,
+    ServiceStartResponse, ServiceStopResponse, ShutdownResponse, SpawnDaemonResponse,
+    SpawnPipeSessionResponse, SpawnPtySessionResponse, StatusCode, StatusResponse,
+    TerminatePipeSessionResponse, TerminatePtySessionResponse,
     TerminationOutcome as ProtoTerminationOutcome, TrackedProcess, UnregisterResponse,
     WritePipeStdinResponse, ZombieReport,
 };
@@ -1358,6 +1358,47 @@ pub fn handle_attach_pipe_stream(request: &DaemonRequest, _state: &DaemonState) 
         code: StatusCode::Internal as i32,
         message: "attach_pipe_stream must be intercepted by the streaming server path".into(),
         attach_pipe_stream: Some(AttachPipeStreamResponse::default()),
+        ..Default::default()
+    }
+}
+
+/// Resize a PTY session without an active attachment (#130 M5
+/// follow-up). The new size persists for the lifetime of the session
+/// and overrides any per-attach size passed by future attach requests
+/// (they can still override it again by sending their own rows/cols).
+pub fn handle_resize_pty_session(
+    request: &DaemonRequest,
+    state: &DaemonState,
+) -> DaemonResponse {
+    let req = match request.resize_pty_session.as_ref() {
+        Some(r) => r,
+        None => {
+            return error_pty_response(
+                request.id,
+                StatusCode::InvalidArgument,
+                "resize_pty_session payload missing".into(),
+            )
+        }
+    };
+    let session = match state.pty_sessions.get(&req.session_id) {
+        Some(s) => s,
+        None => {
+            return error_pty_response(
+                request.id,
+                StatusCode::NotFound,
+                format!("session not found: {}", req.session_id),
+            )
+        }
+    };
+    let rows = if req.rows == 0 { session.rows() } else { req.rows as u16 };
+    let cols = if req.cols == 0 { session.cols() } else { req.cols as u16 };
+    if let Err(e) = session.resize(rows, cols) {
+        return error_pty_response(request.id, StatusCode::Internal, e.to_string());
+    }
+    DaemonResponse {
+        request_id: request.id,
+        code: StatusCode::Ok as i32,
+        resize_pty_session: Some(ResizePtySessionResponse::default()),
         ..Default::default()
     }
 }

@@ -13,10 +13,10 @@ use running_process_proto::daemon::{
     GetProcessTreeRequest, GetSessionBacklogRequest, GetSessionBacklogResponse, KeyValue,
     KillTreeRequest, KillZombiesRequest, ListActiveRequest, ListByOriginatorRequest, PingRequest,
     PipeStreamKind, PurgeExitedSessionsRequest, PurgeExitedSessionsResponse, RequestType,
-    ServiceConfig, ServiceDeleteRequest, ServiceDescribeRequest, ServiceFlushRequest,
-    ServiceListRequest, ServiceLogsRequest, ServiceRestartRequest, ServiceResurrectRequest,
-    ServiceSaveRequest, ServiceStartRequest, ServiceStopRequest, ShutdownRequest,
-    SpawnDaemonRequest as ProtoSpawnDaemonRequest, StatusCode, StatusRequest,
+    ResizePtySessionRequest, ServiceConfig, ServiceDeleteRequest, ServiceDescribeRequest,
+    ServiceFlushRequest, ServiceListRequest, ServiceLogsRequest, ServiceRestartRequest,
+    ServiceResurrectRequest, ServiceSaveRequest, ServiceStartRequest, ServiceStopRequest,
+    ShutdownRequest, SpawnDaemonRequest as ProtoSpawnDaemonRequest, StatusCode, StatusRequest,
 };
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
@@ -616,6 +616,40 @@ impl DaemonClient {
             ..Default::default()
         };
         self.send_request(request)
+    }
+
+    /// Resize a PTY session without going through an attach
+    /// (#130 M5 follow-up). The new size persists for the lifetime of
+    /// the session; subsequent attaches can override it via their own
+    /// rows/cols fields.
+    pub fn resize_pty_session(
+        &mut self,
+        session_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Result<(), ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::ResizePtySession.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            resize_pty_session: Some(ResizePtySessionRequest {
+                session_id: session_id.into(),
+                rows: rows as u32,
+                cols: cols as u32,
+            }),
+            ..Default::default()
+        };
+        let response = self.send_request(request)?;
+        if response.code != StatusCode::Ok as i32 {
+            let code =
+                StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
+            return Err(ClientError::Server {
+                code,
+                message: response.message,
+            });
+        }
+        Ok(())
     }
 
     /// Purge exited sessions from both daemon-side registries (#130 M9

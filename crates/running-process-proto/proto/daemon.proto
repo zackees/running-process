@@ -61,6 +61,8 @@ enum RequestType {
   // Bulk session ops (#130 milestone 9 H4).
   REQUEST_TYPE_PURGE_EXITED_SESSIONS  = 72;
   REQUEST_TYPE_BULK_TERMINATE_SESSIONS = 73;
+  // Resize a PTY session without attaching (#130 M5 follow-up).
+  REQUEST_TYPE_RESIZE_PTY_SESSION     = 74;
 }
 
 enum StatusCode {
@@ -130,6 +132,7 @@ message DaemonRequest {
   GetSessionBacklogRequest    get_session_backlog    = 71;
   PurgeExitedSessionsRequest  purge_exited_sessions  = 72;
   BulkTerminateSessionsRequest bulk_terminate_sessions = 73;
+  ResizePtySessionRequest     resize_pty_session     = 74;
 }
 
 message DaemonResponse {
@@ -173,6 +176,7 @@ message DaemonResponse {
   GetSessionBacklogResponse    get_session_backlog    = 71;
   PurgeExitedSessionsResponse  purge_exited_sessions  = 72;
   BulkTerminateSessionsResponse bulk_terminate_sessions = 73;
+  ResizePtySessionResponse     resize_pty_session     = 74;
 }
 
 // ---------------------------------------------------------------------------
@@ -736,6 +740,17 @@ message BulkTerminateSessionsResponse {
   uint32 pty_terminated  = 1;
   uint32 pipe_terminated = 2;
 }
+
+// Resize a PTY session without going through an attach. Useful for
+// scripts that adjust the PTY dimensions between attaches, or for an
+// orchestrator that wants to set the size once before any client
+// connects. No-op on pipe sessions (no PTY to resize).
+message ResizePtySessionRequest {
+  string session_id = 1;
+  uint32 rows       = 2;
+  uint32 cols       = 3;
+}
+message ResizePtySessionResponse {}
 
 // Daemon -> client stream frame for an attached stdout/stderr.
 message PipeStreamFrame {
