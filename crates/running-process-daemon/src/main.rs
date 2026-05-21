@@ -15,8 +15,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the daemon in the background
-    Start,
+    /// Start the daemon in the background.
+    ///
+    /// Without any flags the daemon listens on the default global socket.
+    /// Tests and parallel daemons can use --scope to derive an isolated
+    /// socket/db path, or override either path directly.
+    Start {
+        /// Use this scope name instead of the global default. The socket
+        /// and SQLite paths are derived from the scope.
+        #[arg(long)]
+        scope: Option<String>,
+        /// Override the IPC socket path (skips scope-based derivation).
+        #[arg(long)]
+        socket_path: Option<String>,
+        /// Override the SQLite database path (skips scope-based derivation).
+        #[arg(long)]
+        db_path: Option<String>,
+    },
     /// Stop the running daemon
     Stop,
     /// Check if the daemon is alive
@@ -61,18 +76,32 @@ fn init_logging() {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Start => {
+        Commands::Start {
+            scope,
+            socket_path,
+            db_path,
+        } => {
             init_logging();
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             rt.block_on(async {
-                let socket = paths::socket_path(None);
-                let db = paths::db_path(None).to_string_lossy().into_owned();
+                let scope_name = scope.clone().unwrap_or_else(|| "global".to_string());
+                let socket =
+                    socket_path.unwrap_or_else(|| paths::socket_path(scope.as_deref()));
+                let db = db_path.unwrap_or_else(|| {
+                    paths::db_path(scope.as_deref())
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                let cwd = std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
                 let srv = match server::DaemonServer::new(
                     socket,
                     db,
-                    "global".to_string(),
-                    String::new(),
-                    String::new(),
+                    scope_name,
+                    scope.unwrap_or_default(),
+                    cwd,
                 ) {
                     Ok(s) => s,
                     Err(e) => {
