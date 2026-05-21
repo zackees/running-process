@@ -23,7 +23,9 @@ use running_process_core::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::pty_sessions::{AttachmentEnded, ExitState, OutboundFrame, RingBuffer};
+use crate::pty_sessions::{
+    AttachmentEnded, ExitState, OutboundFrame, PendingTermination, RingBuffer, TerminationOutcome,
+};
 
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
 pub const STREAM_CHUNK_BYTES: usize = 64 * 1024;
@@ -96,6 +98,7 @@ pub struct OwnedPipeSession {
     stderr: PipeStreamState,
     stdin_closed: AtomicBool,
     exit_state: Mutex<Option<ExitState>>,
+    pub(crate) pending_termination: Mutex<Option<PendingTermination>>,
     reader_shutdown: Arc<AtomicBool>,
     reader_threads: Mutex<Vec<thread::JoinHandle<()>>>,
 }
@@ -193,10 +196,14 @@ impl OwnedPipeSession {
         if self.process.poll()?.is_some() {
             return Ok(());
         }
+        *self.pending_termination.lock().unwrap() = Some(PendingTermination {
+            started_at_unix: unix_now(),
+            grace_secs: grace.as_secs_f64(),
+        });
         let process = Arc::clone(&self.process);
         thread::spawn(move || {
-            // M4 will issue the soft signal first; for M3 we simply
-            // wait the grace window then call kill (which routes through
+            // M4 will issue the soft signal first; for now we wait the
+            // grace window then call kill (which routes through
             // NativeProcess::kill_impl -> std::process::Child::kill on
             // POSIX and Job-Object terminate on Windows).
             thread::sleep(grace);
@@ -205,6 +212,19 @@ impl OwnedPipeSession {
             }
         });
         Ok(())
+    }
+
+    pub(crate) fn classify_termination(&self, exited_at_unix: f64) -> TerminationOutcome {
+        match *self.pending_termination.lock().unwrap() {
+            None => TerminationOutcome::NaturalExit,
+            Some(p) => {
+                if exited_at_unix - p.started_at_unix <= p.grace_secs + 0.25 {
+                    TerminationOutcome::SoftExit
+                } else {
+                    TerminationOutcome::HardKilled
+                }
+            }
+        }
     }
 
     /// Mark the session for reader shutdown. Subsequent reader iterations
@@ -313,6 +333,7 @@ impl PipeSessionRegistry {
             stderr: PipeStreamState::new(),
             stdin_closed: AtomicBool::new(false),
             exit_state: Mutex::new(None),
+            pending_termination: Mutex::new(None),
             reader_shutdown: Arc::new(AtomicBool::new(false)),
             reader_threads: Mutex::new(Vec::new()),
         });
@@ -429,9 +450,12 @@ fn exit_waiter_loop(session: Arc<OwnedPipeSession>) {
             return;
         }
     };
+    let exited_at_unix = unix_now();
+    let outcome = session.classify_termination(exited_at_unix);
     let state = ExitState {
         exit_code,
-        exited_at_unix: unix_now(),
+        exited_at_unix,
+        outcome,
     };
     *session.exit_state.lock().unwrap() = Some(state.clone());
     // Notify any attached stream clients.
