@@ -22,6 +22,8 @@ use running_process_proto::daemon::{DaemonRequest, DaemonResponse, RequestType, 
 use crate::attach_stream;
 use crate::config::DaemonConfig;
 use crate::handlers::{self, DaemonState};
+use crate::pipe_attach_stream;
+use crate::pipe_sessions::PipeSessionRegistry;
 use crate::pty_sessions::PtySessionRegistry;
 use crate::reaper;
 use crate::registry::Registry;
@@ -53,6 +55,7 @@ impl DaemonServer {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let registry = Arc::new(Registry::open(std::path::Path::new(&db_path))?);
         let pty_sessions = Arc::new(PtySessionRegistry::new());
+        let pipe_sessions = Arc::new(PipeSessionRegistry::new());
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = Arc::new(DaemonState {
@@ -67,6 +70,7 @@ impl DaemonServer {
             active_connections: std::sync::atomic::AtomicU32::new(0),
             registry,
             pty_sessions,
+            pipe_sessions,
         });
         Ok(Self { state, shutdown_rx })
     }
@@ -299,6 +303,18 @@ async fn handle_connection_inner(
             return Ok(());
         }
 
+        if RequestType::try_from(request.r#type) == Ok(RequestType::AttachPipeStream) {
+            let attach_req = request.attach_pipe_stream.clone().unwrap_or_default();
+            let state_arc = Arc::clone(state);
+            if let Err(e) =
+                pipe_attach_stream::run_pipe_attach_stream(framed, request_id, attach_req, state_arc)
+                    .await
+            {
+                warn!("pipe attach stream ended with error: {e}");
+            }
+            return Ok(());
+        }
+
         // Layer 4: catch panics around the dispatch.
         let response = match catch_unwind(AssertUnwindSafe(|| dispatch_request(&request, state))) {
             Ok(future) => future.await,
@@ -370,6 +386,14 @@ fn dispatch_request(
         Ok(RequestType::TerminatePtySession) => {
             handlers::handle_terminate_pty_session(request, state)
         }
+        Ok(RequestType::SpawnPipeSession) => handlers::handle_spawn_pipe_session(request, state),
+        Ok(RequestType::AttachPipeStream) => handlers::handle_attach_pipe_stream(request, state),
+        Ok(RequestType::DetachPipeStream) => handlers::handle_detach_pipe_stream(request, state),
+        Ok(RequestType::ListPipeSessions) => handlers::handle_list_pipe_sessions(request, state),
+        Ok(RequestType::TerminatePipeSession) => {
+            handlers::handle_terminate_pipe_session(request, state)
+        }
+        Ok(RequestType::WritePipeStdin) => handlers::handle_write_pipe_stdin(request, state),
         Err(_) => error_response(
             request_id,
             StatusCode::UnknownRequest,
@@ -423,6 +447,7 @@ mod tests {
         let db_path = tmp_dir.path().join("test-server.db");
         let registry = Arc::new(Registry::open(&db_path).unwrap());
         let pty_sessions = Arc::new(crate::pty_sessions::PtySessionRegistry::new());
+        let pipe_sessions = Arc::new(crate::pipe_sessions::PipeSessionRegistry::new());
         let state = DaemonState {
             start_time: Instant::now(),
             version: "0.0.0-test".to_string(),
@@ -435,6 +460,7 @@ mod tests {
             active_connections: AtomicU32::new(0),
             registry,
             pty_sessions,
+            pipe_sessions,
         };
         (state, tmp_dir)
     }

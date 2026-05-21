@@ -11,6 +11,7 @@ fn test_state() -> (DaemonState, tempfile::TempDir) {
     let db_path = tmp_dir.path().join("test-handlers.db");
     let registry = Arc::new(Registry::open(&db_path).unwrap());
     let pty_sessions = Arc::new(crate::pty_sessions::PtySessionRegistry::new());
+    let pipe_sessions = Arc::new(crate::pipe_sessions::PipeSessionRegistry::new());
     let state = DaemonState {
         start_time: Instant::now(),
         version: "0.0.0-test".to_string(),
@@ -23,6 +24,7 @@ fn test_state() -> (DaemonState, tempfile::TempDir) {
         active_connections: AtomicU32::new(3),
         registry,
         pty_sessions,
+        pipe_sessions,
     };
     (state, tmp_dir)
 }
