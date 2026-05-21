@@ -445,9 +445,37 @@ impl NativeProcess {
         }
         #[cfg(windows)]
         {
-            // Windows CTRL_BREAK_EVENT support lives in a separate
-            // follow-up; soft step here is a no-op and the hard kill
-            // on grace handles termination.
+            if !self.config.create_process_group {
+                // GenerateConsoleCtrlEvent only routes to children
+                // spawned with CREATE_NEW_PROCESS_GROUP, and the
+                // event would otherwise hit the daemon's own group.
+                // No-op so the hard-kill schedule still wins.
+                return Ok(());
+            }
+            let pid = match self.pid() {
+                Some(p) => p,
+                None => return Err(ProcessError::NotRunning),
+            };
+            // GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT=1, pid).
+            // SAFETY: the FFI call is the standard Windows API; no
+            // borrowed Rust state is involved.
+            let ok = unsafe {
+                winapi::um::wincon::GenerateConsoleCtrlEvent(
+                    winapi::um::wincon::CTRL_BREAK_EVENT,
+                    pid,
+                )
+            };
+            if ok == 0 {
+                let err = std::io::Error::last_os_error();
+                // ERROR_INVALID_HANDLE means the child has already
+                // exited or has detached from the console — treat as
+                // success because the soft step's only goal is to
+                // give the child a chance to exit cleanly, and a
+                // dead/detached child does not need one.
+                if err.raw_os_error() != Some(6) {
+                    return Err(ProcessError::Io(err));
+                }
+            }
             Ok(())
         }
     }
@@ -737,8 +765,18 @@ impl NativeProcess {
         {
             use std::os::windows::process::CommandExt;
 
+            // CREATE_NEW_PROCESS_GROUP makes GenerateConsoleCtrlEvent
+            // with CTRL_BREAK_EVENT route to this child's group
+            // (rather than the daemon's group) — required for the
+            // pipe-session soft-signal path on Windows (#130 M4).
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            let extra = if self.config.create_process_group {
+                CREATE_NEW_PROCESS_GROUP
+            } else {
+                0
+            };
             let flags =
-                self.config.creationflags.unwrap_or(0) | windows_priority_flags(self.config.nice);
+                self.config.creationflags.unwrap_or(0) | extra | windows_priority_flags(self.config.nice);
             if flags != 0 {
                 command.creation_flags(flags);
             }
