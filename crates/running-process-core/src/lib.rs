@@ -410,6 +410,48 @@ impl NativeProcess {
         self.kill()
     }
 
+    /// Send the OS-appropriate soft termination signal to the child's
+    /// process group (POSIX: SIGTERM to `-pid`; Windows: no soft path
+    /// implemented yet — returns Ok without doing anything so callers
+    /// can run the same code on both platforms and rely on the post-
+    /// grace hard kill).
+    ///
+    /// Requires `ProcessConfig.create_process_group=true` on POSIX so
+    /// that `-pid` resolves to the child's own group. With the default
+    /// `create_process_group=false`, the kill would walk back to the
+    /// caller's group; the method silently no-ops in that case to avoid
+    /// signaling the wrong tree.
+    ///
+    /// Used by the daemon-side pipe sessions (#130 M4 follow-up) so
+    /// that `TerminationOutcome::SoftExit` becomes meaningful on POSIX.
+    pub fn terminate_group_soft(&self) -> Result<(), ProcessError> {
+        #[cfg(unix)]
+        {
+            if !self.config.create_process_group {
+                return Ok(());
+            }
+            let pid = match self.pid() {
+                Some(p) => p as i32,
+                None => return Err(ProcessError::NotRunning),
+            };
+            let result = unsafe { libc::kill(-pid, libc::SIGTERM) };
+            if result != 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(ProcessError::Io(err));
+                }
+            }
+            Ok(())
+        }
+        #[cfg(windows)]
+        {
+            // Windows CTRL_BREAK_EVENT support lives in a separate
+            // follow-up; soft step here is a no-op and the hard kill
+            // on grace handles termination.
+            Ok(())
+        }
+    }
+
     // Preserve a stable Rust frame here in release user dumps.
     #[inline(never)]
     pub fn close(&self) -> Result<(), ProcessError> {

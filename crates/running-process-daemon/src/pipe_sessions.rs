@@ -200,12 +200,12 @@ impl OwnedPipeSession {
             started_at_unix: unix_now(),
             grace_secs: grace.as_secs_f64(),
         });
+        // Soft step: SIGTERM to the child's process group on POSIX,
+        // no-op on Windows (until CTRL_BREAK_EVENT plumbing lands as a
+        // separate follow-up).
+        let _ = self.process.terminate_group_soft();
         let process = Arc::clone(&self.process);
         thread::spawn(move || {
-            // M4 will issue the soft signal first; for now we wait the
-            // grace window then call kill (which routes through
-            // NativeProcess::kill_impl -> std::process::Child::kill on
-            // POSIX and Job-Object terminate on Windows).
             thread::sleep(grace);
             if process.poll().ok().flatten().is_none() {
                 let _ = process.kill();
@@ -308,7 +308,11 @@ impl PipeSessionRegistry {
                 StderrMode::Pipe
             },
             creationflags: None,
-            create_process_group: false,
+            // Put each pipe-backed child in its own process group on
+            // POSIX so `kill(-pid, SIGTERM)` reaches the whole tree
+            // (used by terminate's soft step). On Windows this is a
+            // no-op; Job Object kill-on-close handles teardown.
+            create_process_group: cfg!(unix),
             stdin_mode: StdinMode::Piped,
             nice: None,
         };
