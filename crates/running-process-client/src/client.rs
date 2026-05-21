@@ -9,11 +9,12 @@ use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
 use running_process_proto::daemon::{
-    DaemonRequest, DaemonResponse, GetProcessTreeRequest, KeyValue, KillTreeRequest,
-    KillZombiesRequest, ListActiveRequest, ListByOriginatorRequest, PingRequest, RequestType,
-    ServiceConfig, ServiceDeleteRequest, ServiceDescribeRequest, ServiceFlushRequest,
-    ServiceListRequest, ServiceLogsRequest, ServiceRestartRequest, ServiceResurrectRequest,
-    ServiceSaveRequest, ServiceStartRequest, ServiceStopRequest, ShutdownRequest,
+    DaemonRequest, DaemonResponse, GetProcessTreeRequest, GetSessionBacklogRequest,
+    GetSessionBacklogResponse, KeyValue, KillTreeRequest, KillZombiesRequest, ListActiveRequest,
+    ListByOriginatorRequest, PingRequest, PipeStreamKind, RequestType, ServiceConfig,
+    ServiceDeleteRequest, ServiceDescribeRequest, ServiceFlushRequest, ServiceListRequest,
+    ServiceLogsRequest, ServiceRestartRequest, ServiceResurrectRequest, ServiceSaveRequest,
+    ServiceStartRequest, ServiceStopRequest, ShutdownRequest,
     SpawnDaemonRequest as ProtoSpawnDaemonRequest, StatusCode, StatusRequest,
 };
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -614,6 +615,41 @@ impl DaemonClient {
             ..Default::default()
         };
         self.send_request(request)
+    }
+
+    /// Snapshot a PTY or pipe session's output backlog without consuming
+    /// it. For pipe sessions, `pipe_stream` selects between stdout and
+    /// stderr (default stdout). For PTY sessions `pipe_stream` is ignored.
+    /// Returns `None` when the session is not found.
+    pub fn get_session_backlog(
+        &mut self,
+        session_id: &str,
+        pipe_stream: PipeStreamKind,
+    ) -> Result<Option<GetSessionBacklogResponse>, ClientError> {
+        let request = DaemonRequest {
+            id: self.next_request_id(),
+            r#type: RequestType::GetSessionBacklog.into(),
+            protocol_version: 1,
+            client_name: String::from("running-process-client"),
+            get_session_backlog: Some(GetSessionBacklogRequest {
+                session_id: session_id.into(),
+                pipe_stream: pipe_stream as i32,
+            }),
+            ..Default::default()
+        };
+        let response = self.send_request(request)?;
+        if response.code == StatusCode::NotFound as i32 {
+            return Ok(None);
+        }
+        if response.code != StatusCode::Ok as i32 {
+            let code =
+                StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
+            return Err(ClientError::Server {
+                code,
+                message: response.message,
+            });
+        }
+        Ok(response.get_session_backlog)
     }
 }
 

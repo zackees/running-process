@@ -53,6 +53,11 @@ enum RequestType {
   REQUEST_TYPE_LIST_PIPE_SESSIONS     = 68;
   REQUEST_TYPE_TERMINATE_PIPE_SESSION = 69;
   REQUEST_TYPE_WRITE_PIPE_STDIN       = 70;
+  // Session backlog snapshot (#130 milestone 7 B4). Returns the current
+  // ring-buffer contents for any daemon-owned session (PTY or pipe)
+  // without consuming them — same buffer continues to fill, and a real
+  // attach later still sees the same backlog.
+  REQUEST_TYPE_GET_SESSION_BACKLOG    = 71;
 }
 
 enum StatusCode {
@@ -119,6 +124,7 @@ message DaemonRequest {
   ListPipeSessionsRequest     list_pipe_sessions     = 68;
   TerminatePipeSessionRequest terminate_pipe_session = 69;
   WritePipeStdinRequest       write_pipe_stdin       = 70;
+  GetSessionBacklogRequest    get_session_backlog    = 71;
 }
 
 message DaemonResponse {
@@ -159,6 +165,7 @@ message DaemonResponse {
   ListPipeSessionsResponse     list_pipe_sessions     = 68;
   TerminatePipeSessionResponse terminate_pipe_session = 69;
   WritePipeStdinResponse       write_pipe_stdin       = 70;
+  GetSessionBacklogResponse    get_session_backlog    = 71;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +666,23 @@ message WritePipeStdinRequest {
 }
 message WritePipeStdinResponse {
   uint64 bytes_written = 1;
+}
+
+message GetSessionBacklogRequest {
+  string session_id = 1;
+  // Pipe sessions only: which stream's backlog to return. Ignored for
+  // PTY sessions (PTY has a single merged output buffer).
+  PipeStreamKind pipe_stream = 2;
+}
+
+message GetSessionBacklogResponse {
+  bytes  backlog          = 1;
+  uint64 bytes_missed     = 2;
+  // "pty" or "pipe", or empty if the session was not found.
+  string session_kind     = 3;
+  bool   exited           = 4;
+  int32  exit_code        = 5;
+  double exited_at        = 6;
 }
 
 // Daemon -> client stream frame for an attached stdout/stderr.

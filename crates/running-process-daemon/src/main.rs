@@ -86,6 +86,15 @@ enum SessionsCommand {
         #[arg(long)]
         pipe: bool,
     },
+    /// Print the current captured output of a session without attaching
+    /// to it (#130 M7 B4).
+    Log {
+        session_id: String,
+        /// For pipe sessions: which stream's backlog to dump. Ignored
+        /// for PTY sessions.
+        #[arg(long, value_parser = ["stdout", "stderr"], default_value = "stdout")]
+        stream: String,
+    },
 }
 
 /// Initialize structured logging via `tracing-subscriber`.
@@ -303,6 +312,39 @@ fn run_sessions_command(command: SessionsCommand) {
                 match client.list_pipe_sessions(&originator) {
                     Ok(sessions) => print_pipe_session_table(&sessions),
                     Err(e) => eprintln!("list_pipe_sessions failed: {e}"),
+                }
+            }
+        }
+        SessionsCommand::Log { session_id, stream } => {
+            use running_process_proto::daemon::PipeStreamKind;
+            let pipe_stream = match stream.as_str() {
+                "stderr" => PipeStreamKind::Stderr,
+                _ => PipeStreamKind::Stdout,
+            };
+            match client.get_session_backlog(&session_id, pipe_stream) {
+                Ok(None) => {
+                    eprintln!("session not found: {session_id}");
+                    std::process::exit(1);
+                }
+                Ok(Some(payload)) => {
+                    use std::io::Write;
+                    if payload.bytes_missed > 0 {
+                        eprintln!(
+                            "[note: {} bytes dropped from the ring buffer before this snapshot]",
+                            payload.bytes_missed
+                        );
+                    }
+                    let _ = std::io::stdout().write_all(&payload.backlog);
+                    if payload.exited {
+                        eprintln!(
+                            "[session exited with code {} at {:.3}]",
+                            payload.exit_code, payload.exited_at
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("get_session_backlog failed: {e}");
+                    std::process::exit(1);
                 }
             }
         }

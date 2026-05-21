@@ -77,6 +77,14 @@ impl RingBuffer {
         (bytes, self.bytes_dropped)
     }
 
+    /// Copy the current contents WITHOUT draining the buffer. Used by
+    /// `GetSessionBacklog` (#130 M7 B4) so callers can snapshot the
+    /// captured output without disturbing the buffer that a future
+    /// attach would replay.
+    pub fn snapshot(&self) -> (Vec<u8>, u64) {
+        (self.data.iter().copied().collect(), self.bytes_dropped)
+    }
+
     pub fn dropped(&self) -> u64 {
         self.bytes_dropped
     }
@@ -172,6 +180,12 @@ impl OwnedPtySession {
 
     pub fn cols(&self) -> u16 {
         self.cols.load(Ordering::Acquire)
+    }
+
+    /// Snapshot the current ring-buffer contents without consuming them
+    /// (#130 M7 B4 "sessions log").
+    pub fn backlog_snapshot(&self) -> (Vec<u8>, u64) {
+        self.backlog.lock().unwrap().snapshot()
     }
 
     /// Install an attached client. Returns the receiver half + a snapshot of

@@ -158,6 +158,12 @@ impl OwnedPipeSession {
         *self.stream_state(stream).attached.lock().unwrap() = None;
     }
 
+    /// Snapshot the ring-buffer contents for one stream without
+    /// consuming them (#130 M7 B4 "sessions log").
+    pub fn backlog_snapshot(&self, stream: PipeStreamSelect) -> (Vec<u8>, u64) {
+        self.stream_state(stream).backlog.lock().unwrap().snapshot()
+    }
+
     pub fn notify_attached(&self, stream: PipeStreamSelect, frame: OutboundFrame) {
         if let Some(client) = self.stream_state(stream).attached.lock().unwrap().as_ref() {
             let _ = client.sender.send(frame);
