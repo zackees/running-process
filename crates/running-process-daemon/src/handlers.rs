@@ -5,17 +5,18 @@
 
 use running_process_core::ORIGINATOR_ENV_VAR;
 use running_process_proto::daemon::{
-    AttachPipeStreamResponse, AttachPtySessionResponse,
-    BulkTerminateSessionsResponse, DaemonRequest, DaemonResponse, DetachPipeStreamResponse,
-    DetachPtySessionResponse, GetProcessTreeResponse, GetSessionBacklogResponse, KeyValue,
-    KillTreeResponse, KillZombiesResponse, ListActiveResponse, ListByOriginatorResponse,
-    ListPipeSessionsResponse, ListPtySessionsResponse, PingResponse, PipeSessionInfo,
-    PipeStreamKind, ProcessState, PtySessionInfo, PurgeExitedSessionsResponse, RegisterResponse,
-    ServiceDeleteResponse, ServiceDescribeResponse, ServiceFlushResponse, ServiceListResponse,
-    ServiceLogsResponse, ServiceRestartResponse, ServiceResurrectResponse, ServiceSaveResponse,
-    ServiceStartResponse, ServiceStopResponse, ShutdownResponse, SpawnDaemonResponse,
-    SpawnPipeSessionResponse, SpawnPtySessionResponse, StatusCode, StatusResponse,
-    TerminatePipeSessionResponse, TerminatePtySessionResponse, TrackedProcess, UnregisterResponse,
+    AttachPipeStreamResponse, AttachPtySessionResponse, BulkTerminateSessionsResponse,
+    DaemonRequest, DaemonResponse, DetachPipeStreamResponse, DetachPtySessionResponse,
+    GetProcessTreeResponse, GetSessionBacklogResponse, KeyValue, KillTreeResponse,
+    KillZombiesResponse, ListActiveResponse, ListByOriginatorResponse, ListPipeSessionsResponse,
+    ListPtySessionsResponse, PingResponse, PipeSessionInfo, PipeStreamKind, ProcessState,
+    PtySessionInfo, PurgeExitedSessionsResponse, RegisterResponse, ServiceDeleteResponse,
+    ServiceDescribeResponse, ServiceFlushResponse, ServiceListResponse, ServiceLogsResponse,
+    ServiceRestartResponse, ServiceResurrectResponse, ServiceSaveResponse, ServiceStartResponse,
+    ServiceStopResponse, ShutdownResponse, SpawnDaemonResponse, SpawnPipeSessionResponse,
+    SpawnPtySessionResponse, StatusCode, StatusResponse, TerminatePipeSessionResponse,
+    TerminatePtySessionResponse,
+    TerminationOutcome as ProtoTerminationOutcome, TrackedProcess, UnregisterResponse,
     WritePipeStdinResponse, ZombieReport,
 };
 use std::process::Command;
@@ -971,6 +972,18 @@ pub fn handle_detach_pty_session(request: &DaemonRequest, state: &DaemonState) -
     }
 }
 
+fn termination_outcome_to_proto(
+    outcome: crate::pty_sessions::TerminationOutcome,
+) -> ProtoTerminationOutcome {
+    use crate::pty_sessions::TerminationOutcome as T;
+    match outcome {
+        T::Unspecified => ProtoTerminationOutcome::Unspecified,
+        T::NaturalExit => ProtoTerminationOutcome::NaturalExit,
+        T::SoftExit => ProtoTerminationOutcome::SoftExit,
+        T::HardKilled => ProtoTerminationOutcome::HardKilled,
+    }
+}
+
 pub fn handle_list_pty_sessions(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
     let originator_filter = request
         .list_pty_sessions
@@ -984,9 +997,14 @@ pub fn handle_list_pty_sessions(request: &DaemonRequest, state: &DaemonState) ->
             continue;
         }
         let exit = session.exit_state();
-        let (exited, exit_code, exited_at) = match exit {
-            Some(s) => (true, s.exit_code, s.exited_at_unix),
-            None => (false, 0, 0.0),
+        let (exited, exit_code, exited_at, outcome) = match exit {
+            Some(s) => (true, s.exit_code, s.exited_at_unix, s.outcome),
+            None => (
+                false,
+                0,
+                0.0,
+                crate::pty_sessions::TerminationOutcome::Unspecified,
+            ),
         };
         infos.push(PtySessionInfo {
             session_id: session.id.clone(),
@@ -1001,6 +1019,7 @@ pub fn handle_list_pty_sessions(request: &DaemonRequest, state: &DaemonState) ->
             exited_at,
             rows: session.rows() as u32,
             cols: session.cols() as u32,
+            termination_outcome: termination_outcome_to_proto(outcome) as i32,
         });
     }
 
@@ -1167,9 +1186,14 @@ pub fn handle_list_pipe_sessions(request: &DaemonRequest, state: &DaemonState) -
         if !originator_filter.is_empty() && session.originator != originator_filter {
             continue;
         }
-        let (exited, exit_code, exited_at) = match session.exit_state() {
-            Some(s) => (true, s.exit_code, s.exited_at_unix),
-            None => (false, 0, 0.0),
+        let (exited, exit_code, exited_at, outcome) = match session.exit_state() {
+            Some(s) => (true, s.exit_code, s.exited_at_unix, s.outcome),
+            None => (
+                false,
+                0,
+                0.0,
+                crate::pty_sessions::TerminationOutcome::Unspecified,
+            ),
         };
         infos.push(PipeSessionInfo {
             session_id: session.id.clone(),
@@ -1186,6 +1210,7 @@ pub fn handle_list_pipe_sessions(request: &DaemonRequest, state: &DaemonState) -
             exit_code,
             exited_at,
             merge_stderr_into_stdout: session.merge_stderr_into_stdout,
+            termination_outcome: termination_outcome_to_proto(outcome) as i32,
         });
     }
 
@@ -1450,9 +1475,14 @@ pub fn handle_get_session_backlog(request: &DaemonRequest, state: &DaemonState) 
 
     if let Some(pty) = state.pty_sessions.get(&req.session_id) {
         let (backlog, missed) = pty.backlog_snapshot();
-        let (exited, exit_code, exited_at) = match pty.exit_state() {
-            Some(s) => (true, s.exit_code, s.exited_at_unix),
-            None => (false, 0, 0.0),
+        let (exited, exit_code, exited_at, outcome) = match pty.exit_state() {
+            Some(s) => (true, s.exit_code, s.exited_at_unix, s.outcome),
+            None => (
+                false,
+                0,
+                0.0,
+                crate::pty_sessions::TerminationOutcome::Unspecified,
+            ),
         };
         return DaemonResponse {
             request_id: request.id,
@@ -1464,6 +1494,7 @@ pub fn handle_get_session_backlog(request: &DaemonRequest, state: &DaemonState) 
                 exited,
                 exit_code,
                 exited_at,
+                termination_outcome: termination_outcome_to_proto(outcome) as i32,
             }),
             ..Default::default()
         };
@@ -1476,9 +1507,14 @@ pub fn handle_get_session_backlog(request: &DaemonRequest, state: &DaemonState) 
             _ => crate::pipe_sessions::PipeStreamSelect::Stdout,
         };
         let (backlog, missed) = pipe.backlog_snapshot(stream);
-        let (exited, exit_code, exited_at) = match pipe.exit_state() {
-            Some(s) => (true, s.exit_code, s.exited_at_unix),
-            None => (false, 0, 0.0),
+        let (exited, exit_code, exited_at, outcome) = match pipe.exit_state() {
+            Some(s) => (true, s.exit_code, s.exited_at_unix, s.outcome),
+            None => (
+                false,
+                0,
+                0.0,
+                crate::pty_sessions::TerminationOutcome::Unspecified,
+            ),
         };
         return DaemonResponse {
             request_id: request.id,
@@ -1490,6 +1526,7 @@ pub fn handle_get_session_backlog(request: &DaemonRequest, state: &DaemonState) 
                 exited,
                 exit_code,
                 exited_at,
+                termination_outcome: termination_outcome_to_proto(outcome) as i32,
             }),
             ..Default::default()
         };

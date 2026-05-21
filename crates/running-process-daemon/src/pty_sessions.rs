@@ -141,6 +141,24 @@ struct AttachedClient {
 pub struct ExitState {
     pub exit_code: i32,
     pub exited_at_unix: f64,
+    pub outcome: TerminationOutcome,
+}
+
+/// Which termination path a session took (mirrors the proto enum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminationOutcome {
+    Unspecified,
+    NaturalExit,
+    SoftExit,
+    HardKilled,
+}
+
+/// Signal state recorded by [`OwnedPtySession::terminate`] so the
+/// exit-waiter / reader thread can classify the eventual exit.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingTermination {
+    pub started_at_unix: f64,
+    pub grace_secs: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +179,7 @@ pub struct OwnedPtySession {
     backlog: Mutex<RingBuffer>,
     attached: Mutex<Option<AttachedClient>>,
     exit_state: Mutex<Option<ExitState>>,
+    pub(crate) pending_termination: Mutex<Option<PendingTermination>>,
     reader_shutdown: Arc<AtomicBool>,
     reader_thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
@@ -268,13 +287,16 @@ impl OwnedPtySession {
     /// M4 will replace this with a configurable schedule running on a tokio
     /// task; the API stays the same.
     pub fn terminate(&self, grace: Duration) -> Result<(), running_process_core::pty::PtyError> {
+        // Record the soft-signal moment so the reader loop can classify
+        // the eventual exit as Soft (within grace) or HardKilled (after
+        // grace window).
+        *self.pending_termination.lock().unwrap() = Some(PendingTermination {
+            started_at_unix: unix_now(),
+            grace_secs: grace.as_secs_f64(),
+        });
+
         self.process.terminate_tree_impl()?;
         let process = Arc::clone(&self.process);
-        // Best-effort hard-kill escalation: spawn a thread that waits the
-        // grace window and then issues kill_tree if the child is still alive.
-        // M4 replaces this with a configurable tokio task that runs the
-        // full soft-then-hard schedule and records the result; the public
-        // API stays the same.
         thread::spawn(move || {
             thread::sleep(grace);
             if process.wait_impl(Some(0.0)).is_err() {
@@ -282,6 +304,19 @@ impl OwnedPtySession {
             }
         });
         Ok(())
+    }
+
+    pub(crate) fn classify_termination(&self, exited_at_unix: f64) -> TerminationOutcome {
+        match *self.pending_termination.lock().unwrap() {
+            None => TerminationOutcome::NaturalExit,
+            Some(p) => {
+                if exited_at_unix - p.started_at_unix <= p.grace_secs + 0.25 {
+                    TerminationOutcome::SoftExit
+                } else {
+                    TerminationOutcome::HardKilled
+                }
+            }
+        }
     }
 }
 
@@ -358,6 +393,7 @@ impl PtySessionRegistry {
             backlog: Mutex::new(RingBuffer::new(DEFAULT_BACKLOG_BYTES)),
             attached: Mutex::new(None),
             exit_state: Mutex::new(None),
+            pending_termination: Mutex::new(None),
             reader_shutdown: Arc::new(AtomicBool::new(false)),
             reader_thread: Mutex::new(None),
         });
@@ -487,9 +523,12 @@ fn reader_loop(session: Arc<OwnedPtySession>) {
     // so blocking is fine.
     match session.process.wait_impl(Some(5.0)) {
         Ok(exit_code) => {
+            let exited_at_unix = unix_now();
+            let outcome = session.classify_termination(exited_at_unix);
             let state = ExitState {
                 exit_code,
-                exited_at_unix: unix_now(),
+                exited_at_unix,
+                outcome,
             };
             *session.exit_state.lock().unwrap() = Some(state.clone());
             if let Some(client) = session.attached.lock().unwrap().take() {

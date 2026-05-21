@@ -524,6 +524,9 @@ message PtySessionInfo {
   double exited_at  = 10;
   uint32 rows       = 11;
   uint32 cols       = 12;
+  // Which termination path the session took. UNSPECIFIED while the
+  // session is live or for pre-#130 callers.
+  TerminationOutcome termination_outcome = 13;
 }
 
 message TerminatePtySessionRequest {
@@ -598,6 +601,23 @@ enum PipeStreamKind {
   PIPE_STREAM_KIND_STDERR      = 2;
 }
 
+// How a session reached its terminal state. Reported on
+// PtySessionInfo/PipeSessionInfo/GetSessionBacklogResponse once
+// `exited=true`. Useful for understanding whether the soft signal
+// worked or whether the daemon had to escalate to a hard kill.
+enum TerminationOutcome {
+  // Default for live sessions and pre-#130 callers.
+  TERMINATION_OUTCOME_UNSPECIFIED = 0;
+  // The child exited on its own. No terminate RPC fired before exit.
+  TERMINATION_OUTCOME_NATURAL_EXIT = 1;
+  // Terminate RPC fired; child exited within the grace window before
+  // the daemon issued the hard kill. The soft signal worked.
+  TERMINATION_OUTCOME_SOFT_EXIT    = 2;
+  // Terminate RPC fired; child did not exit within the grace window;
+  // the daemon's hard kill ran.
+  TERMINATION_OUTCOME_HARD_KILLED  = 3;
+}
+
 message SpawnPipeSessionRequest {
   repeated string argv = 1;
   string cwd = 2;
@@ -656,6 +676,7 @@ message PipeSessionInfo {
   int32  exit_code  = 10;
   double exited_at  = 11;
   bool   merge_stderr_into_stdout = 12;
+  TerminationOutcome termination_outcome = 13;
 }
 
 message TerminatePipeSessionRequest {
@@ -690,6 +711,7 @@ message GetSessionBacklogResponse {
   bool   exited           = 4;
   int32  exit_code        = 5;
   double exited_at        = 6;
+  TerminationOutcome termination_outcome = 7;
 }
 
 message PurgeExitedSessionsRequest {
