@@ -394,6 +394,9 @@ fn dispatch_request(
             handlers::handle_terminate_pipe_session(request, state)
         }
         Ok(RequestType::WritePipeStdin) => handlers::handle_write_pipe_stdin(request, state),
+        Ok(RequestType::GetSessionBacklog) => {
+            handlers::handle_get_session_backlog(request, state)
+        }
         Err(_) => error_response(
             request_id,
             StatusCode::UnknownRequest,
@@ -499,6 +502,7 @@ mod tests {
             RequestType::SpawnPtySession,
             RequestType::DetachPtySession,
             RequestType::TerminatePtySession,
+            RequestType::GetSessionBacklog,
         ];
         for (i, rt) in payload_required.iter().enumerate() {
             let request = DaemonRequest {

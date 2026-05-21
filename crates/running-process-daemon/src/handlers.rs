@@ -6,16 +6,16 @@
 use running_process_core::ORIGINATOR_ENV_VAR;
 use running_process_proto::daemon::{
     AttachPipeStreamResponse, AttachPtySessionResponse, DaemonRequest, DaemonResponse,
-    DetachPipeStreamResponse, DetachPtySessionResponse, GetProcessTreeResponse, KeyValue,
-    KillTreeResponse, KillZombiesResponse, ListActiveResponse, ListByOriginatorResponse,
-    ListPipeSessionsResponse, ListPtySessionsResponse, PingResponse, PipeSessionInfo,
-    PipeStreamKind, ProcessState, PtySessionInfo, RegisterResponse, ServiceDeleteResponse,
-    ServiceDescribeResponse, ServiceFlushResponse, ServiceListResponse, ServiceLogsResponse,
-    ServiceRestartResponse, ServiceResurrectResponse, ServiceSaveResponse, ServiceStartResponse,
-    ServiceStopResponse, ShutdownResponse, SpawnDaemonResponse, SpawnPipeSessionResponse,
-    SpawnPtySessionResponse, StatusCode, StatusResponse, TerminatePipeSessionResponse,
-    TerminatePtySessionResponse, TrackedProcess, UnregisterResponse, WritePipeStdinResponse,
-    ZombieReport,
+    DetachPipeStreamResponse, DetachPtySessionResponse, GetProcessTreeResponse,
+    GetSessionBacklogResponse, KeyValue, KillTreeResponse, KillZombiesResponse, ListActiveResponse,
+    ListByOriginatorResponse, ListPipeSessionsResponse, ListPtySessionsResponse, PingResponse,
+    PipeSessionInfo, PipeStreamKind, ProcessState, PtySessionInfo, RegisterResponse,
+    ServiceDeleteResponse, ServiceDescribeResponse, ServiceFlushResponse, ServiceListResponse,
+    ServiceLogsResponse, ServiceRestartResponse, ServiceResurrectResponse, ServiceSaveResponse,
+    ServiceStartResponse, ServiceStopResponse, ShutdownResponse, SpawnDaemonResponse,
+    SpawnPipeSessionResponse, SpawnPtySessionResponse, StatusCode, StatusResponse,
+    TerminatePipeSessionResponse, TerminatePtySessionResponse, TrackedProcess, UnregisterResponse,
+    WritePipeStdinResponse, ZombieReport,
 };
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -1334,6 +1334,77 @@ pub fn handle_attach_pipe_stream(request: &DaemonRequest, _state: &DaemonState) 
         attach_pipe_stream: Some(AttachPipeStreamResponse::default()),
         ..Default::default()
     }
+}
+
+/// Snapshot a session's output ring buffer without consuming it
+/// (#130 M7 B4). Looks up the session in the PTY registry first, then
+/// falls back to the pipe registry. For pipe sessions the request's
+/// `pipe_stream` field selects between stdout and stderr (default
+/// stdout).
+pub fn handle_get_session_backlog(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let req = match request.get_session_backlog.as_ref() {
+        Some(r) => r,
+        None => {
+            return error_pty_response(
+                request.id,
+                StatusCode::InvalidArgument,
+                "get_session_backlog payload missing".into(),
+            )
+        }
+    };
+
+    if let Some(pty) = state.pty_sessions.get(&req.session_id) {
+        let (backlog, missed) = pty.backlog_snapshot();
+        let (exited, exit_code, exited_at) = match pty.exit_state() {
+            Some(s) => (true, s.exit_code, s.exited_at_unix),
+            None => (false, 0, 0.0),
+        };
+        return DaemonResponse {
+            request_id: request.id,
+            code: StatusCode::Ok as i32,
+            get_session_backlog: Some(GetSessionBacklogResponse {
+                backlog,
+                bytes_missed: missed,
+                session_kind: "pty".into(),
+                exited,
+                exit_code,
+                exited_at,
+            }),
+            ..Default::default()
+        };
+    }
+
+    if let Some(pipe) = state.pipe_sessions.get(&req.session_id) {
+        let stream = match PipeStreamKind::try_from(req.pipe_stream) {
+            Ok(PipeStreamKind::Stderr) => crate::pipe_sessions::PipeStreamSelect::Stderr,
+            // Default and Stdout both map to stdout.
+            _ => crate::pipe_sessions::PipeStreamSelect::Stdout,
+        };
+        let (backlog, missed) = pipe.backlog_snapshot(stream);
+        let (exited, exit_code, exited_at) = match pipe.exit_state() {
+            Some(s) => (true, s.exit_code, s.exited_at_unix),
+            None => (false, 0, 0.0),
+        };
+        return DaemonResponse {
+            request_id: request.id,
+            code: StatusCode::Ok as i32,
+            get_session_backlog: Some(GetSessionBacklogResponse {
+                backlog,
+                bytes_missed: missed,
+                session_kind: "pipe".into(),
+                exited,
+                exit_code,
+                exited_at,
+            }),
+            ..Default::default()
+        };
+    }
+
+    error_pty_response(
+        request.id,
+        StatusCode::NotFound,
+        format!("session not found: {}", req.session_id),
+    )
 }
 
 // ---------------------------------------------------------------------------
