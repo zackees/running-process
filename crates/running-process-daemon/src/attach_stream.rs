@@ -67,7 +67,13 @@ where
         attach_req.cols as u16
     };
 
-    let (handle, backlog, bytes_dropped) = match session.attach(attach_req.steal, rows, cols) {
+    let (handle, backlog, bytes_dropped) = match session.attach_with_terminal_info(
+        attach_req.steal,
+        rows,
+        cols,
+        attach_req.is_tty,
+        attach_req.term.clone(),
+    ) {
         Ok(h) => h,
         Err(AttachError::AlreadyAttached) => {
             let resp = error_attach_response(

@@ -134,6 +134,14 @@ pub struct AttachmentHandle {
 /// State held inside the session for the currently attached client.
 struct AttachedClient {
     sender: mpsc::UnboundedSender<OutboundFrame>,
+    /// Whether the attaching client identified itself as a real TTY.
+    /// `false` clients are in the C9 "degraded" mode: the daemon will
+    /// skip side effects that only make sense for an interactive
+    /// terminal (e.g. resize). Bytes still flow normally.
+    is_tty: bool,
+    /// Client-supplied TERM value. Recorded for the session's lifetime
+    /// so list/snapshot can surface it.
+    term: String,
 }
 
 /// Final state once the child exits.
@@ -207,6 +215,28 @@ impl OwnedPtySession {
         self.backlog.lock().unwrap().snapshot()
     }
 
+    /// Whether the currently attached client (if any) self-identified as
+    /// a TTY at attach time. Returns `false` when no client is attached.
+    pub fn attached_is_tty(&self) -> bool {
+        self.attached
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.is_tty)
+            .unwrap_or(false)
+    }
+
+    /// TERM value supplied by the currently attached client. Empty when
+    /// no client is attached.
+    pub fn attached_term(&self) -> String {
+        self.attached
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.term.clone())
+            .unwrap_or_default()
+    }
+
     /// Install an attached client. Returns the receiver half + a snapshot of
     /// the current backlog (with the cumulative bytes-dropped counter).
     ///
@@ -219,6 +249,21 @@ impl OwnedPtySession {
         steal: bool,
         rows: u16,
         cols: u16,
+    ) -> Result<(AttachmentHandle, Vec<u8>, u64), AttachError> {
+        self.attach_with_terminal_info(steal, rows, cols, true, String::new())
+    }
+
+    /// Like [`Self::attach`] but lets the caller record whether the
+    /// client is a real TTY and what TERM it claims. Non-TTY clients
+    /// skip the resize side effect because pixel dimensions are
+    /// meaningless without an interactive terminal (#130 M6 C9).
+    pub fn attach_with_terminal_info(
+        &self,
+        steal: bool,
+        rows: u16,
+        cols: u16,
+        is_tty: bool,
+        term: String,
     ) -> Result<(AttachmentHandle, Vec<u8>, u64), AttachError> {
         // If the session has already exited, surface that immediately rather
         // than handing out an attachment for a corpse.
@@ -237,19 +282,26 @@ impl OwnedPtySession {
             }
         }
 
-        // Apply resize before draining the backlog so the client sees output
-        // sized for its terminal.
-        self.rows.store(rows, Ordering::Release);
-        self.cols.store(cols, Ordering::Release);
-        if rows > 0 && cols > 0 {
-            if let Err(e) = self.process.resize_impl(rows, cols) {
-                warn!(session_id = %self.id, error = %e, "resize on attach failed");
+        // Apply resize before draining the backlog so the client sees
+        // output sized for its terminal. Non-TTY clients (stream-JSON
+        // renderers etc.) skip this: their rows/cols are meaningless.
+        if is_tty {
+            self.rows.store(rows, Ordering::Release);
+            self.cols.store(cols, Ordering::Release);
+            if rows > 0 && cols > 0 {
+                if let Err(e) = self.process.resize_impl(rows, cols) {
+                    warn!(session_id = %self.id, error = %e, "resize on attach failed");
+                }
             }
         }
 
         let (tx, rx) = mpsc::unbounded_channel();
         let (backlog, dropped) = self.backlog.lock().unwrap().drain();
-        *attached = Some(AttachedClient { sender: tx });
+        *attached = Some(AttachedClient {
+            sender: tx,
+            is_tty,
+            term,
+        });
         Ok((AttachmentHandle { receiver: rx }, backlog, dropped))
     }
 

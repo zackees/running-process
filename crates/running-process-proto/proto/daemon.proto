@@ -531,6 +531,17 @@ message PtySessionInfo {
   // Which termination path the session took. UNSPECIFIED while the
   // session is live or for pre-#130 callers.
   TerminationOutcome termination_outcome = 13;
+  // Whether the current attached client identified itself as a TTY.
+  // Meaningful only when `attached=true`; set to the value of
+  // AttachPtySessionRequest.is_tty at attach time. The daemon uses
+  // this to skip resize/cursor-query side effects for non-TTY
+  // clients (e.g. stream-JSON renderers). #130 M6 C9.
+  bool   attached_is_tty = 14;
+  // TERM string supplied by the attached client at attach time.
+  // Informational; the daemon does not propagate this to the running
+  // child's environment (you cannot change a live child's TERM).
+  // Empty when no client is attached.
+  string attached_term = 15;
 }
 
 message TerminatePtySessionRequest {

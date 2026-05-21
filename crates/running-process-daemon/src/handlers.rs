@@ -1020,6 +1020,8 @@ pub fn handle_list_pty_sessions(request: &DaemonRequest, state: &DaemonState) ->
             rows: session.rows() as u32,
             cols: session.cols() as u32,
             termination_outcome: termination_outcome_to_proto(outcome) as i32,
+            attached_is_tty: session.attached_is_tty(),
+            attached_term: session.attached_term(),
         });
     }
 
