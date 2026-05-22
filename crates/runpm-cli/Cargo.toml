@@ -11,7 +11,7 @@ name = "runpm"
 path = "src/main.rs"
 
 [dependencies]
-running-process-client = { path = "../running-process-client", version = "3.3.0" }
-running-process-proto = { path = "../running-process-proto", version = "3.3.0" }
+running-process-client = { path = "../running-process-client", version = "3.4.0" }
+running-process-proto = { path = "../running-process-proto", version = "3.4.0" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
