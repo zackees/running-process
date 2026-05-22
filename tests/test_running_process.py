@@ -924,6 +924,26 @@ def test_wait_uses_instance_timeout_and_callback() -> None:
     assert seen[0].command == [sys.executable, "-c", "import time; time.sleep(10)"]
 
 
+def test_non_blocking_line_reports_eos_immediately_after_timeout_kill() -> None:
+    """Regression for the fastled non-blocking-EOS race.
+
+    After `wait()` raises `TimeoutError` (which kills the child), the
+    very next `get_next_line_non_blocking()` call must observe
+    `EndOfStream` rather than `None`. The Rust `kill_impl` now
+    synchronizes with the reader threads via
+    `wait_for_capture_completion`, so by the time `kill()` returns the
+    capture queues have flipped to "closed".
+    """
+    process = RunningProcess(
+        [sys.executable, "-c", "import time; time.sleep(999)"],
+        timeout=1,
+    )
+    with pytest.raises(TimeoutError):
+        process.wait()
+    nxt = process.get_next_line_non_blocking()
+    assert isinstance(nxt, EndOfStream), f"expected EOS, got {nxt!r}"
+
+
 def test_wait_raises_keyboard_interrupt_when_child_gets_sigint() -> None:
     creationflags = (
         getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if sys.platform == "win32" else None
