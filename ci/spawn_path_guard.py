@@ -27,7 +27,9 @@ ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process-client/src/client.rs"),
     # Daemon crate: process management for daemonize, shadow-copy, and auto-start
     Path("crates/running-process-daemon/src/client.rs"),
-    Path("crates/running-process-daemon/src/handlers.rs"),
+    # Daemon handlers (split from former handlers.rs into a module dir).
+    # Process-spawn-bearing sub-files only — keep the allowlist narrow.
+    Path("crates/running-process-daemon/src/handlers/spawn.rs"),
     Path("crates/running-process-daemon/src/platform/windows.rs"),
     Path("crates/running-process-daemon/src/shadow.rs"),
     # Daemon trampoline: reads sidecar JSON and spawns the target command
@@ -67,7 +69,12 @@ ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-client/src/client.rs"),
     # Daemon crate: process management for daemonize, shadow-copy, and auto-start
     Path("crates/running-process-daemon/src/client.rs"),
-    Path("crates/running-process-daemon/src/handlers.rs"),
+    # Daemon handlers (split from former handlers.rs into a module dir).
+    # Only sub-files that contain genuine process spawn calls are allowlisted;
+    # the remaining sub-files do not need to appear here.
+    Path("crates/running-process-daemon/src/handlers/spawn.rs"),
+    Path("crates/running-process-daemon/src/handlers/pty_sessions_handlers.rs"),
+    Path("crates/running-process-daemon/src/handlers/pipe_sessions_handlers.rs"),
     Path("crates/running-process-daemon/src/platform/windows.rs"),
     Path("crates/running-process-daemon/src/shadow.rs"),
     # Daemon trampoline: reads sidecar JSON and spawns the target command
