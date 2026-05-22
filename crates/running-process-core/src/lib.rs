@@ -398,11 +398,21 @@ impl NativeProcess {
 
     fn kill_impl(&self) -> Result<(), ProcessError> {
         crate::rp_rust_debug_scope!("running_process_core::NativeProcess::kill");
-        let mut guard = self.child.lock().expect("child mutex poisoned");
-        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
-        child.kill().map_err(ProcessError::Io)?;
-        let status = child.wait().map_err(ProcessError::Io)?;
-        self.set_returncode(exit_code(status));
+        {
+            let mut guard = self.child.lock().expect("child mutex poisoned");
+            let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
+            child.kill().map_err(ProcessError::Io)?;
+            let status = child.wait().map_err(ProcessError::Io)?;
+            self.set_returncode(exit_code(status));
+        }
+        // Synchronize with the per-stream reader threads so that by the
+        // time kill() returns, the capture queues have flipped from
+        // "blocked on read" to "closed" and downstream pollers (e.g.
+        // take_combined_line) observe EOS instead of timeout. Without
+        // this, callers that hit a wait()-timeout path see Python code
+        // raise TimeoutError, kill the child, then race the reader
+        // threads — a 10ms poll loop can miss the EOS flip entirely.
+        public_symbols::rp_native_process_wait_for_capture_completion_public(self);
         Ok(())
     }
 
