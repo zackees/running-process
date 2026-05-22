@@ -648,6 +648,78 @@ fn terminate_kills_running_process() {
     process.terminate().unwrap();
 }
 
+/// FastLED Bug B follow-up: on Windows, `kill()` must wake the
+/// reader threads via `CancelIoEx` *immediately* even when a
+/// grandchild keeps the captured pipe open. This is what the
+/// `cancel_capture_io()` call in `kill_impl` provides — without it,
+/// kill() would wait for the full `RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS`
+/// safety-net deadline before returning. The test sets that deadline
+/// to 5000 ms and asserts kill() returns in under 1 s, proving the
+/// CancelIoEx fast path is wired up.
+#[cfg(windows)]
+#[test]
+fn kill_cancels_capture_io_when_grandchild_orphans_pipe() {
+    let script = "\
+import os, subprocess, sys, time;\
+print('PARENT_PID=' + str(os.getpid()), flush=True);\
+gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);\
+print('GRANDCHILD_PID=' + str(gc.pid), flush=True);\
+time.sleep(60)";
+
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), script.into()]),
+        true,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+
+    let mut grandchild_pid: Option<u32> = None;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        match process.read_combined(Some(Duration::from_millis(200))) {
+            ReadStatus::Line(event) => {
+                let line = String::from_utf8_lossy(&event.line).into_owned();
+                if let Some(rest) = line.strip_prefix("GRANDCHILD_PID=") {
+                    grandchild_pid = rest.trim().parse::<u32>().ok();
+                    break;
+                }
+            }
+            ReadStatus::Timeout => continue,
+            ReadStatus::Eof => panic!("parent exited before announcing grandchild"),
+        }
+    }
+    let grandchild_pid = grandchild_pid.expect("did not observe GRANDCHILD_PID line");
+
+    // Crank the safety-net drain deadline way up so the only way
+    // kill() can return fast is via the CancelIoEx fast path.
+    let prior = env::var_os("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS");
+    env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", "5000");
+
+    let kill_start = Instant::now();
+    let kill_result = process.kill();
+    let kill_elapsed = kill_start.elapsed();
+
+    match prior {
+        Some(v) => env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", v),
+        None => env::remove_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS"),
+    }
+
+    kill_result.expect("kill() returned an error");
+    assert!(
+        kill_elapsed < Duration::from_secs(1),
+        "kill() took {kill_elapsed:?} with 5 s safety-net deadline; \
+         CancelIoEx fast path is not interrupting the reader thread",
+    );
+
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &grandchild_pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 /// FastLED Bug B regression: when a grandchild inherits the captured
 /// stdout pipe and outlives the direct child, `kill()` must still
 /// return promptly instead of blocking forever in
