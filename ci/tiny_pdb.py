@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ci.env import host_target_triple
 from ci.tiny_pdb_symbols import ROOT, TINY_PDB_SYMBOLS, filter_list_contents
+from ci.wheel_record import record_entry, render_record
 
 _GLOBAL_RELEASE_RUSTFLAGS = (
     "-C force-frame-pointers=yes",
@@ -107,22 +108,31 @@ def _native_extension_entry(wheel: Path) -> str:
             lower = name.lower()
             if lower.startswith("running_process/") and lower.endswith(".pyd"):
                 return name
-    raise RuntimeError(f"could not find running_process native extension inside {wheel}")
+    raise RuntimeError(
+        f"could not find running_process native extension inside {wheel}"
+    )
 
 
 def _replace_wheel_entries(wheel: Path, replacements: dict[str, bytes]) -> None:
     temp_path = wheel.with_suffix(".tmp.whl")
+    record_name = record_entry(wheel)
     try:
-        with zipfile.ZipFile(wheel) as src, zipfile.ZipFile(
-            temp_path, "w", compression=zipfile.ZIP_DEFLATED
-        ) as dst:
+        with (
+            zipfile.ZipFile(wheel) as src,
+            zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as dst,
+        ):
             replacement_names = set(replacements)
+            record_rows: list[tuple[str, bytes]] = []
             for info in src.infolist():
-                if info.filename in replacement_names:
+                if info.filename in replacement_names or info.filename == record_name:
                     continue
-                dst.writestr(info, src.read(info.filename))
+                payload = src.read(info.filename)
+                dst.writestr(info, payload)
+                record_rows.append((info.filename, payload))
             for name, payload in replacements.items():
                 dst.writestr(name, payload)
+                record_rows.append((name, payload))
+            dst.writestr(record_name, render_record(record_rows, record_name))
         temp_path.replace(wheel)
     finally:
         if temp_path.exists():
