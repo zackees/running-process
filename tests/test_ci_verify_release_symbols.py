@@ -8,6 +8,7 @@ import pytest
 
 from ci import verify_release_symbols
 from ci.tiny_pdb_symbols import TINY_PDB_SYMBOLS
+from ci.wheel_record import render_record
 
 
 def _write_release_wheel(tmp_path: Path, *, pdb_bytes: bytes = b"x" * 733_184) -> Path:
@@ -16,18 +17,26 @@ def _write_release_wheel(tmp_path: Path, *, pdb_bytes: bytes = b"x" * 733_184) -
         "schema_version": 1,
         "symbols": [spec.__dict__ for spec in TINY_PDB_SYMBOLS],
     }
-    with zipfile.ZipFile(wheel, "w") as zf:
-        zf.writestr("running_process/_native.cp313-win_amd64.pyd", b"pyd-bytes")
-        zf.writestr("running_process/_native.cp313-win_amd64.pdb", pdb_bytes)
-        zf.writestr(
+    files = [
+        ("running_process/_native.cp313-win_amd64.pyd", b"pyd-bytes"),
+        ("running_process/_native.cp313-win_amd64.pdb", pdb_bytes),
+        (
             "running_process/_native.cp313-win_amd64.tiny-pdb.json",
-            json.dumps(manifest),
-        )
+            json.dumps(manifest).encode("utf-8"),
+        ),
+    ]
+    record_entry = "running_process-3.0.3.dist-info/RECORD"
+    with zipfile.ZipFile(wheel, "w") as zf:
+        for name, payload in files:
+            zf.writestr(name, payload)
+        zf.writestr(record_entry, render_record(files, record_entry))
     return wheel
 
 
 def _fake_publics_text(*symbols: str) -> str:
-    return "\n".join(f"pub {index}: `{symbol}`" for index, symbol in enumerate(symbols, start=1))
+    return "\n".join(
+        f"pub {index}: `{symbol}`" for index, symbol in enumerate(symbols, start=1)
+    )
 
 
 def test_wheel_native_entries_reads_packaged_artifacts(tmp_path: Path) -> None:
@@ -37,7 +46,10 @@ def test_wheel_native_entries_reads_packaged_artifacts(tmp_path: Path) -> None:
 
     assert entries["pyd_entry"] == "running_process/_native.cp313-win_amd64.pyd"
     assert entries["pdb_entry"] == "running_process/_native.cp313-win_amd64.pdb"
-    assert entries["manifest_entry"] == "running_process/_native.cp313-win_amd64.tiny-pdb.json"
+    assert (
+        entries["manifest_entry"]
+        == "running_process/_native.cp313-win_amd64.tiny-pdb.json"
+    )
     assert entries["pdb_size"] == 733_184
 
 
@@ -81,7 +93,9 @@ def test_verify_release_artifact_fails_low_water(tmp_path: Path, monkeypatch) ->
         "_resolve_llvm_pdbutil",
         lambda explicit=None: "llvm-pdbutil",
     )
-    monkeypatch.setattr(verify_release_symbols, "_run_pdbutil", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        verify_release_symbols, "_run_pdbutil", lambda *args, **kwargs: ""
+    )
 
     with pytest.raises(RuntimeError, match="too small"):
         verify_release_symbols.verify_release_artifact(wheel)
@@ -165,6 +179,39 @@ def test_verify_release_artifact_rejects_disallowed_symbol_families(
         verify_release_symbols.verify_release_artifact(wheel)
 
 
+def test_verify_release_artifact_rejects_stale_wheel_record(tmp_path: Path) -> None:
+    wheel = tmp_path / "running_process-3.0.3-cp313-cp313-win_amd64.whl"
+    manifest = {
+        "schema_version": 1,
+        "symbols": [spec.__dict__ for spec in TINY_PDB_SYMBOLS],
+    }
+    record_entry = "running_process-3.0.3.dist-info/RECORD"
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr("running_process/_native.cp313-win_amd64.pyd", b"pyd-bytes")
+        zf.writestr("running_process/_native.cp313-win_amd64.pdb", b"x" * 733_184)
+        zf.writestr(
+            "running_process/_native.cp313-win_amd64.tiny-pdb.json",
+            json.dumps(manifest),
+        )
+        zf.writestr(
+            record_entry,
+            "\n".join(
+                [
+                    "running_process/_native.cp313-win_amd64.pyd,sha256=stale,9",
+                    "running_process/_native.cp313-win_amd64.pdb,sha256=stale,733184",
+                    (
+                        "running_process/_native.cp313-win_amd64.tiny-pdb.json,"
+                        "sha256=stale,2"
+                    ),
+                    f"{record_entry},,",
+                ]
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="wheel RECORD does not match file contents"):
+        verify_release_symbols.verify_release_artifact(wheel)
+
+
 def test_verify_release_artifact_requires_packaged_pdb(tmp_path: Path) -> None:
     wheel = tmp_path / "running_process-3.0.3-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as zf:
@@ -172,9 +219,7 @@ def test_verify_release_artifact_requires_packaged_pdb(tmp_path: Path) -> None:
 
     with pytest.raises(
         RuntimeError,
-        match=(
-            r"expected running_process/_native\.cp313-win_amd64\.pdb"
-        ),
+        match=(r"expected running_process/_native\.cp313-win_amd64\.pdb"),
     ):
         verify_release_symbols.wheel_native_entries(wheel)
 

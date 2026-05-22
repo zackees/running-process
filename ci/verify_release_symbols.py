@@ -9,7 +9,12 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from ci.tiny_pdb_symbols import DISALLOWED_PUBLIC_SYMBOL_PATTERNS, ROOT, TINY_PDB_SYMBOLS
+from ci.tiny_pdb_symbols import (
+    DISALLOWED_PUBLIC_SYMBOL_PATTERNS,
+    ROOT,
+    TINY_PDB_SYMBOLS,
+)
+from ci.wheel_record import validate_record
 
 DEFAULT_PDB_LOW_WATER_BYTES = 50_000
 DEFAULT_PDB_HIGH_WATER_BYTES = 1_000_000
@@ -69,7 +74,9 @@ def wheel_native_entries(wheel: Path) -> dict[str, object]:
             raise RuntimeError(f"expected {pdb_entry} next to {pyd_entry} in {wheel}")
         manifest_entry = pyd_entry.removesuffix(".pyd") + ".tiny-pdb.json"
         if manifest_entry not in zf.namelist():
-            raise RuntimeError(f"expected {manifest_entry} next to {pyd_entry} in {wheel}")
+            raise RuntimeError(
+                f"expected {manifest_entry} next to {pyd_entry} in {wheel}"
+            )
         pyd_bytes = zf.read(pyd_entry)
         pdb_bytes = zf.read(pdb_entry)
         manifest = json.loads(zf.read(manifest_entry))
@@ -112,6 +119,7 @@ def verify_release_artifact(
     pdb_high_water_bytes: int = DEFAULT_PDB_HIGH_WATER_BYTES,
     combined_native_high_water_bytes: int = DEFAULT_COMBINED_NATIVE_HIGH_WATER_BYTES,
 ) -> dict[str, object]:
+    validate_record(wheel)
     entries = wheel_native_entries(wheel)
 
     pdb_size = int(entries["pdb_size"])
@@ -134,7 +142,9 @@ def verify_release_artifact(
     manifest_symbols = [item["name"] for item in manifest.get("symbols", [])]
     expected_symbols = [spec.name for spec in TINY_PDB_SYMBOLS]
     if manifest_symbols != expected_symbols:
-        raise RuntimeError("tiny PDB manifest does not match the allowlist order/content")
+        raise RuntimeError(
+            "tiny PDB manifest does not match the allowlist order/content"
+        )
 
     pdbutil = _resolve_llvm_pdbutil(llvm_pdbutil)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -154,7 +164,9 @@ def verify_release_artifact(
         if summary.get(key) != expected
     ]
     if summary_errors:
-        raise RuntimeError("invalid tiny PDB summary:\n- " + "\n- ".join(summary_errors))
+        raise RuntimeError(
+            "invalid tiny PDB summary:\n- " + "\n- ".join(summary_errors)
+        )
 
     public_symbol_names = parse_public_symbol_names(publics_text)
     if sorted(public_symbol_names) != sorted(expected_symbols):
