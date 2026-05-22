@@ -1,5 +1,7 @@
 #![allow(improper_ctypes_definitions)]
 
+use std::time::Instant;
+
 use super::*;
 
 #[unsafe(no_mangle)]
@@ -48,6 +50,15 @@ pub extern "C" fn rp_native_process_read_combined_public(
 #[inline(never)]
 pub extern "C" fn rp_native_process_wait_for_capture_completion_public(process: &NativeProcess) {
     process.wait_for_capture_completion_impl();
+}
+
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub extern "C" fn rp_native_process_wait_for_capture_completion_with_deadline_public(
+    process: &NativeProcess,
+    deadline: Instant,
+) -> bool {
+    process.wait_for_capture_completion_with_deadline_impl(deadline)
 }
 
 #[cfg(windows)]

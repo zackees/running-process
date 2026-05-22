@@ -648,6 +648,77 @@ fn terminate_kills_running_process() {
     process.terminate().unwrap();
 }
 
+/// FastLED Bug B regression: when a grandchild inherits the captured
+/// stdout pipe and outlives the direct child, `kill()` must still
+/// return promptly instead of blocking forever in
+/// `wait_for_capture_completion`. Mirrors the `uv run python ...`
+/// shape, where uv exits while a python grandchild keeps the pipe open.
+#[test]
+fn kill_returns_when_grandchild_inherits_stdout_pipe() {
+    // Parent: print its own PID, spawn a grandchild python that sleeps
+    // 60 s with inherited stdout, then itself sleep 60 s. We kill the
+    // parent before either sleep elapses; the grandchild stays alive
+    // (and thus the pipe stays open) for the duration of the test.
+    let script = "\
+import os, subprocess, sys, time;\
+print('PARENT_PID=' + str(os.getpid()), flush=True);\
+gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);\
+print('GRANDCHILD_PID=' + str(gc.pid), flush=True);\
+time.sleep(60)";
+
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), script.into()]),
+        true,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+
+    // Wait for the parent to spawn the grandchild and announce both PIDs.
+    let mut grandchild_pid: Option<u32> = None;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        match process.read_combined(Some(Duration::from_millis(200))) {
+            ReadStatus::Line(event) => {
+                let line = String::from_utf8_lossy(&event.line).into_owned();
+                if let Some(rest) = line.strip_prefix("GRANDCHILD_PID=") {
+                    grandchild_pid = rest.trim().parse::<u32>().ok();
+                    break;
+                }
+            }
+            ReadStatus::Timeout => continue,
+            ReadStatus::Eof => panic!("parent exited before announcing grandchild"),
+        }
+    }
+    let grandchild_pid = grandchild_pid.expect("did not observe GRANDCHILD_PID line");
+
+    // The grandchild now holds the stdout pipe open. kill() on the
+    // parent reaps the parent but the reader thread is still blocked
+    // on read(); without the bounded wait this hangs forever.
+    let kill_start = Instant::now();
+    process.kill().expect("kill() returned an error");
+    let kill_elapsed = kill_start.elapsed();
+    assert!(
+        kill_elapsed < Duration::from_secs(5),
+        "kill() blocked for {kill_elapsed:?}; expected bounded return after grandchild orphan",
+    );
+
+    // Cleanup: terminate the lingering grandchild so it doesn't leak.
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &grandchild_pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    unsafe {
+        libc::kill(grandchild_pid as i32, libc::SIGKILL);
+    }
+}
+
 // ── pid() ──
 
 #[test]
