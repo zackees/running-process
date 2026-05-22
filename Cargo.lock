@@ -210,7 +210,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "daemon-trampoline"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "libc",
  "serde",
@@ -1036,7 +1036,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "running-process-client"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "dirs",
  "interprocess",
@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-core"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "libc",
  "portable-pty",
@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-daemon"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "bytes",
  "clap",
@@ -1088,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-proto"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "prost",
  "prost-build",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "interprocess",
  "libc",
@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "runpm-cli"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "anyhow",
  "clap",
