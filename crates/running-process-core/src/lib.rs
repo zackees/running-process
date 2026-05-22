@@ -40,6 +40,25 @@ macro_rules! rp_rust_debug_scope {
 
 const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_PATH";
 
+/// Hard cap on how long `kill_impl()` will block on
+/// `wait_for_capture_completion` after the direct child has been
+/// reaped. Override via the `RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS`
+/// env var (milliseconds). The default of 2 s gives normal children
+/// time to flush their pipe buffers while preventing indefinite hangs
+/// when a grandchild inherits the pipe and outlives the parent (FastLED
+/// Bug B).
+const DEFAULT_KILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const KILL_DRAIN_TIMEOUT_ENV: &str = "RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS";
+
+fn kill_drain_deadline() -> Instant {
+    let timeout = std::env::var(KILL_DRAIN_TIMEOUT_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_KILL_DRAIN_TIMEOUT);
+    Instant::now() + timeout
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamKind {
     Stdout,
@@ -412,7 +431,20 @@ impl NativeProcess {
         // this, callers that hit a wait()-timeout path see Python code
         // raise TimeoutError, kill the child, then race the reader
         // threads — a 10ms poll loop can miss the EOS flip entirely.
-        public_symbols::rp_native_process_wait_for_capture_completion_public(self);
+        //
+        // Bound the wait: on Windows a grandchild that inherits the
+        // stdout pipe (e.g. `python.exe` spawned by `uv.exe`) survives
+        // the direct child's death and keeps the pipe's write end
+        // open, so the reader thread's `read()` never returns EOF. The
+        // unbounded wait used to hang kill() indefinitely in that case
+        // (FastLED Bug B). After the bounded wait, we force-close the
+        // queues so callers see Eof and the reader thread's eventual
+        // flag flip — once the OS finally closes the pipe — is a
+        // harmless no-op.
+        public_symbols::rp_native_process_wait_for_capture_completion_with_deadline_public(
+            self,
+            kill_drain_deadline(),
+        );
         Ok(())
     }
 
@@ -785,8 +817,9 @@ impl NativeProcess {
             } else {
                 0
             };
-            let flags =
-                self.config.creationflags.unwrap_or(0) | extra | windows_priority_flags(self.config.nice);
+            let flags = self.config.creationflags.unwrap_or(0)
+                | extra
+                | windows_priority_flags(self.config.nice);
             if flags != 0 {
                 command.creation_flags(flags);
             }
@@ -873,6 +906,46 @@ impl NativeProcess {
                 .wait(guard)
                 .expect("queue mutex poisoned");
         }
+    }
+
+    /// Like `wait_for_capture_completion_impl` but bounded by `deadline`.
+    /// Returns `true` if the reader threads flipped both closed flags on
+    /// their own, `false` if the deadline elapsed first. On timeout the
+    /// closed flags are force-set (and waiters notified) so downstream
+    /// pollers stop seeing `Timeout` and start seeing `Eof`. A reader
+    /// thread that eventually unblocks after the OS releases the pipe
+    /// will assign `closed = true` again, which is a harmless no-op.
+    fn wait_for_capture_completion_with_deadline_impl(&self, deadline: Instant) -> bool {
+        crate::rp_rust_debug_scope!(
+            "running_process_core::NativeProcess::wait_for_capture_completion_with_deadline"
+        );
+        if !self.config.capture {
+            return true;
+        }
+
+        let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
+        while !(guard.stdout_closed && guard.stderr_closed) {
+            let now = Instant::now();
+            if now >= deadline {
+                guard.stdout_closed = true;
+                guard.stderr_closed = true;
+                self.shared.condvar.notify_all();
+                return false;
+            }
+            let (next_guard, result) = self
+                .shared
+                .condvar
+                .wait_timeout(guard, deadline - now)
+                .expect("queue mutex poisoned");
+            guard = next_guard;
+            if result.timed_out() && !(guard.stdout_closed && guard.stderr_closed) {
+                guard.stdout_closed = true;
+                guard.stderr_closed = true;
+                self.shared.condvar.notify_all();
+                return false;
+            }
+        }
+        true
     }
 }
 
