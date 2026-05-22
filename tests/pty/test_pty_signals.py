@@ -7,7 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import running_process.pty as pty_module
+# NOTE: After the #151 monolith split, InteractiveProcess and
+# PseudoTerminalProcess live in separate sub-modules. Tests below patch
+# the sub-module that owns the symbol under test.
+import running_process.pty._interactive as interactive_module
+import running_process.pty._pseudo_terminal as pty_module
 from running_process import (
     InteractiveMode,
     RunningProcess,
@@ -51,8 +55,8 @@ def test_console_isolated_uses_process_group_on_posix(monkeypatch: pytest.Monkey
         def start(self) -> None:
             return None
 
-    monkeypatch.setattr(pty_module.sys, "platform", "linux")
-    monkeypatch.setattr(pty_module, "NativeProcess", FakeProc)
+    monkeypatch.setattr(interactive_module.sys, "platform", "linux")
+    monkeypatch.setattr(interactive_module, "NativeProcess", FakeProc)
 
     process = InteractiveProcess(
         [sys.executable, "-c", "print('x')"],
@@ -67,11 +71,11 @@ def test_console_isolated_send_interrupt_uses_killpg_on_posix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(pty_module.sys, "platform", "linux")
+    monkeypatch.setattr(interactive_module.sys, "platform", "linux")
     monkeypatch.setattr(
-        pty_module.os, "killpg", lambda pid, sig: calls.append((pid, sig)), raising=False
+        interactive_module.os, "killpg", lambda pid, sig: calls.append((pid, sig)), raising=False
     )
-    monkeypatch.setattr(pty_module.signal, "SIGINT", 2, raising=False)
+    monkeypatch.setattr(interactive_module.signal, "SIGINT", 2, raising=False)
 
     process = InteractiveProcess(
         [sys.executable, "-c", "print('x')"],
@@ -81,7 +85,7 @@ def test_console_isolated_send_interrupt_uses_killpg_on_posix(
     process._proc = SimpleNamespace(pid=4321)
     process.send_interrupt()
 
-    assert calls == [(4321, pty_module.signal.SIGINT)]
+    assert calls == [(4321, interactive_module.signal.SIGINT)]
 
 
 def test_pseudo_terminal_kill_uses_killpg_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:

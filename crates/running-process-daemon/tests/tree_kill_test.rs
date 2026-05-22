@@ -11,19 +11,27 @@
 //!    the hard-kill escalation after the grace window, and the
 //!    daemon's `TerminationOutcome` records HARD_KILLED.
 
+#[cfg(unix)]
 use running_process_daemon::client::DaemonClient;
+#[cfg(unix)]
 use running_process_daemon::paths;
+#[cfg(unix)]
 use running_process_daemon::pipe_session::PipeSpawnRequest;
+#[cfg(unix)]
 use running_process_daemon::server::DaemonServer;
 #[cfg(unix)]
 use running_process_proto::daemon::PipeStreamKind;
 #[cfg(unix)]
 use running_process_proto::daemon::TerminationOutcome;
 
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::process::Command;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
         .args(["build", "-p", name, "--message-format=json"])
@@ -56,6 +64,7 @@ fn testbin_path(name: &str) -> PathBuf {
     panic!("could not find binary artifact for {name}");
 }
 
+#[cfg(unix)]
 fn start_server(scope: &str) -> (tokio::task::JoinHandle<()>, String) {
     let socket = paths::socket_path(Some(scope));
     let db = paths::db_path(Some(scope)).to_string_lossy().into_owned();
@@ -83,7 +92,7 @@ fn pid_is_alive(pid: u32) -> bool {
         if kill(pid as i32, 0) == 0 {
             return true;
         }
-        *libc::__errno_location() != ESRCH
+        std::io::Error::last_os_error().raw_os_error() != Some(ESRCH)
     }
 }
 
@@ -172,8 +181,7 @@ async fn terminate_reaps_grandchildren_along_with_spawner() {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let listed = client.list_pipe_sessions("").expect("list");
-            if let Some(entry) = listed.iter().find(|s| s.session_id == session.session_id)
-            {
+            if let Some(entry) = listed.iter().find(|s| s.session_id == session.session_id) {
                 if entry.exited {
                     break;
                 }
@@ -224,6 +232,13 @@ async fn stubborn_child_is_hard_killed_after_grace() {
             )
             .expect("spawn");
 
+        // Give the testbin time to install its SIG_IGN handler for
+        // SIGTERM. Without this, the immediate terminate below races
+        // the child's main() and can hit the default SIGTERM action
+        // (terminate), which would be (correctly) classified as a
+        // SoftExit and break this test's HARD_KILLED assertion.
+        std::thread::sleep(Duration::from_millis(500));
+
         // Generous grace so SoftExit would be plausible if the child
         // responded to SIGTERM. It doesn't, so HARD_KILLED is required.
         let grace_ms: u32 = 1500;
@@ -236,9 +251,7 @@ async fn stubborn_child_is_hard_killed_after_grace() {
         let deadline = Instant::now() + Duration::from_secs(15);
         let outcome = loop {
             let listed = client.list_pipe_sessions("").expect("list");
-            if let Some(entry) =
-                listed.iter().find(|s| s.session_id == session.session_id)
-            {
+            if let Some(entry) = listed.iter().find(|s| s.session_id == session.session_id) {
                 if entry.exited {
                     break entry.termination_outcome;
                 }

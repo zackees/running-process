@@ -188,6 +188,11 @@ pub struct OwnedPtySession {
     attached: Mutex<Option<AttachedClient>>,
     exit_state: Mutex<Option<ExitState>>,
     pub(crate) pending_termination: Mutex<Option<PendingTermination>>,
+    /// Set by the grace-window timer thread when it fires the hard kill
+    /// because the child didn't honor the soft signal in time. Used by
+    /// `classify_termination` to distinguish SoftExit (timing-only) from
+    /// HardKilled (explicit `.kill_tree_impl()` invocation).
+    hard_kill_fired: Arc<AtomicBool>,
     reader_shutdown: Arc<AtomicBool>,
     reader_thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
@@ -278,7 +283,9 @@ impl OwnedPtySession {
             }
             // Evict the existing client.
             if let Some(existing) = attached.take() {
-                let _ = existing.sender.send(OutboundFrame::Ended(AttachmentEnded::Stolen));
+                let _ = existing
+                    .sender
+                    .send(OutboundFrame::Ended(AttachmentEnded::Stolen));
             }
         }
 
@@ -349,9 +356,11 @@ impl OwnedPtySession {
 
         self.process.terminate_tree_impl()?;
         let process = Arc::clone(&self.process);
+        let hard_kill_fired = Arc::clone(&self.hard_kill_fired);
         thread::spawn(move || {
             thread::sleep(grace);
             if process.wait_impl(Some(0.0)).is_err() {
+                hard_kill_fired.store(true, Ordering::Release);
                 let _ = process.kill_tree_impl();
             }
         });
@@ -362,7 +371,9 @@ impl OwnedPtySession {
         match *self.pending_termination.lock().unwrap() {
             None => TerminationOutcome::NaturalExit,
             Some(p) => {
-                if exited_at_unix - p.started_at_unix <= p.grace_secs + 0.25 {
+                if self.hard_kill_fired.load(Ordering::Acquire) {
+                    TerminationOutcome::HardKilled
+                } else if exited_at_unix - p.started_at_unix <= p.grace_secs + 0.25 {
                     TerminationOutcome::SoftExit
                 } else {
                     TerminationOutcome::HardKilled
@@ -427,7 +438,9 @@ impl PtySessionRegistry {
 
         let process = NativePtyProcess::new(argv, cwd.clone(), env, rows, cols, None)
             .map_err(|e| SpawnError::Construct(e.to_string()))?;
-        process.start_impl().map_err(|e| SpawnError::Spawn(e.to_string()))?;
+        process
+            .start_impl()
+            .map_err(|e| SpawnError::Spawn(e.to_string()))?;
 
         let pid = pid_of(&process).unwrap_or(0);
         let id = self.next_session_id();
@@ -446,6 +459,7 @@ impl PtySessionRegistry {
             attached: Mutex::new(None),
             exit_state: Mutex::new(None),
             pending_termination: Mutex::new(None),
+            hard_kill_fired: Arc::new(AtomicBool::new(false)),
             reader_shutdown: Arc::new(AtomicBool::new(false)),
             reader_thread: Mutex::new(None),
         });
@@ -477,8 +491,7 @@ impl PtySessionRegistry {
         let to_remove: Vec<String> = guard
             .iter()
             .filter(|(_, s)| {
-                s.exit_state().is_some()
-                    && (originator.is_empty() || s.originator == originator)
+                s.exit_state().is_some() && (originator.is_empty() || s.originator == originator)
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -546,9 +559,7 @@ fn reader_loop(session: Arc<OwnedPtySession>) {
                 session.backlog.lock().unwrap().push(&bytes);
                 if let Some(client) = session.attached.lock().unwrap().as_ref() {
                     for slice in bytes.chunks(STREAM_CHUNK_BYTES) {
-                        let _ = client
-                            .sender
-                            .send(OutboundFrame::Output(slice.to_vec()));
+                        let _ = client.sender.send(OutboundFrame::Output(slice.to_vec()));
                     }
                 }
             }

@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
-import running_process.pty as pty_module
+# `_pty_command` moved to the `_command` sub-module in the #151 refactor;
+# patch its sub-module so the production lookup sees changes.
+import running_process.pty._command as pty_module
 from running_process import (
     CpuPriority,
     InteractiveMode,
