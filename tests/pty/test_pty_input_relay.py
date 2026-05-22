@@ -8,8 +8,12 @@ import time
 import pytest
 from running_process._native import native_windows_terminal_input_bytes
 
-import running_process.pty as pty_module
-import running_process.running_process as running_process_module
+# NOTE: After the #151 monolith split, the symbols these tests patch live
+# in sub-modules rather than the package namespace. Aim each monkeypatch
+# at the submodule that actually imports the symbol so the patch reaches
+# the production lookup site.
+import running_process.pty._pseudo_terminal as pty_module
+import running_process.running_process._core as running_process_module
 from running_process import RunningProcess
 from running_process.pty import PseudoTerminalProcess
 

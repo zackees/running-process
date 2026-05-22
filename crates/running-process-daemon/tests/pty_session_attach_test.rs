@@ -278,13 +278,17 @@ async fn attach_with_steal_evicts_existing_client() {
             PtyAttachment::attach_to(&socket_for_test, &session.session_id, 24, 80, true)
                 .expect("steal attach b");
 
-        // First attachment should receive a terminal frame indicating it
-        // was stolen. The exact frame variant is permissive: stolen_by or
-        // error("…").
-        let frame = attach_a.recv_frame().expect("recv after steal");
-        match frame.frame {
-            Some(StreamOneof::StolenBy(_)) | Some(StreamOneof::Error(_)) => {}
-            other => panic!("expected terminal frame on stolen attachment, got {other:?}"),
+        // First attachment should eventually receive a terminal frame
+        // indicating it was stolen. The exact frame variant is permissive:
+        // stolen_by or error("…"). Drain any output/missed-bytes frames
+        // already queued before the steal landed.
+        loop {
+            let frame = attach_a.recv_frame().expect("recv after steal");
+            match frame.frame {
+                Some(StreamOneof::Output(_)) | Some(StreamOneof::MissedBytes(_)) => continue,
+                Some(StreamOneof::StolenBy(_)) | Some(StreamOneof::Error(_)) => break,
+                other => panic!("expected terminal frame on stolen attachment, got {other:?}"),
+            }
         }
 
         // Clean up.

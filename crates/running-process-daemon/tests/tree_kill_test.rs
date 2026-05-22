@@ -232,6 +232,13 @@ async fn stubborn_child_is_hard_killed_after_grace() {
             )
             .expect("spawn");
 
+        // Give the testbin time to install its SIG_IGN handler for
+        // SIGTERM. Without this, the immediate terminate below races
+        // the child's main() and can hit the default SIGTERM action
+        // (terminate), which would be (correctly) classified as a
+        // SoftExit and break this test's HARD_KILLED assertion.
+        std::thread::sleep(Duration::from_millis(500));
+
         // Generous grace so SoftExit would be plausible if the child
         // responded to SIGTERM. It doesn't, so HARD_KILLED is required.
         let grace_ms: u32 = 1500;

@@ -7,7 +7,10 @@ import sys
 
 import pytest
 
-import running_process.pty as pty_module
+# `_safe_console_write_chunk` and the `_WINDOWS_VT_OUTPUT_HANDLES` cache
+# moved to the `_console_io` sub-module in the #151 refactor; patch there
+# so the production lookup site sees the change.
+import running_process.pty._console_io as pty_module
 from running_process import RunningProcess
 from running_process.pty import PseudoTerminalProcess
 from tests.pty._pty_helpers import _capture_wait_echo_bytes, _read_until_contains

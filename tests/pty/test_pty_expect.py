@@ -9,7 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import running_process.pty as pty_module
+# `time.time` calls inside PseudoTerminalProcess.wait_for_expect live in
+# the `_pseudo_terminal` sub-module after the #151 refactor; patch there.
+import running_process.pty._pseudo_terminal as pty_module
 from running_process import (
     Expect,
     ExpectRule,
