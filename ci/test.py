@@ -17,6 +17,11 @@ SKIP_LINUX_DOCKER_ENV = "RUNNING_PROCESS_SKIP_LINUX_DOCKER"
 DEFAULT_TEST_TIMEOUT_SECONDS = "40"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 DEFAULT_RUST_TEST_TIMEOUT_SECONDS = 60.0
+# Windows runs cargo test with --test-threads=1 (pyo3 GIL + PTY deadlock
+# workaround). Serialized ConPTY teardown — Job Object close + child wait
+# + reader-thread join — can stay quiet for 10s+ at a time, so the
+# supervisor's idle window needs more headroom than the parallel POSIX path.
+WINDOWS_RUST_TEST_TIMEOUT_SECONDS = 180.0
 DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 180.0
 DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS = 600.0
 DEFAULT_PYTEST_TIMEOUT_SECONDS = 40.0
@@ -122,7 +127,12 @@ def running_on_github_actions() -> bool:
 
 
 def skip_linux_docker_preflight() -> bool:
-    return os.environ.get(SKIP_LINUX_DOCKER_ENV, "").lower() in {"1", "true", "yes", "on"}
+    return os.environ.get(SKIP_LINUX_DOCKER_ENV, "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def run(cmd: list[str]) -> int:
@@ -148,12 +158,7 @@ def load_env_helpers():
 
 
 def _looks_like_pytest_target(arg: str) -> bool:
-    return (
-        arg.endswith(".py")
-        or "::" in arg
-        or "/" in arg
-        or "\\" in arg
-    )
+    return arg.endswith(".py") or "::" in arg or "/" in arg or "\\" in arg
 
 
 def _normalize_pytest_args(args: list[str]) -> list[str]:
@@ -205,7 +210,9 @@ def main(argv: list[str] | None = None) -> int:
     activate()
     if require_symbols:
         os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] = "1"
-    os.environ.setdefault("RUNNING_PROCESS_TEST_TIMEOUT_SECONDS", DEFAULT_TEST_TIMEOUT_SECONDS)
+    os.environ.setdefault(
+        "RUNNING_PROCESS_TEST_TIMEOUT_SECONDS", DEFAULT_TEST_TIMEOUT_SECONDS
+    )
     python = Path(sys.executable)
     if os.environ.get(IN_RUNNING_PROCESS_ENV) != IN_RUNNING_PROCESS_VALUE:
         try:
@@ -257,10 +264,15 @@ def main(argv: list[str] | None = None) -> int:
             harness_args.append("--nocapture")
         if harness_args:
             cargo_test_args += ["--", *harness_args]
+        rust_test_timeout = (
+            WINDOWS_RUST_TEST_TIMEOUT_SECONDS
+            if sys.platform == "win32"
+            else DEFAULT_RUST_TEST_TIMEOUT_SECONDS
+        )
         cargo_cmd = supervised_command(
             python,
             *cargo_test_args,
-            timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
+            timeout=rust_test_timeout,
         )
         if run(cargo_cmd) != 0:
             return 1
@@ -268,7 +280,11 @@ def main(argv: list[str] | None = None) -> int:
     # -- Python non-live tests --
     cov_first = list(_COV_PYTEST_FIRST) if coverage else []
     if not _pytest_exit_is_acceptable(
-        run(_supervised_pytest_command(python, "-m", "not live", *cov_first, *pytest_args)),
+        run(
+            _supervised_pytest_command(
+                python, "-m", "not live", *cov_first, *pytest_args
+            )
+        ),
         pytest_args,
     ):
         return 1
@@ -283,7 +299,11 @@ def main(argv: list[str] | None = None) -> int:
     if live_tests_enabled():
         cov_append = list(_COV_PYTEST_APPEND) if coverage else []
         if not _pytest_exit_is_acceptable(
-            run_live(_supervised_pytest_command(python, "-m", "live", *cov_append, *pytest_args)),
+            run_live(
+                _supervised_pytest_command(
+                    python, "-m", "live", *cov_append, *pytest_args
+                )
+            ),
             pytest_args,
         ):
             return 1
