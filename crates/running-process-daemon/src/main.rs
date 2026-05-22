@@ -169,8 +169,7 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             rt.block_on(async {
                 let scope_name = scope.clone().unwrap_or_else(|| "global".to_string());
-                let socket =
-                    socket_path.unwrap_or_else(|| paths::socket_path(scope.as_deref()));
+                let socket = socket_path.unwrap_or_else(|| paths::socket_path(scope.as_deref()));
                 let db = db_path.unwrap_or_else(|| {
                     paths::db_path(scope.as_deref())
                         .to_string_lossy()
@@ -343,8 +342,8 @@ fn run_sessions_command(command: SessionsCommand) {
             pty,
             pipe,
         } => {
-            let show_pty = pty || (!pty && !pipe);
-            let show_pipe = pipe || (!pty && !pipe);
+            let show_pty = pty || !pipe;
+            let show_pipe = pipe || !pty;
             if show_pty {
                 match client.list_pty_sessions(&originator) {
                     Ok(sessions) => print_pty_session_table(&sessions),
@@ -358,20 +357,18 @@ fn run_sessions_command(command: SessionsCommand) {
                 }
             }
         }
-        SessionsCommand::Purge { originator } => {
-            match client.purge_exited_sessions(&originator) {
-                Ok(payload) => {
-                    println!(
-                        "purged {} PTY + {} pipe exited sessions",
-                        payload.pty_purged, payload.pipe_purged
-                    );
-                }
-                Err(e) => {
-                    eprintln!("purge_exited_sessions failed: {e}");
-                    std::process::exit(1);
-                }
+        SessionsCommand::Purge { originator } => match client.purge_exited_sessions(&originator) {
+            Ok(payload) => {
+                println!(
+                    "purged {} PTY + {} pipe exited sessions",
+                    payload.pty_purged, payload.pipe_purged
+                );
             }
-        }
+            Err(e) => {
+                eprintln!("purge_exited_sessions failed: {e}");
+                std::process::exit(1);
+            }
+        },
         SessionsCommand::KillOlder {
             older_than,
             originator,
@@ -447,19 +444,18 @@ fn run_sessions_command(command: SessionsCommand) {
                 // Try PTY first, fall back to pipe on NotFound.
                 match client.terminate_pty_session(&session_id, grace_ms) {
                     Ok(()) => println!("pty session {session_id} terminate scheduled"),
-                    Err(client::ClientError::Server { code, .. })
-                        if code == StatusCode::NotFound =>
-                    {
-                        match client.terminate_pipe_session(&session_id, grace_ms) {
-                            Ok(()) => {
-                                println!("pipe session {session_id} terminate scheduled")
-                            }
-                            Err(e) => {
-                                eprintln!("terminate failed: {e}");
-                                std::process::exit(1);
-                            }
+                    Err(client::ClientError::Server {
+                        code: StatusCode::NotFound,
+                        ..
+                    }) => match client.terminate_pipe_session(&session_id, grace_ms) {
+                        Ok(()) => {
+                            println!("pipe session {session_id} terminate scheduled")
                         }
-                    }
+                        Err(e) => {
+                            eprintln!("terminate failed: {e}");
+                            std::process::exit(1);
+                        }
+                    },
                     Err(e) => {
                         eprintln!("terminate_pty_session failed: {e}");
                         std::process::exit(1);
@@ -477,8 +473,8 @@ fn print_pty_session_table(sessions: &[running_process_proto::daemon::PtySession
     }
     println!("PTY sessions:");
     println!(
-        "  {:<48} {:<7} {:<10} {:<10} {}",
-        "SESSION_ID", "PID", "STATE", "ATTACHED", "COMMAND"
+        "  {:<48} {:<7} {:<10} {:<10} COMMAND",
+        "SESSION_ID", "PID", "STATE", "ATTACHED"
     );
     for s in sessions {
         let state = if s.exited {
@@ -501,8 +497,8 @@ fn print_pipe_session_table(sessions: &[running_process_proto::daemon::PipeSessi
     }
     println!("Pipe sessions:");
     println!(
-        "  {:<48} {:<7} {:<10} {:<12} {}",
-        "SESSION_ID", "PID", "STATE", "OUT/ERR ATT", "COMMAND"
+        "  {:<48} {:<7} {:<10} {:<12} COMMAND",
+        "SESSION_ID", "PID", "STATE", "OUT/ERR ATT"
     );
     for s in sessions {
         let state = if s.exited {

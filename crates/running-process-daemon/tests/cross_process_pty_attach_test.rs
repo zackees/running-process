@@ -19,8 +19,8 @@
 //!     the test ends, even on assertion failure.
 
 use running_process_client::client::DaemonClient;
-use running_process_client::pty_session::{PtyAttachment, PtySpawnRequest};
 use running_process_client::paths;
+use running_process_client::pty_session::{PtyAttachment, PtySpawnRequest};
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -65,7 +65,10 @@ fn build_artifact(package: &str, kind_filter: &str) -> PathBuf {
             while !path.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(50));
             }
-            assert!(path.exists(), "cargo emitted {path:?} but it does not exist");
+            assert!(
+                path.exists(),
+                "cargo emitted {path:?} but it does not exist"
+            );
             return path;
         }
     }
@@ -237,8 +240,7 @@ fn pty_session_survives_first_client_disconnect_then_second_client_attaches() {
 }
 
 #[test]
-fn daemon_shutdown_reaps_sessions_no_orphans(
-) {
+fn daemon_shutdown_reaps_sessions_no_orphans() {
     // #130 M8: when the daemon shuts down, every session it owns must
     // be torn down. On Windows the Job Object kill-on-close handles
     // this implicitly, but on POSIX the daemon must explicitly issue
@@ -293,7 +295,6 @@ fn daemon_shutdown_reaps_sessions_no_orphans(
 
 #[cfg(windows)]
 fn pid_is_alive(pid: u32) -> bool {
-    use std::ptr;
     use winapi::shared::minwindef::DWORD;
     use winapi::shared::ntdef::NULL;
     use winapi::um::handleapi::CloseHandle;
@@ -320,7 +321,7 @@ fn pid_is_alive(pid: u32) -> bool {
         if kill(pid as i32, 0) == 0 {
             return true;
         }
-        *libc::__errno_location() != ESRCH
+        std::io::Error::last_os_error().raw_os_error() != Some(ESRCH)
     }
 }
 
@@ -335,23 +336,18 @@ fn concurrent_attach_attempts_resolve_to_exactly_one_winner() {
         let mut client = DaemonClient::connect_to(&socket).expect("connect");
         let req = PtySpawnRequest::new([sleeper.to_string_lossy().into_owned()])
             .with_originator("race-test");
-        client
-            .spawn_pty_session(&req)
-            .expect("spawn")
-            .session_id
+        client.spawn_pty_session(&req).expect("spawn").session_id
     };
 
     // Fire two attach attempts in parallel from independent OS threads.
     let socket_a = socket.clone();
     let id_a = session_id.clone();
-    let handle_a = std::thread::spawn(move || {
-        PtyAttachment::attach_to(&socket_a, &id_a, 24, 80, false)
-    });
+    let handle_a =
+        std::thread::spawn(move || PtyAttachment::attach_to(&socket_a, &id_a, 24, 80, false));
     let socket_b = socket.clone();
     let id_b = session_id.clone();
-    let handle_b = std::thread::spawn(move || {
-        PtyAttachment::attach_to(&socket_b, &id_b, 24, 80, false)
-    });
+    let handle_b =
+        std::thread::spawn(move || PtyAttachment::attach_to(&socket_b, &id_b, 24, 80, false));
 
     let result_a = handle_a.join().expect("thread A");
     let result_b = handle_b.join().expect("thread B");

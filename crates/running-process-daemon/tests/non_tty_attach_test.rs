@@ -124,10 +124,10 @@ fn raw_attach_non_tty(
         std::io::Error::new(std::io::ErrorKind::InvalidData, format!("decode: {e}"))
     })?;
     if resp.code != StatusCode::Ok as i32 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("attach failed: {} ({})", resp.message, resp.code),
-        ));
+        return Err(std::io::Error::other(format!(
+            "attach failed: {} ({})",
+            resp.message, resp.code
+        )));
     }
     Ok(reader)
 }
@@ -168,14 +168,9 @@ async fn non_tty_attach_records_flag_and_skips_resize() {
         // should be IGNORED (non-TTY clients have no terminal size).
         // Keep the connection's reader alive so the attachment stays
         // active while we inspect the daemon state.
-        let _attach_reader = raw_attach_non_tty(
-            &socket_for_test,
-            &session.session_id,
-            999,
-            999,
-            "dumb",
-        )
-        .expect("non-tty attach");
+        let _attach_reader =
+            raw_attach_non_tty(&socket_for_test, &session.session_id, 999, 999, "dumb")
+                .expect("non-tty attach");
 
         // Brief wait so the daemon installs the attachment.
         std::thread::sleep(Duration::from_millis(100));
@@ -209,14 +204,9 @@ async fn non_tty_attach_records_flag_and_skips_resize() {
         drop(_attach_reader);
         std::thread::sleep(Duration::from_millis(100));
 
-        let _tty_attachment = PtyAttachment::attach_to(
-            &socket_for_test,
-            &session.session_id,
-            12,
-            34,
-            true,
-        )
-        .expect("tty attach");
+        let _tty_attachment =
+            PtyAttachment::attach_to(&socket_for_test, &session.session_id, 12, 34, true)
+                .expect("tty attach");
         std::thread::sleep(Duration::from_millis(100));
         let listed = client.list_pty_sessions("").expect("list after tty attach");
         let entry = listed

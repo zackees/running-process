@@ -99,6 +99,11 @@ pub struct OwnedPipeSession {
     stdin_closed: AtomicBool,
     exit_state: Mutex<Option<ExitState>>,
     pub(crate) pending_termination: Mutex<Option<PendingTermination>>,
+    /// Set by the grace-window timer thread when it fires the hard kill
+    /// because the child didn't honor the soft signal in time. Used by
+    /// `classify_termination` to distinguish SoftExit (timing-only) from
+    /// HardKilled (explicit `.kill()` invocation).
+    hard_kill_fired: Arc<AtomicBool>,
     reader_shutdown: Arc<AtomicBool>,
     reader_threads: Mutex<Vec<thread::JoinHandle<()>>>,
 }
@@ -205,9 +210,11 @@ impl OwnedPipeSession {
         // separate follow-up).
         let _ = self.process.terminate_group_soft();
         let process = Arc::clone(&self.process);
+        let hard_kill_fired = Arc::clone(&self.hard_kill_fired);
         thread::spawn(move || {
             thread::sleep(grace);
             if process.poll().ok().flatten().is_none() {
+                hard_kill_fired.store(true, Ordering::Release);
                 let _ = process.kill();
             }
         });
@@ -218,7 +225,9 @@ impl OwnedPipeSession {
         match *self.pending_termination.lock().unwrap() {
             None => TerminationOutcome::NaturalExit,
             Some(p) => {
-                if exited_at_unix - p.started_at_unix <= p.grace_secs + 0.25 {
+                if self.hard_kill_fired.load(Ordering::Acquire) {
+                    TerminationOutcome::HardKilled
+                } else if exited_at_unix - p.started_at_unix <= p.grace_secs + 0.25 {
                     TerminationOutcome::SoftExit
                 } else {
                     TerminationOutcome::HardKilled
@@ -271,8 +280,7 @@ impl PipeSessionRegistry {
         let to_remove: Vec<String> = guard
             .iter()
             .filter(|(_, s)| {
-                s.exit_state().is_some()
-                    && (originator.is_empty() || s.originator == originator)
+                s.exit_state().is_some() && (originator.is_empty() || s.originator == originator)
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -339,6 +347,7 @@ impl PipeSessionRegistry {
             stdin_closed: AtomicBool::new(false),
             exit_state: Mutex::new(None),
             pending_termination: Mutex::new(None),
+            hard_kill_fired: Arc::new(AtomicBool::new(false)),
             reader_shutdown: Arc::new(AtomicBool::new(false)),
             reader_threads: Mutex::new(Vec::new()),
         });
@@ -469,13 +478,7 @@ fn exit_waiter_loop(session: Arc<OwnedPipeSession>) {
     *session.exit_state.lock().unwrap() = Some(state.clone());
     // Notify any attached stream clients.
     for stream in [PipeStreamSelect::Stdout, PipeStreamSelect::Stderr] {
-        if let Some(client) = session
-            .stream_state(stream)
-            .attached
-            .lock()
-            .unwrap()
-            .take()
-        {
+        if let Some(client) = session.stream_state(stream).attached.lock().unwrap().take() {
             let _ = client.sender.send(OutboundFrame::Exit(state.exit_code));
             let _ = client
                 .sender

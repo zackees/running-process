@@ -75,6 +75,16 @@ ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-daemon/src/handlers/spawn.rs"),
     Path("crates/running-process-daemon/src/handlers/pty_sessions_handlers.rs"),
     Path("crates/running-process-daemon/src/handlers/pipe_sessions_handlers.rs"),
+    # Session managers (split from former handlers monolith). Method calls
+    # `state.pty_sessions.spawn(...)` / `state.pipe_sessions.spawn(...)` and
+    # `PtySessions::spawn` / `PipeSessions::spawn` definitions trigger the
+    # `.spawn(` regex; the underlying process spawn happens via the native
+    # spawn layer in running-process-core.
+    Path("crates/running-process-daemon/src/pty_sessions.rs"),
+    Path("crates/running-process-daemon/src/pipe_sessions.rs"),
+    # Daemon server: autostart dispatch invokes the session-manager
+    # `.spawn(...)` methods listed above.
+    Path("crates/running-process-daemon/src/server.rs"),
     Path("crates/running-process-daemon/src/platform/windows.rs"),
     Path("crates/running-process-daemon/src/shadow.rs"),
     # Daemon trampoline: reads sidecar JSON and spawns the target command
@@ -96,6 +106,10 @@ ALLOWED_PORTABLE_PTY = {
     Path("crates/running-process-core/src/pty/mod.rs"),
     # Native PTY process impl extracted from pty/mod.rs.
     Path("crates/running-process-core/src/pty/native_pty_process.rs"),
+    # Daemon PTY session manager: holds NativePtyProcess handles and reads
+    # the child's pid via the underlying portable_pty::Child::process_id.
+    # Spawn itself routes through the native layer.
+    Path("crates/running-process-daemon/src/pty_sessions.rs"),
 }
 
 # `ChildStdin::from` / `ChildStdout::from` / `ChildStderr::from` consumes a
