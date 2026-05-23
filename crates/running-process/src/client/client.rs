@@ -4,11 +4,11 @@
 //! Linux/macOS, named pipe on Windows) and exchanges length-prefixed protobuf
 //! messages.
 
-use crate::paths;
+use crate::client::paths;
 use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
-use running_process::proto::daemon::{
+use crate::proto::daemon::{
     BulkTerminateSessionsRequest, BulkTerminateSessionsResponse, DaemonRequest, DaemonResponse,
     GetProcessTreeRequest, GetSessionBacklogRequest, GetSessionBacklogResponse, KeyValue,
     KillTreeRequest, KillZombiesRequest, ListActiveRequest, ListByOriginatorRequest, PingRequest,

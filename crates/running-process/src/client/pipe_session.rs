@@ -8,11 +8,11 @@
 //! and pumps `PipeStreamFrame` payloads.
 
 use crate::client::{ClientError, DaemonClient};
-use crate::paths;
+use crate::client::paths;
 use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
-use running_process::proto::daemon::{
+use crate::proto::daemon::{
     AttachPipeStreamRequest, AttachPipeStreamResponse, DaemonRequest, DaemonResponse,
     DetachPipeStreamRequest, KeyValue, ListPipeSessionsRequest, ListPipeSessionsResponse,
     PipeSessionInfo, PipeStreamFrame, PipeStreamKind, RequestType, SpawnPipeSessionRequest,

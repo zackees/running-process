@@ -115,7 +115,7 @@ pub(crate) fn native_launch_detached(
 
     let spawned = py
         .allow_threads(move || {
-            let mut request = running_process_client::SpawnCommandRequest::shell(command);
+            let mut request = running_process::client::SpawnCommandRequest::shell(command);
             if let Some(cwd) = cwd {
                 request = request.with_cwd(cwd);
             }
@@ -126,7 +126,7 @@ pub(crate) fn native_launch_detached(
                 request = request.with_originator(originator);
             }
 
-            let mut client = running_process_client::connect_or_start(None)?;
+            let mut client = running_process::client::connect_or_start(None)?;
             client.spawn_command(&request)
         })
         .map_err(to_py_err)?;

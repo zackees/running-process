@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 
-use running_process_client::{connect_or_start, ClientError, DaemonClient};
+use running_process::client::{connect_or_start, ClientError, DaemonClient};
 use running_process::proto::daemon::{DaemonResponse, ServiceConfig, StatusCode};
 
 #[derive(Parser)]

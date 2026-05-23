@@ -1038,6 +1038,10 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "running-process"
 version = "3.4.1"
 dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "interprocess",
  "libc",
  "portable-pty",
  "prost",
@@ -1053,19 +1057,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "running-process-client"
-version = "3.4.1"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "interprocess",
- "libc",
- "prost",
- "running-process",
-]
-
-[[package]]
 name = "running-process-daemon"
 version = "3.4.1"
 dependencies = [
@@ -1077,7 +1068,6 @@ dependencies = [
  "libc",
  "prost",
  "running-process",
- "running-process-client",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1101,7 +1091,6 @@ dependencies = [
  "pyo3",
  "regex",
  "running-process",
- "running-process-client",
  "sysinfo",
  "winapi",
 ]

@@ -1,3 +1,10 @@
+//! Synchronous IPC client for the running-process daemon.
+//!
+//! Wave 4 of #165: absorbed from the former `running-process-client`
+//! crate. Re-exports preserved at the top level so downstream code that
+//! previously imported from `running_process_client::*` keeps working
+//! when it switches to `running_process::client::*`.
+
 pub mod client;
 pub mod paths;
 pub mod pipe_session;
