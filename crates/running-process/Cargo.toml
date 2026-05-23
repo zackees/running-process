@@ -15,18 +15,32 @@ name = "runpm"
 path = "src/bin/runpm.rs"
 required-features = ["client"]
 
+[[bin]]
+# Wave 5 of #165: daemon binary absorbed from `running-process-daemon`.
+# Requires the heavy `daemon` feature (tokio, sqlite, etc.).
+name = "running-process-daemon"
+path = "src/bin/daemon.rs"
+required-features = ["daemon"]
+
 [features]
 # Final feature scheme per #165:
 # * `core`   — always-available API (spawn / pty / containment).
 # * `client` — adds proto types + IPC client (prost, interprocess, dirs).
-# * `daemon` — superset of client; adds the full daemon runtime (Wave 5).
+# * `daemon` — superset of client; adds the full daemon runtime
+#              (tokio, rusqlite, tracing, etc.).
 # Default ships `client` so `cargo install running-process` installs
 # the `runpm` binary out of the box (per Q1 resolution in #165:
 # `required-features` are not auto-activated by cargo install).
 default = ["client"]
 core = []
 client = ["dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs", "dep:anyhow", "dep:clap"]
-daemon = ["client"]                # populated by Wave 5 (#170)
+daemon = [
+    "client",
+    "interprocess/tokio",
+    "dep:tokio", "dep:tokio-util", "dep:bytes", "dep:futures-util",
+    "dep:tracing", "dep:tracing-subscriber",
+    "dep:rusqlite", "dep:serde", "dep:serde_json", "dep:toml",
+]
 originator-scan = []               # used by running-process-py for cwd-tagging
 
 [dependencies]
@@ -44,6 +58,17 @@ dirs = { version = "6", optional = true }
 # Used by the `runpm` PM2-style supervisor CLI (src/bin/runpm.rs).
 anyhow = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
+# Wave 5 of #165: daemon-feature deps. All optional.
+tokio = { version = "1", features = ["full"], optional = true }
+tokio-util = { version = "0.7", features = ["codec"], optional = true }
+bytes = { version = "1", optional = true }
+futures-util = { version = "0.3", features = ["sink"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+rusqlite = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+toml = { version = "0.8", optional = true }
 
 [build-dependencies]
 # Wave 3 of #165: build.rs absorbed from `running-process-proto`.
@@ -55,3 +80,8 @@ protox = "0.9"
 serde_json = "1"
 tempfile = "3"
 test-watchdog = { path = "../test-watchdog" }
+
+# Wave 5 of #165: extra dev-deps absorbed from `running-process-daemon`
+# for its windows-only and unix-only integration tests.
+[target.'cfg(windows)'.dev-dependencies]
+winapi = { version = "0.3", features = ["handleapi", "processthreadsapi", "winnt"] }
