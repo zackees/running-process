@@ -25,7 +25,7 @@ def _trampoline_binary() -> Path:
         if c.exists():
             return c
     raise unittest.SkipTest(
-        "daemon-trampoline binary not built; run `cargo build -p daemon-trampoline`"
+        "daemon-trampoline binary not built; run `cargo build --bin daemon-trampoline`"
     )
 
 

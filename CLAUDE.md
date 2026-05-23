@@ -15,12 +15,16 @@ A Rust-backed Python library (v3.0.15) for subprocess and PTY process management
 - **`ProcessOutputReader`**: Threaded reader draining stdout/stderr to prevent blocking
 - **`RunningProcessManager`**: Thread-safe singleton registry for tracking active processes
 
-**Rust layer** (`crates/`) provides native performance:
-- **`running-process`**: OS-level subprocess abstraction (`NativeProcess` — pipe I/O, signaling, Job Objects/process groups). No PTY.
-- **`running-process-py`**: PyO3 bindings. Contains `NativePtyProcess` (via `portable-pty` crate) alongside the pipe backend. Exposes a unified `PyNativeProcess` with `NativeProcessBackend` enum dispatching to either `NativeRunningProcess` or `NativePtyProcess`
-- **`running-process-proto`**: Protobuf schema for daemon IPC (`daemon.proto`). Field numbers in `RequestType` enum match payload field numbers.
-- **`running-process-daemon`**: Persistent daemon for process tracking (Tokio, SQLite registry, protobuf IPC)
-- **`daemon-trampoline`**: Minimal daemon launcher binary
+**Rust layer** (`crates/`) — mono-crate after the consolidation in #165:
+- **`running-process`** (`crates/running-process/`): the only published Rust crate. Feature-gated subsystems:
+  - **`core`** (always on) — OS-level subprocess abstraction (`NativeProcess` — pipe I/O, signaling, Job Objects/process groups, PTY via `portable-pty`).
+  - **`client`** (default) — proto types (`src/proto/`) + sync IPC client (`src/client/`). Adds prost, interprocess, dirs.
+  - **`daemon`** — full daemon runtime (`src/daemon/`). Adds tokio, rusqlite, tracing, etc.
+  - Three binaries in `src/bin/`: `runpm` (requires `client`), `running-process-daemon` (requires `daemon`), `daemon-trampoline` (no required-features).
+  - `proto/daemon.proto` compiled by `build.rs` (prost-build + protox).
+- **`running-process-py`**: PyO3 bindings. Contains `NativePtyProcess` alongside the pipe backend. Exposes a unified `PyNativeProcess` with `NativeProcessBackend` enum dispatching to either `NativeRunningProcess` or `NativePtyProcess`. Depends on `running-process` with `features = ["client", "originator-scan"]`.
+- `crates/test-watchdog/` (publish=false): Windows hang-dump helper used as dev-dep by `running-process` tests.
+- `testbins/`: 8 test-fixture binaries.
 
 **Python-Rust bridge**: `running_process._native` module compiled via maturin. Python's `PseudoTerminalProcess.start()` calls `NativeProcess.for_pty()` which creates a `NativePtyProcess` on the Rust side.
 

@@ -29,28 +29,26 @@ ENV CARGO_TARGET_DIR=/work/target \
 
 FROM python-tools AS rust-manifests
 
+# Wave 7 of #165: cache-warmup stage simplified after the mono-crate
+# consolidation. Workspace now has only running-process (with three
+# bins inside it), running-process-py, test-watchdog, testbins.
 COPY Cargo.toml Cargo.lock /work/
 COPY crates/running-process/Cargo.toml /work/crates/running-process/Cargo.toml
-COPY crates/running-process-proto/Cargo.toml /work/crates/running-process-proto/Cargo.toml
-COPY crates/running-process-client/Cargo.toml /work/crates/running-process-client/Cargo.toml
-COPY crates/running-process-daemon/Cargo.toml /work/crates/running-process-daemon/Cargo.toml
-COPY crates/daemon-trampoline/Cargo.toml /work/crates/daemon-trampoline/Cargo.toml
+COPY crates/running-process/build.rs /work/crates/running-process/build.rs
+COPY crates/running-process/proto /work/crates/running-process/proto
 COPY crates/running-process-py/Cargo.toml /work/crates/running-process-py/Cargo.toml
+COPY crates/test-watchdog/Cargo.toml /work/crates/test-watchdog/Cargo.toml
 COPY testbins/Cargo.toml /work/testbins/Cargo.toml
 
-RUN mkdir -p /work/crates/running-process/src \
-    /work/crates/running-process-proto/src \
-    /work/crates/running-process-client/src/bin \
-    /work/crates/running-process-daemon/src \
-    /work/crates/daemon-trampoline/src \
+RUN mkdir -p /work/crates/running-process/src/bin \
     /work/crates/running-process-py/src \
+    /work/crates/test-watchdog/src \
     /work/testbins/src/bin \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process/src/lib.rs \
- && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-proto/src/lib.rs \
- && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-client/src/lib.rs \
- && printf "fn main() {}\n" > /work/crates/running-process-client/src/bin/runpm.rs \
- && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-daemon/src/lib.rs \
- && printf "fn main() {}\n" > /work/crates/daemon-trampoline/src/main.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process/src/bin/runpm.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process/src/bin/daemon.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process/src/bin/trampoline.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/test-watchdog/src/lib.rs \
  && printf "use pyo3::prelude::*;\n#[pymodule]\nfn _native(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> { Ok(()) }\n" > /work/crates/running-process-py/src/lib.rs \
  && for b in cwd_reporter dies_after_spawn emitter env_dump env_reporter sleeper spawner stubborn; do \
         printf "fn main() {}\n" > /work/testbins/src/bin/$b.rs ; \
@@ -60,7 +58,7 @@ FROM rust-manifests AS rust-deps
 
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git/db \
-    cargo build --release --manifest-path crates/running-process-py/Cargo.toml
+    cargo build --release --manifest-path crates/running-process-py/Cargo.toml --features pyo3/extension-module
 
 FROM python-tools AS build
 

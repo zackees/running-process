@@ -89,10 +89,13 @@ def build_trampoline(mode: BuildMode) -> int:
     import shutil
 
     profile_args = ["--release"] if mode == "release" else []
+    # Wave 7 of #165: daemon-trampoline is now a [[bin]] inside the
+    # `running-process` crate; select it by binary name rather than
+    # by the old standalone package name.
     result = subprocess.run(
         cargo_command(
             "build",
-            "-p",
+            "--bin",
             "daemon-trampoline",
             "--message-format=json",
             *profile_args,

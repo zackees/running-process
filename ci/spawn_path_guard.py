@@ -13,6 +13,9 @@ PYTHON_PRODUCTION_ROOT = ROOT / "src"
 # earlier sanitization round precisely because testbins weren't checked.
 RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 
+# Wave 7 of #165: paths re-keyed within the merged `running-process`
+# crate. Daemon/client/trampoline code that used to live in sibling
+# crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process/src/lib.rs"),
     Path("crates/running-process/src/containment.rs"),
@@ -23,19 +26,18 @@ ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process-py/src/containment.rs"),
     # Python-bindings inline test fixtures.
     Path("crates/running-process-py/src/tests/pty_process.rs"),
-    # Client crate: auto-starts the daemon process when connecting.
-    Path("crates/running-process-client/src/client.rs"),
-    # Daemon crate: process management for daemonize, shadow-copy, and auto-start
-    Path("crates/running-process-daemon/src/client.rs"),
-    # Daemon handlers (split from former handlers.rs into a module dir).
+    # Client module (merged from `running-process-client`): auto-starts
+    # the daemon process when connecting.
+    Path("crates/running-process/src/client/client.rs"),
+    # Daemon module (merged from `running-process-daemon`):
+    # daemonize / shadow-copy / auto-start.
     # Process-spawn-bearing sub-files only — keep the allowlist narrow.
-    Path("crates/running-process-daemon/src/handlers/spawn.rs"),
-    Path("crates/running-process-daemon/src/platform/windows.rs"),
-    Path("crates/running-process-daemon/src/shadow.rs"),
-    # Daemon trampoline: reads sidecar JSON and spawns the target command
-    Path("crates/daemon-trampoline/src/main.rs"),
-    # Client crate: spawns daemon as detached background process
-    Path("crates/running-process-client/src/client.rs"),
+    Path("crates/running-process/src/daemon/handlers/spawn.rs"),
+    Path("crates/running-process/src/daemon/platform/windows.rs"),
+    Path("crates/running-process/src/daemon/shadow.rs"),
+    # Daemon trampoline binary (merged from `daemon-trampoline`):
+    # reads sidecar JSON and spawns the target command.
+    Path("crates/running-process/src/bin/trampoline.rs"),
     # Test-only watchdog crate (publish=false, dev-dep only) — invokes
     # procdump.exe via Command::new when the watchdog fires.
     Path("crates/test-watchdog/src/lib.rs"),
@@ -65,32 +67,31 @@ ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-py/src/containment.rs"),
     # Python-bindings inline test fixtures.
     Path("crates/running-process-py/src/tests/pty_process.rs"),
-    # Client crate: auto-starts the daemon process when connecting.
-    Path("crates/running-process-client/src/client.rs"),
-    # Daemon crate: process management for daemonize, shadow-copy, and auto-start
-    Path("crates/running-process-daemon/src/client.rs"),
+    # Client module (merged from `running-process-client`): auto-starts
+    # the daemon process when connecting, plus spawns daemon as
+    # detached background process.
+    Path("crates/running-process/src/client/client.rs"),
     # Daemon handlers (split from former handlers.rs into a module dir).
     # Only sub-files that contain genuine process spawn calls are allowlisted;
     # the remaining sub-files do not need to appear here.
-    Path("crates/running-process-daemon/src/handlers/spawn.rs"),
-    Path("crates/running-process-daemon/src/handlers/pty_sessions_handlers.rs"),
-    Path("crates/running-process-daemon/src/handlers/pipe_sessions_handlers.rs"),
+    Path("crates/running-process/src/daemon/handlers/spawn.rs"),
+    Path("crates/running-process/src/daemon/handlers/pty_sessions_handlers.rs"),
+    Path("crates/running-process/src/daemon/handlers/pipe_sessions_handlers.rs"),
     # Session managers (split from former handlers monolith). Method calls
     # `state.pty_sessions.spawn(...)` / `state.pipe_sessions.spawn(...)` and
     # `PtySessions::spawn` / `PipeSessions::spawn` definitions trigger the
     # `.spawn(` regex; the underlying process spawn happens via the native
     # spawn layer in running-process.
-    Path("crates/running-process-daemon/src/pty_sessions.rs"),
-    Path("crates/running-process-daemon/src/pipe_sessions.rs"),
+    Path("crates/running-process/src/daemon/pty_sessions.rs"),
+    Path("crates/running-process/src/daemon/pipe_sessions.rs"),
     # Daemon server: autostart dispatch invokes the session-manager
     # `.spawn(...)` methods listed above.
-    Path("crates/running-process-daemon/src/server.rs"),
-    Path("crates/running-process-daemon/src/platform/windows.rs"),
-    Path("crates/running-process-daemon/src/shadow.rs"),
-    # Daemon trampoline: reads sidecar JSON and spawns the target command
-    Path("crates/daemon-trampoline/src/main.rs"),
-    # Client crate: spawns daemon as detached background process
-    Path("crates/running-process-client/src/client.rs"),
+    Path("crates/running-process/src/daemon/server.rs"),
+    Path("crates/running-process/src/daemon/platform/windows.rs"),
+    Path("crates/running-process/src/daemon/shadow.rs"),
+    # Daemon trampoline binary (merged from `daemon-trampoline`):
+    # reads sidecar JSON and spawns the target command.
+    Path("crates/running-process/src/bin/trampoline.rs"),
     # Test-only watchdog crate: spawns procdump.exe with .output()
     # which is .spawn() + wait under the hood.
     Path("crates/test-watchdog/src/lib.rs"),
@@ -110,7 +111,7 @@ ALLOWED_PORTABLE_PTY = {
     # Daemon PTY session manager: holds NativePtyProcess handles and reads
     # the child's pid via the underlying portable_pty::Child::process_id.
     # Spawn itself routes through the native layer.
-    Path("crates/running-process-daemon/src/pty_sessions.rs"),
+    Path("crates/running-process/src/daemon/pty_sessions.rs"),
 }
 
 # `ChildStdin::from` / `ChildStdout::from` / `ChildStderr::from` consumes a
