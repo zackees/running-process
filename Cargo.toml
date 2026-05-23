@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/running-process",
-    "crates/daemon-trampoline",
     "crates/running-process-py",
     "crates/test-watchdog",
     "testbins",
