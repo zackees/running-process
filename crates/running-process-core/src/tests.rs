@@ -564,6 +564,7 @@ fn rust_debug_scope_guard_enters_and_drops() {
 #[cfg(unix)]
 mod unix_tests {
     use super::*;
+    use crate::unix::unix_signal_raw;
 
     #[test]
     fn unix_signal_raw_values() {
