@@ -244,7 +244,7 @@ Deliverable:
 ### Rust
 
 - expand [crates/running-process-py/src/lib.rs](C:/Users/niteris/dev/running-process/crates/running-process-py/src/lib.rs) PTY surface
-- likely add shared PTY backend code in `running-process-core` or a new Rust module/crate
+- likely add shared PTY backend code in `running-process` or a new Rust module/crate
 - add Windows ConPTY implementation
 - expose stable PTY lifecycle and buffer APIs to Python
 

@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use running_process_core::{ContainedProcessGroup, SpawnStdio, StdioSource};
+use running_process::{ContainedProcessGroup, SpawnStdio, StdioSource};
 
 /// Build (if needed) and locate a test binary from the workspace.
 fn testbin_path(name: &str) -> PathBuf {

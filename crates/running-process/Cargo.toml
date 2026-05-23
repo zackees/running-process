@@ -1,12 +1,12 @@
 [package]
-name = "running-process-core"
+name = "running-process"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Native process runtime for running-process"
+description = "Subprocess and PTY runtime for the running-process project"
 
 [features]
 default = []

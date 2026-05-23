@@ -1,5 +1,5 @@
-use running_process_core::pty as core_pty;
-use running_process_core::pty::NativePtyProcess as CoreNativePtyProcess;
+use running_process::pty as core_pty;
+use running_process::pty::NativePtyProcess as CoreNativePtyProcess;
 
 // ── NativePtyProcess: empty argv errors ──
 
@@ -543,7 +543,7 @@ fn pty_process_stop_terminal_input_relay_noop_when_not_started() {
 #[test]
 #[cfg(windows)]
 fn assign_child_to_job_null_handle_errors() {
-    use running_process_core::pty::assign_child_to_windows_kill_on_close_job;
+    use running_process::pty::assign_child_to_windows_kill_on_close_job;
     pyo3::prepare_freethreaded_python();
     let result = assign_child_to_windows_kill_on_close_job(None);
     assert!(result.is_err());
@@ -552,7 +552,7 @@ fn assign_child_to_job_null_handle_errors() {
 #[test]
 #[cfg(windows)]
 fn apply_windows_pty_priority_none_handle_ok() {
-    use running_process_core::pty::apply_windows_pty_priority;
+    use running_process::pty::apply_windows_pty_priority;
     pyo3::prepare_freethreaded_python();
     // None handle with any nice value should be Ok (early return)
     assert!(apply_windows_pty_priority(None, Some(5)).is_ok());
@@ -562,7 +562,7 @@ fn apply_windows_pty_priority_none_handle_ok() {
 #[test]
 #[cfg(windows)]
 fn apply_windows_pty_priority_zero_nice_noop() {
-    use running_process_core::pty::apply_windows_pty_priority;
+    use running_process::pty::apply_windows_pty_priority;
     pyo3::prepare_freethreaded_python();
     // Some handle with nice=0 → flags=0 → early return Ok
     use std::os::windows::io::AsRawHandle;

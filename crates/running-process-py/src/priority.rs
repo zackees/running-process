@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 use pyo3::exceptions::PyRuntimeError;
 
 #[cfg(unix)]
-use running_process_core::unix_set_priority;
+use running_process::unix_set_priority;
 
 use crate::helpers::to_py_err;
 use crate::public_symbols;
@@ -15,7 +15,7 @@ pub(crate) fn native_apply_process_nice(pid: u32, nice: i32) -> PyResult<()> {
 }
 
 pub(crate) fn native_apply_process_nice_impl(pid: u32, nice: i32) -> PyResult<()> {
-    running_process_core::rp_rust_debug_scope!("running_process_py::native_apply_process_nice");
+    running_process::rp_rust_debug_scope!("running_process_py::native_apply_process_nice");
     #[cfg(windows)]
     {
         public_symbols::rp_windows_apply_process_priority_public(pid, nice)
@@ -29,7 +29,7 @@ pub(crate) fn native_apply_process_nice_impl(pid: u32, nice: i32) -> PyResult<()
 
 #[cfg(windows)]
 pub(crate) fn windows_apply_process_priority_impl(pid: u32, nice: i32) -> PyResult<()> {
-    running_process_core::rp_rust_debug_scope!(
+    running_process::rp_rust_debug_scope!(
         "running_process_py::windows_apply_process_priority"
     );
     use winapi::um::handleapi::CloseHandle;
@@ -73,7 +73,7 @@ pub(crate) fn windows_generate_console_ctrl_break_impl(
     pid: u32,
     creationflags: Option<u32>,
 ) -> PyResult<()> {
-    running_process_core::rp_rust_debug_scope!(
+    running_process::rp_rust_debug_scope!(
         "running_process_py::windows_generate_console_ctrl_break"
     );
     use winapi::um::wincon::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};

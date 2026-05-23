@@ -1,6 +1,6 @@
 use pyo3::IntoPyObject;
-use running_process_core::pty as core_pty;
-use running_process_core::{CommandSpec, StderrMode, StdinMode, StreamKind};
+use running_process::pty as core_pty;
+use running_process::{CommandSpec, StderrMode, StdinMode, StreamKind};
 
 use crate::helpers::{parse_command, stderr_mode, stdin_mode, stream_kind};
 

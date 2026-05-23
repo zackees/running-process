@@ -4,7 +4,7 @@
 use std::process::Command;
 use std::sync::Arc;
 
-use running_process_core::ORIGINATOR_ENV_VAR;
+use running_process::ORIGINATOR_ENV_VAR;
 use running_process_proto::daemon::{
     DaemonRequest, DaemonResponse, KeyValue, SpawnDaemonResponse, StatusCode,
 };
@@ -24,7 +24,7 @@ struct SpawnedChild {
 fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
     {
-        // IMPORTANT: do NOT use `raw_arg` here. running_process_core's
+        // IMPORTANT: do NOT use `raw_arg` here. running_process's
         // sanitized spawn rebuilds the Win32 command line from
         // `cmd.get_program()` + `cmd.get_args()` (it can't reach
         // Rust stdlib's internal `raw_arg` storage), so any
@@ -142,7 +142,7 @@ fn spawn_and_track_detached(
     // makes Rust stdlib's `command.env_clear()` actually observable
     // through our manual CreateProcessW path on Windows.
     let mut detached =
-        running_process_core::spawn_daemon_with_clear_env(&mut command, clear_inherited_env)
+        running_process::spawn_daemon_with_clear_env(&mut command, clear_inherited_env)
             .map_err(|e| format!("failed to spawn detached command: {e}"))?;
 
     let pid = detached.id();

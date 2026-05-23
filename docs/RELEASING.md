@@ -70,7 +70,7 @@ These need to exist on the repo *before* the first real release runs:
   `skip-existing: true` (OIDC, no static token).
 - **crates.io**, in dep order:
   1. `running-process-proto`
-  2. `running-process-core`
+  2. `running-process`
   3. `running-process-client`
   4. `running-process-py`
   `cargo publish` already blocks on the sparse-index appearance before

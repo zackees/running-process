@@ -14,7 +14,7 @@ Replace the Python subprocess implementation with a Rust core so stdout and stde
 
 ## Delivered
 
-- Rust workspace with `running-process-core` and `running-process-py`
+- Rust workspace with `running-process` and `running-process-py`
 - PyO3-backed `running_process._native`
 - Thin Python wrapper in `src/running_process`
 - Separate stdout/stderr history, draining, and readiness checks

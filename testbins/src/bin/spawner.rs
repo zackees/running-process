@@ -11,7 +11,7 @@
 //!
 //! ## Why two spawn paths (cfg-gated)
 //!
-//! On Windows, sleepers are launched via `running_process_core::spawn_daemon`
+//! On Windows, sleepers are launched via `running_process::spawn_daemon`
 //! so that `CreateProcessW`'s `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` whitelist
 //! restricts inheritance to exactly the three NUL stdio handles. Using
 //! bare `std::process::Command::spawn` here leaks the spawner's stdout
@@ -62,7 +62,7 @@ fn main() {
 #[cfg(windows)]
 fn spawn_sleeper(sleeper_path: &str) -> u32 {
     let mut cmd = Command::new(sleeper_path);
-    let child = running_process_core::spawn_daemon(&mut cmd).expect("failed to spawn sleeper");
+    let child = running_process::spawn_daemon(&mut cmd).expect("failed to spawn sleeper");
     let pid = child.id();
     // `DaemonChild::Drop` just closes our process handle — the sleeper
     // keeps running and is reaped by the test's Job Object when the

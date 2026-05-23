@@ -1035,20 +1035,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
-name = "running-process-client"
-version = "3.4.1"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "interprocess",
- "libc",
- "prost",
- "running-process-proto",
-]
-
-[[package]]
-name = "running-process-core"
+name = "running-process"
 version = "3.4.1"
 dependencies = [
  "libc",
@@ -1062,6 +1049,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "running-process-client"
+version = "3.4.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "interprocess",
+ "libc",
+ "prost",
+ "running-process-proto",
+]
+
+[[package]]
 name = "running-process-daemon"
 version = "3.4.1"
 dependencies = [
@@ -1072,8 +1072,8 @@ dependencies = [
  "interprocess",
  "libc",
  "prost",
+ "running-process",
  "running-process-client",
- "running-process-core",
  "running-process-proto",
  "rusqlite",
  "serde",
@@ -1107,8 +1107,8 @@ dependencies = [
  "prost",
  "pyo3",
  "regex",
+ "running-process",
  "running-process-client",
- "running-process-core",
  "running-process-proto",
  "sysinfo",
  "winapi",
@@ -1354,7 +1354,7 @@ name = "testbins"
 version = "0.0.0"
 dependencies = [
  "libc",
- "running-process-core",
+ "running-process",
 ]
 
 [[package]]

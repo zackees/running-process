@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 
-use running_process_core::{find_processes_by_originator, OriginatorProcessInfo};
+use running_process::{find_processes_by_originator, OriginatorProcessInfo};
 
 // ── Originator process scanning ─────────────────────────────────────────────
 

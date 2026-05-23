@@ -6,7 +6,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use running_process_core::pty::{
+use running_process::pty::{
     self as core_pty, NativePtyProcess as CoreNativePtyProcess, PtyError,
 };
 

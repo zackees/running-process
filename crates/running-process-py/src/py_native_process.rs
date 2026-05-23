@@ -2,7 +2,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use running_process_core::pty::NativePtyProcess as CoreNativePtyProcess;
+use running_process::pty::NativePtyProcess as CoreNativePtyProcess;
 
 use crate::process::NativeRunningProcess;
 use crate::pty_process::NativePtyProcess;

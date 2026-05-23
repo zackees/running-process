@@ -176,7 +176,7 @@ def test_publishable_crates_include_client_before_py() -> None:
     module = _load_publish_module()
 
     assert module.PUBLISHABLE_CRATES == [
-        "running-process-core",
+        "running-process",
         "running-process-proto",
         "running-process-client",
         "running-process-py",
@@ -199,7 +199,7 @@ def test_publish_crates_runs_in_dependency_order(monkeypatch) -> None:
     module.publish_crates(dry_run=False)
 
     assert seen == [
-        ["cargo", "publish", "-p", "running-process-core", "--no-verify"],
+        ["cargo", "publish", "-p", "running-process", "--no-verify"],
         ["cargo", "publish", "-p", "running-process-proto", "--no-verify"],
         ["cargo", "publish", "-p", "running-process-client", "--no-verify"],
         ["cargo", "publish", "-p", "running-process-py", "--no-verify"],

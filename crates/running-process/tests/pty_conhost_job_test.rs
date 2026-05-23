@@ -5,7 +5,7 @@
 mod windows_tests {
     use std::time::Duration;
 
-    use running_process_core::pty::{find_child_processes, NativePtyProcess};
+    use running_process::pty::{find_child_processes, NativePtyProcess};
 
     /// Return conhost.exe PIDs that are children of our process.
     fn our_conhost_pids() -> Vec<u32> {

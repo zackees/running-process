@@ -6,11 +6,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyString};
 use regex::Regex;
 
-use running_process_core::{
+use running_process::{
     NativeProcess, ProcessConfig, ReadStatus, StreamEvent, StreamKind,
 };
 #[cfg(unix)]
-use running_process_core::{unix_signal_process, unix_signal_process_group, UnixSignal};
+use running_process::{unix_signal_process, unix_signal_process_group, UnixSignal};
 
 use crate::helpers::{
     parse_command, process_err_to_py, stderr_mode, stdin_mode, stream_kind, to_py_err,
@@ -350,14 +350,14 @@ impl NativeRunningProcess {
 
 impl NativeRunningProcess {
     pub(crate) fn start_impl(&self) -> PyResult<()> {
-        running_process_core::rp_rust_debug_scope!(
+        running_process::rp_rust_debug_scope!(
             "running_process_py::NativeRunningProcess::start"
         );
         self.inner.start().map_err(to_py_err)
     }
 
     pub(crate) fn wait_impl(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<i32> {
-        running_process_core::rp_rust_debug_scope!(
+        running_process::rp_rust_debug_scope!(
             "running_process_py::NativeRunningProcess::wait"
         );
         py.allow_threads(|| {
@@ -368,28 +368,28 @@ impl NativeRunningProcess {
     }
 
     pub(crate) fn kill_impl(&self) -> PyResult<()> {
-        running_process_core::rp_rust_debug_scope!(
+        running_process::rp_rust_debug_scope!(
             "running_process_py::NativeRunningProcess::kill"
         );
         self.inner.kill().map_err(to_py_err)
     }
 
     pub(crate) fn terminate_impl(&self) -> PyResult<()> {
-        running_process_core::rp_rust_debug_scope!(
+        running_process::rp_rust_debug_scope!(
             "running_process_py::NativeRunningProcess::terminate"
         );
         self.inner.terminate().map_err(to_py_err)
     }
 
     pub(crate) fn close_impl(&self, py: Python<'_>) -> PyResult<()> {
-        running_process_core::rp_rust_debug_scope!(
+        running_process::rp_rust_debug_scope!(
             "running_process_py::NativeRunningProcess::close"
         );
         py.allow_threads(|| self.inner.close().map_err(process_err_to_py))
     }
 
     pub(crate) fn send_interrupt_impl(&self) -> PyResult<()> {
-        running_process_core::rp_rust_debug_scope!(
+        running_process::rp_rust_debug_scope!(
             "running_process_py::NativeRunningProcess::send_interrupt"
         );
         let pid = self

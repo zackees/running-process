@@ -28,7 +28,7 @@
 //! ## Example
 //!
 //! ```no_run
-//! use running_process_core::{ContainedProcessGroup, SpawnStdio};
+//! use running_process::{ContainedProcessGroup, SpawnStdio};
 //!
 //! let group = ContainedProcessGroup::with_originator("CLUD").unwrap();
 //! let mut cmd = std::process::Command::new("sleep");

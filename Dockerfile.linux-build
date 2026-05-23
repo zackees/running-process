@@ -30,7 +30,7 @@ ENV CARGO_TARGET_DIR=/work/target \
 FROM python-tools AS rust-manifests
 
 COPY Cargo.toml Cargo.lock /work/
-COPY crates/running-process-core/Cargo.toml /work/crates/running-process-core/Cargo.toml
+COPY crates/running-process/Cargo.toml /work/crates/running-process/Cargo.toml
 COPY crates/running-process-proto/Cargo.toml /work/crates/running-process-proto/Cargo.toml
 COPY crates/running-process-client/Cargo.toml /work/crates/running-process-client/Cargo.toml
 COPY crates/running-process-daemon/Cargo.toml /work/crates/running-process-daemon/Cargo.toml
@@ -38,14 +38,14 @@ COPY crates/daemon-trampoline/Cargo.toml /work/crates/daemon-trampoline/Cargo.to
 COPY crates/running-process-py/Cargo.toml /work/crates/running-process-py/Cargo.toml
 COPY testbins/Cargo.toml /work/testbins/Cargo.toml
 
-RUN mkdir -p /work/crates/running-process-core/src \
+RUN mkdir -p /work/crates/running-process/src \
     /work/crates/running-process-proto/src \
     /work/crates/running-process-client/src/bin \
     /work/crates/running-process-daemon/src \
     /work/crates/daemon-trampoline/src \
     /work/crates/running-process-py/src \
     /work/testbins/src/bin \
- && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-core/src/lib.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process/src/lib.rs \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-proto/src/lib.rs \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-client/src/lib.rs \
  && printf "fn main() {}\n" > /work/crates/running-process-client/src/bin/runpm.rs \

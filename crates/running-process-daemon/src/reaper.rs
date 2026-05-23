@@ -125,7 +125,7 @@ pub fn scan_for_zombies(state: &DaemonState) -> Vec<ZombieInfo> {
 /// and does not require prior registration.
 #[cfg(windows)]
 pub fn scan_for_orphan_conhosts() -> Vec<ZombieInfo> {
-    running_process_core::pty::find_orphan_conhosts()
+    running_process::pty::find_orphan_conhosts()
         .into_iter()
         .map(|c| ZombieInfo {
             pid: c.pid,

@@ -5,8 +5,8 @@ use std::sync::{Mutex, OnceLock};
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use running_process_core::pty::terminal_input as core_terminal_input;
-use running_process_core::{
+use running_process::pty::terminal_input as core_terminal_input;
+use running_process::{
     CommandSpec, ProcessError, StderrMode, StdinMode, StreamKind,
 };
 use sysinfo::{Pid, System};
@@ -48,7 +48,7 @@ pub(crate) fn descendant_pids(system: &System, pid: Pid) -> Vec<Pid> {
     descendants
 }
 
-// unix_now_seconds is now in running_process_core::pty::terminal_input
+// unix_now_seconds is now in running_process::pty::terminal_input
 pub(crate) fn unix_now_seconds() -> f64 {
     core_terminal_input::unix_now_seconds()
 }

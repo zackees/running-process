@@ -1,4 +1,4 @@
-use running_process_core::pty as core_pty;
+use running_process::pty as core_pty;
 
 // ── control_churn_bytes tests ──
 
@@ -112,8 +112,8 @@ fn control_churn_bytes_multiple_sequences() {
 #[cfg(windows)]
 mod windows_payload_tests {
     use super::*;
-    use running_process_core::pty::terminal_input::format_terminal_input_bytes;
-    use running_process_core::pty::terminal_input::native_terminal_input_mode;
+    use running_process::pty::terminal_input::format_terminal_input_bytes;
+    use running_process::pty::terminal_input::native_terminal_input_mode;
 
     #[test]
     fn windows_terminal_input_payload_mixed_line_endings() {
@@ -209,7 +209,7 @@ fn control_churn_bytes_plain_text_no_churn() {
 #[cfg(not(windows))]
 fn posix_input_payload_passthrough() {
     // On POSIX, input_payload is a passthrough (data.to_vec())
-    // This is now in running_process_core::pty::pty_posix
+    // This is now in running_process::pty::pty_posix
     let data = b"hello\n";
     assert_eq!(data.to_vec(), b"hello\n");
 }

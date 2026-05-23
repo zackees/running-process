@@ -3,7 +3,7 @@ use std::time::Duration;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
-use running_process_core::render_rust_debug_traces;
+use running_process::render_rust_debug_traces;
 #[cfg(windows)]
 use std::fs;
 
@@ -13,7 +13,7 @@ use crate::helpers::to_py_err;
 #[pyfunction]
 pub(crate) fn native_windows_terminal_input_bytes(py: Python<'_>, data: &[u8]) -> Py<PyAny> {
     #[cfg(windows)]
-    let payload = running_process_core::pty::windows_terminal_input_payload(data);
+    let payload = running_process::pty::windows_terminal_input_payload(data);
     #[cfg(not(windows))]
     let payload = data.to_vec();
     PyBytes::new(py, &payload).into_any().unbind()
@@ -28,7 +28,7 @@ pub(crate) fn native_dump_rust_debug_traces() -> String {
 pub(crate) fn native_test_capture_rust_debug_trace() -> String {
     #[inline(never)]
     fn inner() -> String {
-        running_process_core::rp_rust_debug_scope!(
+        running_process::rp_rust_debug_scope!(
             "running_process_py::native_test_capture_rust_debug_trace::inner"
         );
         render_rust_debug_traces()
@@ -36,7 +36,7 @@ pub(crate) fn native_test_capture_rust_debug_trace() -> String {
 
     #[inline(never)]
     fn outer() -> String {
-        running_process_core::rp_rust_debug_scope!(
+        running_process::rp_rust_debug_scope!(
             "running_process_py::native_test_capture_rust_debug_trace::outer"
         );
         inner()
@@ -49,7 +49,7 @@ pub(crate) fn native_test_capture_rust_debug_trace() -> String {
 #[no_mangle]
 #[inline(never)]
 pub fn running_process_py_debug_hang_inner(release_path: &std::path::Path) -> PyResult<()> {
-    running_process_core::rp_rust_debug_scope!("running_process_py::debug_hang_inner");
+    running_process::rp_rust_debug_scope!("running_process_py::debug_hang_inner");
     while !release_path.exists() {
         std::hint::spin_loop();
     }
@@ -63,7 +63,7 @@ pub fn running_process_py_debug_hang_outer(
     ready_path: &std::path::Path,
     release_path: &std::path::Path,
 ) -> PyResult<()> {
-    running_process_core::rp_rust_debug_scope!("running_process_py::debug_hang_outer");
+    running_process::rp_rust_debug_scope!("running_process_py::debug_hang_outer");
     fs::write(ready_path, b"ready").map_err(to_py_err)?;
     running_process_py_debug_hang_inner(release_path)
 }
@@ -72,7 +72,7 @@ pub fn running_process_py_debug_hang_outer(
 #[cfg(windows)]
 #[inline(never)]
 pub(crate) fn native_test_hang_in_rust(ready_path: String, release_path: String) -> PyResult<()> {
-    running_process_core::rp_rust_debug_scope!("running_process_py::native_test_hang_in_rust");
+    running_process::rp_rust_debug_scope!("running_process_py::native_test_hang_in_rust");
     running_process_py_debug_hang_outer(
         std::path::Path::new(&ready_path),
         std::path::Path::new(&release_path),
@@ -86,7 +86,7 @@ pub(crate) fn native_test_hang_in_rust(ready_path: String, release_path: String)
 #[pyfunction]
 pub(crate) fn monitor_console_windows(py: Python<'_>, duration_secs: f64) -> PyResult<PyObject> {
     let duration = Duration::from_secs_f64(duration_secs);
-    let infos = running_process_core::monitor_console_windows(duration);
+    let infos = running_process::monitor_console_windows(duration);
     let list = PyList::empty(py);
     for info in infos {
         let dict = PyDict::new(py);

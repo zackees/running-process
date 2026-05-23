@@ -42,10 +42,10 @@ prefix_rule(
     decision = "forbidden",
     justification = "Use `soldr cargo package ...` instead of raw `cargo package`.",
     match = [
-        "cargo package -p running-process-core --no-verify",
+        "cargo package -p running-process --no-verify",
     ],
     not_match = [
-        "soldr cargo package -p running-process-core --no-verify",
+        "soldr cargo package -p running-process --no-verify",
     ],
 )
 
@@ -54,9 +54,9 @@ prefix_rule(
     decision = "forbidden",
     justification = "Use `soldr cargo publish ...` instead of raw `cargo publish`.",
     match = [
-        "cargo publish -p running-process-core --no-verify",
+        "cargo publish -p running-process --no-verify",
     ],
     not_match = [
-        "soldr cargo publish -p running-process-core --no-verify",
+        "soldr cargo publish -p running-process --no-verify",
     ],
 )

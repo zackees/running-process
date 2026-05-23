@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 #[cfg(windows)]
 use std::thread;
 
-use running_process_core::{
+use running_process::{
     CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode,
     StreamKind,
 };

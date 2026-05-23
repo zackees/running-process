@@ -2,7 +2,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use running_process_core::pty::terminal_input::{
+use running_process::pty::terminal_input::{
     TerminalInputCore, TerminalInputError, TerminalInputEventRecord,
 };
 

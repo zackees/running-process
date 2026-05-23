@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use running_process_core::{spawn, SpawnStdio, StdioSource};
+use running_process::{spawn, SpawnStdio, StdioSource};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))

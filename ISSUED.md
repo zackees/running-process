@@ -13,14 +13,14 @@ Those are downstream CLI policy issues, not `running-process` bugs.
 
 Problem:
 
-- `running-process-core` exposes `NativePtyProcess`, PTY query handling, and `TerminalInputCore`.
+- `running-process` exposes `NativePtyProcess`, PTY query handling, and `TerminalInputCore`.
 - But the actual Windows PTY terminal-input relay wiring is only exposed in `running-process-py`.
-- A Rust consumer using `running-process-core` directly can easily create a PTY that shows child output but never forwards keyboard input.
+- A Rust consumer using `running-process` directly can easily create a PTY that shows child output but never forwards keyboard input.
 
 Evidence:
 
-- `crates/running-process-core/src/pty/mod.rs`
-- `crates/running-process-core/src/pty/terminal_input.rs`
+- `crates/running-process/src/pty/mod.rs`
+- `crates/running-process/src/pty/terminal_input.rs`
 - `crates/running-process-py/src/lib.rs` implements `start_terminal_input_relay_py(...)`
 
 Why this belongs here:
@@ -37,7 +37,7 @@ What to add:
 
 Problem:
 
-To build a real interactive PTY session with `running-process-core`, the caller has to know to combine:
+To build a real interactive PTY session with `running-process`, the caller has to know to combine:
 
 - PTY spawn
 - output echo

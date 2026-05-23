@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use running_process_core::pty::NativePtyProcess;
+use running_process::pty::NativePtyProcess;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -327,17 +327,17 @@ impl OwnedPtySession {
     }
 
     /// Write bytes to the PTY input.
-    pub fn write_input(&self, bytes: &[u8]) -> Result<(), running_process_core::pty::PtyError> {
+    pub fn write_input(&self, bytes: &[u8]) -> Result<(), running_process::pty::PtyError> {
         self.process.write_impl(bytes, false)
     }
 
-    pub fn resize(&self, rows: u16, cols: u16) -> Result<(), running_process_core::pty::PtyError> {
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<(), running_process::pty::PtyError> {
         self.rows.store(rows, Ordering::Release);
         self.cols.store(cols, Ordering::Release);
         self.process.resize_impl(rows, cols)
     }
 
-    pub fn send_interrupt(&self) -> Result<(), running_process_core::pty::PtyError> {
+    pub fn send_interrupt(&self) -> Result<(), running_process::pty::PtyError> {
         self.process.send_interrupt_impl()
     }
 
@@ -345,7 +345,7 @@ impl OwnedPtySession {
     /// immediate `terminate_tree` followed by a short grace, then `kill_tree`.
     /// M4 will replace this with a configurable schedule running on a tokio
     /// task; the API stays the same.
-    pub fn terminate(&self, grace: Duration) -> Result<(), running_process_core::pty::PtyError> {
+    pub fn terminate(&self, grace: Duration) -> Result<(), running_process::pty::PtyError> {
         // Record the soft-signal moment so the reader loop can classify
         // the eventual exit as Soft (within grace) or HardKilled (after
         // grace window).
