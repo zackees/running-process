@@ -22,6 +22,15 @@ name = "running-process-daemon"
 path = "src/bin/daemon.rs"
 required-features = ["daemon"]
 
+[[bin]]
+# Wave 6 of #165: tiny launcher binary absorbed from the
+# `daemon-trampoline` crate. Reads a sidecar JSON file and execs the
+# target command. No required-features — uses only serde/serde_json
+# (promoted to unconditional deps below) plus libc + winapi which
+# the lib already pulls in.
+name = "daemon-trampoline"
+path = "src/bin/trampoline.rs"
+
 [features]
 # Final feature scheme per #165:
 # * `core`   — always-available API (spawn / pty / containment).
@@ -39,7 +48,7 @@ daemon = [
     "interprocess/tokio",
     "dep:tokio", "dep:tokio-util", "dep:bytes", "dep:futures-util",
     "dep:tracing", "dep:tracing-subscriber",
-    "dep:rusqlite", "dep:serde", "dep:serde_json", "dep:toml",
+    "dep:rusqlite", "dep:toml",
 ]
 originator-scan = []               # used by running-process-py for cwd-tagging
 
@@ -66,9 +75,15 @@ futures-util = { version = "0.3", features = ["sink"], optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 rusqlite = { workspace = true, optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
 toml = { version = "0.8", optional = true }
+# Wave 6 of #165: serde / serde_json promoted from daemon-feature
+# optional to unconditional so the `daemon-trampoline` binary (which
+# does not need the full daemon runtime) can deserialize its sidecar
+# JSON without forcing `--features daemon`. They were already pulled
+# in transitively under the daemon path; this just makes them always
+# present.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [build-dependencies]
 # Wave 3 of #165: build.rs absorbed from `running-process-proto`.
