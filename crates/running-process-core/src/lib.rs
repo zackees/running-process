@@ -1,24 +1,25 @@
 use std::collections::VecDeque;
-use std::fs::OpenOptions;
 use std::io::Read;
-use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use thiserror::Error;
-
 pub mod console_detect;
 pub mod containment;
+mod helpers;
 #[cfg(feature = "originator-scan")]
 pub mod originator;
 pub mod pty;
 mod public_symbols;
 mod rust_debug;
 pub mod spawn;
+mod types;
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
 
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
@@ -29,6 +30,23 @@ pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_with_clear_env, DaemonChild, SpawnStdio, SpawnedChild,
     StdioSource,
 };
+pub use types::{
+    CommandSpec, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode, StreamEvent,
+    StreamKind,
+};
+
+pub(crate) use helpers::{
+    exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid, shell_command,
+};
+#[cfg(unix)]
+pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
+#[cfg(unix)]
+pub(crate) use unix::unix_signal_raw;
+#[cfg(windows)]
+pub(crate) use windows::{
+    assign_child_to_windows_kill_on_close_job_impl, windows_priority_flags, CapturePipeHandles,
+    WindowsJobHandle,
+};
 
 #[macro_export]
 macro_rules! rp_rust_debug_scope {
@@ -36,111 +54,6 @@ macro_rules! rp_rust_debug_scope {
         let _running_process_rust_debug_scope =
             $crate::RustDebugScopeGuard::enter($label, file!(), line!());
     };
-}
-
-const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_PATH";
-
-/// Hard cap on how long `kill_impl()` will block on
-/// `wait_for_capture_completion` after the direct child has been
-/// reaped. Override via the `RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS`
-/// env var (milliseconds). The default of 2 s gives normal children
-/// time to flush their pipe buffers while preventing indefinite hangs
-/// when a grandchild inherits the pipe and outlives the parent (FastLED
-/// Bug B).
-const DEFAULT_KILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
-const KILL_DRAIN_TIMEOUT_ENV: &str = "RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS";
-
-fn kill_drain_deadline() -> Instant {
-    let timeout = std::env::var(KILL_DRAIN_TIMEOUT_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_KILL_DRAIN_TIMEOUT);
-    Instant::now() + timeout
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamKind {
-    Stdout,
-    Stderr,
-}
-
-impl StreamKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Stdout => "stdout",
-            Self::Stderr => "stderr",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamEvent {
-    pub stream: StreamKind,
-    pub line: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReadStatus<T> {
-    Line(T),
-    Timeout,
-    Eof,
-}
-
-#[derive(Debug, Error)]
-pub enum ProcessError {
-    #[error("process already started")]
-    AlreadyStarted,
-    #[error("process is not running")]
-    NotRunning,
-    #[error("process stdin is not available")]
-    StdinUnavailable,
-    #[error("failed to spawn process: {0}")]
-    Spawn(std::io::Error),
-    #[error("failed to read process output: {0}")]
-    Io(std::io::Error),
-    #[error("process timed out")]
-    Timeout,
-}
-
-#[derive(Debug, Clone)]
-pub enum CommandSpec {
-    Shell(String),
-    Argv(Vec<String>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StdinMode {
-    Inherit,
-    Piped,
-    Null,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StderrMode {
-    Stdout,
-    Pipe,
-}
-
-#[cfg(unix)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnixSignal {
-    Interrupt,
-    Terminate,
-    Kill,
-}
-
-#[derive(Debug, Clone)]
-pub struct ProcessConfig {
-    pub command: CommandSpec,
-    pub cwd: Option<PathBuf>,
-    pub env: Option<Vec<(String, String)>>,
-    pub capture: bool,
-    pub stderr_mode: StderrMode,
-    pub creationflags: Option<u32>,
-    pub create_process_group: bool,
-    pub stdin_mode: StdinMode,
-    pub nice: Option<i32>,
 }
 
 #[derive(Default)]
@@ -169,37 +82,10 @@ struct SharedState {
     returncode: AtomicI64,
 }
 
-#[cfg(windows)]
-struct WindowsJobHandle(usize);
-
-#[cfg(windows)]
-impl Drop for WindowsJobHandle {
-    fn drop(&mut self) {
-        unsafe {
-            winapi::um::handleapi::CloseHandle(self.0 as winapi::shared::ntdef::HANDLE);
-        }
-    }
-}
-
 struct ChildState {
     child: Child,
     #[cfg(windows)]
     _job: WindowsJobHandle,
-}
-
-/// Parent-side handles for the captured stdout/stderr pipes, kept so
-/// that `kill_impl` can call `CancelIoEx` to interrupt a reader thread
-/// blocked in `read()`. Stored as `usize` because `RawHandle` (a raw
-/// pointer) is not `Send` and we share this via `Arc<Mutex<...>>`.
-///
-/// The reader thread clears its slot (under the mutex) immediately
-/// before dropping its `ChildStd*`, so `kill_impl` never calls
-/// `CancelIoEx` on a closed (and potentially reused) handle.
-#[cfg(windows)]
-#[derive(Default)]
-struct CapturePipeHandles {
-    stdout: Option<usize>,
-    stderr: Option<usize>,
 }
 
 impl SharedState {
@@ -1051,119 +937,6 @@ impl NativeProcess {
     }
 }
 
-#[cfg(unix)]
-pub fn unix_set_priority(pid: u32, nice: i32) -> Result<(), std::io::Error> {
-    let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid, nice) };
-    if result == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-pub fn unix_signal_process(pid: u32, signal: UnixSignal) -> Result<(), std::io::Error> {
-    let result = unsafe { libc::kill(pid as i32, unix_signal_raw(signal)) };
-    if result == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-pub fn unix_signal_process_group(pid: i32, signal: UnixSignal) -> Result<(), std::io::Error> {
-    let result = unsafe { libc::killpg(pid, unix_signal_raw(signal)) };
-    if result == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
-    let Some(path) = std::env::var_os(CHILD_PID_LOG_PATH_ENV) else {
-        return Ok(());
-    };
-
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(format!("{pid}\n").as_bytes())?;
-    file.flush()?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn assign_child_to_windows_kill_on_close_job_impl(
-    child: &Child,
-) -> Result<WindowsJobHandle, std::io::Error> {
-    crate::rp_rust_debug_scope!("running_process_core::assign_child_to_windows_kill_on_close_job");
-    use std::mem::zeroed;
-    use std::os::windows::io::AsRawHandle;
-
-    use winapi::shared::minwindef::FALSE;
-    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-    use winapi::um::jobapi2::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-    };
-    use winapi::um::winnt::{
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-
-    let handle = child.as_raw_handle();
-    let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
-    if job.is_null() || job == INVALID_HANDLE_VALUE {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    let ok = unsafe {
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            (&mut info as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )
-    };
-    if ok == FALSE {
-        let err = std::io::Error::last_os_error();
-        unsafe { CloseHandle(job) };
-        return Err(err);
-    }
-
-    let ok = unsafe { AssignProcessToJobObject(job, handle.cast()) };
-    if ok == FALSE {
-        let err = std::io::Error::last_os_error();
-        unsafe { CloseHandle(job) };
-        return Err(err);
-    }
-
-    Ok(WindowsJobHandle(job as usize))
-}
-
-fn feed_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let mut index = 0;
-
-    while index < chunk.len() {
-        if chunk[index] == b'\n' {
-            let end = if index > start && chunk[index - 1] == b'\r' {
-                index - 1
-            } else {
-                index
-            };
-            pending.extend_from_slice(&chunk[start..end]);
-            if !pending.is_empty() {
-                lines.push(std::mem::take(pending));
-            }
-            start = index + 1;
-        }
-        index += 1;
-    }
-
-    pending.extend_from_slice(&chunk[start..]);
-    lines
-}
-
 fn emit_lines(shared: &Arc<SharedState>, stream: StreamKind, lines: Vec<Vec<u8>>) {
     if lines.is_empty() {
         return;
@@ -1191,62 +964,5 @@ fn emit_lines(shared: &Arc<SharedState>, stream: StreamKind, lines: Vec<Vec<u8>>
     shared.condvar.notify_all();
 }
 
-fn shell_command(command: &str) -> Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-
-        let mut cmd = Command::new("cmd");
-        cmd.raw_arg("/D /S /C \"");
-        cmd.raw_arg(command);
-        cmd.raw_arg("\"");
-        cmd
-    }
-    #[cfg(not(windows))]
-    {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-lc").arg(command);
-        cmd
-    }
-}
-
-fn exit_code(status: std::process::ExitStatus) -> i32 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        status
-            .code()
-            .unwrap_or_else(|| -status.signal().unwrap_or(1))
-    }
-    #[cfg(not(unix))]
-    {
-        status.code().unwrap_or(1)
-    }
-}
-
-#[cfg(unix)]
-fn unix_signal_raw(signal: UnixSignal) -> i32 {
-    match signal {
-        UnixSignal::Interrupt => libc::SIGINT,
-        UnixSignal::Terminate => libc::SIGTERM,
-        UnixSignal::Kill => libc::SIGKILL,
-    }
-}
-
-#[cfg(windows)]
-fn windows_priority_flags(nice: Option<i32>) -> u32 {
-    const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
-    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
-    const ABOVE_NORMAL_PRIORITY_CLASS: u32 = 0x0000_8000;
-    const HIGH_PRIORITY_CLASS: u32 = 0x0000_0080;
-
-    match nice {
-        Some(value) if value >= 15 => IDLE_PRIORITY_CLASS,
-        Some(value) if value >= 1 => BELOW_NORMAL_PRIORITY_CLASS,
-        Some(value) if value <= -15 => HIGH_PRIORITY_CLASS,
-        Some(value) if value <= -1 => ABOVE_NORMAL_PRIORITY_CLASS,
-        _ => 0,
-    }
-}
 #[cfg(test)]
 mod tests;
