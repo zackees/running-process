@@ -30,21 +30,27 @@ use std::time::{Duration, Instant};
 // Build / spawn helpers
 // ---------------------------------------------------------------------------
 
-fn build_artifact(package: &str, kind_filter: &str) -> PathBuf {
+// Fix Wave T2 of #165: post-mono-crate, the daemon binary lives inside
+// `running-process` and is selected by `--bin running-process-daemon`
+// (under `--features daemon`); the testbin lives inside `testbins`.
+// This helper takes the cargo args directly so each caller can pin the
+// right package + bin selector + feature set.
+fn build_artifact(cargo_args: &[&str], bin_name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", package, "--message-format=json"])
+        .args(cargo_args)
+        .arg("--message-format=json")
         .stderr(Stdio::inherit())
         .output()
-        .unwrap_or_else(|e| panic!("failed to invoke cargo build -p {package}: {e}"));
+        .unwrap_or_else(|e| panic!("failed to invoke cargo build {cargo_args:?}: {e}"));
     assert!(
         output.status.success(),
-        "cargo build -p {package} exited with {:?}",
+        "cargo build {cargo_args:?} exited with {:?}",
         output.status
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
-        if !line.contains("\"compiler-artifact\"") || !line.contains(package) {
+        if !line.contains("\"compiler-artifact\"") || !line.contains(bin_name) {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -53,10 +59,14 @@ fn build_artifact(package: &str, kind_filter: &str) -> PathBuf {
         if v["reason"] != "compiler-artifact" {
             continue;
         }
-        let is_match = v["target"]["kind"]
+        let target_name = v["target"]["name"].as_str().unwrap_or("");
+        if target_name != bin_name {
+            continue;
+        }
+        let is_bin = v["target"]["kind"]
             .as_array()
-            .is_some_and(|a| a.iter().any(|k| k == kind_filter));
-        if !is_match {
+            .is_some_and(|a| a.iter().any(|k| k == "bin"));
+        if !is_bin {
             continue;
         }
         if let Some(exe) = v["executable"].as_str() {
@@ -72,15 +82,29 @@ fn build_artifact(package: &str, kind_filter: &str) -> PathBuf {
             return path;
         }
     }
-    panic!("cargo build -p {package} produced no {kind_filter} artifact");
+    panic!("cargo build {cargo_args:?} produced no bin artifact named {bin_name}");
 }
 
 fn daemon_binary() -> PathBuf {
-    build_artifact("running-process-daemon", "bin")
+    build_artifact(
+        &[
+            "build",
+            "-p",
+            "running-process",
+            "--features",
+            "daemon",
+            "--bin",
+            "running-process-daemon",
+        ],
+        "running-process-daemon",
+    )
 }
 
 fn sleeper_binary() -> PathBuf {
-    build_artifact("testbin-sleeper", "bin")
+    build_artifact(
+        &["build", "-p", "testbins", "--bin", "testbin-sleeper"],
+        "testbin-sleeper",
+    )
 }
 
 struct DaemonGuard {

@@ -1,5 +1,11 @@
 //! Integration tests for `RUNNING_PROCESS_ORIGINATOR` env var propagation and
 //! `find_processes_by_originator` scanner.
+//!
+//! Fix Wave T4 of #165: `running_process::originator` is gated behind
+//! `feature = "originator-scan"`. Gate the entire test binary the same
+//! way so single-feature builds (e.g. `--features daemon` alone) skip
+//! this file cleanly instead of hitting an unresolved-import error.
+#![cfg(feature = "originator-scan")]
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
