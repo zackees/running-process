@@ -48,6 +48,14 @@ jobs:
           toolchain: "1.94.1"
           components: clippy, rustfmt
 
+      # cargo-nextest gives us per-test process isolation and a hard
+      # per-test wall-clock kill (see .config/nextest.toml). Prebuilt
+      # binary install is sub-second compared with `cargo install`.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
         with:

@@ -23,7 +23,16 @@ Repository = "https://github.com/zackees/running-process"
 Issues = "https://github.com/zackees/running-process/issues"
 
 [dependency-groups]
-dev = ["maturin[zig]>=1.7,<2", "pytest>=8.0.0", "pytest-cov>=6.0.0", "ruff>=0.8.0"]
+dev = [
+    "maturin[zig]>=1.7,<2",
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+    # pytest-timeout enforces the per-test wall-clock kill configured in
+    # [tool.pytest.ini_options] below. On fire it dumps every thread's
+    # Python stack so the offending test is identifiable in CI logs.
+    "pytest-timeout>=2.3.0",
+    "ruff>=0.8.0",
+]
 
 [tool.maturin]
 manifest-path = "crates/running-process-py/Cargo.toml"
@@ -46,6 +55,13 @@ cache-keys = [
 minversion = "8.0"
 addopts = ["-ra", "--strict-markers"]
 testpaths = ["tests"]
+# Hard 2-minute wall-clock per test, enforced by pytest-timeout. The
+# `thread` method (rather than `signal`) is cross-platform — it works
+# on Windows where SIGALRM isn't available — and on fire it raises in
+# the main thread AND dumps every thread's stack so the offending test
+# is identifiable in CI logs.
+timeout = 120
+timeout_method = "thread"
 markers = [
     "live: exercises real OS process and signal behavior; skipped unless RUNNING_PROCESS_LIVE_TESTS=1",
     "windows_encoding: exercises every captured-output path on Windows against UTF-8 payloads under a cp1252 console; skipped unless RUNNING_PROCESS_WINDOWS_ENCODING_TESTS=1 and sys.platform == 'win32'. Run via: pytest -m windows_encoding tests/encoding",

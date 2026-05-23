@@ -58,6 +58,13 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      # cargo-nextest is the runner ci/test.py invokes under coverage
+      # (`cargo llvm-cov nextest ...`). Prebuilt binary install.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Run tests with coverage
         run: uv run --module ci.run_logged logs/test.log -- uv run --module ci.test --coverage
 

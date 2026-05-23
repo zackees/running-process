@@ -45,6 +45,11 @@ uv run pytest tests/test_foo.py::TestClass::test_method -v  # Single test
 RUNNING_PROCESS_LIVE_TESTS=1 uv run pytest -m live tests -v  # Integration tests
 ```
 
+**Per-test deadlock guard.** Every test (Rust + Python) gets a hard 2-minute wall-clock kill so a hung test can't stall CI indefinitely:
+- Rust runs through `cargo nextest` (auto-installed by `ci/test.py` if missing); `.config/nextest.toml` sets `slow-timeout.terminate-after = 2 × 60s`. On fire nextest prints `TIMEOUT [...] <crate>::<test_file> <test_name>` plus captured stdout/stderr.
+- Python uses `pytest-timeout` with `timeout = 120, timeout_method = "thread"` in `pyproject.toml`. On fire pytest prints a `+++ Timeout +++` banner with every thread's Python stack — enough to identify the hung test from CI logs.
+Override per-invocation when needed: `cargo nextest run -- --slow-timeout 30s --terminate-after 1` or `pytest --timeout=300`.
+
 **Linting:**
 ```bash
 ./lint                           # Full suite: ruff + black + isort + pyright + KBI checker
