@@ -1026,7 +1026,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "running-process"
-version = "3.4.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "3.4.1"
+version = "4.0.0"
 dependencies = [
  "interprocess",
  "libc",
