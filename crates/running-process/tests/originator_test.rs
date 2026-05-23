@@ -135,6 +135,12 @@ fn test_no_originator_env_var_without_originator() {
     let group = ContainedProcessGroup::new().expect("create group");
 
     let mut cmd = Command::new(&env_reporter);
+    // Fix Wave T5 of #165: scrub harness-inherited
+    // RUNNING_PROCESS_ORIGINATOR so the assertion below isn't poisoned
+    // when this test runs under an agent harness (CLUD, etc.) that
+    // sets the var on the parent process. CI runs in a clean env so
+    // this was previously undetected.
+    cmd.env_remove("RUNNING_PROCESS_ORIGINATOR");
     let mut child = group.spawn(&mut cmd, pipe_stdio()).expect("spawn");
 
     let (child_pid, originator) = read_until_ready(&mut child);
