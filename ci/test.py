@@ -187,6 +187,42 @@ def _pytest_exit_is_acceptable(returncode: int, pytest_args: list[str]) -> bool:
     return returncode == 5 and bool(pytest_args)
 
 
+def _ensure_nextest_installed() -> bool:
+    """Ensure `cargo nextest` is on PATH; install it on demand if not.
+
+    Per-test timeouts and process isolation come from cargo-nextest
+    plus `.config/nextest.toml`. CI workflows pre-install via
+    `taiki-e/install-action`; this fallback covers local `./test` runs
+    where the developer hasn't done so yet.
+    """
+    probe = subprocess.run(
+        ["cargo", "nextest", "--version"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode == 0:
+        return True
+    print(
+        "cargo-nextest not found — installing (`cargo install cargo-nextest --locked`)…",
+        flush=True,
+    )
+    install = subprocess.run(
+        ["cargo", "install", "cargo-nextest", "--locked"],
+        cwd=ROOT,
+    )
+    if install.returncode != 0:
+        print(
+            "Failed to install cargo-nextest. Install it manually with:\n"
+            "  cargo install cargo-nextest --locked\n"
+            "or via the taiki-e/install-action GitHub Action.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+    return True
+
+
 def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool]:
     argv = list(sys.argv[1:] if argv is None else argv)
     raw_pytest_args: list[str] = []
@@ -223,18 +259,30 @@ def main(argv: list[str] | None = None) -> int:
 
     # -- Rust tests (with optional coverage via cargo-llvm-cov) --
     #
+    # We run via `cargo nextest run` rather than `cargo test`. Two wins:
+    #
+    # 1. Per-test PROCESS isolation — the pyo3 GIL + PTY deadlock that
+    #    forces `--test-threads=1` under cargo test on Windows doesn't
+    #    apply because each #[test] runs in its own process.
+    # 2. Per-test WALL-CLOCK timeout from `.config/nextest.toml`
+    #    (`slow-timeout.terminate-after`). Any test that hangs longer
+    #    than the deadline is killed and its captured stdout/stderr
+    #    appears in the nextest failure summary — enough for a CI agent
+    #    to identify what hung and start fixing it.
+    #
     # Build test binaries first WITHOUT the idle-timeout supervisor.
     # Compilation can have long gaps (>10s) with no stdout/stderr when
     # linking large crates (tokio, interprocess, clap, etc.) and the
-    # 10-second idle-timeout kills the process mid-compile.  The
-    # supervisor is only useful during test *execution*, but the Rust
-    # suites can still be quiet for longer than the default 10-second
-    # idle timeout while serialized PTY/PyO3 tests are running.
+    # 10-second idle-timeout would kill the process mid-compile.
+    if not _ensure_nextest_installed():
+        return 1
+
     if coverage:
         cargo_cmd = supervised_command(
             python,
             *cargo_command(
                 "llvm-cov",
+                "nextest",
                 "--workspace",
                 "--lcov",
                 "--output-path",
@@ -246,24 +294,22 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     else:
         # Step 1: compile all test binaries (no supervisor, no timeout)
-        build_args = cargo_command("test", "--workspace", "--no-run")
+        build_args = cargo_command("nextest", "run", "--workspace", "--no-run")
         if run(build_args) != 0:
             return 1
 
-        # Step 2: run the pre-built tests under the supervisor
-        cargo_test_args = cargo_command("test", "--workspace")
-        # Collect any libtest harness flags after a `--` separator.
-        harness_args: list[str] = []
+        # Step 2: run the pre-built tests under the idle-timeout supervisor.
+        # nextest's per-test wall clock comes from .config/nextest.toml.
+        cargo_test_args = cargo_command("nextest", "run", "--workspace")
         if sys.platform == "win32":
-            # On Windows, pyo3 GIL + parallel tests cause deadlocks in PTY tests.
-            # Serialize Rust tests to avoid the issue.
-            harness_args.append("--test-threads=1")
+            # Belt-and-braces: even with process-per-test isolation,
+            # filesystem and named-pipe races in the daemon test suite
+            # are more reliable under serial execution on Windows.
+            cargo_test_args += ["--test-threads", "1"]
         if os.environ.get("RUNNING_PROCESS_TEST_NOCAPTURE"):
             # CI-only: surface println!/eprintln! from Rust tests so
             # hangs and panics leave a usable trail in the GH log.
-            harness_args.append("--nocapture")
-        if harness_args:
-            cargo_test_args += ["--", *harness_args]
+            cargo_test_args.append("--no-capture")
         rust_test_timeout = (
             WINDOWS_RUST_TEST_TIMEOUT_SECONDS
             if sys.platform == "win32"
