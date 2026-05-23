@@ -20,7 +20,7 @@
 //! conditions — so a failure here is a real bug, not a flake.
 
 use running_process_daemon::client::{DaemonClient, SpawnCommandRequest};
-use running_process_proto::daemon::StatusCode;
+use running_process::proto::daemon::StatusCode;
 
 use super::{scaled, start_server_with_tempdb};
 

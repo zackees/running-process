@@ -17,7 +17,7 @@
 use running_process_daemon::client::DaemonClient;
 use running_process_daemon::paths;
 use running_process_daemon::server::DaemonServer;
-use running_process_proto::daemon::{ServiceConfig, StatusCode};
+use running_process::proto::daemon::{ServiceConfig, StatusCode};
 
 /// Build a unique scope string for each test to avoid socket conflicts.
 macro_rules! test_scope {

@@ -1040,6 +1040,10 @@ version = "3.4.1"
 dependencies = [
  "libc",
  "portable-pty",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "protox",
  "serde_json",
  "sysinfo",
  "tempfile",
@@ -1058,7 +1062,7 @@ dependencies = [
  "interprocess",
  "libc",
  "prost",
- "running-process-proto",
+ "running-process",
 ]
 
 [[package]]
@@ -1074,7 +1078,6 @@ dependencies = [
  "prost",
  "running-process",
  "running-process-client",
- "running-process-proto",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1089,16 +1092,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "running-process-proto"
-version = "3.4.1"
-dependencies = [
- "prost",
- "prost-build",
- "prost-types",
- "protox",
-]
-
-[[package]]
 name = "running-process-py"
 version = "3.4.1"
 dependencies = [
@@ -1109,7 +1102,6 @@ dependencies = [
  "regex",
  "running-process",
  "running-process-client",
- "running-process-proto",
  "sysinfo",
  "winapi",
 ]

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use prost::Message;
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     DaemonRequest, RegisterRequest, RequestType, UnregisterRequest,
 };
 

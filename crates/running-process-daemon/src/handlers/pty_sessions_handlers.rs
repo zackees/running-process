@@ -6,7 +6,7 @@
 //! handled separately in `server.rs::handle_attach_streaming` because it
 //! takes ownership of the IPC framed stream after the response is sent.
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     AttachPtySessionResponse, DaemonRequest, DaemonResponse, DetachPtySessionResponse, KeyValue,
     ListPtySessionsResponse, PtySessionInfo, ResizePtySessionResponse, SpawnPtySessionResponse,
     StatusCode, TerminatePtySessionResponse,

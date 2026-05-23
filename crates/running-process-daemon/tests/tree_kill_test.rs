@@ -20,9 +20,9 @@ use running_process_daemon::pipe_session::PipeSpawnRequest;
 #[cfg(unix)]
 use running_process_daemon::server::DaemonServer;
 #[cfg(unix)]
-use running_process_proto::daemon::PipeStreamKind;
+use running_process::proto::daemon::PipeStreamKind;
 #[cfg(unix)]
-use running_process_proto::daemon::TerminationOutcome;
+use running_process::proto::daemon::TerminationOutcome;
 
 #[cfg(unix)]
 use std::path::PathBuf;

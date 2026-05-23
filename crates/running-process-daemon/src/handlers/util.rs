@@ -1,6 +1,6 @@
 //! Shared helpers used by multiple handler sub-modules.
 
-use running_process_proto::daemon::{DaemonResponse, StatusCode};
+use running_process::proto::daemon::{DaemonResponse, StatusCode};
 
 /// Build an error `DaemonResponse` with no payload.
 pub(super) fn error_response(
@@ -45,9 +45,9 @@ pub(super) fn unix_now_seconds() -> f64 {
 /// to its proto representation.
 pub(super) fn termination_outcome_to_proto(
     outcome: crate::pty_sessions::TerminationOutcome,
-) -> running_process_proto::daemon::TerminationOutcome {
+) -> running_process::proto::daemon::TerminationOutcome {
     use crate::pty_sessions::TerminationOutcome as T;
-    use running_process_proto::daemon::TerminationOutcome as ProtoTerminationOutcome;
+    use running_process::proto::daemon::TerminationOutcome as ProtoTerminationOutcome;
     match outcome {
         T::Unspecified => ProtoTerminationOutcome::Unspecified,
         T::NaturalExit => ProtoTerminationOutcome::NaturalExit,

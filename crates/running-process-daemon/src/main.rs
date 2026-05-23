@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use running_process_daemon::{client, paths, server};
-use running_process_proto::daemon::{StatusCode, TrackedProcess};
+use running_process::proto::daemon::{StatusCode, TrackedProcess};
 
 #[derive(Parser)]
 #[command(
@@ -395,7 +395,7 @@ fn run_sessions_command(command: SessionsCommand) {
             }
         }
         SessionsCommand::Log { session_id, stream } => {
-            use running_process_proto::daemon::PipeStreamKind;
+            use running_process::proto::daemon::PipeStreamKind;
             let pipe_stream = match stream.as_str() {
                 "stderr" => PipeStreamKind::Stderr,
                 _ => PipeStreamKind::Stdout,
@@ -466,7 +466,7 @@ fn run_sessions_command(command: SessionsCommand) {
     }
 }
 
-fn print_pty_session_table(sessions: &[running_process_proto::daemon::PtySessionInfo]) {
+fn print_pty_session_table(sessions: &[running_process::proto::daemon::PtySessionInfo]) {
     if sessions.is_empty() {
         println!("no PTY sessions");
         return;
@@ -490,7 +490,7 @@ fn print_pty_session_table(sessions: &[running_process_proto::daemon::PtySession
     }
 }
 
-fn print_pipe_session_table(sessions: &[running_process_proto::daemon::PipeSessionInfo]) {
+fn print_pipe_session_table(sessions: &[running_process::proto::daemon::PipeSessionInfo]) {
     if sessions.is_empty() {
         println!("no pipe sessions");
         return;

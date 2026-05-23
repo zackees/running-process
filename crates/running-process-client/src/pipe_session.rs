@@ -12,7 +12,7 @@ use crate::paths;
 use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     AttachPipeStreamRequest, AttachPipeStreamResponse, DaemonRequest, DaemonResponse,
     DetachPipeStreamRequest, KeyValue, ListPipeSessionsRequest, ListPipeSessionsResponse,
     PipeSessionInfo, PipeStreamFrame, PipeStreamKind, RequestType, SpawnPipeSessionRequest,

@@ -15,7 +15,6 @@ name = "running-process-daemon"
 path = "src/main.rs"
 
 [dependencies]
-running-process-proto = { path = "../running-process-proto", version = "3.4.1" }
 running-process = { path = "../running-process", version = "3.4.1" }
 running-process-client = { path = "../running-process-client", version = "3.4.1" }
 prost = "0.14"

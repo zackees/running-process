@@ -2,7 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     DaemonRequest, DaemonResponse, PingResponse, ShutdownResponse, StatusCode, StatusResponse,
 };
 

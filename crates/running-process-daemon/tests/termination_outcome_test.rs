@@ -15,7 +15,7 @@ use running_process_daemon::paths;
 use running_process_daemon::pipe_session::PipeSpawnRequest;
 use running_process_daemon::pty_session::PtySpawnRequest;
 use running_process_daemon::server::DaemonServer;
-use running_process_proto::daemon::TerminationOutcome;
+use running_process::proto::daemon::TerminationOutcome;
 
 use std::path::PathBuf;
 use std::process::Command;

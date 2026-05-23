@@ -1,6 +1,6 @@
 //! Session maintenance handlers: purge exited, bulk terminate, get backlog.
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     BulkTerminateSessionsResponse, DaemonRequest, DaemonResponse, GetSessionBacklogResponse,
     PipeStreamKind, PurgeExitedSessionsResponse, StatusCode,
 };

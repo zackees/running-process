@@ -7,7 +7,7 @@
 //!  - ATTACH_PIPE_STREAM: intercepted by the server before dispatch;
 //!    this stub returns INTERNAL when reached directly.
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     AttachPipeStreamResponse, DaemonRequest, DaemonResponse, DetachPipeStreamResponse, KeyValue,
     ListPipeSessionsResponse, PipeSessionInfo, PipeStreamKind, SpawnPipeSessionResponse,
     StatusCode, TerminatePipeSessionResponse, WritePipeStdinResponse,

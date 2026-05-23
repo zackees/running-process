@@ -9,7 +9,7 @@ use running_process_daemon::client::DaemonClient;
 use running_process_daemon::paths;
 use running_process_daemon::pty_session::{PtyAttachment, PtySpawnRequest};
 use running_process_daemon::server::DaemonServer;
-use running_process_proto::daemon::AttachPtySessionRequest;
+use running_process::proto::daemon::AttachPtySessionRequest;
 
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
@@ -84,7 +84,7 @@ fn raw_attach_non_tty(
     use interprocess::local_socket::Stream;
     use interprocess::TryClone;
     use prost::Message;
-    use running_process_proto::daemon::{DaemonRequest, DaemonResponse, RequestType, StatusCode};
+    use running_process::proto::daemon::{DaemonRequest, DaemonResponse, RequestType, StatusCode};
 
     let name = paths::make_socket_name(socket_path)?;
     let stream = Stream::connect(name)?;

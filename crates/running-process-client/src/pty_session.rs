@@ -15,7 +15,7 @@ use crate::paths;
 use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     pty_input_frame::Frame as InputOneof, AttachPtySessionRequest, AttachPtySessionResponse,
     DaemonRequest, DaemonResponse, DetachPtySessionRequest, KeyValue, ListPtySessionsRequest,
     ListPtySessionsResponse, PtyInputFrame, PtyResize, PtySessionInfo, PtyStreamFrame, RequestType,
