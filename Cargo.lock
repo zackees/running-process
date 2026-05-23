@@ -1038,6 +1038,8 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "running-process-client"
 version = "3.4.1"
 dependencies = [
+ "anyhow",
+ "clap",
  "dirs",
  "interprocess",
  "libc",
@@ -1110,16 +1112,6 @@ dependencies = [
  "running-process-proto",
  "sysinfo",
  "winapi",
-]
-
-[[package]]
-name = "runpm-cli"
-version = "3.4.1"
-dependencies = [
- "anyhow",
- "clap",
- "running-process-client",
- "running-process-proto",
 ]
 
 [[package]]
@@ -1358,44 +1350,11 @@ name = "test-watchdog"
 version = "0.0.0"
 
 [[package]]
-name = "testbin-cwd-reporter"
-version = "0.0.0"
-
-[[package]]
-name = "testbin-dies-after-spawn"
-version = "0.0.0"
-dependencies = [
- "running-process-core",
-]
-
-[[package]]
-name = "testbin-emitter"
-version = "0.0.0"
-
-[[package]]
-name = "testbin-env-dump"
-version = "0.0.0"
-
-[[package]]
-name = "testbin-env-reporter"
-version = "0.0.0"
-
-[[package]]
-name = "testbin-sleeper"
-version = "0.0.0"
-
-[[package]]
-name = "testbin-spawner"
-version = "0.0.0"
-dependencies = [
- "running-process-core",
-]
-
-[[package]]
-name = "testbin-stubborn"
+name = "testbins"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "running-process-core",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PYTHON_PRODUCTION_ROOT = ROOT / "src"
 # Scan all Rust source under both crates/ and testbins/. The testbin
 # scan exists specifically because issue #115 was a bare
-# `Command::spawn` in testbins/spawner/src/main.rs that survived the
+# `Command::spawn` in testbins/src/bin/spawner.rs that survived the
 # earlier sanitization round precisely because testbins weren't checked.
 RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 
@@ -43,8 +43,8 @@ ALLOWED_RUST_COMMAND_NEW = {
     # sanitized spawn surface (or, on Unix, to bare std::Command::spawn
     # because our sanitized spawn calls setpgid in the child, which
     # would break the test's killpg-based containment on macOS).
-    Path("testbins/spawner/src/main.rs"),
-    Path("testbins/dies_after_spawn/src/main.rs"),
+    Path("testbins/src/bin/spawner.rs"),
+    Path("testbins/src/bin/dies_after_spawn.rs"),
 }
 
 ALLOWED_RUST_SPAWN = {
@@ -95,9 +95,10 @@ ALLOWED_RUST_SPAWN = {
     # which is .spawn() + wait under the hood.
     Path("crates/test-watchdog/src/lib.rs"),
     # Testbins: bare std::Command::spawn on Unix only (see comment in
-    # testbins/spawner — sanitized spawn isn't usable there because of
-    # the setpgid-vs-killpg interaction the containment test relies on).
-    Path("testbins/spawner/src/main.rs"),
+    # testbins/src/bin/spawner.rs — sanitized spawn isn't usable there
+    # because of the setpgid-vs-killpg interaction the containment test
+    # relies on).
+    Path("testbins/src/bin/spawner.rs"),
 }
 
 ALLOWED_PORTABLE_PTY = {
