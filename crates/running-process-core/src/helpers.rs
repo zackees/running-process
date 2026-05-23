@@ -1,6 +1,5 @@
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub(crate) const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_PATH";
@@ -58,25 +57,6 @@ pub(crate) fn feed_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
 
     pending.extend_from_slice(&chunk[start..]);
     lines
-}
-
-pub(crate) fn shell_command(command: &str) -> Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-
-        let mut cmd = Command::new("cmd");
-        cmd.raw_arg("/D /S /C \"");
-        cmd.raw_arg(command);
-        cmd.raw_arg("\"");
-        cmd
-    }
-    #[cfg(not(windows))]
-    {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-lc").arg(command);
-        cmd
-    }
 }
 
 pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {

@@ -35,9 +35,7 @@ pub use types::{
     StreamKind,
 };
 
-pub(crate) use helpers::{
-    exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid, shell_command,
-};
+pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
 #[cfg(unix)]
@@ -962,6 +960,25 @@ fn emit_lines(shared: &Arc<SharedState>, stream: StreamKind, lines: Vec<Vec<u8>>
         guard.combined_queue.push_back(event);
     }
     shared.condvar.notify_all();
+}
+
+pub(crate) fn shell_command(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let mut cmd = Command::new("cmd");
+        cmd.raw_arg("/D /S /C \"");
+        cmd.raw_arg(command);
+        cmd.raw_arg("\"");
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-lc").arg(command);
+        cmd
+    }
 }
 
 #[cfg(test)]
