@@ -38,8 +38,6 @@ pub use types::{
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
-#[cfg(unix)]
-pub(crate) use unix::unix_signal_raw;
 #[cfg(windows)]
 pub(crate) use windows::{
     assign_child_to_windows_kill_on_close_job_impl, windows_priority_flags, CapturePipeHandles,
