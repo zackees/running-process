@@ -29,7 +29,7 @@ pub(crate) struct CapturePipeHandles {
 pub(crate) fn assign_child_to_windows_kill_on_close_job_impl(
     child: &Child,
 ) -> Result<WindowsJobHandle, std::io::Error> {
-    crate::rp_rust_debug_scope!("running_process_core::assign_child_to_windows_kill_on_close_job");
+    crate::rp_rust_debug_scope!("running_process::assign_child_to_windows_kill_on_close_job");
     use std::mem::zeroed;
     use std::os::windows::io::AsRawHandle;
 

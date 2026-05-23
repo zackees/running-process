@@ -1,7 +1,7 @@
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
-use running_process_core::{ContainedProcessGroup, DaemonChild, SpawnStdio, SpawnedChild};
+use running_process::{ContainedProcessGroup, DaemonChild, SpawnStdio, SpawnedChild};
 
 use crate::helpers::to_py_err;
 

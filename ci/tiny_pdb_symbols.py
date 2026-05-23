@@ -17,43 +17,43 @@ class TinyPdbSymbolSpec:
 TINY_PDB_SYMBOLS: tuple[TinyPdbSymbolSpec, ...] = (
     TinyPdbSymbolSpec(
         "rp_native_process_start_public",
-        "crates/running-process-core/src/public_symbols.rs",
+        "crates/running-process/src/public_symbols.rs",
         "pub extern \"C\" fn rp_native_process_start_public(",
         "core",
     ),
     TinyPdbSymbolSpec(
         "rp_native_process_wait_public",
-        "crates/running-process-core/src/public_symbols.rs",
+        "crates/running-process/src/public_symbols.rs",
         "pub extern \"C\" fn rp_native_process_wait_public(",
         "core",
     ),
     TinyPdbSymbolSpec(
         "rp_native_process_kill_public",
-        "crates/running-process-core/src/public_symbols.rs",
+        "crates/running-process/src/public_symbols.rs",
         "pub extern \"C\" fn rp_native_process_kill_public(",
         "core",
     ),
     TinyPdbSymbolSpec(
         "rp_native_process_close_public",
-        "crates/running-process-core/src/public_symbols.rs",
+        "crates/running-process/src/public_symbols.rs",
         "pub extern \"C\" fn rp_native_process_close_public(",
         "core",
     ),
     TinyPdbSymbolSpec(
         "rp_native_process_read_combined_public",
-        "crates/running-process-core/src/public_symbols.rs",
+        "crates/running-process/src/public_symbols.rs",
         "pub extern \"C\" fn rp_native_process_read_combined_public(",
         "core",
     ),
     TinyPdbSymbolSpec(
         "rp_native_process_wait_for_capture_completion_public",
-        "crates/running-process-core/src/public_symbols.rs",
+        "crates/running-process/src/public_symbols.rs",
         "pub extern \"C\" fn rp_native_process_wait_for_capture_completion_public(",
         "core",
     ),
     TinyPdbSymbolSpec(
         "rp_assign_child_to_windows_kill_on_close_job_public",
-        "crates/running-process-core/src/public_symbols.rs",
+        "crates/running-process/src/public_symbols.rs",
         "pub extern \"C\" fn rp_assign_child_to_windows_kill_on_close_job_public(",
         "core",
     ),
@@ -111,7 +111,7 @@ TINY_PDB_SYMBOLS: tuple[TinyPdbSymbolSpec, ...] = (
         "pub extern \"C\" fn rp_native_running_process_send_interrupt_public(",
         "api",
     ),
-    # PTY public symbols moved to running-process-core/src/pty/
+    # PTY public symbols moved to running-process/src/pty/
 )
 
 DISALLOWED_PUBLIC_SYMBOL_PATTERNS: tuple[str, ...] = (

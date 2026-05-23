@@ -1,12 +1,12 @@
 #[cfg(windows)]
-use running_process_core::pty::terminal_input::{
+use running_process::pty::terminal_input::{
     control_character_for_unicode, format_terminal_input_bytes, native_terminal_input_mode,
     native_terminal_input_trace_target, repeat_terminal_input_bytes, repeated_modified_sequence,
     repeated_tilde_sequence, terminal_input_modifier_parameter, translate_console_key_event,
 };
 #[cfg(all(windows, test))]
-use running_process_core::pty::terminal_input::NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV;
-use running_process_core::pty::terminal_input::TerminalInputEventRecord;
+use running_process::pty::terminal_input::NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV;
+use running_process::pty::terminal_input::TerminalInputEventRecord;
 
 #[cfg(windows)]
 use winapi::um::wincon::{

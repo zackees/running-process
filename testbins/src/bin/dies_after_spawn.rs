@@ -1,4 +1,4 @@
-//! Test binary: spawns a long-lived grandchild via running_process_core::spawn,
+//! Test binary: spawns a long-lived grandchild via running_process::spawn,
 //! prints the grandchild PID, prints READY, then exits 0.
 //!
 //! Reads the path to the sleeper binary from RUNNING_PROCESS_SPAWN_TARGET.
@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::process::Command;
 
-use running_process_core::{spawn, SpawnStdio};
+use running_process::{spawn, SpawnStdio};
 
 fn main() {
     let target = std::env::var("RUNNING_PROCESS_SPAWN_TARGET")

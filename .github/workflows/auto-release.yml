@@ -235,7 +235,7 @@ jobs:
           # Keep this in sync with PUBLISH_ORDER in the publish-crates job.
           rust_crates = (
               "running-process-proto",
-              "running-process-core",
+              "running-process",
               "running-process-client",
               "running-process-py",
           )
@@ -481,7 +481,7 @@ jobs:
           # the rust_crates tuple in preflight's registry-check step.
           PUBLISH_ORDER=(
             running-process-proto
-            running-process-core
+            running-process
             running-process-client
             running-process-py
           )

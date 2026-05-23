@@ -692,7 +692,7 @@ def test_demangle_native_debugger_text_uses_cxxfilt(monkeypatch) -> None:
 
         class Result:
             returncode = 0
-            stdout = "running_process_core::NativeProcess::wait::h6b7a0fd0be7a0f11\n"
+            stdout = "running_process::NativeProcess::wait::h6b7a0fd0be7a0f11\n"
 
         return Result()
 
@@ -700,10 +700,10 @@ def test_demangle_native_debugger_text_uses_cxxfilt(monkeypatch) -> None:
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     rendered = cli._demangle_native_debugger_text(
-        "frame _ZN20running_process_core13NativeProcess4wait17h6b7a0fd0be7a0f11E"
+        "frame _ZN20running_process13NativeProcess4wait17h6b7a0fd0be7a0f11E"
     )
 
-    assert rendered == "frame running_process_core::NativeProcess::wait"
+    assert rendered == "frame running_process::NativeProcess::wait"
     assert seen == [["C:/tools/c++filt.exe"]]
 
 
@@ -730,7 +730,7 @@ def test_run_native_debugger_dump_falls_back_after_failed_debugger(
             return Result(1, "")
         return Result(
             0,
-            "_ZN20running_process_core13NativeProcess4wait17h6b7a0fd0be7a0f11E\n",
+            "_ZN20running_process13NativeProcess4wait17h6b7a0fd0be7a0f11E\n",
         )
 
     monkeypatch.setattr(
@@ -744,7 +744,7 @@ def test_run_native_debugger_dump_falls_back_after_failed_debugger(
         if command == ["C:/tools/c++filt.exe"]:
             class Result:
                 returncode = 0
-                stdout = "running_process_core::NativeProcess::wait::h6b7a0fd0be7a0f11\n"
+                stdout = "running_process::NativeProcess::wait::h6b7a0fd0be7a0f11\n"
                 stderr = ""
 
             return Result()
@@ -755,8 +755,8 @@ def test_run_native_debugger_dump_falls_back_after_failed_debugger(
     assert cli._run_native_debugger_dump(pid=123, log_path=log_path) is True
     text = log_path.read_text(encoding="utf-8")
     assert "$ gdb --batch 123" in text
-    assert "running_process_core::NativeProcess::wait" in text
-    assert "_ZN20running_process_core13NativeProcess4wait17h6b7a0fd0be7a0f11E" not in text
+    assert "running_process::NativeProcess::wait" in text
+    assert "_ZN20running_process13NativeProcess4wait17h6b7a0fd0be7a0f11E" not in text
 
 
 def test_run_native_debugger_dump_records_unavailable_tool(monkeypatch, tmp_path: Path) -> None:

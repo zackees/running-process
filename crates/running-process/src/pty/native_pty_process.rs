@@ -262,7 +262,7 @@ impl NativePtyProcess {
     /// Synchronously tear down the PTY and reap the child.
     #[inline(never)]
     pub fn close_impl(&self) -> Result<(), PtyError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::close_impl");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::close_impl");
         self.stop_terminal_input_relay_impl();
         let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
         let Some(handles) = guard.take() else {
@@ -289,14 +289,14 @@ impl NativePtyProcess {
         {
             {
                 crate::rp_rust_debug_scope!(
-                    "running_process_core::NativePtyProcess::close_impl.drop_job"
+                    "running_process::NativePtyProcess::close_impl.drop_job"
                 );
                 drop(_job);
             }
 
             {
                 crate::rp_rust_debug_scope!(
-                    "running_process_core::NativePtyProcess::close_impl.wait_job_exit"
+                    "running_process::NativePtyProcess::close_impl.wait_job_exit"
                 );
                 let wait_deadline = Instant::now() + Duration::from_secs(2);
                 loop {
@@ -331,20 +331,20 @@ impl NativePtyProcess {
             }
             {
                 crate::rp_rust_debug_scope!(
-                    "running_process_core::NativePtyProcess::close_impl.drop_writer"
+                    "running_process::NativePtyProcess::close_impl.drop_writer"
                 );
                 drop(writer);
             }
             {
                 crate::rp_rust_debug_scope!(
-                    "running_process_core::NativePtyProcess::close_impl.drop_master"
+                    "running_process::NativePtyProcess::close_impl.drop_master"
                 );
                 drop(master);
             }
             drop(child);
             {
                 crate::rp_rust_debug_scope!(
-                    "running_process_core::NativePtyProcess::close_impl.join_reader"
+                    "running_process::NativePtyProcess::close_impl.join_reader"
                 );
                 self.join_reader_worker();
             }
@@ -359,7 +359,7 @@ impl NativePtyProcess {
 
             let code = {
                 crate::rp_rust_debug_scope!(
-                    "running_process_core::NativePtyProcess::close_impl.wait_child"
+                    "running_process::NativePtyProcess::close_impl.wait_child"
                 );
                 match child.wait() {
                     Ok(status) => portable_exit_code(status),
@@ -371,7 +371,7 @@ impl NativePtyProcess {
             self.store_returncode(code);
             {
                 crate::rp_rust_debug_scope!(
-                    "running_process_core::NativePtyProcess::close_impl.join_reader"
+                    "running_process::NativePtyProcess::close_impl.join_reader"
                 );
                 self.join_reader_worker();
             }
@@ -383,7 +383,7 @@ impl NativePtyProcess {
     /// Best-effort, non-blocking teardown for use from `Drop`.
     #[inline(never)]
     pub fn close_nonblocking(&self) {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::close_nonblocking");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::close_nonblocking");
         #[cfg(windows)]
         self.request_terminal_input_relay_stop();
         let Ok(mut guard) = self.handles.lock() else {
@@ -423,7 +423,7 @@ impl NativePtyProcess {
     }
 
     pub fn start_impl(&self) -> Result<(), PtyError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::start");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::start");
         let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
         if guard.is_some() {
             return Err(PtyError::AlreadyStarted);
@@ -517,7 +517,7 @@ impl NativePtyProcess {
     }
 
     pub fn resize_impl(&self, rows: u16, cols: u16) -> Result<(), PtyError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::resize");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::resize");
         let guard = self.handles.lock().expect("pty handles mutex poisoned");
         if let Some(handles) = guard.as_ref() {
             #[cfg(windows)]
@@ -544,7 +544,7 @@ impl NativePtyProcess {
     }
 
     pub fn send_interrupt_impl(&self) -> Result<(), PtyError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::send_interrupt");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::send_interrupt");
         #[cfg(windows)]
         {
             pty_windows::send_interrupt(self)
@@ -557,7 +557,7 @@ impl NativePtyProcess {
     }
 
     pub fn wait_impl(&self, timeout: Option<f64>) -> Result<i32, PtyError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::wait");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::wait");
         // Fast path: already exited.
         if let Some(code) = *self
             .returncode
@@ -579,7 +579,7 @@ impl NativePtyProcess {
     }
 
     pub fn terminate_impl(&self) -> Result<(), PtyError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::terminate");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::terminate");
         #[cfg(windows)]
         {
             if self
@@ -600,7 +600,7 @@ impl NativePtyProcess {
     }
 
     pub fn kill_impl(&self) -> Result<(), PtyError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::kill");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::kill");
         #[cfg(windows)]
         {
             if self
@@ -621,7 +621,7 @@ impl NativePtyProcess {
     }
 
     pub fn terminate_tree_impl(&self) -> Result<(), PtyError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::terminate_tree");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::terminate_tree");
         #[cfg(windows)]
         {
             pty_windows::terminate_tree(self)
@@ -634,7 +634,7 @@ impl NativePtyProcess {
     }
 
     pub fn kill_tree_impl(&self) -> Result<(), PtyError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativePtyProcess::kill_tree");
+        crate::rp_rust_debug_scope!("running_process::NativePtyProcess::kill_tree");
         #[cfg(windows)]
         {
             pty_windows::kill_tree(self)

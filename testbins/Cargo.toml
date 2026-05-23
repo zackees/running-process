@@ -36,10 +36,10 @@ path = "src/bin/spawner.rs"
 name = "testbin-stubborn"
 path = "src/bin/stubborn.rs"
 
-# Unconditional because `dies_after_spawn` uses `running_process_core::{spawn, SpawnStdio}`
+# Unconditional because `dies_after_spawn` uses `running_process::{spawn, SpawnStdio}`
 # on every platform. `spawner` also uses it but only inside `#[cfg(windows)]` blocks.
 [dependencies]
-running-process-core = { path = "../crates/running-process-core" }
+running-process = { path = "../crates/running-process" }
 
 # `stubborn` only needs libc on Unix (to SIG_IGN SIGTERM).
 [target.'cfg(unix)'.dependencies]

@@ -14,10 +14,10 @@ PYTHON_PRODUCTION_ROOT = ROOT / "src"
 RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 
 ALLOWED_RUST_COMMAND_NEW = {
-    Path("crates/running-process-core/src/lib.rs"),
-    Path("crates/running-process-core/src/containment.rs"),
-    # Inline tests module for running-process-core lib root.
-    Path("crates/running-process-core/src/tests.rs"),
+    Path("crates/running-process/src/lib.rs"),
+    Path("crates/running-process/src/containment.rs"),
+    # Inline tests module for running-process lib root.
+    Path("crates/running-process/src/tests.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),
@@ -48,18 +48,18 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
-    Path("crates/running-process-core/src/lib.rs"),
-    Path("crates/running-process-core/src/containment.rs"),
-    # Inline tests module for running-process-core lib root.
-    Path("crates/running-process-core/src/tests.rs"),
+    Path("crates/running-process/src/lib.rs"),
+    Path("crates/running-process/src/containment.rs"),
+    # Inline tests module for running-process lib root.
+    Path("crates/running-process/src/tests.rs"),
     # Two-mode spawn surface: `spawn` (contained, sanitized handles, caller stdio)
     # and `spawn_daemon` (detached, NUL stdio, sanitized handles). See #110, #113.
-    Path("crates/running-process-core/src/spawn.rs"),
+    Path("crates/running-process/src/spawn.rs"),
     # Unix backing impl for `spawn`/`spawn_daemon`: drives bare
     # `Command::spawn()` after applying setpgid/setsid + fd hygiene
     # via `pre_exec`. Windows impl uses CreateProcessW directly so it
     # doesn't trigger this lint.
-    Path("crates/running-process-core/src/spawn_imp_unix.rs"),
+    Path("crates/running-process/src/spawn_imp_unix.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),
@@ -79,7 +79,7 @@ ALLOWED_RUST_SPAWN = {
     # `state.pty_sessions.spawn(...)` / `state.pipe_sessions.spawn(...)` and
     # `PtySessions::spawn` / `PipeSessions::spawn` definitions trigger the
     # `.spawn(` regex; the underlying process spawn happens via the native
-    # spawn layer in running-process-core.
+    # spawn layer in running-process.
     Path("crates/running-process-daemon/src/pty_sessions.rs"),
     Path("crates/running-process-daemon/src/pipe_sessions.rs"),
     # Daemon server: autostart dispatch invokes the session-manager
@@ -104,9 +104,9 @@ ALLOWED_RUST_SPAWN = {
 ALLOWED_PORTABLE_PTY = {
     Path("crates/running-process-py/src/lib.rs"),
     # PTY module moved to core crate
-    Path("crates/running-process-core/src/pty/mod.rs"),
+    Path("crates/running-process/src/pty/mod.rs"),
     # Native PTY process impl extracted from pty/mod.rs.
-    Path("crates/running-process-core/src/pty/native_pty_process.rs"),
+    Path("crates/running-process/src/pty/native_pty_process.rs"),
     # Daemon PTY session manager: holds NativePtyProcess handles and reads
     # the child's pid via the underlying portable_pty::Child::process_id.
     # Spawn itself routes through the native layer.
@@ -121,7 +121,7 @@ ALLOWED_PORTABLE_PTY = {
 # wrappers in spawn_imp_windows.rs are the ONLY approved way to do this
 # conversion, and they bake in the FILE_FLAG_OVERLAPPED guarantee.
 ALLOWED_RUST_CHILD_PIPE_FROM = {
-    Path("crates/running-process-core/src/spawn_imp_windows.rs"),
+    Path("crates/running-process/src/spawn_imp_windows.rs"),
 }
 
 ALLOWED_PYTHON_POPEN = {

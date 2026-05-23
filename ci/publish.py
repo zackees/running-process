@@ -31,7 +31,7 @@ WORKFLOWS = {
 # Publish Rust crates in dependency order so crates.io can resolve each local
 # path dependency by version when the next crate is packaged.
 PUBLISHABLE_CRATES = [
-    "running-process-core",
+    "running-process",
     "running-process-proto",
     "running-process-client",
     "running-process-py",

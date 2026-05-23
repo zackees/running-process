@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use pyo3::prelude::*;
 
-use running_process_core::pty::{IdleDetectorCore, IdleMonitorState};
+use running_process::pty::{IdleDetectorCore, IdleMonitorState};
 
 use crate::signal_bool::NativeSignalBool;
 

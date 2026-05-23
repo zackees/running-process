@@ -290,7 +290,7 @@ pub fn spawn_pty_reader(
     output_bytes_total: Arc<AtomicUsize>,
     control_churn_bytes_total: Arc<AtomicUsize>,
 ) {
-    crate::rp_rust_debug_scope!("running_process_core::spawn_pty_reader");
+    crate::rp_rust_debug_scope!("running_process::spawn_pty_reader");
     let idle_detector_snapshot = idle_detector
         .lock()
         .expect("idle detector mutex poisoned")
@@ -571,7 +571,7 @@ pub fn assign_child_to_windows_kill_on_close_job(
     handle: Option<std::os::windows::io::RawHandle>,
 ) -> Result<WindowsJobHandle, PtyError> {
     crate::rp_rust_debug_scope!(
-        "running_process_core::pty::assign_child_to_windows_kill_on_close_job"
+        "running_process::pty::assign_child_to_windows_kill_on_close_job"
     );
     use std::mem::zeroed;
 
@@ -793,7 +793,7 @@ pub fn apply_windows_pty_priority(
     handle: Option<std::os::windows::io::RawHandle>,
     nice: Option<i32>,
 ) -> Result<(), PtyError> {
-    crate::rp_rust_debug_scope!("running_process_core::pty::apply_windows_pty_priority");
+    crate::rp_rust_debug_scope!("running_process::pty::apply_windows_pty_priority");
     use winapi::um::processthreadsapi::SetPriorityClass;
     use winapi::um::winbase::{
         ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,

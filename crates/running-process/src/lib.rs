@@ -125,7 +125,7 @@ impl NativeProcess {
     }
 
     fn start_impl(&self) -> Result<(), ProcessError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::start");
+        crate::rp_rust_debug_scope!("running_process::NativeProcess::start");
         let mut guard = self.child.lock().expect("child mutex poisoned");
         if guard.is_some() {
             return Err(ProcessError::AlreadyStarted);
@@ -280,7 +280,7 @@ impl NativeProcess {
     }
 
     fn wait_impl(&self, timeout: Option<Duration>) -> Result<i32, ProcessError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::wait");
+        crate::rp_rust_debug_scope!("running_process::NativeProcess::wait");
         if self.child.lock().expect("child mutex poisoned").is_none() {
             return self.returncode().ok_or(ProcessError::NotRunning);
         }
@@ -333,7 +333,7 @@ impl NativeProcess {
     }
 
     fn kill_impl(&self) -> Result<(), ProcessError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::kill");
+        crate::rp_rust_debug_scope!("running_process::NativeProcess::kill");
         {
             let mut guard = self.child.lock().expect("child mutex poisoned");
             let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
@@ -450,7 +450,7 @@ impl NativeProcess {
     }
 
     fn close_impl(&self) -> Result<(), ProcessError> {
-        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::close");
+        crate::rp_rust_debug_scope!("running_process::NativeProcess::close");
         if self.child.lock().expect("child mutex poisoned").is_none() {
             return Ok(());
         }
@@ -582,7 +582,7 @@ impl NativeProcess {
     }
 
     fn read_combined_impl(&self, timeout: Option<Duration>) -> ReadStatus<StreamEvent> {
-        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::read_combined");
+        crate::rp_rust_debug_scope!("running_process::NativeProcess::read_combined");
         let deadline = timeout.map(|limit| Instant::now() + limit);
         let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
 
@@ -844,7 +844,7 @@ impl NativeProcess {
     /// `wait_for_capture_completion_with_deadline`'s safety-net.
     #[cfg(windows)]
     fn cancel_capture_io(&self) {
-        crate::rp_rust_debug_scope!("running_process_core::NativeProcess::cancel_capture_io");
+        crate::rp_rust_debug_scope!("running_process::NativeProcess::cancel_capture_io");
         use winapi::shared::ntdef::HANDLE;
         use winapi::um::ioapiset::CancelIoEx;
         let guard = self
@@ -876,7 +876,7 @@ impl NativeProcess {
 
     fn wait_for_capture_completion_impl(&self) {
         crate::rp_rust_debug_scope!(
-            "running_process_core::NativeProcess::wait_for_capture_completion"
+            "running_process::NativeProcess::wait_for_capture_completion"
         );
         if !self.config.capture {
             return;
@@ -901,7 +901,7 @@ impl NativeProcess {
     /// will assign `closed = true` again, which is a harmless no-op.
     fn wait_for_capture_completion_with_deadline_impl(&self, deadline: Instant) -> bool {
         crate::rp_rust_debug_scope!(
-            "running_process_core::NativeProcess::wait_for_capture_completion_with_deadline"
+            "running_process::NativeProcess::wait_for_capture_completion_with_deadline"
         );
         if !self.config.capture {
             return true;

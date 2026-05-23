@@ -1,4 +1,4 @@
-//! Adversarial filesystem / path / env tests for `running_process_core::spawn`.
+//! Adversarial filesystem / path / env tests for `running_process::spawn`.
 //!
 //! Each test targets a place where Windows, macOS, and Linux filesystem or
 //! shell semantics diverge and where our spawn machinery could silently
@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use running_process_core::{spawn, SpawnStdio, StdioSource};
+use running_process::{spawn, SpawnStdio, StdioSource};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

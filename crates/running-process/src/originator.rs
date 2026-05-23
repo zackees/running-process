@@ -22,7 +22,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use running_process_core::originator::find_processes_by_originator;
+//! use running_process::originator::find_processes_by_originator;
 //!
 //! let stale = find_processes_by_originator("CLUD");
 //! for info in &stale {
@@ -70,7 +70,7 @@ pub fn parse_originator_value(value: &str) -> Option<(&str, u32)> {
 /// # Example
 ///
 /// ```no_run
-/// use running_process_core::originator::find_processes_by_originator;
+/// use running_process::originator::find_processes_by_originator;
 ///
 /// let results = find_processes_by_originator("CLUD");
 /// for info in &results {

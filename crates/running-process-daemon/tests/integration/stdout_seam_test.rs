@@ -1,6 +1,6 @@
 //! Adversarial integration tests for the daemon → subprocess stdout seam.
 //!
-//! The daemon spawns subprocesses via `running_process_core::spawn_daemon`,
+//! The daemon spawns subprocesses via `running_process::spawn_daemon`,
 //! which wires stdin/stdout/stderr to the platform null device. That's a
 //! deliberate API choice — once the subprocess is detached from the
 //! daemon's lifetime, there's no caller around to hold a pipe. These

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use running_process_core::originator::find_processes_by_originator;
-use running_process_core::{ContainedProcessGroup, SpawnStdio, SpawnedChild, StdioSource};
+use running_process::originator::find_processes_by_originator;
+use running_process::{ContainedProcessGroup, SpawnStdio, SpawnedChild, StdioSource};
 
 /// Build and locate a test binary from the workspace.
 fn testbin_path(name: &str) -> PathBuf {

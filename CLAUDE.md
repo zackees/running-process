@@ -16,7 +16,7 @@ A Rust-backed Python library (v3.0.15) for subprocess and PTY process management
 - **`RunningProcessManager`**: Thread-safe singleton registry for tracking active processes
 
 **Rust layer** (`crates/`) provides native performance:
-- **`running-process-core`**: OS-level subprocess abstraction (`NativeProcess` — pipe I/O, signaling, Job Objects/process groups). No PTY.
+- **`running-process`**: OS-level subprocess abstraction (`NativeProcess` — pipe I/O, signaling, Job Objects/process groups). No PTY.
 - **`running-process-py`**: PyO3 bindings. Contains `NativePtyProcess` (via `portable-pty` crate) alongside the pipe backend. Exposes a unified `PyNativeProcess` with `NativeProcessBackend` enum dispatching to either `NativeRunningProcess` or `NativePtyProcess`
 - **`running-process-proto`**: Protobuf schema for daemon IPC (`daemon.proto`). Field numbers in `RequestType` enum match payload field numbers.
 - **`running-process-daemon`**: Persistent daemon for process tracking (Tokio, SQLite registry, protobuf IPC)

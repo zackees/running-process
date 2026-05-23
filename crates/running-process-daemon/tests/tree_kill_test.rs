@@ -97,7 +97,7 @@ fn pid_is_alive(pid: u32) -> bool {
 }
 
 /// POSIX-only because `testbin-spawner` deliberately spawns its
-/// grandchildren via `running_process_core::spawn_daemon` on Windows,
+/// grandchildren via `running_process::spawn_daemon` on Windows,
 /// which sets `CREATE_BREAKAWAY_FROM_JOB` so the grandchildren escape
 /// the parent's Job Object (used by `testbin-spawner`'s original
 /// containment-test purpose). That is intentional for the spawner

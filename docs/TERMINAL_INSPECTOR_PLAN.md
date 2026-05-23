@@ -27,7 +27,7 @@ The current code can only partially inspect processes created by this library, a
 
 ### Existing leak-sensitive code
 
-- Pipe output history is unbounded in `crates/running-process-core/src/lib.rs`.
+- Pipe output history is unbounded in `crates/running-process/src/lib.rs`.
 - PTY output history is unbounded in `crates/running-process-py/src/lib.rs`.
 - Reader threads are spawned in Rust and then become opaque to diagnostics.
 - Python-side active process tracking is object-lifetime-based rather than process-lifetime-based.
@@ -69,7 +69,7 @@ Purpose:
 
 ### Rust crate ownership
 
-The feature should live primarily in `running-process-core`.
+The feature should live primarily in `running-process`.
 
 Suggested modules:
 
