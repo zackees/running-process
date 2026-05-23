@@ -372,7 +372,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release --target ${{ matrix.target }} \
-            -p runpm-cli \
+            --bin runpm \
             -p running-process-daemon
 
       - name: Stage release artifacts

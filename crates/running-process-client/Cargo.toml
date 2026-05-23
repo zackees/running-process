@@ -8,11 +8,18 @@ repository.workspace = true
 homepage.workspace = true
 description = "Lightweight synchronous IPC client for the running-process daemon"
 
+[[bin]]
+name = "runpm"
+path = "src/bin/runpm.rs"
+
 [dependencies]
 running-process-proto = { path = "../running-process-proto", version = "3.4.1" }
 prost = "0.14"
 interprocess = "2"
 dirs = "6"
+# Used by the `runpm` PM2-style supervisor CLI (src/bin/runpm.rs).
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

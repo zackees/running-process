@@ -1,0 +1,46 @@
+[package]
+name = "testbins"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "testbin-cwd-reporter"
+path = "src/bin/cwd_reporter.rs"
+
+[[bin]]
+name = "testbin-dies-after-spawn"
+path = "src/bin/dies_after_spawn.rs"
+
+[[bin]]
+name = "testbin-emitter"
+path = "src/bin/emitter.rs"
+
+[[bin]]
+name = "testbin-env-dump"
+path = "src/bin/env_dump.rs"
+
+[[bin]]
+name = "testbin-env-reporter"
+path = "src/bin/env_reporter.rs"
+
+[[bin]]
+name = "testbin-sleeper"
+path = "src/bin/sleeper.rs"
+
+[[bin]]
+name = "testbin-spawner"
+path = "src/bin/spawner.rs"
+
+[[bin]]
+name = "testbin-stubborn"
+path = "src/bin/stubborn.rs"
+
+# Unconditional because `dies_after_spawn` uses `running_process_core::{spawn, SpawnStdio}`
+# on every platform. `spawner` also uses it but only inside `#[cfg(windows)]` blocks.
+[dependencies]
+running-process-core = { path = "../crates/running-process-core" }
+
+# `stubborn` only needs libc on Unix (to SIG_IGN SIGTERM).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

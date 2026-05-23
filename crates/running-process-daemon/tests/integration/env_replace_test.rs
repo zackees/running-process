@@ -27,7 +27,7 @@ use super::{scaled, start_server_with_tempdb};
 /// Locate the env-dump testbin. Builds it on demand.
 fn env_dump_path() -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbin-env-dump", "--message-format=json"])
+        .args(["build", "-p", "testbins", "--bin", "testbin-env-dump", "--message-format=json"])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("cargo build");
