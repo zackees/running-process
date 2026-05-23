@@ -12,7 +12,7 @@
 use running_process_daemon::client::DaemonClient;
 use running_process_daemon::paths;
 use running_process_daemon::server::DaemonServer;
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     DaemonRequest, RegisterRequest, RequestType, StatusCode, UnregisterRequest,
 };
 

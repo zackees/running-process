@@ -1,7 +1,7 @@
 //! Handlers for the SQLite-backed registry: register/unregister and the
 //! two list variants.
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     DaemonRequest, DaemonResponse, ListActiveResponse, ListByOriginatorResponse, ProcessState,
     RegisterResponse, StatusCode, TrackedProcess, UnregisterResponse,
 };

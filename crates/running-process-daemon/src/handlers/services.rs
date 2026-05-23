@@ -5,7 +5,7 @@
 //! in Phase 2 of #106. Each returns StatusCode::Ok with a default-valued
 //! response payload — no service state is created, mutated, or persisted.
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     DaemonRequest, DaemonResponse, ServiceDeleteResponse, ServiceDescribeResponse,
     ServiceFlushResponse, ServiceListResponse, ServiceLogsResponse, ServiceRestartResponse,
     ServiceResurrectResponse, ServiceSaveResponse, ServiceStartResponse, ServiceStopResponse,

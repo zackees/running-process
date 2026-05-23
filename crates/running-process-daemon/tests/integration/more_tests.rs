@@ -1,7 +1,7 @@
 //! Continuation of integration tests — split for file-size budget.
 
 use running_process_daemon::client::{DaemonClient, SpawnCommandRequest};
-use running_process_proto::daemon::StatusCode;
+use running_process::proto::daemon::StatusCode;
 
 use super::{make_register_request, scaled, start_server_with_tempdb};
 

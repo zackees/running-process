@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use running_process::ORIGINATOR_ENV_VAR;
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     DaemonRequest, DaemonResponse, KeyValue, SpawnDaemonResponse, StatusCode,
 };
 use sysinfo::{Pid, ProcessRefreshKind, System};

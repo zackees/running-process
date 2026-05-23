@@ -1,7 +1,7 @@
 //! `GetProcessTree` handler — builds a human-readable tree display via
 //! sysinfo.
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     DaemonRequest, DaemonResponse, GetProcessTreeResponse, StatusCode,
 };
 use sysinfo::{Pid, System};

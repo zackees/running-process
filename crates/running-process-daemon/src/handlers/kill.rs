@@ -1,6 +1,6 @@
 //! Handlers for the kill-tree and kill-zombies request types.
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     DaemonRequest, DaemonResponse, KillTreeResponse, KillZombiesResponse, StatusCode, ZombieReport,
 };
 use sysinfo::{Pid, System};

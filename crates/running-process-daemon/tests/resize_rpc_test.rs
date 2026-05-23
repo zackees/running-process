@@ -111,7 +111,7 @@ async fn resize_pty_session_without_attach_updates_rows_cols() {
             .expect_err("unknown id");
         match err {
             running_process_daemon::client::ClientError::Server { code, .. } => {
-                assert_eq!(code, running_process_proto::daemon::StatusCode::NotFound);
+                assert_eq!(code, running_process::proto::daemon::StatusCode::NotFound);
             }
             other => panic!("unexpected error: {other}"),
         }

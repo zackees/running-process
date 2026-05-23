@@ -17,7 +17,7 @@ use tokio::time::{timeout, Duration};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, error, info, warn};
 
-use running_process_proto::daemon::{DaemonRequest, DaemonResponse, RequestType, StatusCode};
+use running_process::proto::daemon::{DaemonRequest, DaemonResponse, RequestType, StatusCode};
 
 use crate::attach_stream;
 use crate::config::DaemonConfig;

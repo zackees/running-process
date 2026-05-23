@@ -1,5 +1,5 @@
 use super::*;
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     ListByOriginatorRequest, PingRequest, RegisterRequest, RequestType, ShutdownRequest,
     SpawnDaemonRequest, StatusRequest, UnregisterRequest,
 };

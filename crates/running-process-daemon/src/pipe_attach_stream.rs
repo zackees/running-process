@@ -15,7 +15,7 @@ use prost::Message;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, warn};
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     pipe_stream_frame::Frame as PipeStreamOneof, AttachPipeStreamRequest, AttachPipeStreamResponse,
     DaemonResponse, PipeStreamFrame, PipeStreamKind, StatusCode,
 };

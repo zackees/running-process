@@ -9,7 +9,7 @@ use running_process_daemon::client::DaemonClient;
 use running_process_daemon::paths;
 use running_process_daemon::pipe_session::{PipeSpawnRequest, PipeStreamAttachment};
 use running_process_daemon::server::DaemonServer;
-use running_process_proto::daemon::PipeStreamKind;
+use running_process::proto::daemon::PipeStreamKind;
 
 use std::path::PathBuf;
 use std::process::Command;

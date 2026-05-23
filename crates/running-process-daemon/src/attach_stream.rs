@@ -17,7 +17,7 @@ use prost::Message;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, warn};
 
-use running_process_proto::daemon::{
+use running_process::proto::daemon::{
     pty_input_frame::Frame as InputOneof, pty_stream_frame::Frame as StreamOneof,
     AttachPtySessionRequest, AttachPtySessionResponse, DaemonResponse, PtyInputFrame,
     PtyStreamFrame, StatusCode,

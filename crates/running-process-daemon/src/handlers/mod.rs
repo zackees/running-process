@@ -17,7 +17,7 @@ use crate::registry::Registry;
 // `Registry` being in scope via the same glob — those are imported above.
 #[cfg(test)]
 #[allow(unused_imports)]
-use running_process_proto::daemon::{DaemonRequest, ProcessState, StatusCode};
+use running_process::proto::daemon::{DaemonRequest, ProcessState, StatusCode};
 
 mod core;
 mod kill;
