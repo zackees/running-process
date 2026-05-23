@@ -11,15 +11,19 @@ pub mod containment;
 mod helpers;
 #[cfg(feature = "originator-scan")]
 pub mod originator;
-// Wave 3 of #165: proto module absorbed from `running-process-proto`.
-// The submodule name `daemon` matches the protobuf package
-// `running_process.daemon.v1`. Will be feature-gated behind
-// `feature = "client"` in Wave 4 along with the rest of IPC.
+// Wave 3+4 of #165: proto module + IPC client absorbed from the
+// former `running-process-proto` and `running-process-client` crates.
+// Both gated behind `feature = "client"`. The protobuf package
+// `running_process.daemon.v1` compiles to the file referenced below.
+#[cfg(feature = "client")]
 pub mod proto {
     pub mod daemon {
         include!(concat!(env!("OUT_DIR"), "/running_process.daemon.v1.rs"));
     }
 }
+
+#[cfg(feature = "client")]
+pub mod client;
 pub mod pty;
 mod public_symbols;
 mod rust_debug;

@@ -50,13 +50,13 @@ fn next_id() -> u64 {
 
 /// Compute the daemon socket path for the global (un-scoped) daemon.
 fn socket_path() -> String {
-    running_process_client::paths::socket_path(None)
+    running_process::client::paths::socket_path(None)
 }
 
 /// Build an `interprocess` local-socket [`Name`] using the same name-type
 /// dispatch as the daemon server.
 fn make_socket_name(path: &str) -> std::io::Result<interprocess::local_socket::Name<'_>> {
-    running_process_client::paths::make_socket_name(path)
+    running_process::client::paths::make_socket_name(path)
 }
 
 /// Attempt to open a connection to the daemon.

@@ -18,9 +18,9 @@
 //!   * The `DaemonGuard` struct ensures the spawned daemon is killed when
 //!     the test ends, even on assertion failure.
 
-use running_process_client::client::DaemonClient;
-use running_process_client::paths;
-use running_process_client::pty_session::{PtyAttachment, PtySpawnRequest};
+use running_process::client::client::DaemonClient;
+use running_process::client::paths;
+use running_process::client::pty_session::{PtyAttachment, PtySpawnRequest};
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};

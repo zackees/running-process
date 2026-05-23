@@ -1,7 +1,7 @@
-pub use running_process_client::client;
-pub use running_process_client::paths;
-pub use running_process_client::pipe_session;
-pub use running_process_client::pty_session;
+pub use running_process::client::client;
+pub use running_process::client::paths;
+pub use running_process::client::pipe_session;
+pub use running_process::client::pty_session;
 
 pub mod attach_stream;
 pub mod config;

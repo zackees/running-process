@@ -11,11 +11,11 @@
 //! clients can build on top of [`DaemonClient::attach_pty_session_raw`].
 
 use crate::client::{ClientError, DaemonClient};
-use crate::paths;
+use crate::client::paths;
 use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
-use running_process::proto::daemon::{
+use crate::proto::daemon::{
     pty_input_frame::Frame as InputOneof, AttachPtySessionRequest, AttachPtySessionResponse,
     DaemonRequest, DaemonResponse, DetachPtySessionRequest, KeyValue, ListPtySessionsRequest,
     ListPtySessionsResponse, PtyInputFrame, PtyResize, PtySessionInfo, PtyStreamFrame, RequestType,
