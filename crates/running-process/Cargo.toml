@@ -9,8 +9,20 @@ homepage.workspace = true
 description = "Subprocess and PTY runtime for the running-process project"
 
 [features]
+# Wave 2/9 of #165: feature scaffolding for the upcoming mono-crate
+# consolidation. Subsequent waves (W3-W6) merge the proto / client /
+# daemon / trampoline crates into this one and switch these features
+# on. Final feature scheme is documented in #165.
+#
+# `default` will become `["client"]` once Wave 4 lands and populates
+# the `client` feature with its actual dep list (per Q1 resolution in
+# #165). For now `default` stays `[]` so this wave is a pure no-op
+# diff at the dep-graph level.
 default = []
-originator-scan = []
+core = []                       # always-available API; placeholder marker
+client = []                     # populated by Wave 4 (#169)
+daemon = ["client"]             # populated by Wave 5 (#170)
+originator-scan = []            # used by running-process-py for cwd-tagging
 
 [dependencies]
 libc = "0.2"
