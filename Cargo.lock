@@ -1039,8 +1039,10 @@ name = "running-process"
 version = "3.4.1"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
  "dirs",
+ "futures-util",
  "interprocess",
  "libc",
  "portable-pty",
@@ -1048,31 +1050,13 @@ dependencies = [
  "prost-build",
  "prost-types",
  "protox",
- "serde_json",
- "sysinfo",
- "tempfile",
- "test-watchdog",
- "thiserror 2.0.18",
- "winapi",
-]
-
-[[package]]
-name = "running-process-daemon"
-version = "3.4.1"
-dependencies = [
- "bytes",
- "clap",
- "dirs",
- "futures-util",
- "interprocess",
- "libc",
- "prost",
- "running-process",
  "rusqlite",
  "serde",
  "serde_json",
  "sysinfo",
  "tempfile",
+ "test-watchdog",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "toml",

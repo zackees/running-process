@@ -24,6 +24,11 @@ pub mod proto {
 
 #[cfg(feature = "client")]
 pub mod client;
+
+// Wave 5 of #165: daemon runtime absorbed from `running-process-daemon`.
+// Heavy deps (tokio, sqlite, etc.) gated behind `feature = "daemon"`.
+#[cfg(feature = "daemon")]
+pub mod daemon;
 pub mod pty;
 mod public_symbols;
 mod rust_debug;
