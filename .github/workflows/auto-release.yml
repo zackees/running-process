@@ -233,10 +233,9 @@ jobs:
 
           # ----- crates.io -----
           # Keep this in sync with PUBLISH_ORDER in the publish-crates job.
+          # Wave 7 of #165: post-consolidation crate set.
           rust_crates = (
-              "running-process-proto",
               "running-process",
-              "running-process-client",
               "running-process-py",
           )
 
@@ -371,9 +370,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Wave 7 of #165: both runpm and the daemon binary live inside
+          # the mono `running-process` crate now. Building them needs the
+          # right feature set per the [[bin]] required-features.
           cargo build --release --target ${{ matrix.target }} \
+            --features daemon \
             --bin runpm \
-            -p running-process-daemon
+            --bin running-process-daemon
 
       - name: Stage release artifacts
         id: stage
@@ -476,13 +479,12 @@ jobs:
             exit 1
           fi
 
-          # Dependency order: proto + core have no internal deps, client
-          # depends on proto, py depends on all three. Keep in sync with
-          # the rust_crates tuple in preflight's registry-check step.
+          # Wave 7 of #165: post-consolidation crate set. `running-process`
+          # is the only Rust crate; `running-process-py` depends on it.
+          # Keep in sync with the rust_crates tuple in preflight's
+          # registry-check step.
           PUBLISH_ORDER=(
-            running-process-proto
             running-process
-            running-process-client
             running-process-py
           )
 

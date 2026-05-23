@@ -45,8 +45,8 @@ These need to exist on the repo *before* the first real release runs:
    - `pyproject.toml` — `project.version`
    - `Cargo.toml` — `workspace.package.version`
    - `src/running_process/__init__.py` — `__version__` literal
-   - All `crates/*/Cargo.toml` internal path-dep version pins
-     (e.g. `{ path = "../running-process-proto", version = "X.Y.Z" }`)
+   - `crates/running-process-py/Cargo.toml` internal path-dep version pin
+     (`{ path = "../running-process", version = "X.Y.Z" }`)
    - `Cargo.lock` (regenerate via `soldr cargo check --workspace`)
    - `uv.lock` (regenerate via `uv lock`)
 2. Open a PR with just the bump. Once it merges to `main`, the
@@ -68,11 +68,9 @@ These need to exist on the repo *before* the first real release runs:
   Windows x86/arm, plus the sdist (built on the linux-x86 runner).
   Published via `pypa/gh-action-pypi-publish@release/v1` with
   `skip-existing: true` (OIDC, no static token).
-- **crates.io**, in dep order:
-  1. `running-process-proto`
-  2. `running-process`
-  3. `running-process-client`
-  4. `running-process-py`
+- **crates.io**, in dep order (post-consolidation per #165):
+  1. `running-process`
+  2. `running-process-py` (depends on the previous one)
   `cargo publish` already blocks on the sparse-index appearance before
   returning — the index is what the next `cargo publish` reads to
   resolve internal path-deps — so the loop trusts cargo's own wait and
@@ -91,7 +89,7 @@ These need to exist on the repo *before* the first real release runs:
 | `ERROR: CARGO_REGISTRY_TOKEN secret is not set` | Repo secret missing. | Add the secret with publish scope on the four publishable crates and re-run. |
 | `ci.version_check` ERROR | One manifest didn't get bumped. | Run `uv run --module ci.version_check` locally; fix the file it names; ensure `Cargo.lock` + `uv.lock` regenerated. |
 | Partial crates.io publish (some crates uploaded, later ones not) | Almost always a transient cargo / network issue; the workflow is idempotent. | Re-run the same workflow run. `preflight` skips crates already on crates.io and `publish-crates` skips them in its inner loop. |
-| `running-process-proto` was published with the wrong schema | The 3.2.x→3.3.0 wire change taught us this can happen. | `cargo yank --version X.Y.Z -p running-process-proto` to block new resolutions. Yank doesn't delete; existing lockfiles keep working. Then bump and publish a corrected version. |
+| `running-process` was published with a wire-format regression | The 3.2.x→3.3.0 wire change taught us this can happen (proto types now live inside `running-process` itself post-#165). | `cargo yank --version X.Y.Z -p running-process` to block new resolutions. Yank doesn't delete; existing lockfiles keep working. Then bump and publish a corrected version. |
 
 ## Per-platform dev workflows
 

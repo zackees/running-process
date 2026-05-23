@@ -172,13 +172,13 @@ def test_select_expected_artifacts_skips_missing_files_on_disk(tmp_path: Path) -
     assert "running_process-3.0.3-*-win_amd64.whl" in missing
 
 
-def test_publishable_crates_include_client_before_py() -> None:
+def test_publishable_crates_include_py_after_running_process() -> None:
     module = _load_publish_module()
 
+    # Wave 7 of #165: post-consolidation crate set. The split crates
+    # (proto, client, daemon) all merged into `running-process`.
     assert module.PUBLISHABLE_CRATES == [
         "running-process",
-        "running-process-proto",
-        "running-process-client",
         "running-process-py",
     ]
 
@@ -200,8 +200,6 @@ def test_publish_crates_runs_in_dependency_order(monkeypatch) -> None:
 
     assert seen == [
         ["cargo", "publish", "-p", "running-process", "--no-verify"],
-        ["cargo", "publish", "-p", "running-process-proto", "--no-verify"],
-        ["cargo", "publish", "-p", "running-process-client", "--no-verify"],
         ["cargo", "publish", "-p", "running-process-py", "--no-verify"],
     ]
-    assert sleeps == [30, 30, 30]
+    assert sleeps == [30]

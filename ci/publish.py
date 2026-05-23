@@ -30,10 +30,12 @@ WORKFLOWS = {
 }
 # Publish Rust crates in dependency order so crates.io can resolve each local
 # path dependency by version when the next crate is packaged.
+#
+# Wave 7 of #165: post-consolidation crate set. `running-process-proto`,
+# `-client`, `-daemon`, `daemon-trampoline` are gone -- their code now lives
+# inside `running-process`. Only the mono crate and the PyO3 binding remain.
 PUBLISHABLE_CRATES = [
     "running-process",
-    "running-process-proto",
-    "running-process-client",
     "running-process-py",
 ]
 
