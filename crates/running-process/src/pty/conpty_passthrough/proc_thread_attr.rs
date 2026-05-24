@@ -18,7 +18,7 @@ use std::ffi::c_void;
 use std::io;
 use std::ptr;
 
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::System::Console::HPCON;
 use windows_sys::Win32::System::Threading::{
     DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
     LPPROC_THREAD_ATTRIBUTE_LIST, UpdateProcThreadAttribute,
@@ -33,13 +33,15 @@ pub(super) struct ProcThreadAttributeList {
     /// Backing storage for the HPCON value the attribute list points
     /// at. Boxed so its address is stable across moves of `Self`.
     /// MSDN requires this storage to outlive the attribute list.
-    _hpc_storage: Box<HANDLE>,
+    /// Typed as the actual HPCON (windows-sys 0.59 = `isize`) so the
+    /// pointer width and copy size match exactly.
+    _hpc_storage: Box<HPCON>,
 }
 
 impl ProcThreadAttributeList {
     /// Build an attribute list with a single
     /// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` entry pointing at `hpc`.
-    pub(super) fn with_pseudoconsole(hpc: HANDLE) -> io::Result<Self> {
+    pub(super) fn with_pseudoconsole(hpc: HPCON) -> io::Result<Self> {
         // Probe call to get required buffer size. Per MSDN this call
         // returns FALSE with last_os_error == ERROR_INSUFFICIENT_BUFFER
         // (122), which we deliberately ignore — we only care about
@@ -63,14 +65,14 @@ impl ProcThreadAttributeList {
 
         // Box HPCON so its address survives moves of `Self`.
         let hpc_storage = Box::new(hpc);
-        let hpc_ptr = (&*hpc_storage as *const HANDLE) as *const c_void;
+        let hpc_ptr = (&*hpc_storage as *const HPCON) as *const c_void;
         let ok = unsafe {
             UpdateProcThreadAttribute(
                 list_ptr,
                 0,
                 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
                 hpc_ptr,
-                std::mem::size_of::<HANDLE>(),
+                std::mem::size_of::<HPCON>(),
                 ptr::null_mut(),
                 ptr::null(),
             )

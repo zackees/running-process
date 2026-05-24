@@ -117,14 +117,12 @@ impl ConPtyMaster {
     }
 }
 
-/// Slave-side spawn target. Holds only the shared `HPCON`; the
-/// ConPTY-side pipe ends were closed at `openpty` time per
-/// Microsoft's ConPTY sample (they are already duplicated inside
-/// the pseudo-console object). Leaving them open in the host process
-/// breaks the EOF chain that drains the master-side reader when the
-/// child exits.
+/// Slave-side spawn target. Holds the shared `HPCON` and the
+/// ConPTY-side pipe ends (closed via Drop after spawn).
 pub(crate) struct ConPtySlave {
     pseudo_console: Arc<Mutex<PseudoConsole>>,
+    _conpty_input: OwnedHandle,
+    _conpty_output: OwnedHandle,
 }
 
 impl ConPtySlave {
@@ -179,7 +177,7 @@ impl ConPtySlave {
             .lock()
             .expect("conpty pseudo-console mutex poisoned")
             .as_handle();
-        let mut attr_list = ProcThreadAttributeList::with_pseudoconsole(hpc_handle as HANDLE)?;
+        let mut attr_list = ProcThreadAttributeList::with_pseudoconsole(hpc_handle)?;
 
         let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
@@ -238,12 +236,10 @@ pub(super) fn openpty(size: PtySize) -> io::Result<ConPtyPair> {
         owned_to_handle(&stdin_pipe.child),
         owned_to_handle(&stdout_pipe.child),
     )?;
-    // Per Microsoft's ConPTY sample: close the ConPTY-side pipe
-    // handles in the host process now that CreatePseudoConsole has
-    // duplicated them internally. If we keep our copies open the
-    // master-side reader never sees EOF when the child exits.
-    drop(stdin_pipe.child);
-    drop(stdout_pipe.child);
+    // NOTE: Microsoft's official sample closes the ConPTY-side handles
+    // here. portable-pty 0.9 does NOT close them and works fine; we
+    // mirror portable-pty for stability and let Drop close them when
+    // ConPtySlave is consumed by spawn.
 
     let pseudo_console = Arc::new(Mutex::new(pseudo_console));
 
@@ -252,7 +248,11 @@ pub(super) fn openpty(size: PtySize) -> io::Result<ConPtyPair> {
         reader: Some(stdout_pipe.host),
         writer: Some(stdin_pipe.host),
     };
-    let slave = ConPtySlave { pseudo_console };
+    let slave = ConPtySlave {
+        pseudo_console,
+        _conpty_input: stdin_pipe.child,
+        _conpty_output: stdout_pipe.child,
+    };
     Ok(ConPtyPair { master, slave })
 }
 

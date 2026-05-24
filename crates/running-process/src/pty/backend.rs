@@ -262,10 +262,11 @@ mod unix {
 
 // #150 W8: temporarily route Windows through PortablePtyBackend
 // instead of ConPtyBackend. The conpty_passthrough W1-W7 code is in
-// place but has a runtime bug — child output isn't reaching the
-// master pipe (spawn succeeds, no bytes flow). Tracked as a
-// follow-up sub-issue. The Backend abstraction itself works; flip
-// this alias back to `conpty::ConPtyBackend` once the bug is fixed.
+// place but has a runtime bug — child spawns and process attribute
+// list update succeeds, but the child's stdio never connects to
+// the master pipe (child exits with STATUS_DLL_INIT_FAILED for cmd,
+// silent no-output for Rust binaries). Tracked in #197. Flip back
+// to `conpty::ConPtyBackend` once the bug is fixed.
 #[cfg(windows)]
 pub(crate) type Backend = unix_compat::PortablePtyBackend;
 #[cfg(unix)]

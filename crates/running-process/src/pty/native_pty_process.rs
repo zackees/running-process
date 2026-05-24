@@ -462,12 +462,15 @@ impl NativePtyProcess {
         let child = slave
             .spawn(&argv, cwd_path, env.as_deref())
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
+        // The trait's PtyChild::as_raw_handle returns Option<RawHandle>
+        // matching portable_pty's signature; pass directly.
         #[cfg(windows)]
-        let job = assign_child_to_windows_kill_on_close_job(child.as_raw_handle())?;
+        let job =
+            assign_child_to_windows_kill_on_close_job(PtyChild::as_raw_handle(&child))?;
         #[cfg(windows)]
         assign_conpty_conhost_to_job(&job, &conhost_pids_before);
         #[cfg(windows)]
-        apply_windows_pty_priority(child.as_raw_handle(), self.nice)?;
+        apply_windows_pty_priority(PtyChild::as_raw_handle(&child), self.nice)?;
         let shared = Arc::clone(&self.reader);
         let echo = Arc::clone(&self.echo);
         let idle_detector = Arc::clone(&self.idle_detector);
