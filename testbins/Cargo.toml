@@ -36,6 +36,12 @@ path = "src/bin/spawner.rs"
 name = "testbin-stubborn"
 path = "src/bin/stubborn.rs"
 
+[[bin]]
+# #150: raw-ANSI emitter used by the PTY passthrough integration
+# tests. No external deps.
+name = "testbin-tui-counter"
+path = "src/bin/tui_counter.rs"
+
 # Unconditional because `dies_after_spawn` uses `running_process::{spawn, SpawnStdio}`
 # on every platform. `spawner` also uses it but only inside `#[cfg(windows)]` blocks.
 [dependencies]
