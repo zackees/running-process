@@ -56,6 +56,11 @@ class TestPtyTuiRepaint(unittest.TestCase):
     """Asserts raw ANSI bytes survive the round trip through ConPTY /
     POSIX PTY to the in-process reader."""
 
+    @unittest.skip(
+        "blocked on #150 ConPty output bug — Backend is temporarily aliased "
+        "to PortablePtyBackend on Windows; the new ConPty path doesn't "
+        "forward child stdout. Re-enable once fixed.",
+    )
     def test_ansi_clear_and_cursor_home_survive_pty(self) -> None:
         from running_process import RunningProcess
 

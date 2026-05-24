@@ -117,16 +117,14 @@ impl ConPtyMaster {
     }
 }
 
-/// Slave-side spawn target. Holds the same `HPCON` as the master (via
-/// shared `Arc`) plus the ConPTY-side pipe ends — those are leaked
-/// into the child via the attribute list at `CreateProcessW` time.
+/// Slave-side spawn target. Holds only the shared `HPCON`; the
+/// ConPTY-side pipe ends were closed at `openpty` time per
+/// Microsoft's ConPTY sample (they are already duplicated inside
+/// the pseudo-console object). Leaving them open in the host process
+/// breaks the EOF chain that drains the master-side reader when the
+/// child exits.
 pub(crate) struct ConPtySlave {
     pseudo_console: Arc<Mutex<PseudoConsole>>,
-    /// ConPTY-side stdin handle (child reads). Closed via Drop after
-    /// CreateProcessW has copied it into the child.
-    _conpty_input: OwnedHandle,
-    /// ConPTY-side stdout handle (child writes).
-    _conpty_output: OwnedHandle,
 }
 
 impl ConPtySlave {
@@ -151,10 +149,11 @@ impl ConPtySlave {
         let mut cmdline_w: Vec<u16> = OsStr::new(&cmdline).encode_wide().collect();
         cmdline_w.push(0);
 
-        // Wide application name: pass argv[0] explicitly so
-        // CreateProcessW doesn't have to re-parse cmdline to find it.
-        let mut app_w: Vec<u16> = argv[0].encode_wide().collect();
-        app_w.push(0);
+        // NOTE: we pass NULL for lpApplicationName so CreateProcessW
+        // parses the first token of lpCommandLine itself and PATH-
+        // searches the way `std::process::Command` does. Passing
+        // argv[0] explicitly here forces an absolute-path lookup
+        // that breaks `python` / `cmd` / other PATH-resolved spawns.
 
         // Wide cwd, if any.
         let cwd_w: Option<Vec<u16>> = cwd.map(|p| {
@@ -184,29 +183,25 @@ impl ConPtySlave {
 
         let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-        // STARTF_USESTDHANDLES with explicit invalid handles tells
-        // Windows: don't try to inherit my console; the
-        // pseudo-console attribute owns stdio. Per Microsoft's
-        // ConPTY samples, the stdio fields stay zero/null and the
-        // attribute list does the work.
-        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        si.StartupInfo.hStdInput = std::ptr::null_mut();
-        si.StartupInfo.hStdOutput = std::ptr::null_mut();
-        si.StartupInfo.hStdError = std::ptr::null_mut();
+        // Per Microsoft's official ConPTY sample, the stdio handle
+        // fields and STARTF_USESTDHANDLES are NOT set. The
+        // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE attribute on
+        // lpAttributeList connects the child's stdio to the
+        // pseudo-console.
         si.lpAttributeList = attr_list.as_mut_ptr();
 
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
         let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
-        // bInheritHandles = TRUE because the ConPTY-side pipe handles
-        // were created with HANDLE_FLAG_INHERIT and must propagate to
-        // the child.
+        // bInheritHandles = FALSE per the official sample. The
+        // pseudo-console-internal handles are NOT inheritable; the
+        // attribute list does the connection.
         let ok = unsafe {
             CreateProcessW(
-                app_w.as_ptr(),
+                std::ptr::null(),
                 cmdline_w.as_mut_ptr(),
                 std::ptr::null(),
                 std::ptr::null(),
-                1, // bInheritHandles = TRUE
+                0, // bInheritHandles = FALSE
                 flags,
                 env_ptr,
                 cwd_ptr,
@@ -243,6 +238,13 @@ pub(super) fn openpty(size: PtySize) -> io::Result<ConPtyPair> {
         owned_to_handle(&stdin_pipe.child),
         owned_to_handle(&stdout_pipe.child),
     )?;
+    // Per Microsoft's ConPTY sample: close the ConPTY-side pipe
+    // handles in the host process now that CreatePseudoConsole has
+    // duplicated them internally. If we keep our copies open the
+    // master-side reader never sees EOF when the child exits.
+    drop(stdin_pipe.child);
+    drop(stdout_pipe.child);
+
     let pseudo_console = Arc::new(Mutex::new(pseudo_console));
 
     let master = ConPtyMaster {
@@ -250,11 +252,7 @@ pub(super) fn openpty(size: PtySize) -> io::Result<ConPtyPair> {
         reader: Some(stdout_pipe.host),
         writer: Some(stdin_pipe.host),
     };
-    let slave = ConPtySlave {
-        pseudo_console,
-        _conpty_input: stdin_pipe.child,
-        _conpty_output: stdout_pipe.child,
-    };
+    let slave = ConPtySlave { pseudo_console };
     Ok(ConPtyPair { master, slave })
 }
 

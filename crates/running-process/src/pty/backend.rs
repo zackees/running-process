@@ -49,8 +49,12 @@ pub(crate) trait PtyChild: Send + 'static {
     /// Block until the child exits, then return the exit code.
     fn wait(&mut self) -> io::Result<u32>;
     fn kill(&mut self) -> io::Result<()>;
+    /// Returns the Windows process HANDLE, if applicable. `None`
+    /// means the backend can't expose one (which is fatal for Job
+    /// Object containment — `assign_child_to_windows_kill_on_close_job`
+    /// requires a real handle). Matches portable_pty's signature.
     #[cfg(windows)]
-    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle;
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle>;
 }
 
 pub(crate) trait PtySlave: Send + 'static {
@@ -136,8 +140,8 @@ mod conpty {
         fn kill(&mut self) -> io::Result<()> {
             conpty_passthrough::child::ConPtyChild::kill(self)
         }
-        fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
-            conpty_passthrough::child::ConPtyChild::as_raw_handle(self)
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            Some(conpty_passthrough::child::ConPtyChild::as_raw_handle(self))
         }
     }
 }
@@ -256,7 +260,117 @@ mod unix {
     }
 }
 
+// #150 W8: temporarily route Windows through PortablePtyBackend
+// instead of ConPtyBackend. The conpty_passthrough W1-W7 code is in
+// place but has a runtime bug — child output isn't reaching the
+// master pipe (spawn succeeds, no bytes flow). Tracked as a
+// follow-up sub-issue. The Backend abstraction itself works; flip
+// this alias back to `conpty::ConPtyBackend` once the bug is fixed.
 #[cfg(windows)]
-pub(crate) type Backend = conpty::ConPtyBackend;
+pub(crate) type Backend = unix_compat::PortablePtyBackend;
 #[cfg(unix)]
 pub(crate) type Backend = unix::PortablePtyBackend;
+
+// On Windows we still want the portable-pty wrapper available as
+// the temporary backend. Mirror the Unix module under a different
+// name so the cfg-pickup above works.
+#[cfg(windows)]
+mod unix_compat {
+    use super::*;
+    use portable_pty::{
+        Child as PortableChild, CommandBuilder, MasterPty, PtySize as PortPtySize, SlavePty,
+        native_pty_system,
+    };
+
+    pub(crate) struct PortablePtyBackend;
+    pub(crate) struct PortablePtyMaster(Box<dyn MasterPty + Send>);
+    pub(crate) struct PortablePtySlave(Box<dyn SlavePty + Send>);
+    pub(crate) struct PortablePtyChild(Box<dyn PortableChild + Send + Sync>);
+
+    impl PtyBackend for PortablePtyBackend {
+        type Master = PortablePtyMaster;
+        type Slave = PortablePtySlave;
+        fn openpty(size: PtySize) -> io::Result<(Self::Master, Self::Slave)> {
+            let sys = native_pty_system();
+            let pair = sys
+                .openpty(PortPtySize {
+                    rows: size.rows,
+                    cols: size.cols,
+                    pixel_width: size.pixel_width,
+                    pixel_height: size.pixel_height,
+                })
+                .map_err(io::Error::other)?;
+            Ok((PortablePtyMaster(pair.master), PortablePtySlave(pair.slave)))
+        }
+    }
+
+    impl PtyMaster for PortablePtyMaster {
+        fn try_clone_reader(&mut self) -> io::Result<Box<dyn Read + Send>> {
+            self.0.try_clone_reader().map_err(io::Error::other)
+        }
+        fn take_writer(&mut self) -> io::Result<Box<dyn Write + Send>> {
+            self.0.take_writer().map_err(io::Error::other)
+        }
+        fn resize(&self, size: PtySize) -> io::Result<()> {
+            self.0
+                .resize(PortPtySize {
+                    rows: size.rows,
+                    cols: size.cols,
+                    pixel_width: size.pixel_width,
+                    pixel_height: size.pixel_height,
+                })
+                .map_err(io::Error::other)
+        }
+    }
+
+    impl PtySlave for PortablePtySlave {
+        type Child = PortablePtyChild;
+        fn spawn(
+            self,
+            argv: &[OsString],
+            cwd: Option<&Path>,
+            env: Option<&[(OsString, OsString)]>,
+        ) -> io::Result<Self::Child> {
+            if argv.is_empty() {
+                return Err(io::Error::other("portable-pty spawn requires non-empty argv"));
+            }
+            let mut cmd = CommandBuilder::new(&argv[0]);
+            for arg in &argv[1..] {
+                cmd.arg(arg);
+            }
+            if let Some(cwd) = cwd {
+                cmd.cwd(cwd);
+            }
+            if let Some(env) = env {
+                cmd.env_clear();
+                for (k, v) in env {
+                    cmd.env(k, v);
+                }
+            }
+            let child = self.0.spawn_command(cmd).map_err(io::Error::other)?;
+            Ok(PortablePtyChild(child))
+        }
+    }
+
+    impl PtyChild for PortablePtyChild {
+        fn pid(&self) -> u32 {
+            self.0.process_id().unwrap_or(0)
+        }
+        fn try_wait(&mut self) -> io::Result<Option<u32>> {
+            match self.0.try_wait()? {
+                Some(status) => Ok(Some(status.exit_code())),
+                None => Ok(None),
+            }
+        }
+        fn wait(&mut self) -> io::Result<u32> {
+            let status = self.0.wait()?;
+            Ok(status.exit_code())
+        }
+        fn kill(&mut self) -> io::Result<()> {
+            self.0.kill()
+        }
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            self.0.as_raw_handle()
+        }
+    }
+}
