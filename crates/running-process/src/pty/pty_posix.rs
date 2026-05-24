@@ -74,7 +74,10 @@ pub(super) fn send_interrupt(process: &NativePtyProcess) -> Result<(), PtyError>
 pub(super) fn terminate(process: &NativePtyProcess) -> Result<(), PtyError> {
     let mut guard = process.handles.lock().expect("pty handles mutex poisoned");
     let handles = guard.as_mut().ok_or(PtyError::NotRunning)?;
-    let pid = handles.child.process_id().ok_or(PtyError::NotRunning)?;
+    let pid = handles.child.pid();
+    if pid == 0 {
+        return Err(PtyError::NotRunning);
+    }
     unix_signal_process(pid, UnixSignal::Terminate)?;
     Ok(())
 }
@@ -99,7 +102,7 @@ pub(super) fn kill(process: &NativePtyProcess) -> Result<(), PtyError> {
     drop(master);
     let status = child.wait().map_err(PtyError::Io)?;
     drop(child);
-    process.store_returncode(portable_exit_code(status));
+    process.store_returncode(status as i32);
     process.join_reader_worker();
     process.mark_reader_closed();
     Ok(())
