@@ -306,6 +306,12 @@ impl NativePtyProcess {
                             break;
                         }
                         Ok(None) if Instant::now() < wait_deadline => {
+                            // #199: intentional — `PtyChild` doesn't
+                            // expose a "wait with timeout" method
+                            // (portable-pty's Child trait doesn't
+                            // either). Polling at 10ms inside a
+                            // bounded 2-second deadline is the
+                            // close-path graceful-exit watcher.
                             thread::sleep(Duration::from_millis(10));
                         }
                         Ok(None) => {
@@ -571,6 +577,9 @@ impl NativePtyProcess {
             if timeout.is_some_and(|limit| start.elapsed() >= Duration::from_secs_f64(limit)) {
                 return Err(PtyError::Timeout);
             }
+            // #199: intentional — `wait_impl` poll. Same constraint
+            // as the close_impl variant above: no per-Child wait
+            // primitive on the trait surface.
             thread::sleep(Duration::from_millis(10));
         }
     }

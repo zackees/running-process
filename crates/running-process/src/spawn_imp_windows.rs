@@ -503,6 +503,11 @@ fn drain_watcher(process_handle: OwnedHandle, timeout: Duration, _keep: Arc<()>)
         WaitForSingleObject(process_handle.as_raw(), INFINITE);
     }
     // Give the pipes a chance to drain post-mortem.
+    //
+    // #199: intentional — same post-mortem drain semantic as the
+    // Unix watcher. `WaitForSingleObject(INFINITE)` above gives us
+    // the exit; this sleep lets the reader threads pick up the
+    // last bytes the kernel still has buffered.
     thread::sleep(timeout);
     // process_handle is closed here.  The Rust ChildStdin/Stdout/Stderr
     // pipes owned by the SpawnedChild caller are not in our hands; the

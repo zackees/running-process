@@ -612,6 +612,11 @@ def _wait_for_child_with_activity_timeout(
                 and not stderr_thread.is_alive()
             ):
                 break
+            # #199: intentional — polling for the joint condition
+            # "child exited AND both capture threads drained". A
+            # signaling primitive that fires when ALL THREE
+            # subsystems are done would require thread-coordination
+            # machinery that's overkill for this CLI wait loop.
             time.sleep(0.05)
         if returncode is None and not timed_out:
             wait = getattr(child, "wait", None)

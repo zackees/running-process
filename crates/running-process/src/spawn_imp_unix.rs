@@ -162,8 +162,16 @@ pub fn spawn(
                         None => return,
                     }
                 }
+                // #199: intentional — try_wait poll on the contained
+                // child, 50ms cadence inside a bounded outer drain
+                // loop. waitpid(WNOHANG)-equivalent semantics.
                 thread::sleep(std::time::Duration::from_millis(50));
             }
+            // #199: intentional — post-mortem pipe drain. Children's
+            // write-ends of the captured stdio pipes are still being
+            // closed by the kernel after exit; this gives readers a
+            // chance to see the final bytes before the watcher
+            // releases its keep-alive.
             thread::sleep(timeout);
         });
     }

@@ -336,4 +336,9 @@ def run_streaming(
             return code
         if deadline is not None and time.time() >= deadline:
             process._handle_timeout(timeout)
+        # #199: intentional — wait-for-completion poll that
+        # interleaves with the project's _handle_timeout machinery.
+        # subprocess.Popen.wait(timeout) raises TimeoutExpired and
+        # discards partial results; this loop keeps the result for
+        # the caller's inspection on timeout.
         time.sleep(0.01)

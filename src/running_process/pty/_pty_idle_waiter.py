@@ -356,7 +356,11 @@ def _start_native_exit_watcher(process: PseudoTerminalProcess) -> None:
             if code is not None:
                 detector.mark_exit(code, code in KEYBOARD_INTERRUPT_EXIT_CODES)
                 return
-            time.sleep(0.05)  # 50ms — exit detection doesn't need 1ms precision
+            # #199: intentional — exit-detection cadence on a
+            # background watcher thread. 50ms gives sub-100ms
+            # latency on the user-visible idle-callback fire path
+            # while keeping CPU cost at ~20 polls/sec.
+            time.sleep(0.05)
 
     process._native_exit_watcher = threading.Thread(
         target=watch_for_exit,

@@ -142,7 +142,11 @@ impl DaemonServer {
                         }
                         Err(e) => {
                             error!("accept error: {e}");
-                            // Brief pause to avoid tight error loops.
+                            // #199: intentional — back-off against a
+                            // pathological accept failure that would
+                            // otherwise spin the daemon's CPU at 100%.
+                            // 50ms is a conventional "rate limit my
+                            // error log" delay.
                             tokio::time::sleep(Duration::from_millis(50)).await;
                         }
                     }
@@ -347,11 +351,11 @@ async fn reap_all_sessions(state: &DaemonState) {
         pids_to_wait.len()
     );
 
-    // Brief wait so the child exits actually propagate; we do not
-    // strictly need this for correctness (the children are dead) but
-    // tests that observe `Get-Process` immediately after Shutdown
-    // benefit from it.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // #199: removed — this 150ms wait was a "tests benefit from it"
+    // crutch, not a correctness requirement. Tests that need to
+    // observe child-exit propagation after Shutdown should
+    // themselves wait + retry rather than relying on the daemon
+    // sleeping. Saves 150ms on every clean shutdown.
 }
 
 // ---------------------------------------------------------------------------

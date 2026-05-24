@@ -337,6 +337,11 @@ pub fn spawn_pty_reader(
             }
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                // #199: intentional — back-off on a non-blocking PTY
+                // master read that returned WouldBlock. There's no
+                // POSIX "wait for fd readable" that's portable
+                // across the OwnedFd / Windows OwnedHandle paths
+                // used here.
                 thread::sleep(Duration::from_millis(10));
                 continue;
             }
