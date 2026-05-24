@@ -10,15 +10,27 @@
 //! ring buffer (#150 M5 follow-up).
 //!
 //! This module ports portable-pty's three Windows source files to
-//! windows-sys directly and adds the passthrough flag. Public surface
-//! mirrors what `native_pty_process.rs` needs: `openpty(size)` returning
-//! a `ConPtyPair { master, slave }`, with master/slave types exposing
-//! `try_clone_reader`, `take_writer`, `resize`, and `spawn_command`.
-//!
-//! Wave 1 of #150 (scaffolding only): module exists but is otherwise
-//! empty. Implementation lands in W2/W3.
+//! `windows-sys` directly and adds the passthrough flag. Public
+//! surface mirrors what `native_pty_process.rs` needs: an `openpty`
+//! returning a [`ConPtyPair`] with a master that exposes
+//! `try_clone_reader` / `take_writer` / `resize` and a slave that
+//! accepts a `spawn` call returning a [`ConPtyChild`].
 
 #![cfg(windows)]
+
+use std::ffi::{OsStr, OsString};
+use std::io::{self, Read, Write};
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle, RawHandle};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::System::Console::COORD;
+use windows_sys::Win32::System::Threading::{
+    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+};
 
 // PSEUDOCONSOLE_PASSTHROUGH_MODE is the whole point of this rewrite.
 // windows-sys 0.59 does not expose this constant; declared locally
@@ -29,3 +41,391 @@ pub(super) mod child;
 pub(super) mod pipes;
 pub(super) mod proc_thread_attr;
 pub(super) mod pseudoconsole;
+
+use child::ConPtyChild;
+use pipes::{PipeDirection, PipePair, create_pipe};
+use proc_thread_attr::ProcThreadAttributeList;
+use pseudoconsole::PseudoConsole;
+
+/// Caller-facing PTY dimensions. Pixel fields are ignored on Windows
+/// (ConPTY only consumes rows/cols) but we mirror portable-pty's
+/// `PtySize` shape so callers can pass them through unchanged.
+#[derive(Debug, Clone, Copy)]
+pub struct PtySize {
+    pub rows: u16,
+    pub cols: u16,
+    pub pixel_width: u16,
+    pub pixel_height: u16,
+}
+
+impl From<PtySize> for COORD {
+    fn from(size: PtySize) -> Self {
+        COORD {
+            X: size.cols as i16,
+            Y: size.rows as i16,
+        }
+    }
+}
+
+/// One ConPTY: master end held by the host process, slave end ready
+/// to be spawned into a child.
+pub(super) struct ConPtyPair {
+    pub master: ConPtyMaster,
+    pub slave: ConPtySlave,
+}
+
+/// Host-side handle. Shares ownership of the `HPCON` with the slave
+/// via an `Arc<Mutex<...>>` so `Drop` order is deterministic — the
+/// HPCON is only released when the last clone goes away.
+pub(super) struct ConPtyMaster {
+    pseudo_console: Arc<Mutex<PseudoConsole>>,
+    /// Host-side handle for reading child stdout/stderr. `None` after
+    /// `try_clone_reader` has taken it.
+    reader: Option<OwnedHandle>,
+    /// Host-side handle for writing child stdin. `None` after
+    /// `take_writer` has taken it.
+    writer: Option<OwnedHandle>,
+}
+
+impl ConPtyMaster {
+    /// Take the host-side stdout/stderr reader. Returns
+    /// `AlreadyTaken` on the second call — matches portable-pty's
+    /// `take_writer` semantics (we use the same shape for symmetry).
+    pub(super) fn try_clone_reader(&mut self) -> io::Result<Box<dyn Read + Send>> {
+        let handle = self
+            .reader
+            .take()
+            .ok_or_else(|| io::Error::other("ConPtyMaster reader already taken"))?;
+        // SAFETY: we hand off ownership; HandleReader closes on drop.
+        Ok(Box::new(HandleReader::new(handle)))
+    }
+
+    pub(super) fn take_writer(&mut self) -> io::Result<Box<dyn Write + Send>> {
+        let handle = self
+            .writer
+            .take()
+            .ok_or_else(|| io::Error::other("ConPtyMaster writer already taken"))?;
+        Ok(Box::new(HandleWriter::new(handle)))
+    }
+
+    pub(super) fn resize(&self, size: PtySize) -> io::Result<()> {
+        let pc = self
+            .pseudo_console
+            .lock()
+            .expect("conpty pseudo-console mutex poisoned");
+        pc.resize(size.into())
+    }
+}
+
+/// Slave-side spawn target. Holds the same `HPCON` as the master (via
+/// shared `Arc`) plus the ConPTY-side pipe ends — those are leaked
+/// into the child via the attribute list at `CreateProcessW` time.
+pub(super) struct ConPtySlave {
+    pseudo_console: Arc<Mutex<PseudoConsole>>,
+    /// ConPTY-side stdin handle (child reads). Closed via Drop after
+    /// CreateProcessW has copied it into the child.
+    _conpty_input: OwnedHandle,
+    /// ConPTY-side stdout handle (child writes).
+    _conpty_output: OwnedHandle,
+}
+
+impl ConPtySlave {
+    /// Spawn a process whose stdio is routed through this ConPTY.
+    /// `argv[0]` is the executable, `argv[1..]` the arguments.
+    /// `env`, if present, is the full environment (KEY,VALUE pairs);
+    /// `None` means "inherit parent env".
+    pub(super) fn spawn(
+        self,
+        argv: &[OsString],
+        cwd: Option<&Path>,
+        env: Option<&[(OsString, OsString)]>,
+    ) -> io::Result<ConPtyChild> {
+        if argv.is_empty() {
+            return Err(io::Error::other("conpty spawn requires non-empty argv"));
+        }
+
+        // Build wide-string command line (CreateProcessW parses this
+        // into argv inside the child — see Microsoft's
+        // CommandLineToArgvW for the parser this is the inverse of).
+        let cmdline = build_command_line(argv)?;
+        let mut cmdline_w: Vec<u16> = OsStr::new(&cmdline).encode_wide().collect();
+        cmdline_w.push(0);
+
+        // Wide application name: pass argv[0] explicitly so
+        // CreateProcessW doesn't have to re-parse cmdline to find it.
+        let mut app_w: Vec<u16> = argv[0].encode_wide().collect();
+        app_w.push(0);
+
+        // Wide cwd, if any.
+        let cwd_w: Option<Vec<u16>> = cwd.map(|p| {
+            let mut v: Vec<u16> = p.as_os_str().encode_wide().collect();
+            v.push(0);
+            v
+        });
+        let cwd_ptr = cwd_w
+            .as_ref()
+            .map(|v| v.as_ptr())
+            .unwrap_or(std::ptr::null());
+
+        // Wide env block, if any.
+        let env_block: Option<Vec<u16>> = env.map(build_env_block);
+        let env_ptr = env_block
+            .as_ref()
+            .map(|v| v.as_ptr() as *mut std::ffi::c_void)
+            .unwrap_or(std::ptr::null_mut());
+
+        // Build STARTUPINFOEXW with the pseudo-console attribute.
+        let hpc_handle = self
+            .pseudo_console
+            .lock()
+            .expect("conpty pseudo-console mutex poisoned")
+            .as_handle();
+        let mut attr_list = ProcThreadAttributeList::with_pseudoconsole(hpc_handle as HANDLE)?;
+
+        let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+        si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        // STARTF_USESTDHANDLES with explicit invalid handles tells
+        // Windows: don't try to inherit my console; the
+        // pseudo-console attribute owns stdio. Per Microsoft's
+        // ConPTY samples, the stdio fields stay zero/null and the
+        // attribute list does the work.
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdInput = std::ptr::null_mut();
+        si.StartupInfo.hStdOutput = std::ptr::null_mut();
+        si.StartupInfo.hStdError = std::ptr::null_mut();
+        si.lpAttributeList = attr_list.as_mut_ptr();
+
+        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+        let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+        // bInheritHandles = TRUE because the ConPTY-side pipe handles
+        // were created with HANDLE_FLAG_INHERIT and must propagate to
+        // the child.
+        let ok = unsafe {
+            CreateProcessW(
+                app_w.as_ptr(),
+                cmdline_w.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1, // bInheritHandles = TRUE
+                flags,
+                env_ptr,
+                cwd_ptr,
+                &si.StartupInfo,
+                &mut pi,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: CreateProcessW returned success; hProcess and
+        // hThread are owned and unique.
+        let process = unsafe { OwnedHandle::from_raw_handle(pi.hProcess as RawHandle) };
+        let main_thread = unsafe { OwnedHandle::from_raw_handle(pi.hThread as RawHandle) };
+
+        // ConPTY-side pipe handles can be closed in the host now —
+        // the child inherited duplicates. Dropping `self` (which
+        // owns `_conpty_input` / `_conpty_output`) at function-end
+        // closes them.
+
+        Ok(ConPtyChild::new(process, main_thread))
+    }
+}
+
+pub(super) fn openpty(size: PtySize) -> io::Result<ConPtyPair> {
+    // Input: host writes, child reads.
+    let stdin_pipe = create_pipe(PipeDirection::HostWriteChildRead)?;
+    // Output: child writes, host reads.
+    let stdout_pipe = create_pipe(PipeDirection::HostReadChildWrite)?;
+
+    let pseudo_console = PseudoConsole::new(
+        size.into(),
+        owned_to_handle(&stdin_pipe.child),
+        owned_to_handle(&stdout_pipe.child),
+    )?;
+    let pseudo_console = Arc::new(Mutex::new(pseudo_console));
+
+    let master = ConPtyMaster {
+        pseudo_console: Arc::clone(&pseudo_console),
+        reader: Some(stdout_pipe.host),
+        writer: Some(stdin_pipe.host),
+    };
+    let slave = ConPtySlave {
+        pseudo_console,
+        _conpty_input: stdin_pipe.child,
+        _conpty_output: stdout_pipe.child,
+    };
+    Ok(ConPtyPair { master, slave })
+}
+
+fn owned_to_handle(handle: &OwnedHandle) -> HANDLE {
+    handle.as_raw_handle() as HANDLE
+}
+
+// ── Command line + env block construction ───────────────────────────
+
+/// Build a Windows command-line string from argv. Each argument is
+/// quoted+escaped per the rules `CommandLineToArgvW` parses with.
+fn build_command_line(argv: &[OsString]) -> io::Result<OsString> {
+    let mut out = OsString::new();
+    for (i, arg) in argv.iter().enumerate() {
+        if i > 0 {
+            out.push(" ");
+        }
+        out.push(quote_argument(arg)?);
+    }
+    Ok(out)
+}
+
+/// Quote a single argument per Microsoft's rules. Conservative:
+/// always wraps in double quotes and escapes embedded `"` and
+/// trailing backslashes.
+fn quote_argument(arg: &OsStr) -> io::Result<OsString> {
+    // OsStr on Windows is WTF-16-ish but we convert to wide,
+    // process, and re-wrap.
+    let wide: Vec<u16> = arg.encode_wide().collect();
+    if wide.iter().any(|c| *c == 0) {
+        return Err(io::Error::other(
+            "argv element contains a NUL byte; cannot pass to CreateProcessW",
+        ));
+    }
+    // Empty args still need to be representable.
+    if wide.is_empty() {
+        return Ok(OsString::from("\"\""));
+    }
+    // Simple case: no whitespace and no quote chars — pass as-is.
+    let needs_quoting = wide.iter().any(|&c| {
+        c == b' ' as u16 || c == b'\t' as u16 || c == b'\n' as u16 || c == b'"' as u16 || c == 0x0B
+    });
+    if !needs_quoting {
+        let s: OsString = std::os::windows::ffi::OsStringExt::from_wide(&wide);
+        return Ok(s);
+    }
+    let mut out_w: Vec<u16> = Vec::with_capacity(wide.len() + 2);
+    out_w.push(b'"' as u16);
+    let mut backslashes = 0usize;
+    for &c in &wide {
+        if c == b'\\' as u16 {
+            backslashes += 1;
+            out_w.push(c);
+        } else if c == b'"' as u16 {
+            // Double each pending backslash, then add one to escape
+            // the quote itself.
+            for _ in 0..backslashes {
+                out_w.push(b'\\' as u16);
+            }
+            backslashes = 0;
+            out_w.push(b'\\' as u16);
+            out_w.push(b'"' as u16);
+        } else {
+            backslashes = 0;
+            out_w.push(c);
+        }
+    }
+    // Double trailing backslashes so the closing quote isn't
+    // accidentally escaped.
+    for _ in 0..backslashes {
+        out_w.push(b'\\' as u16);
+    }
+    out_w.push(b'"' as u16);
+    Ok(std::os::windows::ffi::OsStringExt::from_wide(&out_w))
+}
+
+/// Build a UTF-16 environment block from `(key, value)` pairs.
+/// Format is `K1=V1\0K2=V2\0...\0\0` (each pair NUL-terminated, full
+/// block double-NUL-terminated).
+fn build_env_block(env: &[(OsString, OsString)]) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    for (k, v) in env {
+        for c in k.encode_wide() {
+            out.push(c);
+        }
+        out.push(b'=' as u16);
+        for c in v.encode_wide() {
+            out.push(c);
+        }
+        out.push(0);
+    }
+    // Double-NUL terminator.
+    out.push(0);
+    out
+}
+
+// ── Handle-backed Read/Write wrappers ────────────────────────────────
+
+struct HandleReader {
+    handle: OwnedHandle,
+}
+
+impl HandleReader {
+    fn new(handle: OwnedHandle) -> Self {
+        Self { handle }
+    }
+}
+
+impl Read for HandleReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use windows_sys::Win32::Storage::FileSystem::ReadFile;
+        let mut read: u32 = 0;
+        let ok = unsafe {
+            ReadFile(
+                self.handle.as_raw_handle() as HANDLE,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &mut read,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            let err = io::Error::last_os_error();
+            // ERROR_BROKEN_PIPE = 109 -> peer closed -> EOF.
+            if err.raw_os_error() == Some(109) {
+                return Ok(0);
+            }
+            return Err(err);
+        }
+        Ok(read as usize)
+    }
+}
+
+struct HandleWriter {
+    handle: OwnedHandle,
+}
+
+impl HandleWriter {
+    fn new(handle: OwnedHandle) -> Self {
+        Self { handle }
+    }
+}
+
+impl Write for HandleWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        use windows_sys::Win32::Storage::FileSystem::WriteFile;
+        let mut written: u32 = 0;
+        let ok = unsafe {
+            WriteFile(
+                self.handle.as_raw_handle() as HANDLE,
+                buf.as_ptr(),
+                buf.len() as u32,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(written as usize)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // Anonymous pipes don't buffer in user-space; nothing to flush.
+        Ok(())
+    }
+}
+
+// Keep `IntoRawHandle` import in tree (otherwise rustc warns "unused
+// import" on this conditional cfg-windows file when not exercised).
+#[allow(dead_code)]
+fn _silence_unused_into_raw_handle(h: OwnedHandle) -> RawHandle {
+    h.into_raw_handle()
+}

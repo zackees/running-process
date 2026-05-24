@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Integration tests for the running-process daemon.
 //!
 //! Each test starts a `DaemonServer` in a background tokio task using a
