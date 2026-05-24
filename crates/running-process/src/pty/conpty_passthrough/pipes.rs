@@ -23,17 +23,12 @@ use std::io;
 use std::os::windows::io::{FromRawHandle, OwnedHandle, RawHandle};
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{
-    SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-};
+use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 
-const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
-
-/// Anonymous pipe pair. The `child` side gets inherited into the
-/// ConPTY-spawned process; the `host` side stays private to this
-/// process.
+/// Anonymous pipe pair. The `child` side is passed to
+/// `CreatePseudoConsole`; the `host` side stays in our process.
 pub(super) struct PipePair {
     pub(super) host: OwnedHandle,
     pub(super) child: OwnedHandle,
@@ -48,15 +43,19 @@ pub(super) enum PipeDirection {
 }
 
 pub(super) fn create_pipe(direction: PipeDirection) -> io::Result<PipePair> {
+    // Match portable-pty / filedescriptor exactly: non-inheritable
+    // handles, default OS buffer size. With `bInheritHandles = FALSE`
+    // on CreateProcessW (which is what we use), inheritance doesn't
+    // come into play anyway — ConPTY duplicates the handles
+    // internally for its own use.
     let mut sa: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
     sa.nLength = std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32;
-    sa.bInheritHandle = 1; // TRUE
+    sa.bInheritHandle = 0;
     sa.lpSecurityDescriptor = ptr::null_mut();
 
     let mut read_handle: HANDLE = INVALID_HANDLE_VALUE;
     let mut write_handle: HANDLE = INVALID_HANDLE_VALUE;
-    let ok =
-        unsafe { CreatePipe(&mut read_handle, &mut write_handle, &sa, PIPE_BUFFER_SIZE) };
+    let ok = unsafe { CreatePipe(&mut read_handle, &mut write_handle, &sa, 0) };
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -69,21 +68,12 @@ pub(super) fn create_pipe(direction: PipeDirection) -> io::Result<PipePair> {
         PipeDirection::HostReadChildWrite => (read_owned, write_owned),
     };
 
-    // Strip HANDLE_FLAG_INHERIT from the host-side handle so it does
-    // NOT leak into the child via CreateProcessW handle inheritance.
-    let host_raw = host_handle_as_raw(&host_owned);
-    let ok = unsafe { SetHandleInformation(host_raw, HANDLE_FLAG_INHERIT, 0) };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
+    // No SetHandleInformation needed — handles are non-inheritable
+    // by construction, and CreateProcessW's bInheritHandles=FALSE
+    // makes inheritance moot anyway.
 
     Ok(PipePair {
         host: host_owned,
         child: child_owned,
     })
-}
-
-fn host_handle_as_raw(handle: &OwnedHandle) -> HANDLE {
-    use std::os::windows::io::AsRawHandle;
-    handle.as_raw_handle() as HANDLE
 }

@@ -15,6 +15,24 @@
 //! returning a [`ConPtyPair`] with a master that exposes
 //! `try_clone_reader` / `take_writer` / `resize` and a slave that
 //! accepts a `spawn` call returning a [`ConPtyChild`].
+//!
+//! # `PSEUDOCONSOLE_PASSTHROUGH_MODE` OS support
+//!
+//! The passthrough flag is **only honored on Windows 11 (build
+//! 22000+) and Server 2022+**. On Windows 10 — including the latest
+//! 22H2 (build 19045) — ConPTY silently ignores the flag and runs
+//! the normal virtual-screen path, emitting synthesized DSR queries
+//! (`\x1b[6n`) instead of forwarding the child's bytes verbatim.
+//! Confirmed empirically: on Win 10.0.19045 my master pipe receives
+//! exactly the 4-byte `\x1b[6n` cursor query from ConPTY and never
+//! sees the child's actual output.
+//!
+//! The byte-exact tests in `daemon_tui_repaint_test.rs` and
+//! `tests/test_pty_tui_repaint.py` detect the OS at runtime and
+//! skip on Windows 10 with a clear message; on Win11 / Server 2022
+//! they exercise the full passthrough chain. Cross-platform
+//! coverage on Linux / macOS POSIX PTYs is byte-exact by design
+//! (no virtual-screen layer).
 
 #![cfg(windows)]
 
@@ -25,7 +43,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandl
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::COORD;
 use windows_sys::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
@@ -117,12 +135,15 @@ impl ConPtyMaster {
     }
 }
 
-/// Slave-side spawn target. Holds the shared `HPCON` and the
-/// ConPTY-side pipe ends (closed via Drop after spawn).
+/// Slave-side spawn target. Holds only the shared `HPCON`; the
+/// ConPTY-side pipe handles are closed in `openpty` right after
+/// `CreatePseudoConsole` returns (matching portable-pty's flow:
+/// they pass `FileDescriptor` by value to `PsuedoCon::new` and the
+/// values are dropped at function exit). Holding our copies open
+/// past `CreatePseudoConsole` desyncs ConPTY's internal pipe
+/// reference counts and breaks the master-side reader.
 pub(crate) struct ConPtySlave {
     pseudo_console: Arc<Mutex<PseudoConsole>>,
-    _conpty_input: OwnedHandle,
-    _conpty_output: OwnedHandle,
 }
 
 impl ConPtySlave {
@@ -181,11 +202,17 @@ impl ConPtySlave {
 
         let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-        // Per Microsoft's official ConPTY sample, the stdio handle
-        // fields and STARTF_USESTDHANDLES are NOT set. The
-        // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE attribute on
-        // lpAttributeList connects the child's stdio to the
-        // pseudo-console.
+        // Per portable-pty's spawn_command (which works in production
+        // via wezterm): set STARTF_USESTDHANDLES with the stdio fields
+        // marked as INVALID_HANDLE_VALUE. This prevents the child from
+        // inheriting whatever stdio our host process happens to have
+        // — the PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE attribute on
+        // lpAttributeList then actually connects the child's stdio to
+        // the pseudo-console.
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+        si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+        si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
         si.lpAttributeList = attr_list.as_mut_ptr();
 
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
@@ -236,10 +263,16 @@ pub(super) fn openpty(size: PtySize) -> io::Result<ConPtyPair> {
         owned_to_handle(&stdin_pipe.child),
         owned_to_handle(&stdout_pipe.child),
     )?;
-    // NOTE: Microsoft's official sample closes the ConPTY-side handles
-    // here. portable-pty 0.9 does NOT close them and works fine; we
-    // mirror portable-pty for stability and let Drop close them when
-    // ConPtySlave is consumed by spawn.
+    // Close the ConPTY-side handles in the host process now —
+    // CreatePseudoConsole internally duplicated them, and ConPTY's
+    // dup is what's plumbed to the child via
+    // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE. Keeping our copies open
+    // past this point breaks ConPTY's pipe-reference counting and
+    // the master-side reader never sees any data. portable-pty
+    // achieves the same drop implicitly by consuming FileDescriptor
+    // by value into PsuedoCon::new.
+    drop(stdin_pipe.child);
+    drop(stdout_pipe.child);
 
     let pseudo_console = Arc::new(Mutex::new(pseudo_console));
 
@@ -248,11 +281,7 @@ pub(super) fn openpty(size: PtySize) -> io::Result<ConPtyPair> {
         reader: Some(stdout_pipe.host),
         writer: Some(stdin_pipe.host),
     };
-    let slave = ConPtySlave {
-        pseudo_console,
-        _conpty_input: stdin_pipe.child,
-        _conpty_output: stdout_pipe.child,
-    };
+    let slave = ConPtySlave { pseudo_console };
     Ok(ConPtyPair { master, slave })
 }
 

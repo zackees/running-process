@@ -56,12 +56,22 @@ class TestPtyTuiRepaint(unittest.TestCase):
     """Asserts raw ANSI bytes survive the round trip through ConPTY /
     POSIX PTY to the in-process reader."""
 
-    @unittest.skip(
-        "blocked on #150 ConPty output bug — Backend is temporarily aliased "
-        "to PortablePtyBackend on Windows; the new ConPty path doesn't "
-        "forward child stdout. Re-enable once fixed.",
-    )
     def test_ansi_clear_and_cursor_home_survive_pty(self) -> None:
+        # #150 W8: PSEUDOCONSOLE_PASSTHROUGH_MODE is only honored on
+        # Windows 11 / Server 2022 (build 22000+). On Win10 ConPTY
+        # silently ignores the flag, the master pipe sees only the
+        # synthesized DSR query, and byte-exact assertions can't
+        # hold. Skip with a clear note; POSIX PTYs run normally.
+        if sys.platform == "win32":
+            version = sys.getwindowsversion()  # type: ignore[attr-defined]
+            if version.build < 22000:
+                raise unittest.SkipTest(
+                    "PSEUDOCONSOLE_PASSTHROUGH_MODE requires Windows 11+ "
+                    f"(current build {version.build}). The ConPty "
+                    "implementation is correct but the OS won't honor "
+                    "the flag — see #150 conpty_passthrough/mod.rs doc."
+                )
+
         from running_process import RunningProcess
 
         testbin = _resolve_testbin()

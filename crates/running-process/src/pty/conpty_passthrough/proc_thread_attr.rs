@@ -30,17 +30,11 @@ pub(super) struct ProcThreadAttributeList {
     /// Backing storage for the attribute list itself. Cast to
     /// `LPPROC_THREAD_ATTRIBUTE_LIST` when handed to Win32.
     buffer: Vec<u8>,
-    /// Backing storage for the HPCON value the attribute list points
-    /// at. Boxed so its address is stable across moves of `Self`.
-    /// MSDN requires this storage to outlive the attribute list.
-    /// Typed as the actual HPCON (windows-sys 0.59 = `isize`) so the
-    /// pointer width and copy size match exactly.
-    _hpc_storage: Box<HPCON>,
 }
 
 impl ProcThreadAttributeList {
     /// Build an attribute list with a single
-    /// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` entry pointing at `hpc`.
+    /// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` entry referencing `hpc`.
     pub(super) fn with_pseudoconsole(hpc: HPCON) -> io::Result<Self> {
         // Probe call to get required buffer size. Per MSDN this call
         // returns FALSE with last_os_error == ERROR_INSUFFICIENT_BUFFER
@@ -63,15 +57,21 @@ impl ProcThreadAttributeList {
             return Err(io::Error::last_os_error());
         }
 
-        // Box HPCON so its address survives moves of `Self`.
-        let hpc_storage = Box::new(hpc);
-        let hpc_ptr = (&*hpc_storage as *const HPCON) as *const c_void;
+        // HPCON is passed BY VALUE as `lpValue` — NOT by pointer.
+        // Both Microsoft's official ConPTY sample (samples/ConPTY/
+        // EchoCon, `hPC` passed directly) and portable-pty 0.9
+        // (`procthreadattr.rs::set_pty`) do this, even though MSDN
+        // phrases `lpValue` as "a pointer to the attribute value".
+        // HPCON is itself a HANDLE-typed pointer, and ConPTY
+        // reinterprets `lpValue` as the HPCON directly. Cast HPCON
+        // (`isize` in windows-sys 0.59) to `*const c_void` to satisfy
+        // the FFI signature; `cbsize` stays `size_of::<HPCON>()`.
         let ok = unsafe {
             UpdateProcThreadAttribute(
                 list_ptr,
                 0,
                 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                hpc_ptr,
+                hpc as *const c_void,
                 std::mem::size_of::<HPCON>(),
                 ptr::null_mut(),
                 ptr::null(),
@@ -79,15 +79,11 @@ impl ProcThreadAttributeList {
         };
         if ok == 0 {
             let err = io::Error::last_os_error();
-            // Clean up the partially initialized list before propagating.
             unsafe { DeleteProcThreadAttributeList(list_ptr) };
             return Err(err);
         }
 
-        Ok(Self {
-            buffer,
-            _hpc_storage: hpc_storage,
-        })
+        Ok(Self { buffer })
     }
 
     pub(super) fn as_mut_ptr(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {

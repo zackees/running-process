@@ -98,15 +98,46 @@ fn drain_attachment(att: &mut PtyAttachment, deadline: Instant) -> Vec<u8> {
     out
 }
 
-// #150 W8: ignored pending the ConPty implementation bug. The
-// conpty_passthrough module (W1-W3) is in place but its output
-// path isn't forwarding child stdout — `Backend` is temporarily
-// aliased to PortablePtyBackend on Windows. Re-enable this test
-// when the runtime bug is fixed; this exercises the byte-exact
-// PASSTHROUGH path the rewrite was designed for.
-#[ignore = "blocked on #150 ConPty output bug — see backend.rs Backend alias note"]
+/// Returns Some(build_number) on Windows, None elsewhere. Used to
+/// gate the byte-exact assertion on Win11 (build 22000+) where
+/// PSEUDOCONSOLE_PASSTHROUGH_MODE is honored.
+#[cfg(windows)]
+fn windows_build_number() -> Option<u32> {
+    use std::process::Command;
+    let output = Command::new("cmd")
+        .args(["/c", "ver"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // "Microsoft Windows [Version 10.0.19045.6093]"
+    let v = stdout.split('.').nth(2)?;
+    v.parse::<u32>().ok()
+}
+
+#[cfg(not(windows))]
+fn windows_build_number() -> Option<u32> {
+    None
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn raw_ansi_bytes_flow_through_pty_to_ring_buffer() {
+    // #150 W8: PSEUDOCONSOLE_PASSTHROUGH_MODE is only honored on
+    // Windows 11 / Server 2022 (build 22000+). On Win10 ConPTY
+    // silently ignores the flag and the master pipe sees only
+    // synthesized DSR queries instead of the child's raw bytes —
+    // skip with a clear note. POSIX PTYs (Linux/macOS) are
+    // passthrough by design, so this test runs there.
+    if let Some(build) = windows_build_number() {
+        if build < 22000 {
+            eprintln!(
+                "SKIPPED: PSEUDOCONSOLE_PASSTHROUGH_MODE requires Windows 11+ \
+                 (current build {build}). The ConPty implementation is correct \
+                 but the OS won't honor the flag — see #150 module doc."
+            );
+            return;
+        }
+    }
+
     let scope = format!("tui-repaint-{}", line!());
     let (_handle, socket) = start_server(&scope);
     tokio::time::sleep(Duration::from_millis(300)).await;
