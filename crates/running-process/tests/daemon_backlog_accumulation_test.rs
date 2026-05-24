@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Backlog accumulation while detached (#130 milestone 5 C2).
 //!
 //! Spawn a child that emits continuous output (`testbin-emitter` prints

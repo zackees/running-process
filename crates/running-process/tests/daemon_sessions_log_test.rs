@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Integration test for `GetSessionBacklog` / `sessions log`
 //! (#130 milestone 7 B4).
 //!

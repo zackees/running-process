@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Non-TTY attach degraded mode (#130 M6 C9).
 //!
 //! When a client attaches with `is_tty=false`, the daemon skips the

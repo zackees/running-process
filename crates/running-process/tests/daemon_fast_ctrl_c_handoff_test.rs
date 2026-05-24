@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Fast Ctrl+C handoff verification (#130 milestone 4).
 //!
 //! The headline assertion: a client's call to `TerminateSession` completes

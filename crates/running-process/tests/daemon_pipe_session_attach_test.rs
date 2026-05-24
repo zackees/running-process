@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Integration test for daemon-owned pipe-backed sessions
 //! (#130 milestone 3).
 //!

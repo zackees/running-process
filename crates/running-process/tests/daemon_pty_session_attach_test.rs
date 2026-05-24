@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Integration test for daemon-owned detachable PTY sessions
 //! (issue #130 milestone 2).
 //!
