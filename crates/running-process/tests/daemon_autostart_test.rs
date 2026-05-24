@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Direct test of `spawn_autostart_sessions` (#130 M7 B3).
 //!
 //! End-to-end testing of the config-file → daemon startup path would

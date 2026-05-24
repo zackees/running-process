@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Resize PTY session while detached (#130 M5 follow-up).
 
 use running_process::daemon::client::DaemonClient;

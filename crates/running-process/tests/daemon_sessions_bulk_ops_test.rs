@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Bulk session ops (#130 M9 H4 follow-up).
 //!
 //! Verifies `purge_exited_sessions` removes exited sessions but leaves

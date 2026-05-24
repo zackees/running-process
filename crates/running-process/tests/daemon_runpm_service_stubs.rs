@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Phase 1 integration tests for the runpm `SERVICE_*` daemon RPC stubs (#106).
 //!
 //! Each new request type (`ServiceStart` ... `ServiceResurrect`, enum values

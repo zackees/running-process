@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! TerminationOutcome tracking on ExitState (#130 M4 follow-up).
 //!
 //! When `terminate_pty_session` / `terminate_pipe_session` is called and

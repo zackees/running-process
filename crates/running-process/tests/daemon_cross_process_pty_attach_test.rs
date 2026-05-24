@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Cross-process integration test for daemon-owned PTY sessions
 //! (#130 milestone 2).
 //!

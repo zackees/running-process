@@ -1,3 +1,4 @@
+#![cfg(feature = "daemon")]
 //! Tree-with-grandchildren + stubborn-child tests (#130 M4 follow-up).
 //!
 //! Two assertions about the daemon's soft-then-hard schedule:
