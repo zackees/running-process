@@ -29,8 +29,11 @@ pub mod terminal_input;
 pub(super) mod conpty_passthrough;
 
 // #150: backend abstraction so native_pty_process.rs calls a single
-// Backend::openpty() regardless of platform.
-pub(super) mod backend;
+// Backend::openpty() regardless of platform. Made `pub` in 4.0.1 so
+// downstream consumers (e.g. clud's SIGWINCH relay) can call
+// `PtyMaster::resize` / `get_size` through `NativePtyHandles.master`.
+pub mod backend;
+pub use backend::{PtyChild, PtyMaster, PtySize};
 
 mod native_pty_process;
 pub use native_pty_process::{

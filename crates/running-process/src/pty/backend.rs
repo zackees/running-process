@@ -20,18 +20,23 @@ use std::path::Path;
 /// Caller-facing PTY dimensions. Pixel fields are ignored on Windows
 /// (ConPTY only consumes rows/cols). Mirrors portable-pty's shape so
 /// caller code passes them through unchanged.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PtySize {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PtySize {
     pub rows: u16,
     pub cols: u16,
     pub pixel_width: u16,
     pub pixel_height: u16,
 }
 
-pub(crate) trait PtyMaster: Send + 'static {
+pub trait PtyMaster: Send + 'static {
     fn try_clone_reader(&mut self) -> io::Result<Box<dyn Read + Send>>;
     fn take_writer(&mut self) -> io::Result<Box<dyn Write + Send>>;
     fn resize(&self, size: PtySize) -> io::Result<()>;
+    /// Return the current PTY dimensions. On Windows the value is
+    /// the last size passed to `resize` (or the initial openpty
+    /// size); ConPTY exposes no live query API. Restored in 4.0.1
+    /// for downstream parity with portable-pty's `MasterPty::get_size`.
+    fn get_size(&self) -> io::Result<PtySize>;
     /// On Unix returns the foreground process group leader of the
     /// PTY (used by tools like `tcsetpgrp` checks). Always returns
     /// `None` on Windows where the concept doesn't exist.
@@ -39,7 +44,7 @@ pub(crate) trait PtyMaster: Send + 'static {
     fn process_group_leader(&self) -> Option<i32>;
 }
 
-pub(crate) trait PtyChild: Send + 'static {
+pub trait PtyChild: Send + 'static {
     fn pid(&self) -> u32;
     /// Poll without blocking. `Ok(None)` means still running.
     /// `Ok(Some(code))` means exited with that exit code.
@@ -57,7 +62,7 @@ pub(crate) trait PtyChild: Send + 'static {
     fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle>;
 }
 
-pub(crate) trait PtySlave: Send + 'static {
+pub trait PtySlave: Send + 'static {
     type Child: PtyChild;
     fn spawn(
         self,
@@ -67,7 +72,7 @@ pub(crate) trait PtySlave: Send + 'static {
     ) -> io::Result<Self::Child>;
 }
 
-pub(crate) trait PtyBackend {
+pub trait PtyBackend {
     type Master: PtyMaster;
     type Slave: PtySlave;
     fn openpty(size: PtySize) -> io::Result<(Self::Master, Self::Slave)>;
@@ -112,6 +117,15 @@ mod conpty {
                     pixel_height: size.pixel_height,
                 },
             )
+        }
+        fn get_size(&self) -> io::Result<PtySize> {
+            let s = conpty_passthrough::ConPtyMaster::get_size(self);
+            Ok(PtySize {
+                rows: s.rows,
+                cols: s.cols,
+                pixel_width: s.pixel_width,
+                pixel_height: s.pixel_height,
+            })
         }
     }
 
@@ -194,6 +208,15 @@ mod unix {
                     pixel_height: size.pixel_height,
                 })
                 .map_err(io::Error::other)
+        }
+        fn get_size(&self) -> io::Result<PtySize> {
+            let s = self.0.get_size().map_err(io::Error::other)?;
+            Ok(PtySize {
+                rows: s.rows,
+                cols: s.cols,
+                pixel_width: s.pixel_width,
+                pixel_height: s.pixel_height,
+            })
         }
         fn process_group_leader(&self) -> Option<i32> {
             self.0.process_group_leader()
@@ -316,6 +339,15 @@ mod unix_compat {
                     pixel_height: size.pixel_height,
                 })
                 .map_err(io::Error::other)
+        }
+        fn get_size(&self) -> io::Result<PtySize> {
+            let s = self.0.get_size().map_err(io::Error::other)?;
+            Ok(PtySize {
+                rows: s.rows,
+                cols: s.cols,
+                pixel_width: s.pixel_width,
+                pixel_height: s.pixel_height,
+            })
         }
     }
 

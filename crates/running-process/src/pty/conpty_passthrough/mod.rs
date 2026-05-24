@@ -103,6 +103,9 @@ pub(crate) struct ConPtyMaster {
     /// Host-side handle for writing child stdin. `None` after
     /// `take_writer` has taken it.
     writer: Option<OwnedHandle>,
+    /// Cached last-known dimensions. ConPTY has no live query API, so
+    /// `get_size` returns this. Seeded by `openpty`, updated by `resize`.
+    current_size: Mutex<PtySize>,
 }
 
 impl ConPtyMaster {
@@ -131,7 +134,19 @@ impl ConPtyMaster {
             .pseudo_console
             .lock()
             .expect("conpty pseudo-console mutex poisoned");
-        pc.resize(size.into())
+        pc.resize(size.into())?;
+        *self
+            .current_size
+            .lock()
+            .expect("conpty size mutex poisoned") = size;
+        Ok(())
+    }
+
+    pub(super) fn get_size(&self) -> PtySize {
+        *self
+            .current_size
+            .lock()
+            .expect("conpty size mutex poisoned")
     }
 }
 
@@ -280,6 +295,7 @@ pub(super) fn openpty(size: PtySize) -> io::Result<ConPtyPair> {
         pseudo_console: Arc::clone(&pseudo_console),
         reader: Some(stdout_pipe.host),
         writer: Some(stdin_pipe.host),
+        current_size: Mutex::new(size),
     };
     let slave = ConPtySlave { pseudo_console };
     Ok(ConPtyPair { master, slave })
