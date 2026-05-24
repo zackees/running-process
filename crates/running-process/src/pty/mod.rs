@@ -81,9 +81,13 @@ pub struct PtyReadShared {
 }
 
 pub struct NativePtyHandles {
-    pub master: Box<dyn MasterPty + Send>,
+    // #150: master/child were `Box<dyn portable_pty::MasterPty>` etc.
+    // Refactored to use the cross-platform PtyMaster / PtyChild
+    // traits so the Windows path goes through `conpty_passthrough`
+    // (with PSEUDOCONSOLE_PASSTHROUGH_MODE) instead of portable-pty.
+    pub master: Box<dyn crate::pty::backend::PtyMaster>,
     pub writer: Box<dyn Write + Send>,
-    pub child: Box<dyn portable_pty::Child + Send + Sync>,
+    pub child: Box<dyn crate::pty::backend::PtyChild>,
     #[cfg(windows)]
     pub _job: WindowsJobHandle,
 }
@@ -522,7 +526,9 @@ pub fn poll_pty_process(
         return Ok(*returncode.lock().expect("pty returncode mutex poisoned"));
     };
     let status = handles.child.try_wait()?;
-    let code = status.map(portable_exit_code);
+    // #150: try_wait now returns Option<u32> (from PtyChild trait)
+    // instead of portable_pty's ExitStatus. Just cast for storage.
+    let code = status.map(|c| c as i32);
     if let Some(code) = code {
         store_pty_returncode(returncode, code);
         return Ok(Some(code));

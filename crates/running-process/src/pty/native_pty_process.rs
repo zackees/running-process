@@ -4,12 +4,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, PtySize};
-
+use super::backend::{Backend, PtyBackend, PtyChild, PtyMaster, PtySize, PtySlave};
 use super::{
-    command_builder_from_argv, is_ignorable_process_control_error, poll_pty_process,
-    portable_exit_code, record_pty_input_metrics, spawn_pty_reader, store_pty_returncode,
-    write_pty_input, IdleDetectorCore, NativePtyHandles, PtyError, PtyReadShared, PtyReadState,
+    is_ignorable_process_control_error, poll_pty_process, record_pty_input_metrics,
+    spawn_pty_reader, store_pty_returncode, write_pty_input, IdleDetectorCore, NativePtyHandles,
+    PtyError, PtyReadShared, PtyReadState,
 };
 #[cfg(unix)]
 use super::posix_terminal_input_relay_worker;
@@ -302,7 +301,7 @@ impl NativePtyProcess {
                 loop {
                     match child.try_wait() {
                         Ok(Some(status)) => {
-                            let code = portable_exit_code(status);
+                            let code = status as i32;
                             self.store_returncode(code);
                             break;
                         }
@@ -316,7 +315,7 @@ impl NativePtyProcess {
                                 }
                             }
                             let code = match child.wait() {
-                                Ok(status) => portable_exit_code(status),
+                                Ok(status) => status as i32,
                                 Err(_) => -9,
                             };
                             self.store_returncode(code);
@@ -362,7 +361,7 @@ impl NativePtyProcess {
                     "running_process::NativePtyProcess::close_impl.wait_child"
                 );
                 match child.wait() {
-                    Ok(status) => portable_exit_code(status),
+                    Ok(status) => status as i32,
                     Err(_) => -9,
                 }
             };
@@ -434,46 +433,41 @@ impl NativePtyProcess {
         #[cfg(windows)]
         let conhost_pids_before = conhost_children_of_current_process();
 
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: self.rows,
-                cols: self.cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| PtyError::Spawn(e.to_string()))?;
+        let (mut master, slave) = Backend::openpty(PtySize {
+            rows: self.rows,
+            cols: self.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| PtyError::Spawn(e.to_string()))?;
 
-        let mut cmd = command_builder_from_argv(&self.argv);
+        // Build argv/cwd/env in the shape the backend wants.
+        let argv: Vec<std::ffi::OsString> =
+            self.argv.iter().map(std::ffi::OsString::from).collect();
         let cwd = resolved_spawn_cwd(self.cwd.as_deref());
-        if let Some(cwd) = &cwd {
-            cmd.cwd(cwd);
-        }
-        if let Some(env) = &self.env {
-            cmd.env_clear();
-            for (key, value) in env {
-                cmd.env(key, value);
-            }
-        }
+        let env: Option<Vec<(std::ffi::OsString, std::ffi::OsString)>> =
+            self.env.as_ref().map(|e| {
+                e.iter()
+                    .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)))
+                    .collect()
+            });
 
-        let reader = pair
-            .master
+        let reader = master
             .try_clone_reader()
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
-        let writer = pair
-            .master
+        let writer = master
             .take_writer()
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
-        let child = pair
-            .slave
-            .spawn_command(cmd)
+        let cwd_path = cwd.as_deref().map(std::path::Path::new);
+        let child = slave
+            .spawn(&argv, cwd_path, env.as_deref())
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
         #[cfg(windows)]
-        let job = assign_child_to_windows_kill_on_close_job(child.as_raw_handle())?;
+        let job = assign_child_to_windows_kill_on_close_job(Some(child.as_raw_handle()))?;
         #[cfg(windows)]
         assign_conpty_conhost_to_job(&job, &conhost_pids_before);
         #[cfg(windows)]
-        apply_windows_pty_priority(child.as_raw_handle(), self.nice)?;
+        apply_windows_pty_priority(Some(child.as_raw_handle()), self.nice)?;
         let shared = Arc::clone(&self.reader);
         let echo = Arc::clone(&self.echo);
         let idle_detector = Arc::clone(&self.idle_detector);
@@ -495,9 +489,9 @@ impl NativePtyProcess {
             .expect("pty reader worker mutex poisoned") = Some(reader_worker);
 
         *guard = Some(NativePtyHandles {
-            master: pair.master,
+            master: Box::new(master) as Box<dyn PtyMaster>,
             writer,
-            child,
+            child: Box::new(child) as Box<dyn PtyChild>,
             #[cfg(windows)]
             _job: job,
         });
@@ -656,7 +650,7 @@ impl NativePtyProcess {
                     return Ok(Some(pid));
                 }
             }
-            return Ok(handles.child.process_id());
+            return Ok(Some(handles.child.pid()));
         }
         Ok(None)
     }

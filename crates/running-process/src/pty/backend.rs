@@ -32,12 +32,23 @@ pub(crate) trait PtyMaster: Send + 'static {
     fn try_clone_reader(&mut self) -> io::Result<Box<dyn Read + Send>>;
     fn take_writer(&mut self) -> io::Result<Box<dyn Write + Send>>;
     fn resize(&self, size: PtySize) -> io::Result<()>;
+    /// On Unix returns the foreground process group leader of the
+    /// PTY (used by tools like `tcsetpgrp` checks). Always returns
+    /// `None` on Windows where the concept doesn't exist.
+    #[cfg(unix)]
+    fn process_group_leader(&self) -> Option<i32>;
 }
 
 pub(crate) trait PtyChild: Send + 'static {
     fn pid(&self) -> u32;
-    fn try_wait(&self) -> io::Result<Option<u32>>;
-    fn kill(&self) -> io::Result<()>;
+    /// Poll without blocking. `Ok(None)` means still running.
+    /// `Ok(Some(code))` means exited with that exit code.
+    /// `&mut self` because portable-pty's underlying Child::try_wait
+    /// takes &mut, and we keep the surface uniform across backends.
+    fn try_wait(&mut self) -> io::Result<Option<u32>>;
+    /// Block until the child exits, then return the exit code.
+    fn wait(&mut self) -> io::Result<u32>;
+    fn kill(&mut self) -> io::Result<()>;
     #[cfg(windows)]
     fn as_raw_handle(&self) -> std::os::windows::io::RawHandle;
 }
@@ -116,10 +127,13 @@ mod conpty {
         fn pid(&self) -> u32 {
             conpty_passthrough::child::ConPtyChild::pid(self)
         }
-        fn try_wait(&self) -> io::Result<Option<u32>> {
+        fn try_wait(&mut self) -> io::Result<Option<u32>> {
             conpty_passthrough::child::ConPtyChild::try_wait(self)
         }
-        fn kill(&self) -> io::Result<()> {
+        fn wait(&mut self) -> io::Result<u32> {
+            conpty_passthrough::child::ConPtyChild::wait(self)
+        }
+        fn kill(&mut self) -> io::Result<()> {
             conpty_passthrough::child::ConPtyChild::kill(self)
         }
         fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
@@ -177,6 +191,9 @@ mod unix {
                 })
                 .map_err(io::Error::other)
         }
+        fn process_group_leader(&self) -> Option<i32> {
+            self.0.process_group_leader()
+        }
     }
 
     impl PtySlave for PortablePtySlave {
@@ -212,26 +229,30 @@ mod unix {
         fn pid(&self) -> u32 {
             self.0.process_id().unwrap_or(0)
         }
-        fn try_wait(&self) -> io::Result<Option<u32>> {
-            // portable-pty's Child::try_wait takes &mut; we use
-            // interior mutability via the trait's &self. Spinning on
-            // try_wait through a &self interface needs UnsafeCell-y
-            // shenanigans we don't want here. The daemon's PTY layer
-            // doesn't actually call try_wait through this trait — the
-            // Unix backend's existing portable_pty wait paths run
-            // through different APIs. So this is a placeholder that
-            // says "still running"; the real wait happens elsewhere.
-            // TODO(#150): if the Unix daemon path ever does call
-            //  PtyChild::try_wait, refactor to take &mut self.
-            Ok(None)
+        fn try_wait(&mut self) -> io::Result<Option<u32>> {
+            match self.0.try_wait()? {
+                Some(status) => Ok(Some(portable_pty_exit_code(status))),
+                None => Ok(None),
+            }
         }
-        fn kill(&self) -> io::Result<()> {
-            // Same &self issue as try_wait. portable-pty's Child::kill
-            // takes &mut. The Unix Drop path that owns the Child does
-            // the actual cleanup; this trait method is a no-op
-            // placeholder for the Backend::PtyChild surface.
-            Ok(())
+        fn wait(&mut self) -> io::Result<u32> {
+            let status = self.0.wait()?;
+            Ok(portable_pty_exit_code(status))
         }
+        fn kill(&mut self) -> io::Result<()> {
+            self.0.kill()
+        }
+    }
+
+    /// Convert portable-pty's ExitStatus to a u32 exit code.
+    /// Signal exits map to `128 + signal_index` per the standard
+    /// shell convention.
+    fn portable_pty_exit_code(status: portable_pty::ExitStatus) -> u32 {
+        // ExitStatus is opaque; format and parse the debug form which
+        // is "exited(code)" or "signal(name)". Cleaner would be to
+        // pattern-match on its accessor — but portable-pty's
+        // ExitStatus only exposes `exit_code() -> u32` directly.
+        status.exit_code()
     }
 }
 
