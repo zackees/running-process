@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.0.1 — Restore public access to PTY backend traits
+
+Surfaced by clud during the 4.0.0 rollout (see [meta tracker](https://github.com/zackees/running-process/issues/203)).
+
+In 4.0.0 the new `pty::backend` module was `pub(crate)` along with its `PtyMaster` / `PtyChild` / `PtySize` types. That left downstream consumers in an awkward state: `NativePtyHandles.master` is `pub` and typed as `Box<dyn PtyMaster>`, but the trait wasn't reachable, so callers could hold the box but couldn't call `resize()` on it — a regression from the 3.x portable-pty surface.
+
+This patch:
+
+- Promotes `pty::backend` to `pub`, and `PtyMaster` / `PtyChild` / `PtyBackend` / `PtySlave` / `PtySize` to `pub`.
+- Re-exports `PtyMaster`, `PtyChild`, `PtySize` at `running_process::pty::*` for convenience.
+- Adds `PtyMaster::get_size()` — Windows caches the last-set size internally (ConPTY has no live query API); Unix delegates to portable-pty.
+- New integration test `pty_master_public_api_test.rs` locks the surface.
+
+No other API changes. Python ABI unchanged.
+
 ## 4.0.0 — Mono-crate consolidation
 
 **Breaking change for direct Rust consumers only.** The Python (`pip install running-process`) ABI is unchanged.
