@@ -463,11 +463,11 @@ impl NativePtyProcess {
             .spawn(&argv, cwd_path, env.as_deref())
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
         #[cfg(windows)]
-        let job = assign_child_to_windows_kill_on_close_job(Some(child.as_raw_handle()))?;
+        let job = assign_child_to_windows_kill_on_close_job(child.as_raw_handle())?;
         #[cfg(windows)]
         assign_conpty_conhost_to_job(&job, &conhost_pids_before);
         #[cfg(windows)]
-        apply_windows_pty_priority(Some(child.as_raw_handle()), self.nice)?;
+        apply_windows_pty_priority(child.as_raw_handle(), self.nice)?;
         let shared = Arc::clone(&self.reader);
         let echo = Arc::clone(&self.echo);
         let idle_detector = Arc::clone(&self.idle_detector);
