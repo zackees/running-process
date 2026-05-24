@@ -629,10 +629,11 @@ fn unix_now() -> f64 {
 }
 
 fn pid_of(process: &NativePtyProcess) -> Option<u32> {
-    // `NativePtyHandles.child` exposes `portable_pty::Child::process_id`.
-    // The handles slot is `None` if the PTY has not been started.
+    // #150: `NativePtyHandles.child` now exposes `PtyChild::pid()`
+    // (returning `u32`) instead of portable_pty's `process_id() ->
+    // Option<u32>`. The pid is unconditional once handles exist.
     let guard = process.handles.lock().unwrap();
-    guard.as_ref().and_then(|h| h.child.process_id())
+    guard.as_ref().map(|h| h.child.pid())
 }
 
 // ---------------------------------------------------------------------------
