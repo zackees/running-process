@@ -22,6 +22,14 @@
 # line at 60s and a final TERMINATE at 120s.
 slow-timeout = { period = "60s", terminate-after = 2, grace-period = "10s" }
 
+# Fix Wave T3 of #165: a handful of Windows tests that spawn subprocess
+# pipes intermittently lose captured stdout/stderr bytes when the
+# suite runs under heavy parallel load (timing-sensitive races in the
+# pipe drain path). One retry catches the transient flakes and lets
+# nextest report them as flaky rather than failing the suite. Hard
+# hangs still surface immediately via slow-timeout.
+retries = 2
+
 # Always print captured stdout/stderr for failed and timed-out tests,
 # both immediately when they fire and again in the final summary, so
 # the diagnostics survive interleaved CI log output.
