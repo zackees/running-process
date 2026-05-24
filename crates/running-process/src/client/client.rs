@@ -778,6 +778,12 @@ pub fn connect_or_start(scope_hash: Option<&str>) -> Result<DaemonClient, Client
     spawn_daemon()?;
 
     // Retry with exponential back-off.
+    //
+    // #199: intentional — the daemon binds its socket asynchronously
+    // after `spawn_daemon()` returns. There's no event the OS can
+    // signal us with when the socket is ready, so we poll. Exponential
+    // back-off (50→100→200→400ms) is the standard pattern; total
+    // wait caps at 750ms.
     let delays_ms: [u64; 4] = [50, 100, 200, 400];
     for delay in delays_ms {
         std::thread::sleep(std::time::Duration::from_millis(delay));

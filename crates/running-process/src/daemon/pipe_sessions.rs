@@ -212,6 +212,11 @@ impl OwnedPipeSession {
         let process = Arc::clone(&self.process);
         let hard_kill_fired = Arc::clone(&self.hard_kill_fired);
         thread::spawn(move || {
+            // #199: intentional — the grace period IS the wait. After
+            // SIGTERM we give the child a fixed window to exit
+            // cleanly before escalating to SIGKILL. The signaling
+            // alternative (waitpid + alarm) doesn't compose well
+            // with the existing tokio-based daemon runtime.
             thread::sleep(grace);
             if process.poll().ok().flatten().is_none() {
                 hard_kill_fired.store(true, Ordering::Release);

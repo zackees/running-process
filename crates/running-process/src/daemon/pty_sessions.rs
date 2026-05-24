@@ -358,6 +358,10 @@ impl OwnedPtySession {
         let process = Arc::clone(&self.process);
         let hard_kill_fired = Arc::clone(&self.hard_kill_fired);
         thread::spawn(move || {
+            // #199: intentional — grace-before-hard-kill mirror of
+            // pipe_sessions.rs. The PTY-tree variant uses
+            // terminate_tree_impl + kill_tree_impl but the timing
+            // semantics are identical.
             thread::sleep(grace);
             if process.wait_impl(Some(0.0)).is_err() {
                 hard_kill_fired.store(true, Ordering::Release);

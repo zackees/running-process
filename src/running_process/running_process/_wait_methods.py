@@ -145,6 +145,10 @@ def _wait_impl(
                     echo_streams(process, echo_callback)
                 else:
                     process._pty_process._echo_to_console(sys.stdout)
+                # #199: intentional — wait_for loop polling at 10ms
+                # to interleave echo-stream draining with the
+                # exit/timeout check. A condvar wouldn't carry the
+                # echo work this loop also performs.
                 time.sleep(0.01)
             if echo_callback is not None:
                 echo_streams(process, echo_callback)
@@ -175,6 +179,9 @@ def _wait_impl(
             if deadline is not None and time.time() >= deadline:
                 process._handle_timeout(effective_timeout)
             echo_streams(process, echo_callback)
+            # #199: intentional — same echo-interleave pattern as
+            # the wait_for poll above, used for `wait()`'s subprocess
+            # variant. 10ms cadence shared with the PTY branch.
             time.sleep(0.01)
 
     if echo_active:

@@ -85,6 +85,9 @@ mod imp {
         let poll_interval = Duration::from_millis(50);
 
         while start.elapsed() < duration {
+            // #199: intentional — Win32 exposes no "new console window"
+            // event; enumerating top-level windows is the only way to
+            // detect new ones. 50ms poll trades responsiveness for CPU.
             std::thread::sleep(poll_interval);
 
             for info in enumerate_visible_windows() {

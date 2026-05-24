@@ -370,6 +370,12 @@ impl PtyAttachment {
                 return Ok(None);
             }
             // Sleep a small amount; the OS will buffer incoming data.
+            //
+            // #199: intentional — `interprocess::local_socket::Stream`
+            // lacks a portable peek/ready primitive on Windows. The
+            // 20ms poll is the documented fallback. Replacing with
+            // an event-based primitive would require a per-platform
+            // shim that the upstream crate doesn't expose.
             std::thread::sleep(Duration::from_millis(20));
             // Probe by peeking a single byte: read from reader will block,
             // so we use the BufReader.fill_buf trick by reading 0 bytes

@@ -234,6 +234,11 @@ impl NativeProcess {
                     return;
                 }
             }
+            // #199: intentional — capture thread polling for
+            // child-exit. `try_wait` is non-blocking by design;
+            // we can't block here because the thread also drains
+            // pipe state alongside the exit check. 10ms keeps the
+            // CPU cost negligible while staying responsive.
             thread::sleep(Duration::from_millis(10));
         });
     }
