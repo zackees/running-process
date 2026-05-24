@@ -21,6 +21,17 @@ pub(super) mod pty_windows;
 
 pub mod terminal_input;
 
+// #150: ConPTY rewrite with PSEUDOCONSOLE_PASSTHROUGH_MODE so raw
+// child ANSI bytes reach the daemon ring buffer instead of ConPTY's
+// synthesized virtual-screen re-emission. Windows-only; Unix continues
+// to use portable-pty via the `pty_platform = pty_posix` alias above.
+#[cfg(windows)]
+pub(super) mod conpty_passthrough;
+
+// #150: backend abstraction so native_pty_process.rs calls a single
+// Backend::openpty() regardless of platform.
+pub(super) mod backend;
+
 mod native_pty_process;
 pub use native_pty_process::{
     InteractivePtyOptions, InteractivePtyPumpResult, InteractivePtySession, NativePtyProcess,

@@ -96,6 +96,24 @@ serde_json = "1"
 tempfile = "3"
 test-watchdog = { path = "../test-watchdog" }
 
+# #150: ConPTY passthrough rewrite uses windows-sys directly for the
+# new conpty_passthrough module. Kept alongside (not replacing) the
+# existing winapi 0.3 dep because the rest of the crate's Windows
+# call sites are on winapi and migrating them is out of scope.
+# windows-sys 0.59 exposes CreatePseudoConsole / ResizePseudoConsole /
+# ClosePseudoConsole + PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE directly.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+] }
+
 # Wave 5 of #165: extra dev-deps absorbed from `running-process-daemon`
 # for its windows-only and unix-only integration tests.
 [target.'cfg(windows)'.dev-dependencies]
