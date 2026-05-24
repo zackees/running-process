@@ -37,7 +37,7 @@ use windows_sys::Win32::System::Threading::{
 // from the Microsoft consoleapi.h header value.
 pub(super) const PSEUDOCONSOLE_PASSTHROUGH_MODE: u32 = 0x8;
 
-pub(super) mod child;
+pub(in crate::pty) mod child;
 pub(super) mod pipes;
 pub(super) mod proc_thread_attr;
 pub(super) mod pseudoconsole;
@@ -77,7 +77,7 @@ pub(super) struct ConPtyPair {
 /// Host-side handle. Shares ownership of the `HPCON` with the slave
 /// via an `Arc<Mutex<...>>` so `Drop` order is deterministic — the
 /// HPCON is only released when the last clone goes away.
-pub(super) struct ConPtyMaster {
+pub(crate) struct ConPtyMaster {
     pseudo_console: Arc<Mutex<PseudoConsole>>,
     /// Host-side handle for reading child stdout/stderr. `None` after
     /// `try_clone_reader` has taken it.
@@ -120,7 +120,7 @@ impl ConPtyMaster {
 /// Slave-side spawn target. Holds the same `HPCON` as the master (via
 /// shared `Arc`) plus the ConPTY-side pipe ends — those are leaked
 /// into the child via the attribute list at `CreateProcessW` time.
-pub(super) struct ConPtySlave {
+pub(crate) struct ConPtySlave {
     pseudo_console: Arc<Mutex<PseudoConsole>>,
     /// ConPTY-side stdin handle (child reads). Closed via Drop after
     /// CreateProcessW has copied it into the child.

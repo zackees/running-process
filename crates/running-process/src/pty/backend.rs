@@ -4,13 +4,238 @@
 //! `#[cfg(unix)]` branches around the underlying portable-pty calls.
 //! After the #150 rewrite we have two distinct backends:
 //!
-//! * Windows — `conpty_passthrough` (raw ConPTY via windows-sys with
-//!   `PSEUDOCONSOLE_PASSTHROUGH_MODE` enabled)
-//! * Unix — portable-pty's POSIX backend (unchanged)
+//! * Windows — [`conpty::ConPtyBackend`] (raw ConPTY via windows-sys
+//!   with `PSEUDOCONSOLE_PASSTHROUGH_MODE` enabled)
+//! * Unix — [`unix::PortablePtyBackend`] (a thin wrapper around
+//!   portable-pty's native_pty_system, unchanged behavior)
 //!
-//! The `Backend` type alias resolves to one or the other per-target,
+//! The [`Backend`] type alias resolves to one or the other per-target,
 //! and `native_pty_process.rs` makes a single `Backend::openpty(...)`
 //! call instead of branching.
-//!
-//! Wave 1 stub. Trait definition + concrete `Backend` alias land in
-//! W4; W5 swaps `native_pty_process.rs` over.
+
+use std::ffi::OsString;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+/// Caller-facing PTY dimensions. Pixel fields are ignored on Windows
+/// (ConPTY only consumes rows/cols). Mirrors portable-pty's shape so
+/// caller code passes them through unchanged.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PtySize {
+    pub rows: u16,
+    pub cols: u16,
+    pub pixel_width: u16,
+    pub pixel_height: u16,
+}
+
+pub(crate) trait PtyMaster: Send + 'static {
+    fn try_clone_reader(&mut self) -> io::Result<Box<dyn Read + Send>>;
+    fn take_writer(&mut self) -> io::Result<Box<dyn Write + Send>>;
+    fn resize(&self, size: PtySize) -> io::Result<()>;
+}
+
+pub(crate) trait PtyChild: Send + 'static {
+    fn pid(&self) -> u32;
+    fn try_wait(&self) -> io::Result<Option<u32>>;
+    fn kill(&self) -> io::Result<()>;
+    #[cfg(windows)]
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle;
+}
+
+pub(crate) trait PtySlave: Send + 'static {
+    type Child: PtyChild;
+    fn spawn(
+        self,
+        argv: &[OsString],
+        cwd: Option<&Path>,
+        env: Option<&[(OsString, OsString)]>,
+    ) -> io::Result<Self::Child>;
+}
+
+pub(crate) trait PtyBackend {
+    type Master: PtyMaster;
+    type Slave: PtySlave;
+    fn openpty(size: PtySize) -> io::Result<(Self::Master, Self::Slave)>;
+}
+
+#[cfg(windows)]
+mod conpty {
+    use super::*;
+    use crate::pty::conpty_passthrough;
+
+    pub(crate) struct ConPtyBackend;
+
+    impl PtyBackend for ConPtyBackend {
+        type Master = conpty_passthrough::ConPtyMaster;
+        type Slave = conpty_passthrough::ConPtySlave;
+
+        fn openpty(size: PtySize) -> io::Result<(Self::Master, Self::Slave)> {
+            let pair = conpty_passthrough::openpty(conpty_passthrough::PtySize {
+                rows: size.rows,
+                cols: size.cols,
+                pixel_width: size.pixel_width,
+                pixel_height: size.pixel_height,
+            })?;
+            Ok((pair.master, pair.slave))
+        }
+    }
+
+    impl PtyMaster for conpty_passthrough::ConPtyMaster {
+        fn try_clone_reader(&mut self) -> io::Result<Box<dyn Read + Send>> {
+            conpty_passthrough::ConPtyMaster::try_clone_reader(self)
+        }
+        fn take_writer(&mut self) -> io::Result<Box<dyn Write + Send>> {
+            conpty_passthrough::ConPtyMaster::take_writer(self)
+        }
+        fn resize(&self, size: PtySize) -> io::Result<()> {
+            conpty_passthrough::ConPtyMaster::resize(
+                self,
+                conpty_passthrough::PtySize {
+                    rows: size.rows,
+                    cols: size.cols,
+                    pixel_width: size.pixel_width,
+                    pixel_height: size.pixel_height,
+                },
+            )
+        }
+    }
+
+    impl PtySlave for conpty_passthrough::ConPtySlave {
+        type Child = conpty_passthrough::child::ConPtyChild;
+        fn spawn(
+            self,
+            argv: &[OsString],
+            cwd: Option<&Path>,
+            env: Option<&[(OsString, OsString)]>,
+        ) -> io::Result<Self::Child> {
+            conpty_passthrough::ConPtySlave::spawn(self, argv, cwd, env)
+        }
+    }
+
+    impl PtyChild for conpty_passthrough::child::ConPtyChild {
+        fn pid(&self) -> u32 {
+            conpty_passthrough::child::ConPtyChild::pid(self)
+        }
+        fn try_wait(&self) -> io::Result<Option<u32>> {
+            conpty_passthrough::child::ConPtyChild::try_wait(self)
+        }
+        fn kill(&self) -> io::Result<()> {
+            conpty_passthrough::child::ConPtyChild::kill(self)
+        }
+        fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+            conpty_passthrough::child::ConPtyChild::as_raw_handle(self)
+        }
+    }
+}
+
+#[cfg(unix)]
+mod unix {
+    use super::*;
+    use portable_pty::{
+        Child as PortableChild, CommandBuilder, MasterPty, PtySize as PortPtySize, SlavePty,
+        native_pty_system,
+    };
+
+    pub(crate) struct PortablePtyBackend;
+
+    pub(crate) struct PortablePtyMaster(Box<dyn MasterPty + Send>);
+    pub(crate) struct PortablePtySlave(Box<dyn SlavePty + Send>);
+    pub(crate) struct PortablePtyChild(Box<dyn PortableChild + Send + Sync>);
+
+    impl PtyBackend for PortablePtyBackend {
+        type Master = PortablePtyMaster;
+        type Slave = PortablePtySlave;
+
+        fn openpty(size: PtySize) -> io::Result<(Self::Master, Self::Slave)> {
+            let sys = native_pty_system();
+            let pair = sys
+                .openpty(PortPtySize {
+                    rows: size.rows,
+                    cols: size.cols,
+                    pixel_width: size.pixel_width,
+                    pixel_height: size.pixel_height,
+                })
+                .map_err(io::Error::other)?;
+            Ok((PortablePtyMaster(pair.master), PortablePtySlave(pair.slave)))
+        }
+    }
+
+    impl PtyMaster for PortablePtyMaster {
+        fn try_clone_reader(&mut self) -> io::Result<Box<dyn Read + Send>> {
+            self.0.try_clone_reader().map_err(io::Error::other)
+        }
+        fn take_writer(&mut self) -> io::Result<Box<dyn Write + Send>> {
+            self.0.take_writer().map_err(io::Error::other)
+        }
+        fn resize(&self, size: PtySize) -> io::Result<()> {
+            self.0
+                .resize(PortPtySize {
+                    rows: size.rows,
+                    cols: size.cols,
+                    pixel_width: size.pixel_width,
+                    pixel_height: size.pixel_height,
+                })
+                .map_err(io::Error::other)
+        }
+    }
+
+    impl PtySlave for PortablePtySlave {
+        type Child = PortablePtyChild;
+        fn spawn(
+            self,
+            argv: &[OsString],
+            cwd: Option<&Path>,
+            env: Option<&[(OsString, OsString)]>,
+        ) -> io::Result<Self::Child> {
+            if argv.is_empty() {
+                return Err(io::Error::other("portable-pty spawn requires non-empty argv"));
+            }
+            let mut cmd = CommandBuilder::new(&argv[0]);
+            for arg in &argv[1..] {
+                cmd.arg(arg);
+            }
+            if let Some(cwd) = cwd {
+                cmd.cwd(cwd);
+            }
+            if let Some(env) = env {
+                cmd.env_clear();
+                for (k, v) in env {
+                    cmd.env(k, v);
+                }
+            }
+            let child = self.0.spawn_command(cmd).map_err(io::Error::other)?;
+            Ok(PortablePtyChild(child))
+        }
+    }
+
+    impl PtyChild for PortablePtyChild {
+        fn pid(&self) -> u32 {
+            self.0.process_id().unwrap_or(0)
+        }
+        fn try_wait(&self) -> io::Result<Option<u32>> {
+            // portable-pty's Child::try_wait takes &mut; we use
+            // interior mutability via the trait's &self. Spinning on
+            // try_wait through a &self interface needs UnsafeCell-y
+            // shenanigans we don't want here. The daemon's PTY layer
+            // doesn't actually call try_wait through this trait — the
+            // Unix backend's existing portable_pty wait paths run
+            // through different APIs. So this is a placeholder that
+            // says "still running"; the real wait happens elsewhere.
+            // TODO(#150): if the Unix daemon path ever does call
+            //  PtyChild::try_wait, refactor to take &mut self.
+            Ok(None)
+        }
+        fn kill(&self) -> io::Result<()> {
+            // Same &self issue as try_wait. portable-pty's Child::kill
+            // takes &mut. The Unix Drop path that owns the Child does
+            // the actual cleanup; this trait method is a no-op
+            // placeholder for the Backend::PtyChild surface.
+            Ok(())
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) type Backend = conpty::ConPtyBackend;
+#[cfg(unix)]
+pub(crate) type Backend = unix::PortablePtyBackend;

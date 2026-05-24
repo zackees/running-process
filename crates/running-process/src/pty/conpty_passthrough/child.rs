@@ -22,13 +22,13 @@ use windows_sys::Win32::System::Threading::{
 /// running. Equals `STATUS_PENDING` from ntstatus.h.
 const STILL_ACTIVE: u32 = 259;
 
-pub(super) struct ConPtyChild {
+pub(crate) struct ConPtyChild {
     process: OwnedHandle,
     _main_thread: OwnedHandle,
 }
 
 impl ConPtyChild {
-    pub(super) fn new(process: OwnedHandle, main_thread: OwnedHandle) -> Self {
+    pub(crate) fn new(process: OwnedHandle, main_thread: OwnedHandle) -> Self {
         Self {
             process,
             _main_thread: main_thread,
@@ -39,13 +39,13 @@ impl ConPtyChild {
         self.process.as_raw_handle() as HANDLE
     }
 
-    pub(super) fn pid(&self) -> u32 {
+    pub(crate) fn pid(&self) -> u32 {
         unsafe { GetProcessId(self.process_handle()) }
     }
 
     /// Returns `Ok(Some(exit_code))` if the process has exited,
     /// `Ok(None)` if it's still running.
-    pub(super) fn try_wait(&self) -> io::Result<Option<u32>> {
+    pub(crate) fn try_wait(&self) -> io::Result<Option<u32>> {
         let mut code: u32 = 0;
         let ok = unsafe { GetExitCodeProcess(self.process_handle(), &mut code) };
         if ok == 0 {
@@ -58,7 +58,7 @@ impl ConPtyChild {
     }
 
     /// Blocks until the process exits, then returns the exit code.
-    pub(super) fn wait(&self) -> io::Result<u32> {
+    pub(crate) fn wait(&self) -> io::Result<u32> {
         let r = unsafe { WaitForSingleObject(self.process_handle(), INFINITE) };
         if r != WAIT_OBJECT_0 {
             let err = unsafe { GetLastError() };
@@ -77,7 +77,7 @@ impl ConPtyChild {
     /// `TerminateProcess(handle, 1)`. Best-effort hard kill; the
     /// Job-Object cleanup in the outer layer covers the case where
     /// the child has already exited.
-    pub(super) fn kill(&self) -> io::Result<()> {
+    pub(crate) fn kill(&self) -> io::Result<()> {
         let ok = unsafe { TerminateProcess(self.process_handle(), 1) };
         if ok == 0 {
             return Err(io::Error::last_os_error());
@@ -87,7 +87,7 @@ impl ConPtyChild {
 
     /// Raw process handle for integration with Job Object assignment
     /// and process-priority APIs that take a HANDLE directly.
-    pub(super) fn as_raw_handle(&self) -> RawHandle {
+    pub(crate) fn as_raw_handle(&self) -> RawHandle {
         self.process.as_raw_handle()
     }
 }
