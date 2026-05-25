@@ -294,6 +294,7 @@ pub(crate) type Backend = unix::PortablePtyBackend;
 // the temporary backend. Mirror the Unix module under a different
 // name so the cfg-pickup above works.
 #[cfg(windows)]
+#[allow(dead_code)]
 mod unix_compat {
     use super::*;
     use portable_pty::{

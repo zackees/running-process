@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use portable_pty::{CommandBuilder, MasterPty};
+use portable_pty::CommandBuilder;
 use thiserror::Error;
 
 /// Re-exports for downstream crates that need portable-pty types.

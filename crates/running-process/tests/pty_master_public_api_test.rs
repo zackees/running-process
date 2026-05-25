@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use running_process::pty::backend::{PtyMaster, PtySize};
+use running_process::pty::backend::PtySize;
 use running_process::pty::NativePtyProcess;
 
 fn python_available() -> bool {

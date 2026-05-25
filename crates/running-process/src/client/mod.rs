@@ -5,6 +5,7 @@
 //! previously imported from `running_process_client::*` keeps working
 //! when it switches to `running_process::client::*`.
 
+#[allow(clippy::module_inception)]
 pub mod client;
 pub mod paths;
 pub mod pipe_session;
