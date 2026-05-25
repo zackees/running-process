@@ -18,7 +18,14 @@ use running_process::{ContainedProcessGroup, SpawnStdio, SpawnedChild, StdioSour
 /// Build and locate a test binary from the workspace.
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", name, "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            name,
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("failed to run cargo build");
@@ -135,12 +142,7 @@ fn test_no_originator_env_var_without_originator() {
     let group = ContainedProcessGroup::new().expect("create group");
 
     let mut cmd = Command::new(&env_reporter);
-    // Fix Wave T5 of #165: scrub harness-inherited
-    // RUNNING_PROCESS_ORIGINATOR so the assertion below isn't poisoned
-    // when this test runs under an agent harness (CLUD, etc.) that
-    // sets the var on the parent process. CI runs in a clean env so
-    // this was previously undetected.
-    cmd.env_remove("RUNNING_PROCESS_ORIGINATOR");
+    cmd.env("RUNNING_PROCESS_ORIGINATOR", "STALE_PARENT:1");
     let mut child = group.spawn(&mut cmd, pipe_stdio()).expect("spawn");
 
     let (child_pid, originator) = read_until_ready(&mut child);
