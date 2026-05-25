@@ -5,6 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::backend::{Backend, PtyBackend, PtyChild, PtyMaster, PtySize};
+#[cfg(unix)]
+use super::backend::PtySlave;
 use super::{
     is_ignorable_process_control_error, poll_pty_process, record_pty_input_metrics,
     spawn_pty_reader, store_pty_returncode, write_pty_input, IdleDetectorCore, NativePtyHandles,
