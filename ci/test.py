@@ -17,8 +17,8 @@ SKIP_LINUX_DOCKER_ENV = "RUNNING_PROCESS_SKIP_LINUX_DOCKER"
 DEFAULT_TEST_TIMEOUT_SECONDS = "40"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 DEFAULT_RUST_TEST_TIMEOUT_SECONDS = 60.0
-# Windows runs cargo test with --test-threads=1 (pyo3 GIL + PTY deadlock
-# workaround). Serialized ConPTY teardown — Job Object close + child wait
+# Windows runs cargo nextest with --test-threads=1 for extra isolation around
+# filesystem and named-pipe races. Serialized ConPTY teardown — Job Object close + child wait
 # + reader-thread join — can stay quiet for 10s+ at a time, so the
 # supervisor's idle window needs more headroom than the parallel POSIX path.
 WINDOWS_RUST_TEST_TIMEOUT_SECONDS = 180.0
@@ -223,11 +223,12 @@ def _ensure_nextest_installed() -> bool:
     return True
 
 
-def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool]:
+def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool, bool]:
     argv = list(sys.argv[1:] if argv is None else argv)
     raw_pytest_args: list[str] = []
     require_symbols = False
     coverage = False
+    live_only = False
     while argv:
         current = argv.pop(0)
         if current == "--no-skip":
@@ -236,19 +237,22 @@ def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool]:
         if current == "--coverage":
             coverage = True
             continue
+        if current == "--live-only":
+            live_only = True
+            continue
         raw_pytest_args.append(current)
-    return _normalize_pytest_args(raw_pytest_args), require_symbols, coverage
+    return _normalize_pytest_args(raw_pytest_args), require_symbols, coverage, live_only
 
 
 def main(argv: list[str] | None = None) -> int:
-    pytest_args, require_symbols, coverage = parse_args(argv)
+    pytest_args, require_symbols, coverage, live_only = parse_args(argv)
     activate, _ = load_env_helpers()
     activate()
     if require_symbols:
         os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] = "1"
-    os.environ.setdefault(
-        "RUNNING_PROCESS_TEST_TIMEOUT_SECONDS", DEFAULT_TEST_TIMEOUT_SECONDS
-    )
+    if live_only:
+        os.environ["RUNNING_PROCESS_LIVE_TESTS"] = "1"
+    os.environ.setdefault("RUNNING_PROCESS_TEST_TIMEOUT_SECONDS", DEFAULT_TEST_TIMEOUT_SECONDS)
     python = Path(sys.executable)
     if os.environ.get(IN_RUNNING_PROCESS_ENV) != IN_RUNNING_PROCESS_VALUE:
         try:
@@ -274,82 +278,75 @@ def main(argv: list[str] | None = None) -> int:
     # Compilation can have long gaps (>10s) with no stdout/stderr when
     # linking large crates (tokio, interprocess, clap, etc.) and the
     # 10-second idle-timeout would kill the process mid-compile.
-    if not _ensure_nextest_installed():
-        return 1
-
-    if coverage:
-        cargo_cmd = supervised_command(
-            python,
-            *cargo_command(
-                "llvm-cov",
-                "nextest",
-                "--workspace",
-                "--lcov",
-                "--output-path",
-                "coverage-rust.lcov",
-            ),
-            timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
-        )
-        if run(cargo_cmd) != 0:
-            return 1
-    else:
-        # Step 1: compile all test binaries (no supervisor, no timeout)
-        build_args = cargo_command("nextest", "run", "--workspace", "--no-run")
-        if run(build_args) != 0:
+    if not live_only:
+        if not _ensure_nextest_installed():
             return 1
 
-        # Step 2: run the pre-built tests under the idle-timeout supervisor.
-        # nextest's per-test wall clock comes from .config/nextest.toml.
-        cargo_test_args = cargo_command("nextest", "run", "--workspace")
-        if sys.platform == "win32":
-            # Belt-and-braces: even with process-per-test isolation,
-            # filesystem and named-pipe races in the daemon test suite
-            # are more reliable under serial execution on Windows.
-            cargo_test_args += ["--test-threads", "1"]
-        if os.environ.get("RUNNING_PROCESS_TEST_NOCAPTURE"):
-            # CI-only: surface println!/eprintln! from Rust tests so
-            # hangs and panics leave a usable trail in the GH log.
-            cargo_test_args.append("--no-capture")
-        rust_test_timeout = (
-            WINDOWS_RUST_TEST_TIMEOUT_SECONDS
-            if sys.platform == "win32"
-            else DEFAULT_RUST_TEST_TIMEOUT_SECONDS
-        )
-        cargo_cmd = supervised_command(
-            python,
-            *cargo_test_args,
-            timeout=rust_test_timeout,
-        )
-        if run(cargo_cmd) != 0:
-            return 1
-
-    # -- Python non-live tests --
-    cov_first = list(_COV_PYTEST_FIRST) if coverage else []
-    if not _pytest_exit_is_acceptable(
-        run(
-            _supervised_pytest_command(
-                python, "-m", "not live", *cov_first, *pytest_args
+        if coverage:
+            cargo_cmd = supervised_command(
+                python,
+                *cargo_command(
+                    "llvm-cov",
+                    "nextest",
+                    "--workspace",
+                    "--lcov",
+                    "--output-path",
+                    "coverage-rust.lcov",
+                ),
+                timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
             )
-        ),
-        pytest_args,
-    ):
-        return 1
-    if not running_on_github_actions() and not skip_linux_docker_preflight():
-        if run(_linux_unit_test_command(python, *pytest_args)) != 0:
+            if run(cargo_cmd) != 0:
+                return 1
+        else:
+            # Step 1: compile all test binaries (no supervisor, no timeout)
+            build_args = cargo_command("nextest", "run", "--workspace", "--no-run")
+            if run(build_args) != 0:
+                return 1
+
+            # Step 2: run the pre-built tests under the idle-timeout supervisor.
+            # nextest's per-test wall clock comes from .config/nextest.toml.
+            cargo_test_args = cargo_command("nextest", "run", "--workspace")
+            if sys.platform == "win32":
+                # Belt-and-braces: even with process-per-test isolation,
+                # filesystem and named-pipe races in the daemon test suite
+                # are more reliable under serial execution on Windows.
+                cargo_test_args += ["--test-threads", "1"]
+            if os.environ.get("RUNNING_PROCESS_TEST_NOCAPTURE"):
+                # CI-only: surface println!/eprintln! from Rust tests so
+                # hangs and panics leave a usable trail in the GH log.
+                cargo_test_args.append("--no-capture")
+            rust_test_timeout = (
+                WINDOWS_RUST_TEST_TIMEOUT_SECONDS
+                if sys.platform == "win32"
+                else DEFAULT_RUST_TEST_TIMEOUT_SECONDS
+            )
+            cargo_cmd = supervised_command(
+                python,
+                *cargo_test_args,
+                timeout=rust_test_timeout,
+            )
+            if run(cargo_cmd) != 0:
+                return 1
+
+        # -- Python non-live tests --
+        cov_first = list(_COV_PYTEST_FIRST) if coverage else []
+        if not _pytest_exit_is_acceptable(
+            run(_supervised_pytest_command(python, "-m", "not live", *cov_first, *pytest_args)),
+            pytest_args,
+        ):
             return 1
-    if require_symbols and sys.platform == "win32":
-        if run(_release_build_command(python)) != 0:
-            return 1
+        if not running_on_github_actions() and not skip_linux_docker_preflight():
+            if run(_linux_unit_test_command(python, *pytest_args)) != 0:
+                return 1
+        if require_symbols and sys.platform == "win32":
+            if run(_release_build_command(python)) != 0:
+                return 1
 
     # -- Python live tests --
     if live_tests_enabled():
         cov_append = list(_COV_PYTEST_APPEND) if coverage else []
         if not _pytest_exit_is_acceptable(
-            run_live(
-                _supervised_pytest_command(
-                    python, "-m", "live", *cov_append, *pytest_args
-                )
-            ),
+            run_live(_supervised_pytest_command(python, "-m", "live", *cov_append, *pytest_args)),
             pytest_args,
         ):
             return 1
