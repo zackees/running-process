@@ -62,6 +62,10 @@ ALLOWED_RUST_SPAWN = {
     # via `pre_exec`. Windows impl uses CreateProcessW directly so it
     # doesn't trigger this lint.
     Path("crates/running-process/src/spawn_imp_unix.rs"),
+    # Native PTY process calls the backend trait's `spawn` method. The
+    # backend implementations are reviewed separately below; this is not a
+    # raw std::process::Command spawn site.
+    Path("crates/running-process/src/pty/native_pty_process.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),
@@ -106,6 +110,11 @@ ALLOWED_PORTABLE_PTY = {
     Path("crates/running-process-py/src/lib.rs"),
     # PTY module moved to core crate
     Path("crates/running-process/src/pty/mod.rs"),
+    # PTY backend abstraction: Unix remains the portable-pty backend while
+    # Windows routes through the reviewed ConPTY passthrough implementation.
+    Path("crates/running-process/src/pty/backend.rs"),
+    Path("crates/running-process/src/pty/conpty_passthrough/child.rs"),
+    Path("crates/running-process/src/pty/conpty_passthrough/mod.rs"),
     # Native PTY process impl extracted from pty/mod.rs.
     Path("crates/running-process/src/pty/native_pty_process.rs"),
     # Daemon PTY session manager: holds NativePtyProcess handles and reads
@@ -123,6 +132,14 @@ ALLOWED_PORTABLE_PTY = {
 # conversion, and they bake in the FILE_FLAG_OVERLAPPED guarantee.
 ALLOWED_RUST_CHILD_PIPE_FROM = {
     Path("crates/running-process/src/spawn_imp_windows.rs"),
+}
+
+# `CreatePipe` is allowed only for the ConPTY passthrough host/child pipe
+# plumbing. Those handles are owned directly by the PTY backend and are not
+# wrapped in Rust `ChildStd*`, so they do not trigger the #115 mismatch this
+# guard blocks everywhere else.
+ALLOWED_RUST_CREATE_PIPE = {
+    Path("crates/running-process/src/pty/conpty_passthrough/pipes.rs"),
 }
 
 ALLOWED_PYTHON_POPEN = {
@@ -230,12 +247,12 @@ def check_rust_spawn_sites() -> list[str]:
                     )
                 )
 
-            # CreatePipe is banned workspace-wide. No allowlist —
-            # `create_pipe_pair` in spawn_imp_windows.rs uses
-            # CreateNamedPipeW + CreateFileW instead and is the only
-            # sanctioned construction.
+            # CreatePipe is banned workspace-wide except the ConPTY passthrough
+            # helper allowlisted above. `create_pipe_pair` in
+            # spawn_imp_windows.rs uses CreateNamedPipeW + CreateFileW instead
+            # and is the only sanctioned construction for Rust ChildStd* pipes.
             create_pipe_hits = _find_matches(path, create_pipe_pattern)
-            if create_pipe_hits:
+            if create_pipe_hits and rel not in ALLOWED_RUST_CREATE_PIPE:
                 failures.extend(
                     _format_hits(
                         path,

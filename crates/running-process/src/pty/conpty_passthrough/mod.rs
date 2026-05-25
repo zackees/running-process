@@ -47,7 +47,7 @@ use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::COORD;
 use windows_sys::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 // PSEUDOCONSOLE_PASSTHROUGH_MODE is the whole point of this rewrite.
@@ -61,7 +61,7 @@ pub(super) mod proc_thread_attr;
 pub(super) mod pseudoconsole;
 
 use child::ConPtyChild;
-use pipes::{PipeDirection, PipePair, create_pipe};
+use pipes::{PipeDirection, create_pipe};
 use proc_thread_attr::ProcThreadAttributeList;
 use pseudoconsole::PseudoConsole;
 
@@ -327,7 +327,7 @@ fn quote_argument(arg: &OsStr) -> io::Result<OsString> {
     // OsStr on Windows is WTF-16-ish but we convert to wide,
     // process, and re-wrap.
     let wide: Vec<u16> = arg.encode_wide().collect();
-    if wide.iter().any(|c| *c == 0) {
+    if wide.contains(&0) {
         return Err(io::Error::other(
             "argv element contains a NUL byte; cannot pass to CreateProcessW",
         ));
