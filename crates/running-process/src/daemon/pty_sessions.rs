@@ -21,6 +21,8 @@ use crate::pty::NativePtyProcess;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::daemon::telemetry::{TeeHandle, TeeRegistry, TeeSnapshot, TeeStream};
+
 /// Default ring-buffer capacity for the output backlog (1 MiB per session).
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
 
@@ -185,6 +187,7 @@ pub struct OwnedPtySession {
     pub rows: AtomicU16,
     pub cols: AtomicU16,
     backlog: Mutex<RingBuffer>,
+    tees: TeeRegistry,
     attached: Mutex<Option<AttachedClient>>,
     exit_state: Mutex<Option<ExitState>>,
     pub(crate) pending_termination: Mutex<Option<PendingTermination>>,
@@ -218,6 +221,26 @@ impl OwnedPtySession {
     /// (#130 M7 B4 "sessions log").
     pub fn backlog_snapshot(&self) -> (Vec<u8>, u64) {
         self.backlog.lock().unwrap().snapshot()
+    }
+
+    /// Register a non-blocking bounded ring tee for PTY output bytes.
+    pub fn tee_output_ring(&self, capacity: usize) -> TeeHandle {
+        self.tees.add_ring(TeeStream::PtyOutput, capacity)
+    }
+
+    /// Register a non-blocking bounded ring tee for bytes written to stdin.
+    pub fn tee_input_ring(&self, capacity: usize) -> TeeHandle {
+        self.tees.add_ring(TeeStream::Stdin, capacity)
+    }
+
+    /// Snapshot a ring tee without draining it.
+    pub fn tee_snapshot(&self, handle: TeeHandle) -> Option<TeeSnapshot> {
+        self.tees.snapshot(handle)
+    }
+
+    /// Remove a registered tee sink.
+    pub fn untee(&self, handle: TeeHandle) -> bool {
+        self.tees.remove(handle)
     }
 
     /// Whether the currently attached client (if any) self-identified as
@@ -328,7 +351,9 @@ impl OwnedPtySession {
 
     /// Write bytes to the PTY input.
     pub fn write_input(&self, bytes: &[u8]) -> Result<(), crate::pty::PtyError> {
-        self.process.write_impl(bytes, false)
+        self.process.write_impl(bytes, false)?;
+        self.tees.write(TeeStream::Stdin, bytes);
+        Ok(())
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), crate::pty::PtyError> {
@@ -460,6 +485,7 @@ impl PtySessionRegistry {
             rows: AtomicU16::new(rows),
             cols: AtomicU16::new(cols),
             backlog: Mutex::new(RingBuffer::new(DEFAULT_BACKLOG_BYTES)),
+            tees: TeeRegistry::new(),
             attached: Mutex::new(None),
             exit_state: Mutex::new(None),
             pending_termination: Mutex::new(None),
@@ -561,6 +587,7 @@ fn reader_loop(session: Arc<OwnedPtySession>) {
         match session.process.read_chunk_impl(read_timeout) {
             Ok(Some(bytes)) if !bytes.is_empty() => {
                 session.backlog.lock().unwrap().push(&bytes);
+                session.tees.write(TeeStream::PtyOutput, &bytes);
                 if let Some(client) = session.attached.lock().unwrap().as_ref() {
                     for slice in bytes.chunks(STREAM_CHUNK_BYTES) {
                         let _ = client.sender.send(OutboundFrame::Output(slice.to_vec()));
