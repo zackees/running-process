@@ -16,3 +16,4 @@ pub mod registry;
 pub mod runtime_gc;
 pub mod server;
 pub mod shadow;
+pub mod telemetry;

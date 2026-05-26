@@ -26,6 +26,7 @@ use tracing::debug;
 use crate::daemon::pty_sessions::{
     AttachmentEnded, ExitState, OutboundFrame, PendingTermination, RingBuffer, TerminationOutcome,
 };
+use crate::daemon::telemetry::{TeeHandle, TeeRegistry, TeeSnapshot, TeeStream};
 
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
 pub const STREAM_CHUNK_BYTES: usize = 64 * 1024;
@@ -45,6 +46,13 @@ impl PipeStreamSelect {
         match self {
             Self::Stdout => StreamKind::Stdout,
             Self::Stderr => StreamKind::Stderr,
+        }
+    }
+
+    fn to_tee_stream(self) -> TeeStream {
+        match self {
+            Self::Stdout => TeeStream::Stdout,
+            Self::Stderr => TeeStream::Stderr,
         }
     }
 }
@@ -96,6 +104,7 @@ pub struct OwnedPipeSession {
     pub merge_stderr_into_stdout: bool,
     stdout: PipeStreamState,
     stderr: PipeStreamState,
+    tees: TeeRegistry,
     stdin_closed: AtomicBool,
     exit_state: Mutex<Option<ExitState>>,
     pub(crate) pending_termination: Mutex<Option<PendingTermination>>,
@@ -172,6 +181,33 @@ impl OwnedPipeSession {
         self.stream_state(stream).backlog.lock().unwrap().snapshot()
     }
 
+    /// Register a non-blocking bounded ring tee for stdout or stderr.
+    pub fn tee_stream_ring(
+        &self,
+        stream: PipeStreamSelect,
+        capacity: usize,
+    ) -> Result<TeeHandle, PipeAttachError> {
+        if !self.stream_available(stream) {
+            return Err(PipeAttachError::StreamUnavailable);
+        }
+        Ok(self.tees.add_ring(stream.to_tee_stream(), capacity))
+    }
+
+    /// Register a non-blocking bounded ring tee for bytes written to stdin.
+    pub fn tee_input_ring(&self, capacity: usize) -> TeeHandle {
+        self.tees.add_ring(TeeStream::Stdin, capacity)
+    }
+
+    /// Snapshot a ring tee without draining it.
+    pub fn tee_snapshot(&self, handle: TeeHandle) -> Option<TeeSnapshot> {
+        self.tees.snapshot(handle)
+    }
+
+    /// Remove a registered tee sink.
+    pub fn untee(&self, handle: TeeHandle) -> bool {
+        self.tees.remove(handle)
+    }
+
     pub fn notify_attached(&self, stream: PipeStreamSelect, frame: OutboundFrame) {
         if let Some(client) = self.stream_state(stream).attached.lock().unwrap().as_ref() {
             let _ = client.sender.send(frame);
@@ -184,6 +220,7 @@ impl OwnedPipeSession {
         }
         if !bytes.is_empty() {
             self.process.write_stdin_streaming(bytes)?;
+            self.tees.write(TeeStream::Stdin, bytes);
         }
         if close_after {
             self.process.close_stdin()?;
@@ -349,6 +386,7 @@ impl PipeSessionRegistry {
             merge_stderr_into_stdout,
             stdout: PipeStreamState::new(),
             stderr: PipeStreamState::new(),
+            tees: TeeRegistry::new(),
             stdin_closed: AtomicBool::new(false),
             exit_state: Mutex::new(None),
             pending_termination: Mutex::new(None),
@@ -440,6 +478,7 @@ fn reader_loop(session: Arc<OwnedPipeSession>, stream: PipeStreamSelect) {
                 let mut with_lf = bytes;
                 with_lf.push(b'\n');
                 state.backlog.lock().unwrap().push(&with_lf);
+                session.tees.write(stream.to_tee_stream(), &with_lf);
                 if let Some(client) = state.attached.lock().unwrap().as_ref() {
                     for slice in with_lf.chunks(STREAM_CHUNK_BYTES) {
                         let _ = client.sender.send(OutboundFrame::Output(slice.to_vec()));
