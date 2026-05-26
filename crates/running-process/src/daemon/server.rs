@@ -568,6 +568,15 @@ fn dispatch_request(
         Ok(RequestType::ResizePtySession) => {
             handlers::handle_resize_pty_session(request, state)
         }
+        Ok(RequestType::RegisterSessionTee) => {
+            handlers::handle_register_session_tee(request, state)
+        }
+        Ok(RequestType::UnregisterSessionTee) => {
+            handlers::handle_unregister_session_tee(request, state)
+        }
+        Ok(RequestType::GetSessionTeeStatus) => {
+            handlers::handle_get_session_tee_status(request, state)
+        }
         Err(_) => error_response(
             request_id,
             StatusCode::UnknownRequest,
@@ -674,6 +683,9 @@ mod tests {
             RequestType::DetachPtySession,
             RequestType::TerminatePtySession,
             RequestType::GetSessionBacklog,
+            RequestType::RegisterSessionTee,
+            RequestType::UnregisterSessionTee,
+            RequestType::GetSessionTeeStatus,
         ];
         for (i, rt) in payload_required.iter().enumerate() {
             let request = DaemonRequest {

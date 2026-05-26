@@ -23,6 +23,10 @@ use std::os::windows::io::RawHandle;
 pub struct TeeHandle(u64);
 
 impl TeeHandle {
+    pub fn from_u64(id: u64) -> Self {
+        Self(id)
+    }
+
     pub fn as_u64(self) -> u64 {
         self.0
     }

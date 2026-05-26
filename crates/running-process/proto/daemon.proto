@@ -63,6 +63,10 @@ enum RequestType {
   REQUEST_TYPE_BULK_TERMINATE_SESSIONS = 73;
   // Resize a PTY session without attaching (#130 M5 follow-up).
   REQUEST_TYPE_RESIZE_PTY_SESSION     = 74;
+  // Optional daemon-owned tee telemetry (#131).
+  REQUEST_TYPE_REGISTER_SESSION_TEE   = 75;
+  REQUEST_TYPE_UNREGISTER_SESSION_TEE = 76;
+  REQUEST_TYPE_GET_SESSION_TEE_STATUS = 77;
 }
 
 enum StatusCode {
@@ -133,6 +137,9 @@ message DaemonRequest {
   PurgeExitedSessionsRequest  purge_exited_sessions  = 72;
   BulkTerminateSessionsRequest bulk_terminate_sessions = 73;
   ResizePtySessionRequest     resize_pty_session     = 74;
+  RegisterSessionTeeRequest   register_session_tee   = 75;
+  UnregisterSessionTeeRequest unregister_session_tee = 76;
+  GetSessionTeeStatusRequest  get_session_tee_status = 77;
 }
 
 message DaemonResponse {
@@ -177,6 +184,9 @@ message DaemonResponse {
   PurgeExitedSessionsResponse  purge_exited_sessions  = 72;
   BulkTerminateSessionsResponse bulk_terminate_sessions = 73;
   ResizePtySessionResponse     resize_pty_session     = 74;
+  RegisterSessionTeeResponse   register_session_tee   = 75;
+  UnregisterSessionTeeResponse unregister_session_tee = 76;
+  GetSessionTeeStatusResponse  get_session_tee_status = 77;
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +772,79 @@ message ResizePtySessionRequest {
   uint32 cols       = 3;
 }
 message ResizePtySessionResponse {}
+
+// ---------------------------------------------------------------------------
+// Optional session tee telemetry (#131).
+// ---------------------------------------------------------------------------
+
+enum TeeSessionKind {
+  TEE_SESSION_KIND_UNSPECIFIED = 0;
+  TEE_SESSION_KIND_PTY         = 1;
+  TEE_SESSION_KIND_PIPE        = 2;
+}
+
+enum TeeStreamKind {
+  TEE_STREAM_KIND_UNSPECIFIED = 0;
+  TEE_STREAM_KIND_PTY_OUTPUT  = 1;
+  TEE_STREAM_KIND_STDOUT      = 2;
+  TEE_STREAM_KIND_STDERR      = 3;
+  TEE_STREAM_KIND_STDIN       = 4;
+}
+
+enum TeeSinkKind {
+  TEE_SINK_KIND_UNSPECIFIED = 0;
+  // Daemon opens the path and owns the file descriptor until the tee is
+  // removed or the session ends. Path bytes are OS-native, not UTF-8.
+  TEE_SINK_KIND_FILE        = 1;
+}
+
+enum TeeFileMode {
+  TEE_FILE_MODE_APPEND   = 0;
+  TEE_FILE_MODE_TRUNCATE = 1;
+}
+
+enum TeeBackpressure {
+  TEE_BACKPRESSURE_DROP_OLDEST = 0;
+  TEE_BACKPRESSURE_BLOCK       = 1;
+}
+
+message RegisterSessionTeeRequest {
+  string session_id          = 1;
+  TeeSessionKind session_kind = 2;
+  TeeStreamKind stream       = 3;
+  TeeSinkKind sink_kind      = 4;
+  // OS-native path bytes: Unix = OsStr bytes; Windows = little-endian UTF-16.
+  bytes  file_path           = 5;
+  TeeFileMode file_mode      = 6;
+  // 0 means use the daemon default.
+  uint32 queue_capacity      = 7;
+  // false means write missed-byte markers, matching the Rust default.
+  bool   suppress_missed_markers = 8;
+  TeeBackpressure backpressure = 9;
+}
+
+message RegisterSessionTeeResponse {
+  uint64 tee_handle = 1;
+}
+
+message UnregisterSessionTeeRequest {
+  string session_id          = 1;
+  TeeSessionKind session_kind = 2;
+  uint64 tee_handle          = 3;
+}
+message UnregisterSessionTeeResponse {}
+
+message GetSessionTeeStatusRequest {
+  string session_id          = 1;
+  TeeSessionKind session_kind = 2;
+  uint64 tee_handle          = 3;
+}
+
+message GetSessionTeeStatusResponse {
+  TeeStreamKind stream       = 1;
+  uint64 missed_bytes        = 2;
+  bool   disconnected        = 3;
+}
 
 // Daemon -> client stream frame for an attached stdout/stderr.
 message PipeStreamFrame {
