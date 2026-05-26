@@ -29,8 +29,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::daemon::telemetry::{
-    TeeEvent, TeeFileOptions, TeeHandle, TeeRawOptions, TeeRegistry, TeeSnapshot, TeeStatus,
-    TeeStream,
+    TeeEvent, TeeFileOptions, TeeHandle, TeeOptions, TeeRawOptions, TeeRegistry, TeeSnapshot,
+    TeeStatus, TeeStream,
 };
 
 /// Default ring-buffer capacity for the output backlog (1 MiB per session).
@@ -240,7 +240,17 @@ impl OwnedPtySession {
 
     /// Register a bounded non-blocking channel tee for PTY output bytes.
     pub fn tee_output_channel(&self, capacity: usize) -> (TeeHandle, Receiver<TeeEvent>) {
-        self.tees.add_channel(TeeStream::PtyOutput, capacity)
+        self.tee_output_channel_with_options(capacity, TeeOptions::default())
+    }
+
+    /// Register a bounded channel tee for PTY output bytes.
+    pub fn tee_output_channel_with_options(
+        &self,
+        capacity: usize,
+        options: TeeOptions,
+    ) -> (TeeHandle, Receiver<TeeEvent>) {
+        self.tees
+            .add_channel_with_options(TeeStream::PtyOutput, capacity, options)
     }
 
     /// Register a callback tee for PTY output bytes.
@@ -248,8 +258,21 @@ impl OwnedPtySession {
     where
         F: FnMut(TeeEvent) + Send + 'static,
     {
+        self.tee_output_callback_with_options(capacity, TeeOptions::default(), callback)
+    }
+
+    /// Register a callback tee for PTY output bytes.
+    pub fn tee_output_callback_with_options<F>(
+        &self,
+        capacity: usize,
+        options: TeeOptions,
+        callback: F,
+    ) -> TeeHandle
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
         self.tees
-            .add_callback(TeeStream::PtyOutput, capacity, callback)
+            .add_callback_with_options(TeeStream::PtyOutput, capacity, options, callback)
     }
 
     /// Register a file path tee for PTY output bytes.
@@ -280,7 +303,17 @@ impl OwnedPtySession {
 
     /// Register a bounded non-blocking channel tee for bytes written to stdin.
     pub fn tee_input_channel(&self, capacity: usize) -> (TeeHandle, Receiver<TeeEvent>) {
-        self.tees.add_channel(TeeStream::Stdin, capacity)
+        self.tee_input_channel_with_options(capacity, TeeOptions::default())
+    }
+
+    /// Register a bounded channel tee for bytes written to stdin.
+    pub fn tee_input_channel_with_options(
+        &self,
+        capacity: usize,
+        options: TeeOptions,
+    ) -> (TeeHandle, Receiver<TeeEvent>) {
+        self.tees
+            .add_channel_with_options(TeeStream::Stdin, capacity, options)
     }
 
     /// Register a callback tee for bytes written to stdin.
@@ -288,7 +321,21 @@ impl OwnedPtySession {
     where
         F: FnMut(TeeEvent) + Send + 'static,
     {
-        self.tees.add_callback(TeeStream::Stdin, capacity, callback)
+        self.tee_input_callback_with_options(capacity, TeeOptions::default(), callback)
+    }
+
+    /// Register a callback tee for bytes written to stdin.
+    pub fn tee_input_callback_with_options<F>(
+        &self,
+        capacity: usize,
+        options: TeeOptions,
+        callback: F,
+    ) -> TeeHandle
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
+        self.tees
+            .add_callback_with_options(TeeStream::Stdin, capacity, options, callback)
     }
 
     /// Register a file path tee for bytes written to stdin.

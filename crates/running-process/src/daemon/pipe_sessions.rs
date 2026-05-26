@@ -34,8 +34,8 @@ use crate::daemon::pty_sessions::{
     AttachmentEnded, ExitState, OutboundFrame, PendingTermination, RingBuffer, TerminationOutcome,
 };
 use crate::daemon::telemetry::{
-    TeeEvent, TeeFileOptions, TeeHandle, TeeRawOptions, TeeRegistry, TeeSnapshot, TeeStatus,
-    TeeStream,
+    TeeEvent, TeeFileOptions, TeeHandle, TeeOptions, TeeRawOptions, TeeRegistry, TeeSnapshot,
+    TeeStatus, TeeStream,
 };
 
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
@@ -209,10 +209,22 @@ impl OwnedPipeSession {
         stream: PipeStreamSelect,
         capacity: usize,
     ) -> Result<(TeeHandle, Receiver<TeeEvent>), PipeAttachError> {
+        self.tee_stream_channel_with_options(stream, capacity, TeeOptions::default())
+    }
+
+    /// Register a bounded channel tee for stdout or stderr.
+    pub fn tee_stream_channel_with_options(
+        &self,
+        stream: PipeStreamSelect,
+        capacity: usize,
+        options: TeeOptions,
+    ) -> Result<(TeeHandle, Receiver<TeeEvent>), PipeAttachError> {
         if !self.stream_available(stream) {
             return Err(PipeAttachError::StreamUnavailable);
         }
-        Ok(self.tees.add_channel(stream.to_tee_stream(), capacity))
+        Ok(self
+            .tees
+            .add_channel_with_options(stream.to_tee_stream(), capacity, options))
     }
 
     /// Register a callback tee for stdout or stderr.
@@ -225,12 +237,26 @@ impl OwnedPipeSession {
     where
         F: FnMut(TeeEvent) + Send + 'static,
     {
+        self.tee_stream_callback_with_options(stream, capacity, TeeOptions::default(), callback)
+    }
+
+    /// Register a callback tee for stdout or stderr.
+    pub fn tee_stream_callback_with_options<F>(
+        &self,
+        stream: PipeStreamSelect,
+        capacity: usize,
+        options: TeeOptions,
+        callback: F,
+    ) -> Result<TeeHandle, PipeAttachError>
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
         if !self.stream_available(stream) {
             return Err(PipeAttachError::StreamUnavailable);
         }
         Ok(self
             .tees
-            .add_callback(stream.to_tee_stream(), capacity, callback))
+            .add_callback_with_options(stream.to_tee_stream(), capacity, options, callback))
     }
 
     /// Register a file path tee for stdout or stderr.
@@ -295,7 +321,17 @@ impl OwnedPipeSession {
 
     /// Register a bounded non-blocking channel tee for bytes written to stdin.
     pub fn tee_input_channel(&self, capacity: usize) -> (TeeHandle, Receiver<TeeEvent>) {
-        self.tees.add_channel(TeeStream::Stdin, capacity)
+        self.tee_input_channel_with_options(capacity, TeeOptions::default())
+    }
+
+    /// Register a bounded channel tee for bytes written to stdin.
+    pub fn tee_input_channel_with_options(
+        &self,
+        capacity: usize,
+        options: TeeOptions,
+    ) -> (TeeHandle, Receiver<TeeEvent>) {
+        self.tees
+            .add_channel_with_options(TeeStream::Stdin, capacity, options)
     }
 
     /// Register a callback tee for bytes written to stdin.
@@ -303,7 +339,21 @@ impl OwnedPipeSession {
     where
         F: FnMut(TeeEvent) + Send + 'static,
     {
-        self.tees.add_callback(TeeStream::Stdin, capacity, callback)
+        self.tee_input_callback_with_options(capacity, TeeOptions::default(), callback)
+    }
+
+    /// Register a callback tee for bytes written to stdin.
+    pub fn tee_input_callback_with_options<F>(
+        &self,
+        capacity: usize,
+        options: TeeOptions,
+        callback: F,
+    ) -> TeeHandle
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
+        self.tees
+            .add_callback_with_options(TeeStream::Stdin, capacity, options, callback)
     }
 
     /// Register a file path tee for bytes written to stdin.
