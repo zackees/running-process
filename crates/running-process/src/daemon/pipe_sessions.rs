@@ -12,6 +12,10 @@
 
 use std::collections::HashMap;
 use std::io;
+#[cfg(unix)]
+use std::os::fd::RawFd;
+#[cfg(windows)]
+use std::os::windows::io::RawHandle;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
@@ -30,7 +34,8 @@ use crate::daemon::pty_sessions::{
     AttachmentEnded, ExitState, OutboundFrame, PendingTermination, RingBuffer, TerminationOutcome,
 };
 use crate::daemon::telemetry::{
-    TeeEvent, TeeFileOptions, TeeHandle, TeeRegistry, TeeSnapshot, TeeStatus, TeeStream,
+    TeeEvent, TeeFileOptions, TeeHandle, TeeRawOptions, TeeRegistry, TeeSnapshot, TeeStatus,
+    TeeStream,
 };
 
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
@@ -247,6 +252,42 @@ impl OwnedPipeSession {
         self.tees.add_file(stream.to_tee_stream(), path, options)
     }
 
+    /// Register a raw file descriptor tee for stdout or stderr.
+    #[cfg(unix)]
+    pub fn tee_stream_raw_fd(
+        &self,
+        stream: PipeStreamSelect,
+        fd: RawFd,
+        options: TeeRawOptions,
+    ) -> io::Result<TeeHandle> {
+        if !self.stream_available(stream) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "pipe stream unavailable",
+            ));
+        }
+        Ok(self.tees.add_raw_fd(stream.to_tee_stream(), fd, options))
+    }
+
+    /// Register a raw Windows handle tee for stdout or stderr.
+    #[cfg(windows)]
+    pub fn tee_stream_raw_handle(
+        &self,
+        stream: PipeStreamSelect,
+        handle: RawHandle,
+        options: TeeRawOptions,
+    ) -> io::Result<TeeHandle> {
+        if !self.stream_available(stream) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "pipe stream unavailable",
+            ));
+        }
+        Ok(self
+            .tees
+            .add_raw_handle(stream.to_tee_stream(), handle, options))
+    }
+
     /// Register a non-blocking bounded ring tee for bytes written to stdin.
     pub fn tee_input_ring(&self, capacity: usize) -> TeeHandle {
         self.tees.add_ring(TeeStream::Stdin, capacity)
@@ -271,6 +312,18 @@ impl OwnedPipeSession {
         P: AsRef<Path>,
     {
         self.tees.add_file(TeeStream::Stdin, path, options)
+    }
+
+    /// Register a raw file descriptor tee for bytes written to stdin.
+    #[cfg(unix)]
+    pub fn tee_input_raw_fd(&self, fd: RawFd, options: TeeRawOptions) -> TeeHandle {
+        self.tees.add_raw_fd(TeeStream::Stdin, fd, options)
+    }
+
+    /// Register a raw Windows handle tee for bytes written to stdin.
+    #[cfg(windows)]
+    pub fn tee_input_raw_handle(&self, handle: RawHandle, options: TeeRawOptions) -> TeeHandle {
+        self.tees.add_raw_handle(TeeStream::Stdin, handle, options)
     }
 
     /// Snapshot a ring tee without draining it.

@@ -2,7 +2,11 @@
 //! First #131 telemetry slice: daemon-owned sessions can tee stream bytes into
 //! non-blocking in-memory rings while no client is attached.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::Receiver;
@@ -12,7 +16,9 @@ use std::time::{Duration, Instant};
 use running_process::daemon::pipe_sessions::{PipeSessionRegistry, PipeStreamSelect};
 #[cfg(not(windows))]
 use running_process::daemon::pty_sessions::PtySessionRegistry;
-use running_process::daemon::telemetry::{TeeEvent, TeeFileMode, TeeFileOptions, TeeStream};
+use running_process::daemon::telemetry::{
+    TeeEvent, TeeFileMode, TeeFileOptions, TeeRawOptions, TeeStream,
+};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
@@ -232,6 +238,66 @@ fn pipe_stdout_tee_file_receives_without_attachment() {
     let _ = session.terminate(Duration::from_millis(100));
     wait_for_exit(|| session.exit_state().is_some());
     registry.remove(&session.id);
+}
+
+#[test]
+fn pipe_stdout_tee_raw_os_sink_receives_without_attachment() {
+    let emitter = testbin_path("testbin-emitter");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("stdout-raw.log");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&path)
+        .expect("open raw tee file");
+    let registry = Arc::new(PipeSessionRegistry::new());
+    let session = registry
+        .spawn(
+            vec![emitter.to_string_lossy().into_owned()],
+            None,
+            None,
+            "tee-raw-test".to_string(),
+            "testbin-emitter".to_string(),
+            false,
+        )
+        .expect("spawn pipe session");
+
+    #[cfg(unix)]
+    let handle = session
+        .tee_stream_raw_fd(
+            PipeStreamSelect::Stdout,
+            file.as_raw_fd(),
+            TeeRawOptions {
+                queue_capacity: 8,
+                write_missed_markers: true,
+            },
+        )
+        .expect("register stdout raw fd tee");
+
+    #[cfg(windows)]
+    let handle = session
+        .tee_stream_raw_handle(
+            PipeStreamSelect::Stdout,
+            file.as_raw_handle(),
+            TeeRawOptions {
+                queue_capacity: 8,
+                write_missed_markers: true,
+            },
+        )
+        .expect("register stdout raw handle tee");
+
+    let bytes = wait_for_file_contains(&path, b"tick");
+    assert!(bytes.windows(b"tick".len()).any(|window| window == b"tick"));
+    let status = session.tee_status(handle).expect("status");
+    assert_eq!(status.stream, TeeStream::Stdout);
+    assert!(!status.disconnected);
+    assert!(session.untee(handle));
+
+    let _ = session.terminate(Duration::from_millis(100));
+    wait_for_exit(|| session.exit_state().is_some());
+    registry.remove(&session.id);
+    drop(file);
 }
 
 #[test]
