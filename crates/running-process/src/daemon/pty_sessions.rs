@@ -12,6 +12,8 @@
 //! be re-acquired by a new daemon process without a kernel-side broker).
 
 use std::collections::{HashMap, VecDeque};
+use std::io;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -23,7 +25,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::daemon::telemetry::{
-    TeeEvent, TeeHandle, TeeRegistry, TeeSnapshot, TeeStatus, TeeStream,
+    TeeEvent, TeeFileOptions, TeeHandle, TeeRegistry, TeeSnapshot, TeeStatus, TeeStream,
 };
 
 /// Default ring-buffer capacity for the output backlog (1 MiB per session).
@@ -245,6 +247,14 @@ impl OwnedPtySession {
             .add_callback(TeeStream::PtyOutput, capacity, callback)
     }
 
+    /// Register a file path tee for PTY output bytes.
+    pub fn tee_output_file<P>(&self, path: P, options: TeeFileOptions) -> io::Result<TeeHandle>
+    where
+        P: AsRef<Path>,
+    {
+        self.tees.add_file(TeeStream::PtyOutput, path, options)
+    }
+
     /// Register a non-blocking bounded ring tee for bytes written to stdin.
     pub fn tee_input_ring(&self, capacity: usize) -> TeeHandle {
         self.tees.add_ring(TeeStream::Stdin, capacity)
@@ -261,6 +271,14 @@ impl OwnedPtySession {
         F: FnMut(TeeEvent) + Send + 'static,
     {
         self.tees.add_callback(TeeStream::Stdin, capacity, callback)
+    }
+
+    /// Register a file path tee for bytes written to stdin.
+    pub fn tee_input_file<P>(&self, path: P, options: TeeFileOptions) -> io::Result<TeeHandle>
+    where
+        P: AsRef<Path>,
+    {
+        self.tees.add_file(TeeStream::Stdin, path, options)
     }
 
     /// Snapshot a ring tee without draining it.

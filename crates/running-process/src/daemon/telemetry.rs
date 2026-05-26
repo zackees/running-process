@@ -5,6 +5,9 @@
 //! on the same registry shape without changing the reader hot path.
 
 use std::collections::{HashMap, VecDeque};
+use std::fs::OpenOptions;
+use std::io::{self, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Mutex;
@@ -77,6 +80,31 @@ pub struct TeeStatus {
     pub disconnected: bool,
 }
 
+/// File sink open mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TeeFileMode {
+    Append,
+    Truncate,
+}
+
+/// Options for file path tee sinks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TeeFileOptions {
+    pub mode: TeeFileMode,
+    pub queue_capacity: usize,
+    pub write_missed_markers: bool,
+}
+
+impl Default for TeeFileOptions {
+    fn default() -> Self {
+        Self {
+            mode: TeeFileMode::Append,
+            queue_capacity: 1024,
+            write_missed_markers: true,
+        }
+    }
+}
+
 /// Per-session registry of tee sinks.
 pub struct TeeRegistry {
     next_id: AtomicU64,
@@ -142,6 +170,47 @@ impl TeeRegistry {
             }
         });
         handle
+    }
+
+    /// Register a file path sink backed by a bounded non-blocking channel.
+    pub fn add_file<P>(
+        &self,
+        stream: TeeStream,
+        path: P,
+        options: TeeFileOptions,
+    ) -> io::Result<TeeHandle>
+    where
+        P: AsRef<Path>,
+    {
+        let mut open = OpenOptions::new();
+        open.create(true).write(true);
+        match options.mode {
+            TeeFileMode::Append => {
+                open.append(true);
+            }
+            TeeFileMode::Truncate => {
+                open.truncate(true);
+            }
+        }
+        let mut file = open.open(path)?;
+        let (handle, receiver) = self.add_channel(stream, options.queue_capacity);
+        thread::spawn(move || {
+            while let Ok(event) = receiver.recv() {
+                let write_result = match event {
+                    TeeEvent::Bytes(bytes) => file.write_all(&bytes),
+                    TeeEvent::MissedBytes(n) if options.write_missed_markers => {
+                        let marker = format!("\n[running-process tee missed {n} bytes]\n");
+                        file.write_all(marker.as_bytes())
+                    }
+                    TeeEvent::MissedBytes(_) => Ok(()),
+                };
+                if write_result.is_err() || file.flush().is_err() {
+                    break;
+                }
+            }
+            let _ = file.flush();
+        });
+        Ok(handle)
     }
 
     /// Remove a sink by handle. Returns true when a sink was removed.
@@ -357,6 +426,7 @@ impl EventTeeSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -500,6 +570,40 @@ mod tests {
             seen.lock().unwrap().as_slice(),
             &[TeeEvent::Bytes(b"callback bytes".to_vec())]
         );
+        assert!(registry.remove(handle));
+    }
+
+    #[test]
+    fn file_sink_writes_bytes_on_worker_thread() {
+        let registry = TeeRegistry::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tee.log");
+        let handle = registry
+            .add_file(
+                TeeStream::Stdout,
+                &path,
+                TeeFileOptions {
+                    mode: TeeFileMode::Truncate,
+                    queue_capacity: 4,
+                    write_missed_markers: true,
+                },
+            )
+            .expect("file sink");
+
+        registry.write(TeeStream::Stdout, b"file bytes");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let bytes = fs::read(&path).unwrap_or_default();
+            if bytes == b"file bytes" {
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!("file sink did not write expected bytes, got {bytes:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
         assert!(registry.remove(handle));
     }
 }
