@@ -11,6 +11,8 @@
 //! attach.
 
 use std::collections::HashMap;
+use std::io;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -28,7 +30,7 @@ use crate::daemon::pty_sessions::{
     AttachmentEnded, ExitState, OutboundFrame, PendingTermination, RingBuffer, TerminationOutcome,
 };
 use crate::daemon::telemetry::{
-    TeeEvent, TeeHandle, TeeRegistry, TeeSnapshot, TeeStatus, TeeStream,
+    TeeEvent, TeeFileOptions, TeeHandle, TeeRegistry, TeeSnapshot, TeeStatus, TeeStream,
 };
 
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
@@ -226,6 +228,25 @@ impl OwnedPipeSession {
             .add_callback(stream.to_tee_stream(), capacity, callback))
     }
 
+    /// Register a file path tee for stdout or stderr.
+    pub fn tee_stream_file<P>(
+        &self,
+        stream: PipeStreamSelect,
+        path: P,
+        options: TeeFileOptions,
+    ) -> io::Result<TeeHandle>
+    where
+        P: AsRef<Path>,
+    {
+        if !self.stream_available(stream) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "pipe stream unavailable",
+            ));
+        }
+        self.tees.add_file(stream.to_tee_stream(), path, options)
+    }
+
     /// Register a non-blocking bounded ring tee for bytes written to stdin.
     pub fn tee_input_ring(&self, capacity: usize) -> TeeHandle {
         self.tees.add_ring(TeeStream::Stdin, capacity)
@@ -242,6 +263,14 @@ impl OwnedPipeSession {
         F: FnMut(TeeEvent) + Send + 'static,
     {
         self.tees.add_callback(TeeStream::Stdin, capacity, callback)
+    }
+
+    /// Register a file path tee for bytes written to stdin.
+    pub fn tee_input_file<P>(&self, path: P, options: TeeFileOptions) -> io::Result<TeeHandle>
+    where
+        P: AsRef<Path>,
+    {
+        self.tees.add_file(TeeStream::Stdin, path, options)
     }
 
     /// Snapshot a ring tee without draining it.

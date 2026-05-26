@@ -2,6 +2,7 @@
 //! First #131 telemetry slice: daemon-owned sessions can tee stream bytes into
 //! non-blocking in-memory rings while no client is attached.
 
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::Receiver;
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use running_process::daemon::pipe_sessions::{PipeSessionRegistry, PipeStreamSelect};
 #[cfg(not(windows))]
 use running_process::daemon::pty_sessions::PtySessionRegistry;
-use running_process::daemon::telemetry::{TeeEvent, TeeStream};
+use running_process::daemon::telemetry::{TeeEvent, TeeFileMode, TeeFileOptions, TeeStream};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
@@ -108,6 +109,25 @@ fn wait_for_event_contains(receiver: &Receiver<TeeEvent>, needle: &[u8]) -> Vec<
     }
 }
 
+fn wait_for_file_contains(path: &PathBuf, needle: &[u8]) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let bytes = fs::read(path).unwrap_or_default();
+        if bytes.windows(needle.len()).any(|window| window == needle) {
+            return bytes;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for file {:?} to contain {:?}; got {:?}",
+                path,
+                String::from_utf8_lossy(needle),
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn pipe_stdout_tee_ring_accumulates_without_attachment() {
     let emitter = testbin_path("testbin-emitter");
@@ -163,6 +183,47 @@ fn pipe_stdout_tee_channel_receives_without_attachment() {
     let bytes = wait_for_event_contains(&receiver, b"tick");
     assert!(bytes.windows(b"tick".len()).any(|window| window == b"tick"));
     assert!(session.tee_snapshot(handle).is_none());
+    let status = session.tee_status(handle).expect("status");
+    assert_eq!(status.stream, TeeStream::Stdout);
+    assert!(!status.disconnected);
+    assert!(session.untee(handle));
+
+    let _ = session.terminate(Duration::from_millis(100));
+    wait_for_exit(|| session.exit_state().is_some());
+    registry.remove(&session.id);
+}
+
+#[test]
+fn pipe_stdout_tee_file_receives_without_attachment() {
+    let emitter = testbin_path("testbin-emitter");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("stdout.log");
+    let registry = Arc::new(PipeSessionRegistry::new());
+    let session = registry
+        .spawn(
+            vec![emitter.to_string_lossy().into_owned()],
+            None,
+            None,
+            "tee-file-test".to_string(),
+            "testbin-emitter".to_string(),
+            false,
+        )
+        .expect("spawn pipe session");
+
+    let handle = session
+        .tee_stream_file(
+            PipeStreamSelect::Stdout,
+            &path,
+            TeeFileOptions {
+                mode: TeeFileMode::Truncate,
+                queue_capacity: 8,
+                write_missed_markers: true,
+            },
+        )
+        .expect("register stdout file tee");
+
+    let bytes = wait_for_file_contains(&path, b"tick");
+    assert!(bytes.windows(b"tick".len()).any(|window| window == b"tick"));
     let status = session.tee_status(handle).expect("status");
     assert_eq!(status.stream, TeeStream::Stdout);
     assert!(!status.disconnected);
