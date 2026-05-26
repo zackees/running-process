@@ -6,12 +6,14 @@
 //! two independent OS-level socket clients against an in-process
 //! `DaemonServer` to validate spawn → list → attach to stdout → terminate.
 
+use running_process::client::{SessionTeeFileRequest, SessionTeeKind, SessionTeeStream};
 use running_process::daemon::client::DaemonClient;
 use running_process::daemon::paths;
 use running_process::daemon::pipe_session::{PipeSpawnRequest, PipeStreamAttachment};
 use running_process::daemon::server::DaemonServer;
 use running_process::proto::daemon::PipeStreamKind;
 
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -66,6 +68,25 @@ fn start_server(scope: &str) -> (tokio::task::JoinHandle<()>, String) {
         server.run().await.expect("server.run");
     });
     (handle, socket)
+}
+
+fn wait_for_file_contains(path: &PathBuf, needle: &[u8]) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let bytes = fs::read(path).unwrap_or_default();
+        if bytes.windows(needle.len()).any(|window| window == needle) {
+            return bytes;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for file {:?} to contain {:?}; got {:?}",
+                path,
+                String::from_utf8_lossy(needle),
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 // (helper intentionally elided: `recv_frame` blocks indefinitely without
@@ -169,6 +190,60 @@ async fn spawn_attach_stdout_then_terminate_lifecycle() {
             }
             std::thread::sleep(Duration::from_millis(200));
         }
+    })
+    .await
+    .expect("blocking task");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipe_stdout_file_tee_can_be_registered_over_ipc() {
+    let scope = format!("pipe-tee-ipc-{}", line!());
+    let (_handle, socket) = start_server(&scope);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let emitter = tokio::task::spawn_blocking(|| testbin_path("testbin-emitter"))
+        .await
+        .expect("testbin");
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let transcript = tempdir.path().join("stdout.log");
+
+    let socket_for_test = socket.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut client = DaemonClient::connect_to(&socket_for_test).expect("connect");
+        let spawned = client
+            .spawn_pipe_session(
+                &PipeSpawnRequest::new([emitter.to_string_lossy().into_owned()])
+                    .with_originator("pipe-tee-ipc"),
+            )
+            .expect("spawn");
+
+        let request = SessionTeeFileRequest::new(
+            &spawned.session_id,
+            SessionTeeKind::Pipe,
+            SessionTeeStream::Stdout,
+            &transcript,
+        )
+        .truncate()
+        .queue_capacity(8);
+        let handle = client
+            .register_session_file_tee(&request)
+            .expect("register file tee");
+
+        let bytes = wait_for_file_contains(&transcript, b"tick");
+        assert!(bytes.windows(b"tick".len()).any(|window| window == b"tick"));
+
+        let status = client
+            .get_session_tee_status(SessionTeeKind::Pipe, &spawned.session_id, handle)
+            .expect("tee status");
+        assert_eq!(status.stream, SessionTeeStream::Stdout);
+        assert!(!status.disconnected);
+
+        client
+            .unregister_session_tee(SessionTeeKind::Pipe, &spawned.session_id, handle)
+            .expect("unregister file tee");
+        client
+            .terminate_pipe_session(&spawned.session_id, 1000)
+            .expect("terminate");
     })
     .await
     .expect("blocking task");

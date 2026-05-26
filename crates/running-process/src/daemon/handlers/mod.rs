@@ -28,6 +28,7 @@ mod pty_sessions_handlers;
 mod registry_handlers;
 mod services;
 mod spawn;
+mod telemetry;
 mod util;
 
 pub use self::core::{handle_ping, handle_shutdown, handle_status};
@@ -53,6 +54,9 @@ pub use self::services::{
     handle_service_start, handle_service_stop,
 };
 pub use self::spawn::handle_spawn_daemon;
+pub use self::telemetry::{
+    handle_get_session_tee_status, handle_register_session_tee, handle_unregister_session_tee,
+};
 
 // ---------------------------------------------------------------------------
 // Shared daemon state
