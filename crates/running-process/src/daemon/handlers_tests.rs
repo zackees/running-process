@@ -1,7 +1,10 @@
 use super::*;
 use crate::proto::daemon::{
-    ListByOriginatorRequest, PingRequest, RegisterRequest, RequestType, ShutdownRequest,
-    SpawnDaemonRequest, StatusRequest, UnregisterRequest,
+    BulkTerminateSessionsRequest, DetachPipeStreamRequest, DetachPtySessionRequest,
+    GetSessionBacklogRequest, ListByOriginatorRequest, PingRequest, RegisterRequest, RequestType,
+    ResizePtySessionRequest, ShutdownRequest, SpawnDaemonRequest, StatusRequest,
+    TerminatePipeSessionRequest, TerminatePtySessionRequest, UnregisterRequest,
+    WritePipeStdinRequest,
 };
 
 /// Build a minimal `DaemonState` for testing.
@@ -362,4 +365,192 @@ fn test_kill_zombies_missing_payload() {
 
     assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
     assert!(resp.message.contains("missing kill_zombies payload"));
+}
+
+#[test]
+fn test_pty_session_handlers_missing_payloads() {
+    let (state, _tmp) = test_state();
+
+    let spawn = handle_spawn_pty_session(&make_request(49, RequestType::SpawnPtySession), &state);
+    assert_eq!(spawn.code, StatusCode::InvalidArgument as i32);
+    assert!(spawn.message.contains("spawn_pty_session payload missing"));
+
+    let detach =
+        handle_detach_pty_session(&make_request(50, RequestType::DetachPtySession), &state);
+    assert_eq!(detach.code, StatusCode::InvalidArgument as i32);
+    assert!(detach
+        .message
+        .contains("detach_pty_session payload missing"));
+
+    let terminate =
+        handle_terminate_pty_session(&make_request(51, RequestType::TerminatePtySession), &state);
+    assert_eq!(terminate.code, StatusCode::InvalidArgument as i32);
+    assert!(terminate
+        .message
+        .contains("terminate_pty_session payload missing"));
+
+    let resize =
+        handle_resize_pty_session(&make_request(52, RequestType::ResizePtySession), &state);
+    assert_eq!(resize.code, StatusCode::InvalidArgument as i32);
+    assert!(resize
+        .message
+        .contains("resize_pty_session payload missing"));
+}
+
+#[test]
+fn test_pty_session_handlers_report_not_found() {
+    let (state, _tmp) = test_state();
+
+    let mut detach_req = make_request(53, RequestType::DetachPtySession);
+    detach_req.detach_pty_session = Some(DetachPtySessionRequest {
+        session_id: "missing-pty".into(),
+    });
+    let detach = handle_detach_pty_session(&detach_req, &state);
+    assert_eq!(detach.code, StatusCode::NotFound as i32);
+    assert!(detach.message.contains("missing-pty"));
+
+    let mut terminate_req = make_request(54, RequestType::TerminatePtySession);
+    terminate_req.terminate_pty_session = Some(TerminatePtySessionRequest {
+        session_id: "missing-pty".into(),
+        grace_ms: 0,
+    });
+    let terminate = handle_terminate_pty_session(&terminate_req, &state);
+    assert_eq!(terminate.code, StatusCode::NotFound as i32);
+    assert!(terminate.message.contains("missing-pty"));
+
+    let mut resize_req = make_request(55, RequestType::ResizePtySession);
+    resize_req.resize_pty_session = Some(ResizePtySessionRequest {
+        session_id: "missing-pty".into(),
+        rows: 40,
+        cols: 100,
+    });
+    let resize = handle_resize_pty_session(&resize_req, &state);
+    assert_eq!(resize.code, StatusCode::NotFound as i32);
+    assert!(resize.message.contains("missing-pty"));
+}
+
+#[test]
+fn test_pty_attach_stub_returns_internal_error() {
+    let (state, _tmp) = test_state();
+    let resp = handle_attach_pty_session(&make_request(56, RequestType::AttachPtySession), &state);
+
+    assert_eq!(resp.code, StatusCode::Internal as i32);
+    assert!(resp
+        .message
+        .contains("attach_pty_session must be intercepted"));
+    assert!(resp.attach_pty_session.is_some());
+}
+
+#[test]
+fn test_pipe_session_handlers_missing_payloads() {
+    let (state, _tmp) = test_state();
+
+    let spawn = handle_spawn_pipe_session(&make_request(57, RequestType::SpawnPipeSession), &state);
+    assert_eq!(spawn.code, StatusCode::InvalidArgument as i32);
+    assert!(spawn.message.contains("spawn_pipe_session payload missing"));
+
+    let detach =
+        handle_detach_pipe_stream(&make_request(58, RequestType::DetachPipeStream), &state);
+    assert_eq!(detach.code, StatusCode::InvalidArgument as i32);
+    assert!(detach
+        .message
+        .contains("detach_pipe_stream payload missing"));
+
+    let terminate =
+        handle_terminate_pipe_session(&make_request(59, RequestType::TerminatePipeSession), &state);
+    assert_eq!(terminate.code, StatusCode::InvalidArgument as i32);
+    assert!(terminate
+        .message
+        .contains("terminate_pipe_session payload missing"));
+
+    let write = handle_write_pipe_stdin(&make_request(60, RequestType::WritePipeStdin), &state);
+    assert_eq!(write.code, StatusCode::InvalidArgument as i32);
+    assert!(write.message.contains("write_pipe_stdin payload missing"));
+}
+
+#[test]
+fn test_pipe_session_handlers_report_not_found() {
+    let (state, _tmp) = test_state();
+
+    let mut detach_req = make_request(61, RequestType::DetachPipeStream);
+    detach_req.detach_pipe_stream = Some(DetachPipeStreamRequest {
+        session_id: "missing-pipe".into(),
+        stream: 1,
+    });
+    let detach = handle_detach_pipe_stream(&detach_req, &state);
+    assert_eq!(detach.code, StatusCode::NotFound as i32);
+    assert!(detach.message.contains("missing-pipe"));
+
+    let mut terminate_req = make_request(62, RequestType::TerminatePipeSession);
+    terminate_req.terminate_pipe_session = Some(TerminatePipeSessionRequest {
+        session_id: "missing-pipe".into(),
+        grace_ms: 0,
+    });
+    let terminate = handle_terminate_pipe_session(&terminate_req, &state);
+    assert_eq!(terminate.code, StatusCode::NotFound as i32);
+    assert!(terminate.message.contains("missing-pipe"));
+
+    let mut write_req = make_request(63, RequestType::WritePipeStdin);
+    write_req.write_pipe_stdin = Some(WritePipeStdinRequest {
+        session_id: "missing-pipe".into(),
+        data: b"hello".to_vec(),
+        close: false,
+    });
+    let write = handle_write_pipe_stdin(&write_req, &state);
+    assert_eq!(write.code, StatusCode::NotFound as i32);
+    assert!(write.message.contains("missing-pipe"));
+}
+
+#[test]
+fn test_pipe_attach_stub_returns_internal_error() {
+    let (state, _tmp) = test_state();
+    let resp = handle_attach_pipe_stream(&make_request(64, RequestType::AttachPipeStream), &state);
+
+    assert_eq!(resp.code, StatusCode::Internal as i32);
+    assert!(resp
+        .message
+        .contains("attach_pipe_stream must be intercepted"));
+    assert!(resp.attach_pipe_stream.is_some());
+}
+
+#[test]
+fn test_session_maintenance_missing_payloads_and_not_found() {
+    let (state, _tmp) = test_state();
+
+    let bulk = handle_bulk_terminate_sessions(
+        &make_request(65, RequestType::BulkTerminateSessions),
+        &state,
+    );
+    assert_eq!(bulk.code, StatusCode::InvalidArgument as i32);
+    assert!(bulk
+        .message
+        .contains("bulk_terminate_sessions payload missing"));
+
+    let backlog_missing =
+        handle_get_session_backlog(&make_request(66, RequestType::GetSessionBacklog), &state);
+    assert_eq!(backlog_missing.code, StatusCode::InvalidArgument as i32);
+    assert!(backlog_missing
+        .message
+        .contains("get_session_backlog payload missing"));
+
+    let mut backlog_req = make_request(67, RequestType::GetSessionBacklog);
+    backlog_req.get_session_backlog = Some(GetSessionBacklogRequest {
+        session_id: "missing-session".into(),
+        pipe_stream: 1,
+    });
+    let backlog = handle_get_session_backlog(&backlog_req, &state);
+    assert_eq!(backlog.code, StatusCode::NotFound as i32);
+    assert!(backlog.message.contains("missing-session"));
+
+    let mut bulk_req = make_request(68, RequestType::BulkTerminateSessions);
+    bulk_req.bulk_terminate_sessions = Some(BulkTerminateSessionsRequest {
+        older_than_secs: 0,
+        originator: String::new(),
+        grace_ms: 0,
+    });
+    let bulk_ok = handle_bulk_terminate_sessions(&bulk_req, &state);
+    assert_eq!(bulk_ok.code, StatusCode::Ok as i32);
+    let payload = bulk_ok.bulk_terminate_sessions.unwrap();
+    assert_eq!(payload.pty_terminated, 0);
+    assert_eq!(payload.pipe_terminated, 0);
 }
