@@ -13,6 +13,11 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Mutex;
 use std::thread;
 
+#[cfg(unix)]
+use std::os::fd::RawFd;
+#[cfg(windows)]
+use std::os::windows::io::RawHandle;
+
 /// Opaque identifier for a registered tee sink.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TeeHandle(u64);
@@ -99,6 +104,22 @@ impl Default for TeeFileOptions {
     fn default() -> Self {
         Self {
             mode: TeeFileMode::Append,
+            queue_capacity: 1024,
+            write_missed_markers: true,
+        }
+    }
+}
+
+/// Options for raw fd / raw handle tee sinks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TeeRawOptions {
+    pub queue_capacity: usize,
+    pub write_missed_markers: bool,
+}
+
+impl Default for TeeRawOptions {
+    fn default() -> Self {
+        Self {
             queue_capacity: 1024,
             write_missed_markers: true,
         }
@@ -199,8 +220,7 @@ impl TeeRegistry {
                 let write_result = match event {
                     TeeEvent::Bytes(bytes) => file.write_all(&bytes),
                     TeeEvent::MissedBytes(n) if options.write_missed_markers => {
-                        let marker = format!("\n[running-process tee missed {n} bytes]\n");
-                        file.write_all(marker.as_bytes())
+                        file.write_all(&missed_marker(n))
                     }
                     TeeEvent::MissedBytes(_) => Ok(()),
                 };
@@ -211,6 +231,28 @@ impl TeeRegistry {
             let _ = file.flush();
         });
         Ok(handle)
+    }
+
+    /// Register a caller-owned raw file descriptor sink.
+    #[cfg(unix)]
+    pub fn add_raw_fd(&self, stream: TeeStream, fd: RawFd, options: TeeRawOptions) -> TeeHandle {
+        let (handle, receiver) = self.add_channel(stream, options.queue_capacity);
+        thread::spawn(move || raw_fd_worker(fd, receiver, options));
+        handle
+    }
+
+    /// Register a caller-owned raw Windows handle sink.
+    #[cfg(windows)]
+    pub fn add_raw_handle(
+        &self,
+        stream: TeeStream,
+        handle: RawHandle,
+        options: TeeRawOptions,
+    ) -> TeeHandle {
+        let handle_value = handle as usize;
+        let (tee_handle, receiver) = self.add_channel(stream, options.queue_capacity);
+        thread::spawn(move || raw_handle_worker(handle_value, receiver, options));
+        tee_handle
     }
 
     /// Remove a sink by handle. Returns true when a sink was removed.
@@ -264,6 +306,97 @@ impl Default for TeeRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn missed_marker(n: u64) -> Vec<u8> {
+    format!("\n[running-process tee missed {n} bytes]\n").into_bytes()
+}
+
+#[cfg(unix)]
+fn raw_fd_worker(fd: RawFd, receiver: Receiver<TeeEvent>, options: TeeRawOptions) {
+    while let Ok(event) = receiver.recv() {
+        let result = match event {
+            TeeEvent::Bytes(bytes) => write_all_raw_fd(fd, &bytes),
+            TeeEvent::MissedBytes(n) if options.write_missed_markers => {
+                write_all_raw_fd(fd, &missed_marker(n))
+            }
+            TeeEvent::MissedBytes(_) => Ok(()),
+        };
+        if result.is_err() {
+            break;
+        }
+    }
+}
+
+#[cfg(unix)]
+fn write_all_raw_fd(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if written < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "raw fd write returned zero",
+            ));
+        }
+        bytes = &bytes[written as usize..];
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn raw_handle_worker(handle: usize, receiver: Receiver<TeeEvent>, options: TeeRawOptions) {
+    while let Ok(event) = receiver.recv() {
+        let result = match event {
+            TeeEvent::Bytes(bytes) => write_all_raw_handle(handle, &bytes),
+            TeeEvent::MissedBytes(n) if options.write_missed_markers => {
+                write_all_raw_handle(handle, &missed_marker(n))
+            }
+            TeeEvent::MissedBytes(_) => Ok(()),
+        };
+        if result.is_err() {
+            break;
+        }
+    }
+}
+
+#[cfg(windows)]
+fn write_all_raw_handle(handle: usize, mut bytes: &[u8]) -> io::Result<()> {
+    use std::ptr;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::um::fileapi::WriteFile;
+    use winapi::um::winnt::HANDLE;
+
+    while !bytes.is_empty() {
+        let len = bytes.len().min(u32::MAX as usize) as DWORD;
+        let mut written: DWORD = 0;
+        let ok = unsafe {
+            WriteFile(
+                handle as HANDLE,
+                bytes.as_ptr().cast(),
+                len,
+                &mut written,
+                ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "raw handle write returned zero",
+            ));
+        }
+        bytes = &bytes[written as usize..];
+    }
+    Ok(())
 }
 
 struct TeeSink {
@@ -426,9 +559,29 @@ impl EventTeeSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::fs::{self, OpenOptions};
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
+    #[cfg(windows)]
+    use std::os::windows::io::AsRawHandle;
+
+    fn wait_for_file_bytes(path: &Path, expected: &[u8]) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let bytes = fs::read(path).unwrap_or_default();
+            if bytes == expected {
+                return;
+            }
+            if Instant::now() >= deadline {
+                panic!("file sink did not write expected bytes, got {bytes:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn ring_tee_keeps_tail_and_reports_missed_bytes() {
@@ -592,18 +745,64 @@ mod tests {
 
         registry.write(TeeStream::Stdout, b"file bytes");
 
-        let deadline = Instant::now() + Duration::from_secs(1);
-        loop {
-            let bytes = fs::read(&path).unwrap_or_default();
-            if bytes == b"file bytes" {
-                break;
-            }
-            if Instant::now() >= deadline {
-                panic!("file sink did not write expected bytes, got {bytes:?}");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_file_bytes(&path, b"file bytes");
 
         assert!(registry.remove(handle));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_fd_sink_writes_bytes_on_worker_thread() {
+        let registry = TeeRegistry::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tee-raw.log");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
+            .expect("open file");
+        let handle = registry.add_raw_fd(
+            TeeStream::Stdout,
+            file.as_raw_fd(),
+            TeeRawOptions {
+                queue_capacity: 4,
+                write_missed_markers: true,
+            },
+        );
+
+        registry.write(TeeStream::Stdout, b"raw bytes");
+
+        wait_for_file_bytes(&path, b"raw bytes");
+        assert!(registry.remove(handle));
+        drop(file);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn raw_handle_sink_writes_bytes_on_worker_thread() {
+        let registry = TeeRegistry::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tee-raw.log");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
+            .expect("open file");
+        let handle = registry.add_raw_handle(
+            TeeStream::Stdout,
+            file.as_raw_handle(),
+            TeeRawOptions {
+                queue_capacity: 4,
+                write_missed_markers: true,
+            },
+        );
+
+        registry.write(TeeStream::Stdout, b"raw bytes");
+
+        wait_for_file_bytes(&path, b"raw bytes");
+        assert!(registry.remove(handle));
+        drop(file);
     }
 }

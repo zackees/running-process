@@ -13,6 +13,10 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
+#[cfg(unix)]
+use std::os::fd::RawFd;
+#[cfg(windows)]
+use std::os::windows::io::RawHandle;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
@@ -25,7 +29,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::daemon::telemetry::{
-    TeeEvent, TeeFileOptions, TeeHandle, TeeRegistry, TeeSnapshot, TeeStatus, TeeStream,
+    TeeEvent, TeeFileOptions, TeeHandle, TeeRawOptions, TeeRegistry, TeeSnapshot, TeeStatus,
+    TeeStream,
 };
 
 /// Default ring-buffer capacity for the output backlog (1 MiB per session).
@@ -255,6 +260,19 @@ impl OwnedPtySession {
         self.tees.add_file(TeeStream::PtyOutput, path, options)
     }
 
+    /// Register a raw file descriptor tee for PTY output bytes.
+    #[cfg(unix)]
+    pub fn tee_output_raw_fd(&self, fd: RawFd, options: TeeRawOptions) -> TeeHandle {
+        self.tees.add_raw_fd(TeeStream::PtyOutput, fd, options)
+    }
+
+    /// Register a raw Windows handle tee for PTY output bytes.
+    #[cfg(windows)]
+    pub fn tee_output_raw_handle(&self, handle: RawHandle, options: TeeRawOptions) -> TeeHandle {
+        self.tees
+            .add_raw_handle(TeeStream::PtyOutput, handle, options)
+    }
+
     /// Register a non-blocking bounded ring tee for bytes written to stdin.
     pub fn tee_input_ring(&self, capacity: usize) -> TeeHandle {
         self.tees.add_ring(TeeStream::Stdin, capacity)
@@ -279,6 +297,18 @@ impl OwnedPtySession {
         P: AsRef<Path>,
     {
         self.tees.add_file(TeeStream::Stdin, path, options)
+    }
+
+    /// Register a raw file descriptor tee for bytes written to stdin.
+    #[cfg(unix)]
+    pub fn tee_input_raw_fd(&self, fd: RawFd, options: TeeRawOptions) -> TeeHandle {
+        self.tees.add_raw_fd(TeeStream::Stdin, fd, options)
+    }
+
+    /// Register a raw Windows handle tee for bytes written to stdin.
+    #[cfg(windows)]
+    pub fn tee_input_raw_handle(&self, handle: RawHandle, options: TeeRawOptions) -> TeeHandle {
+        self.tees.add_raw_handle(TeeStream::Stdin, handle, options)
     }
 
     /// Snapshot a ring tee without draining it.
