@@ -35,13 +35,15 @@ path = "src/bin/trampoline.rs"
 # Final feature scheme per #165:
 # * `core`   — always-available API (spawn / pty / containment).
 # * `client` — adds proto types + IPC client (prost, interprocess, dirs).
-# * `daemon` — superset of client; adds the full daemon runtime
-#              (tokio, rusqlite, tracing, etc.).
+# * `telemetry` — tee sink primitives without the full daemon runtime.
+# * `daemon`    — superset of client; adds the full daemon runtime
+#                 (tokio, rusqlite, tracing, etc.).
 # Default ships `client` so `cargo install running-process` installs
 # the `runpm` binary out of the box (per Q1 resolution in #165:
 # `required-features` are not auto-activated by cargo install).
 default = ["client"]
 core = []
+telemetry = []
 client = ["dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs", "dep:anyhow", "dep:clap"]
 daemon = [
     "client",

@@ -25,6 +25,12 @@ pub mod proto {
 #[cfg(feature = "client")]
 pub mod client;
 
+// Lightweight tee sink primitives for callers that want transcript/log
+// fan-out without pulling in the full daemon runtime.
+#[cfg(feature = "telemetry")]
+#[path = "daemon/telemetry.rs"]
+pub mod telemetry;
+
 // Wave 5 of #165: daemon runtime absorbed from `running-process-daemon`.
 // Heavy deps (tokio, sqlite, etc.) gated behind `feature = "daemon"`.
 #[cfg(feature = "daemon")]
