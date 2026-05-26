@@ -17,7 +17,7 @@ use running_process::daemon::pipe_sessions::{PipeSessionRegistry, PipeStreamSele
 #[cfg(not(windows))]
 use running_process::daemon::pty_sessions::PtySessionRegistry;
 use running_process::daemon::telemetry::{
-    TeeEvent, TeeFileMode, TeeFileOptions, TeeRawOptions, TeeStream,
+    TeeBackpressure, TeeEvent, TeeFileMode, TeeFileOptions, TeeRawOptions, TeeStream,
 };
 
 fn testbin_path(name: &str) -> PathBuf {
@@ -224,6 +224,7 @@ fn pipe_stdout_tee_file_receives_without_attachment() {
                 mode: TeeFileMode::Truncate,
                 queue_capacity: 8,
                 write_missed_markers: true,
+                backpressure: TeeBackpressure::DropOldest,
             },
         )
         .expect("register stdout file tee");
@@ -271,6 +272,7 @@ fn pipe_stdout_tee_raw_os_sink_receives_without_attachment() {
             TeeRawOptions {
                 queue_capacity: 8,
                 write_missed_markers: true,
+                backpressure: TeeBackpressure::DropOldest,
             },
         )
         .expect("register stdout raw fd tee");
@@ -283,6 +285,7 @@ fn pipe_stdout_tee_raw_os_sink_receives_without_attachment() {
             TeeRawOptions {
                 queue_capacity: 8,
                 write_missed_markers: true,
+                backpressure: TeeBackpressure::DropOldest,
             },
         )
         .expect("register stdout raw handle tee");

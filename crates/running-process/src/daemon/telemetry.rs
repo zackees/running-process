@@ -1,15 +1,15 @@
 //! Opt-in session telemetry primitives for daemon-owned sessions.
 //!
-//! This is the first #131 slice: bounded in-memory tee rings with explicit
-//! drop-oldest backpressure. File, raw-handle, and callback sinks can build
-//! on the same registry shape without changing the reader hot path.
+//! Sinks are opt-in. When no sink is registered, the reader hot path is a
+//! single atomic load. Queued sinks default to non-blocking drop accounting and
+//! can opt into blocking backpressure when the caller accepts that risk.
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SendError, SyncSender, TrySendError};
 use std::sync::Mutex;
 use std::thread;
 
@@ -42,8 +42,11 @@ pub enum TeeStream {
 /// Backpressure behavior for bounded tee sinks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TeeBackpressure {
-    /// Never block the child/session reader; drop oldest retained bytes.
+    /// Never block the child/session reader. Rings drop the oldest retained
+    /// bytes; queued sinks record missed bytes when their queue is full.
     DropOldest,
+    /// Block the child/session reader until the sink accepts the bytes.
+    Block,
 }
 
 /// Options used when registering a tee sink.
@@ -69,7 +72,7 @@ pub struct TeeSnapshot {
     pub capacity: usize,
 }
 
-/// Event delivered by non-blocking queued tee sinks.
+/// Event delivered by queued tee sinks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TeeEvent {
     Bytes(Vec<u8>),
@@ -98,6 +101,7 @@ pub struct TeeFileOptions {
     pub mode: TeeFileMode,
     pub queue_capacity: usize,
     pub write_missed_markers: bool,
+    pub backpressure: TeeBackpressure,
 }
 
 impl Default for TeeFileOptions {
@@ -106,6 +110,7 @@ impl Default for TeeFileOptions {
             mode: TeeFileMode::Append,
             queue_capacity: 1024,
             write_missed_markers: true,
+            backpressure: TeeBackpressure::DropOldest,
         }
     }
 }
@@ -115,6 +120,7 @@ impl Default for TeeFileOptions {
 pub struct TeeRawOptions {
     pub queue_capacity: usize,
     pub write_missed_markers: bool,
+    pub backpressure: TeeBackpressure,
 }
 
 impl Default for TeeRawOptions {
@@ -122,6 +128,7 @@ impl Default for TeeRawOptions {
         Self {
             queue_capacity: 1024,
             write_missed_markers: true,
+            backpressure: TeeBackpressure::DropOldest,
         }
     }
 }
@@ -156,6 +163,10 @@ impl TeeRegistry {
     ) -> TeeHandle {
         match options.backpressure {
             TeeBackpressure::DropOldest => {}
+            TeeBackpressure::Block => {
+                // Ring buffers have no downstream consumer to wait on, so
+                // they always retain the bounded tail.
+            }
         }
 
         let sink = TeeSink {
@@ -171,20 +182,44 @@ impl TeeRegistry {
         stream: TeeStream,
         capacity: usize,
     ) -> (TeeHandle, Receiver<TeeEvent>) {
+        self.add_channel_with_options(stream, capacity, TeeOptions::default())
+    }
+
+    /// Register a bounded channel sink with explicit backpressure behavior.
+    pub fn add_channel_with_options(
+        &self,
+        stream: TeeStream,
+        capacity: usize,
+        options: TeeOptions,
+    ) -> (TeeHandle, Receiver<TeeEvent>) {
         let (sender, receiver) = mpsc::sync_channel(capacity);
         let sink = TeeSink {
             stream,
-            kind: TeeSinkKind::Event(EventTeeSink::new(sender)),
+            kind: TeeSinkKind::Event(EventTeeSink::new(sender, options.backpressure)),
         };
         (self.insert_sink(sink), receiver)
     }
 
     /// Register a callback sink backed by a bounded non-blocking channel.
-    pub fn add_callback<F>(&self, stream: TeeStream, capacity: usize, mut callback: F) -> TeeHandle
+    pub fn add_callback<F>(&self, stream: TeeStream, capacity: usize, callback: F) -> TeeHandle
     where
         F: FnMut(TeeEvent) + Send + 'static,
     {
-        let (handle, receiver) = self.add_channel(stream, capacity);
+        self.add_callback_with_options(stream, capacity, TeeOptions::default(), callback)
+    }
+
+    /// Register a callback sink with explicit backpressure behavior.
+    pub fn add_callback_with_options<F>(
+        &self,
+        stream: TeeStream,
+        capacity: usize,
+        options: TeeOptions,
+        mut callback: F,
+    ) -> TeeHandle
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
+        let (handle, receiver) = self.add_channel_with_options(stream, capacity, options);
         thread::spawn(move || {
             while let Ok(event) = receiver.recv() {
                 callback(event);
@@ -214,7 +249,13 @@ impl TeeRegistry {
             }
         }
         let mut file = open.open(path)?;
-        let (handle, receiver) = self.add_channel(stream, options.queue_capacity);
+        let (handle, receiver) = self.add_channel_with_options(
+            stream,
+            options.queue_capacity,
+            TeeOptions {
+                backpressure: options.backpressure,
+            },
+        );
         thread::spawn(move || {
             while let Ok(event) = receiver.recv() {
                 let write_result = match event {
@@ -236,7 +277,13 @@ impl TeeRegistry {
     /// Register a caller-owned raw file descriptor sink.
     #[cfg(unix)]
     pub fn add_raw_fd(&self, stream: TeeStream, fd: RawFd, options: TeeRawOptions) -> TeeHandle {
-        let (handle, receiver) = self.add_channel(stream, options.queue_capacity);
+        let (handle, receiver) = self.add_channel_with_options(
+            stream,
+            options.queue_capacity,
+            TeeOptions {
+                backpressure: options.backpressure,
+            },
+        );
         thread::spawn(move || raw_fd_worker(fd, receiver, options));
         handle
     }
@@ -250,7 +297,13 @@ impl TeeRegistry {
         options: TeeRawOptions,
     ) -> TeeHandle {
         let handle_value = handle as usize;
-        let (tee_handle, receiver) = self.add_channel(stream, options.queue_capacity);
+        let (tee_handle, receiver) = self.add_channel_with_options(
+            stream,
+            options.queue_capacity,
+            TeeOptions {
+                backpressure: options.backpressure,
+            },
+        );
         thread::spawn(move || raw_handle_worker(handle_value, receiver, options));
         tee_handle
     }
@@ -495,15 +548,17 @@ impl RingTeeSink {
 
 struct EventTeeSink {
     sender: SyncSender<TeeEvent>,
+    backpressure: TeeBackpressure,
     missed_bytes: u64,
     pending_missed: u64,
     disconnected: bool,
 }
 
 impl EventTeeSink {
-    fn new(sender: SyncSender<TeeEvent>) -> Self {
+    fn new(sender: SyncSender<TeeEvent>, backpressure: TeeBackpressure) -> Self {
         Self {
             sender,
+            backpressure,
             missed_bytes: 0,
             pending_missed: 0,
             disconnected: false,
@@ -514,6 +569,13 @@ impl EventTeeSink {
         if bytes.is_empty() {
             return;
         }
+        match self.backpressure {
+            TeeBackpressure::DropOldest => self.push_drop_oldest(bytes),
+            TeeBackpressure::Block => self.push_blocking(bytes),
+        }
+    }
+
+    fn push_drop_oldest(&mut self, bytes: &[u8]) {
         if self.disconnected {
             self.record_missed(bytes.len() as u64);
             return;
@@ -546,6 +608,37 @@ impl EventTeeSink {
             Err(TrySendError::Disconnected(_)) => {
                 self.disconnected = true;
                 self.record_missed(bytes.len() as u64);
+            }
+        }
+    }
+
+    fn push_blocking(&mut self, bytes: &[u8]) {
+        if self.disconnected {
+            self.record_missed(bytes.len() as u64);
+            return;
+        }
+
+        if self.pending_missed > 0 {
+            let missed = self.pending_missed;
+            match self.sender.send(TeeEvent::MissedBytes(missed)) {
+                Ok(()) => self.pending_missed = 0,
+                Err(SendError(_)) => {
+                    self.disconnected = true;
+                    self.record_missed(bytes.len() as u64);
+                    return;
+                }
+            }
+        }
+
+        match self.sender.send(TeeEvent::Bytes(bytes.to_vec())) {
+            Ok(()) => {}
+            Err(SendError(TeeEvent::Bytes(bytes))) => {
+                self.disconnected = true;
+                self.record_missed(bytes.len() as u64);
+            }
+            Err(SendError(TeeEvent::MissedBytes(n))) => {
+                self.disconnected = true;
+                self.record_missed(n);
             }
         }
     }
@@ -698,6 +791,35 @@ mod tests {
     }
 
     #[test]
+    fn channel_sink_can_block_until_receiver_drains() {
+        let registry = Arc::new(TeeRegistry::new());
+        let (_handle, receiver) = registry.add_channel_with_options(
+            TeeStream::Stdout,
+            0,
+            TeeOptions {
+                backpressure: TeeBackpressure::Block,
+            },
+        );
+        let (done_sender, done_receiver) = mpsc::channel();
+        let writer = Arc::clone(&registry);
+
+        let thread = thread::spawn(move || {
+            writer.write(TeeStream::Stdout, b"blocking bytes");
+            done_sender.send(()).expect("send done");
+        });
+
+        assert!(done_receiver
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            TeeEvent::Bytes(b"blocking bytes".to_vec())
+        );
+        done_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        thread.join().expect("writer thread");
+    }
+
+    #[test]
     fn callback_sink_receives_events_on_worker_thread() {
         let registry = TeeRegistry::new();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -739,6 +861,7 @@ mod tests {
                     mode: TeeFileMode::Truncate,
                     queue_capacity: 4,
                     write_missed_markers: true,
+                    backpressure: TeeBackpressure::DropOldest,
                 },
             )
             .expect("file sink");
@@ -768,6 +891,7 @@ mod tests {
             TeeRawOptions {
                 queue_capacity: 4,
                 write_missed_markers: true,
+                backpressure: TeeBackpressure::DropOldest,
             },
         );
 
@@ -796,6 +920,7 @@ mod tests {
             TeeRawOptions {
                 queue_capacity: 4,
                 write_missed_markers: true,
+                backpressure: TeeBackpressure::DropOldest,
             },
         );
 
