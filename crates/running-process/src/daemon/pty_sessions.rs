@@ -13,6 +13,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,7 +22,9 @@ use crate::pty::NativePtyProcess;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::daemon::telemetry::{TeeHandle, TeeRegistry, TeeSnapshot, TeeStream};
+use crate::daemon::telemetry::{
+    TeeEvent, TeeHandle, TeeRegistry, TeeSnapshot, TeeStatus, TeeStream,
+};
 
 /// Default ring-buffer capacity for the output backlog (1 MiB per session).
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
@@ -228,14 +231,46 @@ impl OwnedPtySession {
         self.tees.add_ring(TeeStream::PtyOutput, capacity)
     }
 
+    /// Register a bounded non-blocking channel tee for PTY output bytes.
+    pub fn tee_output_channel(&self, capacity: usize) -> (TeeHandle, Receiver<TeeEvent>) {
+        self.tees.add_channel(TeeStream::PtyOutput, capacity)
+    }
+
+    /// Register a callback tee for PTY output bytes.
+    pub fn tee_output_callback<F>(&self, capacity: usize, callback: F) -> TeeHandle
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
+        self.tees
+            .add_callback(TeeStream::PtyOutput, capacity, callback)
+    }
+
     /// Register a non-blocking bounded ring tee for bytes written to stdin.
     pub fn tee_input_ring(&self, capacity: usize) -> TeeHandle {
         self.tees.add_ring(TeeStream::Stdin, capacity)
     }
 
+    /// Register a bounded non-blocking channel tee for bytes written to stdin.
+    pub fn tee_input_channel(&self, capacity: usize) -> (TeeHandle, Receiver<TeeEvent>) {
+        self.tees.add_channel(TeeStream::Stdin, capacity)
+    }
+
+    /// Register a callback tee for bytes written to stdin.
+    pub fn tee_input_callback<F>(&self, capacity: usize, callback: F) -> TeeHandle
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
+        self.tees.add_callback(TeeStream::Stdin, capacity, callback)
+    }
+
     /// Snapshot a ring tee without draining it.
     pub fn tee_snapshot(&self, handle: TeeHandle) -> Option<TeeSnapshot> {
         self.tees.snapshot(handle)
+    }
+
+    /// Return current missed-byte status for any tee sink.
+    pub fn tee_status(&self, handle: TeeHandle) -> Option<TeeStatus> {
+        self.tees.status(handle)
     }
 
     /// Remove a registered tee sink.

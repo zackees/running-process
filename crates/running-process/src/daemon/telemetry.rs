@@ -6,7 +6,9 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Mutex;
+use std::thread;
 
 /// Opaque identifier for a registered tee sink.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -59,6 +61,22 @@ pub struct TeeSnapshot {
     pub capacity: usize,
 }
 
+/// Event delivered by non-blocking queued tee sinks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TeeEvent {
+    Bytes(Vec<u8>),
+    MissedBytes(u64),
+}
+
+/// Current sink status. Useful for queued sinks whose byte events are
+/// consumed out-of-band.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TeeStatus {
+    pub stream: TeeStream,
+    pub missed_bytes: u64,
+    pub disconnected: bool,
+}
+
 /// Per-session registry of tee sinks.
 pub struct TeeRegistry {
     next_id: AtomicU64,
@@ -91,13 +109,38 @@ impl TeeRegistry {
             TeeBackpressure::DropOldest => {}
         }
 
-        let handle = TeeHandle(self.next_id.fetch_add(1, Ordering::Relaxed));
         let sink = TeeSink {
             stream,
-            ring: RingTeeSink::new(capacity),
+            kind: TeeSinkKind::Ring(RingTeeSink::new(capacity)),
         };
-        self.sinks.lock().unwrap().insert(handle, sink);
-        self.active_sinks.fetch_add(1, Ordering::Release);
+        self.insert_sink(sink)
+    }
+
+    /// Register a bounded non-blocking channel sink.
+    pub fn add_channel(
+        &self,
+        stream: TeeStream,
+        capacity: usize,
+    ) -> (TeeHandle, Receiver<TeeEvent>) {
+        let (sender, receiver) = mpsc::sync_channel(capacity);
+        let sink = TeeSink {
+            stream,
+            kind: TeeSinkKind::Event(EventTeeSink::new(sender)),
+        };
+        (self.insert_sink(sink), receiver)
+    }
+
+    /// Register a callback sink backed by a bounded non-blocking channel.
+    pub fn add_callback<F>(&self, stream: TeeStream, capacity: usize, mut callback: F) -> TeeHandle
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
+        let (handle, receiver) = self.add_channel(stream, capacity);
+        thread::spawn(move || {
+            while let Ok(event) = receiver.recv() {
+                callback(event);
+            }
+        });
         handle
     }
 
@@ -116,7 +159,12 @@ impl TeeRegistry {
             .lock()
             .unwrap()
             .get(&handle)
-            .map(TeeSink::snapshot)
+            .and_then(TeeSink::snapshot)
+    }
+
+    /// Return the current missed-byte status for any sink type.
+    pub fn status(&self, handle: TeeHandle) -> Option<TeeStatus> {
+        self.sinks.lock().unwrap().get(&handle).map(TeeSink::status)
     }
 
     /// Tee bytes to all sinks registered for `stream`.
@@ -127,12 +175,19 @@ impl TeeRegistry {
 
         let mut sinks = self.sinks.lock().unwrap();
         for sink in sinks.values_mut().filter(|sink| sink.stream == stream) {
-            sink.ring.push(bytes);
+            sink.push(bytes);
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.active_sinks.load(Ordering::Acquire) == 0
+    }
+
+    fn insert_sink(&self, sink: TeeSink) -> TeeHandle {
+        let handle = TeeHandle(self.next_id.fetch_add(1, Ordering::Relaxed));
+        self.sinks.lock().unwrap().insert(handle, sink);
+        self.active_sinks.fetch_add(1, Ordering::Release);
+        handle
     }
 }
 
@@ -144,17 +199,49 @@ impl Default for TeeRegistry {
 
 struct TeeSink {
     stream: TeeStream,
-    ring: RingTeeSink,
+    kind: TeeSinkKind,
+}
+
+enum TeeSinkKind {
+    Ring(RingTeeSink),
+    Event(EventTeeSink),
 }
 
 impl TeeSink {
-    fn snapshot(&self) -> TeeSnapshot {
-        let (bytes, missed_bytes) = self.ring.snapshot();
-        TeeSnapshot {
-            stream: self.stream,
-            bytes,
-            missed_bytes,
-            capacity: self.ring.capacity,
+    fn snapshot(&self) -> Option<TeeSnapshot> {
+        match &self.kind {
+            TeeSinkKind::Ring(ring) => {
+                let (bytes, missed_bytes) = ring.snapshot();
+                Some(TeeSnapshot {
+                    stream: self.stream,
+                    bytes,
+                    missed_bytes,
+                    capacity: ring.capacity,
+                })
+            }
+            TeeSinkKind::Event(_) => None,
+        }
+    }
+
+    fn status(&self) -> TeeStatus {
+        match &self.kind {
+            TeeSinkKind::Ring(ring) => TeeStatus {
+                stream: self.stream,
+                missed_bytes: ring.missed_bytes,
+                disconnected: false,
+            },
+            TeeSinkKind::Event(event) => TeeStatus {
+                stream: self.stream,
+                missed_bytes: event.missed_bytes,
+                disconnected: event.disconnected,
+            },
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        match &mut self.kind {
+            TeeSinkKind::Ring(ring) => ring.push(bytes),
+            TeeSinkKind::Event(event) => event.push(bytes),
         }
     }
 }
@@ -204,9 +291,74 @@ impl RingTeeSink {
     }
 }
 
+struct EventTeeSink {
+    sender: SyncSender<TeeEvent>,
+    missed_bytes: u64,
+    pending_missed: u64,
+    disconnected: bool,
+}
+
+impl EventTeeSink {
+    fn new(sender: SyncSender<TeeEvent>) -> Self {
+        Self {
+            sender,
+            missed_bytes: 0,
+            pending_missed: 0,
+            disconnected: false,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        if self.disconnected {
+            self.record_missed(bytes.len() as u64);
+            return;
+        }
+
+        if self.pending_missed > 0 {
+            let missed = self.pending_missed;
+            match self.sender.try_send(TeeEvent::MissedBytes(missed)) {
+                Ok(()) => self.pending_missed = 0,
+                Err(TrySendError::Full(_)) => {
+                    self.record_missed(bytes.len() as u64);
+                    return;
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.disconnected = true;
+                    self.record_missed(bytes.len() as u64);
+                    return;
+                }
+            }
+        }
+
+        match self.sender.try_send(TeeEvent::Bytes(bytes.to_vec())) {
+            Ok(()) => {}
+            Err(TrySendError::Full(TeeEvent::Bytes(bytes))) => {
+                self.record_missed(bytes.len() as u64);
+            }
+            Err(TrySendError::Full(TeeEvent::MissedBytes(n))) => {
+                self.record_missed(n);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.disconnected = true;
+                self.record_missed(bytes.len() as u64);
+            }
+        }
+    }
+
+    fn record_missed(&mut self, n: u64) {
+        self.missed_bytes += n;
+        self.pending_missed += n;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn ring_tee_keeps_tail_and_reports_missed_bytes() {
@@ -271,5 +423,83 @@ mod tests {
         let snapshot = registry.snapshot(handle).unwrap();
         assert!(snapshot.bytes.is_empty());
         assert_eq!(snapshot.missed_bytes, 3);
+    }
+
+    #[test]
+    fn channel_sink_reports_missed_bytes_out_of_band() {
+        let registry = TeeRegistry::new();
+        let (handle, receiver) = registry.add_channel(TeeStream::Stdout, 2);
+
+        registry.write(TeeStream::Stdout, b"a");
+        registry.write(TeeStream::Stdout, b"b");
+        registry.write(TeeStream::Stdout, b"c");
+
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            TeeEvent::Bytes(b"a".to_vec())
+        );
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            TeeEvent::Bytes(b"b".to_vec())
+        );
+
+        registry.write(TeeStream::Stdout, b"d");
+
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            TeeEvent::MissedBytes(1)
+        );
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            TeeEvent::Bytes(b"d".to_vec())
+        );
+
+        let status = registry.status(handle).expect("status");
+        assert_eq!(status.stream, TeeStream::Stdout);
+        assert_eq!(status.missed_bytes, 1);
+        assert!(!status.disconnected);
+        assert!(registry.snapshot(handle).is_none());
+    }
+
+    #[test]
+    fn channel_sink_marks_disconnected_receivers() {
+        let registry = TeeRegistry::new();
+        let (handle, receiver) = registry.add_channel(TeeStream::Stdout, 1);
+        drop(receiver);
+
+        registry.write(TeeStream::Stdout, b"abc");
+
+        let status = registry.status(handle).expect("status");
+        assert_eq!(status.missed_bytes, 3);
+        assert!(status.disconnected);
+    }
+
+    #[test]
+    fn callback_sink_receives_events_on_worker_thread() {
+        let registry = TeeRegistry::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = Arc::clone(&seen);
+        let handle = registry.add_callback(TeeStream::Stdout, 4, move |event| {
+            seen_for_callback.lock().unwrap().push(event);
+        });
+
+        registry.write(TeeStream::Stdout, b"callback bytes");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if seen.lock().unwrap().len() == 1 {
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!("callback did not receive tee event");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[TeeEvent::Bytes(b"callback bytes".to_vec())]
+        );
+        assert!(registry.remove(handle));
     }
 }

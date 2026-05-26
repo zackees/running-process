@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,7 +27,9 @@ use tracing::debug;
 use crate::daemon::pty_sessions::{
     AttachmentEnded, ExitState, OutboundFrame, PendingTermination, RingBuffer, TerminationOutcome,
 };
-use crate::daemon::telemetry::{TeeHandle, TeeRegistry, TeeSnapshot, TeeStream};
+use crate::daemon::telemetry::{
+    TeeEvent, TeeHandle, TeeRegistry, TeeSnapshot, TeeStatus, TeeStream,
+};
 
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
 pub const STREAM_CHUNK_BYTES: usize = 64 * 1024;
@@ -193,14 +196,62 @@ impl OwnedPipeSession {
         Ok(self.tees.add_ring(stream.to_tee_stream(), capacity))
     }
 
+    /// Register a bounded non-blocking channel tee for stdout or stderr.
+    pub fn tee_stream_channel(
+        &self,
+        stream: PipeStreamSelect,
+        capacity: usize,
+    ) -> Result<(TeeHandle, Receiver<TeeEvent>), PipeAttachError> {
+        if !self.stream_available(stream) {
+            return Err(PipeAttachError::StreamUnavailable);
+        }
+        Ok(self.tees.add_channel(stream.to_tee_stream(), capacity))
+    }
+
+    /// Register a callback tee for stdout or stderr.
+    pub fn tee_stream_callback<F>(
+        &self,
+        stream: PipeStreamSelect,
+        capacity: usize,
+        callback: F,
+    ) -> Result<TeeHandle, PipeAttachError>
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
+        if !self.stream_available(stream) {
+            return Err(PipeAttachError::StreamUnavailable);
+        }
+        Ok(self
+            .tees
+            .add_callback(stream.to_tee_stream(), capacity, callback))
+    }
+
     /// Register a non-blocking bounded ring tee for bytes written to stdin.
     pub fn tee_input_ring(&self, capacity: usize) -> TeeHandle {
         self.tees.add_ring(TeeStream::Stdin, capacity)
     }
 
+    /// Register a bounded non-blocking channel tee for bytes written to stdin.
+    pub fn tee_input_channel(&self, capacity: usize) -> (TeeHandle, Receiver<TeeEvent>) {
+        self.tees.add_channel(TeeStream::Stdin, capacity)
+    }
+
+    /// Register a callback tee for bytes written to stdin.
+    pub fn tee_input_callback<F>(&self, capacity: usize, callback: F) -> TeeHandle
+    where
+        F: FnMut(TeeEvent) + Send + 'static,
+    {
+        self.tees.add_callback(TeeStream::Stdin, capacity, callback)
+    }
+
     /// Snapshot a ring tee without draining it.
     pub fn tee_snapshot(&self, handle: TeeHandle) -> Option<TeeSnapshot> {
         self.tees.snapshot(handle)
+    }
+
+    /// Return current missed-byte status for any tee sink.
+    pub fn tee_status(&self, handle: TeeHandle) -> Option<TeeStatus> {
+        self.tees.status(handle)
     }
 
     /// Remove a registered tee sink.

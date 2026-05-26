@@ -4,13 +4,14 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use running_process::daemon::pipe_sessions::{PipeSessionRegistry, PipeStreamSelect};
 #[cfg(not(windows))]
 use running_process::daemon::pty_sessions::PtySessionRegistry;
-use running_process::daemon::telemetry::TeeStream;
+use running_process::daemon::telemetry::{TeeEvent, TeeStream};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
@@ -85,6 +86,28 @@ where
     }
 }
 
+fn wait_for_event_contains(receiver: &Receiver<TeeEvent>, needle: &[u8]) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(TeeEvent::Bytes(bytes)) => {
+                if bytes.windows(needle.len()).any(|window| window == needle) {
+                    return bytes;
+                }
+            }
+            Ok(TeeEvent::MissedBytes(_)) => {}
+            Err(_) if Instant::now() < deadline => {}
+            Err(err) => panic!("timed out waiting for tee event: {err}"),
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for tee event containing {:?}",
+                String::from_utf8_lossy(needle)
+            );
+        }
+    }
+}
+
 #[test]
 fn pipe_stdout_tee_ring_accumulates_without_attachment() {
     let emitter = testbin_path("testbin-emitter");
@@ -112,6 +135,38 @@ fn pipe_stdout_tee_ring_accumulates_without_attachment() {
     assert_eq!(snapshot.stream, TeeStream::Stdout);
     assert_eq!(snapshot.bytes, bytes);
     assert_eq!(snapshot.capacity, 128);
+
+    let _ = session.terminate(Duration::from_millis(100));
+    wait_for_exit(|| session.exit_state().is_some());
+    registry.remove(&session.id);
+}
+
+#[test]
+fn pipe_stdout_tee_channel_receives_without_attachment() {
+    let emitter = testbin_path("testbin-emitter");
+    let registry = Arc::new(PipeSessionRegistry::new());
+    let session = registry
+        .spawn(
+            vec![emitter.to_string_lossy().into_owned()],
+            None,
+            None,
+            "tee-channel-test".to_string(),
+            "testbin-emitter".to_string(),
+            false,
+        )
+        .expect("spawn pipe session");
+
+    let (handle, receiver) = session
+        .tee_stream_channel(PipeStreamSelect::Stdout, 8)
+        .expect("register stdout channel tee");
+
+    let bytes = wait_for_event_contains(&receiver, b"tick");
+    assert!(bytes.windows(b"tick".len()).any(|window| window == b"tick"));
+    assert!(session.tee_snapshot(handle).is_none());
+    let status = session.tee_status(handle).expect("status");
+    assert_eq!(status.stream, TeeStream::Stdout);
+    assert!(!status.disconnected);
+    assert!(session.untee(handle));
 
     let _ = session.terminate(Duration::from_millis(100));
     wait_for_exit(|| session.exit_state().is_some());
