@@ -230,3 +230,70 @@ where
     framed.send(Bytes::from(encoded)).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_pipe_frame_maps_non_terminal_frames() {
+        let (terminal, output) = encode_pipe_frame(OutboundFrame::Output(b"abc".to_vec()));
+        assert!(!terminal);
+        assert!(matches!(
+            output.frame,
+            Some(PipeStreamOneof::Bytes(bytes)) if bytes == b"abc"
+        ));
+
+        let (terminal, missed) = encode_pipe_frame(OutboundFrame::MissedBytes(42));
+        assert!(!terminal);
+        assert!(matches!(
+            missed.frame,
+            Some(PipeStreamOneof::MissedBytes(42))
+        ));
+    }
+
+    #[test]
+    fn encode_pipe_frame_maps_terminal_frames() {
+        let (terminal, exit) = encode_pipe_frame(OutboundFrame::Exit(7));
+        assert!(terminal);
+        assert!(matches!(exit.frame, Some(PipeStreamOneof::ExitCode(7))));
+
+        let (terminal, stolen) = encode_pipe_frame(OutboundFrame::Ended(AttachmentEnded::Stolen));
+        assert!(terminal);
+        assert!(matches!(
+            stolen.frame,
+            Some(PipeStreamOneof::StolenBy(peer)) if peer == "peer"
+        ));
+
+        let (terminal, detached) =
+            encode_pipe_frame(OutboundFrame::Ended(AttachmentEnded::Detached));
+        assert!(terminal);
+        assert!(matches!(detached.frame, Some(PipeStreamOneof::Eof(true))));
+
+        let (terminal, exited) =
+            encode_pipe_frame(OutboundFrame::Ended(AttachmentEnded::SessionExited));
+        assert!(terminal);
+        assert!(matches!(
+            exited.frame,
+            Some(PipeStreamOneof::Error(message)) if message == "session exited"
+        ));
+
+        let (terminal, terminated) =
+            encode_pipe_frame(OutboundFrame::Ended(AttachmentEnded::Terminated));
+        assert!(terminal);
+        assert!(matches!(
+            terminated.frame,
+            Some(PipeStreamOneof::Error(message)) if message == "session terminated by request"
+        ));
+    }
+
+    #[test]
+    fn error_attach_response_uses_pipe_attach_payload() {
+        let response = error_attach_response(99, StatusCode::NotFound, "missing".into());
+
+        assert_eq!(response.request_id, 99);
+        assert_eq!(response.code, StatusCode::NotFound as i32);
+        assert_eq!(response.message, "missing");
+        assert!(response.attach_pipe_stream.is_some());
+    }
+}
