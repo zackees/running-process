@@ -46,6 +46,16 @@ pub enum ProcessError {
     Timeout,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOutput {
+    /// Raw stdout bytes captured from the child.
+    pub stdout: Vec<u8>,
+    /// Raw stderr bytes captured from the child.
+    pub stderr: Vec<u8>,
+    /// Process exit code, with Unix signal exits represented as negative signal numbers.
+    pub exit_code: i32,
+}
+
 #[derive(Debug, Clone)]
 pub enum CommandSpec {
     Shell(String),

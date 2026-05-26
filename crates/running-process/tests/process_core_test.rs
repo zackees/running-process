@@ -14,8 +14,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 
 use running_process::{
-    CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode,
-    StreamKind,
+    run_command, CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode,
+    StdinMode, StreamKind,
 };
 
 fn config(
@@ -57,6 +57,83 @@ fn captures_stderr_in_stdout_by_default() {
     assert!(process.captured_stdout().iter().any(|line| line == b"out"));
     assert!(process.captured_stdout().iter().any(|line| line == b"err"));
     assert!(process.captured_stderr().is_empty());
+}
+
+#[test]
+fn run_command_returns_raw_output_and_exit_code() {
+    let output = run_command(
+        ProcessConfig {
+            stderr_mode: StderrMode::Pipe,
+            ..config(
+                CommandSpec::Argv(vec![
+                    "python".into(),
+                    "-c".into(),
+                    "import sys; sys.stdout.buffer.write(b'out\\n'); sys.stderr.buffer.write(b'err\\n'); sys.exit(7)"
+                        .into(),
+                ]),
+                false,
+                StdinMode::Null,
+                None,
+            )
+        },
+        Some(Duration::from_secs(5)),
+    )
+    .unwrap();
+
+    assert_eq!(output.exit_code, 7);
+    assert_eq!(output.stdout, b"out\n");
+    assert_eq!(output.stderr, b"err\n");
+}
+
+#[test]
+fn run_command_drains_stdout_and_stderr_concurrently() {
+    let output = run_command(
+        ProcessConfig {
+            stderr_mode: StderrMode::Pipe,
+            ..config(
+                CommandSpec::Argv(vec![
+                    "python".into(),
+                    "-c".into(),
+                    "import sys; sys.stderr.buffer.write(b'e' * 262144); sys.stderr.flush(); sys.stdout.buffer.write(b'ok\\n'); sys.stdout.flush()"
+                        .into(),
+                ]),
+                false,
+                StdinMode::Null,
+                None,
+            )
+        },
+        Some(Duration::from_secs(5)),
+    )
+    .unwrap();
+
+    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.stdout, b"ok\n");
+    assert_eq!(output.stderr.len(), 262144);
+    assert!(output.stderr.iter().all(|byte| *byte == b'e'));
+}
+
+#[test]
+fn run_command_timeout_kills_child_and_returns_timeout() {
+    let started = Instant::now();
+    let result = run_command(
+        config(
+            CommandSpec::Argv(vec![
+                "python".into(),
+                "-c".into(),
+                "import time; time.sleep(10)".into(),
+            ]),
+            false,
+            StdinMode::Null,
+            None,
+        ),
+        Some(Duration::from_millis(100)),
+    );
+
+    assert!(matches!(result, Err(ProcessError::Timeout)));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "timeout path did not kill promptly"
+    );
 }
 
 #[test]

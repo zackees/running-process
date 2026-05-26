@@ -49,8 +49,8 @@ pub use spawn::{
     StdioSource,
 };
 pub use types::{
-    CommandSpec, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode, StreamEvent,
-    StreamKind,
+    CommandSpec, ProcessConfig, ProcessError, ReadStatus, RunOutput, StderrMode, StdinMode,
+    StreamEvent, StreamKind,
 };
 
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
@@ -78,6 +78,8 @@ struct QueueState {
     stdout_history: VecDeque<Vec<u8>>,
     stderr_history: VecDeque<Vec<u8>>,
     combined_history: VecDeque<StreamEvent>,
+    stdout_raw: Vec<u8>,
+    stderr_raw: Vec<u8>,
     stdout_history_bytes: usize,
     stderr_history_bytes: usize,
     combined_history_bytes: usize,
@@ -656,6 +658,15 @@ impl NativeProcess {
             .collect()
     }
 
+    fn captured_stdout_raw(&self) -> Vec<u8> {
+        self.shared
+            .queues
+            .lock()
+            .expect("queue mutex poisoned")
+            .stdout_raw
+            .clone()
+    }
+
     pub fn captured_stderr(&self) -> Vec<Vec<u8>> {
         if self.config.stderr_mode == StderrMode::Stdout {
             return Vec::new();
@@ -668,6 +679,18 @@ impl NativeProcess {
             .clone()
             .into_iter()
             .collect()
+    }
+
+    fn captured_stderr_raw(&self) -> Vec<u8> {
+        if self.config.stderr_mode == StderrMode::Stdout {
+            return Vec::new();
+        }
+        self.shared
+            .queues
+            .lock()
+            .expect("queue mutex poisoned")
+            .stderr_raw
+            .clone()
     }
 
     pub fn captured_combined(&self) -> Vec<StreamEvent> {
@@ -709,12 +732,14 @@ impl NativeProcess {
             StreamKind::Stdout => {
                 let released = guard.stdout_history_bytes;
                 guard.stdout_history.clear();
+                guard.stdout_raw.clear();
                 guard.stdout_history_bytes = 0;
                 released
             }
             StreamKind::Stderr => {
                 let released = guard.stderr_history_bytes;
                 guard.stderr_history.clear();
+                guard.stderr_raw.clear();
                 guard.stderr_history_bytes = 0;
                 released
             }
@@ -814,6 +839,7 @@ impl NativeProcess {
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(n) => {
+                        append_raw(&shared, visible_stream, &chunk[..n]);
                         let lines = feed_chunk(&mut pending, &chunk[..n]);
                         emit_lines(&shared, visible_stream, lines);
                     }
@@ -981,6 +1007,49 @@ fn emit_lines(shared: &Arc<SharedState>, stream: StreamKind, lines: Vec<Vec<u8>>
         guard.combined_queue.push_back(event);
     }
     shared.condvar.notify_all();
+}
+
+fn append_raw(shared: &Arc<SharedState>, stream: StreamKind, chunk: &[u8]) {
+    if chunk.is_empty() {
+        return;
+    }
+    let mut guard = shared.queues.lock().expect("queue mutex poisoned");
+    match stream {
+        StreamKind::Stdout => guard.stdout_raw.extend_from_slice(chunk),
+        StreamKind::Stderr => guard.stderr_raw.extend_from_slice(chunk),
+    }
+}
+
+/// Run a command to completion while concurrently draining stdout and stderr.
+///
+/// The helper forces capture on regardless of `config.capture`, returns raw
+/// stdout/stderr bytes, and kills the child before returning
+/// [`ProcessError::Timeout`] when `timeout` elapses.
+pub fn run_command(
+    mut config: ProcessConfig,
+    timeout: Option<Duration>,
+) -> Result<RunOutput, ProcessError> {
+    config.capture = true;
+    let process = NativeProcess::new(config);
+    process.start()?;
+
+    let exit_code = match process.wait(timeout) {
+        Ok(code) => code,
+        Err(ProcessError::Timeout) => {
+            match process.kill() {
+                Ok(()) | Err(ProcessError::NotRunning) => {}
+                Err(error) => return Err(error),
+            }
+            return Err(ProcessError::Timeout);
+        }
+        Err(error) => return Err(error),
+    };
+
+    Ok(RunOutput {
+        stdout: process.captured_stdout_raw(),
+        stderr: process.captured_stderr_raw(),
+        exit_code,
+    })
 }
 
 pub(crate) fn shell_command(command: &str) -> Command {
