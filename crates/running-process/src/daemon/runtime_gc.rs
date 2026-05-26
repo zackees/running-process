@@ -316,4 +316,101 @@ mod tests {
         let data: Value = serde_json::from_str(&fs::read_to_string(sidecar_path).unwrap()).unwrap();
         assert_eq!(data["last_seen_unix_ms"].as_u64(), Some(20_000));
     }
+
+    #[test]
+    fn read_runtime_dir_entry_uses_spawned_at_as_last_seen_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut sidecar = Map::new();
+        sidecar.insert("command".into(), Value::from("python"));
+        sidecar.insert("spawned_at_unix_ms".into(), Value::from(42_000_u64));
+        let runtime_dir = create_runtime_dir(temp.path(), "spawned-only", Some(1234), sidecar);
+
+        let entry = read_runtime_dir_entry(&runtime_dir).expect("entry should parse");
+
+        assert_eq!(entry.pid, Some(1234));
+        assert_eq!(entry.spawned_at_unix_ms, Some(42_000));
+        assert_eq!(entry.last_seen_unix_ms, Some(42_000));
+        assert_eq!(
+            entry.sidecar_path,
+            runtime_dir.join("spawned-only.daemon.json")
+        );
+    }
+
+    #[test]
+    fn read_runtime_dir_entry_rejects_missing_or_invalid_sidecars() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing-sidecar");
+        fs::create_dir_all(&missing).unwrap();
+        assert!(read_runtime_dir_entry(&missing).is_none());
+
+        let invalid = temp.path().join("invalid-sidecar");
+        fs::create_dir_all(&invalid).unwrap();
+        fs::write(invalid.join("invalid-sidecar.daemon.json"), "{not json").unwrap();
+        assert!(read_runtime_dir_entry(&invalid).is_none());
+
+        let non_object = temp.path().join("non-object-sidecar");
+        fs::create_dir_all(&non_object).unwrap();
+        fs::write(non_object.join("non-object-sidecar.daemon.json"), "[]").unwrap();
+        assert!(read_runtime_dir_entry(&non_object).is_none());
+    }
+
+    #[test]
+    fn write_last_seen_updates_once_and_noops_for_same_timestamp() {
+        let temp = tempfile::tempdir().unwrap();
+        let sidecar_path = temp.path().join("runtime.daemon.json");
+        fs::write(
+            &sidecar_path,
+            r#"{"command":"python","last_seen_unix_ms":1}"#,
+        )
+        .unwrap();
+
+        assert!(write_last_seen(&sidecar_path, 10).expect("update should succeed"));
+        let data: Value =
+            serde_json::from_str(&fs::read_to_string(&sidecar_path).unwrap()).unwrap();
+        assert_eq!(data["last_seen_unix_ms"].as_u64(), Some(10));
+
+        assert!(!write_last_seen(&sidecar_path, 10).expect("same value should no-op"));
+    }
+
+    #[test]
+    fn write_last_seen_rejects_non_object_sidecar() {
+        let temp = tempfile::tempdir().unwrap();
+        let sidecar_path = temp.path().join("runtime.daemon.json");
+        fs::write(&sidecar_path, "[]").unwrap();
+
+        let err = write_last_seen(&sidecar_path, 10).expect_err("array should fail");
+
+        assert!(err.contains("is not a JSON object"));
+    }
+
+    #[test]
+    fn process_matches_checks_pid_and_start_time() {
+        let mut system = System::new();
+        let pid = std::process::id();
+
+        assert!(process_matches(&mut system, pid, None));
+        assert!(!process_matches(&mut system, pid, Some(0)));
+        assert!(!process_matches(&mut system, u32::MAX, None));
+    }
+
+    #[test]
+    fn prune_runtime_root_skips_files_and_unusable_sidecars() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("plain-file"), "not a runtime dir").unwrap();
+
+        let missing_sidecar = temp.path().join("missing-sidecar");
+        fs::create_dir_all(&missing_sidecar).unwrap();
+
+        let mut no_timestamp = Map::new();
+        no_timestamp.insert("command".into(), Value::from("python"));
+        let no_timestamp_dir =
+            create_runtime_dir(temp.path(), "no-timestamp", Some(4_000_002), no_timestamp);
+
+        let stats = prune_runtime_root_at(temp.path(), Duration::from_secs(5), 10_000);
+
+        assert_eq!(stats.scanned_dirs, 2);
+        assert_eq!(stats.removed_dirs, 0);
+        assert!(missing_sidecar.exists());
+        assert!(no_timestamp_dir.exists());
+    }
 }
