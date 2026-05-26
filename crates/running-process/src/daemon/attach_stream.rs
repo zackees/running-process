@@ -222,12 +222,7 @@ fn encode_outbound(frame: OutboundFrame) -> (bool, PtyStreamFrame) {
                 }
                 AttachmentEnded::Detached => StreamOneof::Error("detached".into()),
             };
-            (
-                true,
-                PtyStreamFrame {
-                    frame: Some(oneof),
-                },
-            )
+            (true, PtyStreamFrame { frame: Some(oneof) })
         }
     }
 }
@@ -288,4 +283,70 @@ where
     let encoded = response.encode_to_vec();
     framed.send(Bytes::from(encoded)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_outbound_maps_non_terminal_frames() {
+        let (terminal, output) = encode_outbound(OutboundFrame::Output(b"abc".to_vec()));
+        assert!(!terminal);
+        assert!(matches!(
+            output.frame,
+            Some(StreamOneof::Output(bytes)) if bytes == b"abc"
+        ));
+
+        let (terminal, missed) = encode_outbound(OutboundFrame::MissedBytes(42));
+        assert!(!terminal);
+        assert!(matches!(missed.frame, Some(StreamOneof::MissedBytes(42))));
+    }
+
+    #[test]
+    fn encode_outbound_maps_terminal_frames() {
+        let (terminal, exit) = encode_outbound(OutboundFrame::Exit(7));
+        assert!(terminal);
+        assert!(matches!(exit.frame, Some(StreamOneof::ExitCode(7))));
+
+        let (terminal, stolen) = encode_outbound(OutboundFrame::Ended(AttachmentEnded::Stolen));
+        assert!(terminal);
+        assert!(matches!(
+            stolen.frame,
+            Some(StreamOneof::StolenBy(peer)) if peer == "peer"
+        ));
+
+        let (terminal, exited) =
+            encode_outbound(OutboundFrame::Ended(AttachmentEnded::SessionExited));
+        assert!(terminal);
+        assert!(matches!(
+            exited.frame,
+            Some(StreamOneof::Error(message)) if message == "session exited"
+        ));
+
+        let (terminal, terminated) =
+            encode_outbound(OutboundFrame::Ended(AttachmentEnded::Terminated));
+        assert!(terminal);
+        assert!(matches!(
+            terminated.frame,
+            Some(StreamOneof::Error(message)) if message == "session terminated by request"
+        ));
+
+        let (terminal, detached) = encode_outbound(OutboundFrame::Ended(AttachmentEnded::Detached));
+        assert!(terminal);
+        assert!(matches!(
+            detached.frame,
+            Some(StreamOneof::Error(message)) if message == "detached"
+        ));
+    }
+
+    #[test]
+    fn error_attach_response_uses_attach_payload() {
+        let response = error_attach_response(99, StatusCode::NotFound, "missing".into());
+
+        assert_eq!(response.request_id, 99);
+        assert_eq!(response.code, StatusCode::NotFound as i32);
+        assert_eq!(response.message, "missing");
+        assert!(response.attach_pty_session.is_some());
+    }
 }

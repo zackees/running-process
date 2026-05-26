@@ -187,11 +187,39 @@ pub fn cleanup_stale_shadows() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env_var<T>(
+        key: &str,
+        value: Option<&OsStr>,
+        f: impl FnOnce() -> T + std::panic::UnwindSafe,
+    ) -> T {
+        let old = std::env::var_os(key);
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+
+        let result = std::panic::catch_unwind(f);
+        match old {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
 
     #[test]
     fn fnv1a_known_vector() {
         // Empty string should match the well-known FNV-1a offset basis.
         assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a_64(b"hello"), 0xa430_d846_80aa_bd0b);
     }
 
     #[test]
@@ -217,5 +245,50 @@ mod tests {
     fn shadow_dir_is_not_empty() {
         let d = shadow_dir();
         assert!(!d.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn maybe_self_relocate_skips_when_shadow_marker_is_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        with_env_var(SHADOW_MARKER_ENV, Some(OsStr::new("1")), || {
+            assert!(!maybe_self_relocate().expect("shadow marker should skip relocation"));
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    fn with_temp_shadow_root<T>(f: impl FnOnce(&Path) -> T + std::panic::UnwindSafe) -> T {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().as_os_str().to_os_string();
+
+        with_env_var("XDG_RUNTIME_DIR", Some(root.as_os_str()), || f(temp.path()))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shadow_dir_respects_platform_runtime_env() {
+        with_temp_shadow_root(|root| {
+            let dir = shadow_dir();
+            assert!(dir.starts_with(root));
+            assert!(dir.ends_with(Path::new("running-process").join("run")));
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cleanup_stale_shadows_removes_files_but_leaves_dirs() {
+        with_temp_shadow_root(|_| {
+            let dir = shadow_dir();
+            std::fs::create_dir_all(&dir).unwrap();
+            let stale_file = dir.join("old-daemon-copy");
+            let nested_dir = dir.join("nested");
+            std::fs::write(&stale_file, b"old").unwrap();
+            std::fs::create_dir_all(&nested_dir).unwrap();
+
+            cleanup_stale_shadows();
+
+            assert!(!stale_file.exists());
+            assert!(nested_dir.exists());
+        });
     }
 }
