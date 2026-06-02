@@ -69,10 +69,11 @@ jobs:
         run: uv run --module ci.run_logged logs/dev-build.log -- uv run --module ci.build_wheel --dev
 
       - name: Terminal graphics capability matrix
+        timeout-minutes: 10
         env:
           RUNNING_PROCESS_TERMINAL_CAPABILITY_EXPORT_DIR: ${{ github.workspace }}/logs/terminal-capabilities/${{ inputs.runs-on }}
         run: |
-          uvx soldr cargo test -p running-process --test terminal_graphics_capabilities_test --features client -- --nocapture
+          cargo test -p running-process --test terminal_graphics_capabilities_test --features client -- --nocapture
 
       - name: Report terminal graphics capability matrix
         if: ${{ always() }}
