@@ -90,6 +90,30 @@ enum ProcessState {
   PROCESS_STATE_ZOMBIE  = 3;
 }
 
+enum GraphicsProtocol {
+  GRAPHICS_PROTOCOL_UNSPECIFIED = 0;
+  GRAPHICS_PROTOCOL_SIXEL       = 1;
+  GRAPHICS_PROTOCOL_KITTY       = 2;
+  GRAPHICS_PROTOCOL_ITERM2_FILE = 3;
+}
+
+enum CapabilityStatus {
+  CAPABILITY_STATUS_UNSPECIFIED = 0;
+  CAPABILITY_STATUS_SUPPORTED   = 1;
+  CAPABILITY_STATUS_UNSUPPORTED = 2;
+  CAPABILITY_STATUS_UNKNOWN     = 3;
+  CAPABILITY_STATUS_BLOCKED     = 4;
+}
+
+enum EvidenceStrength {
+  EVIDENCE_STRENGTH_UNSPECIFIED        = 0;
+  EVIDENCE_STRENGTH_PROBE              = 1;
+  EVIDENCE_STRENGTH_STRONG_HOST_SIGNAL = 2;
+  EVIDENCE_STRENGTH_TERMINFO           = 3;
+  EVIDENCE_STRENGTH_WEAK_ENV           = 4;
+  EVIDENCE_STRENGTH_USER_OVERRIDE      = 5;
+}
+
 // ---------------------------------------------------------------------------
 // Envelope messages
 // ---------------------------------------------------------------------------
@@ -199,6 +223,19 @@ message DaemonResponse {
 message KeyValue {
   string key   = 1;
   string value = 2;
+}
+
+message TerminalGraphicsCapability {
+  GraphicsProtocol protocol = 1;
+  CapabilityStatus status   = 2;
+  EvidenceStrength evidence = 3;
+  string source             = 4;
+  repeated string risks     = 5;
+}
+
+message TerminalGraphicsCapabilities {
+  repeated TerminalGraphicsCapability protocols = 1;
+  GraphicsProtocol preferred = 2;
 }
 
 message RegisterRequest {
@@ -494,6 +531,7 @@ message AttachPtySessionRequest {
   // Terminal capabilities for renegotiation; informational only for now.
   string term            = 5;
   bool   is_tty          = 6;
+  TerminalGraphicsCapabilities graphics_capabilities = 7;
 }
 
 message AttachPtySessionResponse {
@@ -552,6 +590,9 @@ message PtySessionInfo {
   // child's environment (you cannot change a live child's TERM).
   // Empty when no client is attached.
   string attached_term = 15;
+  // Graphics capability metadata supplied by the currently attached
+  // client. Missing metadata from older clients is treated as unknown.
+  TerminalGraphicsCapabilities attached_graphics_capabilities = 16;
 }
 
 message TerminatePtySessionRequest {

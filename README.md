@@ -33,6 +33,22 @@ On those platforms, `RunningProcess.pseudo_terminal(...)`, `wait_for_expect(...)
 
 `Pty.is_available()` remains as a compatibility shim and only reports `False` on unsupported platforms.
 
+## Terminal Graphics Capabilities
+
+Rust callers can inspect terminal graphics support with
+`running_process::current_terminal_capabilities()` or the pure
+`running_process::detect_terminal_capabilities(...)` helper. The result reports
+Sixel, Kitty graphics, and iTerm2 `File=` image support as structured
+capability records with `status`, `evidence`, `source`, and `risks` metadata.
+
+The detector intentionally distinguishes terminal hosts from shells. `cmd.exe`,
+PowerShell, Git Bash, bash, zsh, and fish are command interpreters; they do not
+prove graphics support. The terminal host or multiplexer does: Windows
+Terminal, xterm, foot, Konsole, WezTerm, Kitty, iTerm2, tmux, GNU screen, and
+similar programs provide the relevant evidence. Weak aliases such as
+`TERM=xterm-256color` are reported as unknown unless a live probe or stronger
+host signal confirms support.
+
 ## CLI Helpers
 
 The package installs a `running-process` wrapper CLI for supervised command execution:

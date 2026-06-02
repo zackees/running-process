@@ -10,17 +10,21 @@
 //! send/receive helpers suitable for tests and small clients. Async
 //! clients can build on top of [`DaemonClient::attach_pty_session_raw`].
 
-use crate::client::{ClientError, DaemonClient};
 use crate::client::paths;
-use interprocess::local_socket::Stream;
-use interprocess::TryClone;
-use prost::Message;
+use crate::client::{ClientError, DaemonClient};
 use crate::proto::daemon::{
     pty_input_frame::Frame as InputOneof, AttachPtySessionRequest, AttachPtySessionResponse,
     DaemonRequest, DaemonResponse, DetachPtySessionRequest, KeyValue, ListPtySessionsRequest,
     ListPtySessionsResponse, PtyInputFrame, PtyResize, PtySessionInfo, PtyStreamFrame, RequestType,
     SpawnPtySessionRequest, SpawnPtySessionResponse, StatusCode, TerminatePtySessionRequest,
 };
+use crate::terminal_graphics::{
+    current_terminal_capabilities, terminal_graphics_capabilities_to_proto, TerminalCapabilities,
+    TerminalGraphicsCapabilities,
+};
+use interprocess::local_socket::Stream;
+use interprocess::TryClone;
+use prost::Message;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -76,10 +80,7 @@ impl PtySpawnRequest {
         K: Into<String>,
         V: Into<String>,
     {
-        self.env = env
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect();
+        self.env = env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
         self
     }
 }
@@ -131,10 +132,12 @@ impl DaemonClient {
         let response = self.send_request(daemon_request)?;
         ensure_ok(&response)?;
         let payload: SpawnPtySessionResponse =
-            response.spawn_pty_session.ok_or_else(|| ClientError::Server {
-                code: StatusCode::Internal,
-                message: "spawn_pty_session response missing payload".into(),
-            })?;
+            response
+                .spawn_pty_session
+                .ok_or_else(|| ClientError::Server {
+                    code: StatusCode::Internal,
+                    message: "spawn_pty_session response missing payload".into(),
+                })?;
         Ok(SpawnedPtySession {
             session_id: payload.session_id,
             pid: payload.pid,
@@ -160,12 +163,13 @@ impl DaemonClient {
         };
         let response = self.send_request(req)?;
         ensure_ok(&response)?;
-        let payload: ListPtySessionsResponse = response
-            .list_pty_sessions
-            .ok_or_else(|| ClientError::Server {
-                code: StatusCode::Internal,
-                message: "list_pty_sessions response missing payload".into(),
-            })?;
+        let payload: ListPtySessionsResponse =
+            response
+                .list_pty_sessions
+                .ok_or_else(|| ClientError::Server {
+                    code: StatusCode::Internal,
+                    message: "list_pty_sessions response missing payload".into(),
+                })?;
         Ok(payload.sessions)
     }
 
@@ -210,7 +214,6 @@ impl DaemonClient {
         ensure_ok(&response)?;
         Ok(())
     }
-
 }
 
 fn ensure_ok(response: &DaemonResponse) -> Result<(), ClientError> {
@@ -249,7 +252,10 @@ pub enum AttachError {
     Connect(std::io::Error),
     Io(std::io::Error),
     Decode(prost::DecodeError),
-    Server { code: StatusCode, message: String },
+    Server {
+        code: StatusCode,
+        message: String,
+    },
     /// The daemon never sent an AttachPtySessionResponse payload.
     MissingPayload,
 }
@@ -291,6 +297,32 @@ impl PtyAttachment {
         cols: u16,
         steal: bool,
     ) -> Result<Self, AttachError> {
+        let mut terminal_capabilities = current_terminal_capabilities();
+        if !terminal_capabilities.is_tty {
+            terminal_capabilities.is_tty = true;
+            terminal_capabilities.graphics = TerminalGraphicsCapabilities::unknown();
+        }
+        Self::attach_to_with_terminal_capabilities(
+            socket_path,
+            session_id,
+            rows,
+            cols,
+            steal,
+            terminal_capabilities,
+        )
+    }
+
+    /// Attach with explicit terminal metadata. This is useful for tests,
+    /// non-interactive attach clients, and callers that already performed
+    /// capability probing before opening the daemon socket.
+    pub fn attach_to_with_terminal_capabilities(
+        socket_path: &str,
+        session_id: &str,
+        rows: u16,
+        cols: u16,
+        steal: bool,
+        terminal_capabilities: TerminalCapabilities,
+    ) -> Result<Self, AttachError> {
         let name = paths::make_socket_name(socket_path).map_err(AttachError::Connect)?;
         use interprocess::local_socket::traits::Stream as _;
         let stream = Stream::connect(name).map_err(AttachError::Connect)?;
@@ -309,8 +341,11 @@ impl PtyAttachment {
                 rows: rows as u32,
                 cols: cols as u32,
                 steal,
-                term: std::env::var("TERM").unwrap_or_default(),
-                is_tty: true,
+                term: terminal_capabilities.term.unwrap_or_default(),
+                is_tty: terminal_capabilities.is_tty,
+                graphics_capabilities: Some(terminal_graphics_capabilities_to_proto(
+                    &terminal_capabilities.graphics,
+                )),
             }),
             ..Default::default()
         };
@@ -319,8 +354,7 @@ impl PtyAttachment {
 
         // Read the initial response.
         let response_bytes = read_length_prefixed(&mut reader).map_err(AttachError::Io)?;
-        let response =
-            DaemonResponse::decode(&response_bytes[..]).map_err(AttachError::Decode)?;
+        let response = DaemonResponse::decode(&response_bytes[..]).map_err(AttachError::Decode)?;
         if response.code != StatusCode::Ok as i32 {
             let code = StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
             return Err(AttachError::Server {
