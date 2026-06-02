@@ -143,7 +143,7 @@ pub fn current_terminal_capabilities_with_timeout(timeout: Duration) -> Terminal
 pub fn detect_terminal_capabilities(input: TerminalCapabilityInput) -> TerminalCapabilities {
     let term = env_value(&input.env, "TERM");
     let terminal_program = env_value(&input.env, "TERM_PROGRAM");
-    let mut risks = base_risks(&input);
+    let risks = base_risks(&input);
 
     let graphics = if !input.is_tty {
         blocked_all("non_tty", ["non_tty"])
@@ -152,7 +152,7 @@ pub fn detect_terminal_capabilities(input: TerminalCapabilityInput) -> TerminalC
     } else if is_screen(term.as_deref()) {
         blocked_all("TERM=screen", ["screen"])
     } else {
-        let sixel = detect_sixel(&input, &mut risks);
+        let sixel = detect_sixel(&input, &risks);
         let kitty = detect_kitty(&input, &risks);
         let iterm2 = detect_iterm2(&input, &risks);
         let preferred = choose_preferred(&[sixel.clone(), kitty.clone(), iterm2.clone()]);
@@ -170,7 +170,7 @@ pub fn detect_terminal_capabilities(input: TerminalCapabilityInput) -> TerminalC
     }
 }
 
-fn detect_sixel(input: &TerminalCapabilityInput, risks: &mut Vec<String>) -> GraphicsCapability {
+fn detect_sixel(input: &TerminalCapabilityInput, risks: &[String]) -> GraphicsCapability {
     if let Some(reply) = input.probe.sixel_xtsmgraphics.as_deref() {
         if xtsmgraphics_reports_sixel(reply) {
             return capability(
@@ -178,7 +178,7 @@ fn detect_sixel(input: &TerminalCapabilityInput, risks: &mut Vec<String>) -> Gra
                 CapabilityStatus::Supported,
                 EvidenceStrength::Probe,
                 "XTSMGRAPHICS",
-                risks.clone(),
+                risks.to_vec(),
             );
         }
     }
@@ -189,7 +189,7 @@ fn detect_sixel(input: &TerminalCapabilityInput, risks: &mut Vec<String>) -> Gra
                 CapabilityStatus::Supported,
                 EvidenceStrength::Probe,
                 "DA1",
-                risks.clone(),
+                risks.to_vec(),
             );
         }
     }
@@ -214,12 +214,12 @@ fn detect_sixel(input: &TerminalCapabilityInput, risks: &mut Vec<String>) -> Gra
                     &env_value(&input.env, "VTE_VERSION").unwrap_or_default(),
                 ),
             ]),
-            risks.clone(),
+            risks.to_vec(),
         );
     }
 
     if env_value(&input.env, "WT_SESSION").is_some() {
-        let mut local_risks = risks.clone();
+        let mut local_risks = risks.to_vec();
         local_risks.push("requires_windows_terminal_1_22".into());
         return capability(
             GraphicsProtocol::Sixel,
@@ -250,7 +250,7 @@ fn detect_sixel(input: &TerminalCapabilityInput, risks: &mut Vec<String>) -> Gra
                     &env_value(&input.env, "WEZTERM_PANE").unwrap_or_default(),
                 ),
             ]),
-            risks.clone(),
+            risks.to_vec(),
         );
     }
 
@@ -260,7 +260,7 @@ fn detect_sixel(input: &TerminalCapabilityInput, risks: &mut Vec<String>) -> Gra
             CapabilityStatus::Unknown,
             EvidenceStrength::WeakEnv,
             format!("TERM={term}"),
-            risks.clone(),
+            risks.to_vec(),
         );
     }
 
@@ -273,7 +273,7 @@ fn detect_sixel(input: &TerminalCapabilityInput, risks: &mut Vec<String>) -> Gra
         } else {
             format!("TERM={term}")
         },
-        risks.clone(),
+        risks.to_vec(),
     )
 }
 
