@@ -25,6 +25,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::pty::NativePtyProcess;
+use crate::terminal_graphics::TerminalGraphicsCapabilities;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -154,6 +155,9 @@ struct AttachedClient {
     /// Client-supplied TERM value. Recorded for the session's lifetime
     /// so list/snapshot can surface it.
     term: String,
+    /// Client-supplied terminal graphics capability metadata. Missing
+    /// metadata from older clients is represented as unknown.
+    graphics_capabilities: TerminalGraphicsCapabilities,
 }
 
 /// Final state once the child exits.
@@ -395,6 +399,18 @@ impl OwnedPtySession {
             .unwrap_or_default()
     }
 
+    /// Graphics capability metadata supplied by the currently attached
+    /// client. Missing metadata from older clients is represented as
+    /// unknown rather than inferred from daemon environment.
+    pub fn attached_graphics_capabilities(&self) -> TerminalGraphicsCapabilities {
+        self.attached
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.graphics_capabilities.clone())
+            .unwrap_or_else(TerminalGraphicsCapabilities::unknown)
+    }
+
     /// Install an attached client. Returns the receiver half + a snapshot of
     /// the current backlog (with the cumulative bytes-dropped counter).
     ///
@@ -408,7 +424,14 @@ impl OwnedPtySession {
         rows: u16,
         cols: u16,
     ) -> Result<(AttachmentHandle, Vec<u8>, u64), AttachError> {
-        self.attach_with_terminal_info(steal, rows, cols, true, String::new())
+        self.attach_with_terminal_info(
+            steal,
+            rows,
+            cols,
+            true,
+            String::new(),
+            TerminalGraphicsCapabilities::unknown(),
+        )
     }
 
     /// Like [`Self::attach`] but lets the caller record whether the
@@ -422,6 +445,7 @@ impl OwnedPtySession {
         cols: u16,
         is_tty: bool,
         term: String,
+        graphics_capabilities: TerminalGraphicsCapabilities,
     ) -> Result<(AttachmentHandle, Vec<u8>, u64), AttachError> {
         // If the session has already exited, surface that immediately rather
         // than handing out an attachment for a corpse.
@@ -461,6 +485,7 @@ impl OwnedPtySession {
             sender: tx,
             is_tty,
             term,
+            graphics_capabilities,
         });
         Ok((AttachmentHandle { receiver: rx }, backlog, dropped))
     }

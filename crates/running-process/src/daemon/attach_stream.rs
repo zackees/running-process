@@ -25,6 +25,9 @@ use crate::proto::daemon::{
 
 use crate::daemon::handlers::DaemonState;
 use crate::daemon::pty_sessions::{AttachError, AttachmentEnded, OutboundFrame};
+use crate::terminal_graphics::{
+    terminal_graphics_capabilities_from_proto, TerminalGraphicsCapabilities,
+};
 
 /// Drive the attach stream for the lifetime of one client connection.
 ///
@@ -73,6 +76,11 @@ where
         cols,
         attach_req.is_tty,
         attach_req.term.clone(),
+        attach_req
+            .graphics_capabilities
+            .as_ref()
+            .map(terminal_graphics_capabilities_from_proto)
+            .unwrap_or_else(TerminalGraphicsCapabilities::unknown),
     ) {
         Ok(h) => h,
         Err(AttachError::AlreadyAttached) => {

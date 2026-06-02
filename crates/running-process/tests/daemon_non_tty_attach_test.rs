@@ -19,7 +19,14 @@ use std::time::{Duration, Instant};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", name, "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            name,
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("cargo build failed");
@@ -85,7 +92,10 @@ fn raw_attach_non_tty(
     use interprocess::local_socket::Stream;
     use interprocess::TryClone;
     use prost::Message;
-    use running_process::proto::daemon::{DaemonRequest, DaemonResponse, RequestType, StatusCode};
+    use running_process::proto::daemon::{
+        CapabilityStatus, DaemonRequest, DaemonResponse, EvidenceStrength, GraphicsProtocol,
+        RequestType, StatusCode, TerminalGraphicsCapabilities, TerminalGraphicsCapability,
+    };
 
     let name = paths::make_socket_name(socket_path)?;
     let stream = Stream::connect(name)?;
@@ -105,6 +115,16 @@ fn raw_attach_non_tty(
             steal: false,
             term: term.into(),
             is_tty: false,
+            graphics_capabilities: Some(TerminalGraphicsCapabilities {
+                protocols: vec![TerminalGraphicsCapability {
+                    protocol: GraphicsProtocol::Sixel as i32,
+                    status: CapabilityStatus::Blocked as i32,
+                    evidence: EvidenceStrength::StrongHostSignal as i32,
+                    source: "non_tty".into(),
+                    risks: vec!["non_tty".into()],
+                }],
+                preferred: GraphicsProtocol::Unspecified as i32,
+            }),
         }),
         ..Default::default()
     };
@@ -190,6 +210,22 @@ async fn non_tty_attach_records_flag_and_skips_resize() {
             entry.attached_term, "dumb",
             "TERM should be recorded as supplied"
         );
+        let graphics = entry
+            .attached_graphics_capabilities
+            .as_ref()
+            .expect("graphics metadata should be present");
+        let sixel = graphics
+            .protocols
+            .iter()
+            .find(|cap| {
+                cap.protocol == running_process::proto::daemon::GraphicsProtocol::Sixel as i32
+            })
+            .expect("sixel capability");
+        assert_eq!(
+            sixel.status,
+            running_process::proto::daemon::CapabilityStatus::Blocked as i32
+        );
+        assert_eq!(sixel.source, "non_tty");
         assert_eq!(
             entry.rows, 40,
             "non-TTY attach must NOT resize (rows unchanged)"

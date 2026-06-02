@@ -11,6 +11,7 @@ use crate::proto::daemon::{
     ListPtySessionsResponse, PtySessionInfo, ResizePtySessionResponse, SpawnPtySessionResponse,
     StatusCode, TerminatePtySessionResponse,
 };
+use crate::terminal_graphics::terminal_graphics_capabilities_to_proto;
 
 use super::util::{error_pty_response, termination_outcome_to_proto};
 use super::DaemonState;
@@ -167,6 +168,9 @@ pub fn handle_list_pty_sessions(request: &DaemonRequest, state: &DaemonState) ->
             termination_outcome: termination_outcome_to_proto(outcome) as i32,
             attached_is_tty: session.attached_is_tty(),
             attached_term: session.attached_term(),
+            attached_graphics_capabilities: Some(terminal_graphics_capabilities_to_proto(
+                &session.attached_graphics_capabilities(),
+            )),
         });
     }
 
@@ -208,7 +212,11 @@ pub fn handle_terminate_pty_session(
     // M4 will turn this into a configurable soft-then-hard schedule.
     // For M2 we issue an immediate terminate and let the reader thread
     // observe the exit + record exit state.
-    let grace_ms = if req.grace_ms == 0 { 2000 } else { req.grace_ms };
+    let grace_ms = if req.grace_ms == 0 {
+        2000
+    } else {
+        req.grace_ms
+    };
     if let Err(e) = session.terminate(std::time::Duration::from_millis(grace_ms as u64)) {
         return error_pty_response(request.id, StatusCode::Internal, e.to_string());
     }
@@ -237,8 +245,7 @@ pub fn handle_attach_pty_session(request: &DaemonRequest, _state: &DaemonState) 
     DaemonResponse {
         request_id: request.id,
         code: StatusCode::Internal as i32,
-        message: "attach_pty_session must be intercepted by the streaming server path"
-            .into(),
+        message: "attach_pty_session must be intercepted by the streaming server path".into(),
         attach_pty_session: Some(AttachPtySessionResponse::default()),
         ..Default::default()
     }
@@ -248,10 +255,7 @@ pub fn handle_attach_pty_session(request: &DaemonRequest, _state: &DaemonState) 
 /// follow-up). The new size persists for the lifetime of the session
 /// and overrides any per-attach size passed by future attach requests
 /// (they can still override it again by sending their own rows/cols).
-pub fn handle_resize_pty_session(
-    request: &DaemonRequest,
-    state: &DaemonState,
-) -> DaemonResponse {
+pub fn handle_resize_pty_session(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
     let req = match request.resize_pty_session.as_ref() {
         Some(r) => r,
         None => {
@@ -272,8 +276,16 @@ pub fn handle_resize_pty_session(
             )
         }
     };
-    let rows = if req.rows == 0 { session.rows() } else { req.rows as u16 };
-    let cols = if req.cols == 0 { session.cols() } else { req.cols as u16 };
+    let rows = if req.rows == 0 {
+        session.rows()
+    } else {
+        req.rows as u16
+    };
+    let cols = if req.cols == 0 {
+        session.cols()
+    } else {
+        req.cols as u16
+    };
     if let Err(e) = session.resize(rows, cols) {
         return error_pty_response(request.id, StatusCode::Internal, e.to_string());
     }

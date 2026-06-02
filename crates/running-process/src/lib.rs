@@ -39,6 +39,7 @@ pub mod pty;
 mod public_symbols;
 mod rust_debug;
 pub mod spawn;
+pub mod terminal_graphics;
 mod types;
 #[cfg(unix)]
 mod unix;
@@ -53,6 +54,12 @@ pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_with_clear_env, DaemonChild, SpawnStdio, SpawnedChild,
     StdioSource,
+};
+pub use terminal_graphics::{
+    current_terminal_capabilities, current_terminal_capabilities_with_timeout,
+    detect_terminal_capabilities, CapabilityStatus, EvidenceStrength, GraphicsCapability,
+    GraphicsProtocol, TerminalCapabilities, TerminalCapabilityInput, TerminalGraphicsCapabilities,
+    TerminalProbeEvidence,
 };
 pub use types::{
     CommandSpec, ProcessConfig, ProcessError, ReadStatus, RunOutput, StderrMode, StdinMode,
@@ -877,9 +884,7 @@ impl NativeProcess {
     fn pipe_done_callback(&self, stream: StreamKind) -> Box<dyn FnOnce() + Send> {
         let handles = Arc::clone(&self.capture_pipe_handles);
         Box::new(move || {
-            let mut guard = handles
-                .lock()
-                .expect("capture pipe handles mutex poisoned");
+            let mut guard = handles.lock().expect("capture pipe handles mutex poisoned");
             match stream {
                 StreamKind::Stdout => guard.stdout = None,
                 StreamKind::Stderr => guard.stderr = None,
@@ -930,9 +935,7 @@ impl NativeProcess {
     }
 
     fn wait_for_capture_completion_impl(&self) {
-        crate::rp_rust_debug_scope!(
-            "running_process::NativeProcess::wait_for_capture_completion"
-        );
+        crate::rp_rust_debug_scope!("running_process::NativeProcess::wait_for_capture_completion");
         if !self.config.capture {
             return;
         }
