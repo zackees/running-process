@@ -90,6 +90,22 @@ impl BackendRegistry {
         self.entries.iter()
     }
 
+    /// Remove backend handles whose verified process is no longer alive.
+    ///
+    /// Returns the removed keys so the lifecycle monitor can emit events,
+    /// metrics, or diagnostics after the registry mutation is complete.
+    pub fn prune_stale(&mut self) -> Vec<BackendKey> {
+        let mut removed = Vec::new();
+        self.entries.retain(|key, handle| {
+            let alive = handle.is_alive();
+            if !alive {
+                removed.push(key.clone());
+            }
+            alive
+        });
+        removed
+    }
+
     /// Return Hello negotiation metadata for one registered backend.
     pub fn registered_backend_for(
         &self,
@@ -108,5 +124,66 @@ impl BackendRegistry {
             backend_pipe: handle.daemon_process.ipc_endpoint.path.clone(),
             server_capabilities: 0,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::broker::backend_handle::{BackendHandle, DaemonProcess};
+    use crate::broker::protocol::Endpoint;
+
+    use super::*;
+
+    fn handle(service_name: &str, version: &str, pid: u32) -> BackendHandle {
+        let endpoint = Endpoint {
+            namespace_id: "shared".into(),
+            path: format!("rpb-v1-test-{service_name}-{version}"),
+        };
+        let mut daemon = DaemonProcess::current_process(endpoint, Some(30)).unwrap();
+        daemon.pid = pid;
+
+        BackendHandle {
+            service_name: service_name.into(),
+            service_version: version.into(),
+            daemon_process: daemon,
+            #[cfg(unix)]
+            pid_handle: None,
+            #[cfg(windows)]
+            process_handle: None,
+        }
+    }
+
+    #[test]
+    fn prune_stale_removes_dead_handles_and_keeps_live_ones() {
+        let mut registry = BackendRegistry::new();
+        let live_key = BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.20");
+        let dead_key = BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.21");
+
+        registry.insert(
+            live_key.instance.clone(),
+            handle(&live_key.service_name, &live_key.service_version, std::process::id()),
+        );
+        registry.insert(
+            dead_key.instance.clone(),
+            handle(&dead_key.service_name, &dead_key.service_version, u32::MAX),
+        );
+
+        let removed = registry.prune_stale();
+
+        assert_eq!(removed, vec![dead_key.clone()]);
+        assert!(registry
+            .get(
+                &live_key.instance,
+                &live_key.service_name,
+                &live_key.service_version
+            )
+            .is_some());
+        assert!(registry
+            .get(
+                &dead_key.instance,
+                &dead_key.service_name,
+                &dead_key.service_version
+            )
+            .is_none());
     }
 }

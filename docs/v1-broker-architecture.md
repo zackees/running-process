@@ -87,6 +87,9 @@ spawn coordinator is attached, repeated misses consume the per-backend-key spawn
 budget and return `ERROR_RATE_LIMITED` with a retry hint once the budget is
 exhausted.
 
+The backend registry exposes `prune_stale` so the lifecycle monitor can remove
+dead verified handles before future Hello routing returns a negotiated endpoint.
+
 ## Backend Table
 
 The backend registry is keyed by:
