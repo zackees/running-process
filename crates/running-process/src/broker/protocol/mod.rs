@@ -13,11 +13,9 @@
 //! module so existing call sites importing them under
 //! `running_process::broker::protocol::*` keep working.
 
+#[allow(missing_docs)]
 mod prost_generated {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/running_process.broker.v1.rs"
-    ));
+    include!(concat!(env!("OUT_DIR"), "/running_process.broker.v1.rs"));
 }
 
 pub use prost_generated::*;
