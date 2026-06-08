@@ -26,7 +26,7 @@ jobs:
         run: rustup toolchain install nightly --profile minimal
 
       - name: Install cargo-fuzz
-        run: cargo +nightly install cargo-fuzz --locked
+        run: cargo install cargo-fuzz --locked
 
       - name: Restore fuzz corpus
         uses: actions/cache@v4
