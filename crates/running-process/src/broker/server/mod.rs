@@ -6,6 +6,7 @@
 //! logic testable without binding sockets or spawning backends.
 
 pub mod admin;
+pub mod backend_endpoint_allocator;
 pub mod backend_registry;
 pub mod connection;
 pub mod hello_handler;
@@ -18,6 +19,9 @@ pub mod trace_context;
 pub mod version_allow_list;
 
 pub use admin::{AdminBackend, AdminSnapshot, ADMIN_SCHEMA_VERSION};
+pub use backend_endpoint_allocator::{
+    BackendEndpointAllocator, BackendEndpointAllocatorError, DEFAULT_BACKEND_ENDPOINT_ATTEMPTS,
+};
 pub use backend_registry::{BackendKey, BackendRegistry};
 pub use connection::{
     handle_hello_connection, local_socket_name, serve_local_socket_connections,

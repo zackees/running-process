@@ -12,6 +12,7 @@ mod backend_handle_common;
 mod backend_handle_dead;
 mod backend_handle_probe;
 mod backend_handle_recycled;
+mod backend_endpoint_allocator;
 mod backend_registry;
 mod client;
 mod connection;

@@ -29,6 +29,14 @@ collisions on Windows named pipes and case-insensitive filesystems.
 Backend pipes use a random 128-bit suffix generated per backend bind. This
 prevents predictable backend pipe squatting.
 
+`server::BackendEndpointAllocator` owns runtime allocation for backend pipes.
+It draws 16 bytes from the OS random source, calls the frozen
+`backend_pipe(user_sid_hash, random128)` formatter, records the generated path
+as reserved for this broker process, and retries on duplicate reservations.
+The allocator returns an `Endpoint` whose `namespace_id` is the owning broker
+instance and whose `path` is the platform pipe/socket string clients receive in
+`Negotiated.backend_pipe`.
+
 ## Windows
 
 Windows uses named pipes:

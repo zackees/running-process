@@ -26,6 +26,7 @@ backend lifecycle, and returns direct backend pipe addresses.
 | Service registry | Loads and validates service-definition files, re-reading on `Hello`. |
 | Instance resolver | Maps service definitions to shared, private, or explicit broker instances. |
 | Rate limiter | Bounds Hello requests per verified peer PID. |
+| Backend endpoint allocator | Generates unguessable backend pipe endpoints and avoids duplicate allocations. |
 | Backend registry | Tracks verified backend handles by instance, service, and version. |
 | Spawn coordinator | Serializes backend startup for one service/version. |
 | Perf guard | Summarizes Hello latency samples and enforces the frozen P50/P99 budgets. |
