@@ -36,11 +36,20 @@ once, and classifies the payload as `Accepted` or `Rejected`.
 The helper does not call `DuplicateHandle`, `sendmsg`, or `recvmsg`; those
 transport details remain isolated for the later Windows and Unix modules.
 
+## Platform Transport Scaffold
+
+`running_process::broker::server::handoff::windows` models the future
+`DuplicateHandle` attempt inputs, result, and fallback-safe errors.
+`running_process::broker::server::handoff::unix` does the same for
+`SCM_RIGHTS`. These modules do not perform real handle or file-descriptor
+passing yet; permission-denied, unsupported, and timeout-like transport
+outcomes are translated into the existing silent reconnect fallback policy.
+
 ## Platform Mechanisms
 
 | Platform | Mechanism |
 |---|---|
-| Windows | `DuplicateHandle` into the client process. |
+| Windows | `DuplicateHandle` into the backend process. |
 | Linux | `SCM_RIGHTS` over Unix-domain socket. |
 | macOS | `SCM_RIGHTS` over Unix-domain socket. |
 
