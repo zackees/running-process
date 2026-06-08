@@ -77,6 +77,10 @@ The v1 release gate includes a dependency audit:
 
 - `cargo audit --deny warnings` runs on dependency changes, pushes to `main`,
   manual dispatch, and the daily security schedule.
+- Security tests reject direct HTTP, TLS, browser-facing, and network RPC
+  dependencies in the `running-process` crate manifest. The broker's transport
+  stays local IPC by construction; adding a network stack requires an explicit
+  design issue before the dependency lands.
 - New dependencies are reviewed for known advisories, network stacks, TLS
   stacks, serialization format drift, and unnecessary transitive weight.
 - Dependencies used by broker parsing, IPC, manifest, service-definition,
