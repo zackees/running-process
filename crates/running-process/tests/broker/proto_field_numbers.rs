@@ -8,7 +8,9 @@
 use std::path::PathBuf;
 
 fn proto_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("proto")
+        .join("broker_v1")
 }
 
 fn proto(name: &str) -> String {
