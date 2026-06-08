@@ -11,6 +11,7 @@ pub mod backend_endpoint_allocator;
 pub mod backend_registry;
 pub mod connection;
 pub mod control_socket;
+pub mod handoff;
 pub mod hello_handler;
 pub mod hello_router;
 pub mod instance;
@@ -49,6 +50,11 @@ pub use control_socket::{
     serve_control_socket_connections_with_limit_and_policy,
     serve_control_socket_connections_with_policy, ControlSocketConnectionLimit,
     ControlSocketError, ControlSocketReply,
+};
+pub use handoff::{
+    HandoffToken, HandoffTokenError, HandoffTokenStore, HandoffTokenStoreConfig,
+    DEFAULT_HANDOFF_TOKEN_COLLISION_ATTEMPTS, DEFAULT_HANDOFF_TOKEN_TTL,
+    DEFAULT_MAX_PENDING_HANDOFF_TOKENS, HANDOFF_TOKEN_BYTES,
 };
 pub use hello_handler::{
     HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend,
