@@ -22,15 +22,23 @@ use std::path::Path;
 /// caller code passes them through unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PtySize {
+    /// Terminal row count in character cells.
     pub rows: u16,
+    /// Terminal column count in character cells.
     pub cols: u16,
+    /// Terminal width in pixels when the backend supports it.
     pub pixel_width: u16,
+    /// Terminal height in pixels when the backend supports it.
     pub pixel_height: u16,
 }
 
+/// Platform-neutral handle for the master side of a pseudo-terminal.
 pub trait PtyMaster: Send + 'static {
+    /// Clone a reader for PTY output.
     fn try_clone_reader(&mut self) -> io::Result<Box<dyn Read + Send>>;
+    /// Take the writer used to send input to the PTY.
     fn take_writer(&mut self) -> io::Result<Box<dyn Write + Send>>;
+    /// Resize the PTY to the requested dimensions.
     fn resize(&self, size: PtySize) -> io::Result<()>;
     /// Return the current PTY dimensions. On Windows the value is
     /// the last size passed to `resize` (or the initial openpty
@@ -44,7 +52,9 @@ pub trait PtyMaster: Send + 'static {
     fn process_group_leader(&self) -> Option<i32>;
 }
 
+/// Platform-neutral handle for a child process running inside a PTY.
 pub trait PtyChild: Send + 'static {
+    /// Return the operating system process identifier.
     fn pid(&self) -> u32;
     /// Poll without blocking. `Ok(None)` means still running.
     /// `Ok(Some(code))` means exited with that exit code.
@@ -53,6 +63,7 @@ pub trait PtyChild: Send + 'static {
     fn try_wait(&mut self) -> io::Result<Option<u32>>;
     /// Block until the child exits, then return the exit code.
     fn wait(&mut self) -> io::Result<u32>;
+    /// Terminate the child process.
     fn kill(&mut self) -> io::Result<()>;
     /// Returns the Windows process HANDLE, if applicable. `None`
     /// means the backend can't expose one (which is fatal for Job
@@ -62,8 +73,11 @@ pub trait PtyChild: Send + 'static {
     fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle>;
 }
 
+/// Platform-neutral handle for the slave side of a pseudo-terminal.
 pub trait PtySlave: Send + 'static {
+    /// Child process type produced by this slave handle.
     type Child: PtyChild;
+    /// Spawn a child process attached to this slave PTY.
     fn spawn(
         self,
         argv: &[OsString],
@@ -72,9 +86,13 @@ pub trait PtySlave: Send + 'static {
     ) -> io::Result<Self::Child>;
 }
 
+/// Factory trait for opening platform-specific pseudo-terminal pairs.
 pub trait PtyBackend {
+    /// Master-side handle type returned by this backend.
     type Master: PtyMaster;
+    /// Slave-side handle type returned by this backend.
     type Slave: PtySlave;
+    /// Open a new PTY with the requested dimensions.
     fn openpty(size: PtySize) -> io::Result<(Self::Master, Self::Slave)>;
 }
 
@@ -164,8 +182,8 @@ mod conpty {
 mod unix {
     use super::*;
     use portable_pty::{
-        Child as PortableChild, CommandBuilder, MasterPty, PtySize as PortPtySize, SlavePty,
-        native_pty_system,
+        native_pty_system, Child as PortableChild, CommandBuilder, MasterPty,
+        PtySize as PortPtySize, SlavePty,
     };
 
     pub(crate) struct PortablePtyBackend;
@@ -232,7 +250,9 @@ mod unix {
             env: Option<&[(OsString, OsString)]>,
         ) -> io::Result<Self::Child> {
             if argv.is_empty() {
-                return Err(io::Error::other("portable-pty spawn requires non-empty argv"));
+                return Err(io::Error::other(
+                    "portable-pty spawn requires non-empty argv",
+                ));
             }
             let mut cmd = CommandBuilder::new(&argv[0]);
             for arg in &argv[1..] {
@@ -298,8 +318,8 @@ pub(crate) type Backend = unix::PortablePtyBackend;
 mod unix_compat {
     use super::*;
     use portable_pty::{
-        Child as PortableChild, CommandBuilder, MasterPty, PtySize as PortPtySize, SlavePty,
-        native_pty_system,
+        native_pty_system, Child as PortableChild, CommandBuilder, MasterPty,
+        PtySize as PortPtySize, SlavePty,
     };
 
     pub(crate) struct PortablePtyBackend;
@@ -361,7 +381,9 @@ mod unix_compat {
             env: Option<&[(OsString, OsString)]>,
         ) -> io::Result<Self::Child> {
             if argv.is_empty() {
-                return Err(io::Error::other("portable-pty spawn requires non-empty argv"));
+                return Err(io::Error::other(
+                    "portable-pty spawn requires non-empty argv",
+                ));
             }
             let mut cmd = CommandBuilder::new(&argv[0]);
             for arg in &argv[1..] {
