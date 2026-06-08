@@ -7,6 +7,7 @@
 #![cfg(feature = "client")]
 
 mod deferred_runtime_surfaces;
+mod manifest_tamper_detection;
 mod pipe_name_validation;
 mod service_name_validation;
 mod wanted_version_shell_injection;
