@@ -24,7 +24,10 @@ pub mod originator;
 // Both gated behind `feature = "client"`. The protobuf package
 // `running_process.daemon.v1` compiles to the file referenced below.
 #[cfg(feature = "client")]
+/// Prost-generated daemon protocol types used by the client transport.
 pub mod proto {
+    /// Generated Rust bindings for the `running_process.daemon.v1` protobuf package.
+    #[allow(missing_docs)]
     pub mod daemon {
         include!(concat!(env!("OUT_DIR"), "/running_process.daemon.v1.rs"));
     }
