@@ -1,0 +1,91 @@
+# v1 Broker Internal Architecture
+
+This document is for contributors working on `running-process-broker-v1`.
+The public architecture is summarized in
+[v1 architecture overview](v1-architecture-overview.md).
+
+## Process Model
+
+`running-process-broker-v1` is a per-user local IPC daemon. Each broker
+instance owns one trust domain:
+
+- shared user broker
+- private service broker
+- explicit named instance
+
+The broker accepts control-plane connections, validates `Hello`, coordinates
+backend lifecycle, and returns direct backend pipe addresses.
+
+## Major Components
+
+| Component | Responsibility |
+|---|---|
+| Listener | Binds the platform pipe or socket for one broker instance. |
+| Framing | Reads and writes `[1][u32 length][prost body]` frames. |
+| Protocol | Decodes `Frame`, `Hello`, `HelloReply`, and admin payloads. |
+| Service registry | Loads and validates service-definition files. |
+| Backend table | Tracks live backend processes by service and version. |
+| Spawn coordinator | Serializes backend startup for one service/version. |
+| Lifecycle monitor | Watches process death, idle timers, and shutdown drains. |
+| Manifest registry | Reads and writes central cache manifests. |
+| Admin dispatcher | Implements status, dump, health, config, diagnose, and metrics verbs. |
+| Event log | Appends bounded `LifecycleEvent` records. |
+
+## Hello Path
+
+1. Listener accepts one local IPC connection.
+2. Framing layer reads the initial frame with the 64 KiB `Hello` cap.
+3. Protocol layer decodes `Frame` and `Hello`.
+4. Peer credential check validates the OS identity.
+5. Service registry resolves the service definition.
+6. Backend table returns a live backend or asks the spawn coordinator to start
+   one.
+7. Broker replies with `Negotiated` or `Refused`.
+8. Client disconnects and uses the backend pipe directly.
+
+## Backend Table
+
+The backend table is keyed by:
+
+```text
+(broker_instance, service_name, service_version)
+```
+
+Each entry stores:
+
+- backend process id
+- backend pipe endpoint
+- backend executable hash
+- boot id
+- last activity timestamp
+- spawn budget state
+- lifecycle event cursor
+
+## Concurrency Rules
+
+- One spawn lock exists per service/version.
+- The broker never holds the global backend table lock while launching a child
+  process.
+- Admin dump snapshots copy state into a diagnostic structure before encoding
+  JSON.
+- Shutdown cancellation is broadcast before listener close.
+
+## Error Mapping
+
+Internal errors map to stable `Refused.code` values:
+
+| Internal condition | Wire code |
+|---|---|
+| Protocol range mismatch | `ERROR_VERSION_UNSUPPORTED` |
+| Missing service definition | `ERROR_SERVICE_UNKNOWN` |
+| Spawn failure | `ERROR_BACKEND_SPAWN_FAILED` |
+| Spawn budget exhausted | `ERROR_RATE_LIMITED` |
+| Shutdown in progress | `ERROR_SHUTTING_DOWN` |
+| Peer credential failure | `ERROR_PEER_REJECTED` |
+| Policy version floor | `ERROR_VERSION_BLOCKED` |
+| Unclassified invariant failure | `ERROR_INTERNAL` |
+
+## Contributor Rule
+
+Code changes that affect any component above update the matching v1 document in
+the same PR.

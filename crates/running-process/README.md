@@ -1,0 +1,34 @@
+# running-process crate
+
+This crate contains the Rust implementation for `running-process`, including
+the v1 broker protocol schemas and lifecycle helpers.
+
+## v1 Broker Specification
+
+Core broker docs:
+
+- [Architecture overview](../../docs/v1-architecture-overview.md)
+- [Frozen commitments](../../docs/v1-frozen-commitments.md)
+- [Pipe naming](../../docs/v1-pipe-naming.md)
+- [Platform behavior](../../docs/v1-platform-behavior.md)
+- [Security model](../../docs/v1-security-model.md)
+
+Schema docs:
+
+- [Wire envelope](../../docs/v1-wire-envelope.md)
+- [Cache manifest](../../docs/v1-cache-manifest.md)
+- [Service definition](../../docs/v1-service-definition.md)
+- [Lifecycle events](../../docs/v1-lifecycle-events.md)
+
+Operations and rollout docs:
+
+- [Broker internal architecture](../../docs/v1-broker-architecture.md)
+- [Admin verbs](../../docs/v1-admin-verbs.md)
+- [Backend lifecycle](../../docs/v1-backend-lifecycle.md)
+- [Handoff optimization](../../docs/v1-handoff-optimization.md)
+- [Observability](../../docs/v1-observability.md)
+- [Rollout policy](../../docs/v1-rollout-policy.md)
+- [Escape hatch](../../docs/v1-escape-hatch.md)
+- [Troubleshooting](../../docs/v1-troubleshooting.md)
+
+The authoritative v1 proto files live under `proto/broker_v1/`.
