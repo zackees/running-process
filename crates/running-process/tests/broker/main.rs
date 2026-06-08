@@ -32,6 +32,7 @@ mod hello_router;
 mod hello_service_unknown;
 mod hello_skip;
 mod hello_version_blocked;
+mod idle_coord;
 mod instance;
 mod instance_isolation;
 mod lifecycle_event_size;

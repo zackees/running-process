@@ -64,15 +64,17 @@ shape.
 
 ## Idle Shutdown
 
-Backends report or expose activity through their direct data plane. The broker
-uses the backend's last-active timestamp and service policy to trigger idle
-shutdown. The idle clock is monotonic and platform-specific:
+Backends report or expose activity through their direct data plane. Phase 5
+tracks each backend key's last activity with `std::time::Instant` and a
+configured idle timeout. The default idle timeout is 30 seconds.
 
-| Platform | Clock |
-|---|---|
-| Linux | `CLOCK_BOOTTIME` |
-| macOS | `CLOCK_UPTIME_RAW` |
-| Windows | `GetTickCount64` |
+The broker-side idle model remains pure state: `mark_activity` resets a
+backend's deadline, draining or quiesced backends are not emitted again, and
+removed backends leave the idle table. When a running backend reaches its idle
+deadline, `collect_due_for_quiesce` returns a due item containing the
+`BackendKey`, elapsed idle duration, configured timeout, and
+`QuiesceReason::IdleTimeout`. Later backend RPC wiring should feed those due
+items into the lifecycle broadcast model's `quiesce` operation.
 
 ## Parent-Death Cleanup
 

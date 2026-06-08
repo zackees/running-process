@@ -15,6 +15,7 @@ pub mod control_socket;
 pub mod handoff;
 pub mod hello_handler;
 pub mod hello_router;
+pub mod idle_coord;
 pub mod instance;
 pub mod metrics;
 pub mod perf_guard;
@@ -73,6 +74,9 @@ pub use hello_handler::{
     HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend,
 };
 pub use hello_router::HelloRouter;
+pub use idle_coord::{
+    BackendIdleCoordinator, BackendIdleDue, BackendIdlePolicy, DEFAULT_BACKEND_IDLE_TIMEOUT,
+};
 pub use instance::{BrokerInstanceError, BrokerInstanceKey};
 pub use perf_guard::{
     enforce_hello_latency_budget, summarize_hello_latencies, HelloLatencySummary, PerfGuardError,
