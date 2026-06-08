@@ -25,8 +25,14 @@ const PROTOCOL_VERSION: u32 = 1;
 #[derive(Clone, Copy)]
 pub struct HelloRouter<'a> {
     service_definitions: &'a ServiceDefinitionLoader,
-    backends: &'a BackendRegistry,
+    backends: BackendRegistryView<'a>,
     spawn_coordinator: Option<&'a Mutex<SpawnCoordinator>>,
+}
+
+#[derive(Clone, Copy)]
+enum BackendRegistryView<'a> {
+    Static(&'a BackendRegistry),
+    Live(&'a Mutex<BackendRegistry>),
 }
 
 impl<'a> HelloRouter<'a> {
@@ -37,7 +43,20 @@ impl<'a> HelloRouter<'a> {
     ) -> Self {
         Self {
             service_definitions,
-            backends,
+            backends: BackendRegistryView::Static(backends),
+            spawn_coordinator: None,
+        }
+    }
+
+    /// Create a router over live broker state that prunes stale backend handles
+    /// before each registry lookup.
+    pub fn with_lifecycle_monitor(
+        service_definitions: &'a ServiceDefinitionLoader,
+        backends: &'a Mutex<BackendRegistry>,
+    ) -> Self {
+        Self {
+            service_definitions,
+            backends: BackendRegistryView::Live(backends),
             spawn_coordinator: None,
         }
     }
@@ -76,25 +95,26 @@ impl<'a> HelloRouter<'a> {
             .lookup_or_reload(&request.hello.service_name)
             .map_err(refused_from_service_definition_error)?;
 
-        if let Err(block) = check_version_allowed(&request.hello.wanted_version, &service_definition)
+        if let Err(block) =
+            check_version_allowed(&request.hello.wanted_version, &service_definition)
         {
             return Err(refused_from_version_policy(block));
         }
 
-        let instance = BrokerInstanceKey::from_service_definition(&service_definition).map_err(
-            |err| {
+        let instance =
+            BrokerInstanceKey::from_service_definition(&service_definition).map_err(|err| {
                 refused(
                     ErrorCode::ErrorInternal,
                     format!("service isolation could not be resolved: {err}"),
                     0,
                 )
-            },
-        )?;
+            })?;
 
-        if let Some(registered) =
-            self.backends
-                .registered_backend_for(&instance, &service_definition, &request.hello.wanted_version)
-        {
+        if let Some(registered) = self.registered_backend_for(
+            &instance,
+            &service_definition,
+            &request.hello.wanted_version,
+        ) {
             return Ok(registered);
         }
 
@@ -108,6 +128,26 @@ impl<'a> HelloRouter<'a> {
             "backend is not registered",
             1_000,
         ))
+    }
+
+    fn registered_backend_for(
+        &self,
+        instance: &BrokerInstanceKey,
+        service_definition: &crate::broker::protocol::ServiceDefinition,
+        service_version: &str,
+    ) -> Option<RegisteredBackend> {
+        match self.backends {
+            BackendRegistryView::Static(registry) => {
+                registry.registered_backend_for(instance, service_definition, service_version)
+            }
+            BackendRegistryView::Live(registry) => {
+                let mut registry = registry
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let _removed = registry.prune_stale();
+                registry.registered_backend_for(instance, service_definition, service_version)
+            }
+        }
     }
 
     fn record_spawn_needed(&self, key: BackendKey) -> Result<(), Refused> {
@@ -140,11 +180,9 @@ impl<'a> HelloRouter<'a> {
 
 fn refused_from_service_definition_error(error: ServiceDefinitionError) -> Refused {
     match error {
-        ServiceDefinitionError::InvalidName(_) => refused(
-            ErrorCode::ErrorPeerRejected,
-            "invalid service_name",
-            0,
-        ),
+        ServiceDefinitionError::InvalidName(_) => {
+            refused(ErrorCode::ErrorPeerRejected, "invalid service_name", 0)
+        }
         ServiceDefinitionError::Io(err) if err.kind() == std::io::ErrorKind::NotFound => refused(
             ErrorCode::ErrorServiceUnknown,
             "service definition was not found",
@@ -200,5 +238,131 @@ fn duration_to_retry_ms(duration: Duration) -> u64 {
 fn refused_reply(refused: Refused) -> HelloReply {
     HelloReply {
         result: Some(HelloReplyResult::Refused(refused)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use prost::Message;
+
+    use crate::broker::backend_handle::{BackendHandle, DaemonProcess};
+    use crate::broker::protocol::{
+        BrokerIsolation, Endpoint, FrameKind, Hello, PayloadEncoding, ServiceDefinition,
+    };
+    use crate::broker::server::{
+        ensure_service_definition_dir, service_definition_path, PeerIdentity,
+    };
+
+    use super::*;
+
+    fn service_definition() -> ServiceDefinition {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.parent().unwrap().to_path_buf();
+        ServiceDefinition {
+            service_name: "zccache".into(),
+            binary_path: exe.to_string_lossy().into_owned(),
+            isolation: BrokerIsolation::SharedBroker as i32,
+            explicit_instance: String::new(),
+            per_version_binary_dir: dir.to_string_lossy().into_owned(),
+            min_version: "1.10.0".into(),
+            version_allow_list: vec!["1.11.20".into()],
+            labels: Default::default(),
+        }
+    }
+
+    fn service_dir_with_definition(definition: &ServiceDefinition) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("services");
+        ensure_service_definition_dir(&root).unwrap();
+        fs::write(
+            service_definition_path(&root, "zccache").unwrap(),
+            definition.encode_to_vec(),
+        )
+        .unwrap();
+        tmp
+    }
+
+    fn request() -> HelloRequest {
+        let hello = Hello {
+            client_min_protocol: 1,
+            client_max_protocol: 1,
+            service_name: "zccache".into(),
+            wanted_version: "1.11.20".into(),
+            client_version: "zccache-cli/1.11.20".into(),
+            client_capabilities: 0,
+            auth_token: Vec::new(),
+            request_id: "req-live-prune".into(),
+            connection_id: 0,
+            peer_pid: 0,
+            client_lib_name: "running-process".into(),
+            client_lib_version: env!("CARGO_PKG_VERSION").into(),
+            peer_attestation_nonce: Vec::new(),
+            capability_token: Vec::new(),
+            client_keepalive_secs: 60,
+        };
+        HelloRequest {
+            frame: Frame {
+                envelope_version: 1,
+                kind: FrameKind::Request as i32,
+                payload_protocol: 0,
+                payload: hello.encode_to_vec(),
+                request_id: 1,
+                payload_encoding: PayloadEncoding::None as i32,
+                deadline_unix_ms: 0,
+                traceparent: String::new(),
+                tracestate: String::new(),
+            },
+            hello,
+            peer: PeerIdentity {
+                pid: 0,
+                uid_or_sid: "test-peer".into(),
+            },
+        }
+    }
+
+    fn stale_backend_handle() -> BackendHandle {
+        let endpoint = Endpoint {
+            namespace_id: "shared".into(),
+            path: "rpb-v1-test-stale-backend".into(),
+        };
+        let mut daemon = DaemonProcess::current_process(endpoint, Some(30)).unwrap();
+        daemon.pid = u32::MAX;
+        BackendHandle {
+            service_name: "zccache".into(),
+            service_version: "1.11.20".into(),
+            daemon_process: daemon,
+            #[cfg(unix)]
+            pid_handle: None,
+            #[cfg(windows)]
+            process_handle: None,
+        }
+    }
+
+    #[test]
+    fn live_registry_prunes_stale_backend_before_routing() {
+        let definition = service_definition();
+        let tmp = service_dir_with_definition(&definition);
+        let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+        let mut registry = BackendRegistry::new();
+        registry.insert(BrokerInstanceKey::Shared, stale_backend_handle());
+        let registry = Mutex::new(registry);
+        let router = HelloRouter::with_lifecycle_monitor(&loader, &registry);
+
+        let reply = router.handle_request(&request());
+
+        assert!(registry.lock().unwrap().is_empty());
+        match reply.result.unwrap() {
+            HelloReplyResult::Refused(refused) => {
+                assert_eq!(
+                    ErrorCode::try_from(refused.code).unwrap(),
+                    ErrorCode::ErrorBackendSpawnFailed
+                );
+            }
+            HelloReplyResult::Negotiated(negotiated) => {
+                panic!("stale backend must not negotiate: {negotiated:?}")
+            }
+        }
     }
 }
