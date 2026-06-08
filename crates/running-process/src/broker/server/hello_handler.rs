@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use prost::Message;
 
@@ -23,6 +25,8 @@ use crate::broker::server::TraceContext;
 const PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_KEEPALIVE_SECS: u64 = 30 * 60;
 const CONTROL_PAYLOAD_PROTOCOL: u32 = 0;
+const DEFAULT_RATE_LIMIT_MAX_PER_WINDOW: u32 = 256;
+const DEFAULT_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
 
 /// OS-verified peer identity for the process that sent a Hello.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,10 +104,11 @@ pub struct RegisteredBackend {
 }
 
 /// Deterministic Hello handler over an in-memory backend table.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HelloHandler {
     backends: HashMap<String, RegisteredBackend>,
     next_connection_id: AtomicU64,
+    rate_limiter: PeerRateLimiter,
 }
 
 impl HelloHandler {
@@ -112,7 +117,14 @@ impl HelloHandler {
         Self {
             backends: HashMap::new(),
             next_connection_id: AtomicU64::new(1),
+            rate_limiter: PeerRateLimiter::default(),
         }
+    }
+
+    /// Override the per-peer Hello rate limit.
+    pub fn with_rate_limit(mut self, max_per_window: u32, window: Duration) -> Self {
+        self.rate_limiter = PeerRateLimiter::new(max_per_window, window);
+        self
     }
 
     /// Register a backend by its service definition's service name.
@@ -142,6 +154,13 @@ impl HelloHandler {
         let hello = &request.hello;
         if let Some(refused) = validate_hello_shape(hello, &request.peer) {
             return refused_reply(refused);
+        }
+        if let Some(retry_after) = self.rate_limiter.check(request.peer.pid) {
+            return refused_reply(refused(
+                ErrorCode::ErrorRateLimited,
+                "Hello rate limit exceeded",
+                duration_to_retry_ms(retry_after),
+            ));
         }
 
         let Some(backend) = self.backends.get(&hello.service_name) else {
@@ -174,12 +193,80 @@ impl HelloHandler {
     }
 }
 
+impl Default for HelloHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Errors raised while constructing a handler table.
 #[derive(Debug, thiserror::Error)]
 pub enum HelloHandlerError {
     /// A service definition field failed validation.
     #[error(transparent)]
     PipePath(#[from] PipePathError),
+}
+
+/// Per-peer PID token bucket for the Hello path.
+#[derive(Debug)]
+struct PeerRateLimiter {
+    max_per_window: u32,
+    window: Duration,
+    entries: Mutex<HashMap<u32, PeerRateWindow>>,
+}
+
+impl PeerRateLimiter {
+    fn new(max_per_window: u32, window: Duration) -> Self {
+        Self {
+            max_per_window: max_per_window.max(1),
+            window: if window.is_zero() {
+                Duration::from_millis(1)
+            } else {
+                window
+            },
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn check(&self, pid: u32) -> Option<Duration> {
+        if pid == 0 {
+            return None;
+        }
+
+        let now = Instant::now();
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = entries.entry(pid).or_insert(PeerRateWindow {
+            started_at: now,
+            count: 0,
+        });
+        let elapsed = now.duration_since(entry.started_at);
+        if elapsed >= self.window {
+            entry.started_at = now;
+            entry.count = 0;
+        }
+
+        if entry.count < self.max_per_window {
+            entry.count += 1;
+            None
+        } else {
+            Some(self.window.saturating_sub(elapsed))
+        }
+    }
+}
+
+impl Default for PeerRateLimiter {
+    fn default() -> Self {
+        Self::new(DEFAULT_RATE_LIMIT_MAX_PER_WINDOW, DEFAULT_RATE_LIMIT_WINDOW)
+    }
+}
+
+#[derive(Debug)]
+struct PeerRateWindow {
+    started_at: Instant,
+    count: u32,
 }
 
 fn validate_hello_shape(hello: &Hello, peer: &PeerIdentity) -> Option<Refused> {
@@ -251,6 +338,11 @@ fn validate_service_name_for_result(name: &str) -> Result<(), HelloHandlerError>
 
 fn validate_version_for_result(version: &str) -> Result<(), HelloHandlerError> {
     validate_version(version).map_err(HelloHandlerError::PipePath)
+}
+
+fn duration_to_retry_ms(duration: Duration) -> u64 {
+    let millis = duration.as_millis().max(1);
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 fn refused(code: ErrorCode, reason: impl Into<String>, retry_after_ms: u64) -> Refused {

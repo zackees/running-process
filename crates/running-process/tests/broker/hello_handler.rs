@@ -1,5 +1,7 @@
 #![cfg(feature = "client")]
 
+use std::time::Duration;
+
 use prost::Message;
 use running_process::broker::protocol::{
     hello_reply::Result as HelloReplyResult, BrokerIsolation, ErrorCode, Frame, FrameKind, Hello,
@@ -24,6 +26,18 @@ fn service_definition() -> ServiceDefinition {
 
 fn handler() -> HelloHandler {
     HelloHandler::new()
+        .with_backend(RegisteredBackend {
+            service_definition: service_definition(),
+            daemon_version: "1.11.20".into(),
+            backend_pipe: r"\\.\pipe\rpb-v1-test-backend".into(),
+            server_capabilities: 0x01,
+        })
+        .unwrap()
+}
+
+fn limited_handler(max_per_window: u32) -> HelloHandler {
+    HelloHandler::new()
+        .with_rate_limit(max_per_window, Duration::from_secs(60))
         .with_backend(RegisteredBackend {
             service_definition: service_definition(),
             daemon_version: "1.11.20".into(),
@@ -80,6 +94,13 @@ fn refused_code(reply: running_process::broker::protocol::HelloReply) -> ErrorCo
         HelloReplyResult::Negotiated(negotiated) => {
             panic!("expected refused, got negotiated {negotiated:?}")
         }
+    }
+}
+
+fn assert_negotiated(reply: running_process::broker::protocol::HelloReply) {
+    match reply.result.unwrap() {
+        HelloReplyResult::Negotiated(_) => {}
+        HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
     }
 }
 
@@ -176,6 +197,52 @@ fn hello_rejects_peer_pid_mismatch() {
         refused_code(handler().handle_frame(frame_for_hello(&request), wrong_peer)),
         ErrorCode::ErrorPeerRejected
     );
+}
+
+#[test]
+fn hello_rate_limit_refuses_after_peer_budget() {
+    let handler = limited_handler(2);
+    let request = hello();
+    let verified_peer = peer();
+
+    assert_negotiated(handler.handle_frame(frame_for_hello(&request), verified_peer.clone()));
+    assert_negotiated(handler.handle_frame(frame_for_hello(&request), verified_peer.clone()));
+    assert_eq!(
+        refused_code(handler.handle_frame(frame_for_hello(&request), verified_peer)),
+        ErrorCode::ErrorRateLimited
+    );
+}
+
+#[test]
+fn hello_rate_limit_is_per_peer_pid() {
+    let handler = limited_handler(1);
+    let request = hello();
+    let peer_a = peer();
+    let mut peer_b = peer();
+    peer_b.pid = peer_b.pid.saturating_add(1);
+    let mut request_b = request.clone();
+    request_b.peer_pid = peer_b.pid;
+
+    assert_negotiated(handler.handle_frame(frame_for_hello(&request), peer_a.clone()));
+    assert_negotiated(handler.handle_frame(frame_for_hello(&request_b), peer_b));
+    assert_eq!(
+        refused_code(handler.handle_frame(frame_for_hello(&request), peer_a)),
+        ErrorCode::ErrorRateLimited
+    );
+}
+
+#[test]
+fn hello_rate_limit_skips_unknown_verified_pid() {
+    let handler = limited_handler(1);
+    let mut request = hello();
+    request.peer_pid = 0;
+    let unknown_peer = PeerIdentity {
+        pid: 0,
+        uid_or_sid: "test-peer".into(),
+    };
+
+    assert_negotiated(handler.handle_frame(frame_for_hello(&request), unknown_peer.clone()));
+    assert_negotiated(handler.handle_frame(frame_for_hello(&request), unknown_peer));
 }
 
 #[test]
