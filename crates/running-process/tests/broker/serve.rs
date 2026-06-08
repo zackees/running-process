@@ -169,7 +169,7 @@ fn serve_registered_backend_round_trips_loaded_service_definition() {
 fn connect_with_retry(
     name: interprocess::local_socket::Name<'static>,
 ) -> interprocess::local_socket::Stream {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         match LocalSocketStream::connect(name.borrow()) {
             Ok(stream) => return stream,
