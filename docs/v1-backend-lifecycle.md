@@ -82,10 +82,25 @@ items into the lifecycle broadcast model's `quiesce` operation.
 |---|---|---|
 | Windows | Job object with kill-on-close and `CREATE_BREAKAWAY_FROM_JOB`. | Broker installs the job object target before exposing a backend pipe, unless the process is already inside a job. |
 | Linux | Child-side `PR_SET_PDEATHSIG` with `SIGTERM`. | Broker installs the parent-death signal target before exposing a backend pipe. |
-| macOS | Planned kqueue supervisor child using `EVFILT_PROC` and `NOTE_EXIT`. | Broker reports the explicit planned kqueue-supervisor target; it is not collapsed into `UnsupportedNoop` while the supervisor implementation is still pending. |
+| macOS | kqueue supervisor child using `EVFILT_PROC` and `NOTE_EXIT`. | Broker reports the concrete `MacosKqueueSupervisorContract`. Backend spawn wiring must start the supervisor, register the broker PID with kqueue, re-check that the broker is still alive, and only then publish the backend pipe. On broker `NOTE_EXIT`, the supervisor sends `SIGKILL` to the backend within the 5-second cleanup budget. |
 
 Other platforms remain `UnsupportedNoop` until a concrete cleanup primitive is
 chosen. The broker starts lifetime control before it exposes a backend pipe.
+
+### macOS kqueue Supervisor Contract
+
+The Phase 5 macOS model treats the supervisor child as a concrete lifecycle
+contract:
+
+- The supervisor watches the broker parent PID.
+- The supervisor registers `EVFILT_PROC` with `NOTE_EXIT` before the backend
+  pipe is published.
+- After registration, the supervisor re-checks that the broker is still alive
+  to close the startup race where the broker exits before the kqueue watch is
+  armed.
+- When kqueue reports broker exit, the supervisor sends `SIGKILL` to the
+  backend.
+- The backend must be killed within 5 seconds of broker exit.
 
 ## Graceful Broker Shutdown
 
