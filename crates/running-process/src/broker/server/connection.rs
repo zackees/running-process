@@ -17,10 +17,32 @@ use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, read_frame_with_cap, write_frame, ErrorCode, Frame,
     FrameKind, FramingError, HelloReply, PayloadEncoding, Refused, MAX_HELLO_BYTES,
 };
-use crate::broker::server::{HelloHandler, PeerIdentity};
+use crate::broker::server::{HelloHandler, HelloRouter, PeerIdentity};
 
 const PROTOCOL_VERSION: u32 = 1;
 const CONTROL_PAYLOAD_PROTOCOL: u32 = 0;
+
+/// Handles a decoded broker Hello frame and returns the protocol reply.
+///
+/// This keeps the frame I/O boundary independent from the concrete routing
+/// strategy. Tests and bounded serve mode can use [`HelloHandler`], while the
+/// broker accept loop can route through [`HelloRouter`].
+pub trait HelloResponder {
+    /// Decode and answer a broker Hello frame for an OS-verified peer.
+    fn handle_frame(&self, frame: Frame, peer: PeerIdentity) -> HelloReply;
+}
+
+impl HelloResponder for HelloHandler {
+    fn handle_frame(&self, frame: Frame, peer: PeerIdentity) -> HelloReply {
+        Self::handle_frame(self, frame, peer)
+    }
+}
+
+impl HelloResponder for HelloRouter<'_> {
+    fn handle_frame(&self, frame: Frame, peer: PeerIdentity) -> HelloReply {
+        Self::handle_frame(self, frame, peer)
+    }
+}
 
 /// Handle one already-accepted broker connection.
 ///
@@ -32,6 +54,22 @@ pub fn handle_hello_connection<S: Read + Write>(
     handler: &HelloHandler,
     peer: PeerIdentity,
 ) -> Result<HelloReply, BrokerConnectionError> {
+    handle_hello_connection_with(stream, handler, peer)
+}
+
+/// Handle one already-accepted broker connection with a pluggable responder.
+///
+/// The framed wire behavior is identical to [`handle_hello_connection`]; only
+/// the decoded Hello routing strategy is supplied by the caller.
+pub fn handle_hello_connection_with<S, R>(
+    stream: &mut S,
+    responder: &R,
+    peer: PeerIdentity,
+) -> Result<HelloReply, BrokerConnectionError>
+where
+    S: Read + Write,
+    R: HelloResponder + ?Sized,
+{
     let request_bytes = match read_frame_with_cap(stream, MAX_HELLO_BYTES) {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -54,7 +92,7 @@ pub fn handle_hello_connection<S: Read + Write>(
         }
     };
 
-    let reply = handler.handle_frame(request_frame.clone(), peer);
+    let reply = responder.handle_frame(request_frame.clone(), peer);
     write_response_frame(stream, Some(&request_frame), &reply)?;
     Ok(reply)
 }
