@@ -9,6 +9,7 @@
 mod cross_user_release_handles;
 mod deferred_runtime_surfaces;
 mod manifest_tamper_detection;
+mod no_network_dependencies;
 mod pipe_name_validation;
 mod pipe_squatting;
 mod service_name_validation;
