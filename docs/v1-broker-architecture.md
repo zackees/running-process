@@ -23,7 +23,7 @@ backend lifecycle, and returns direct backend pipe addresses.
 | Listener | Binds the platform pipe or socket for one broker instance. |
 | Framing | Reads and writes `[1][u32 length][prost body]` frames. |
 | Protocol | Decodes `Frame`, `Hello`, `HelloReply`, and admin payloads. |
-| Service registry | Loads and validates service-definition files. |
+| Service registry | Loads and validates service-definition files, re-reading on `Hello`. |
 | Backend table | Tracks live backend processes by service and version. |
 | Spawn coordinator | Serializes backend startup for one service/version. |
 | Lifecycle monitor | Watches process death, idle timers, and shutdown drains. |
@@ -38,7 +38,7 @@ backend lifecycle, and returns direct backend pipe addresses.
 3. Protocol layer decodes `Frame`, verifies it is a control-plane request,
    then decodes `Hello` from `Frame.payload`.
 4. Peer credential check validates the OS identity.
-5. Service registry resolves the service definition.
+5. Service registry resolves and revalidates the service definition.
 6. Backend table returns a live backend or asks the spawn coordinator to start
    one.
 7. Broker replies with `Negotiated` or `Refused`.
