@@ -25,6 +25,13 @@ pub mod proto {
 #[cfg(feature = "client")]
 pub mod client;
 
+// Phase 0 of #228: v1 broker module — prost-generated wire types from
+// `proto/broker_v1_*.proto`. Gated behind `feature = "client"` because
+// prost itself is optional under that feature. Schemas are
+// FROZEN FOREVER once v1.0 ships.
+#[cfg(feature = "client")]
+pub mod broker;
+
 // Lightweight tee sink primitives for callers that want transcript/log
 // fan-out without pulling in the full daemon runtime.
 #[cfg(feature = "telemetry")]

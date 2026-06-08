@@ -4,6 +4,9 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "testbin-cwd-reporter"
 path = "src/bin/cwd_reporter.rs"

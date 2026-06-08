@@ -1,0 +1,23 @@
+# Phase 0 of #228: buf config for the v1 broker proto modules.
+#
+# Used by `.github/workflows/proto-breaking.yml` to enforce the
+# frozen-forever contract — any non-additive change to a broker_v1_*
+# file fails the PR. Adding new fields with new field numbers is fine;
+# renaming, renumbering, deleting, or retyping is not.
+#
+# Pre-existing `daemon.proto` is intentionally left out of the BREAKING
+# scope while its wire format is still pre-v1; it can be added once the
+# broker daemon stabilizes.
+version: v2
+modules:
+  - path: .
+    excludes:
+      - daemon.proto
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_VERSION_SUFFIX
+breaking:
+  use:
+    - WIRE_JSON

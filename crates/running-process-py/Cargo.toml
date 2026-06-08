@@ -8,6 +8,10 @@ repository.workspace = true
 homepage.workspace = true
 description = "PyO3 bindings for running-process"
 
+[lints]
+# Phase 0 of #228: inherit the workspace `disallowed_methods = "deny"`.
+workspace = true
+
 [lib]
 name = "_native"
 crate-type = ["cdylib", "lib"]
