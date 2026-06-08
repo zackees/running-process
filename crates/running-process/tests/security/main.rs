@@ -13,6 +13,7 @@ mod cve_sccache_2023_1521;
 mod deferred_runtime_surfaces;
 mod manifest_tamper_detection;
 mod no_network_dependencies;
+mod security_audit_workflow;
 mod pipe_name_validation;
 mod pipe_squatting;
 mod service_name_validation;
