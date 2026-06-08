@@ -47,6 +47,21 @@ The broker treats these as stale backend entries:
 
 Stale entries are removed before a new spawn attempt.
 
+## Lifecycle Broadcasts
+
+Phase 5 models broker control-plane fanout before backend RPC exists. The
+broker can broadcast these lifecycle operations to every live backend:
+
+- `release-handles`: maintenance asks backends to drop file handles below a
+  path prefix before cleanup or replacement.
+- `quiesce`: idle timeout, broker shutdown, or maintenance asks backends to
+  stop accepting new work and drain.
+
+The in-repo model tracks live targets, acknowledgements, timeouts, failures,
+and dead backends skipped before fanout. Later backend RPC wiring should map
+that model onto concrete backend requests without changing the Phase 5 result
+shape.
+
 ## Idle Shutdown
 
 Backends report or expose activity through their direct data plane. The broker
