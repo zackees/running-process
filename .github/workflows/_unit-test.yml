@@ -82,6 +82,13 @@ jobs:
       - name: Unit Tests
         run: uv run --module ci.run_logged logs/test.log -- uv run --module ci.test
 
+      - name: Broker Hello perf guard
+        if: ${{ inputs.runs-on == 'ubuntu-24.04' }}
+        env:
+          RUNNING_PROCESS_BROKER_HELLO_PERF_GUARD: "1"
+        run: |
+          cargo test -p running-process --test broker --features client real_socket_hello_roundtrip_perf_gate -- --nocapture
+
       - name: Display failure diagnostics
         if: ${{ failure() || cancelled() }}
         shell: bash
