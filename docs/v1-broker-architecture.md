@@ -56,6 +56,23 @@ original `Frame` metadata, and the OS-verified peer identity. The full accept
 loop calls the same connection handler after binding the platform socket and
 checking credentials.
 
+The bounded serve-mode slice wires this path end-to-end for an already-known
+backend endpoint:
+
+```bash
+running-process-broker-v1 --serve <socket-path-or-pipe-name> \
+  --service zccache \
+  --version 1.11.20 \
+  --backend-endpoint <backend-socket-or-pipe> \
+  --max-connections 100
+```
+
+This mode loads `<service>.servicedef`, resolves the broker instance, routes the
+provided endpoint through the backend registry, serves exactly the requested
+number of Hello connections, then exits. It uses current-process backend
+identity as a temporary bridge; long-lived serving and spawn-managed backend
+identity remain the responsibility of the later spawn coordinator slice.
+
 ## Backend Table
 
 The backend registry is keyed by:

@@ -1,15 +1,17 @@
 //! Entry point for the v1 broker daemon.
 //!
-//! Phase 4 lands this binary incrementally. This first slice exposes a
-//! real binary target and wires the compiled crate surface. The socket
-//! accept loop lands in follow-up PRs under #235.
+//! Phase 4 lands this binary incrementally. It supports local admin renderers,
+//! single-connection Hello tests, and a bounded serve mode for an already
+//! registered backend endpoint.
 
 use running_process::broker::server::admin::{
     render_backend_health_json, render_config_json, render_diagnose_json, render_dump_json,
     render_healthz, render_list_instances_json, render_metrics_text, render_readyz,
     render_status_json, AdminSnapshot,
 };
-use running_process::broker::server::{serve_one_local_socket, HelloHandler};
+use running_process::broker::server::{
+    serve_one_local_socket, serve_registered_backend, BrokerServeConfig, HelloHandler,
+};
 
 fn main() {
     let mut args = std::env::args();
@@ -73,8 +75,45 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some("--serve") => {
+            let Some(socket_path) = rest.get(1) else {
+                eprintln!("--serve requires a socket path or pipe name");
+                std::process::exit(2);
+            };
+            let service_name = required_option(&rest[2..], "--service");
+            let service_version = required_option(&rest[2..], "--version");
+            let backend_endpoint = required_option(&rest[2..], "--backend-endpoint");
+            let max_connections = option_value(&rest[2..], "--max-connections")
+                .map(parse_connection_count)
+                .unwrap_or(Ok(1))
+                .unwrap_or_else(|err| {
+                    eprintln!("{err}");
+                    std::process::exit(2);
+                });
+
+            let mut config = BrokerServeConfig::new(
+                socket_path,
+                service_name,
+                service_version,
+                backend_endpoint,
+                max_connections,
+            )
+            .unwrap_or_else(|err| {
+                eprintln!("invalid serve config: {err}");
+                std::process::exit(2);
+            });
+            if let Some(root) = option_value(&rest[2..], "--service-def-dir") {
+                config = config.with_service_definition_dir(root);
+            }
+
+            if let Err(err) = serve_registered_backend(config) {
+                eprintln!("serve failed: {err}");
+                std::process::exit(1);
+            }
+        }
         None => {
-            eprintln!("running-process-broker-v1 serve mode is not implemented yet; see #235");
+            eprintln!("no broker command provided");
+            print_help(&program);
             std::process::exit(2);
         }
         Some(other) => {
@@ -97,8 +136,11 @@ fn print_help(program: &str) {
     println!("{program} diagnose --output <bundle.tar.gz>");
     println!("{program} metrics");
     println!("{program} --serve-once <socket-path-or-pipe-name>");
+    println!(
+        "{program} --serve <socket-path-or-pipe-name> --service <name> --version <semver> --backend-endpoint <path> [--service-def-dir <dir>] [--max-connections <n>]"
+    );
     println!();
-    println!("Phase 4 broker daemon entry point. Full serve mode lands in #235 follow-up PRs.");
+    println!("Phase 4 broker daemon entry point. Serve mode is bounded until the long-lived spawn coordinator lands.");
 }
 
 fn has_flag(args: &[String], flag: &str) -> bool {
@@ -115,4 +157,21 @@ fn option_value<'a>(args: &'a [String], option: &str) -> Option<&'a str> {
     args.windows(2)
         .find(|window| window[0] == option)
         .map(|window| window[1].as_str())
+}
+
+fn required_option<'a>(args: &'a [String], option: &str) -> &'a str {
+    option_value(args, option).unwrap_or_else(|| {
+        eprintln!("{option} is required for --serve");
+        std::process::exit(2);
+    })
+}
+
+fn parse_connection_count(value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("--max-connections must be a positive integer, got {value:?}"))?;
+    if parsed == 0 {
+        return Err("--max-connections must be greater than zero".into());
+    }
+    Ok(parsed)
 }

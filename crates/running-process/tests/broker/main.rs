@@ -28,6 +28,7 @@ mod names;
 mod perf_guard;
 mod proto_field_numbers;
 mod proto_roundtrip;
+mod serve;
 mod service_def_loader;
 mod trace_propagation;
 mod verify_pid;

@@ -12,6 +12,7 @@ pub mod hello_handler;
 pub mod instance;
 pub mod metrics;
 pub mod perf_guard;
+pub mod serve;
 pub mod service_def_loader;
 pub mod trace_context;
 pub mod version_allow_list;
@@ -29,6 +30,9 @@ pub use instance::{BrokerInstanceError, BrokerInstanceKey};
 pub use perf_guard::{
     enforce_hello_latency_budget, summarize_hello_latencies, HelloLatencySummary, PerfGuardError,
     HELLO_P50_BUDGET, HELLO_P99_BUDGET, HELLO_PERF_SAMPLE_COUNT,
+};
+pub use serve::{
+    build_hello_handler, serve_registered_backend, BrokerServeConfig, BrokerServeError,
 };
 pub use service_def_loader::{
     ensure_service_definition_dir, service_definition_dir, service_definition_path,
