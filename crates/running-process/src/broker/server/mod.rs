@@ -9,6 +9,7 @@ pub mod admin;
 pub mod backend_launcher;
 pub mod backend_endpoint_allocator;
 pub mod backend_registry;
+pub mod broadcast;
 pub mod connection;
 pub mod control_socket;
 pub mod handoff;
@@ -39,6 +40,11 @@ pub use backend_endpoint_allocator::{
     BackendEndpointAllocator, BackendEndpointAllocatorError, DEFAULT_BACKEND_ENDPOINT_ATTEMPTS,
 };
 pub use backend_registry::{BackendKey, BackendRegistry};
+pub use broadcast::{
+    BroadcastAck, BroadcastBackend, BroadcastBackendResponse, BroadcastFailure,
+    BroadcastFailureReason, BroadcastOperation, BroadcastPolicy, BroadcastResult, BroadcastTimeout,
+    LifecycleBroadcastModel, QuiesceReason, DEFAULT_BROADCAST_ACK_TIMEOUT,
+};
 pub use connection::{
     handle_hello_connection, handle_hello_connection_with,
     handle_hello_connection_with_peer_policy, local_socket_name, serve_local_socket_connections,
