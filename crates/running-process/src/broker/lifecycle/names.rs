@@ -361,7 +361,7 @@ fn unix_broker_socket_dir() -> PathBuf {
         let tmp = std::env::var_os("TMPDIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
-        return tmp.join(format!(".rp-{uid}"));
+        tmp.join(format!(".rp-{uid}"))
     }
     #[cfg(not(target_os = "macos"))]
     {
