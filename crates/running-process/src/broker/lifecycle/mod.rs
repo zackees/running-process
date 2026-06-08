@@ -13,6 +13,7 @@
 
 pub mod crash_dump;
 pub mod names;
+pub mod process_tree;
 pub mod privilege;
 pub mod sid;
 
@@ -21,6 +22,7 @@ pub use names::{
     PipePathError,
 };
 pub use crash_dump::{CrashDumpError, CRASH_DUMP_DIR_ENV};
+pub use process_tree::{ProcessTreeCleanup, ProcessTreeError};
 pub use privilege::{
     refuse_privileged_run, PrivilegeError, PrivilegedIdentity, ALLOW_PRIVILEGED_ENV,
 };

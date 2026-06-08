@@ -15,7 +15,7 @@ use running_process::broker::server::{
 };
 use running_process::broker::{
     client::send_admin_request,
-    lifecycle::{crash_dump, refuse_privileged_run},
+    lifecycle::{crash_dump, process_tree, refuse_privileged_run},
     protocol::{AdminReply, AdminRequest, AdminVerb},
 };
 
@@ -28,6 +28,10 @@ fn main() {
     }
     if let Err(err) = crash_dump::install("broker") {
         eprintln!("failed to install broker crash dump handler: {err}");
+        std::process::exit(1);
+    }
+    if let Err(err) = process_tree::install_cleanup() {
+        eprintln!("failed to install broker process-tree cleanup: {err}");
         std::process::exit(1);
     }
 
