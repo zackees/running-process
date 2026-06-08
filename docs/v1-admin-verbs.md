@@ -58,7 +58,17 @@ Returns a full debug snapshot.
   "broker_instance": "shared",
   "effective_config": {},
   "backend_table": [],
-  "spawn_budgets": [],
+  "spawn_budgets": [
+    {
+      "broker_instance": "shared",
+      "service_name": "zccache",
+      "service_version": "1.11.20",
+      "attempts_used": 1,
+      "remaining": 2,
+      "in_flight": false,
+      "retry_after_ms": null
+    }
+  ],
   "recent_lifecycle_events": []
 }
 ```

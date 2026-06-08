@@ -19,7 +19,7 @@ pub mod spawn_coordinator;
 pub mod trace_context;
 pub mod version_allow_list;
 
-pub use admin::{AdminBackend, AdminSnapshot, ADMIN_SCHEMA_VERSION};
+pub use admin::{AdminBackend, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION};
 pub use backend_endpoint_allocator::{
     BackendEndpointAllocator, BackendEndpointAllocatorError, DEFAULT_BACKEND_ENDPOINT_ATTEMPTS,
 };
