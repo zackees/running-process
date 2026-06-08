@@ -71,6 +71,19 @@ The broker follows these filesystem rules:
 - Strip Windows `Zone.Identifier` alternate data streams from relocated backend
   binaries.
 
+## Dependency Audit
+
+The v1 release gate includes a dependency audit:
+
+- `cargo audit --deny warnings` runs on dependency changes, pushes to `main`,
+  manual dispatch, and the daily security schedule.
+- New dependencies are reviewed for known advisories, network stacks, TLS
+  stacks, serialization format drift, and unnecessary transitive weight.
+- Dependencies used by broker parsing, IPC, manifest, service-definition,
+  cleanup, handoff, and lifecycle paths are reviewed as security-sensitive.
+- Vulnerable advisories block release until the advisory is resolved or a
+  documented exception is approved by the maintainer.
+
 ## Isolation Modes
 
 | Mode | Security property |
