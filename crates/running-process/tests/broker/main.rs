@@ -19,6 +19,7 @@ mod client;
 mod connection;
 mod contrib_templates;
 mod docs_escape_hatch;
+mod docs_index;
 mod framing;
 mod handoff_backend_lib;
 mod handoff_fallback_perm_denied;
