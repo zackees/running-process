@@ -4,6 +4,15 @@
 
 `running-process` is what you wished python's subprocess was. Blazing fast, highly concurrent, huge feature list, dead process tracking, pty support. Built in Rust with a thin python api.
 
+## v1 Broker Docs
+
+The v1 broker work is documented as a stable spec alongside the implementation:
+
+- Core spec: [architecture](docs/v1-architecture-overview.md), [frozen commitments](docs/v1-frozen-commitments.md), [pipe naming](docs/v1-pipe-naming.md), [platform behavior](docs/v1-platform-behavior.md), [security model](docs/v1-security-model.md)
+- Schemas: [wire envelope](docs/v1-wire-envelope.md), [cache manifest](docs/v1-cache-manifest.md), [service definition](docs/v1-service-definition.md), [lifecycle events](docs/v1-lifecycle-events.md)
+- Operations: [broker architecture](docs/v1-broker-architecture.md), [admin verbs](docs/v1-admin-verbs.md), [backend lifecycle](docs/v1-backend-lifecycle.md), [handoff optimization](docs/v1-handoff-optimization.md), [observability](docs/v1-observability.md)
+- Rollout: [policy](docs/v1-rollout-policy.md), [escape hatch](docs/v1-escape-hatch.md), [troubleshooting](docs/v1-troubleshooting.md)
+
 | Platform | Build | Lint | Unit Test | Integration Test |
 |----------|-------|------|-----------|------------------|
 | Linux x86 | [![Build](https://github.com/zackees/running-process/actions/workflows/linux-x86-build.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-x86-build.yml) | [![Lint](https://github.com/zackees/running-process/actions/workflows/linux-x86-lint.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-x86-lint.yml) | [![Unit Test](https://github.com/zackees/running-process/actions/workflows/linux-x86-unit-test.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-x86-unit-test.yml) | [![Integration Test](https://github.com/zackees/running-process/actions/workflows/linux-x86-integration-test.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/linux-x86-integration-test.yml) |
