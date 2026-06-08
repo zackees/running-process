@@ -227,7 +227,7 @@ pub enum BrokerConnectionError {
     WorkerPanic,
 }
 
-fn bind_local_socket(
+pub(super) fn bind_local_socket(
     socket_path: &str,
 ) -> Result<interprocess::local_socket::Listener, BrokerConnectionError> {
     use interprocess::local_socket::ListenerOptions;
@@ -239,7 +239,7 @@ fn bind_local_socket(
     Ok(listener)
 }
 
-struct LocalSocketCleanup<'a>(&'a str);
+pub(super) struct LocalSocketCleanup<'a>(pub(super) &'a str);
 
 impl Drop for LocalSocketCleanup<'_> {
     fn drop(&mut self) {

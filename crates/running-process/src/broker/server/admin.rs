@@ -1,17 +1,21 @@
 //! Admin verb rendering for the v1 broker.
 
+use std::io::{self, Read, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use interprocess::local_socket::traits::Listener;
 use prost::Message;
 use serde_json::json;
 
 use crate::broker::protocol::{
-    AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame, FrameKind, PayloadEncoding,
+    read_frame, write_frame, AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame,
+    FrameKind, FramingError, PayloadEncoding,
 };
-use crate::broker::server::{
-    BackendRegistry, SpawnBudgetSnapshot,
-};
+
+use super::backend_registry::BackendRegistry;
+use super::connection::{bind_local_socket, BrokerConnectionError, LocalSocketCleanup};
 use crate::broker::server::metrics::{MetricKind, BROKER_METRICS};
+use super::spawn_coordinator::SpawnBudgetSnapshot;
 
 /// Frozen admin JSON schema version.
 pub const ADMIN_SCHEMA_VERSION: u32 = 1;
@@ -424,6 +428,41 @@ pub fn handle_admin_frame(
     })
 }
 
+/// Handle one already-accepted broker admin connection.
+///
+/// The connection reads one v1-framed [`Frame`] carrying an [`AdminRequest`],
+/// dispatches through [`handle_admin_frame`], writes one v1-framed response
+/// [`Frame`] carrying an [`AdminReply`], then returns the decoded reply for
+/// tests and callers that need exit-code metadata.
+pub fn handle_admin_connection<S: Read + Write>(
+    stream: &mut S,
+    snapshot: &AdminSnapshot,
+) -> Result<AdminReply, AdminConnectionError> {
+    let request_bytes = read_frame(stream)?;
+    let request_frame = Frame::decode(request_bytes.as_slice())
+        .map_err(AdminConnectionError::DecodeFrame)?;
+    let response_frame = handle_admin_frame(request_frame, snapshot)?;
+    write_frame(stream, &response_frame.encode_to_vec())?;
+    AdminReply::decode(response_frame.payload.as_slice())
+        .map_err(AdminConnectionError::DecodeReply)
+}
+
+/// Run one blocking local-socket accept and serve exactly one admin request.
+///
+/// This is the admin-side counterpart to `serve_one_local_socket` for Hello.
+/// The full long-lived broker loop can reuse [`handle_admin_connection`] after
+/// selecting an admin connection from the shared accept path.
+pub fn serve_one_admin_socket(
+    socket_path: &str,
+    snapshot: &AdminSnapshot,
+) -> Result<AdminReply, AdminConnectionError> {
+    let listener = bind_local_socket(socket_path)?;
+    let _cleanup = LocalSocketCleanup(socket_path);
+
+    let mut stream = listener.accept()?;
+    handle_admin_connection(&mut stream, snapshot)
+}
+
 /// Errors raised by admin frame validation/dispatch.
 #[derive(Debug, thiserror::Error)]
 pub enum AdminFrameError {
@@ -442,6 +481,29 @@ pub enum AdminFrameError {
     /// AdminRequest protobuf decoding failed.
     #[error(transparent)]
     Decode(prost::DecodeError),
+}
+
+/// Errors raised while serving a framed admin connection.
+#[derive(Debug, thiserror::Error)]
+pub enum AdminConnectionError {
+    /// v1 framing failed.
+    #[error(transparent)]
+    Framing(#[from] FramingError),
+    /// The request frame could not be decoded.
+    #[error("failed to decode admin request Frame: {0}")]
+    DecodeFrame(prost::DecodeError),
+    /// The request frame failed admin validation or dispatch.
+    #[error(transparent)]
+    AdminFrame(#[from] AdminFrameError),
+    /// The response payload could not be decoded after dispatch.
+    #[error("failed to decode admin reply payload: {0}")]
+    DecodeReply(prost::DecodeError),
+    /// Local socket binding failed.
+    #[error(transparent)]
+    LocalSocket(#[from] BrokerConnectionError),
+    /// Local socket I/O failed.
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 fn json_reply(body: String) -> AdminReply {
