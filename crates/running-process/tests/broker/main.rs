@@ -6,6 +6,11 @@
 
 #![cfg(feature = "client")]
 
+mod backend_handle_boot_id;
+mod backend_handle_common;
+mod backend_handle_dead;
+mod backend_handle_probe;
+mod backend_handle_recycled;
 mod framing;
 mod lifecycle_event_size;
 mod manifest_atomic;
@@ -15,3 +20,4 @@ mod manifest_roundtrip;
 mod names;
 mod proto_field_numbers;
 mod proto_roundtrip;
+mod verify_pid;
