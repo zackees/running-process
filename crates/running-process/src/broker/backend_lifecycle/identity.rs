@@ -1,4 +1,10 @@
 //! Normalized daemon identity carried by `BackendHandle`.
+//!
+//! `DaemonProcess` is the typed form of `CacheManifest.current_daemon`. It is
+//! deliberately more specific than the generated protobuf message: paths are
+//! `PathBuf`s, executable hashes are fixed 32-byte arrays, and the IPC endpoint
+//! is required. That keeps malformed manifests out of the `BackendHandle` probe
+//! path.
 
 use std::convert::TryFrom;
 use std::fs;
@@ -16,6 +22,29 @@ use crate::broker::protocol::{self, CacheManifest, Endpoint};
 ///
 /// This mirrors `CacheManifest.current_daemon`, but normalizes protobuf strings
 /// and byte vectors into path and digest types that are harder to misuse.
+///
+/// Persist this value only after the daemon has selected its final IPC endpoint
+/// and executable. Later consumers can pass the same identity to
+/// [`crate::broker::backend_handle::BackendHandle::probe`] or store it as
+/// `CacheManifest.current_daemon`.
+///
+/// ```no_run
+/// use running_process::broker::backend_handle::DaemonProcess;
+/// use running_process::broker::protocol::{CacheManifest, Endpoint};
+///
+/// # fn example(mut manifest: CacheManifest)
+/// #     -> Result<CacheManifest, running_process::broker::backend_lifecycle::identity::IdentityError>
+/// # {
+/// let endpoint = Endpoint {
+///     namespace_id: "host-namespace".to_owned(),
+///     path: "running-process-backend.sock".to_owned(),
+/// };
+/// let daemon = DaemonProcess::current_process(endpoint, Some(600))?;
+///
+/// manifest.current_daemon = Some(daemon.to_proto());
+/// # Ok(manifest)
+/// # }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonProcess {
     /// Operating-system process ID.
@@ -39,6 +68,10 @@ impl DaemonProcess {
     ///
     /// This is primarily useful for tests and direct-daemon consumers that have
     /// just spawned a backend and need to persist a manifest entry.
+    ///
+    /// The executable digest is taken from `std::env::current_exe()` at the time
+    /// this method runs. If a daemon relocates or replaces its executable after
+    /// startup, record the final identity after relocation instead.
     pub fn current_process(
         ipc_endpoint: Endpoint,
         idle_timeout_secs: Option<u32>,
@@ -57,6 +90,9 @@ impl DaemonProcess {
     }
 
     /// Convert this identity into the protobuf form stored in `CacheManifest`.
+    ///
+    /// The conversion preserves the fixed-width SHA-256 value as bytes for the
+    /// wire schema.
     pub fn to_proto(&self) -> protocol::DaemonProcess {
         protocol::DaemonProcess {
             pid: self.pid,
@@ -70,6 +106,10 @@ impl DaemonProcess {
     }
 
     /// Read and normalize `CacheManifest.current_daemon`.
+    ///
+    /// Returns `Ok(None)` when the manifest has no daemon entry. Malformed
+    /// entries, such as a missing endpoint or non-32-byte executable digest,
+    /// return an [`IdentityError`].
     pub fn from_manifest_current_daemon(
         manifest: &CacheManifest,
     ) -> Result<Option<Self>, IdentityError> {

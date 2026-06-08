@@ -1,4 +1,46 @@
 //! Public handle for a verified backend daemon.
+//!
+//! `BackendHandle` is the shared probe-and-verify abstraction for broker-managed
+//! daemons and direct-daemon consumers. A cache manifest records where a daemon
+//! is listening and which process identity it claimed when the manifest was
+//! written. Probing turns that persisted identity into an owned handle only
+//! after the endpoint tuple, current boot ID, process liveness, and executable
+//! digest still match.
+//!
+//! Consumers should use this module at the boundary where they would otherwise
+//! trust a manifest, PID file, socket path, or named-pipe path from disk.
+//!
+//! ```
+//! use running_process::broker::backend_handle::BackendHandle;
+//! use running_process::broker::protocol::CacheManifest;
+//!
+//! fn existing_backend(manifest: &CacheManifest) -> Option<BackendHandle> {
+//!     let handle = BackendHandle::probe_manifest(manifest)?;
+//!     handle.is_alive().then_some(handle)
+//! }
+//! ```
+//!
+//! Direct-daemon consumers that just spawned a backend can persist
+//! [`DaemonProcess`] and later probe it without duplicating the liveness and
+//! executable-hash checks:
+//!
+//! ```no_run
+//! use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
+//! use running_process::broker::protocol::Endpoint;
+//!
+//! # fn example() -> running_process::broker::backend_handle::Result<()> {
+//! let endpoint = Endpoint {
+//!     namespace_id: "local-dev".to_owned(),
+//!     path: "running-process-example.sock".to_owned(),
+//! };
+//! let daemon = DaemonProcess::current_process(endpoint.clone(), Some(300))?;
+//!
+//! let handle =
+//!     BackendHandle::probe_with_service("soldr", "1.2.3", &endpoint, &daemon)?;
+//! assert_eq!(handle.service_name, "soldr");
+//! # Ok(())
+//! # }
+//! ```
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -13,10 +55,15 @@ pub use crate::broker::backend_lifecycle::DaemonProcess;
 /// Result type returned by backend-handle operations.
 pub type Result<T> = std::result::Result<T, BackendHandleError>;
 
-/// A handle to a running backend daemon.
+/// A verified handle to a running backend daemon.
 ///
 /// The handle carries the daemon identity needed to defend against stale
 /// manifests and PID recycling before consumers connect to the IPC endpoint.
+///
+/// A handle is created only through one of the `probe*` constructors. The
+/// constructor performs all identity checks first; successful callers may then
+/// use [`Self::is_alive`] for a cheap liveness check or [`Self::connect`] to
+/// open a fresh local-socket connection.
 pub struct BackendHandle {
     /// Logical service name from the manifest or direct probe caller.
     pub service_name: String,
@@ -36,11 +83,40 @@ impl BackendHandle {
     /// This first-pass probe verifies the endpoint identity tuple, current boot
     /// ID, process liveness, and executable SHA-256. It returns `None` for stale
     /// manifests, dead PIDs, or mismatched daemon binaries.
+    ///
+    /// Use this when the caller already has service metadata elsewhere and only
+    /// needs to know whether the daemon identity is still valid.
+    ///
+    /// ```no_run
+    /// use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
+    /// use running_process::broker::protocol::Endpoint;
+    ///
+    /// # fn example(endpoint: Endpoint, expected: DaemonProcess) {
+    /// if let Some(handle) = BackendHandle::probe(&endpoint, &expected) {
+    ///     assert!(handle.is_alive());
+    /// }
+    /// # }
+    /// ```
     pub fn probe(endpoint: &Endpoint, expected: &DaemonProcess) -> Option<Self> {
         Self::probe_with_service("", "", endpoint, expected).ok()
     }
 
     /// Probe an existing backend and attach service metadata to the handle.
+    ///
+    /// This is the preferred constructor for direct-daemon consumers because it
+    /// preserves the logical service tuple alongside the verified process
+    /// identity.
+    ///
+    /// ```no_run
+    /// use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
+    /// use running_process::broker::protocol::Endpoint;
+    ///
+    /// # fn example(endpoint: Endpoint, expected: DaemonProcess)
+    /// #     -> running_process::broker::backend_handle::Result<BackendHandle>
+    /// # {
+    /// BackendHandle::probe_with_service("zccache", "0.8.0", &endpoint, &expected)
+    /// # }
+    /// ```
     pub fn probe_with_service(
         service_name: impl Into<String>,
         service_version: impl Into<String>,
@@ -57,11 +133,33 @@ impl BackendHandle {
     }
 
     /// Probe the `current_daemon` recorded in a cache manifest.
+    ///
+    /// Returns `None` when the manifest has no daemon entry or when the daemon
+    /// entry no longer matches a live process on the current boot.
+    ///
+    /// ```
+    /// use running_process::broker::backend_handle::BackendHandle;
+    /// use running_process::broker::protocol::CacheManifest;
+    ///
+    /// # fn example(manifest: &CacheManifest) {
+    /// match BackendHandle::probe_manifest(manifest) {
+    ///     Some(handle) if handle.is_alive() => {
+    ///         // Reuse the verified backend.
+    ///     }
+    ///     _ => {
+    ///         // Spawn or discover a replacement backend.
+    ///     }
+    /// }
+    /// # }
+    /// ```
     pub fn probe_manifest(manifest: &CacheManifest) -> Option<Self> {
         Self::try_from_manifest(manifest).ok().flatten()
     }
 
     /// Fallible variant of [`Self::probe_manifest`] that preserves parse errors.
+    ///
+    /// Use this in maintenance tools and diagnostics where malformed manifest
+    /// identities should be reported separately from a normal cache miss.
     pub fn try_from_manifest(manifest: &CacheManifest) -> Result<Option<Self>> {
         let Some(daemon_process) = DaemonProcess::from_manifest_current_daemon(manifest)? else {
             return Ok(None);
@@ -76,6 +174,10 @@ impl BackendHandle {
     }
 
     /// Check liveness without opening a new IPC connection.
+    ///
+    /// On platforms with an owned process-handle primitive, this checks the
+    /// handle captured during probing. Otherwise it falls back to opening the
+    /// process ID again.
     pub fn is_alive(&self) -> bool {
         self.platform_handle()
             .map(|handle| handle.is_alive())
@@ -83,6 +185,22 @@ impl BackendHandle {
     }
 
     /// Open a fresh IPC connection to this backend.
+    ///
+    /// The process identity is verified when the handle is created. Callers that
+    /// cache handles for a long time should call [`Self::is_alive`] or reprobe
+    /// from the latest manifest before opening a connection.
+    ///
+    /// ```no_run
+    /// use running_process::broker::backend_handle::BackendHandle;
+    ///
+    /// async fn connect_to_verified_backend(
+    ///     handle: &BackendHandle,
+    /// ) -> running_process::broker::backend_handle::Result<()> {
+    ///     let connection = handle.connect().await?;
+    ///     let _stream = connection.into_inner();
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn connect(&self) -> Result<Connection> {
         Connection::connect(&self.daemon_process.ipc_endpoint).map_err(BackendHandleError::Connect)
     }
@@ -91,6 +209,9 @@ impl BackendHandle {
     ///
     /// On Windows this foundation returns `GracefulTerminateUnsupported` until
     /// the broker shutdown request protocol lands.
+    ///
+    /// Dropping the handle without calling this method leaves the backend
+    /// running.
     pub async fn shutdown(self, timeout: Duration) -> Result<()> {
         verify_pid::signal_terminate(self.daemon_process.pid)?;
         let deadline = Instant::now() + timeout;
@@ -106,6 +227,9 @@ impl BackendHandle {
     }
 
     /// Force-kill the daemon process.
+    ///
+    /// This is the last-resort teardown path for a daemon that ignored graceful
+    /// shutdown or whose IPC protocol is unavailable.
     pub fn force_kill(self) -> Result<()> {
         verify_pid::force_kill_pid(self.daemon_process.pid)?;
         Ok(())
@@ -152,6 +276,10 @@ impl BackendHandle {
 }
 
 /// A fresh IPC connection to a verified backend daemon.
+///
+/// `Connection` is intentionally thin: `BackendHandle` owns identity and
+/// liveness, while this type owns a single local-socket stream opened from the
+/// verified endpoint.
 pub struct Connection {
     stream: interprocess::local_socket::Stream,
 }
