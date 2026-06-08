@@ -1123,6 +1123,7 @@ dependencies = [
  "clap",
  "dirs",
  "futures-util",
+ "getrandom 0.4.2",
  "interprocess",
  "libc",
  "portable-pty",

@@ -59,7 +59,7 @@ required-features = ["daemon"]
 default = ["client"]
 core = []
 telemetry = []
-client = ["dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs", "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2"]
+client = ["dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs", "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2", "dep:getrandom"]
 daemon = [
     "client",
     "interprocess/tokio",
@@ -89,6 +89,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 # no transitive deps beyond `arrayref`/`arrayvec` and `cc`-built SIMD).
 blake3 = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
+getrandom = { version = "0.4", optional = true }
 # Wave 5 of #165: daemon-feature deps. All optional.
 tokio = { version = "1", features = ["full"], optional = true }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
