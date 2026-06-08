@@ -7,6 +7,8 @@
 //! See `proto/broker_v1_*.proto` and the parent issue for the rationale
 //! behind every field number and `reserved` range.
 
+pub mod backend_handle;
+pub mod backend_lifecycle;
 pub mod host_identity;
 pub mod lifecycle;
 pub mod manifest;
