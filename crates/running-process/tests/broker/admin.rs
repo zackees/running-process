@@ -1,15 +1,20 @@
 #![cfg(feature = "client")]
 
+use prost::Message;
 use serde_json::Value;
 
 use running_process::broker::backend_handle::BackendHandle;
+use running_process::broker::protocol::{
+    AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame, FrameKind, PayloadEncoding,
+};
 use running_process::broker::server::admin::{
+    handle_admin_frame, render_admin_reply,
     render_backend_health_json, render_config_json, render_diagnose_json, render_dump_json,
     render_healthz, render_list_instances_json, render_metrics_text, render_readyz,
     render_status_json, AdminBackend, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION,
 };
 use running_process::broker::server::{
-    BackendKey, BackendRegistry, BrokerInstanceKey, SpawnBudgetSnapshot,
+    BackendKey, BackendRegistry, BrokerInstanceKey, SpawnBudgetSnapshot, ADMIN_PAYLOAD_PROTOCOL,
 };
 
 use crate::backend_handle_common::current_daemon;
@@ -157,4 +162,78 @@ fn dump_json_includes_spawn_budget_rows() {
     assert_eq!(budget["attempts_used"], 3);
     assert_eq!(budget["remaining"], 0);
     assert_eq!(budget["retry_after_ms"], 1500);
+}
+
+#[test]
+fn admin_request_dispatches_status_json_reply() {
+    let request = AdminRequest {
+        verb: AdminVerb::Status as i32,
+        json: true,
+        service_name: String::new(),
+        output_path: String::new(),
+    };
+
+    let reply = render_admin_reply(&snapshot(), &request);
+
+    assert_eq!(AdminReplyKind::try_from(reply.kind), Ok(AdminReplyKind::Json));
+    assert_eq!(reply.exit_code, 0);
+    assert_eq!(reply.content_type, "application/json");
+    let value = parse_json(&reply.body);
+    assert_eq!(value["command"], "status");
+    assert_eq!(value["broker_instance"], "shared");
+}
+
+#[test]
+fn admin_frame_round_trips_response_metadata_and_payload() {
+    let request = AdminRequest {
+        verb: AdminVerb::BackendHealth as i32,
+        json: true,
+        service_name: "zccache".into(),
+        output_path: String::new(),
+    };
+    let frame = Frame {
+        envelope_version: 1,
+        kind: FrameKind::Request as i32,
+        payload_protocol: ADMIN_PAYLOAD_PROTOCOL,
+        payload: request.encode_to_vec(),
+        request_id: 44,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into(),
+        tracestate: "vendor=value".into(),
+    };
+
+    let response = handle_admin_frame(frame, &snapshot()).unwrap();
+    let reply = AdminReply::decode(response.payload.as_slice()).unwrap();
+
+    assert_eq!(response.envelope_version, 1);
+    assert_eq!(FrameKind::try_from(response.kind), Ok(FrameKind::Response));
+    assert_eq!(response.payload_protocol, ADMIN_PAYLOAD_PROTOCOL);
+    assert_eq!(response.request_id, 44);
+    assert_eq!(
+        response.traceparent,
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    );
+    assert_eq!(response.tracestate, "vendor=value");
+    assert_eq!(AdminReplyKind::try_from(reply.kind), Ok(AdminReplyKind::Json));
+    assert_eq!(parse_json(&reply.body)["command"], "backend-health");
+}
+
+#[test]
+fn admin_frame_rejects_non_admin_payload_protocol() {
+    let frame = Frame {
+        envelope_version: 1,
+        kind: FrameKind::Request as i32,
+        payload_protocol: 0,
+        payload: Vec::new(),
+        request_id: 44,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: String::new(),
+        tracestate: String::new(),
+    };
+
+    let err = handle_admin_frame(frame, &snapshot()).unwrap_err();
+
+    assert_eq!(err.to_string(), "admin frame payload_protocol must be 0xAD01, got 0");
 }

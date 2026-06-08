@@ -3,6 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // codegen on incremental builds.
     println!("cargo:rerun-if-changed=proto/daemon.proto");
     println!("cargo:rerun-if-changed=proto/broker_v1/broker_v1_envelope.proto");
+    println!("cargo:rerun-if-changed=proto/broker_v1/broker_v1_admin.proto");
     println!("cargo:rerun-if-changed=proto/broker_v1/broker_v1_manifest.proto");
     println!("cargo:rerun-if-changed=proto/broker_v1/broker_v1_service_def.proto");
     println!("cargo:rerun-if-changed=build.rs");
@@ -10,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         [
             "proto/daemon.proto",
             "proto/broker_v1/broker_v1_envelope.proto",
+            "proto/broker_v1/broker_v1_admin.proto",
             "proto/broker_v1/broker_v1_manifest.proto",
             "proto/broker_v1/broker_v1_service_def.proto",
         ],
