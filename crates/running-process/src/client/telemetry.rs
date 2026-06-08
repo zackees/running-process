@@ -16,45 +16,68 @@ use crate::proto::daemon::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Session transport that owns the stream being tee'd.
 pub enum SessionTeeKind {
+    /// Daemon-owned pseudo-terminal session.
     Pty,
+    /// Daemon-owned pipe-backed session.
     Pipe,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Session byte stream that can be mirrored to a tee sink.
 pub enum SessionTeeStream {
+    /// Combined PTY output bytes.
     PtyOutput,
+    /// Pipe session standard output bytes.
     Stdout,
+    /// Pipe session standard error bytes.
     Stderr,
+    /// Bytes written successfully to a pipe session's standard input.
     Stdin,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// File open mode used when registering a file tee.
 pub enum SessionTeeFileMode {
+    /// Append tee output to the file if it already exists.
     Append,
+    /// Truncate the file before writing tee output.
     Truncate,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Backpressure policy for bounded tee queues.
 pub enum SessionTeeBackpressure {
+    /// Keep the session reader non-blocking and account for dropped bytes.
     DropOldest,
+    /// Block the session reader until the tee sink accepts more bytes.
     Block,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Request used to register a daemon-managed file tee for a session stream.
 pub struct SessionTeeFileRequest {
+    /// Session identifier returned by the spawn API.
     pub session_id: String,
+    /// Kind of session that owns `session_id`.
     pub session_kind: SessionTeeKind,
+    /// Stream to mirror into the file.
     pub stream: SessionTeeStream,
+    /// Destination file path on the daemon host.
     pub path: PathBuf,
+    /// File open mode for the destination path.
     pub mode: SessionTeeFileMode,
     /// 0 means use the daemon default.
     pub queue_capacity: u32,
+    /// Whether the daemon writes marker lines when tee bytes are missed.
     pub write_missed_markers: bool,
+    /// Queue behavior when the file sink cannot keep up.
     pub backpressure: SessionTeeBackpressure,
 }
 
 impl SessionTeeFileRequest {
+    /// Create a file tee request with append mode and daemon-default queue size.
     pub fn new<P>(
         session_id: impl Into<String>,
         session_kind: SessionTeeKind,
@@ -76,21 +99,25 @@ impl SessionTeeFileRequest {
         }
     }
 
+    /// Open the destination file in truncate mode instead of append mode.
     pub fn truncate(mut self) -> Self {
         self.mode = SessionTeeFileMode::Truncate;
         self
     }
 
+    /// Set the bounded queue capacity; `0` keeps the daemon default.
     pub fn queue_capacity(mut self, capacity: u32) -> Self {
         self.queue_capacity = capacity;
         self
     }
 
+    /// Disable marker lines for bytes missed by the file tee.
     pub fn suppress_missed_markers(mut self) -> Self {
         self.write_missed_markers = false;
         self
     }
 
+    /// Set the queue backpressure policy for this tee.
     pub fn backpressure(mut self, backpressure: SessionTeeBackpressure) -> Self {
         self.backpressure = backpressure;
         self
@@ -98,13 +125,18 @@ impl SessionTeeFileRequest {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Current daemon status for a registered session tee.
 pub struct SessionTeeStatus {
+    /// Stream associated with the registered tee handle.
     pub stream: SessionTeeStream,
+    /// Number of stream bytes missed by this tee.
     pub missed_bytes: u64,
+    /// Whether the tee sink has disconnected from the session stream.
     pub disconnected: bool,
 }
 
 impl DaemonClient {
+    /// Register a daemon-owned file tee and return its opaque tee handle.
     pub fn register_session_file_tee(
         &mut self,
         request: &SessionTeeFileRequest,
@@ -137,6 +169,7 @@ impl DaemonClient {
         Ok(payload.tee_handle)
     }
 
+    /// Unregister a previously registered session tee handle.
     pub fn unregister_session_tee(
         &mut self,
         session_kind: SessionTeeKind,
@@ -158,6 +191,7 @@ impl DaemonClient {
         ensure_ok(&response)
     }
 
+    /// Fetch the current status for a registered session tee handle.
     pub fn get_session_tee_status(
         &mut self,
         session_kind: SessionTeeKind,
