@@ -16,6 +16,7 @@ pub mod hello_router;
 pub mod instance;
 pub mod metrics;
 pub mod perf_guard;
+pub mod recovery;
 pub mod serve;
 pub mod service_def_loader;
 pub mod spawn_coordinator;
@@ -58,6 +59,10 @@ pub use instance::{BrokerInstanceError, BrokerInstanceKey};
 pub use perf_guard::{
     enforce_hello_latency_budget, summarize_hello_latencies, HelloLatencySummary, PerfGuardError,
     HELLO_P50_BUDGET, HELLO_P99_BUDGET, HELLO_PERF_GUARD_ENV, HELLO_PERF_SAMPLE_COUNT,
+};
+pub use recovery::{
+    BackendRecoveryDecision, BackendRecoveryPolicy, BackendRecoveryRefusalReason,
+    BackendRecoveryState, DEFAULT_RECOVERY_BUDGET_WINDOW, DEFAULT_RECOVERY_RETRY_BACKOFF,
 };
 pub use serve::{
     build_hello_handler, serve_launching_backends, serve_launching_backends_with_launcher,
