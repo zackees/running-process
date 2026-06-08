@@ -44,6 +44,11 @@ ALLOWED_RUST_COMMAND_NEW = {
     # `crates/running-process/src/broker/lifecycle/sid.rs` for the
     # full justification in the module docs.
     Path("crates/running-process/src/broker/lifecycle/sid.rs"),
+    # Broker backend launcher: constructs a reviewed Command only to
+    # hand it to the sanitized `spawn_daemon` surface. The module owns
+    # service-definition validation, canonical endpoint allocation, and
+    # spawned process identity verification before registration.
+    Path("crates/running-process/src/broker/server/backend_launcher.rs"),
     # Daemon trampoline binary (merged from `daemon-trampoline`):
     # reads sidecar JSON and spawns the target command.
     Path("crates/running-process/src/bin/trampoline.rs"),

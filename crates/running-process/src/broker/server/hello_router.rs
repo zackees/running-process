@@ -12,11 +12,13 @@ use std::time::{Duration, Instant};
 
 use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, ErrorCode, Frame, HelloReply, Refused,
+    ServiceDefinition,
 };
 use crate::broker::server::{
-    check_version_allowed, BackendKey, BackendRegistry, BrokerInstanceKey, HelloHandler,
-    HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend, ServiceDefinitionError,
-    ServiceDefinitionLoader, SpawnBeginError, SpawnCoordinator, SpawnOutcome, VersionPolicyBlock,
+    check_version_allowed, BackendKey, BackendLaunchRequest, BackendLauncher, BackendRegistry,
+    BrokerInstanceKey, HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity,
+    RegisteredBackend, ServiceDefinitionError, ServiceDefinitionLoader, SpawnBeginError,
+    SpawnCoordinator, SpawnOutcome, VersionPolicyBlock,
 };
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -27,6 +29,7 @@ pub struct HelloRouter<'a> {
     service_definitions: &'a ServiceDefinitionLoader,
     backends: BackendRegistryView<'a>,
     spawn_coordinator: Option<&'a Mutex<SpawnCoordinator>>,
+    backend_launcher: Option<&'a dyn BackendLauncher>,
 }
 
 #[derive(Clone, Copy)]
@@ -45,6 +48,7 @@ impl<'a> HelloRouter<'a> {
             service_definitions,
             backends: BackendRegistryView::Static(backends),
             spawn_coordinator: None,
+            backend_launcher: None,
         }
     }
 
@@ -58,6 +62,7 @@ impl<'a> HelloRouter<'a> {
             service_definitions,
             backends: BackendRegistryView::Live(backends),
             spawn_coordinator: None,
+            backend_launcher: None,
         }
     }
 
@@ -67,6 +72,12 @@ impl<'a> HelloRouter<'a> {
         spawn_coordinator: &'a Mutex<SpawnCoordinator>,
     ) -> Self {
         self.spawn_coordinator = Some(spawn_coordinator);
+        self
+    }
+
+    /// Attach a launcher used to satisfy verified backend registry misses.
+    pub fn with_backend_launcher(mut self, backend_launcher: &'a dyn BackendLauncher) -> Self {
+        self.backend_launcher = Some(backend_launcher);
         self
     }
 
@@ -118,22 +129,18 @@ impl<'a> HelloRouter<'a> {
             return Ok(registered);
         }
 
-        self.record_spawn_needed(BackendKey::new(
+        let key = BackendKey::new(
             instance,
             request.hello.service_name.clone(),
             request.hello.wanted_version.clone(),
-        ))?;
-        Err(refused(
-            ErrorCode::ErrorBackendSpawnFailed,
-            "backend is not registered",
-            1_000,
-        ))
+        );
+        self.launch_backend(&key, &service_definition)
     }
 
     fn registered_backend_for(
         &self,
         instance: &BrokerInstanceKey,
-        service_definition: &crate::broker::protocol::ServiceDefinition,
+        service_definition: &ServiceDefinition,
         service_version: &str,
     ) -> Option<RegisteredBackend> {
         match self.backends {
@@ -150,7 +157,49 @@ impl<'a> HelloRouter<'a> {
         }
     }
 
-    fn record_spawn_needed(&self, key: BackendKey) -> Result<(), Refused> {
+    fn launch_backend(
+        &self,
+        key: &BackendKey,
+        service_definition: &ServiceDefinition,
+    ) -> Result<RegisteredBackend, Refused> {
+        self.begin_spawn(key.clone())?;
+
+        let Some(backend_launcher) = self.backend_launcher else {
+            self.finish_spawn(key, SpawnOutcome::Failed);
+            return Err(refused(
+                ErrorCode::ErrorBackendSpawnFailed,
+                "backend is not registered",
+                1_000,
+            ));
+        };
+
+        let request = BackendLaunchRequest {
+            key,
+            service_definition,
+        };
+        match backend_launcher.launch(&request) {
+            Ok(handle) => match self.register_launched_backend(key, service_definition, handle) {
+                Ok(registered) => {
+                    self.finish_spawn(key, SpawnOutcome::Success);
+                    Ok(registered)
+                }
+                Err(refused) => {
+                    self.finish_spawn(key, SpawnOutcome::Failed);
+                    Err(refused)
+                }
+            },
+            Err(err) => {
+                self.finish_spawn(key, SpawnOutcome::Failed);
+                Err(refused(
+                    ErrorCode::ErrorBackendSpawnFailed,
+                    format!("backend spawn failed: {err}"),
+                    1_000,
+                ))
+            }
+        }
+    }
+
+    fn begin_spawn(&self, key: BackendKey) -> Result<(), Refused> {
         let Some(spawn_coordinator) = self.spawn_coordinator else {
             return Ok(());
         };
@@ -160,10 +209,7 @@ impl<'a> HelloRouter<'a> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match coordinator.try_begin(key.clone(), now) {
-            Ok(_) => {
-                coordinator.finish(&key, SpawnOutcome::Failed, now);
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(SpawnBeginError::AlreadyInProgress) => Err(refused(
                 ErrorCode::ErrorRateLimited,
                 "backend spawn already in progress",
@@ -175,6 +221,49 @@ impl<'a> HelloRouter<'a> {
                 duration_to_retry_ms(retry_after),
             )),
         }
+    }
+
+    fn finish_spawn(&self, key: &BackendKey, outcome: SpawnOutcome) {
+        let Some(spawn_coordinator) = self.spawn_coordinator else {
+            return;
+        };
+
+        let mut coordinator = spawn_coordinator
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        coordinator.finish(key, outcome, Instant::now());
+    }
+
+    fn register_launched_backend(
+        &self,
+        key: &BackendKey,
+        service_definition: &ServiceDefinition,
+        handle: crate::broker::backend_handle::BackendHandle,
+    ) -> Result<RegisteredBackend, Refused> {
+        if handle.service_name != key.service_name || handle.service_version != key.service_version
+        {
+            return Err(refused(
+                ErrorCode::ErrorInternal,
+                "launched backend identity did not match request",
+                0,
+            ));
+        }
+
+        let registered = RegisteredBackend {
+            service_definition: service_definition.clone(),
+            daemon_version: handle.service_version.clone(),
+            backend_pipe: handle.daemon_process.ipc_endpoint.path.clone(),
+            server_capabilities: 0,
+        };
+
+        if let BackendRegistryView::Live(registry) = self.backends {
+            let mut registry = registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            registry.insert(key.instance.clone(), handle);
+        }
+
+        Ok(registered)
     }
 }
 
