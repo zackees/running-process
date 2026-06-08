@@ -15,7 +15,7 @@ pub fn current_daemon() -> DaemonProcess {
 }
 
 pub fn impossible_pid() -> u32 {
-    u32::MAX
+    i32::MAX as u32
 }
 
 fn test_endpoint_path() -> String {

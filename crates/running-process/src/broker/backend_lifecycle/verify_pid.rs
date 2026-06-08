@@ -58,7 +58,7 @@ pub fn force_kill_pid(pid: u32) -> Result<(), VerifyPidError> {
 /// Errors returned while verifying a daemon process.
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyPidError {
-    /// PID zero is never a valid backend daemon PID.
+    /// PID zero or a value outside the native PID range is never valid.
     #[error("invalid daemon pid: {0}")]
     InvalidPid(u32),
     /// The process is not currently alive.
@@ -122,6 +122,7 @@ mod platform {
 
     impl ProcessHandle {
         pub(crate) fn open(pid: u32) -> Result<Self, VerifyPidError> {
+            validate_pid(pid)?;
             if !process_exists(pid) {
                 return Err(VerifyPidError::NotFound { pid });
             }
@@ -157,7 +158,10 @@ mod platform {
     }
 
     pub(crate) fn process_exists(pid: u32) -> bool {
-        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        let Ok(native_pid) = validate_pid(pid) else {
+            return false;
+        };
+        let rc = unsafe { libc::kill(native_pid, 0) };
         if rc == 0 {
             return true;
         }
@@ -165,7 +169,8 @@ mod platform {
     }
 
     pub(crate) fn platform_signal_terminate(pid: u32) -> Result<(), VerifyPidError> {
-        let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        let native_pid = validate_pid(pid)?;
+        let rc = unsafe { libc::kill(native_pid, libc::SIGTERM) };
         if rc == 0 {
             Ok(())
         } else {
@@ -177,7 +182,8 @@ mod platform {
     }
 
     pub(crate) fn platform_force_kill(pid: u32) -> Result<(), VerifyPidError> {
-        let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        let native_pid = validate_pid(pid)?;
+        let rc = unsafe { libc::kill(native_pid, libc::SIGKILL) };
         if rc == 0 {
             Ok(())
         } else {
@@ -185,6 +191,14 @@ mod platform {
                 pid,
                 source: io::Error::last_os_error(),
             })
+        }
+    }
+
+    fn validate_pid(pid: u32) -> Result<libc::pid_t, VerifyPidError> {
+        if pid == 0 || pid > libc::pid_t::MAX as u32 {
+            Err(VerifyPidError::InvalidPid(pid))
+        } else {
+            Ok(pid as libc::pid_t)
         }
     }
 
@@ -294,7 +308,7 @@ use platform::{platform_force_kill, platform_signal_terminate};
 fn process_exe_path(pid: u32) -> Result<PathBuf, io::Error> {
     #[cfg(target_os = "linux")]
     {
-        return std::fs::read_link(format!("/proc/{pid}/exe"));
+        std::fs::read_link(format!("/proc/{pid}/exe"))
     }
 
     #[cfg(not(target_os = "linux"))]
