@@ -11,6 +11,7 @@
 //! - [`names`] — uses the SID hash to build the four canonical broker
 //!   pipe names defined in #228.
 
+pub mod crash_dump;
 pub mod names;
 pub mod privilege;
 pub mod sid;
@@ -19,6 +20,7 @@ pub use names::{
     backend_pipe, explicit_instance_pipe, private_broker_pipe, shared_broker_pipe, PipePath,
     PipePathError,
 };
+pub use crash_dump::{CrashDumpError, CRASH_DUMP_DIR_ENV};
 pub use privilege::{
     refuse_privileged_run, PrivilegeError, PrivilegedIdentity, ALLOW_PRIVILEGED_ENV,
 };
