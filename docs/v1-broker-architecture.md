@@ -77,7 +77,10 @@ identity remain the responsibility of the later spawn coordinator slice.
 `server::HelloRouter` is the broker-side routing layer for this path. It
 reloads `<service>.servicedef` for each request, checks the version policy,
 resolves the trust-domain instance, and turns backend-registry misses into the
-stable spawn-failed placeholder until real spawn-on-Hello is wired in.
+stable spawn-failed placeholder until real spawn-on-Hello is wired in. When a
+spawn coordinator is attached, repeated misses consume the per-backend-key spawn
+budget and return `ERROR_RATE_LIMITED` with a retry hint once the budget is
+exhausted.
 
 ## Backend Table
 

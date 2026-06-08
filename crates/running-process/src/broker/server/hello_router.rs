@@ -7,14 +7,16 @@
 //! `HelloHandler`.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, ErrorCode, Frame, HelloReply, Refused,
 };
 use crate::broker::server::{
-    check_version_allowed, BackendRegistry, BrokerInstanceKey, HelloHandler, HelloHandlerError,
-    HelloRequest, PeerIdentity, RegisteredBackend, ServiceDefinitionError, ServiceDefinitionLoader,
-    VersionPolicyBlock,
+    check_version_allowed, BackendKey, BackendRegistry, BrokerInstanceKey, HelloHandler,
+    HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend, ServiceDefinitionError,
+    ServiceDefinitionLoader, SpawnBeginError, SpawnCoordinator, SpawnOutcome, VersionPolicyBlock,
 };
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -24,6 +26,7 @@ const PROTOCOL_VERSION: u32 = 1;
 pub struct HelloRouter<'a> {
     service_definitions: &'a ServiceDefinitionLoader,
     backends: &'a BackendRegistry,
+    spawn_coordinator: Option<&'a Mutex<SpawnCoordinator>>,
 }
 
 impl<'a> HelloRouter<'a> {
@@ -35,7 +38,17 @@ impl<'a> HelloRouter<'a> {
         Self {
             service_definitions,
             backends,
+            spawn_coordinator: None,
         }
+    }
+
+    /// Attach spawn-budget coordination for backend registry misses.
+    pub fn with_spawn_coordinator(
+        mut self,
+        spawn_coordinator: &'a Mutex<SpawnCoordinator>,
+    ) -> Self {
+        self.spawn_coordinator = Some(spawn_coordinator);
+        self
     }
 
     /// Decode and route a framed Hello request.
@@ -78,15 +91,50 @@ impl<'a> HelloRouter<'a> {
             },
         )?;
 
-        self.backends
-            .registered_backend_for(&instance, &service_definition, &request.hello.wanted_version)
-            .ok_or_else(|| {
-                refused(
-                    ErrorCode::ErrorBackendSpawnFailed,
-                    "backend is not registered",
-                    1_000,
-                )
-            })
+        if let Some(registered) =
+            self.backends
+                .registered_backend_for(&instance, &service_definition, &request.hello.wanted_version)
+        {
+            return Ok(registered);
+        }
+
+        self.record_spawn_needed(BackendKey::new(
+            instance,
+            request.hello.service_name.clone(),
+            request.hello.wanted_version.clone(),
+        ))?;
+        Err(refused(
+            ErrorCode::ErrorBackendSpawnFailed,
+            "backend is not registered",
+            1_000,
+        ))
+    }
+
+    fn record_spawn_needed(&self, key: BackendKey) -> Result<(), Refused> {
+        let Some(spawn_coordinator) = self.spawn_coordinator else {
+            return Ok(());
+        };
+
+        let now = Instant::now();
+        let mut coordinator = spawn_coordinator
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match coordinator.try_begin(key.clone(), now) {
+            Ok(_) => {
+                coordinator.finish(&key, SpawnOutcome::Failed, now);
+                Ok(())
+            }
+            Err(SpawnBeginError::AlreadyInProgress) => Err(refused(
+                ErrorCode::ErrorRateLimited,
+                "backend spawn already in progress",
+                1_000,
+            )),
+            Err(SpawnBeginError::BudgetExhausted { retry_after, .. }) => Err(refused(
+                ErrorCode::ErrorRateLimited,
+                "backend spawn budget exhausted",
+                duration_to_retry_ms(retry_after),
+            )),
+        }
     }
 }
 
@@ -142,6 +190,11 @@ fn refused(code: ErrorCode, reason: impl Into<String>, retry_after_ms: u64) -> R
         details: HashMap::new(),
         retry_after_ms,
     }
+}
+
+fn duration_to_retry_ms(duration: Duration) -> u64 {
+    let millis = duration.as_millis().max(1);
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 fn refused_reply(refused: Refused) -> HelloReply {
