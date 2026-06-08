@@ -15,6 +15,9 @@ use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, ErrorCode, Frame, FrameKind, Hello, HelloReply,
     Negotiated, PayloadEncoding, Refused, ServiceDefinition,
 };
+use crate::broker::server::version_allow_list::{
+    check_version_allowed, VersionPolicyBlock,
+};
 
 const PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_KEEPALIVE_SECS: u64 = 30 * 60;
@@ -221,47 +224,19 @@ fn validate_hello_shape(hello: &Hello, peer: &PeerIdentity) -> Option<Refused> {
 }
 
 fn validate_version_policy(hello: &Hello, service: &ServiceDefinition) -> Option<Refused> {
-    if !service.min_version.is_empty()
-        && compare_semver_core(&hello.wanted_version, &service.min_version)
-            == Some(std::cmp::Ordering::Less)
-    {
-        return Some(refused(
+    match check_version_allowed(&hello.wanted_version, service) {
+        Ok(()) => None,
+        Err(VersionPolicyBlock::BelowMinVersion) => Some(refused(
             ErrorCode::ErrorVersionBlocked,
             "wanted_version is below min_version",
             30_000,
-        ));
-    }
-    if !service.version_allow_list.is_empty()
-        && !service
-            .version_allow_list
-            .iter()
-            .any(|allowed| allowed == &hello.wanted_version)
-    {
-        return Some(refused(
+        )),
+        Err(VersionPolicyBlock::OutsideAllowList) => Some(refused(
             ErrorCode::ErrorVersionBlocked,
             "wanted_version is not in version_allow_list",
             30_000,
-        ));
+        )),
     }
-    None
-}
-
-fn compare_semver_core(left: &str, right: &str) -> Option<std::cmp::Ordering> {
-    let left = parse_semver_core(left)?;
-    let right = parse_semver_core(right)?;
-    Some(left.cmp(&right))
-}
-
-fn parse_semver_core(version: &str) -> Option<[u64; 3]> {
-    let core = version.split_once('-').map_or(version, |(core, _)| core);
-    let mut parts = core.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some([major, minor, patch])
 }
 
 fn validate_service_name_for_result(name: &str) -> Result<(), HelloHandlerError> {

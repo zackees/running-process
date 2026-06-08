@@ -21,4 +21,5 @@ mod manifest_roundtrip;
 mod names;
 mod proto_field_numbers;
 mod proto_roundtrip;
+mod service_def_loader;
 mod verify_pid;

@@ -21,6 +21,11 @@ The broker loads `.servicedef` files from the platform directory. The on-disk
 format is prost-encoded protobuf bytes. The parent directory is current-user
 only: mode `0700` on Unix and current-user-only ACL on Windows.
 
+`ServiceDefinitionLoader` also honors `RUNNING_PROCESS_SERVICE_DEF_DIR` for
+tests and development. A request for service `zccache` loads
+`zccache.servicedef`; the decoded `service_name` must match the requested file
+stem.
+
 ## Fields
 
 | Field | Rationale |
@@ -92,8 +97,9 @@ labels {
 ## Reload Rule
 
 The broker validates service definitions on every `Hello` path through a lazy
-reload check. Invalid files are refused with a stable machine-readable code and
-a human-readable reason.
+reload check. The current loader implements this by re-reading the protobuf
+file on every `lookup_or_reload` call. Invalid files are refused with a stable
+machine-readable code and a human-readable reason.
 
 ## Version Policy
 
