@@ -1,7 +1,7 @@
 #![cfg(feature = "client")]
 
 use std::io::Cursor;
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -343,6 +343,66 @@ fn serve_local_socket_connections_handles_concurrent_hellos() {
     assert_eq!(connection_ids.len(), CLIENTS);
     assert_eq!(connection_ids[0], 1);
     assert_eq!(connection_ids[CLIENTS - 1], CLIENTS as u64);
+}
+
+#[test]
+fn serve_local_socket_connections_handles_herd_at_attachment_cap() {
+    const MAX_BROKER_PIPE_ATTACHMENTS: usize = 64;
+
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let server = thread::spawn(move || {
+        serve_local_socket_connections(
+            &server_socket,
+            Arc::new(handler()),
+            MAX_BROKER_PIPE_ATTACHMENTS,
+        )
+    });
+
+    let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let herd = Arc::new(Barrier::new(MAX_BROKER_PIPE_ATTACHMENTS));
+    let mut clients = Vec::with_capacity(MAX_BROKER_PIPE_ATTACHMENTS);
+    for index in 0..MAX_BROKER_PIPE_ATTACHMENTS {
+        let name = name.clone();
+        let herd = Arc::clone(&herd);
+        clients.push(thread::spawn(move || {
+            let mut client = connect_with_retry(name);
+            herd.wait();
+
+            let mut request = hello(0);
+            request.request_id = format!("req-herd-{index}");
+            let mut frame = frame_for_hello(&request);
+            frame.request_id = (index + 1) as u64;
+            write_frame(&mut client, &frame.encode_to_vec()).unwrap();
+
+            let response_bytes = read_frame(&mut client).unwrap();
+            let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
+            assert_eq!(
+                FrameKind::try_from(response_frame.kind),
+                Ok(FrameKind::Response)
+            );
+            assert_eq!(response_frame.request_id, (index + 1) as u64);
+            let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
+            match reply.result.unwrap() {
+                HelloReplyResult::Negotiated(negotiated) => negotiated.connection_id,
+                HelloReplyResult::Refused(refused) => {
+                    panic!("unexpected refusal for herd client {index}: {refused:?}")
+                }
+            }
+        }));
+    }
+
+    let mut connection_ids = Vec::with_capacity(MAX_BROKER_PIPE_ATTACHMENTS);
+    for client in clients {
+        connection_ids.push(client.join().unwrap());
+    }
+    server.join().unwrap().unwrap();
+
+    connection_ids.sort_unstable();
+    assert_eq!(
+        connection_ids,
+        (1..=MAX_BROKER_PIPE_ATTACHMENTS as u64).collect::<Vec<_>>()
+    );
 }
 
 fn connect_with_retry(
