@@ -13,6 +13,7 @@ The v1 broker work is documented as a stable spec alongside the implementation:
 - Consumer adoption: [clud](docs/consumer-adoption-clud.md), [zccache](docs/consumer-adoption-zccache.md), [soldr](docs/consumer-adoption-soldr.md), [fbuild](docs/consumer-adoption-fbuild.md)
 - Operations: [broker architecture](docs/v1-broker-architecture.md), [admin verbs](docs/v1-admin-verbs.md), [backend lifecycle](docs/v1-backend-lifecycle.md), [handoff optimization](docs/v1-handoff-optimization.md), [observability](docs/v1-observability.md)
 - Rollout: [policy](docs/v1-rollout-policy.md), [escape hatch](docs/v1-escape-hatch.md), [troubleshooting](docs/v1-troubleshooting.md)
+- Examples: [minimal consumer](examples/minimal-consumer/), [release-handles CLI](examples/release-handles-cli/), [custom isolation](examples/custom-isolation/)
 
 | Platform | Build | Lint | Unit Test | Integration Test |
 |----------|-------|------|-----------|------------------|

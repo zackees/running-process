@@ -38,4 +38,10 @@ Operations and rollout docs:
 - [Escape hatch](../../docs/v1-escape-hatch.md)
 - [Troubleshooting](../../docs/v1-troubleshooting.md)
 
+Examples:
+
+- [Minimal consumer](../../examples/minimal-consumer/)
+- [Release-handles CLI](../../examples/release-handles-cli/)
+- [Custom isolation](../../examples/custom-isolation/)
+
 The authoritative v1 proto files live under `proto/broker_v1/`.
