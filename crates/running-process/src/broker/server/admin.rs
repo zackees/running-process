@@ -4,6 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
+use crate::broker::server::{
+    BackendRegistry, SpawnBudgetSnapshot,
+};
 use crate::broker::server::metrics::{MetricKind, BROKER_METRICS};
 
 /// Frozen admin JSON schema version.
@@ -26,6 +29,8 @@ pub struct AdminSnapshot {
     pub connections_open: u64,
     /// Known backend rows.
     pub backends: Vec<AdminBackend>,
+    /// Known spawn budget rows.
+    pub spawn_budgets: Vec<AdminSpawnBudget>,
 }
 
 impl AdminSnapshot {
@@ -39,6 +44,71 @@ impl AdminSnapshot {
             accepting_hello: false,
             connections_open: 0,
             backends: Vec::new(),
+            spawn_budgets: Vec::new(),
+        }
+    }
+
+    /// Build a live snapshot from broker state.
+    pub fn from_registry(
+        broker_instance: impl Into<String>,
+        uptime: Duration,
+        accepting_hello: bool,
+        connections_open: u64,
+        registry: &BackendRegistry,
+        spawn_budgets: &[SpawnBudgetSnapshot],
+    ) -> Self {
+        Self::from_registry_at(
+            broker_instance,
+            std::process::id(),
+            unix_now_ms(),
+            uptime,
+            accepting_hello,
+            connections_open,
+            registry,
+            spawn_budgets,
+        )
+    }
+
+    /// Testable variant of [`Self::from_registry`] with deterministic metadata.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_registry_at(
+        broker_instance: impl Into<String>,
+        broker_pid: u32,
+        generated_at_unix_ms: u64,
+        uptime: Duration,
+        accepting_hello: bool,
+        connections_open: u64,
+        registry: &BackendRegistry,
+        spawn_budgets: &[SpawnBudgetSnapshot],
+    ) -> Self {
+        Self {
+            broker_instance: broker_instance.into(),
+            broker_pid,
+            generated_at_unix_ms,
+            uptime,
+            accepting_hello,
+            connections_open,
+            backends: registry
+                .iter()
+                .map(|(_key, handle)| AdminBackend {
+                    service_name: handle.service_name.clone(),
+                    service_version: handle.service_version.clone(),
+                    pid: handle.daemon_process.pid,
+                    backend_pipe: handle.daemon_process.ipc_endpoint.path.clone(),
+                    last_active_unix_ms: handle.daemon_process.started_at_unix_ms,
+                    state: if handle.is_alive() {
+                        "running".into()
+                    } else {
+                        "stale".into()
+                    },
+                    last_hello_unix_ms: 0,
+                    last_error: None,
+                })
+                .collect(),
+            spawn_budgets: spawn_budgets
+                .iter()
+                .map(AdminSpawnBudget::from_snapshot)
+                .collect(),
         }
     }
 }
@@ -62,6 +132,41 @@ pub struct AdminBackend {
     pub last_hello_unix_ms: u64,
     /// Last backend error.
     pub last_error: Option<String>,
+}
+
+/// Spawn budget row used in admin output.
+#[derive(Clone, Debug)]
+pub struct AdminSpawnBudget {
+    /// Broker instance identifier.
+    pub broker_instance: String,
+    /// Logical service name.
+    pub service_name: String,
+    /// Service version.
+    pub service_version: String,
+    /// Attempts used in the active window.
+    pub attempts_used: u32,
+    /// Attempts remaining in the active window.
+    pub remaining: u32,
+    /// Whether a spawn is currently in flight.
+    pub in_flight: bool,
+    /// Retry-after hint when exhausted.
+    pub retry_after_ms: Option<u64>,
+}
+
+impl AdminSpawnBudget {
+    fn from_snapshot(snapshot: &SpawnBudgetSnapshot) -> Self {
+        Self {
+            broker_instance: snapshot.key.instance.id(),
+            service_name: snapshot.key.service_name.clone(),
+            service_version: snapshot.key.service_version.clone(),
+            attempts_used: snapshot.attempts_used,
+            remaining: snapshot.remaining,
+            in_flight: snapshot.in_flight,
+            retry_after_ms: snapshot
+                .retry_after
+                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)),
+        }
+    }
 }
 
 /// Render `status --json`.
@@ -106,7 +211,17 @@ pub fn render_dump_json(snapshot: &AdminSnapshot) -> String {
                 "state": backend.state,
             })
         }).collect::<Vec<_>>(),
-        "spawn_budgets": [],
+        "spawn_budgets": snapshot.spawn_budgets.iter().map(|budget| {
+            json!({
+                "broker_instance": budget.broker_instance,
+                "service_name": budget.service_name,
+                "service_version": budget.service_version,
+                "attempts_used": budget.attempts_used,
+                "remaining": budget.remaining,
+                "in_flight": budget.in_flight,
+                "retry_after_ms": budget.retry_after_ms,
+            })
+        }).collect::<Vec<_>>(),
         "recent_lifecycle_events": [],
     })
     .to_string()

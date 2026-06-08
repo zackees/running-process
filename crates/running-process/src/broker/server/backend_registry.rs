@@ -85,6 +85,11 @@ impl BackendRegistry {
         ))
     }
 
+    /// Iterate over all registered backend handles.
+    pub fn iter(&self) -> impl Iterator<Item = (&BackendKey, &BackendHandle)> {
+        self.entries.iter()
+    }
+
     /// Return Hello negotiation metadata for one registered backend.
     pub fn registered_backend_for(
         &self,

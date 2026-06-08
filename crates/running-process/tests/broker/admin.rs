@@ -2,11 +2,17 @@
 
 use serde_json::Value;
 
+use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::server::admin::{
     render_backend_health_json, render_config_json, render_diagnose_json, render_dump_json,
     render_healthz, render_list_instances_json, render_metrics_text, render_readyz,
-    render_status_json, AdminBackend, AdminSnapshot, ADMIN_SCHEMA_VERSION,
+    render_status_json, AdminBackend, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION,
 };
+use running_process::broker::server::{
+    BackendKey, BackendRegistry, BrokerInstanceKey, SpawnBudgetSnapshot,
+};
+
+use crate::backend_handle_common::current_daemon;
 
 fn snapshot() -> AdminSnapshot {
     AdminSnapshot {
@@ -25,6 +31,15 @@ fn snapshot() -> AdminSnapshot {
             state: "running".into(),
             last_hello_unix_ms: 1700000000000,
             last_error: None,
+        }],
+        spawn_budgets: vec![AdminSpawnBudget {
+            broker_instance: "shared".into(),
+            service_name: "zccache".into(),
+            service_version: "1.11.20".into(),
+            attempts_used: 1,
+            remaining: 2,
+            in_flight: false,
+            retry_after_ms: None,
         }],
     }
 }
@@ -82,4 +97,64 @@ fn metrics_text_contains_frozen_metric_names() {
     assert!(metrics.contains("running_process_broker_v1_connections_open 1"));
     assert!(metrics.contains("running_process_broker_v1_hello_total"));
     assert!(metrics.ends_with("# EOF\n"));
+}
+
+#[test]
+fn admin_snapshot_from_registry_includes_live_backend_rows() {
+    let daemon = current_daemon();
+    let expected_pipe = daemon.ipc_endpoint.path.clone();
+    let handle =
+        BackendHandle::probe_with_service("zccache", "1.11.20", &daemon.ipc_endpoint, &daemon)
+            .unwrap();
+    let mut registry = BackendRegistry::new();
+    registry.insert(BrokerInstanceKey::Shared, handle);
+
+    let snapshot = AdminSnapshot::from_registry_at(
+        "shared",
+        1234,
+        1700000000000,
+        std::time::Duration::from_secs(12),
+        true,
+        3,
+        &registry,
+        &[],
+    );
+
+    assert_eq!(snapshot.backends.len(), 1);
+    assert_eq!(snapshot.backends[0].service_name, "zccache");
+    assert_eq!(snapshot.backends[0].service_version, "1.11.20");
+    assert_eq!(snapshot.backends[0].backend_pipe, expected_pipe);
+    assert_eq!(snapshot.backends[0].state, "running");
+    assert_eq!(snapshot.connections_open, 3);
+}
+
+#[test]
+fn dump_json_includes_spawn_budget_rows() {
+    let key = BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.20");
+    let snapshot = AdminSnapshot::from_registry_at(
+        "shared",
+        1234,
+        1700000000000,
+        std::time::Duration::from_secs(12),
+        true,
+        0,
+        &BackendRegistry::new(),
+        &[SpawnBudgetSnapshot {
+            key,
+            attempts_used: 3,
+            remaining: 0,
+            in_flight: false,
+            retry_after: Some(std::time::Duration::from_millis(1500)),
+        }],
+    );
+
+    let value = parse_json(&render_dump_json(&snapshot));
+    let budget = &value["spawn_budgets"][0];
+
+    assert_eq!(budget["broker_instance"], "shared");
+    assert_eq!(budget["service_name"], "zccache");
+    assert_eq!(budget["service_version"], "1.11.20");
+    assert_eq!(budget["attempts_used"], 3);
+    assert_eq!(budget["remaining"], 0);
+    assert_eq!(budget["retry_after_ms"], 1500);
 }
