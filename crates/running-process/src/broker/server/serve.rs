@@ -8,9 +8,10 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
-use crate::broker::backend_lifecycle::identity::IdentityError;
 use crate::broker::backend_handle::{BackendHandle, BackendHandleError, DaemonProcess};
+use crate::broker::backend_lifecycle::identity::IdentityError;
 use crate::broker::protocol::{Endpoint, ServiceDefinition};
 
 use super::backend_registry::BackendRegistry;
@@ -69,8 +70,11 @@ impl BrokerServeConfig {
 
 /// Serve a bounded number of broker Hello connections.
 pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerServeError> {
-    let registered = build_registered_backend(&config)?;
-    let router = HelloRouter::new(&registered.loader, &registered.registry);
+    let RegisteredServeBackend {
+        loader, registry, ..
+    } = build_registered_backend(&config)?;
+    let registry = Mutex::new(registry);
+    let router = HelloRouter::with_lifecycle_monitor(&loader, &registry);
     serve_local_socket_connections_with(
         &config.socket_path,
         &router,
