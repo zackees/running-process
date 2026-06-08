@@ -28,7 +28,8 @@ pub use admin::{
 pub use backend_launcher::{
     BackendLaunchError, BackendLaunchRequest, BackendLauncher, CommandBackendLauncher,
     BACKEND_ENV_ENDPOINT_NAMESPACE, BACKEND_ENV_ENDPOINT_PATH, BACKEND_ENV_INSTANCE,
-    BACKEND_ENV_SERVICE_NAME, BACKEND_ENV_SERVICE_VERSION,
+    BACKEND_ENV_SERVICE_NAME, BACKEND_ENV_SERVICE_VERSION, BACKEND_ENV_TRACEPARENT,
+    BACKEND_ENV_TRACESTATE,
 };
 pub use backend_endpoint_allocator::{
     BackendEndpointAllocator, BackendEndpointAllocatorError, DEFAULT_BACKEND_ENDPOINT_ATTEMPTS,

@@ -14,11 +14,12 @@ use crate::broker::backend_handle::{BackendHandle, BackendHandleError, DaemonPro
 use crate::broker::backend_lifecycle::identity::{sha256_file, IdentityError};
 use crate::broker::host_identity;
 use crate::broker::lifecycle::sid::{user_sid_hash, SidError};
-use crate::broker::protocol::ServiceDefinition;
+use crate::broker::protocol::{Endpoint, ServiceDefinition};
 use crate::spawn_daemon;
 
 use super::backend_endpoint_allocator::{BackendEndpointAllocator, BackendEndpointAllocatorError};
 use super::backend_registry::BackendKey;
+use super::trace_context::TraceContext;
 
 /// Environment variable containing the logical service name for a launched
 /// backend.
@@ -31,6 +32,10 @@ pub const BACKEND_ENV_ENDPOINT_PATH: &str = "RUNNING_PROCESS_BROKER_V1_BACKEND_P
 pub const BACKEND_ENV_ENDPOINT_NAMESPACE: &str = "RUNNING_PROCESS_BROKER_V1_BACKEND_NAMESPACE";
 /// Environment variable containing the broker instance id.
 pub const BACKEND_ENV_INSTANCE: &str = "RUNNING_PROCESS_BROKER_V1_INSTANCE";
+/// Environment variable containing the incoming W3C traceparent value.
+pub const BACKEND_ENV_TRACEPARENT: &str = "RUNNING_PROCESS_BROKER_V1_TRACEPARENT";
+/// Environment variable containing the incoming W3C tracestate value.
+pub const BACKEND_ENV_TRACESTATE: &str = "RUNNING_PROCESS_BROKER_V1_TRACESTATE";
 
 /// Inputs supplied to a backend launcher after Hello validation and budget
 /// admission.
@@ -39,6 +44,8 @@ pub struct BackendLaunchRequest<'a> {
     pub key: &'a BackendKey,
     /// Service definition that authorized the requested backend.
     pub service_definition: &'a ServiceDefinition,
+    /// Trace context from the Hello frame that triggered this launch.
+    pub trace_context: &'a TraceContext,
 }
 
 /// Launches or discovers one backend and returns a verified handle.
@@ -87,7 +94,7 @@ impl CommandBackendLauncher {
     fn allocate_endpoint(
         &self,
         request: &BackendLaunchRequest<'_>,
-    ) -> Result<crate::broker::protocol::Endpoint, BackendLaunchError> {
+    ) -> Result<Endpoint, BackendLaunchError> {
         let namespace_id = request.key.instance.id();
         let mut allocators = self
             .allocators
@@ -108,12 +115,7 @@ impl BackendLauncher for CommandBackendLauncher {
         let endpoint = self.allocate_endpoint(request)?;
         let binary_path = canonical_backend_binary(request.service_definition)?;
         let mut command = Command::new(&binary_path);
-        command
-            .env(BACKEND_ENV_SERVICE_NAME, &request.key.service_name)
-            .env(BACKEND_ENV_SERVICE_VERSION, &request.key.service_version)
-            .env(BACKEND_ENV_ENDPOINT_PATH, &endpoint.path)
-            .env(BACKEND_ENV_ENDPOINT_NAMESPACE, &endpoint.namespace_id)
-            .env(BACKEND_ENV_INSTANCE, request.key.instance.id());
+        configure_backend_command(&mut command, request, &endpoint);
 
         let mut child = spawn_daemon(&mut command).map_err(BackendLaunchError::Spawn)?;
         let daemon = daemon_identity_for_spawned_process(
@@ -135,6 +137,26 @@ impl BackendLauncher for CommandBackendLauncher {
                 Err(BackendLaunchError::BackendHandle(err))
             }
         }
+    }
+}
+
+fn configure_backend_command(
+    command: &mut Command,
+    request: &BackendLaunchRequest<'_>,
+    endpoint: &Endpoint,
+) {
+    command
+        .env(BACKEND_ENV_SERVICE_NAME, &request.key.service_name)
+        .env(BACKEND_ENV_SERVICE_VERSION, &request.key.service_version)
+        .env(BACKEND_ENV_ENDPOINT_PATH, &endpoint.path)
+        .env(BACKEND_ENV_ENDPOINT_NAMESPACE, &endpoint.namespace_id)
+        .env(BACKEND_ENV_INSTANCE, request.key.instance.id());
+
+    if !request.trace_context.traceparent.is_empty() {
+        command.env(BACKEND_ENV_TRACEPARENT, &request.trace_context.traceparent);
+    }
+    if !request.trace_context.tracestate.is_empty() {
+        command.env(BACKEND_ENV_TRACESTATE, &request.trace_context.tracestate);
     }
 }
 
@@ -223,7 +245,7 @@ fn canonical_backend_binary(
 fn daemon_identity_for_spawned_process(
     pid: u32,
     exe_path: PathBuf,
-    ipc_endpoint: crate::broker::protocol::Endpoint,
+    ipc_endpoint: Endpoint,
     idle_timeout_secs: Option<u32>,
 ) -> Result<DaemonProcess, IdentityError> {
     let exe_sha256 = sha256_file(&exe_path)?;
@@ -243,4 +265,85 @@ fn unix_now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use crate::broker::protocol::ServiceDefinition;
+    use crate::broker::server::{BackendKey, BrokerInstanceKey, TraceContext};
+
+    use super::*;
+
+    fn env_value(command: &Command, name: &str) -> Option<String> {
+        command.get_envs().find_map(|(key, value)| {
+            if key == OsStr::new(name) {
+                value.map(|value| value.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+    }
+
+    #[test]
+    fn backend_command_environment_forwards_trace_context() {
+        let key = BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.20");
+        let service_definition = ServiceDefinition {
+            service_name: "zccache".into(),
+            binary_path: "backend".into(),
+            isolation: 1,
+            explicit_instance: String::new(),
+            per_version_binary_dir: ".".into(),
+            min_version: "1.10.0".into(),
+            version_allow_list: vec!["1.11.20".into()],
+            labels: Default::default(),
+        };
+        let trace_context = TraceContext {
+            request_id: 42,
+            traceparent: "00-11111111111111111111111111111111-2222222222222222-01".into(),
+            tracestate: "vendor=value".into(),
+        };
+        let request = BackendLaunchRequest {
+            key: &key,
+            service_definition: &service_definition,
+            trace_context: &trace_context,
+        };
+        let endpoint = Endpoint {
+            namespace_id: "shared".into(),
+            path: "backend.sock".into(),
+        };
+        let mut command = Command::new("backend");
+
+        configure_backend_command(&mut command, &request, &endpoint);
+
+        assert_eq!(
+            env_value(&command, BACKEND_ENV_SERVICE_NAME).as_deref(),
+            Some("zccache")
+        );
+        assert_eq!(
+            env_value(&command, BACKEND_ENV_SERVICE_VERSION).as_deref(),
+            Some("1.11.20")
+        );
+        assert_eq!(
+            env_value(&command, BACKEND_ENV_ENDPOINT_PATH).as_deref(),
+            Some("backend.sock")
+        );
+        assert_eq!(
+            env_value(&command, BACKEND_ENV_ENDPOINT_NAMESPACE).as_deref(),
+            Some("shared")
+        );
+        assert_eq!(
+            env_value(&command, BACKEND_ENV_INSTANCE).as_deref(),
+            Some("shared")
+        );
+        assert_eq!(
+            env_value(&command, BACKEND_ENV_TRACEPARENT).as_deref(),
+            Some("00-11111111111111111111111111111111-2222222222222222-01")
+        );
+        assert_eq!(
+            env_value(&command, BACKEND_ENV_TRACESTATE).as_deref(),
+            Some("vendor=value")
+        );
+    }
 }

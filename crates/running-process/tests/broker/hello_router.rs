@@ -16,7 +16,7 @@ use running_process::broker::server::{
     ensure_service_definition_dir, handle_hello_connection_with, service_definition_path,
     BackendLaunchError, BackendLaunchRequest, BackendLauncher, BackendRegistry, BrokerInstanceKey,
     HelloRequest, HelloRouter, PeerIdentity, ServiceDefinitionLoader, SpawnBudgetConfig,
-    SpawnCoordinator,
+    SpawnCoordinator, TraceContext,
 };
 
 use crate::backend_handle_common::current_daemon;
@@ -126,6 +126,7 @@ fn current_backend_for(
 struct CurrentProcessLauncher {
     endpoint_path: String,
     calls: Mutex<usize>,
+    trace_contexts: Mutex<Vec<TraceContext>>,
 }
 
 impl CurrentProcessLauncher {
@@ -133,11 +134,16 @@ impl CurrentProcessLauncher {
         Self {
             endpoint_path: endpoint_path.into(),
             calls: Mutex::new(0),
+            trace_contexts: Mutex::new(Vec::new()),
         }
     }
 
     fn calls(&self) -> usize {
         *self.calls.lock().unwrap()
+    }
+
+    fn trace_contexts(&self) -> Vec<TraceContext> {
+        self.trace_contexts.lock().unwrap().clone()
     }
 }
 
@@ -147,6 +153,10 @@ impl BackendLauncher for CurrentProcessLauncher {
         request: &BackendLaunchRequest<'_>,
     ) -> Result<BackendHandle, BackendLaunchError> {
         *self.calls.lock().unwrap() += 1;
+        self.trace_contexts
+            .lock()
+            .unwrap()
+            .push(request.trace_context.clone());
         Ok(current_backend_for(
             &request.key.service_name,
             &request.key.service_version,
@@ -321,8 +331,13 @@ fn router_spawns_and_registers_backend_on_live_registry_miss() {
     let router = HelloRouter::with_lifecycle_monitor(&loader, &registry)
         .with_spawn_coordinator(&spawn_coordinator)
         .with_backend_launcher(&launcher);
+    let mut first_request = request("zccache", "1.11.20");
+    first_request.frame.request_id = 88;
+    first_request.frame.traceparent =
+        "00-11111111111111111111111111111111-2222222222222222-01".into();
+    first_request.frame.tracestate = "vendor=value".into();
 
-    let first = router.handle_request(&request("zccache", "1.11.20"));
+    let first = router.handle_request(&first_request);
 
     match first.result.unwrap() {
         HelloReplyResult::Negotiated(negotiated) => {
@@ -332,6 +347,14 @@ fn router_spawns_and_registers_backend_on_live_registry_miss() {
         HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
     }
     assert_eq!(launcher.calls(), 1);
+    assert_eq!(
+        launcher.trace_contexts(),
+        vec![TraceContext {
+            request_id: 88,
+            traceparent: "00-11111111111111111111111111111111-2222222222222222-01".into(),
+            tracestate: "vendor=value".into(),
+        }]
+    );
     assert!(registry
         .lock()
         .unwrap()
