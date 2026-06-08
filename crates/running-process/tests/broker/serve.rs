@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::prelude::*;
 use prost::Message;
 use running_process::broker::protocol::{
-    hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, Frame,
-    FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
+    hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, ErrorCode,
+    Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
 };
 use running_process::broker::server::{
     build_hello_handler, ensure_service_definition_dir, local_socket_name,
@@ -163,6 +163,49 @@ fn serve_registered_backend_round_trips_loaded_service_definition() {
             assert_eq!(negotiated.daemon_version, "1.11.20");
         }
         HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
+    }
+}
+
+#[test]
+fn serve_registered_backend_rereads_service_definition_for_accepted_hello() {
+    let tmp = write_service_definition_dir();
+    let service_root = tmp.path().join("services");
+    let socket_name = unique_socket_name();
+    let backend_endpoint = unique_backend_endpoint();
+    let config = serve_config(
+        &service_root,
+        socket_name.clone(),
+        backend_endpoint.clone(),
+        1,
+    );
+    let server = thread::spawn(move || serve_registered_backend(config));
+
+    let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let mut client = connect_with_retry(name);
+    let mut updated = service_definition();
+    updated.min_version = "1.12.0".into();
+    write_definition_for(&service_root, "zccache", &updated);
+
+    let request_frame = frame_for_hello(&hello(0));
+    write_frame(&mut client, &request_frame.encode_to_vec()).unwrap();
+    let response_bytes = read_frame(&mut client).unwrap();
+    let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
+    let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
+
+    server.join().unwrap().unwrap();
+    assert_eq!(FrameKind::try_from(response_frame.kind), Ok(FrameKind::Response));
+    assert_eq!(response_frame.request_id, 99);
+    match reply.result.unwrap() {
+        HelloReplyResult::Refused(refused) => {
+            assert_eq!(
+                ErrorCode::try_from(refused.code),
+                Ok(ErrorCode::ErrorVersionBlocked)
+            );
+            assert_eq!(refused.reason, "wanted_version is below min_version");
+        }
+        HelloReplyResult::Negotiated(negotiated) => {
+            panic!("expected version refusal, got {negotiated:?}")
+        }
     }
 }
 

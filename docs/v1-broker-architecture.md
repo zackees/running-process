@@ -73,9 +73,11 @@ running-process-broker-v1 --serve <socket-path-or-pipe-name> \
 
 This mode loads `<service>.servicedef`, resolves the broker instance, routes the
 provided endpoint through the backend registry, serves exactly the requested
-number of Hello connections, then exits. It uses current-process backend
-identity as a temporary bridge; long-lived serving and spawn-managed backend
-identity remain the responsibility of the later spawn coordinator slice.
+number of Hello connections through `HelloRouter`, then exits. Service
+definitions are still reloaded for each accepted Hello, so policy changes made
+after binding are reflected in replies. It uses current-process backend identity
+as a temporary bridge; long-lived serving and spawn-managed backend identity
+remain the responsibility of the later spawn coordinator slice.
 
 `server::HelloRouter` is the broker-side routing layer for this path. It
 reloads `<service>.servicedef` for each request, checks the version policy,

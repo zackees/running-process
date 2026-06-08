@@ -107,12 +107,24 @@ pub fn serve_one_local_socket(
     socket_path: &str,
     handler: &HelloHandler,
 ) -> Result<HelloReply, BrokerConnectionError> {
+    serve_one_local_socket_with(socket_path, handler)
+}
+
+/// Run one blocking local-socket accept and serve exactly one Hello with a
+/// pluggable responder.
+pub fn serve_one_local_socket_with<R>(
+    socket_path: &str,
+    responder: &R,
+) -> Result<HelloReply, BrokerConnectionError>
+where
+    R: HelloResponder + ?Sized,
+{
     let listener = bind_local_socket(socket_path)?;
     let _cleanup = LocalSocketCleanup(socket_path);
 
     let mut stream = listener.accept()?;
     let peer = peer_identity_from_stream(&stream)?;
-    handle_hello_connection(&mut stream, handler, peer)
+    handle_hello_connection_with(&mut stream, responder, peer)
 }
 
 /// Run a bounded blocking local-socket accept loop.
@@ -148,6 +160,34 @@ pub fn serve_local_socket_connections(
             Ok(Err(err)) => return Err(err),
             Err(_) => return Err(BrokerConnectionError::WorkerPanic),
         }
+    }
+    Ok(())
+}
+
+/// Run a bounded blocking local-socket accept loop with a pluggable responder.
+///
+/// This serves accepted connections sequentially so responders may borrow
+/// broker-owned state that is not safe to share across worker threads, such as
+/// platform process handles in the backend registry.
+pub fn serve_local_socket_connections_with<R>(
+    socket_path: &str,
+    responder: &R,
+    connection_count: usize,
+) -> Result<(), BrokerConnectionError>
+where
+    R: HelloResponder + ?Sized,
+{
+    if connection_count == 0 {
+        return Ok(());
+    }
+
+    let listener = bind_local_socket(socket_path)?;
+    let _cleanup = LocalSocketCleanup(socket_path);
+
+    for _ in 0..connection_count {
+        let mut stream = listener.accept()?;
+        let peer = peer_identity_from_stream(&stream)?;
+        handle_hello_connection_with(&mut stream, responder, peer)?;
     }
     Ok(())
 }
