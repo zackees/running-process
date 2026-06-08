@@ -82,14 +82,12 @@ prost messages before insertion into the v1 frame `payload` field.
 
 ## Runtime Selection
 
-clud reads `RUNNING_PROCESS_USE_BROKER` before opening the daemon channel:
+clud reads `RUNNING_PROCESS_DISABLE` before opening the daemon channel:
 
 | Value | clud behavior during transition |
 |---|---|
 | unset | use the release default recorded in clud rollout metadata |
-| `auto` | use the release default explicitly |
-| `off` | use `json-legacy` and the direct daemon endpoint |
-| `on` | use `prost-v1`; broker refusal is a command failure |
+| `1` | use `json-legacy` and the direct daemon endpoint |
 
 The clud command-line diagnostics report the selected wire mode, broker
 instance, and daemon endpoint.
@@ -122,7 +120,7 @@ Manifest registry locations follow [v1 platform behavior](v1-platform-behavior.m
 - `Refused.code = ERROR_VERSION_UNSUPPORTED` is a hard protocol mismatch.
 - `Refused.code = ERROR_SERVICE_UNKNOWN` means the clud service definition is
   absent or invalid.
-- `RUNNING_PROCESS_USE_BROKER=off` is the supported rollback path.
+- `RUNNING_PROCESS_DISABLE=1` is the supported rollback path.
 
 ## Release Checklist
 

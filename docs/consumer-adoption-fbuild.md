@@ -32,7 +32,7 @@ fbuild uses the v1 broker for daemon discovery and lifecycle management:
 | service name | `fbuild` |
 | default isolation | `SHARED_BROKER` for per-user local builds |
 | CI isolation | `EXPLICIT_INSTANCE` for trust-grouped CI jobs |
-| rollback | `RUNNING_PROCESS_USE_BROKER=off` uses the direct fbuild path |
+| rollback | `RUNNING_PROCESS_DISABLE=1` uses the direct fbuild path |
 
 ## Encoding Decision Table
 
@@ -108,14 +108,12 @@ control-plane messages.
 
 ## Runtime Selection
 
-fbuild reads `RUNNING_PROCESS_USE_BROKER` before worker or daemon discovery:
+fbuild reads `RUNNING_PROCESS_DISABLE` before worker or daemon discovery:
 
 | Value | fbuild behavior during transition |
 |---|---|
 | unset | use the release default recorded in fbuild rollout metadata |
-| `auto` | use the release default explicitly |
-| `off` | use the direct fbuild path |
-| `on` | use the v1 broker; broker refusal is a build setup failure |
+| `1` | use the direct fbuild path |
 
 The fbuild diagnostics command prints the selected path, broker instance,
 service definition path, manifest path, and worker or daemon endpoint.
@@ -150,4 +148,4 @@ Service definitions and manifests use the directories documented in
 - Cache manifest round-trip tests for artifact, index, temp, log, lock,
   runtime, and config roots.
 - Per-platform endpoint tests for Linux, macOS, and Windows.
-- Rollback tests with `RUNNING_PROCESS_USE_BROKER=off`.
+- Rollback tests with `RUNNING_PROCESS_DISABLE=1`.

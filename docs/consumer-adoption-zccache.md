@@ -33,7 +33,7 @@ Rules:
 - The prost protocol number is used for every broker-backed zccache request.
 - A daemon that receives an unsupported protocol number returns a stable
   protocol mismatch error before reading the service payload.
-- Rollback uses `RUNNING_PROCESS_USE_BROKER=off` and the bincode direct path.
+- Rollback uses `RUNNING_PROCESS_DISABLE=1` and the bincode direct path.
 
 ## Migration Steps
 
@@ -89,14 +89,12 @@ Rules:
 
 ## Runtime Selection
 
-zccache reads `RUNNING_PROCESS_USE_BROKER` before daemon discovery:
+zccache reads `RUNNING_PROCESS_DISABLE` before daemon discovery:
 
 | Value | zccache behavior during transition |
 |---|---|
 | unset | use the release default recorded in zccache rollout metadata |
-| `auto` | use the release default explicitly |
-| `off` | use `bincode-legacy` and the direct daemon endpoint |
-| `on` | use `prost-v1`; broker refusal is a command failure |
+| `1` | use `bincode-legacy` and the direct daemon endpoint |
 
 The zccache diagnostics command prints the selected wire mode, protocol number,
 broker instance, and daemon endpoint.
@@ -128,7 +126,7 @@ zccache cache manifests live in the v1 platform registry:
   replies.
 - Cache manifest tests for artifact, index, lock, log, and temp roots.
 - Per-platform endpoint tests for Linux, macOS, and Windows.
-- Rollback tests with `RUNNING_PROCESS_USE_BROKER=off`.
+- Rollback tests with `RUNNING_PROCESS_DISABLE=1`.
 
 ## Release Checklist
 

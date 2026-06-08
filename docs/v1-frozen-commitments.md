@@ -99,5 +99,5 @@ v1 contract because there is no network transport.
 
 ## Escape Hatch
 
-`RUNNING_PROCESS_USE_BROKER=off` disables broker usage for participating
+`RUNNING_PROCESS_DISABLE=1` disables broker usage for participating
 consumers. The direct daemon path remains available while v1 is in rollout.

@@ -51,7 +51,7 @@ Any regression in correctness gates stops promotion.
 Rollback is setting:
 
 ```text
-RUNNING_PROCESS_USE_BROKER=off
+RUNNING_PROCESS_DISABLE=1
 ```
 
 Consumers then use their direct daemon path. The direct path stays tested during
