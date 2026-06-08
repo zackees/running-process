@@ -3,8 +3,9 @@
 use std::time::{Duration, Instant};
 
 use running_process::broker::server::{
-    BackendKey, BrokerInstanceKey, SpawnBeginError, SpawnBudgetConfig, SpawnCoordinator,
-    SpawnOutcome, DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, DEFAULT_SPAWN_BUDGET_WINDOW,
+    acquire_spawn_lock, BackendKey, BrokerInstanceKey, SpawnBeginError, SpawnBudgetConfig,
+    SpawnCoordinator, SpawnLockError, SpawnOutcome, DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW,
+    DEFAULT_SPAWN_BUDGET_WINDOW,
 };
 
 fn key(version: &str) -> BackendKey {
@@ -141,4 +142,28 @@ fn default_budget_is_three_attempts_per_thirty_seconds() {
         .try_begin(key, now + DEFAULT_SPAWN_BUDGET_WINDOW)
         .unwrap();
     assert_eq!(permit.attempt_number, 1);
+}
+
+#[test]
+fn acquire_spawn_lock_reports_lock_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lock_path = tmp.path().join("zccache-1.11.20.spawn.lock");
+    let _guard = acquire_spawn_lock(&lock_path).unwrap();
+
+    let err = acquire_spawn_lock(&lock_path).unwrap_err();
+
+    assert!(matches!(err, SpawnLockError::AlreadyLocked { path } if path == lock_path));
+}
+
+#[test]
+fn spawn_lock_guard_releases_lock_on_drop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lock_path = tmp.path().join("zccache-1.11.20.spawn.lock");
+    let guard = acquire_spawn_lock(&lock_path).unwrap();
+    assert_eq!(guard.path(), lock_path.as_path());
+    assert!(lock_path.exists());
+
+    drop(guard);
+
+    let _next_guard = acquire_spawn_lock(&lock_path).unwrap();
 }
