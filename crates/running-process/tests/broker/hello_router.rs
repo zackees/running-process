@@ -2,6 +2,8 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use prost::Message;
 use running_process::broker::backend_handle::BackendHandle;
@@ -11,7 +13,8 @@ use running_process::broker::protocol::{
 };
 use running_process::broker::server::{
     ensure_service_definition_dir, service_definition_path, BackendRegistry, BrokerInstanceKey,
-    HelloRequest, HelloRouter, PeerIdentity, ServiceDefinitionLoader,
+    HelloRequest, HelloRouter, PeerIdentity, ServiceDefinitionLoader, SpawnBudgetConfig,
+    SpawnCoordinator,
 };
 
 use crate::backend_handle_common::current_daemon;
@@ -178,6 +181,48 @@ fn router_reports_registry_miss_as_spawn_failed_placeholder() {
     let reply = router.handle_request(&request("zccache", "1.11.20"));
 
     assert_eq!(reply_code(&reply), ErrorCode::ErrorBackendSpawnFailed);
+}
+
+#[test]
+fn router_consumes_spawn_budget_on_registry_miss() {
+    let definition = service_definition(BrokerIsolation::SharedBroker);
+    let tmp = service_dir_with_definition(&definition);
+    let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+    let registry = BackendRegistry::new();
+    let spawn_coordinator = Mutex::new(SpawnCoordinator::with_config(SpawnBudgetConfig::new(
+        1,
+        Duration::from_secs(10),
+    )));
+    let router = HelloRouter::new(&loader, &registry).with_spawn_coordinator(&spawn_coordinator);
+
+    let first = router.handle_request(&request("zccache", "1.11.20"));
+    let second = router.handle_request(&request("zccache", "1.11.20"));
+
+    assert_eq!(reply_code(&first), ErrorCode::ErrorBackendSpawnFailed);
+    assert_eq!(reply_code(&second), ErrorCode::ErrorRateLimited);
+}
+
+#[test]
+fn router_spawn_budget_is_per_service_version() {
+    let mut definition = service_definition(BrokerIsolation::SharedBroker);
+    definition.version_allow_list = vec!["1.11.20".into(), "1.11.21".into()];
+    let tmp = service_dir_with_definition(&definition);
+    let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+    let registry = BackendRegistry::new();
+    let spawn_coordinator = Mutex::new(SpawnCoordinator::with_config(SpawnBudgetConfig::new(
+        1,
+        Duration::from_secs(10),
+    )));
+    let router = HelloRouter::new(&loader, &registry).with_spawn_coordinator(&spawn_coordinator);
+
+    let first = router.handle_request(&request("zccache", "1.11.20"));
+    let second_version = router.handle_request(&request("zccache", "1.11.21"));
+
+    assert_eq!(reply_code(&first), ErrorCode::ErrorBackendSpawnFailed);
+    assert_eq!(
+        reply_code(&second_version),
+        ErrorCode::ErrorBackendSpawnFailed
+    );
 }
 
 #[test]
