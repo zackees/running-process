@@ -40,6 +40,9 @@ pub mod broker;
 #[cfg(feature = "client")]
 pub mod maintenance;
 
+#[cfg(feature = "client")]
+pub mod cleanup;
+
 // Lightweight tee sink primitives for callers that want transcript/log
 // fan-out without pulling in the full daemon runtime.
 #[cfg(feature = "telemetry")]

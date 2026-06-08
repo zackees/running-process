@@ -71,6 +71,43 @@ running-process --find-leaks -- python worker.py
 `--find-leaks` tags the wrapped process tree with a unique originator marker and reports any
 descendants still alive after the direct child exits.
 
+## Cleanup Manifests
+
+The `running-process-cleanup` binary reads v1 broker `CacheManifest` files
+without requiring a broker or daemon to be running. Manifests are written in two
+places:
+
+- each daemon cache root: `.running-process-manifest.pb`
+- the central registry: `$XDG_DATA_HOME/running-process/manifests/` on Linux,
+  `~/Library/Application Support/running-process/manifests/` on macOS, and
+  `%APPDATA%\running-process\manifests\` on Windows
+
+Destructive commands are dry-run by default. Add `--confirm` to delete selected
+roots:
+
+```bash
+running-process-cleanup list --json
+running-process-cleanup verify --json
+running-process-cleanup prune --dormant-after 30d
+running-process-cleanup prune --dormant-after 30d --confirm
+running-process-cleanup prune --keep-current --keep-last 2
+running-process-cleanup uninstall zccache --keep-config
+running-process-cleanup instances --json
+```
+
+For GitHub Actions cache restores, run verification after `actions/cache@v4`
+restores daemon state. Manifests from a prior runner boot are reported as stale:
+
+```yaml
+- uses: actions/cache@v4
+  with:
+    path: ~/.local/share/running-process
+    key: running-process-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+- name: Verify restored running-process manifests
+  run: running-process-cleanup verify --json
+```
+
 ## Pipe-backed API
 
 ```python

@@ -8,6 +8,10 @@
 
 mod framing;
 mod lifecycle_event_size;
+mod manifest_atomic;
+mod manifest_boot_id;
+mod manifest_corruption;
+mod manifest_roundtrip;
 mod names;
 mod proto_field_numbers;
 mod proto_roundtrip;
