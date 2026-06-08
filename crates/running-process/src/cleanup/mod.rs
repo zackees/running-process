@@ -9,10 +9,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::broker::protocol::{CacheManifest, CacheRoot, CacheRootKind, StorageDisposition};
 
+/// Inspection helpers for broker cleanup instance metadata.
 pub mod instances;
+/// Read-only cleanup listing operations.
 pub mod list;
+/// Pruning operations for removable cache roots.
 pub mod prune;
+/// Uninstall cleanup operations for service-owned roots.
 pub mod uninstall;
+/// Basic cleanup verification helpers.
 pub mod verify_basic;
 
 /// A filesystem action planned or executed by cleanup.
@@ -147,6 +152,7 @@ pub(crate) fn manifest_json(manifest: &CacheManifest) -> String {
     )
 }
 
+/// Serialize cleanup actions to the CLI JSON response envelope.
 pub fn actions_json(schema_version: u32, actions: &[CleanupAction]) -> String {
     let actions = actions
         .iter()
