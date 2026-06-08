@@ -16,48 +16,72 @@ pub const NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV: &str =
 
 // ── Error type ──
 
+/// Errors returned by native terminal input capture.
 #[derive(Debug, Error)]
 pub enum TerminalInputError {
+    /// Terminal input capture has already closed.
     #[error("terminal input is closed")]
     Closed,
+    /// No terminal input arrived before the requested timeout.
     #[error("no terminal input available before timeout")]
     Timeout,
+    /// An operating-system I/O operation failed.
     #[error("terminal input I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// A terminal input error that does not fit a narrower variant.
     #[error("terminal input error: {0}")]
     Other(String),
 }
 
 // ── Pure-Rust data types ──
 
+/// A translated terminal input event ready to forward to a PTY.
 #[derive(Clone)]
 pub struct TerminalInputEventRecord {
+    /// Bytes to write to the PTY for this event.
     pub data: Vec<u8>,
+    /// Whether this event represents an unmodified Enter submit action.
     pub submit: bool,
+    /// Whether Shift was active when the event was captured.
     pub shift: bool,
+    /// Whether Ctrl was active when the event was captured.
     pub ctrl: bool,
+    /// Whether Alt was active when the event was captured.
     pub alt: bool,
+    /// Virtual-key code for the source key event.
     pub virtual_key_code: u16,
+    /// Number of key repeats represented by this event.
     pub repeat_count: u16,
 }
 
+/// Shared queue state for captured terminal input events.
 pub struct TerminalInputState {
+    /// Queued translated terminal input events.
     pub events: VecDeque<TerminalInputEventRecord>,
+    /// Whether the capture stream has been closed.
     pub closed: bool,
 }
 
 #[cfg(windows)]
+/// Windows console state saved while native input capture is active.
 pub struct ActiveTerminalInputCapture {
+    /// Raw Windows console input handle as an integer.
     pub input_handle: usize,
+    /// Console mode to restore when capture stops.
     pub original_mode: u32,
+    /// Console mode installed while capture is active.
     pub active_mode: u32,
 }
 
 #[cfg(windows)]
+/// Result of waiting for a Windows terminal input event.
 #[derive(Debug, PartialEq)]
 pub enum TerminalInputWaitOutcome {
+    /// A translated input event was received.
     Event(TerminalInputEventRecord),
+    /// Terminal input capture closed before an event arrived.
     Closed,
+    /// No event arrived before the timeout.
     Timeout,
 }
 
@@ -91,6 +115,7 @@ impl PartialEq for TerminalInputEventRecord {
 
 // ── Utility functions ──
 
+/// Returns the current Unix timestamp as fractional seconds.
 pub fn unix_now_seconds() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -99,6 +124,7 @@ pub fn unix_now_seconds() -> f64 {
 }
 
 #[cfg(windows)]
+/// Returns the configured native input trace target, if tracing is enabled.
 pub fn native_terminal_input_trace_target() -> Option<String> {
     std::env::var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV)
         .ok()
@@ -107,6 +133,7 @@ pub fn native_terminal_input_trace_target() -> Option<String> {
 }
 
 #[cfg(windows)]
+/// Appends one native input trace line to the configured target.
 pub fn append_native_terminal_input_trace_line(line: &str) {
     let Some(target) = native_terminal_input_trace_target() else {
         return;
@@ -122,6 +149,7 @@ pub fn append_native_terminal_input_trace_line(line: &str) {
 }
 
 #[cfg(windows)]
+/// Formats bytes as lowercase hexadecimal values for trace output.
 pub fn format_terminal_input_bytes(data: &[u8]) -> String {
     if data.is_empty() {
         return "[]".to_string();
@@ -133,6 +161,7 @@ pub fn format_terminal_input_bytes(data: &[u8]) -> String {
 // ── Console mode / key translation helpers ──
 
 #[cfg(windows)]
+/// Builds the Windows console mode used during native input capture.
 pub fn native_terminal_input_mode(original_mode: u32) -> u32 {
     use winapi::um::wincon::{
         ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
@@ -144,12 +173,14 @@ pub fn native_terminal_input_mode(original_mode: u32) -> u32 {
 }
 
 #[cfg(windows)]
+/// Returns the VT modifier parameter for the active modifier keys.
 pub fn terminal_input_modifier_parameter(shift: bool, alt: bool, ctrl: bool) -> Option<u8> {
     let value = 1 + u8::from(shift) + (u8::from(alt) * 2) + (u8::from(ctrl) * 4);
     (value > 1).then_some(value)
 }
 
 #[cfg(windows)]
+/// Repeats translated bytes according to a Windows key repeat count.
 pub fn repeat_terminal_input_bytes(chunk: &[u8], repeat_count: u16) -> Vec<u8> {
     let repeat = usize::from(repeat_count.max(1));
     let mut output = Vec::with_capacity(chunk.len() * repeat);
@@ -160,6 +191,7 @@ pub fn repeat_terminal_input_bytes(chunk: &[u8], repeat_count: u16) -> Vec<u8> {
 }
 
 #[cfg(windows)]
+/// Adds a VT CSI modifier parameter to a base sequence when needed and repeats it.
 pub fn repeated_modified_sequence(base: &[u8], modifier: Option<u8>, repeat_count: u16) -> Vec<u8> {
     if let Some(value) = modifier {
         let base_text = std::str::from_utf8(base).expect("VT sequence literal must be utf-8");
@@ -174,6 +206,7 @@ pub fn repeated_modified_sequence(base: &[u8], modifier: Option<u8>, repeat_coun
 }
 
 #[cfg(windows)]
+/// Builds and repeats a VT CSI tilde sequence with an optional modifier.
 pub fn repeated_tilde_sequence(number: u8, modifier: Option<u8>, repeat_count: u16) -> Vec<u8> {
     if let Some(value) = modifier {
         let sequence = format!("\x1b[{number};{value}~");
@@ -185,6 +218,7 @@ pub fn repeated_tilde_sequence(number: u8, modifier: Option<u8>, repeat_count: u
 }
 
 #[cfg(windows)]
+/// Maps a Unicode code unit to the corresponding Ctrl-key control byte.
 pub fn control_character_for_unicode(unicode: u16) -> Option<u8> {
     let upper = char::from_u32(u32::from(unicode))?.to_ascii_uppercase();
     match upper {
@@ -200,6 +234,7 @@ pub fn control_character_for_unicode(unicode: u16) -> Option<u8> {
 }
 
 #[cfg(windows)]
+/// Writes a trace record for a translated key event and returns the event unchanged.
 pub fn trace_translated_console_key_event(
     record: &winapi::um::wincontypes::KEY_EVENT_RECORD,
     event: TerminalInputEventRecord,
@@ -223,6 +258,7 @@ pub fn trace_translated_console_key_event(
 }
 
 #[cfg(windows)]
+/// Translates a Windows console key event into PTY input bytes.
 pub fn translate_console_key_event(
     record: &winapi::um::wincontypes::KEY_EVENT_RECORD,
 ) -> Option<TerminalInputEventRecord> {
@@ -463,6 +499,7 @@ pub fn translate_console_key_event(
 // ── Worker thread ──
 
 #[cfg(windows)]
+/// Runs the Windows console input worker that queues translated key events.
 pub fn native_terminal_input_worker(
     input_handle: usize,
     state: Arc<Mutex<TerminalInputState>>,
@@ -547,6 +584,7 @@ pub fn native_terminal_input_worker(
 // ── Wait helper ──
 
 #[cfg(windows)]
+/// Waits for the next queued terminal input event, closure, or timeout.
 pub fn wait_for_terminal_input_event(
     state: &Arc<Mutex<TerminalInputState>>,
     condvar: &Arc<Condvar>,
@@ -582,13 +620,20 @@ pub fn wait_for_terminal_input_event(
 
 // ── TerminalInputCore ──
 
+/// Shared native terminal input capture core.
 pub struct TerminalInputCore {
+    /// Shared queue and closed flag for captured input.
     pub state: Arc<Mutex<TerminalInputState>>,
+    /// Condition variable signaled when input state changes.
     pub condvar: Arc<Condvar>,
+    /// Stop flag observed by the capture worker.
     pub stop: Arc<AtomicBool>,
+    /// Whether native input capture is currently active.
     pub capturing: Arc<AtomicBool>,
+    /// Worker thread handle for active capture.
     pub worker: Mutex<Option<thread::JoinHandle<()>>>,
     #[cfg(windows)]
+    /// Saved Windows console capture state.
     pub console: Mutex<Option<ActiveTerminalInputCapture>>,
 }
 
@@ -599,6 +644,7 @@ impl Default for TerminalInputCore {
 }
 
 impl TerminalInputCore {
+    /// Creates an idle terminal input core with capture stopped.
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(TerminalInputState {
@@ -614,6 +660,7 @@ impl TerminalInputCore {
         }
     }
 
+    /// Pops the next queued terminal input event without blocking.
     pub fn next_event(&self) -> Option<TerminalInputEventRecord> {
         self.state
             .lock()
@@ -622,6 +669,7 @@ impl TerminalInputCore {
             .pop_front()
     }
 
+    /// Returns whether at least one input event is queued.
     pub fn available(&self) -> bool {
         !self
             .state
@@ -631,10 +679,12 @@ impl TerminalInputCore {
             .is_empty()
     }
 
+    /// Returns whether native terminal input capture is active.
     pub fn capturing(&self) -> bool {
         self.capturing.load(Ordering::Acquire)
     }
 
+    /// Returns the saved original Windows console mode, if capture is active.
     pub fn original_console_mode(&self) -> Option<u32> {
         #[cfg(windows)]
         {
@@ -652,6 +702,7 @@ impl TerminalInputCore {
         }
     }
 
+    /// Returns the active Windows console mode, if capture is active.
     pub fn active_console_mode(&self) -> Option<u32> {
         #[cfg(windows)]
         {
@@ -669,6 +720,7 @@ impl TerminalInputCore {
         }
     }
 
+    /// Blocks until an input event, closure, or optional timeout.
     pub fn wait_for_event(
         &self,
         timeout: Option<f64>,
@@ -703,11 +755,13 @@ impl TerminalInputCore {
         }
     }
 
+    /// Drains all queued terminal input events.
     pub fn drain_events(&self) -> Vec<TerminalInputEventRecord> {
         let mut guard = self.state.lock().expect("terminal input mutex poisoned");
         guard.events.drain(..).collect()
     }
 
+    /// Stops native terminal input capture and restores console state.
     pub fn stop_impl(&self) -> Result<(), std::io::Error> {
         self.stop.store(true, Ordering::Release);
         #[cfg(windows)]
@@ -755,6 +809,7 @@ impl TerminalInputCore {
     }
 
     #[cfg(windows)]
+    /// Starts native terminal input capture for the attached Windows console.
     pub fn start_impl(&self) -> Result<(), std::io::Error> {
         use winapi::um::consoleapi::{GetConsoleMode, SetConsoleMode};
         use winapi::um::handleapi::INVALID_HANDLE_VALUE;
