@@ -8,7 +8,8 @@
 //! [`PtyInputFrame`] (client → daemon) messages. [`PtyAttachment`] owns the
 //! socket for the lifetime of that stream and exposes blocking
 //! send/receive helpers suitable for tests and small clients. Async
-//! clients can build on top of [`DaemonClient::attach_pty_session_raw`].
+//! clients can build on top of the attachment framing exposed by
+//! [`PtyAttachment`].
 
 use crate::client::paths;
 use crate::client::{ClientError, DaemonClient};

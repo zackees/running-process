@@ -38,8 +38,8 @@ pub fn socket_path(scope_hash: Option<&str>) -> String {
     }
 }
 
-/// Build an `interprocess` local socket [`Name`] from the path returned by
-/// [`socket_path`].
+/// Build an `interprocess` local socket [`interprocess::local_socket::Name`]
+/// from the path returned by [`socket_path`].
 ///
 /// This must use the same name-type dispatch as the server so that client
 /// and server agree on the actual IPC endpoint.

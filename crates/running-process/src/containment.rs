@@ -1,5 +1,5 @@
 //! Process group with originator-env injection that delegates to the
-//! two-mode [`crate::spawn`] surface.
+//! two-mode [`crate::spawn()`] surface.
 //!
 //! `ContainedProcessGroup` no longer carries OS-level containment state of
 //! its own (the new `spawn` builds a Job Object per-spawn on Windows and
@@ -8,7 +8,7 @@
 //!
 //! - holding an optional `originator` label,
 //! - injecting [`ORIGINATOR_ENV_VAR`] into every child the group spawns,
-//! - dispatching to either [`crate::spawn`] or [`crate::spawn_daemon`].
+//! - dispatching to either [`crate::spawn()`] or [`crate::spawn_daemon`].
 //!
 //! # `RUNNING_PROCESS_ORIGINATOR` environment variable
 //!

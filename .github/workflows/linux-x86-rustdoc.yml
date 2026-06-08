@@ -1,0 +1,30 @@
+name: Linux x86 Rustdoc
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rustdoc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTDOCFLAGS: "-Dwarnings"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-24.04-rustdoc
+          cache-on-failure: true
+
+      - name: Check Rust API docs
+        run: cargo doc -p running-process --features daemon --no-deps

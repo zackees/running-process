@@ -262,7 +262,7 @@ message SpawnDaemonRequest {
   // Environment variables to apply to the spawned subprocess. Default
   // behaviour (clear_inherited_env=false) is to LAYER these on top of
   // the daemon's own inherited env — the subprocess sees
-  // <daemon env> ∪ <these entries>, with these entries winning ties.
+  // the daemon environment plus these entries, with these entries winning ties.
   //
   // When clear_inherited_env=true, the subprocess sees ONLY these
   // entries, nothing inherited from the daemon. This mirrors Python's
