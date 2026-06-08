@@ -31,5 +31,6 @@ mod proto_field_numbers;
 mod proto_roundtrip;
 mod serve;
 mod service_def_loader;
+mod spawn_coordinator;
 mod trace_propagation;
 mod verify_pid;

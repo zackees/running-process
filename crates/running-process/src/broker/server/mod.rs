@@ -15,6 +15,7 @@ pub mod metrics;
 pub mod perf_guard;
 pub mod serve;
 pub mod service_def_loader;
+pub mod spawn_coordinator;
 pub mod trace_context;
 pub mod version_allow_list;
 
@@ -42,6 +43,10 @@ pub use service_def_loader::{
     ensure_service_definition_dir, service_definition_dir, service_definition_path,
     validate_service_definition_for_service, ServiceDefinitionError, ServiceDefinitionLoader,
     SERVICE_DEF_DIR_ENV, SERVICE_DEF_EXTENSION,
+};
+pub use spawn_coordinator::{
+    SpawnBeginError, SpawnBudgetConfig, SpawnBudgetSnapshot, SpawnCoordinator, SpawnOutcome,
+    SpawnPermit, DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, DEFAULT_SPAWN_BUDGET_WINDOW,
 };
 pub use trace_context::TraceContext;
 pub use version_allow_list::{check_version_allowed, VersionPolicyBlock};
