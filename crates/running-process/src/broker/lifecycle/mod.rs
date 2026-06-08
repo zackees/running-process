@@ -12,10 +12,14 @@
 //!   pipe names defined in #228.
 
 pub mod names;
+pub mod privilege;
 pub mod sid;
 
 pub use names::{
     backend_pipe, explicit_instance_pipe, private_broker_pipe, shared_broker_pipe, PipePath,
     PipePathError,
+};
+pub use privilege::{
+    refuse_privileged_run, PrivilegeError, PrivilegedIdentity, ALLOW_PRIVILEGED_ENV,
 };
 pub use sid::{user_sid_hash, SidError};
