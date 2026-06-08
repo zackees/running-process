@@ -50,10 +50,15 @@ use std::time::Duration;
 /// to `true` only when you actually want the child to inherit / allocate a
 /// console (interactive subprocess that should be visible to the user).
 pub struct SpawnStdio<'a> {
+    /// Source connected to the child's standard input.
     pub stdin: StdioSource<'a>,
+    /// Source connected to the child's standard output.
     pub stdout: StdioSource<'a>,
+    /// Source connected to the child's standard error.
     pub stderr: StdioSource<'a>,
+    /// Maximum time the watcher waits before closing wrapper-held pipe ends.
     pub drain_timeout: Option<Duration>,
+    /// Whether Windows children may inherit or allocate a visible console.
     pub show_console: bool,
 }
 
@@ -173,8 +178,11 @@ impl DaemonChild {
 /// corresponding [`StdioSource`] was [`StdioSource::Pipe`]; otherwise they
 /// are `None`.
 pub struct SpawnedChild {
+    /// Parent-side pipe for writing to child stdin when requested.
     pub stdin: Option<std::process::ChildStdin>,
+    /// Parent-side pipe for reading child stdout when requested.
     pub stdout: Option<std::process::ChildStdout>,
+    /// Parent-side pipe for reading child stderr when requested.
     pub stderr: Option<std::process::ChildStderr>,
     pid: u32,
     #[cfg(windows)]
