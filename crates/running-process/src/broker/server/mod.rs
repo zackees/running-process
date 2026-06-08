@@ -54,7 +54,10 @@ pub use control_socket::{
     ControlSocketError, ControlSocketReply,
 };
 pub use handoff::{
-    HandoffToken, HandoffTokenError, HandoffTokenStore, HandoffTokenStoreConfig,
+    HandoffAttemptDecision, HandoffAttemptFailure, HandoffAttemptInputs, HandoffFallbackDecision,
+    HandoffFallbackPolicy, HandoffFallbackReason, HandoffFallbackState, HandoffToken,
+    HandoffTokenError, HandoffTokenStore, HandoffTokenStoreConfig,
+    DEFAULT_HANDOFF_FAILED_ATTEMPTS_PER_WINDOW, DEFAULT_HANDOFF_FAILED_ATTEMPT_WINDOW,
     DEFAULT_HANDOFF_TOKEN_COLLISION_ATTEMPTS, DEFAULT_HANDOFF_TOKEN_TTL,
     DEFAULT_MAX_PENDING_HANDOFF_TOKENS, HANDOFF_TOKEN_BYTES,
 };

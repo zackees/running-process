@@ -19,6 +19,7 @@ mod connection;
 mod contrib_templates;
 mod docs_escape_hatch;
 mod framing;
+mod handoff_fallback_perm_denied;
 mod handoff_token_mismatch;
 mod hello_handler;
 mod hello_router;
