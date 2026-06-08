@@ -38,11 +38,13 @@ backend lifecycle, and returns direct backend pipe addresses.
 ## Hello Path
 
 1. Listener accepts one local IPC connection.
-2. `server::connection::handle_hello_connection` reads the initial frame with
+2. The accept loop derives platform peer credentials and applies the broker
+   peer policy. Rejected peers are dropped silently before any `Hello` bytes
+   are read or any `HelloReply` is written.
+3. `server::connection::handle_hello_connection` reads the initial frame with
    the 64 KiB `Hello` cap.
-3. Protocol layer decodes `Frame`, verifies it is a control-plane request,
+4. Protocol layer decodes `Frame`, verifies it is a control-plane request,
    then decodes `Hello` from `Frame.payload`.
-4. Peer credential check validates the OS identity.
 5. Service registry resolves and revalidates the service definition.
 6. Instance resolver selects the broker trust domain.
 7. Backend registry returns a live backend or asks the spawn coordinator to start
