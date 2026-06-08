@@ -66,6 +66,11 @@ negotiation.
 This keeps warm-cache workloads out of the broker path. The broker handles
 coordination, while the backend handles high-volume service traffic.
 
+The crate exposes this policy through `broker::client::connect_to_backend`:
+callers pass a cached backend endpoint plus their `wanted_version` and
+`self_version`; the helper uses the cached endpoint only when those versions
+match.
+
 ## Trust Domains
 
 Each service definition selects a broker isolation mode:
