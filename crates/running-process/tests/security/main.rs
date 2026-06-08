@@ -15,6 +15,7 @@ mod manifest_tamper_detection;
 mod no_network_dependencies;
 mod pipe_name_validation;
 mod pipe_squatting;
+mod security_fuzz_workflow;
 mod service_name_validation;
 mod unsafe_inventory;
 mod wanted_version_shell_injection;
