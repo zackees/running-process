@@ -55,30 +55,30 @@ The first server slices expose this boundary as `HelloRequest` and
 `handle_hello_connection`: the request contains the decoded `Hello`, the
 original `Frame` metadata, and the OS-verified peer identity. The framed I/O
 boundary also exposes `handle_hello_connection_with`, which accepts any
-`HelloResponder`; bounded tests can use the in-memory `HelloHandler`, while the
+`HelloResponder`; focused tests can use the in-memory `HelloHandler`, while the
 broker accept loop can route the same wire frame through `HelloRouter`. The
-full accept loop calls the same connection handler after binding the platform
-socket and checking credentials.
+control-socket accept loop calls the same connection handler after binding the
+platform socket and checking credentials.
 
-The bounded serve-mode slice wires this path end-to-end for an already-known
-backend endpoint:
+The serve-mode slice wires this path end-to-end for an already-known backend
+endpoint:
 
 ```bash
 running-process-broker-v1 --serve <socket-path-or-pipe-name> \
   --service zccache \
   --version 1.11.20 \
-  --backend-endpoint <backend-socket-or-pipe> \
-  --max-connections 100
+  --backend-endpoint <backend-socket-or-pipe>
 ```
 
 This mode loads `<service>.servicedef`, resolves the broker instance, routes the
-provided endpoint through the backend registry, serves exactly the requested
-number of Hello connections through `HelloRouter`, then exits. Service
-definitions are still reloaded for each accepted Hello, so policy changes made
-after binding are reflected in replies. The bounded serve path uses the live
-registry mode and prunes stale backend handles before each lookup. It uses
-current-process backend identity as a temporary bridge; spawn-managed backend
-identity remains the responsibility of the later spawn coordinator slice.
+provided endpoint through the backend registry, then serves Hello and admin
+frames through `HelloRouter` until the process exits. Tests and harnesses may
+pass `--max-connections <n>` to request a bounded run. Service definitions are
+still reloaded for each accepted Hello, so policy changes made after binding
+are reflected in replies. The serve path uses the live registry mode and prunes
+stale backend handles before each lookup. It uses current-process backend
+identity as a temporary bridge; spawn-managed backend identity remains the
+responsibility of the later spawn coordinator slice.
 
 `server::HelloRouter` is the broker-side routing layer for this path. It
 reloads `<service>.servicedef` for each request, checks the version policy,

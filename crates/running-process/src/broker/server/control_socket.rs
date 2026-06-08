@@ -5,6 +5,7 @@
 //! with that contract while the long-lived daemon loop is still being built.
 
 use std::io::{Read, Write};
+use std::num::NonZeroUsize;
 
 use interprocess::local_socket::traits::Listener;
 use prost::Message;
@@ -31,6 +32,24 @@ pub enum ControlSocketReply {
     Hello(HelloReply),
     /// The connection was handled as an admin request.
     Admin(AdminReply),
+}
+
+/// Connection limit for a broker control-socket accept loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlSocketConnectionLimit {
+    /// Accept exactly this many connections, then return.
+    Bounded(NonZeroUsize),
+    /// Continue accepting until the process exits or binding/accepting fails.
+    Unbounded,
+}
+
+impl ControlSocketConnectionLimit {
+    fn should_continue(self, accepted: usize) -> bool {
+        match self {
+            Self::Bounded(limit) => accepted < limit.get(),
+            Self::Unbounded => true,
+        }
+    }
 }
 
 /// Handle one already-accepted broker control connection.
@@ -101,15 +120,39 @@ where
     R: HelloResponder + ?Sized,
     F: Fn() -> AdminSnapshot,
 {
-    if connection_count == 0 {
+    let Some(connection_count) = NonZeroUsize::new(connection_count) else {
         return Ok(());
-    }
+    };
 
+    serve_control_socket_connections_with_limit_and_policy(
+        socket_path,
+        hello_responder,
+        snapshot_provider,
+        ControlSocketConnectionLimit::Bounded(connection_count),
+        peer_policy,
+    )
+}
+
+/// Run a broker control-socket accept loop that dispatches Hello and admin
+/// frames on the same endpoint.
+pub fn serve_control_socket_connections_with_limit_and_policy<R, F>(
+    socket_path: &str,
+    hello_responder: &R,
+    snapshot_provider: F,
+    connection_limit: ControlSocketConnectionLimit,
+    peer_policy: &PeerCredentialPolicy,
+) -> Result<(), ControlSocketError>
+where
+    R: HelloResponder + ?Sized,
+    F: Fn() -> AdminSnapshot,
+{
     let listener = bind_local_socket(socket_path)?;
     let _cleanup = LocalSocketCleanup(socket_path);
 
-    for _ in 0..connection_count {
+    let mut accepted = 0;
+    while connection_limit.should_continue(accepted) {
         let mut stream = listener.accept().map_err(BrokerConnectionError::Io)?;
+        accepted += 1;
         let peer = peer_identity_from_stream(&stream)?;
         let _reply = handle_control_connection_with_peer_policy(
             &mut stream,

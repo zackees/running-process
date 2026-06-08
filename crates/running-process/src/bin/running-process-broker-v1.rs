@@ -1,8 +1,8 @@
 //! Entry point for the v1 broker daemon.
 //!
 //! Phase 4 lands this binary incrementally. It supports local admin renderers,
-//! single-connection Hello tests, and a bounded serve mode for an already
-//! registered backend endpoint.
+//! single-connection Hello tests, and long-lived serve modes for registered or
+//! launch-backed backend endpoints.
 
 use running_process::broker::server::admin::{
     render_backend_health_json, render_config_json, render_diagnose_json, render_dump_json,
@@ -160,25 +160,30 @@ fn main() {
             let service_name = required_option(&rest[2..], "--service");
             let service_version = required_option(&rest[2..], "--version");
             let backend_endpoint = required_option(&rest[2..], "--backend-endpoint");
-            let max_connections = option_value(&rest[2..], "--max-connections")
-                .map(parse_connection_count)
-                .unwrap_or(Ok(1))
-                .unwrap_or_else(|err| {
-                    eprintln!("{err}");
-                    std::process::exit(2);
-                });
-
-            let mut config = BrokerServeConfig::new(
-                socket_path,
-                service_name,
-                service_version,
-                backend_endpoint,
-                max_connections,
-            )
-            .unwrap_or_else(|err| {
-                eprintln!("invalid serve config: {err}");
-                std::process::exit(2);
-            });
+            let mut config =
+                if let Some(max_connections) = option_value(&rest[2..], "--max-connections") {
+                    BrokerServeConfig::new(
+                        socket_path,
+                        service_name,
+                        service_version,
+                        backend_endpoint,
+                        parse_connection_count(max_connections).unwrap_or_else(|err| {
+                            eprintln!("{err}");
+                            std::process::exit(2);
+                        }),
+                    )
+                    .unwrap_or_else(|err| {
+                        eprintln!("invalid serve config: {err}");
+                        std::process::exit(2);
+                    })
+                } else {
+                    BrokerServeConfig::unbounded(
+                        socket_path,
+                        service_name,
+                        service_version,
+                        backend_endpoint,
+                    )
+                };
             if let Some(root) = option_value(&rest[2..], "--service-def-dir") {
                 config = config.with_service_definition_dir(root);
             }
@@ -193,19 +198,22 @@ fn main() {
                 eprintln!("--serve-launch requires a socket path or pipe name");
                 std::process::exit(2);
             };
-            let max_connections = option_value(&rest[2..], "--max-connections")
-                .map(parse_connection_count)
-                .unwrap_or(Ok(1))
-                .unwrap_or_else(|err| {
-                    eprintln!("{err}");
-                    std::process::exit(2);
-                });
-
-            let mut config = BrokerLaunchServeConfig::new(socket_path, max_connections)
-                .unwrap_or_else(|err| {
-                    eprintln!("invalid serve-launch config: {err}");
-                    std::process::exit(2);
-                });
+            let mut config =
+                if let Some(max_connections) = option_value(&rest[2..], "--max-connections") {
+                    BrokerLaunchServeConfig::new(
+                        socket_path,
+                        parse_connection_count(max_connections).unwrap_or_else(|err| {
+                            eprintln!("{err}");
+                            std::process::exit(2);
+                        }),
+                    )
+                    .unwrap_or_else(|err| {
+                        eprintln!("invalid serve-launch config: {err}");
+                        std::process::exit(2);
+                    })
+                } else {
+                    BrokerLaunchServeConfig::unbounded(socket_path)
+                };
             if let Some(root) = option_value(&rest[2..], "--service-def-dir") {
                 config = config.with_service_definition_dir(root);
             }
@@ -248,7 +256,7 @@ fn print_help(program: &str) {
     );
     println!();
     println!("Admin commands use --socket, or {ADMIN_SOCKET_ENV}, to query a running broker.");
-    println!("Phase 4 broker daemon entry point. Serve mode is bounded until the long-lived spawn coordinator lands.");
+    println!("Phase 4 broker daemon entry point. Serve mode accepts until process exit unless --max-connections is provided.");
 }
 
 #[derive(Clone)]

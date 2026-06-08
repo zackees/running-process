@@ -45,7 +45,9 @@ pub use connection::{
     PeerCredentialPolicy,
 };
 pub use control_socket::{
-    handle_control_connection_with_peer_policy, serve_control_socket_connections_with_policy,
+    handle_control_connection_with_peer_policy,
+    serve_control_socket_connections_with_limit_and_policy,
+    serve_control_socket_connections_with_policy, ControlSocketConnectionLimit,
     ControlSocketError, ControlSocketReply,
 };
 pub use hello_handler::{
