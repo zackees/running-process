@@ -1,0 +1,243 @@
+#![cfg(feature = "client")]
+
+use std::io::Cursor;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use interprocess::local_socket::prelude::*;
+use prost::Message;
+use running_process::broker::protocol::{
+    hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, ErrorCode,
+    Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
+};
+use running_process::broker::server::{
+    handle_hello_connection, local_socket_name, serve_one_local_socket, HelloHandler, PeerIdentity,
+    RegisteredBackend,
+};
+
+fn service_definition() -> ServiceDefinition {
+    ServiceDefinition {
+        service_name: "zccache".into(),
+        binary_path: "/usr/local/bin/zccache".into(),
+        isolation: BrokerIsolation::SharedBroker as i32,
+        explicit_instance: String::new(),
+        per_version_binary_dir: "/opt/zccache/versions".into(),
+        min_version: "1.10.0".into(),
+        version_allow_list: vec!["1.11.20".into()],
+        labels: Default::default(),
+    }
+}
+
+fn handler() -> HelloHandler {
+    HelloHandler::new()
+        .with_backend(RegisteredBackend {
+            service_definition: service_definition(),
+            daemon_version: "1.11.20".into(),
+            backend_pipe: r"\\.\pipe\rpb-v1-test-backend".into(),
+            server_capabilities: 0x01,
+        })
+        .unwrap()
+}
+
+fn hello(peer_pid: u32) -> Hello {
+    Hello {
+        client_min_protocol: 1,
+        client_max_protocol: 1,
+        service_name: "zccache".into(),
+        wanted_version: "1.11.20".into(),
+        client_version: "zccache-cli/1.11.20".into(),
+        client_capabilities: 0,
+        auth_token: Vec::new(),
+        request_id: "req-1".into(),
+        connection_id: 0,
+        peer_pid,
+        client_lib_name: "running-process".into(),
+        client_lib_version: "4.0.3".into(),
+        peer_attestation_nonce: Vec::new(),
+        capability_token: Vec::new(),
+        client_keepalive_secs: 60,
+    }
+}
+
+fn peer() -> PeerIdentity {
+    PeerIdentity {
+        pid: std::process::id(),
+        uid_or_sid: "test-peer".into(),
+    }
+}
+
+fn frame_for_hello(hello: &Hello) -> Frame {
+    Frame {
+        envelope_version: 1,
+        kind: FrameKind::Request as i32,
+        payload_protocol: 0,
+        payload: hello.encode_to_vec(),
+        request_id: 7,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into(),
+        tracestate: "vendor=value".into(),
+    }
+}
+
+fn encode_framed_frame(frame: &Frame) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    write_frame(&mut bytes, &frame.encode_to_vec()).unwrap();
+    bytes
+}
+
+fn decode_response_frame(bytes: &[u8]) -> (Frame, HelloReply) {
+    let mut cursor = Cursor::new(bytes);
+    let response_bytes = read_frame(&mut cursor).unwrap();
+    let frame = Frame::decode(response_bytes.as_slice()).unwrap();
+    let reply = HelloReply::decode(frame.payload.as_slice()).unwrap();
+    (frame, reply)
+}
+
+#[test]
+fn handle_hello_connection_returns_framed_negotiated_reply() {
+    let request = encode_framed_frame(&frame_for_hello(&hello(std::process::id())));
+    let request_len = request.len();
+    let mut stream = Cursor::new(request);
+
+    let reply = handle_hello_connection(&mut stream, &handler(), peer()).unwrap();
+    let response_bytes = &stream.get_ref()[request_len..];
+    let (frame, decoded_reply) = decode_response_frame(response_bytes);
+
+    assert_eq!(frame.envelope_version, 1);
+    assert_eq!(FrameKind::try_from(frame.kind), Ok(FrameKind::Response));
+    assert_eq!(frame.payload_protocol, 0);
+    assert_eq!(frame.request_id, 7);
+    assert_eq!(
+        frame.traceparent,
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    );
+    assert_eq!(reply, decoded_reply);
+
+    match decoded_reply.result.unwrap() {
+        HelloReplyResult::Negotiated(negotiated) => {
+            assert_eq!(negotiated.backend_pipe, r"\\.\pipe\rpb-v1-test-backend");
+        }
+        HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
+    }
+}
+
+#[test]
+fn malformed_frame_body_gets_refused_response_frame() {
+    let mut request = Vec::new();
+    write_frame(&mut request, &[0xFF, 0xFF, 0xFF]).unwrap();
+    let request_len = request.len();
+    let mut stream = Cursor::new(request);
+
+    let returned_reply = handle_hello_connection(&mut stream, &handler(), peer()).unwrap();
+
+    let response_bytes = &stream.get_ref()[request_len..];
+    let (frame, reply) = decode_response_frame(response_bytes);
+    assert_eq!(returned_reply, reply);
+    assert_eq!(FrameKind::try_from(frame.kind), Ok(FrameKind::Response));
+    assert_eq!(decoded_reply_code(&reply), ErrorCode::ErrorPeerRejected);
+    match reply.result.unwrap() {
+        HelloReplyResult::Refused(refused) => {
+            assert_eq!(
+                ErrorCode::try_from(refused.code),
+                Ok(ErrorCode::ErrorPeerRejected)
+            );
+            assert_eq!(refused.reason, "malformed broker Frame");
+        }
+        HelloReplyResult::Negotiated(negotiated) => {
+            panic!("expected refusal, got {negotiated:?}")
+        }
+    }
+}
+
+fn decoded_reply_code(reply: &HelloReply) -> ErrorCode {
+    match reply.result.as_ref().unwrap() {
+        HelloReplyResult::Refused(refused) => ErrorCode::try_from(refused.code).unwrap(),
+        HelloReplyResult::Negotiated(negotiated) => {
+            panic!("expected refused, got negotiated {negotiated:?}")
+        }
+    }
+}
+
+#[test]
+fn serve_one_local_socket_round_trips_hello() {
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let server = thread::spawn(move || serve_one_local_socket(&server_socket, &handler()));
+
+    let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let mut client = connect_with_retry(name);
+    let request_frame = frame_for_hello(&hello(0));
+    write_frame(&mut client, &request_frame.encode_to_vec()).unwrap();
+
+    let response_bytes = read_frame(&mut client).unwrap();
+    let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
+    let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
+
+    let server_reply = server.join().unwrap().unwrap();
+    assert_eq!(server_reply, reply);
+    assert_eq!(FrameKind::try_from(response_frame.kind), Ok(FrameKind::Response));
+    assert_eq!(response_frame.request_id, 7);
+    match reply.result.unwrap() {
+        HelloReplyResult::Negotiated(negotiated) => {
+            assert_eq!(negotiated.daemon_version, "1.11.20");
+        }
+        HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
+    }
+}
+
+fn connect_with_retry(
+    name: interprocess::local_socket::Name<'static>,
+) -> interprocess::local_socket::Stream {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match LocalSocketStream::connect(name.borrow()) {
+            Ok(stream) => return stream,
+            Err(err) if Instant::now() < deadline => {
+                if !is_pending_bind_error(&err) {
+                    panic!("failed to connect to broker local socket: {err}");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("timed out connecting to broker local socket: {err}"),
+        }
+    }
+}
+
+fn is_pending_bind_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+    )
+}
+
+#[cfg(windows)]
+fn unique_socket_name() -> String {
+    format!(
+        "rpb-v1-serve-once-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    )
+}
+
+#[cfg(unix)]
+fn unique_socket_name() -> String {
+    std::env::temp_dir()
+        .join(format!(
+            "rpb-v1-serve-once-{}-{}.sock",
+            std::process::id(),
+            unique_suffix()
+        ))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}

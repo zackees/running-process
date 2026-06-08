@@ -9,6 +9,7 @@ use running_process::broker::server::admin::{
     render_healthz, render_list_instances_json, render_metrics_text, render_readyz,
     render_status_json, AdminSnapshot,
 };
+use running_process::broker::server::{serve_one_local_socket, HelloHandler};
 
 fn main() {
     let mut args = std::env::args();
@@ -61,6 +62,17 @@ fn main() {
         Some("metrics") => {
             print!("{}", render_metrics_text(&snapshot));
         }
+        Some("--serve-once") => {
+            let Some(socket_path) = rest.get(1) else {
+                eprintln!("--serve-once requires a socket path or pipe name");
+                std::process::exit(2);
+            };
+            let handler = HelloHandler::new();
+            if let Err(err) = serve_one_local_socket(socket_path, &handler) {
+                eprintln!("serve-once failed: {err}");
+                std::process::exit(1);
+            }
+        }
         None => {
             eprintln!("running-process-broker-v1 serve mode is not implemented yet; see #235");
             std::process::exit(2);
@@ -84,8 +96,9 @@ fn print_help(program: &str) {
     println!("{program} config --effective --json");
     println!("{program} diagnose --output <bundle.tar.gz>");
     println!("{program} metrics");
+    println!("{program} --serve-once <socket-path-or-pipe-name>");
     println!();
-    println!("Phase 4 broker daemon entry point. Serve mode lands in #235 follow-up PRs.");
+    println!("Phase 4 broker daemon entry point. Full serve mode lands in #235 follow-up PRs.");
 }
 
 fn has_flag(args: &[String], flag: &str) -> bool {
