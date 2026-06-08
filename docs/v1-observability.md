@@ -66,6 +66,12 @@ locked by `tests/broker/metrics_names_frozen.rs`.
 
 Metric renames require v2.
 
+## Perf Guard
+
+`broker::server::perf_guard` owns the frozen Hello latency budget:
+P50 <= 200 us and P99 <= 1 ms over 10000 samples. The accept-loop benchmark
+feeds real Hello round-trip samples into this module when the socket path lands.
+
 ## Diagnostic Bundle
 
 `diagnose --output bundle.tar.gz` writes a bundle with:
