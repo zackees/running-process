@@ -1,10 +1,10 @@
-//! Bounded broker serve-mode wiring for registered backends.
+//! Bounded broker serve-mode wiring for registered and launch-backed backends.
 //!
 //! Phase 4 grows the long-lived daemon incrementally. This module connects the
 //! existing service-definition loader, broker instance routing, backend
-//! registry, and framed local-socket accept loop for an already-known backend
-//! endpoint. Phase 5 replaces the current-process backend identity with real
-//! spawn-managed backend handles.
+//! registry, backend launch coordination, and framed local-socket accept loop.
+//! The long-lived daemon loop will replace these bounded entry points once the
+//! broker lifecycle surface is ready.
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -12,8 +12,10 @@ use std::sync::Mutex;
 
 use crate::broker::backend_handle::{BackendHandle, BackendHandleError, DaemonProcess};
 use crate::broker::backend_lifecycle::identity::IdentityError;
+use crate::broker::lifecycle::sid::SidError;
 use crate::broker::protocol::{Endpoint, ServiceDefinition};
 
+use super::backend_launcher::{BackendLauncher, CommandBackendLauncher};
 use super::backend_registry::BackendRegistry;
 use super::connection::{
     serve_local_socket_connections_with_policy, BrokerConnectionError, PeerCredentialPolicy,
@@ -24,6 +26,7 @@ use super::instance::{BrokerInstanceError, BrokerInstanceKey};
 use super::service_def_loader::{
     service_definition_dir, ServiceDefinitionError, ServiceDefinitionLoader,
 };
+use super::spawn_coordinator::SpawnCoordinator;
 use super::version_allow_list::{check_version_allowed, VersionPolicyBlock};
 
 /// Configuration for a bounded broker serve-mode run.
@@ -37,6 +40,17 @@ pub struct BrokerServeConfig {
     pub service_version: String,
     /// Direct backend endpoint returned to negotiated clients.
     pub backend_endpoint: String,
+    /// Directory containing `<service>.servicedef` protobuf files.
+    pub service_definition_dir: PathBuf,
+    /// Number of Hello connections to accept before returning.
+    pub max_connections: NonZeroUsize,
+}
+
+/// Configuration for bounded serve mode that launches backends on Hello miss.
+#[derive(Clone, Debug)]
+pub struct BrokerLaunchServeConfig {
+    /// Local socket path or Windows pipe name to bind.
+    pub socket_path: String,
     /// Directory containing `<service>.servicedef` protobuf files.
     pub service_definition_dir: PathBuf,
     /// Number of Hello connections to accept before returning.
@@ -70,6 +84,28 @@ impl BrokerServeConfig {
     }
 }
 
+impl BrokerLaunchServeConfig {
+    /// Build a launch-backed serve config using the platform
+    /// service-definition directory.
+    pub fn new(
+        socket_path: impl Into<String>,
+        max_connections: usize,
+    ) -> Result<Self, BrokerServeError> {
+        Ok(Self {
+            socket_path: socket_path.into(),
+            service_definition_dir: service_definition_dir(),
+            max_connections: NonZeroUsize::new(max_connections)
+                .ok_or(BrokerServeError::InvalidMaxConnections)?,
+        })
+    }
+
+    /// Override the service-definition directory.
+    pub fn with_service_definition_dir(mut self, root: impl Into<PathBuf>) -> Self {
+        self.service_definition_dir = root.into();
+        self
+    }
+}
+
 /// Serve a bounded number of broker Hello connections.
 pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerServeError> {
     let RegisteredServeBackend {
@@ -77,6 +113,35 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
     } = build_registered_backend(&config)?;
     let registry = Mutex::new(registry);
     let router = HelloRouter::with_lifecycle_monitor(&loader, &registry);
+    let peer_policy =
+        PeerCredentialPolicy::current_user().ok_or(BrokerServeError::PeerPolicyUnavailable)?;
+    serve_local_socket_connections_with_policy(
+        &config.socket_path,
+        &router,
+        config.max_connections.get(),
+        &peer_policy,
+    )?;
+    Ok(())
+}
+
+/// Serve a bounded number of broker Hello connections, launching backends on
+/// verified registry misses.
+pub fn serve_launching_backends(config: BrokerLaunchServeConfig) -> Result<(), BrokerServeError> {
+    let launcher = CommandBackendLauncher::for_current_user()?;
+    serve_launching_backends_with_launcher(config, &launcher)
+}
+
+/// Testable launch-backed serve mode with an injected launcher.
+pub fn serve_launching_backends_with_launcher(
+    config: BrokerLaunchServeConfig,
+    launcher: &dyn BackendLauncher,
+) -> Result<(), BrokerServeError> {
+    let loader = ServiceDefinitionLoader::new(&config.service_definition_dir);
+    let registry = Mutex::new(BackendRegistry::new());
+    let spawn_coordinator = Mutex::new(SpawnCoordinator::new());
+    let router = HelloRouter::with_lifecycle_monitor(&loader, &registry)
+        .with_spawn_coordinator(&spawn_coordinator)
+        .with_backend_launcher(launcher);
     let peer_policy =
         PeerCredentialPolicy::current_user().ok_or(BrokerServeError::PeerPolicyUnavailable)?;
     serve_local_socket_connections_with_policy(
@@ -164,6 +229,9 @@ pub enum BrokerServeError {
     /// Current process identity could not be recorded for the configured backend.
     #[error(transparent)]
     Identity(#[from] IdentityError),
+    /// Current user SID hash could not be computed for backend endpoint allocation.
+    #[error(transparent)]
+    Sid(#[from] SidError),
     /// Configured backend version is blocked by the service definition.
     #[error("configured service version is blocked by service-definition policy: {0:?}")]
     VersionPolicy(VersionPolicyBlock),

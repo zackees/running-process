@@ -2,18 +2,23 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::prelude::*;
 use prost::Message;
+use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
 use running_process::broker::protocol::{
-    hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, ErrorCode,
-    Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
+    hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, Endpoint,
+    ErrorCode, Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
 };
 use running_process::broker::server::{
     build_hello_handler, ensure_service_definition_dir, local_socket_name,
-    serve_registered_backend, service_definition_path, BrokerServeConfig, PeerIdentity,
+    serve_launching_backends_with_launcher, serve_registered_backend, service_definition_path,
+    BackendLaunchError, BackendLaunchRequest, BackendLauncher, BrokerLaunchServeConfig,
+    BrokerServeConfig, PeerIdentity,
 };
 
 fn absolute_paths() -> (String, String) {
@@ -67,6 +72,16 @@ fn serve_config(
     )
     .unwrap()
     .with_service_definition_dir(service_root)
+}
+
+fn launch_serve_config(
+    service_root: &Path,
+    socket_path: impl Into<String>,
+    max_connections: usize,
+) -> BrokerLaunchServeConfig {
+    BrokerLaunchServeConfig::new(socket_path, max_connections)
+        .unwrap()
+        .with_service_definition_dir(service_root)
 }
 
 fn hello(peer_pid: u32) -> Hello {
@@ -155,7 +170,10 @@ fn serve_registered_backend_round_trips_loaded_service_definition() {
     let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
 
     server.join().unwrap().unwrap();
-    assert_eq!(FrameKind::try_from(response_frame.kind), Ok(FrameKind::Response));
+    assert_eq!(
+        FrameKind::try_from(response_frame.kind),
+        Ok(FrameKind::Response)
+    );
     assert_eq!(response_frame.request_id, 99);
     match reply.result.unwrap() {
         HelloReplyResult::Negotiated(negotiated) => {
@@ -193,7 +211,10 @@ fn serve_registered_backend_rereads_service_definition_for_accepted_hello() {
     let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
 
     server.join().unwrap().unwrap();
-    assert_eq!(FrameKind::try_from(response_frame.kind), Ok(FrameKind::Response));
+    assert_eq!(
+        FrameKind::try_from(response_frame.kind),
+        Ok(FrameKind::Response)
+    );
     assert_eq!(response_frame.request_id, 99);
     match reply.result.unwrap() {
         HelloReplyResult::Refused(refused) => {
@@ -206,6 +227,91 @@ fn serve_registered_backend_rereads_service_definition_for_accepted_hello() {
         HelloReplyResult::Negotiated(negotiated) => {
             panic!("expected version refusal, got {negotiated:?}")
         }
+    }
+}
+
+#[test]
+fn serve_launching_backends_launches_once_then_reuses_registry() {
+    let tmp = write_service_definition_dir();
+    let service_root = tmp.path().join("services");
+    let socket_name = unique_socket_name();
+    let backend_endpoint = unique_backend_endpoint();
+    let launcher = Arc::new(CurrentProcessLauncher::new(backend_endpoint.clone()));
+    let server_launcher = Arc::clone(&launcher);
+    let config = launch_serve_config(&service_root, socket_name.clone(), 2);
+    let server = thread::spawn(move || {
+        serve_launching_backends_with_launcher(config, server_launcher.as_ref())
+    });
+
+    let first = send_hello_roundtrip(&socket_name);
+    let second = send_hello_roundtrip(&socket_name);
+
+    server.join().unwrap().unwrap();
+    assert_negotiated_backend(first, &backend_endpoint);
+    assert_negotiated_backend(second, &backend_endpoint);
+    assert_eq!(launcher.launch_count(), 1);
+}
+
+fn send_hello_roundtrip(socket_name: &str) -> HelloReply {
+    let name = local_socket_name(socket_name).unwrap().into_owned();
+    let mut client = connect_with_retry(name);
+    let request_frame = frame_for_hello(&hello(0));
+    write_frame(&mut client, &request_frame.encode_to_vec()).unwrap();
+
+    let response_bytes = read_frame(&mut client).unwrap();
+    let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
+    assert_eq!(
+        FrameKind::try_from(response_frame.kind),
+        Ok(FrameKind::Response)
+    );
+    HelloReply::decode(response_frame.payload.as_slice()).unwrap()
+}
+
+fn assert_negotiated_backend(reply: HelloReply, expected_endpoint: &str) {
+    match reply.result.unwrap() {
+        HelloReplyResult::Negotiated(negotiated) => {
+            assert_eq!(negotiated.backend_pipe, expected_endpoint);
+            assert_eq!(negotiated.daemon_version, "1.11.20");
+        }
+        HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
+    }
+}
+
+struct CurrentProcessLauncher {
+    endpoint_path: String,
+    launch_count: AtomicUsize,
+}
+
+impl CurrentProcessLauncher {
+    fn new(endpoint_path: impl Into<String>) -> Self {
+        Self {
+            endpoint_path: endpoint_path.into(),
+            launch_count: AtomicUsize::new(0),
+        }
+    }
+
+    fn launch_count(&self) -> usize {
+        self.launch_count.load(Ordering::SeqCst)
+    }
+}
+
+impl BackendLauncher for CurrentProcessLauncher {
+    fn launch(
+        &self,
+        request: &BackendLaunchRequest<'_>,
+    ) -> Result<BackendHandle, BackendLaunchError> {
+        self.launch_count.fetch_add(1, Ordering::SeqCst);
+        let endpoint = Endpoint {
+            namespace_id: request.key.instance.id(),
+            path: self.endpoint_path.clone(),
+        };
+        let daemon = DaemonProcess::current_process(endpoint.clone(), Some(30))?;
+        Ok(BackendHandle::probe_with_service(
+            request.key.service_name.clone(),
+            request.key.service_version.clone(),
+            &endpoint,
+            &daemon,
+        )?)
     }
 }
 

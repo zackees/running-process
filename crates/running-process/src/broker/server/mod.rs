@@ -52,7 +52,8 @@ pub use perf_guard::{
     HELLO_P50_BUDGET, HELLO_P99_BUDGET, HELLO_PERF_GUARD_ENV, HELLO_PERF_SAMPLE_COUNT,
 };
 pub use serve::{
-    build_hello_handler, serve_registered_backend, BrokerServeConfig, BrokerServeError,
+    build_hello_handler, serve_launching_backends, serve_launching_backends_with_launcher,
+    serve_registered_backend, BrokerLaunchServeConfig, BrokerServeConfig, BrokerServeError,
 };
 pub use service_def_loader::{
     ensure_service_definition_dir, service_definition_dir, service_definition_path,
