@@ -13,70 +13,109 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Terminal graphics protocols recognized by capability detection.
 pub enum GraphicsProtocol {
+    /// Sixel bitmap graphics escape sequences.
     Sixel,
+    /// Kitty graphics protocol escape sequences.
     Kitty,
+    /// iTerm2 inline file protocol escape sequences.
     Iterm2File,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Detection result for a terminal graphics protocol.
 pub enum CapabilityStatus {
+    /// The protocol is available for use.
     Supported,
+    /// The protocol is known to be unavailable.
     Unsupported,
+    /// Available evidence is not strong enough to decide.
     Unknown,
+    /// The current terminal/session prevents using the protocol safely.
     Blocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Confidence level for graphics capability evidence.
 pub enum EvidenceStrength {
+    /// A live terminal probe confirmed the capability.
     Probe,
+    /// A strong terminal-host signal identified expected support.
     StrongHostSignal,
+    /// Terminfo advertised the capability.
     Terminfo,
+    /// Environment identity provides only weak evidence.
     WeakEnv,
+    /// A user setting supplied the evidence.
     UserOverride,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Detection result for one terminal graphics protocol.
 pub struct GraphicsCapability {
+    /// Protocol described by this result.
     pub protocol: GraphicsProtocol,
+    /// Whether the protocol is usable, unavailable, unknown, or blocked.
     pub status: CapabilityStatus,
+    /// Strength of the evidence behind `status`.
     pub evidence: EvidenceStrength,
+    /// Human-readable source of the evidence.
     pub source: String,
+    /// Context markers that may affect rendering reliability.
     pub risks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Graphics capability set detected for a terminal.
 pub struct TerminalGraphicsCapabilities {
+    /// Per-protocol capability results.
     pub protocols: Vec<GraphicsCapability>,
+    /// Preferred protocol when one is supported.
     pub preferred: Option<GraphicsProtocol>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Terminal capability snapshot used by clients and diagnostics.
 pub struct TerminalCapabilities {
+    /// Whether standard input and output are attached to a terminal.
     pub is_tty: bool,
+    /// Value of the `TERM` environment variable, when present.
     pub term: Option<String>,
+    /// Value of the `TERM_PROGRAM` environment variable, when present.
     pub terminal_program: Option<String>,
+    /// Detected terminal graphics capabilities.
     pub graphics: TerminalGraphicsCapabilities,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Raw terminal replies collected during active graphics probing.
 pub struct TerminalProbeEvidence {
+    /// Reply to the Sixel XTSMGRAPHICS query.
     pub sixel_xtsmgraphics: Option<String>,
+    /// Primary device attributes reply used for Sixel detection.
     pub sixel_da1: Option<String>,
+    /// Reply to the Kitty graphics query.
     pub kitty_graphics: Option<String>,
+    /// Reply to the iTerm2 capabilities query.
     pub iterm2_capabilities: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Inputs used to detect terminal capabilities.
 pub struct TerminalCapabilityInput {
+    /// Whether the inspected streams are attached to a terminal.
     pub is_tty: bool,
+    /// Environment variables used as host and session hints.
     pub env: BTreeMap<String, String>,
+    /// Active probe replies to incorporate into detection.
     pub probe: TerminalProbeEvidence,
 }
 
 impl TerminalCapabilityInput {
+    /// Builds detection input from the current process environment.
     pub fn from_env(is_tty: bool) -> Self {
         Self {
             is_tty,
@@ -85,6 +124,7 @@ impl TerminalCapabilityInput {
         }
     }
 
+    /// Returns this input with active probe evidence attached.
     pub fn with_probe(mut self, probe: TerminalProbeEvidence) -> Self {
         self.probe = probe;
         self
@@ -92,6 +132,7 @@ impl TerminalCapabilityInput {
 }
 
 impl TerminalGraphicsCapabilities {
+    /// Returns an all-protocol unknown capability set.
     pub fn unknown() -> Self {
         Self {
             protocols: vec![
@@ -121,15 +162,18 @@ impl TerminalGraphicsCapabilities {
         }
     }
 
+    /// Finds the capability result for `protocol`.
     pub fn by_protocol(&self, protocol: GraphicsProtocol) -> Option<&GraphicsCapability> {
         self.protocols.iter().find(|c| c.protocol == protocol)
     }
 }
 
+/// Detects capabilities for the current terminal with the default probe timeout.
 pub fn current_terminal_capabilities() -> TerminalCapabilities {
     current_terminal_capabilities_with_timeout(Duration::from_millis(80))
 }
 
+/// Detects capabilities for the current terminal using `timeout` for active probes.
 pub fn current_terminal_capabilities_with_timeout(timeout: Duration) -> TerminalCapabilities {
     let is_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
     let probe = if is_tty {
@@ -140,6 +184,7 @@ pub fn current_terminal_capabilities_with_timeout(timeout: Duration) -> Terminal
     detect_terminal_capabilities(TerminalCapabilityInput::from_env(is_tty).with_probe(probe))
 }
 
+/// Detects terminal capabilities from explicit environment and probe evidence.
 pub fn detect_terminal_capabilities(input: TerminalCapabilityInput) -> TerminalCapabilities {
     let term = env_value(&input.env, "TERM");
     let terminal_program = env_value(&input.env, "TERM_PROGRAM");
@@ -465,6 +510,7 @@ fn first_source(candidates: &[(&str, &str)]) -> String {
     "unknown".into()
 }
 
+/// Returns whether a primary device attributes reply advertises Sixel support.
 pub fn primary_da_reports_sixel(reply: &str) -> bool {
     reply
         .split('\x1b')
@@ -474,6 +520,7 @@ pub fn primary_da_reports_sixel(reply: &str) -> bool {
         .any(|param| param == "4")
 }
 
+/// Returns whether an XTSMGRAPHICS reply indicates Sixel graphics support.
 pub fn xtsmgraphics_reports_sixel(reply: &str) -> bool {
     reply.contains("\x1b[?") && reply.contains('S')
 }
@@ -548,6 +595,7 @@ fn active_probe(_timeout: Duration) -> TerminalProbeEvidence {
 }
 
 #[cfg(feature = "client")]
+/// Converts terminal graphics capabilities into the daemon protobuf form.
 pub fn terminal_graphics_capabilities_to_proto(
     caps: &TerminalGraphicsCapabilities,
 ) -> crate::proto::daemon::TerminalGraphicsCapabilities {
@@ -566,6 +614,7 @@ pub fn terminal_graphics_capabilities_to_proto(
 }
 
 #[cfg(feature = "client")]
+/// Converts daemon protobuf terminal graphics capabilities into the Rust form.
 pub fn terminal_graphics_capabilities_from_proto(
     caps: &crate::proto::daemon::TerminalGraphicsCapabilities,
 ) -> TerminalGraphicsCapabilities {
