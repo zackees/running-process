@@ -40,6 +40,23 @@ jobs:
         run: buf build
         working-directory: crates/running-process/proto/broker_v1
 
+      - name: Does broker_v1 exist on main yet?
+        # First PR (this one) introduces the broker_v1 subdir; main has
+        # nothing to compare against, and buf returns
+        #   "Module had no .proto files"
+        # for an empty subdir. Detect the bootstrap case so the gate
+        # passes on the introducing PR but stays armed on every PR
+        # afterwards.
+        id: have_baseline
+        run: |
+          if git ls-tree -r --name-only origin/main -- crates/running-process/proto/broker_v1 \
+               | grep -q '\.proto$'; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::broker_v1 has no .proto files on main yet — skipping breaking check on the bootstrap PR. The gate will engage on every subsequent PR."
+          fi
+
       - name: Breaking-change check against main
         # On main itself this is a no-op (nothing to compare against).
         # On PRs / forks we compare against origin/main. We fetch via
@@ -47,7 +64,7 @@ jobs:
         # actions/checkout@v4 only materializes the PR head as a local
         # branch — `main` lives under refs/remotes/origin/ and isn't
         # reachable as a plain `branch=main` ref via buf's git fetcher.
-        if: github.ref != 'refs/heads/main'
+        if: github.ref != 'refs/heads/main' && steps.have_baseline.outputs.present == 'true'
         run: |
           buf breaking \
             --against "https://github.com/${GITHUB_REPOSITORY}.git#branch=main,subdir=crates/running-process/proto/broker_v1"
