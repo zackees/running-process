@@ -44,9 +44,14 @@ negotiation. `traceparent`, `tracestate`, and `request_id` therefore survive
 validation and are available to backend lifecycle work, metrics, and admin
 diagnostics.
 
+`HelloRequest::trace_context()` captures the backend-forwardable W3C headers
+from the original frame.
+
 ## Metrics
 
 Metrics use OpenMetrics text and the `running_process_broker_v1_` prefix.
+The canonical names and label order live in `broker::server::metrics` and are
+locked by `tests/broker/metrics_names_frozen.rs`.
 
 | Metric | Type | Labels |
 |---|---|---|
