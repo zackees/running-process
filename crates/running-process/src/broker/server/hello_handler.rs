@@ -18,6 +18,7 @@ use crate::broker::protocol::{
 use crate::broker::server::version_allow_list::{
     check_version_allowed, VersionPolicyBlock,
 };
+use crate::broker::server::TraceContext;
 
 const PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_KEEPALIVE_SECS: u64 = 30 * 60;
@@ -77,6 +78,11 @@ impl HelloRequest {
         let hello = Hello::decode(frame.payload.as_slice())
             .map_err(|_| refused(ErrorCode::ErrorPeerRejected, "malformed Hello payload", 0))?;
         Ok(Self { frame, hello, peer })
+    }
+
+    /// Trace context available to backend lifecycle and diagnostics.
+    pub fn trace_context(&self) -> TraceContext {
+        TraceContext::from_frame(&self.frame)
     }
 }
 

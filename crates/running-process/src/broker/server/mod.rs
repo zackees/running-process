@@ -6,7 +6,9 @@
 //! logic testable without binding sockets or spawning backends.
 
 pub mod hello_handler;
+pub mod metrics;
 pub mod service_def_loader;
+pub mod trace_context;
 pub mod version_allow_list;
 
 pub use hello_handler::{
@@ -17,4 +19,5 @@ pub use service_def_loader::{
     validate_service_definition_for_service, ServiceDefinitionError, ServiceDefinitionLoader,
     SERVICE_DEF_DIR_ENV, SERVICE_DEF_EXTENSION,
 };
+pub use trace_context::TraceContext;
 pub use version_allow_list::{check_version_allowed, VersionPolicyBlock};
