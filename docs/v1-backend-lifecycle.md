@@ -76,13 +76,14 @@ shutdown. The idle clock is monotonic and platform-specific:
 
 ## Parent-Death Cleanup
 
-| Platform | Mechanism |
-|---|---|
-| Windows | Job object with kill-on-close and `CREATE_BREAKAWAY_FROM_JOB`. |
-| Linux | Child registers `PR_SET_PDEATHSIG` immediately after fork. |
-| macOS | Supervisor child watches the parent with `kqueue(NOTE_EXIT)`. |
+| Platform | Phase 5 target | Broker behavior |
+|---|---|---|
+| Windows | Job object with kill-on-close and `CREATE_BREAKAWAY_FROM_JOB`. | Broker installs the job object target before exposing a backend pipe, unless the process is already inside a job. |
+| Linux | Child-side `PR_SET_PDEATHSIG` with `SIGTERM`. | Broker installs the parent-death signal target before exposing a backend pipe. |
+| macOS | Planned kqueue supervisor child using `EVFILT_PROC` and `NOTE_EXIT`. | Broker reports the explicit planned kqueue-supervisor target; it is not collapsed into `UnsupportedNoop` while the supervisor implementation is still pending. |
 
-The broker starts lifetime control before it exposes a backend pipe.
+Other platforms remain `UnsupportedNoop` until a concrete cleanup primitive is
+chosen. The broker starts lifetime control before it exposes a backend pipe.
 
 ## Graceful Broker Shutdown
 

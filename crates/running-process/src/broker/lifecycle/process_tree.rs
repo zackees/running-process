@@ -6,7 +6,8 @@
 
 use std::io;
 
-/// Cleanup mechanism installed for the current broker process.
+/// Cleanup mechanism installed, or explicitly planned, for the current broker
+/// process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessTreeCleanup {
     /// Linux `PR_SET_PDEATHSIG` was installed for the broker process.
@@ -15,6 +16,8 @@ pub enum ProcessTreeCleanup {
     WindowsKillOnJobClose,
     /// Windows reported that the process already belongs to a Job Object.
     WindowsAlreadyInJob,
+    /// macOS kqueue-supervisor containment is the planned Phase 5 target.
+    MacosKqueueSupervisorPlanned,
     /// The current platform has no broker process-tree primitive yet.
     UnsupportedNoop,
 }
@@ -35,9 +38,12 @@ pub enum ProcessTreeError {
 
 /// Install process-tree cleanup for the current broker process.
 ///
-/// On Linux this sets `PR_SET_PDEATHSIG` to `SIGTERM`. On Windows this
-/// assigns the broker to a kill-on-close Job Object unless it already
-/// belongs to one. Other platforms currently return
+/// On Linux this sets `PR_SET_PDEATHSIG` to `SIGTERM`. On Windows this assigns
+/// the broker to a kill-on-close Job Object unless it already belongs to one.
+/// On macOS this returns
+/// [`ProcessTreeCleanup::MacosKqueueSupervisorPlanned`] to make the Phase 5
+/// kqueue-supervisor contract explicit before the supervisor is implemented.
+/// Other platforms currently return
 /// [`ProcessTreeCleanup::UnsupportedNoop`].
 pub fn install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
     platform_install_cleanup()
@@ -45,7 +51,65 @@ pub fn install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
 
 /// Return the cleanup mechanism this platform attempts to install.
 pub fn cleanup_target() -> ProcessTreeCleanup {
-    platform_cleanup_target()
+    cleanup_target_for_platform(current_platform())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupPlatform {
+    #[cfg(any(target_os = "linux", test))]
+    Linux,
+    #[cfg(any(windows, test))]
+    Windows,
+    #[cfg(any(target_os = "macos", test))]
+    Macos,
+    #[cfg(any(
+        all(unix, not(any(target_os = "linux", target_os = "macos"))),
+        all(not(unix), not(windows)),
+        test
+    ))]
+    Other,
+}
+
+fn cleanup_target_for_platform(platform: CleanupPlatform) -> ProcessTreeCleanup {
+    match platform {
+        #[cfg(any(target_os = "linux", test))]
+        CleanupPlatform::Linux => ProcessTreeCleanup::LinuxParentDeathSignal,
+        #[cfg(any(windows, test))]
+        CleanupPlatform::Windows => ProcessTreeCleanup::WindowsKillOnJobClose,
+        #[cfg(any(target_os = "macos", test))]
+        CleanupPlatform::Macos => ProcessTreeCleanup::MacosKqueueSupervisorPlanned,
+        #[cfg(any(
+            all(unix, not(any(target_os = "linux", target_os = "macos"))),
+            all(not(unix), not(windows)),
+            test
+        ))]
+        CleanupPlatform::Other => ProcessTreeCleanup::UnsupportedNoop,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn current_platform() -> CleanupPlatform {
+    CleanupPlatform::Linux
+}
+
+#[cfg(windows)]
+fn current_platform() -> CleanupPlatform {
+    CleanupPlatform::Windows
+}
+
+#[cfg(target_os = "macos")]
+fn current_platform() -> CleanupPlatform {
+    CleanupPlatform::Macos
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn current_platform() -> CleanupPlatform {
+    CleanupPlatform::Other
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn current_platform() -> CleanupPlatform {
+    CleanupPlatform::Other
 }
 
 #[cfg(target_os = "linux")]
@@ -58,11 +122,6 @@ fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
     } else {
         Ok(ProcessTreeCleanup::LinuxParentDeathSignal)
     }
-}
-
-#[cfg(target_os = "linux")]
-fn platform_cleanup_target() -> ProcessTreeCleanup {
-    ProcessTreeCleanup::LinuxParentDeathSignal
 }
 
 #[cfg(target_os = "linux")]
@@ -96,29 +155,19 @@ fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
     }
 }
 
-#[cfg(windows)]
-fn platform_cleanup_target() -> ProcessTreeCleanup {
-    ProcessTreeCleanup::WindowsKillOnJobClose
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(target_os = "macos")]
 fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
-    Ok(ProcessTreeCleanup::UnsupportedNoop)
+    Ok(ProcessTreeCleanup::MacosKqueueSupervisorPlanned)
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
-fn platform_cleanup_target() -> ProcessTreeCleanup {
-    ProcessTreeCleanup::UnsupportedNoop
-}
-
-#[cfg(all(not(unix), not(windows)))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
     Ok(ProcessTreeCleanup::UnsupportedNoop)
 }
 
 #[cfg(all(not(unix), not(windows)))]
-fn platform_cleanup_target() -> ProcessTreeCleanup {
-    ProcessTreeCleanup::UnsupportedNoop
+fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
+    Ok(ProcessTreeCleanup::UnsupportedNoop)
 }
 
 #[cfg(windows)]
@@ -206,6 +255,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cleanup_target_model_states_phase_5_platform_contracts() {
+        assert_eq!(
+            cleanup_target_for_platform(CleanupPlatform::Linux),
+            ProcessTreeCleanup::LinuxParentDeathSignal
+        );
+        assert_eq!(
+            cleanup_target_for_platform(CleanupPlatform::Windows),
+            ProcessTreeCleanup::WindowsKillOnJobClose
+        );
+        assert_eq!(
+            cleanup_target_for_platform(CleanupPlatform::Macos),
+            ProcessTreeCleanup::MacosKqueueSupervisorPlanned
+        );
+        assert_eq!(
+            cleanup_target_for_platform(CleanupPlatform::Other),
+            ProcessTreeCleanup::UnsupportedNoop
+        );
+    }
+
+    #[test]
     fn cleanup_target_is_explicit_for_current_platform() {
         #[cfg(target_os = "linux")]
         assert_eq!(cleanup_target(), ProcessTreeCleanup::LinuxParentDeathSignal);
@@ -213,7 +282,13 @@ mod tests {
         #[cfg(windows)]
         assert_eq!(cleanup_target(), ProcessTreeCleanup::WindowsKillOnJobClose);
 
-        #[cfg(all(not(target_os = "linux"), not(windows)))]
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            cleanup_target(),
+            ProcessTreeCleanup::MacosKqueueSupervisorPlanned
+        );
+
+        #[cfg(all(not(any(target_os = "linux", target_os = "macos")), not(windows)))]
         assert_eq!(cleanup_target(), ProcessTreeCleanup::UnsupportedNoop);
     }
 
