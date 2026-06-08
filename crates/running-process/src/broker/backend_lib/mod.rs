@@ -1,0 +1,18 @@
+//! Backend-facing helpers for v1 broker consumers.
+//!
+//! This module is intentionally platform-neutral. Windows `DuplicateHandle`
+//! and Unix `SCM_RIGHTS` transports will live in platform modules; backend
+//! consumers can use this layer to validate and classify handed-off payloads
+//! once those transports deliver a candidate connection.
+
+pub mod accept_handed_off;
+
+pub use crate::broker::server::{
+    DEFAULT_HANDOFF_TOKEN_COLLISION_ATTEMPTS, DEFAULT_HANDOFF_TOKEN_TTL,
+    DEFAULT_MAX_PENDING_HANDOFF_TOKENS, HANDOFF_TOKEN_BYTES, HandoffToken, HandoffTokenError,
+    HandoffTokenStore, HandoffTokenStoreConfig,
+};
+pub use accept_handed_off::{
+    AcceptedHandoff, HandedOffPayload, HandoffAcceptance, HandoffRejectionReason, RejectedHandoff,
+    accept_handed_off, parse_handoff_token,
+};

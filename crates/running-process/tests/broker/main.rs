@@ -7,18 +7,19 @@
 #![cfg(feature = "client")]
 
 mod admin;
+mod backend_endpoint_allocator;
 mod backend_handle_boot_id;
 mod backend_handle_common;
 mod backend_handle_dead;
 mod backend_handle_probe;
 mod backend_handle_recycled;
-mod backend_endpoint_allocator;
 mod backend_registry;
 mod client;
 mod connection;
 mod contrib_templates;
 mod docs_escape_hatch;
 mod framing;
+mod handoff_backend_lib;
 mod handoff_fallback_perm_denied;
 mod handoff_token_mismatch;
 mod hello_handler;
