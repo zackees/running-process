@@ -1,0 +1,72 @@
+name: security-fuzz
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/security-fuzz.yml"
+      - "crates/running-process/fuzz/**"
+      - "crates/running-process/proto/broker_v1/**"
+      - "crates/running-process/src/broker/**"
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  cargo-fuzz:
+    name: cargo-fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+
+      - name: Restore fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: crates/running-process/fuzz/corpus
+          key: fuzz-corpus-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/running-process/fuzz/Cargo.toml', 'crates/running-process/fuzz/Cargo.lock') }}
+          restore-keys: |
+            fuzz-corpus-${{ runner.os }}-
+
+      - name: Run fuzz targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd crates/running-process
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            FUZZ_SECONDS="${FUZZ_SECONDS:-30}"
+          else
+            FUZZ_SECONDS="${FUZZ_SECONDS:-1800}"
+          fi
+
+          targets=(
+            fuzz_frame_decode
+            fuzz_hello_decode
+            fuzz_helloreply_decode
+            fuzz_cache_manifest_decode
+            fuzz_service_def_decode
+            fuzz_framing_read
+            fuzz_pipe_name_parse
+            fuzz_service_name_validate
+          )
+
+          for target in "${targets[@]}"; do
+            cargo +nightly fuzz run "${target}" -- -max_total_time="${FUZZ_SECONDS}" -timeout=30
+          done
+
+      - name: Upload fuzz artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: crates/running-process/fuzz/artifacts
+          if-no-files-found: ignore
