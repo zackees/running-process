@@ -8,15 +8,15 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::broker::backend_lifecycle::identity::IdentityError;
 use crate::broker::backend_handle::{BackendHandle, BackendHandleError, DaemonProcess};
-use crate::broker::protocol::Endpoint;
+use crate::broker::protocol::{Endpoint, ServiceDefinition};
 
 use super::backend_registry::BackendRegistry;
-use super::connection::{serve_local_socket_connections, BrokerConnectionError};
+use super::connection::{serve_local_socket_connections_with, BrokerConnectionError};
 use super::hello_handler::{HelloHandler, HelloHandlerError};
+use super::hello_router::HelloRouter;
 use super::instance::{BrokerInstanceError, BrokerInstanceKey};
 use super::service_def_loader::{
     service_definition_dir, ServiceDefinitionError, ServiceDefinitionLoader,
@@ -69,10 +69,11 @@ impl BrokerServeConfig {
 
 /// Serve a bounded number of broker Hello connections.
 pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerServeError> {
-    let handler = Arc::new(build_hello_handler(&config)?);
-    serve_local_socket_connections(
+    let registered = build_registered_backend(&config)?;
+    let router = HelloRouter::new(&registered.loader, &registered.registry);
+    serve_local_socket_connections_with(
         &config.socket_path,
-        handler,
+        &router,
         config.max_connections.get(),
     )?;
     Ok(())
@@ -80,6 +81,29 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
 
 /// Build a Hello handler from one service definition and backend endpoint.
 pub fn build_hello_handler(config: &BrokerServeConfig) -> Result<HelloHandler, BrokerServeError> {
+    let registered = build_registered_backend(config)?;
+    let backend = registered
+        .registry
+        .registered_backend_for(
+            &registered.instance,
+            &registered.service_definition,
+            &config.service_version,
+        )
+        .ok_or(BrokerServeError::RegisteredBackendMissing)?;
+
+    Ok(HelloHandler::new().with_backend(backend)?)
+}
+
+struct RegisteredServeBackend {
+    loader: ServiceDefinitionLoader,
+    registry: BackendRegistry,
+    instance: BrokerInstanceKey,
+    service_definition: ServiceDefinition,
+}
+
+fn build_registered_backend(
+    config: &BrokerServeConfig,
+) -> Result<RegisteredServeBackend, BrokerServeError> {
     if config.backend_endpoint.is_empty() {
         return Err(BrokerServeError::EmptyBackendEndpoint);
     }
@@ -104,11 +128,13 @@ pub fn build_hello_handler(config: &BrokerServeConfig) -> Result<HelloHandler, B
 
     let mut registry = BackendRegistry::new();
     registry.insert(instance.clone(), handle);
-    let registered = registry
-        .registered_backend_for(&instance, &service_definition, &config.service_version)
-        .ok_or(BrokerServeError::RegisteredBackendMissing)?;
 
-    Ok(HelloHandler::new().with_backend(registered)?)
+    Ok(RegisteredServeBackend {
+        loader,
+        registry,
+        instance,
+        service_definition,
+    })
 }
 
 /// Errors raised while wiring or serving the bounded broker.
