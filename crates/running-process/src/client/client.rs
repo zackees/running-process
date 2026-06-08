@@ -5,9 +5,6 @@
 //! messages.
 
 use crate::client::paths;
-use interprocess::local_socket::Stream;
-use interprocess::TryClone;
-use prost::Message;
 use crate::proto::daemon::{
     BulkTerminateSessionsRequest, BulkTerminateSessionsResponse, DaemonRequest, DaemonResponse,
     GetProcessTreeRequest, GetSessionBacklogRequest, GetSessionBacklogResponse, KeyValue,
@@ -18,6 +15,9 @@ use crate::proto::daemon::{
     ServiceResurrectRequest, ServiceSaveRequest, ServiceStartRequest, ServiceStopRequest,
     ShutdownRequest, SpawnDaemonRequest as ProtoSpawnDaemonRequest, StatusCode, StatusRequest,
 };
+use interprocess::local_socket::Stream;
+use interprocess::TryClone;
+use prost::Message;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,7 +36,12 @@ pub enum ClientError {
     /// Failed to decode a protobuf response.
     Decode(prost::DecodeError),
     /// The daemon returned an application-level error response.
-    Server { code: StatusCode, message: String },
+    Server {
+        /// Application-level status code returned by the daemon.
+        code: StatusCode,
+        /// Human-readable daemon error message.
+        message: String,
+    },
     /// The daemon is not running and could not be started.
     DaemonNotRunning,
 }
@@ -72,9 +77,13 @@ impl std::error::Error for ClientError {
 /// Request to spawn a detached daemonized shell command under daemon control.
 #[derive(Debug, Clone)]
 pub struct SpawnCommandRequest {
+    /// Shell command line to execute.
     pub command: String,
+    /// Working directory for the spawned command.
     pub cwd: Option<PathBuf>,
+    /// Environment key/value pairs sent with the request.
     pub env: Vec<(String, String)>,
+    /// Caller-provided originator used for tracking and filtering.
     pub originator: Option<String>,
     /// When `true`, the daemon clears the inherited env before applying
     /// [`Self::env`], so the subprocess sees ONLY the supplied map.
@@ -185,11 +194,17 @@ impl SpawnCommandRequest {
 /// Information about a daemonized process spawned by the service.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpawnedDaemon {
+    /// Operating-system process identifier of the spawned daemon.
     pub pid: u32,
+    /// Daemon-side creation timestamp in Unix seconds.
     pub created_at: f64,
+    /// Shell command registered for the spawned daemon.
     pub command: String,
+    /// Working directory reported for the spawned daemon.
     pub cwd: Option<String>,
+    /// Originator recorded for the spawned daemon.
     pub originator: Option<String>,
+    /// Containment mechanism used by the daemon for this process.
     pub containment: String,
 }
 
@@ -642,8 +657,7 @@ impl DaemonClient {
         };
         let response = self.send_request(request)?;
         if response.code != StatusCode::Ok as i32 {
-            let code =
-                StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
+            let code = StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
             return Err(ClientError::Server {
                 code,
                 message: response.message,
@@ -670,8 +684,7 @@ impl DaemonClient {
         };
         let response = self.send_request(request)?;
         if response.code != StatusCode::Ok as i32 {
-            let code =
-                StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
+            let code = StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
             return Err(ClientError::Server {
                 code,
                 message: response.message,
@@ -707,8 +720,7 @@ impl DaemonClient {
         };
         let response = self.send_request(request)?;
         if response.code != StatusCode::Ok as i32 {
-            let code =
-                StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
+            let code = StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
             return Err(ClientError::Server {
                 code,
                 message: response.message,
@@ -747,8 +759,7 @@ impl DaemonClient {
             return Ok(None);
         }
         if response.code != StatusCode::Ok as i32 {
-            let code =
-                StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
+            let code = StatusCode::try_from(response.code).unwrap_or(StatusCode::UnknownRequest);
             return Err(ClientError::Server {
                 code,
                 message: response.message,
