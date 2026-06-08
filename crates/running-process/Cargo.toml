@@ -8,6 +8,11 @@ repository.workspace = true
 homepage.workspace = true
 description = "Subprocess and PTY runtime for the running-process project"
 
+[lints]
+# Phase 0 of #228: pick up the workspace-wide `disallowed_methods =
+# "deny"` so bincode serialization is rejected at compile time.
+workspace = true
+
 [[bin]]
 # Wave 4 of #165: PM2-style supervisor CLI absorbed from
 # `running-process-client`. Requires the `client` feature for IPC deps.

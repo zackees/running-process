@@ -4,3 +4,6 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 description = "Test-only watchdog: dumps process state on hang. Windows-only; no-op elsewhere."
+
+[lints]
+workspace = true

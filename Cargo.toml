@@ -20,6 +20,12 @@ pyo3 = { version = "0.23", features = ["abi3-py310"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
 
+# Phase 0 of #228: workspace-wide lints. `disallowed_methods` is wired
+# through `clippy.toml` at the workspace root so every member crate
+# refuses bincode serialization (broker wire stays prost-only).
+[workspace.lints.clippy]
+disallowed_methods = "deny"
+
 [profile.release]
 debug = true
 strip = "none"
