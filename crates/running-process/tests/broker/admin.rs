@@ -1,20 +1,27 @@
 #![cfg(feature = "client")]
 
+use std::io::Cursor;
+use std::thread;
+use std::time::{Duration, Instant};
+
 use prost::Message;
 use serde_json::Value;
 
 use running_process::broker::backend_handle::BackendHandle;
+use running_process::broker::client::{send_admin_request, BrokerClientError};
 use running_process::broker::protocol::{
-    AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame, FrameKind, PayloadEncoding,
+    read_frame, write_frame, AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame,
+    FrameKind, PayloadEncoding,
 };
 use running_process::broker::server::admin::{
-    handle_admin_frame, render_admin_reply,
+    handle_admin_connection, handle_admin_frame, render_admin_reply,
     render_backend_health_json, render_config_json, render_diagnose_json, render_dump_json,
     render_healthz, render_list_instances_json, render_metrics_text, render_readyz,
     render_status_json, AdminBackend, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION,
 };
 use running_process::broker::server::{
-    BackendKey, BackendRegistry, BrokerInstanceKey, SpawnBudgetSnapshot, ADMIN_PAYLOAD_PROTOCOL,
+    serve_one_admin_socket, BackendKey, BackendRegistry, BrokerInstanceKey, SpawnBudgetSnapshot,
+    ADMIN_PAYLOAD_PROTOCOL,
 };
 
 use crate::backend_handle_common::current_daemon;
@@ -236,4 +243,116 @@ fn admin_frame_rejects_non_admin_payload_protocol() {
     let err = handle_admin_frame(frame, &snapshot()).unwrap_err();
 
     assert_eq!(err.to_string(), "admin frame payload_protocol must be 0xAD01, got 0");
+}
+
+#[test]
+fn handle_admin_connection_writes_admin_reply_frame() {
+    let request = AdminRequest {
+        verb: AdminVerb::Metrics as i32,
+        json: false,
+        service_name: String::new(),
+        output_path: String::new(),
+    };
+    let frame = admin_frame(request, 77);
+    let mut request_bytes = Vec::new();
+    write_frame(&mut request_bytes, &frame.encode_to_vec()).unwrap();
+    let request_len = request_bytes.len();
+    let mut stream = Cursor::new(request_bytes);
+
+    let returned_reply = handle_admin_connection(&mut stream, &snapshot()).unwrap();
+    let response_bytes = &stream.get_ref()[request_len..];
+    let mut cursor = Cursor::new(response_bytes);
+    let response_frame_bytes = read_frame(&mut cursor).unwrap();
+    let response_frame = Frame::decode(response_frame_bytes.as_slice()).unwrap();
+    let reply = AdminReply::decode(response_frame.payload.as_slice()).unwrap();
+
+    assert_eq!(returned_reply, reply);
+    assert_eq!(FrameKind::try_from(response_frame.kind), Ok(FrameKind::Response));
+    assert_eq!(response_frame.payload_protocol, ADMIN_PAYLOAD_PROTOCOL);
+    assert_eq!(response_frame.request_id, 77);
+    assert_eq!(AdminReplyKind::try_from(reply.kind), Ok(AdminReplyKind::Openmetrics));
+    assert!(reply.body.contains("running_process_broker_v1_connections_open 1"));
+}
+
+#[test]
+fn serve_one_admin_socket_round_trips_client_request() {
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let server = thread::spawn(move || serve_one_admin_socket(&server_socket, &snapshot()));
+
+    let request = AdminRequest {
+        verb: AdminVerb::Status as i32,
+        json: true,
+        service_name: String::new(),
+        output_path: String::new(),
+    };
+    let client_reply = send_admin_request_with_retry(&socket_name, request);
+    let server_reply = server.join().unwrap().unwrap();
+
+    assert_eq!(server_reply, client_reply);
+    assert_eq!(AdminReplyKind::try_from(client_reply.kind), Ok(AdminReplyKind::Json));
+    assert_eq!(parse_json(&client_reply.body)["command"], "status");
+}
+
+fn admin_frame(request: AdminRequest, request_id: u64) -> Frame {
+    Frame {
+        envelope_version: 1,
+        kind: FrameKind::Request as i32,
+        payload_protocol: ADMIN_PAYLOAD_PROTOCOL,
+        payload: request.encode_to_vec(),
+        request_id,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: String::new(),
+        tracestate: String::new(),
+    }
+}
+
+fn send_admin_request_with_retry(socket_name: &str, request: AdminRequest) -> AdminReply {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match send_admin_request(socket_name, request.clone()) {
+            Ok(reply) => return reply,
+            Err(BrokerClientError::BrokerConnect(err))
+                if Instant::now() < deadline && is_pending_bind_error(&err) =>
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("failed to send admin request: {err}"),
+        }
+    }
+}
+
+fn is_pending_bind_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+    )
+}
+
+#[cfg(windows)]
+fn unique_socket_name() -> String {
+    format!("rpb-v1-admin-{}-{}", std::process::id(), unique_suffix())
+}
+
+#[cfg(unix)]
+fn unique_socket_name() -> String {
+    std::env::temp_dir()
+        .join(format!(
+            "rpb-v1-admin-{}-{}.sock",
+            std::process::id(),
+            unique_suffix()
+        ))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
 }

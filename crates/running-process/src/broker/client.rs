@@ -6,10 +6,10 @@ use interprocess::local_socket::prelude::*;
 use prost::Message;
 
 use crate::broker::protocol::{
-    hello_reply::Result as HelloReplyResult, read_frame, write_frame, ErrorCode, Frame, FrameKind,
-    FramingError, Hello, HelloReply, Negotiated, PayloadEncoding,
+    hello_reply::Result as HelloReplyResult, read_frame, write_frame, AdminReply, AdminRequest,
+    ErrorCode, Frame, FrameKind, FramingError, Hello, HelloReply, Negotiated, PayloadEncoding,
 };
-use crate::broker::server::local_socket_name;
+use crate::broker::server::{local_socket_name, ADMIN_PAYLOAD_PROTOCOL};
 
 const PROTOCOL_VERSION: u32 = 1;
 const CONTROL_PAYLOAD_PROTOCOL: u32 = 0;
@@ -141,6 +141,38 @@ pub fn connect_to_backend(
     })
 }
 
+/// Send one typed admin request to a broker endpoint and return its reply.
+pub fn send_admin_request(
+    broker_endpoint: &str,
+    request: AdminRequest,
+) -> Result<AdminReply, BrokerClientError> {
+    let mut stream =
+        connect_local_socket(broker_endpoint).map_err(BrokerClientError::BrokerConnect)?;
+    let request_frame = Frame {
+        envelope_version: PROTOCOL_VERSION,
+        kind: FrameKind::Request as i32,
+        payload_protocol: ADMIN_PAYLOAD_PROTOCOL,
+        payload: request.encode_to_vec(),
+        request_id: 1,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: String::new(),
+        tracestate: String::new(),
+    };
+    write_frame(&mut stream, &request_frame.encode_to_vec())?;
+
+    let response_bytes = read_frame(&mut stream)?;
+    let response_frame = Frame::decode(response_bytes.as_slice())
+        .map_err(BrokerClientError::DecodeFrame)?;
+    validate_response_frame(
+        &response_frame,
+        ADMIN_PAYLOAD_PROTOCOL,
+        "payload_protocol is not admin",
+    )?;
+    AdminReply::decode(response_frame.payload.as_slice())
+        .map_err(BrokerClientError::DecodeAdminReply)
+}
+
 /// Open a platform local socket by broker endpoint string.
 pub fn connect_local_socket(endpoint: &str) -> io::Result<interprocess::local_socket::Stream> {
     let name = local_socket_name(endpoint)?;
@@ -169,7 +201,11 @@ fn broker_hello(
     let response_bytes = read_frame(&mut stream)?;
     let response_frame = Frame::decode(response_bytes.as_slice())
         .map_err(BrokerClientError::DecodeFrame)?;
-    validate_response_frame(&response_frame)?;
+    validate_response_frame(
+        &response_frame,
+        CONTROL_PAYLOAD_PROTOCOL,
+        "payload_protocol is not control-plane",
+    )?;
     let reply = HelloReply::decode(response_frame.payload.as_slice())
         .map_err(BrokerClientError::DecodeHelloReply)?;
     match reply.result.ok_or(BrokerClientError::MissingHelloReplyResult)? {
@@ -183,7 +219,11 @@ fn broker_hello(
     }
 }
 
-fn validate_response_frame(frame: &Frame) -> Result<(), BrokerClientError> {
+fn validate_response_frame(
+    frame: &Frame,
+    expected_payload_protocol: u32,
+    payload_protocol_error: &'static str,
+) -> Result<(), BrokerClientError> {
     if frame.envelope_version != PROTOCOL_VERSION {
         return Err(BrokerClientError::UnexpectedResponseFrame(
             "envelope_version is not v1",
@@ -194,9 +234,9 @@ fn validate_response_frame(frame: &Frame) -> Result<(), BrokerClientError> {
             "kind is not RESPONSE",
         ));
     }
-    if frame.payload_protocol != CONTROL_PAYLOAD_PROTOCOL {
+    if frame.payload_protocol != expected_payload_protocol {
         return Err(BrokerClientError::UnexpectedResponseFrame(
-            "payload_protocol is not control-plane",
+            payload_protocol_error,
         ));
     }
     if PayloadEncoding::try_from(frame.payload_encoding) != Ok(PayloadEncoding::None) {
@@ -225,6 +265,9 @@ pub enum BrokerClientError {
     /// Broker response payload was not a valid `HelloReply`.
     #[error("failed to decode broker HelloReply: {0}")]
     DecodeHelloReply(prost::DecodeError),
+    /// Broker response payload was not a valid `AdminReply`.
+    #[error("failed to decode broker AdminReply: {0}")]
+    DecodeAdminReply(prost::DecodeError),
     /// Broker returned an unexpected response envelope.
     #[error("unexpected broker response frame: {0}")]
     UnexpectedResponseFrame(&'static str),

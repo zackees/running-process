@@ -5,8 +5,9 @@ Every JSON response uses `schema_version: 1`.
 
 Admin request frames carry `AdminRequest` protobuf payloads and response frames
 carry `AdminReply` protobuf payloads. The current Phase 4 code can dispatch
-typed admin frames to the local renderers; the long-lived accept loop still
-needs to route live pipe connections to this dispatcher.
+typed admin frames through one-shot local-socket server/client helpers; the
+long-lived broker accept loop still needs to route its live control pipe
+connections to this dispatcher.
 
 ## Frame Payload
 
