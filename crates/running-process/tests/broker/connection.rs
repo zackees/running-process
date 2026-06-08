@@ -12,8 +12,9 @@ use running_process::broker::protocol::{
     Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
 };
 use running_process::broker::server::{
-    handle_hello_connection, local_socket_name, serve_local_socket_connections,
-    serve_one_local_socket, HelloHandler, PeerIdentity, RegisteredBackend,
+    handle_hello_connection, handle_hello_connection_with_peer_policy, local_socket_name,
+    serve_local_socket_connections, serve_one_local_socket, HelloHandler, PeerCredentialPolicy,
+    PeerIdentity, RegisteredBackend,
 };
 
 fn service_definition() -> ServiceDefinition {
@@ -64,6 +65,13 @@ fn peer() -> PeerIdentity {
     PeerIdentity {
         pid: std::process::id(),
         uid_or_sid: "test-peer".into(),
+    }
+}
+
+fn peer_with_owner(uid_or_sid: &str) -> PeerIdentity {
+    PeerIdentity {
+        pid: std::process::id(),
+        uid_or_sid: uid_or_sid.into(),
     }
 }
 
@@ -124,6 +132,59 @@ fn handle_hello_connection_returns_framed_negotiated_reply() {
 }
 
 #[test]
+fn owner_policy_allows_matching_peer_before_hello_handling() {
+    let request = encode_framed_frame(&frame_for_hello(&hello(std::process::id())));
+    let request_len = request.len();
+    let mut stream = Cursor::new(request);
+    let policy = PeerCredentialPolicy::owner_only("owner-1");
+
+    let reply = handle_hello_connection_with_peer_policy(
+        &mut stream,
+        &handler(),
+        peer_with_owner("owner-1"),
+        &policy,
+    )
+    .unwrap()
+    .expect("matching owner should be handled");
+
+    let response_bytes = &stream.get_ref()[request_len..];
+    let (_frame, decoded_reply) = decode_response_frame(response_bytes);
+    assert_eq!(reply, decoded_reply);
+    assert!(matches!(
+        decoded_reply.result,
+        Some(HelloReplyResult::Negotiated(_))
+    ));
+}
+
+#[test]
+fn owner_policy_drops_foreign_peer_before_reading_hello() {
+    let request = encode_framed_frame(&frame_for_hello(&hello(std::process::id())));
+    let request_len = request.len();
+    let mut stream = Cursor::new(request);
+    let policy = PeerCredentialPolicy::owner_only("owner-1");
+
+    let reply = handle_hello_connection_with_peer_policy(
+        &mut stream,
+        &handler(),
+        peer_with_owner("owner-2"),
+        &policy,
+    )
+    .unwrap();
+
+    assert!(reply.is_none());
+    assert_eq!(stream.position(), 0);
+    assert_eq!(stream.get_ref().len(), request_len);
+}
+
+#[test]
+fn owner_policy_rejects_empty_expected_owner() {
+    let policy = PeerCredentialPolicy::owner_only("");
+
+    assert!(!policy.allows(&peer_with_owner("")));
+    assert!(!policy.allows(&peer_with_owner("owner-1")));
+}
+
+#[test]
 fn malformed_frame_body_gets_refused_response_frame() {
     let mut request = Vec::new();
     write_frame(&mut request, &[0xFF, 0xFF, 0xFF]).unwrap();
@@ -177,7 +238,10 @@ fn serve_one_local_socket_round_trips_hello() {
 
     let server_reply = server.join().unwrap().unwrap();
     assert_eq!(server_reply, reply);
-    assert_eq!(FrameKind::try_from(response_frame.kind), Ok(FrameKind::Response));
+    assert_eq!(
+        FrameKind::try_from(response_frame.kind),
+        Ok(FrameKind::Response)
+    );
     assert_eq!(response_frame.request_id, 7);
     match reply.result.unwrap() {
         HelloReplyResult::Negotiated(negotiated) => {
@@ -211,7 +275,10 @@ fn serve_local_socket_connections_handles_concurrent_hellos() {
 
             let response_bytes = read_frame(&mut client).unwrap();
             let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
-            assert_eq!(FrameKind::try_from(response_frame.kind), Ok(FrameKind::Response));
+            assert_eq!(
+                FrameKind::try_from(response_frame.kind),
+                Ok(FrameKind::Response)
+            );
             assert_eq!(response_frame.request_id, (index + 1) as u64);
             let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
             match reply.result.unwrap() {

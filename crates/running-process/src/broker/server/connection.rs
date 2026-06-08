@@ -22,6 +22,59 @@ use crate::broker::server::{HelloHandler, HelloRouter, PeerIdentity};
 const PROTOCOL_VERSION: u32 = 1;
 const CONTROL_PAYLOAD_PROTOCOL: u32 = 0;
 
+/// Peer credential policy applied before reading a Hello frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeerCredentialPolicy {
+    /// Accept any peer whose platform credentials can be read.
+    AllowAny,
+    /// Accept only peers whose UID or SID exactly matches `uid_or_sid`.
+    OwnerOnly {
+        /// Expected owner UID or SID string.
+        uid_or_sid: String,
+    },
+}
+
+impl PeerCredentialPolicy {
+    /// Build a permissive policy.
+    pub fn allow_any() -> Self {
+        Self::AllowAny
+    }
+
+    /// Build a policy that accepts only one owner UID or SID.
+    pub fn owner_only(uid_or_sid: impl Into<String>) -> Self {
+        Self::OwnerOnly {
+            uid_or_sid: uid_or_sid.into(),
+        }
+    }
+
+    /// Build an owner-only policy for the current Unix effective UID.
+    ///
+    /// Windows peer SID extraction is not wired yet, so this returns `None` on
+    /// Windows instead of creating a policy that would silently authorize an
+    /// empty peer identity.
+    pub fn current_user() -> Option<Self> {
+        #[cfg(unix)]
+        {
+            Some(Self::owner_only(unsafe { libc::geteuid() }.to_string()))
+        }
+
+        #[cfg(windows)]
+        {
+            None
+        }
+    }
+
+    /// Return true when `peer` is authorized by this policy.
+    pub fn allows(&self, peer: &PeerIdentity) -> bool {
+        match self {
+            Self::AllowAny => true,
+            Self::OwnerOnly { uid_or_sid } => {
+                !uid_or_sid.is_empty() && peer.uid_or_sid == *uid_or_sid
+            }
+        }
+    }
+}
+
 /// Handles a decoded broker Hello frame and returns the protocol reply.
 ///
 /// This keeps the frame I/O boundary independent from the concrete routing
@@ -70,31 +123,55 @@ where
     S: Read + Write,
     R: HelloResponder + ?Sized,
 {
+    handle_hello_connection_with_peer_policy(
+        stream,
+        responder,
+        peer,
+        &PeerCredentialPolicy::allow_any(),
+    )
+    .map(|reply| reply.expect("allow-any policy must not drop peers"))
+}
+
+/// Handle one already-accepted broker connection with an explicit peer policy.
+///
+/// Returns `Ok(None)` when the policy rejects the peer. The caller should drop
+/// the stream without writing a `HelloReply`; this is the broker's silent
+/// foreign-peer rejection path.
+pub fn handle_hello_connection_with_peer_policy<S, R>(
+    stream: &mut S,
+    responder: &R,
+    peer: PeerIdentity,
+    peer_policy: &PeerCredentialPolicy,
+) -> Result<Option<HelloReply>, BrokerConnectionError>
+where
+    S: Read + Write,
+    R: HelloResponder + ?Sized,
+{
+    if !peer_policy.allows(&peer) {
+        return Ok(None);
+    }
+
     let request_bytes = match read_frame_with_cap(stream, MAX_HELLO_BYTES) {
         Ok(bytes) => bytes,
         Err(err) => {
             let reply = reply_for_framing_error(&err);
             write_response_frame(stream, None, &reply)?;
-            return Ok(reply);
+            return Ok(Some(reply));
         }
     };
 
     let request_frame = match Frame::decode(request_bytes.as_slice()) {
         Ok(frame) => frame,
         Err(_) => {
-            let reply = refused_reply(
-                ErrorCode::ErrorPeerRejected,
-                "malformed broker Frame",
-                0,
-            );
+            let reply = refused_reply(ErrorCode::ErrorPeerRejected, "malformed broker Frame", 0);
             write_response_frame(stream, None, &reply)?;
-            return Ok(reply);
+            return Ok(Some(reply));
         }
     };
 
     let reply = responder.handle_frame(request_frame.clone(), peer);
     write_response_frame(stream, Some(&request_frame), &reply)?;
-    Ok(reply)
+    Ok(Some(reply))
 }
 
 /// Run one blocking local-socket accept and serve exactly one Hello.
@@ -119,12 +196,29 @@ pub fn serve_one_local_socket_with<R>(
 where
     R: HelloResponder + ?Sized,
 {
+    serve_one_local_socket_with_peer_policy(
+        socket_path,
+        responder,
+        &PeerCredentialPolicy::allow_any(),
+    )
+    .map(|reply| reply.expect("allow-any policy must not drop peers"))
+}
+
+/// Run one blocking local-socket accept with an explicit peer policy.
+pub fn serve_one_local_socket_with_peer_policy<R>(
+    socket_path: &str,
+    responder: &R,
+    peer_policy: &PeerCredentialPolicy,
+) -> Result<Option<HelloReply>, BrokerConnectionError>
+where
+    R: HelloResponder + ?Sized,
+{
     let listener = bind_local_socket(socket_path)?;
     let _cleanup = LocalSocketCleanup(socket_path);
 
     let mut stream = listener.accept()?;
     let peer = peer_identity_from_stream(&stream)?;
-    handle_hello_connection_with(&mut stream, responder, peer)
+    handle_hello_connection_with_peer_policy(&mut stream, responder, peer, peer_policy)
 }
 
 /// Run a bounded blocking local-socket accept loop.
@@ -137,6 +231,21 @@ pub fn serve_local_socket_connections(
     handler: Arc<HelloHandler>,
     connection_count: usize,
 ) -> Result<(), BrokerConnectionError> {
+    serve_local_socket_connections_with_peer_policy(
+        socket_path,
+        handler,
+        connection_count,
+        &PeerCredentialPolicy::allow_any(),
+    )
+}
+
+/// Run a bounded blocking local-socket accept loop with an explicit peer policy.
+pub fn serve_local_socket_connections_with_peer_policy(
+    socket_path: &str,
+    handler: Arc<HelloHandler>,
+    connection_count: usize,
+    peer_policy: &PeerCredentialPolicy,
+) -> Result<(), BrokerConnectionError> {
     if connection_count == 0 {
         return Ok(());
     }
@@ -144,13 +253,21 @@ pub fn serve_local_socket_connections(
     let listener = bind_local_socket(socket_path)?;
     let _cleanup = LocalSocketCleanup(socket_path);
     let mut workers = Vec::with_capacity(connection_count);
+    let peer_policy = Arc::new(peer_policy.clone());
 
     for _ in 0..connection_count {
         let mut stream = listener.accept()?;
         let peer = peer_identity_from_stream(&stream)?;
         let handler = Arc::clone(&handler);
+        let peer_policy = Arc::clone(&peer_policy);
         workers.push(thread::spawn(move || {
-            handle_hello_connection(&mut stream, handler.as_ref(), peer).map(|_| ())
+            handle_hello_connection_with_peer_policy(
+                &mut stream,
+                handler.as_ref(),
+                peer,
+                peer_policy.as_ref(),
+            )
+            .map(|_| ())
         }));
     }
 
@@ -177,6 +294,24 @@ pub fn serve_local_socket_connections_with<R>(
 where
     R: HelloResponder + ?Sized,
 {
+    serve_local_socket_connections_with_policy(
+        socket_path,
+        responder,
+        connection_count,
+        &PeerCredentialPolicy::allow_any(),
+    )
+}
+
+/// Run a bounded pluggable-responder accept loop with an explicit peer policy.
+pub fn serve_local_socket_connections_with_policy<R>(
+    socket_path: &str,
+    responder: &R,
+    connection_count: usize,
+    peer_policy: &PeerCredentialPolicy,
+) -> Result<(), BrokerConnectionError>
+where
+    R: HelloResponder + ?Sized,
+{
     if connection_count == 0 {
         return Ok(());
     }
@@ -187,16 +322,15 @@ where
     for _ in 0..connection_count {
         let mut stream = listener.accept()?;
         let peer = peer_identity_from_stream(&stream)?;
-        handle_hello_connection_with(&mut stream, responder, peer)?;
+        let _ =
+            handle_hello_connection_with_peer_policy(&mut stream, responder, peer, peer_policy)?;
     }
     Ok(())
 }
 
 /// Convert the broker's platform socket path/name string into an
 /// `interprocess` local-socket name.
-pub fn local_socket_name(
-    socket_path: &str,
-) -> io::Result<interprocess::local_socket::Name<'_>> {
+pub fn local_socket_name(socket_path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
     #[cfg(unix)]
     {
         use interprocess::local_socket::{GenericFilePath, ToFsName};
