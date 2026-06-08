@@ -47,11 +47,7 @@ impl PeerCredentialPolicy {
         }
     }
 
-    /// Build an owner-only policy for the current Unix effective UID.
-    ///
-    /// Windows peer SID extraction is not wired yet, so this returns `None` on
-    /// Windows instead of creating a policy that would silently authorize an
-    /// empty peer identity.
+    /// Build an owner-only policy for the current platform user.
     pub fn current_user() -> Option<Self> {
         #[cfg(unix)]
         {
@@ -60,7 +56,7 @@ impl PeerCredentialPolicy {
 
         #[cfg(windows)]
         {
-            None
+            current_process_user_sid().ok().map(Self::owner_only)
         }
     }
 
@@ -459,9 +455,113 @@ fn peer_identity_from_stream(
     let uid_or_sid = creds.euid().map(|uid| uid.to_string()).unwrap_or_default();
 
     #[cfg(windows)]
-    let uid_or_sid = String::new();
+    let uid_or_sid = if pid == 0 {
+        String::new()
+    } else {
+        process_user_sid(pid).unwrap_or_default()
+    };
 
     Ok(PeerIdentity { pid, uid_or_sid })
+}
+
+#[cfg(windows)]
+fn current_process_user_sid() -> io::Result<String> {
+    process_user_sid(std::process::id())
+}
+
+#[cfg(windows)]
+fn process_user_sid(pid: u32) -> io::Result<String> {
+    use std::ptr;
+    use winapi::um::processthreadsapi::{OpenProcess, OpenProcessToken};
+    use winapi::um::winnt::{
+        TokenUser, HANDLE, PROCESS_QUERY_LIMITED_INFORMATION, TOKEN_QUERY, TOKEN_USER,
+    };
+
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let _process_guard = WindowsHandle(process);
+
+        let mut token: HANDLE = ptr::null_mut();
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _token_guard = WindowsHandle(token);
+
+        let mut required_size = 0_u32;
+        let _ = winapi::um::securitybaseapi::GetTokenInformation(
+            token,
+            TokenUser,
+            ptr::null_mut(),
+            0,
+            &mut required_size,
+        );
+        if required_size == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut buffer = vec![0_u8; required_size as usize];
+        if winapi::um::securitybaseapi::GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            required_size,
+            &mut required_size,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+
+        let token_user: *const TOKEN_USER = buffer.as_ptr().cast();
+        let sid = (*token_user).User.Sid;
+        sid_to_stable_string(sid)
+    }
+}
+
+#[cfg(windows)]
+struct WindowsHandle(winapi::um::winnt::HANDLE);
+
+#[cfg(windows)]
+impl Drop for WindowsHandle {
+    fn drop(&mut self) {
+        unsafe {
+            winapi::um::handleapi::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe fn sid_to_stable_string(sid: winapi::um::winnt::PSID) -> io::Result<String> {
+    use winapi::um::securitybaseapi::{GetLengthSid, IsValidSid};
+
+    if sid.is_null() || IsValidSid(sid) == 0 {
+        return Err(io::Error::other("invalid Windows SID"));
+    }
+    let len = GetLengthSid(sid) as usize;
+    if len == 0 || len > 1024 {
+        return Err(io::Error::other(format!(
+            "implausible Windows SID length {len}"
+        )));
+    }
+    let bytes = std::slice::from_raw_parts(sid.cast::<u8>(), len);
+    let mut out = String::with_capacity("windows-sid:".len() + len * 2);
+    out.push_str("windows-sid:");
+    for byte in bytes {
+        out.push(nibble_to_hex(byte >> 4));
+        out.push(nibble_to_hex(byte & 0x0f));
+    }
+    Ok(out)
+}
+
+#[cfg(windows)]
+fn nibble_to_hex(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'a' + (nibble - 10)) as char,
+        _ => unreachable!("nibble out of range"),
+    }
 }
 
 fn prepare_local_socket_path(socket_path: &str) -> io::Result<()> {

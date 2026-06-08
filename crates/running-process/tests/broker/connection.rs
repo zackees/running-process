@@ -13,8 +13,9 @@ use running_process::broker::protocol::{
 };
 use running_process::broker::server::{
     handle_hello_connection, handle_hello_connection_with_peer_policy, local_socket_name,
-    serve_local_socket_connections, serve_one_local_socket, HelloHandler, PeerCredentialPolicy,
-    PeerIdentity, RegisteredBackend,
+    serve_local_socket_connections, serve_one_local_socket,
+    serve_one_local_socket_with_peer_policy, HelloHandler, PeerCredentialPolicy, PeerIdentity,
+    RegisteredBackend,
 };
 
 fn service_definition() -> ServiceDefinition {
@@ -185,6 +186,18 @@ fn owner_policy_rejects_empty_expected_owner() {
 }
 
 #[test]
+fn current_user_policy_uses_non_empty_platform_owner() {
+    let policy = PeerCredentialPolicy::current_user().expect("current user policy");
+
+    match policy {
+        PeerCredentialPolicy::OwnerOnly { uid_or_sid } => {
+            assert!(!uid_or_sid.is_empty());
+        }
+        PeerCredentialPolicy::AllowAny => panic!("current user policy must be owner-only"),
+    }
+}
+
+#[test]
 fn malformed_frame_body_gets_refused_response_frame() {
     let mut request = Vec::new();
     write_frame(&mut request, &[0xFF, 0xFF, 0xFF]).unwrap();
@@ -243,6 +256,35 @@ fn serve_one_local_socket_round_trips_hello() {
         Ok(FrameKind::Response)
     );
     assert_eq!(response_frame.request_id, 7);
+    match reply.result.unwrap() {
+        HelloReplyResult::Negotiated(negotiated) => {
+            assert_eq!(negotiated.daemon_version, "1.11.20");
+        }
+        HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
+    }
+}
+
+#[test]
+fn serve_one_local_socket_current_user_policy_allows_same_user() {
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let policy = PeerCredentialPolicy::current_user().expect("current user policy");
+    let server = thread::spawn(move || {
+        let handler = handler();
+        serve_one_local_socket_with_peer_policy(&server_socket, &handler, &policy)
+    });
+
+    let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let mut client = connect_with_retry(name);
+    let request_frame = frame_for_hello(&hello(0));
+    write_frame(&mut client, &request_frame.encode_to_vec()).unwrap();
+
+    let response_bytes = read_frame(&mut client).unwrap();
+    let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
+    let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
+    let server_reply = server.join().unwrap().unwrap().expect("same user allowed");
+
+    assert_eq!(server_reply, reply);
     match reply.result.unwrap() {
         HelloReplyResult::Negotiated(negotiated) => {
             assert_eq!(negotiated.daemon_version, "1.11.20");
