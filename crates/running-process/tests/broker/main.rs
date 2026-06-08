@@ -13,6 +13,7 @@ mod backend_handle_dead;
 mod backend_handle_probe;
 mod backend_handle_recycled;
 mod backend_registry;
+mod connection;
 mod framing;
 mod hello_handler;
 mod instance;
