@@ -11,7 +11,7 @@ broker discovery, service registration, manifests, and rollback behavior.
 | service payloads | keep existing soldr prost messages and field numbers |
 | broker control plane | use v1 `Frame`, `Hello`, `HelloReply`, and `Refused` |
 | daemon endpoint | use the backend endpoint returned by the broker |
-| rollback | use `RUNNING_PROCESS_USE_BROKER=off` and the direct soldr-daemon path |
+| rollback | use `RUNNING_PROCESS_DISABLE=1` and the direct soldr-daemon path |
 
 The broker control-plane schema is documented in
 [v1 wire envelope](v1-wire-envelope.md). The existing soldr prost payloads are
@@ -63,14 +63,12 @@ stored in `Frame.payload` for broker-backed requests.
 
 ## Runtime Selection
 
-soldr reads `RUNNING_PROCESS_USE_BROKER` before daemon discovery:
+soldr reads `RUNNING_PROCESS_DISABLE` before daemon discovery:
 
 | Value | soldr behavior during transition |
 |---|---|
 | unset | use the release default recorded in soldr rollout metadata |
-| `auto` | use the release default explicitly |
-| `off` | use the direct soldr-daemon path |
-| `on` | use the v1 broker; broker refusal is a command failure |
+| `1` | use the direct soldr-daemon path |
 
 The soldr diagnostics command prints the selected path, broker instance,
 service definition path, manifest path, and daemon endpoint.
@@ -103,7 +101,7 @@ soldr service definitions and manifests use the v1 platform directories:
   does not overlap with soldr's requested broker protocol range.
 - `ERROR_VERSION_BLOCKED` means the broker service definition rejected the
   requested soldr-daemon version.
-- `RUNNING_PROCESS_USE_BROKER=off` remains the supported rollback path through
+- `RUNNING_PROCESS_DISABLE=1` remains the supported rollback path through
   the documented rollout window.
 
 ## Test Matrix
@@ -114,4 +112,4 @@ soldr service definitions and manifests use the v1 platform directories:
 - Cache manifest round-trip tests for state, pinned binary, runtime, lock, and
   log roots.
 - Per-platform endpoint tests for Linux, macOS, and Windows.
-- Rollback tests with `RUNNING_PROCESS_USE_BROKER=off`.
+- Rollback tests with `RUNNING_PROCESS_DISABLE=1`.

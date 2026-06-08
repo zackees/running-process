@@ -13,7 +13,7 @@ Symptoms:
 
 Checks:
 
-1. Confirm `RUNNING_PROCESS_USE_BROKER` is not `off`.
+1. Confirm `RUNNING_PROCESS_DISABLE` is not `1`.
 2. Run `running-process-broker-v1 healthz`.
 3. Check the broker pipe path in [v1 pipe naming](v1-pipe-naming.md).
 4. Inspect the lifecycle log for `SPAWN_ATTEMPT`, `HELLO_REFUSED`, and
@@ -120,7 +120,7 @@ Checks:
 Set:
 
 ```text
-RUNNING_PROCESS_USE_BROKER=off
+RUNNING_PROCESS_DISABLE=1
 ```
 
 Then rerun the workload. If the workload succeeds in direct mode, collect a

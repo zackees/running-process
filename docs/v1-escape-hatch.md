@@ -3,22 +3,22 @@
 The v1 broker escape hatch is:
 
 ```text
-RUNNING_PROCESS_USE_BROKER=off
+RUNNING_PROCESS_DISABLE=1
 ```
 
 Participating consumers read this variable before attempting broker discovery.
-When it is set to `off`, the consumer uses its direct daemon path.
+When it is set to `1`, the consumer uses its direct daemon path.
 
 ## Values
 
 | Value | Behavior |
 |---|---|
 | unset | Follow the rollout default for the consumer version. |
-| `off` | Disable broker usage. |
-| `on` | Force broker usage when the consumer supports it. |
-| `auto` | Follow the rollout default explicitly. |
+| `1` | Disable broker usage and use the direct daemon path. |
 
 Unknown values are configuration errors and are logged with the consumer name.
+Forced-broker canaries use consumer-specific rollout configuration, not the
+emergency disable variable.
 
 ## Intended Use
 
@@ -34,13 +34,13 @@ Use the escape hatch for:
 Unix shell:
 
 ```sh
-RUNNING_PROCESS_USE_BROKER=off cargo test
+RUNNING_PROCESS_DISABLE=1 cargo test
 ```
 
 PowerShell:
 
 ```powershell
-$env:RUNNING_PROCESS_USE_BROKER = "off"
+$env:RUNNING_PROCESS_DISABLE = "1"
 cargo test
 ```
 
@@ -48,7 +48,7 @@ GitHub Actions:
 
 ```yaml
 env:
-  RUNNING_PROCESS_USE_BROKER: off
+  RUNNING_PROCESS_DISABLE: "1"
 ```
 
 ## Deprecation Timeline
