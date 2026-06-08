@@ -27,6 +27,7 @@ backend lifecycle, and returns direct backend pipe addresses.
 | Instance resolver | Maps service definitions to shared, private, or explicit broker instances. |
 | Backend registry | Tracks verified backend handles by instance, service, and version. |
 | Spawn coordinator | Serializes backend startup for one service/version. |
+| Perf guard | Summarizes Hello latency samples and enforces the frozen P50/P99 budgets. |
 | Lifecycle monitor | Watches process death, idle timers, and shutdown drains. |
 | Manifest registry | Reads and writes central cache manifests. |
 | Admin dispatcher | Implements status, dump, health, config, diagnose, and metrics verbs. |

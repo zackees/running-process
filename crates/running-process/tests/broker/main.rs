@@ -22,6 +22,7 @@ mod manifest_corruption;
 mod manifest_roundtrip;
 mod metrics_names_frozen;
 mod names;
+mod perf_guard;
 mod proto_field_numbers;
 mod proto_roundtrip;
 mod service_def_loader;
