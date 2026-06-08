@@ -21,6 +21,7 @@ pub mod recovery;
 pub mod serve;
 pub mod service_def_loader;
 pub mod spawn_coordinator;
+pub mod spawn_wait;
 pub mod trace_context;
 pub mod version_allow_list;
 
@@ -82,6 +83,10 @@ pub use service_def_loader::{
 pub use spawn_coordinator::{
     SpawnBeginError, SpawnBudgetConfig, SpawnBudgetSnapshot, SpawnCoordinator, SpawnOutcome,
     SpawnPermit, DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, DEFAULT_SPAWN_BUDGET_WINDOW,
+};
+pub use spawn_wait::{
+    SpawnWaitDecision, SpawnWaitPolicy, SpawnWaitProbe, DEFAULT_SPAWN_WAIT_HARD_CEILING,
+    SPAWN_WAIT_BACKOFF_SEQUENCE,
 };
 pub use trace_context::TraceContext;
 pub use version_allow_list::{check_version_allowed, VersionPolicyBlock};

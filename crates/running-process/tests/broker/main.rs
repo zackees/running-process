@@ -38,5 +38,6 @@ mod recovery_one_retry;
 mod serve;
 mod service_def_loader;
 mod spawn_coordinator;
+mod spawn_wait;
 mod trace_propagation;
 mod verify_pid;
