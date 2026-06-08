@@ -4,14 +4,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::backend::{Backend, PtyBackend, PtyChild, PtyMaster, PtySize};
 #[cfg(unix)]
 use super::backend::PtySlave;
-use super::{
-    is_ignorable_process_control_error, poll_pty_process, record_pty_input_metrics,
-    spawn_pty_reader, store_pty_returncode, write_pty_input, IdleDetectorCore, NativePtyHandles,
-    PtyError, PtyReadShared, PtyReadState,
-};
+use super::backend::{Backend, PtyBackend, PtyChild, PtyMaster, PtySize};
 #[cfg(unix)]
 use super::posix_terminal_input_relay_worker;
 #[cfg(windows)]
@@ -19,25 +14,47 @@ use super::{
     apply_windows_pty_priority, assign_child_to_windows_kill_on_close_job,
     assign_conpty_conhost_to_job, conhost_children_of_current_process,
 };
+use super::{
+    is_ignorable_process_control_error, poll_pty_process, record_pty_input_metrics,
+    spawn_pty_reader, store_pty_returncode, write_pty_input, IdleDetectorCore, NativePtyHandles,
+    PtyError, PtyReadShared, PtyReadState,
+};
 
 #[cfg(unix)]
 use super::pty_posix as pty_platform;
 #[cfg(windows)]
 use super::pty_windows;
 
+/// Low-level native pseudo-terminal process wrapper.
+///
+/// The process is configured at construction time and is spawned by
+/// [`Self::start_impl`]. Output is collected by a reader thread and exposed
+/// through the chunk-reading methods.
 pub struct NativePtyProcess {
+    /// Command argv, including the executable as the first element.
     pub argv: Vec<String>,
+    /// Working directory used when spawning the child, or the current directory.
     pub cwd: Option<String>,
+    /// Environment overrides passed to the child process.
     pub env: Option<Vec<(String, String)>>,
+    /// Initial PTY row count.
     pub rows: u16,
+    /// Initial PTY column count.
     pub cols: u16,
+    /// Optional Windows process priority hint for the PTY child.
     #[cfg(windows)]
     pub nice: Option<i32>,
+    /// Native PTY handles for the running child, present after start.
     pub handles: Arc<Mutex<Option<NativePtyHandles>>>,
+    /// Shared reader queue and condition variable for PTY output.
     pub reader: Arc<PtyReadShared>,
+    /// Cached child exit code once the process has exited.
     pub returncode: Arc<Mutex<Option<i32>>>,
+    /// Total bytes written to the PTY input stream.
     pub input_bytes_total: Arc<AtomicUsize>,
+    /// Count of input writes containing a newline.
     pub newline_events_total: Arc<AtomicUsize>,
+    /// Count of explicit submit events recorded for PTY input.
     pub submit_events_total: Arc<AtomicUsize>,
     /// When true, the reader thread writes PTY output to stdout.
     pub echo: Arc<AtomicBool>,
@@ -47,9 +64,13 @@ pub struct NativePtyProcess {
     pub output_bytes_total: Arc<AtomicUsize>,
     /// Control churn bytes (ANSI escapes, BS, CR, DEL) seen by the reader.
     pub control_churn_bytes_total: Arc<AtomicUsize>,
+    /// Background worker that drains PTY output into the shared queue.
     pub reader_worker: Mutex<Option<thread::JoinHandle<()>>>,
+    /// Stop flag observed by the terminal input relay worker.
     pub terminal_input_relay_stop: Arc<AtomicBool>,
+    /// Whether the terminal input relay worker is currently active.
     pub terminal_input_relay_active: Arc<AtomicBool>,
+    /// Background worker that forwards local terminal input into the PTY.
     pub terminal_input_relay_worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
@@ -62,6 +83,9 @@ pub(super) fn resolved_spawn_cwd(cwd: Option<&str>) -> Option<String> {
 }
 
 impl NativePtyProcess {
+    /// Create a pseudo-terminal process configuration.
+    ///
+    /// The child is not spawned until [`Self::start_impl`] is called.
     pub fn new(
         argv: Vec<String>,
         cwd: Option<String>,
@@ -106,12 +130,14 @@ impl NativePtyProcess {
         })
     }
 
+    /// Mark the reader stream closed and wake all waiting readers.
     pub fn mark_reader_closed(&self) {
         let mut guard = self.reader.state.lock().expect("pty read mutex poisoned");
         guard.closed = true;
         self.reader.condvar.notify_all();
     }
 
+    /// Store the process return code if it has been observed.
     pub fn store_returncode(&self, code: i32) {
         store_pty_returncode(&self.returncode, code);
     }
@@ -127,6 +153,7 @@ impl NativePtyProcess {
         }
     }
 
+    /// Record PTY input byte, newline, and submit counters.
     pub fn record_input_metrics(&self, data: &[u8], submit: bool) {
         record_pty_input_metrics(
             &self.input_bytes_total,
@@ -137,12 +164,14 @@ impl NativePtyProcess {
         );
     }
 
+    /// Write bytes to the PTY input stream and record input metrics.
     pub fn write_impl(&self, data: &[u8], submit: bool) -> Result<(), PtyError> {
         self.record_input_metrics(data, submit);
         write_pty_input(&self.handles, data)?;
         Ok(())
     }
 
+    /// Signal the terminal input relay worker to stop.
     pub fn request_terminal_input_relay_stop(&self) {
         self.terminal_input_relay_stop
             .store(true, Ordering::Release);
@@ -150,6 +179,7 @@ impl NativePtyProcess {
             .store(false, Ordering::Release);
     }
 
+    /// Start forwarding local terminal input into the PTY.
     pub fn start_terminal_input_relay_impl(&self) -> Result<(), PtyError> {
         let mut worker_guard = self
             .terminal_input_relay_worker
@@ -244,6 +274,7 @@ impl NativePtyProcess {
         }
     }
 
+    /// Stop the terminal input relay worker and wait for it to exit.
     pub fn stop_terminal_input_relay_impl(&self) {
         self.request_terminal_input_relay_stop();
         if let Some(worker) = self
@@ -256,6 +287,7 @@ impl NativePtyProcess {
         }
     }
 
+    /// Return whether the terminal input relay worker is active.
     pub fn terminal_input_relay_active(&self) -> bool {
         self.terminal_input_relay_active.load(Ordering::Acquire)
     }
@@ -429,6 +461,7 @@ impl NativePtyProcess {
         self.mark_reader_closed();
     }
 
+    /// Spawn the configured child process inside a native PTY.
     pub fn start_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::start");
         let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
@@ -473,8 +506,7 @@ impl NativePtyProcess {
         // The trait's PtyChild::as_raw_handle returns Option<RawHandle>
         // matching portable_pty's signature; pass directly.
         #[cfg(windows)]
-        let job =
-            assign_child_to_windows_kill_on_close_job(PtyChild::as_raw_handle(&child))?;
+        let job = assign_child_to_windows_kill_on_close_job(PtyChild::as_raw_handle(&child))?;
         #[cfg(windows)]
         assign_conpty_conhost_to_job(&job, &conhost_pids_before);
         #[cfg(windows)]
@@ -509,6 +541,7 @@ impl NativePtyProcess {
         Ok(())
     }
 
+    /// Respond to terminal query escape sequences found in a PTY output chunk.
     pub fn respond_to_queries_impl(&self, data: &[u8]) -> Result<(), PtyError> {
         #[cfg(windows)]
         {
@@ -521,6 +554,7 @@ impl NativePtyProcess {
         }
     }
 
+    /// Resize the PTY to the given row and column dimensions.
     pub fn resize_impl(&self, rows: u16, cols: u16) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::resize");
         let guard = self.handles.lock().expect("pty handles mutex poisoned");
@@ -548,6 +582,7 @@ impl NativePtyProcess {
         Ok(())
     }
 
+    /// Send an interrupt signal or control event to the PTY child.
     pub fn send_interrupt_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::send_interrupt");
         #[cfg(windows)]
@@ -561,6 +596,9 @@ impl NativePtyProcess {
         }
     }
 
+    /// Wait for the PTY child to exit and return its exit code.
+    ///
+    /// Returns a timeout error when `timeout` elapses before exit.
     pub fn wait_impl(&self, timeout: Option<f64>) -> Result<i32, PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::wait");
         // Fast path: already exited.
@@ -586,6 +624,7 @@ impl NativePtyProcess {
         }
     }
 
+    /// Request graceful termination of the PTY child.
     pub fn terminate_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::terminate");
         #[cfg(windows)]
@@ -607,6 +646,7 @@ impl NativePtyProcess {
         }
     }
 
+    /// Forcefully terminate the PTY child.
     pub fn kill_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::kill");
         #[cfg(windows)]
@@ -628,6 +668,7 @@ impl NativePtyProcess {
         }
     }
 
+    /// Request graceful termination of the PTY child process tree.
     pub fn terminate_tree_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::terminate_tree");
         #[cfg(windows)]
@@ -641,6 +682,7 @@ impl NativePtyProcess {
         }
     }
 
+    /// Forcefully terminate the PTY child process tree.
     pub fn kill_tree_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::kill_tree");
         #[cfg(windows)]
@@ -763,14 +805,17 @@ impl NativePtyProcess {
         Ok(code)
     }
 
+    /// Enable or disable echoing PTY output to stdout.
     pub fn set_echo(&self, enabled: bool) {
         self.echo.store(enabled, Ordering::Release);
     }
 
+    /// Return whether PTY output echoing is enabled.
     pub fn echo_enabled(&self) -> bool {
         self.echo.load(Ordering::Acquire)
     }
 
+    /// Attach an idle detector that observes reader-thread output.
     pub fn attach_idle_detector(&self, detector: &Arc<IdleDetectorCore>) {
         let mut guard = self
             .idle_detector
@@ -779,6 +824,7 @@ impl NativePtyProcess {
         *guard = Some(Arc::clone(detector));
     }
 
+    /// Detach the current idle detector, if one is attached.
     pub fn detach_idle_detector(&self) {
         let mut guard = self
             .idle_detector
@@ -787,22 +833,27 @@ impl NativePtyProcess {
         *guard = None;
     }
 
+    /// Return total bytes written to PTY input.
     pub fn pty_input_bytes_total(&self) -> usize {
         self.input_bytes_total.load(Ordering::Acquire)
     }
 
+    /// Return the number of PTY input writes containing newlines.
     pub fn pty_newline_events_total(&self) -> usize {
         self.newline_events_total.load(Ordering::Acquire)
     }
 
+    /// Return the number of recorded PTY input submit events.
     pub fn pty_submit_events_total(&self) -> usize {
         self.submit_events_total.load(Ordering::Acquire)
     }
 
+    /// Return visible PTY output bytes observed by the reader thread.
     pub fn pty_output_bytes_total(&self) -> usize {
         self.output_bytes_total.load(Ordering::Acquire)
     }
 
+    /// Return control-churn bytes observed by the reader thread.
     pub fn pty_control_churn_bytes_total(&self) -> usize {
         self.control_churn_bytes_total.load(Ordering::Acquire)
     }
@@ -814,8 +865,11 @@ impl NativePtyProcess {
 /// output echo, terminal input relay, and automatic PTY query replies.
 #[derive(Debug, Clone, Copy)]
 pub struct InteractivePtyOptions {
+    /// Echo PTY output to stdout while the session is running.
     pub echo_output: bool,
+    /// Relay local terminal input into the PTY.
     pub relay_terminal_input: bool,
+    /// Automatically answer terminal query escape sequences.
     pub respond_to_queries: bool,
 }
 
@@ -829,9 +883,12 @@ impl Default for InteractivePtyOptions {
     }
 }
 
+/// Output collected by one interactive PTY pump operation.
 #[derive(Debug, Default)]
 pub struct InteractivePtyPumpResult {
+    /// Output chunks read from the PTY.
     pub chunks: Vec<Vec<u8>>,
+    /// Whether the PTY stream closed while pumping output.
     pub stream_closed: bool,
 }
 
@@ -845,18 +902,22 @@ pub struct InteractivePtySession {
 }
 
 impl InteractivePtySession {
+    /// Create an interactive PTY session with default options.
     pub fn new(process: NativePtyProcess) -> Self {
         Self::with_options(process, InteractivePtyOptions::default())
     }
 
+    /// Create an interactive PTY session with explicit options.
     pub fn with_options(process: NativePtyProcess, options: InteractivePtyOptions) -> Self {
         Self { process, options }
     }
 
+    /// Return the wrapped low-level PTY process.
     pub fn process(&self) -> &NativePtyProcess {
         &self.process
     }
 
+    /// Start the wrapped PTY process and configured interactive helpers.
     pub fn start(&self) -> Result<(), PtyError> {
         self.process.set_echo(self.options.echo_output);
         self.process.start_impl()?;
@@ -866,6 +927,10 @@ impl InteractivePtySession {
         Ok(())
     }
 
+    /// Read and optionally drain available PTY output.
+    ///
+    /// When query responses are enabled, terminal queries in each chunk are
+    /// answered before the chunk is returned.
     pub fn pump_output(
         &self,
         timeout: Option<f64>,
@@ -896,18 +961,22 @@ impl InteractivePtySession {
         Ok(pumped)
     }
 
+    /// Resize the interactive PTY.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), PtyError> {
         self.process.resize_impl(rows, cols)
     }
 
+    /// Send an interrupt to the interactive PTY child.
     pub fn send_interrupt(&self) -> Result<(), PtyError> {
         self.process.send_interrupt_impl()
     }
 
+    /// Wait for the interactive PTY child to exit.
     pub fn wait(&self, timeout: Option<f64>) -> Result<i32, PtyError> {
         self.process.wait_impl(timeout)
     }
 
+    /// Wait for the child to exit, then drain remaining PTY output.
     pub fn wait_and_drain(
         &self,
         timeout: Option<f64>,
@@ -916,14 +985,17 @@ impl InteractivePtySession {
         self.process.wait_and_drain_impl(timeout, drain_timeout)
     }
 
+    /// Request graceful termination of the interactive PTY child.
     pub fn terminate(&self) -> Result<(), PtyError> {
         self.process.terminate_impl()
     }
 
+    /// Forcefully terminate the interactive PTY child.
     pub fn kill(&self) -> Result<(), PtyError> {
         self.process.kill_impl()
     }
 
+    /// Close the interactive PTY session.
     pub fn close(&self) -> Result<(), PtyError> {
         self.process.close_impl()
     }
