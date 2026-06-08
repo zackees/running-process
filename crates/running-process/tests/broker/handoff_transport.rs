@@ -172,3 +172,18 @@ fn scm_rights_errors_map_to_fallback_safe_policy() {
         HandoffFallbackReason::BackendAckTimeout,
     );
 }
+
+#[cfg(not(unix))]
+#[test]
+fn scm_rights_transport_reports_unsupported_off_unix() {
+    let attempt = ScmRightsAttempt::new(
+        UnixFileDescriptor::new(17),
+        UnixHandoffSocket::new("/tmp/running-process-handoff.sock"),
+        token(0x55),
+    );
+
+    let err = running_process::broker::server::handoff::try_send_scm_rights(&attempt).unwrap_err();
+
+    assert_eq!(err, ScmRightsError::UnsupportedPlatform);
+    assert!(err.is_fallback_safe());
+}
