@@ -6,6 +6,8 @@
 
 #![cfg(feature = "client")]
 
+mod framing;
 mod lifecycle_event_size;
+mod names;
 mod proto_field_numbers;
 mod proto_roundtrip;

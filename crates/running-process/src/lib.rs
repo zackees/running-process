@@ -32,6 +32,14 @@ pub mod client;
 #[cfg(feature = "client")]
 pub mod broker;
 
+// Phase 1 of #228 (issue #230): maintenance subcommands exposed via
+// the `runpm` CLI. Currently just `release-handles` — a cross-platform
+// scaffold for the Windows worktree-teardown handle-race fix
+// (soldr#710). Gated behind `feature = "client"` because the CLI that
+// drives it is.
+#[cfg(feature = "client")]
+pub mod maintenance;
+
 // Lightweight tee sink primitives for callers that want transcript/log
 // fan-out without pulling in the full daemon runtime.
 #[cfg(feature = "telemetry")]
