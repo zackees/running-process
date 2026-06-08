@@ -53,12 +53,9 @@ fn machine_id() -> String {
     }
     #[cfg(windows)]
     {
-        // Avoid a registry dependency in the client feature. The
-        // hostname fallback is stable enough for Phase 2 cleanup
-        // filtering; a later security-hardening PR can replace this
-        // with MachineGuid once the broker's Windows platform module
-        // exists.
-        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string())
+        windows_machine_guid()
+            .or_else(|| std::env::var("COMPUTERNAME").ok())
+            .unwrap_or_else(|| "unknown".to_string())
     }
     #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
     {
@@ -117,8 +114,8 @@ fn fs_dev_id(path: &Path) -> u64 {
 }
 
 #[cfg(windows)]
-fn fs_dev_id(_path: &Path) -> u64 {
-    0
+fn fs_dev_id(path: &Path) -> u64 {
+    windows_volume_serial(path).unwrap_or(0)
 }
 
 #[cfg(target_os = "linux")]
@@ -163,6 +160,110 @@ fn macos_boot_time() -> String {
     }
 }
 
+#[cfg(windows)]
+fn windows_machine_guid() -> Option<String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, REG_SZ, RRF_RT_REG_SZ,
+    };
+
+    let subkey = wide_str("SOFTWARE\\Microsoft\\Cryptography");
+    let value = wide_str("MachineGuid");
+    let mut ty = 0_u32;
+    let mut buf = [0_u16; 128];
+    let mut bytes = (buf.len() * std::mem::size_of::<u16>()) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            &mut ty,
+            buf.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    if status != ERROR_SUCCESS || ty != REG_SZ {
+        return None;
+    }
+
+    let len = (bytes as usize / std::mem::size_of::<u16>()).min(buf.len());
+    let nul = buf[..len].iter().position(|ch| *ch == 0).unwrap_or(len);
+    let guid = String::from_utf16_lossy(&buf[..nul]).trim().to_string();
+    if guid.is_empty() {
+        None
+    } else {
+        Some(guid)
+    }
+}
+
+#[cfg(windows)]
+fn windows_volume_serial(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetVolumeInformationByHandleW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let probe = existing_volume_probe_path(path)?;
+    let wide: Vec<u16> = probe
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+
+    let mut serial = 0_u32;
+    let ok = unsafe {
+        GetVolumeInformationByHandleW(
+            handle,
+            std::ptr::null_mut(),
+            0,
+            &mut serial,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    unsafe {
+        CloseHandle(handle);
+    }
+    if ok == 0 {
+        None
+    } else {
+        Some(serial as u64)
+    }
+}
+
+#[cfg(windows)]
+fn existing_volume_probe_path(path: &Path) -> Option<std::path::PathBuf> {
+    path.ancestors()
+        .find(|candidate| !candidate.as_os_str().is_empty() && candidate.exists())
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+}
+
+#[cfg(windows)]
+fn wide_str(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +274,14 @@ mod tests {
         assert!(!id.hostname.is_empty());
         assert!(!id.machine_id.is_empty());
         assert!(!id.boot_id.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_identity_uses_machine_and_volume_ids() {
+        let cwd = std::env::current_dir().unwrap();
+        let id = current_for_path(&cwd);
+        assert_ne!(id.machine_id, id.hostname);
+        assert_ne!(id.fs_dev_id, 0);
     }
 }

@@ -2,6 +2,7 @@
 
 use running_process::broker::manifest;
 use running_process::broker::protocol::CacheManifest;
+use std::io::Write;
 
 fn manifest_for(version: &str) -> CacheManifest {
     CacheManifest {
@@ -37,4 +38,25 @@ fn repeated_write_never_leaves_torn_manifest() {
     let read = manifest::read_manifest(&root.join(manifest::ROOT_MANIFEST_FILE)).unwrap();
     assert_eq!(read.service_version, "1.2.4");
     assert_eq!(read.self_sha256.len(), 32);
+}
+
+#[test]
+fn interrupted_writer_temp_file_does_not_replace_committed_manifest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("cache");
+    let target = root.join(manifest::ROOT_MANIFEST_FILE);
+    manifest::write_to_root(&root, &manifest_for("1.2.3")).unwrap();
+
+    let interrupted = root.join(".running-process-manifest.pb.tmp-interrupted");
+    let mut file = std::fs::File::create(&interrupted).unwrap();
+    file.write_all(b"partial protobuf payload").unwrap();
+    file.sync_all().unwrap();
+
+    let read = manifest::read_manifest(&target).unwrap();
+    assert_eq!(read.service_version, "1.2.3");
+
+    manifest::write_to_root(&root, &manifest_for("1.2.4")).unwrap();
+    let read = manifest::read_manifest(&target).unwrap();
+    assert_eq!(read.service_version, "1.2.4");
+    assert!(interrupted.exists());
 }
