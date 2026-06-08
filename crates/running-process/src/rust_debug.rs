@@ -46,11 +46,16 @@ fn thread_stack() -> ThreadStack {
     })
 }
 
+/// RAII guard that records one debug frame for the current thread.
+///
+/// Create values with [`Self::enter`]. Dropping the guard pops the frame from
+/// the thread-local debug stack.
 pub struct RustDebugScopeGuard {
     stack: ThreadStack,
 }
 
 impl RustDebugScopeGuard {
+    /// Push a debug frame onto the current thread's stack.
     pub fn enter(label: &'static str, file: &'static str, line: u32) -> Self {
         let stack = thread_stack();
         stack
@@ -71,6 +76,7 @@ impl Drop for RustDebugScopeGuard {
     }
 }
 
+/// Render all non-empty thread debug stacks.
 pub fn render_rust_debug_traces() -> String {
     let registry = registry()
         .lock()
