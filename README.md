@@ -14,6 +14,7 @@ The v1 broker work is documented as a stable spec alongside the implementation:
 - Operations: [broker architecture](docs/v1-broker-architecture.md), [admin verbs](docs/v1-admin-verbs.md), [backend lifecycle](docs/v1-backend-lifecycle.md), [handoff optimization](docs/v1-handoff-optimization.md), [observability](docs/v1-observability.md)
 - Rollout: [policy](docs/v1-rollout-policy.md), [escape hatch](docs/v1-escape-hatch.md), [troubleshooting](docs/v1-troubleshooting.md)
 - Examples: [minimal consumer](examples/minimal-consumer/), [release-handles CLI](examples/release-handles-cli/), [custom isolation](examples/custom-isolation/)
+- Contrib service templates: [systemd](contrib/systemd/running-process-broker-v1.service), [launchd](contrib/launchd/com.zackees.running-process-broker-v1.plist), [Windows service installer](contrib/windows-service/install.ps1)
 
 | Platform | Build | Lint | Unit Test | Integration Test |
 |----------|-------|------|-----------|------------------|
