@@ -5,6 +5,9 @@ use std::time::Duration;
 /// Minimum sample count for the CI Hello perf guard.
 pub const HELLO_PERF_SAMPLE_COUNT: usize = 10_000;
 
+/// Environment variable that enables the real local-socket Hello perf gate.
+pub const HELLO_PERF_GUARD_ENV: &str = "RUNNING_PROCESS_BROKER_HELLO_PERF_GUARD";
+
 /// Frozen Hello P50 latency budget.
 pub const HELLO_P50_BUDGET: Duration = Duration::from_micros(200);
 

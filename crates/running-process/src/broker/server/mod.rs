@@ -49,7 +49,7 @@ pub use hello_router::HelloRouter;
 pub use instance::{BrokerInstanceError, BrokerInstanceKey};
 pub use perf_guard::{
     enforce_hello_latency_budget, summarize_hello_latencies, HelloLatencySummary, PerfGuardError,
-    HELLO_P50_BUDGET, HELLO_P99_BUDGET, HELLO_PERF_SAMPLE_COUNT,
+    HELLO_P50_BUDGET, HELLO_P99_BUDGET, HELLO_PERF_GUARD_ENV, HELLO_PERF_SAMPLE_COUNT,
 };
 pub use serve::{
     build_hello_handler, serve_registered_backend, BrokerServeConfig, BrokerServeError,
