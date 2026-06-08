@@ -33,6 +33,63 @@ pub enum ReleaseHandlesError {
     EmptyPath,
 }
 
+/// Inputs used to authorize a future daemon-side `release-handles` request.
+///
+/// `requester_account_id` and `daemon_owner_account_id` are opaque OS account
+/// identifiers: UID strings on POSIX and SID strings on Windows. The helper
+/// keeps them opaque so tests can exercise the policy without needing a real
+/// cross-user setup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReleaseHandlesAuthorization<'a> {
+    /// UID/SID of the client asking the daemon to release handles.
+    pub requester_account_id: &'a str,
+    /// UID/SID that owns the daemon holding the target handles.
+    pub daemon_owner_account_id: &'a str,
+    /// Whether the requester can write to the requested target path.
+    pub requester_can_write_target_path: bool,
+}
+
+/// Errors emitted by [`authorize_release_handles_request`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReleaseHandlesAuthorizationError {
+    /// The requester identity was empty.
+    #[error("release-handles requester identity must be non-empty")]
+    EmptyRequesterIdentity,
+    /// The daemon owner identity was empty.
+    #[error("release-handles daemon owner identity must be non-empty")]
+    EmptyDaemonOwnerIdentity,
+    /// The requester UID/SID did not match the daemon owner's UID/SID.
+    #[error("release-handles requester identity does not match daemon owner")]
+    OwnerMismatch,
+    /// The requester did not have write access to the requested target path.
+    #[error("release-handles requester lacks write access to target path")]
+    TargetPathWriteDenied,
+}
+
+/// Authorize a daemon-side `release-handles` request.
+///
+/// The policy intentionally checks both ownership and target-path write access:
+/// a requester must be the same OS account that owns the daemon and must be
+/// able to write to the path it is asking the daemon to free.
+pub fn authorize_release_handles_request(
+    authorization: ReleaseHandlesAuthorization<'_>,
+) -> Result<(), ReleaseHandlesAuthorizationError> {
+    if authorization.requester_account_id.trim().is_empty() {
+        return Err(ReleaseHandlesAuthorizationError::EmptyRequesterIdentity);
+    }
+    if authorization.daemon_owner_account_id.trim().is_empty() {
+        return Err(ReleaseHandlesAuthorizationError::EmptyDaemonOwnerIdentity);
+    }
+    if authorization.requester_account_id != authorization.daemon_owner_account_id {
+        return Err(ReleaseHandlesAuthorizationError::OwnerMismatch);
+    }
+    if !authorization.requester_can_write_target_path {
+        return Err(ReleaseHandlesAuthorizationError::TargetPathWriteDenied);
+    }
+
+    Ok(())
+}
+
 /// Result of one `release-handles` invocation.
 ///
 /// Stable across Phase 1 → Phase 2 — Phase 2 will populate the

@@ -2,10 +2,11 @@
 //!
 //! These tests intentionally cover the broker security surfaces that are
 //! available without external reviewer or cross-user setup. Deferred runtime
-//! surfaces stay documented as ignored placeholders.
+//! surfaces stay documented separately until their broker runtime exists.
 
 #![cfg(feature = "client")]
 
+mod cross_user_release_handles;
 mod deferred_runtime_surfaces;
 mod manifest_tamper_detection;
 mod pipe_name_validation;
