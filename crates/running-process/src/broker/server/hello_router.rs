@@ -18,7 +18,7 @@ use crate::broker::server::{
     check_version_allowed, BackendKey, BackendLaunchRequest, BackendLauncher, BackendRegistry,
     BrokerInstanceKey, HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity,
     RegisteredBackend, ServiceDefinitionError, ServiceDefinitionLoader, SpawnBeginError,
-    SpawnCoordinator, SpawnOutcome, VersionPolicyBlock,
+    SpawnCoordinator, SpawnOutcome, TraceContext, VersionPolicyBlock,
 };
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -134,7 +134,8 @@ impl<'a> HelloRouter<'a> {
             request.hello.service_name.clone(),
             request.hello.wanted_version.clone(),
         );
-        self.launch_backend(&key, &service_definition)
+        let trace_context = request.trace_context();
+        self.launch_backend(&key, &service_definition, &trace_context)
     }
 
     fn registered_backend_for(
@@ -161,6 +162,7 @@ impl<'a> HelloRouter<'a> {
         &self,
         key: &BackendKey,
         service_definition: &ServiceDefinition,
+        trace_context: &TraceContext,
     ) -> Result<RegisteredBackend, Refused> {
         self.begin_spawn(key.clone())?;
 
@@ -176,6 +178,7 @@ impl<'a> HelloRouter<'a> {
         let request = BackendLaunchRequest {
             key,
             service_definition,
+            trace_context,
         };
         match backend_launcher.launch(&request) {
             Ok(handle) => match self.register_launched_backend(key, service_definition, handle) {
