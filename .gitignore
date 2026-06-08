@@ -24,5 +24,6 @@ logs/
 .rustup/
 .loop/
 .claude/
+.extern-repos/
 src/running_process/assets/daemon-trampoline
 src/running_process/assets/daemon-trampoline.exe
