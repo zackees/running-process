@@ -26,8 +26,9 @@ pub use backend_endpoint_allocator::{
 };
 pub use backend_registry::{BackendKey, BackendRegistry};
 pub use connection::{
-    handle_hello_connection, local_socket_name, serve_local_socket_connections,
-    serve_one_local_socket, BrokerConnectionError,
+    handle_hello_connection, handle_hello_connection_with, local_socket_name,
+    serve_local_socket_connections, serve_one_local_socket, BrokerConnectionError,
+    HelloResponder,
 };
 pub use hello_handler::{
     HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend,

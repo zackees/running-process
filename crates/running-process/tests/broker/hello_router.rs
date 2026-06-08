@@ -1,6 +1,7 @@
 #![cfg(feature = "client")]
 
 use std::fs;
+use std::io::Cursor;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -8,13 +9,13 @@ use std::time::Duration;
 use prost::Message;
 use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::protocol::{
-    hello_reply::Result as HelloReplyResult, BrokerIsolation, ErrorCode, Frame, FrameKind, Hello,
-    PayloadEncoding, ServiceDefinition,
+    hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, ErrorCode,
+    Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
 };
 use running_process::broker::server::{
-    ensure_service_definition_dir, service_definition_path, BackendRegistry, BrokerInstanceKey,
-    HelloRequest, HelloRouter, PeerIdentity, ServiceDefinitionLoader, SpawnBudgetConfig,
-    SpawnCoordinator,
+    ensure_service_definition_dir, handle_hello_connection_with, service_definition_path,
+    BackendRegistry, BrokerInstanceKey, HelloRequest, HelloRouter, PeerIdentity,
+    ServiceDefinitionLoader, SpawnBudgetConfig, SpawnCoordinator,
 };
 
 use crate::backend_handle_common::current_daemon;
@@ -116,6 +117,20 @@ fn reply_code(reply: &running_process::broker::protocol::HelloReply) -> ErrorCod
     }
 }
 
+fn encode_framed_frame(frame: &Frame) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    write_frame(&mut bytes, &frame.encode_to_vec()).unwrap();
+    bytes
+}
+
+fn decode_response_frame(bytes: &[u8]) -> (Frame, HelloReply) {
+    let mut cursor = Cursor::new(bytes);
+    let response_bytes = read_frame(&mut cursor).unwrap();
+    let frame = Frame::decode(response_bytes.as_slice()).unwrap();
+    let reply = HelloReply::decode(frame.payload.as_slice()).unwrap();
+    (frame, reply)
+}
+
 #[test]
 fn router_negotiates_registry_backend_for_loaded_service_definition() {
     let definition = service_definition(BrokerIsolation::SharedBroker);
@@ -127,6 +142,41 @@ fn router_negotiates_registry_backend_for_loaded_service_definition() {
     let reply = router.handle_request(&request("zccache", "1.11.20"));
 
     match reply.result.unwrap() {
+        HelloReplyResult::Negotiated(negotiated) => {
+            assert_eq!(negotiated.backend_pipe, expected_pipe);
+            assert_eq!(negotiated.daemon_version, "1.11.20");
+        }
+        HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
+    }
+}
+
+#[test]
+fn framed_connection_can_route_through_service_definition_router() {
+    let definition = service_definition(BrokerIsolation::SharedBroker);
+    let tmp = service_dir_with_definition(&definition);
+    let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+    let (registry, expected_pipe) = registry_with_backend(BrokerInstanceKey::Shared);
+    let router = HelloRouter::new(&loader, &registry);
+    let mut request = request("zccache", "1.11.20");
+    request.frame.request_id = 41;
+    request.frame.traceparent =
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into();
+    let peer = request.peer.clone();
+    let request_bytes = encode_framed_frame(&request.frame);
+    let request_len = request_bytes.len();
+    let mut stream = Cursor::new(request_bytes);
+
+    let reply = handle_hello_connection_with(&mut stream, &router, peer).unwrap();
+
+    let response_bytes = &stream.get_ref()[request_len..];
+    let (response_frame, decoded_reply) = decode_response_frame(response_bytes);
+    assert_eq!(reply, decoded_reply);
+    assert_eq!(response_frame.request_id, 41);
+    assert_eq!(
+        response_frame.traceparent,
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    );
+    match decoded_reply.result.unwrap() {
         HelloReplyResult::Negotiated(negotiated) => {
             assert_eq!(negotiated.backend_pipe, expected_pipe);
             assert_eq!(negotiated.daemon_version, "1.11.20");

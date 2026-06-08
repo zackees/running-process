@@ -53,9 +53,12 @@ backend lifecycle, and returns direct backend pipe addresses.
 
 The first server slices expose this boundary as `HelloRequest` and
 `handle_hello_connection`: the request contains the decoded `Hello`, the
-original `Frame` metadata, and the OS-verified peer identity. The full accept
-loop calls the same connection handler after binding the platform socket and
-checking credentials.
+original `Frame` metadata, and the OS-verified peer identity. The framed I/O
+boundary also exposes `handle_hello_connection_with`, which accepts any
+`HelloResponder`; bounded tests can use the in-memory `HelloHandler`, while the
+broker accept loop can route the same wire frame through `HelloRouter`. The
+full accept loop calls the same connection handler after binding the platform
+socket and checking credentials.
 
 The bounded serve-mode slice wires this path end-to-end for an already-known
 backend endpoint:
