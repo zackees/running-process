@@ -10,7 +10,8 @@ use running_process::broker::server::admin::{
     AdminSnapshot,
 };
 use running_process::broker::server::{
-    serve_one_local_socket, serve_registered_backend, BrokerServeConfig, HelloHandler,
+    serve_launching_backends, serve_one_local_socket, serve_registered_backend,
+    BrokerLaunchServeConfig, BrokerServeConfig, HelloHandler,
 };
 use running_process::broker::{
     client::send_admin_request,
@@ -173,6 +174,33 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some("--serve-launch") => {
+            let Some(socket_path) = rest.get(1) else {
+                eprintln!("--serve-launch requires a socket path or pipe name");
+                std::process::exit(2);
+            };
+            let max_connections = option_value(&rest[2..], "--max-connections")
+                .map(parse_connection_count)
+                .unwrap_or(Ok(1))
+                .unwrap_or_else(|err| {
+                    eprintln!("{err}");
+                    std::process::exit(2);
+                });
+
+            let mut config = BrokerLaunchServeConfig::new(socket_path, max_connections)
+                .unwrap_or_else(|err| {
+                    eprintln!("invalid serve-launch config: {err}");
+                    std::process::exit(2);
+                });
+            if let Some(root) = option_value(&rest[2..], "--service-def-dir") {
+                config = config.with_service_definition_dir(root);
+            }
+
+            if let Err(err) = serve_launching_backends(config) {
+                eprintln!("serve-launch failed: {err}");
+                std::process::exit(1);
+            }
+        }
         None => {
             eprintln!("no broker command provided");
             print_help(&program);
@@ -200,6 +228,9 @@ fn print_help(program: &str) {
     println!("{program} --serve-once <socket-path-or-pipe-name>");
     println!(
         "{program} --serve <socket-path-or-pipe-name> --service <name> --version <semver> --backend-endpoint <path> [--service-def-dir <dir>] [--max-connections <n>]"
+    );
+    println!(
+        "{program} --serve-launch <socket-path-or-pipe-name> [--service-def-dir <dir>] [--max-connections <n>]"
     );
     println!();
     println!("Admin commands use --socket, or {ADMIN_SOCKET_ENV}, to query a running broker.");
