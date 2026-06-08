@@ -11,20 +11,25 @@ use thiserror::Error;
 
 /// Re-exports for downstream crates that need portable-pty types.
 pub mod reexports {
+    /// Re-export of the `portable_pty` crate used by the PTY backend.
     pub use portable_pty;
 }
 
+/// Unix PTY process-control helpers.
 #[cfg(unix)]
 pub(super) mod pty_posix;
+/// Windows PTY process-control helpers.
 #[cfg(windows)]
 pub(super) mod pty_windows;
 
+/// Native terminal input capture and translation helpers.
 pub mod terminal_input;
 
 // #150: ConPTY rewrite with PSEUDOCONSOLE_PASSTHROUGH_MODE so raw
 // child ANSI bytes reach the daemon ring buffer instead of ConPTY's
 // synthesized virtual-screen re-emission. Windows-only; Unix continues
 // to use portable-pty via the `pty_platform = pty_posix` alias above.
+/// Windows ConPTY backend that preserves raw child ANSI output.
 #[cfg(windows)]
 pub(super) mod conpty_passthrough;
 
@@ -32,10 +37,13 @@ pub(super) mod conpty_passthrough;
 // Backend::openpty() regardless of platform. Made `pub` in 4.0.1 so
 // downstream consumers (e.g. clud's SIGWINCH relay) can call
 // `PtyMaster::resize` / `get_size` through `NativePtyHandles.master`.
+/// Cross-platform PTY backend traits and platform-selected implementations.
 pub mod backend;
+/// Re-exported PTY backend handles and size type.
 pub use backend::{PtyChild, PtyMaster, PtySize};
 
 mod native_pty_process;
+/// Re-exported native PTY process and interactive session types.
 pub use native_pty_process::{
     InteractivePtyOptions, InteractivePtyPumpResult, InteractivePtySession, NativePtyProcess,
 };
@@ -43,22 +51,40 @@ pub use native_pty_process::{
 #[cfg(unix)]
 use pty_posix as pty_platform;
 
+/// Errors returned by pseudo-terminal process operations.
 #[derive(Debug, Error)]
 pub enum PtyError {
+    /// The pseudo-terminal process has already been started.
     #[error("pseudo-terminal process already started")]
     AlreadyStarted,
+    /// The pseudo-terminal process is not currently running.
     #[error("pseudo-terminal process is not running")]
     NotRunning,
+    /// The pseudo-terminal operation exceeded its timeout.
     #[error("pseudo-terminal timed out")]
     Timeout,
+    /// An underlying I/O operation failed.
     #[error("pseudo-terminal I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(
+        /// The underlying I/O error.
+        #[from]
+        std::io::Error,
+    ),
+    /// Spawning the pseudo-terminal process failed.
     #[error("pseudo-terminal spawn failed: {0}")]
-    Spawn(String),
+    Spawn(
+        /// Backend-provided spawn failure details.
+        String,
+    ),
+    /// A pseudo-terminal operation failed for another reason.
     #[error("pseudo-terminal error: {0}")]
-    Other(String),
+    Other(
+        /// Human-readable error details.
+        String,
+    ),
 }
 
+/// Return whether a process-control error can be ignored during cleanup.
 pub fn is_ignorable_process_control_error(err: &std::io::Error) -> bool {
     if matches!(
         err.kind(),
@@ -73,30 +99,45 @@ pub fn is_ignorable_process_control_error(err: &std::io::Error) -> bool {
     false
 }
 
+/// Buffered output and close state for a PTY reader thread.
 pub struct PtyReadState {
+    /// Output chunks read from the PTY master.
     pub chunks: VecDeque<Vec<u8>>,
+    /// Whether the PTY reader has reached EOF or stopped.
     pub closed: bool,
 }
 
+/// Shared reader state paired with a condition variable for waiters.
 pub struct PtyReadShared {
+    /// Protected reader buffer and close state.
     pub state: Mutex<PtyReadState>,
+    /// Notifies waiters when output arrives or the reader closes.
     pub condvar: Condvar,
 }
 
+/// Platform-neutral handles for a running native PTY child.
 pub struct NativePtyHandles {
     // #150: master/child were `Box<dyn portable_pty::MasterPty>` etc.
     // Refactored to use the cross-platform PtyMaster / PtyChild
     // traits so the Windows path goes through `conpty_passthrough`
     // (with PSEUDOCONSOLE_PASSTHROUGH_MODE) instead of portable-pty.
+    /// Master side of the PTY, used for resize and size queries.
     pub master: Box<dyn crate::pty::backend::PtyMaster>,
+    /// Writer connected to the PTY master input stream.
     pub writer: Box<dyn Write + Send>,
+    /// Spawned child process attached to the PTY slave.
     pub child: Box<dyn crate::pty::backend::PtyChild>,
+    /// Windows Job Object that cleans up the PTY child tree on close.
     #[cfg(windows)]
     pub _job: WindowsJobHandle,
 }
 
 #[cfg(windows)]
-pub struct WindowsJobHandle(pub usize);
+/// Owning wrapper around a Windows Job Object handle.
+pub struct WindowsJobHandle(
+    /// Raw Windows Job Object handle stored as an integer for Send safety.
+    pub usize,
+);
 
 #[cfg(windows)]
 impl WindowsJobHandle {
@@ -134,27 +175,41 @@ impl Drop for WindowsJobHandle {
     }
 }
 
+/// Shared mutable state for idle detection waits.
 pub struct IdleMonitorState {
+    /// Last time input or qualifying output reset the idle timer.
     pub last_reset_at: Instant,
+    /// Observed child return code, when the process has exited.
     pub returncode: Option<i32>,
+    /// Whether the recorded exit was caused by an interrupt request.
     pub interrupted: bool,
 }
 
 /// Core idle detection logic, shareable across threads via Arc.
 /// The reader thread calls `record_output` directly.
 pub struct IdleDetectorCore {
+    /// Minimum idle duration before the detector reports an idle timeout.
     pub timeout_seconds: f64,
+    /// Additional quiet window required before reporting idle.
     pub stability_window_seconds: f64,
+    /// Poll interval used while waiting for idle or exit.
     pub sample_interval_seconds: f64,
+    /// Whether PTY input resets the idle timer.
     pub reset_on_input: bool,
+    /// Whether PTY output resets the idle timer.
     pub reset_on_output: bool,
+    /// Whether ANSI/control churn without visible bytes counts as output.
     pub count_control_churn_as_output: bool,
+    /// Runtime switch that enables or disables idle timeout detection.
     pub enabled: Arc<AtomicBool>,
+    /// Protected idle timing and exit state.
     pub state: Mutex<IdleMonitorState>,
+    /// Notifies idle waiters when activity, exit, or enablement changes.
     pub condvar: Condvar,
 }
 
 impl IdleDetectorCore {
+    /// Record input activity and reset the idle timer when configured.
     pub fn record_input(&self, byte_count: usize) {
         if !self.reset_on_input || byte_count == 0 {
             return;
@@ -164,6 +219,7 @@ impl IdleDetectorCore {
         self.condvar.notify_all();
     }
 
+    /// Record output activity and reset the idle timer when configured.
     pub fn record_output(&self, data: &[u8]) {
         if !self.reset_on_output || data.is_empty() {
             return;
@@ -180,6 +236,7 @@ impl IdleDetectorCore {
         self.condvar.notify_all();
     }
 
+    /// Record child process exit information and wake idle waiters.
     pub fn mark_exit(&self, returncode: i32, interrupted: bool) {
         let mut guard = self.state.lock().expect("idle monitor mutex poisoned");
         guard.returncode = Some(returncode);
@@ -187,10 +244,12 @@ impl IdleDetectorCore {
         self.condvar.notify_all();
     }
 
+    /// Return whether idle timeout detection is currently enabled.
     pub fn enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
 
+    /// Enable or disable idle timeout detection.
     pub fn set_enabled(&self, enabled: bool) {
         let was_enabled = self.enabled.swap(enabled, Ordering::AcqRel);
         if enabled && !was_enabled {
@@ -200,6 +259,7 @@ impl IdleDetectorCore {
         self.condvar.notify_all();
     }
 
+    /// Wait until the child exits, the idle threshold is reached, or the timeout expires.
     pub fn wait(&self, timeout: Option<f64>) -> (bool, String, f64, Option<i32>) {
         let started = Instant::now();
         let overall_timeout = timeout.map(Duration::from_secs_f64);
@@ -254,9 +314,9 @@ impl IdleDetectorCore {
     }
 }
 
-
 // ── Helper functions ──
 
+/// Count ANSI/control bytes that should not be treated as visible output.
 pub fn control_churn_bytes(data: &[u8]) -> usize {
     let mut total = 0;
     let mut index = 0;
@@ -286,6 +346,7 @@ pub fn control_churn_bytes(data: &[u8]) -> usize {
     total
 }
 
+/// Build a `portable_pty::CommandBuilder` from an argv vector.
 pub fn command_builder_from_argv(argv: &[String]) -> CommandBuilder {
     let mut command = CommandBuilder::new(&argv[0]);
     if argv.len() > 1 {
@@ -299,6 +360,7 @@ pub fn command_builder_from_argv(argv: &[String]) -> CommandBuilder {
     command
 }
 
+/// Spawn the background reader that drains PTY output into shared state.
 #[inline(never)]
 pub fn spawn_pty_reader(
     mut reader: Box<dyn Read + Send>,
@@ -356,6 +418,7 @@ pub fn spawn_pty_reader(
     shared.condvar.notify_all();
 }
 
+/// Convert a `portable_pty` exit status into this crate's signed exit-code convention.
 pub fn portable_exit_code(status: portable_pty::ExitStatus) -> i32 {
     if let Some(signal) = status.signal() {
         let signal = signal.to_ascii_lowercase();
@@ -372,6 +435,7 @@ pub fn portable_exit_code(status: portable_pty::ExitStatus) -> i32 {
     status.exit_code() as i32
 }
 
+/// Return whether input bytes contain a carriage return or newline.
 pub fn input_contains_newline(data: &[u8]) -> bool {
     data.iter().any(|byte| matches!(*byte, b'\r' | b'\n'))
 }
@@ -412,6 +476,7 @@ fn acquire_posix_terminal_mode_guard() -> Result<PosixTerminalModeGuard, std::io
 }
 
 #[cfg(unix)]
+/// Relay bytes from POSIX stdin into the active PTY until stopped or exited.
 #[inline(never)]
 pub(super) fn posix_terminal_input_relay_worker(
     handles: Arc<Mutex<Option<NativePtyHandles>>>,
@@ -505,6 +570,7 @@ pub(super) fn posix_terminal_input_relay_worker(
     active.store(false, Ordering::Release);
 }
 
+/// Record PTY input byte, newline, and submit counters for one input chunk.
 pub fn record_pty_input_metrics(
     input_bytes_total: &Arc<AtomicUsize>,
     newline_events_total: &Arc<AtomicUsize>,
@@ -521,10 +587,12 @@ pub fn record_pty_input_metrics(
     }
 }
 
+/// Store the PTY child return code in shared process state.
 pub fn store_pty_returncode(returncode: &Arc<Mutex<Option<i32>>>, code: i32) {
     *returncode.lock().expect("pty returncode mutex poisoned") = Some(code);
 }
 
+/// Poll the PTY child process and persist its return code after exit.
 pub fn poll_pty_process(
     handles: &Arc<Mutex<Option<NativePtyHandles>>>,
     returncode: &Arc<Mutex<Option<i32>>>,
@@ -544,6 +612,7 @@ pub fn poll_pty_process(
     Ok(None)
 }
 
+/// Write input bytes to the running PTY after platform-specific translation.
 pub fn write_pty_input(
     handles: &Arc<Mutex<Option<NativePtyHandles>>>,
     data: &[u8],
@@ -564,6 +633,7 @@ pub fn write_pty_input(
 }
 
 #[cfg(windows)]
+/// Translate newline bytes into the Windows PTY input payload format.
 pub fn windows_terminal_input_payload(data: &[u8]) -> Vec<u8> {
     let mut translated = Vec::with_capacity(data.len());
     let mut index = 0usize;
@@ -591,13 +661,12 @@ pub fn windows_terminal_input_payload(data: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(windows)]
+/// Create a kill-on-close Windows Job Object and assign the child process to it.
 #[inline(never)]
 pub fn assign_child_to_windows_kill_on_close_job(
     handle: Option<std::os::windows::io::RawHandle>,
 ) -> Result<WindowsJobHandle, PtyError> {
-    crate::rp_rust_debug_scope!(
-        "running_process::pty::assign_child_to_windows_kill_on_close_job"
-    );
+    crate::rp_rust_debug_scope!("running_process::pty::assign_child_to_windows_kill_on_close_job");
     use std::mem::zeroed;
 
     use winapi::shared::minwindef::FALSE;
@@ -655,7 +724,9 @@ pub fn assign_child_to_windows_kill_on_close_job(
 #[cfg(windows)]
 #[derive(Debug, Clone)]
 pub struct ChildProcessInfo {
+    /// Process identifier of the child process.
     pub pid: u32,
+    /// Executable name reported by the Toolhelp process snapshot.
     pub name: String,
 }
 
@@ -813,6 +884,7 @@ pub fn find_orphan_conhosts() -> Vec<OrphanConhostInfo> {
 }
 
 #[cfg(windows)]
+/// Apply a Unix-like niceness hint to a Windows PTY child priority class.
 #[inline(never)]
 pub fn apply_windows_pty_priority(
     handle: Option<std::os::windows::io::RawHandle>,
