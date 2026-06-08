@@ -42,7 +42,13 @@ jobs:
 
       - name: Breaking-change check against main
         # On main itself this is a no-op (nothing to compare against).
-        # On PRs / forks we compare against origin/main.
+        # On PRs / forks we compare against origin/main. We fetch via
+        # GitHub HTTPS rather than the local .git directory because
+        # actions/checkout@v4 only materializes the PR head as a local
+        # branch — `main` lives under refs/remotes/origin/ and isn't
+        # reachable as a plain `branch=main` ref via buf's git fetcher.
         if: github.ref != 'refs/heads/main'
-        run: buf breaking --against "../../../../.git#branch=main,subdir=crates/running-process/proto/broker_v1"
+        run: |
+          buf breaking \
+            --against "https://github.com/${GITHUB_REPOSITORY}.git#branch=main,subdir=crates/running-process/proto/broker_v1"
         working-directory: crates/running-process/proto/broker_v1
