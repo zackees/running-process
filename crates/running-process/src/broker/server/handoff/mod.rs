@@ -25,8 +25,8 @@ pub use pending::{
     DEFAULT_MAX_PENDING_HANDOFFS, DEFAULT_PENDING_HANDOFF_TTL,
 };
 pub use unix::{
-    ScmRightsAttempt, ScmRightsError, ScmRightsResult, ScmRightsSuccess, UnixFileDescriptor,
-    UnixHandoffSocket, SCM_RIGHTS_TRANSPORT_SUPPORTED,
+    try_send_scm_rights, ScmRightsAttempt, ScmRightsError, ScmRightsResult, ScmRightsSuccess,
+    UnixFileDescriptor, UnixHandoffSocket, SCM_RIGHTS_TRANSPORT_SUPPORTED,
 };
 pub use windows::{
     DuplicateHandleAttempt, DuplicateHandleError, DuplicateHandleResult, DuplicateHandleSuccess,
