@@ -108,8 +108,13 @@ pub enum VerifyPidError {
 mod platform {
     use std::io;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_os = "macos")]
+    use std::ptr;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    #[cfg(target_os = "macos")]
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::VerifyPidError;
 
@@ -118,25 +123,40 @@ mod platform {
         pid: u32,
         #[cfg(target_os = "linux")]
         pid_fd: Option<OwnedFd>,
+        #[cfg(target_os = "macos")]
+        exit_kqueue: OwnedFd,
+        #[cfg(target_os = "macos")]
+        exited: AtomicBool,
     }
 
     impl ProcessHandle {
         pub(crate) fn open(pid: u32) -> Result<Self, VerifyPidError> {
             validate_pid(pid)?;
-            if !process_exists(pid) {
-                return Err(VerifyPidError::NotFound { pid });
+            #[cfg(target_os = "macos")]
+            {
+                Ok(Self {
+                    pid,
+                    exit_kqueue: open_exit_kqueue(pid)?,
+                    exited: AtomicBool::new(false),
+                })
             }
 
             #[cfg(target_os = "linux")]
             {
+                if !process_exists(pid) {
+                    return Err(VerifyPidError::NotFound { pid });
+                }
                 Ok(Self {
                     pid,
                     pid_fd: try_pidfd_open(pid)?,
                 })
             }
 
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
             {
+                if !process_exists(pid) {
+                    return Err(VerifyPidError::NotFound { pid });
+                }
                 Ok(Self { pid })
             }
         }
@@ -149,14 +169,27 @@ mod platform {
         /// Return whether the process represented by this handle is alive.
         pub fn is_alive(&self) -> bool {
             #[cfg(target_os = "linux")]
-            if let Some(pid_fd) = self.pid_fd.as_ref() {
-                return pidfd_is_alive(pid_fd);
+            {
+                if let Some(pid_fd) = self.pid_fd.as_ref() {
+                    return pidfd_is_alive(pid_fd);
+                }
+                process_exists(self.pid)
             }
 
-            process_exists(self.pid)
+            #[cfg(target_os = "macos")]
+            {
+                !self.exited.load(Ordering::Relaxed)
+                    && kqueue_process_is_alive(&self.exit_kqueue, &self.exited)
+            }
+
+            #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
+            {
+                process_exists(self.pid)
+            }
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn process_exists(pid: u32) -> bool {
         let Ok(native_pid) = validate_pid(pid) else {
             return false;
@@ -200,6 +233,73 @@ mod platform {
         } else {
             Ok(pid as libc::pid_t)
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_exit_kqueue(pid: u32) -> Result<OwnedFd, VerifyPidError> {
+        let native_pid = validate_pid(pid)?;
+        let raw_fd = unsafe { libc::kqueue() };
+        if raw_fd < 0 {
+            return Err(VerifyPidError::Handle {
+                pid,
+                source: io::Error::last_os_error(),
+            });
+        }
+
+        let kqueue_fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+        let change = libc::kevent {
+            ident: native_pid as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD | libc::EV_CLEAR,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: ptr::null_mut(),
+        };
+        let rc = unsafe {
+            libc::kevent(
+                kqueue_fd.as_raw_fd(),
+                &change,
+                1,
+                ptr::null_mut(),
+                0,
+                ptr::null(),
+            )
+        };
+        if rc == 0 {
+            return Ok(kqueue_fd);
+        }
+
+        let source = io::Error::last_os_error();
+        if matches!(source.raw_os_error(), Some(libc::ESRCH)) {
+            Err(VerifyPidError::NotFound { pid })
+        } else {
+            Err(VerifyPidError::Handle { pid, source })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn kqueue_process_is_alive(kqueue_fd: &OwnedFd, exited: &AtomicBool) -> bool {
+        let mut event = std::mem::MaybeUninit::<libc::kevent>::uninit();
+        let timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let rc = unsafe {
+            libc::kevent(
+                kqueue_fd.as_raw_fd(),
+                ptr::null(),
+                0,
+                event.as_mut_ptr(),
+                1,
+                &timeout,
+            )
+        };
+        if rc == 0 {
+            return true;
+        }
+
+        exited.store(true, Ordering::Relaxed);
+        false
     }
 
     #[cfg(target_os = "linux")]
