@@ -92,8 +92,9 @@ pub use service_def_loader::{
     SERVICE_DEF_DIR_ENV, SERVICE_DEF_EXTENSION,
 };
 pub use spawn_coordinator::{
-    SpawnBeginError, SpawnBudgetConfig, SpawnBudgetSnapshot, SpawnCoordinator, SpawnOutcome,
-    SpawnPermit, DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, DEFAULT_SPAWN_BUDGET_WINDOW,
+    acquire_spawn_lock, SpawnBeginError, SpawnBudgetConfig, SpawnBudgetSnapshot, SpawnCoordinator,
+    SpawnLockError, SpawnLockFileIdentity, SpawnLockGuard, SpawnOutcome, SpawnPermit,
+    DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, DEFAULT_SPAWN_BUDGET_WINDOW,
 };
 pub use spawn_wait::{
     SpawnWaitDecision, SpawnWaitPolicy, SpawnWaitProbe, DEFAULT_SPAWN_WAIT_HARD_CEILING,
