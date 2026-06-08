@@ -1,3 +1,11 @@
+//! Cross-platform process execution, process-tree control, PTY handling, and
+//! broker integration primitives.
+//!
+//! The crate exposes a synchronous process API through [`NativeProcess`], a
+//! contained process-group helper through [`ContainedProcessGroup`], low-level
+//! spawn helpers through [`spawn()`] and [`spawn_daemon`], and optional
+//! daemon/broker modules behind feature flags.
+
 use std::collections::VecDeque;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
