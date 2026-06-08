@@ -575,7 +575,16 @@ fn prepare_local_socket_path(socket_path: &str) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::remove_file(path);
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "broker local socket path already exists",
+                ));
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
     }
 
     #[cfg(windows)]
