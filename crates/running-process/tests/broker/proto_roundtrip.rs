@@ -8,11 +8,12 @@ use std::collections::HashMap;
 
 use prost::Message;
 use running_process::broker::protocol::{
-    hello_reply::Result as HelloReplyResult, BrokerIsolation, CacheManifest, CacheRoot,
-    CacheRootKind, CleanupPolicy, DaemonProcess, Endpoint, ErrorCode, EventKind, Frame, FrameKind,
-    Hello, HelloReply, HostIdentity, LifecycleEvent, ManifestRef, Negotiated, ObservabilityInfo,
-    Operation, OperationKind, Ownership, PayloadEncoding, Quota, Refused, ServiceDefinition,
-    StorageDisposition, TeardownHook, TeardownKind,
+    hello_reply::Result as HelloReplyResult, AdminReply, AdminReplyKind, AdminRequest, AdminVerb,
+    BrokerIsolation, CacheManifest, CacheRoot, CacheRootKind, CleanupPolicy, DaemonProcess,
+    Endpoint, ErrorCode, EventKind, Frame, FrameKind, Hello, HelloReply, HostIdentity,
+    LifecycleEvent, ManifestRef, Negotiated, ObservabilityInfo, Operation, OperationKind,
+    Ownership, PayloadEncoding, Quota, Refused, ServiceDefinition, StorageDisposition,
+    TeardownHook, TeardownKind,
 };
 
 fn assert_roundtrip<M: Message + PartialEq + std::fmt::Debug + Default>(msg: M) {
@@ -92,6 +93,28 @@ fn hello_reply_refused_roundtrip() {
     };
     let reply = HelloReply {
         result: Some(HelloReplyResult::Refused(refused)),
+    };
+    assert_roundtrip(reply);
+}
+
+#[test]
+fn admin_request_roundtrip() {
+    let request = AdminRequest {
+        verb: AdminVerb::BackendHealth as i32,
+        json: true,
+        service_name: "zccache".into(),
+        output_path: String::new(),
+    };
+    assert_roundtrip(request);
+}
+
+#[test]
+fn admin_reply_roundtrip() {
+    let reply = AdminReply {
+        kind: AdminReplyKind::Json as i32,
+        body: r#"{"schema_version":1}"#.into(),
+        exit_code: 0,
+        content_type: "application/json".into(),
     };
     assert_roundtrip(reply);
 }
@@ -220,4 +243,3 @@ fn lifecycle_event_roundtrip() {
     };
     assert_roundtrip(evt);
 }
-

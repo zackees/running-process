@@ -1,11 +1,30 @@
 # v1 Admin Verbs
 
-Admin verbs use the broker control pipe with `Frame.payload_protocol = 0xADMIN`.
+Admin verbs use the broker control pipe with `Frame.payload_protocol = 0xAD01`.
 Every JSON response uses `schema_version: 1`.
 
-The current Phase 4 binary can render every admin response locally. Pipe-backed
-admin transport wires these renderers to broker state when the accept loop
-lands.
+Admin request frames carry `AdminRequest` protobuf payloads and response frames
+carry `AdminReply` protobuf payloads. The current Phase 4 code can dispatch
+typed admin frames to the local renderers; the long-lived accept loop still
+needs to route live pipe connections to this dispatcher.
+
+## Frame Payload
+
+```protobuf
+message AdminRequest {
+  AdminVerb verb = 1;
+  bool json = 2;
+  string service_name = 3;
+  string output_path = 4;
+}
+
+message AdminReply {
+  AdminReplyKind kind = 1;
+  string body = 2;
+  uint32 exit_code = 3;
+  string content_type = 4;
+}
+```
 
 ## Common Envelope
 

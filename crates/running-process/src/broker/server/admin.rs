@@ -2,8 +2,12 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use prost::Message;
 use serde_json::json;
 
+use crate::broker::protocol::{
+    AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame, FrameKind, PayloadEncoding,
+};
 use crate::broker::server::{
     BackendRegistry, SpawnBudgetSnapshot,
 };
@@ -11,6 +15,10 @@ use crate::broker::server::metrics::{MetricKind, BROKER_METRICS};
 
 /// Frozen admin JSON schema version.
 pub const ADMIN_SCHEMA_VERSION: u32 = 1;
+/// Payload protocol value for v1 admin request/reply frames.
+pub const ADMIN_PAYLOAD_PROTOCOL: u32 = 0xAD01;
+
+const PROTOCOL_VERSION: u32 = 1;
 
 /// Snapshot consumed by admin verb renderers.
 #[derive(Clone, Debug)]
@@ -321,6 +329,136 @@ pub fn render_readyz(snapshot: &AdminSnapshot) -> &'static str {
         "ready\n"
     } else {
         "not ready\n"
+    }
+}
+
+/// Render one typed admin request into a typed admin reply.
+pub fn render_admin_reply(snapshot: &AdminSnapshot, request: &AdminRequest) -> AdminReply {
+    match AdminVerb::try_from(request.verb) {
+        Ok(AdminVerb::Status) => {
+            if request.json {
+                json_reply(render_status_json(snapshot))
+            } else {
+                text_reply(
+                    format!(
+                        "broker_instance: {}\naccepting_hello: {}\n",
+                        snapshot.broker_instance, snapshot.accepting_hello
+                    ),
+                    0,
+                )
+            }
+        }
+        Ok(AdminVerb::Dump) => json_reply(render_dump_json(snapshot)),
+        Ok(AdminVerb::ListInstances) => json_reply(render_list_instances_json(snapshot)),
+        Ok(AdminVerb::Healthz) => text_reply(render_healthz(), 0),
+        Ok(AdminVerb::Readyz) => {
+            let exit_code = if snapshot.accepting_hello { 0 } else { 1 };
+            text_reply(render_readyz(snapshot), exit_code)
+        }
+        Ok(AdminVerb::BackendHealth) => {
+            let service_name = if request.service_name.is_empty() {
+                "unknown"
+            } else {
+                &request.service_name
+            };
+            json_reply(render_backend_health_json(snapshot, service_name))
+        }
+        Ok(AdminVerb::Config) => json_reply(render_config_json(snapshot)),
+        Ok(AdminVerb::Diagnose) => {
+            let output = if request.output_path.is_empty() {
+                "bundle.tar.gz"
+            } else {
+                &request.output_path
+            };
+            json_reply(render_diagnose_json(snapshot, output))
+        }
+        Ok(AdminVerb::Metrics) => AdminReply {
+            kind: AdminReplyKind::Openmetrics as i32,
+            body: render_metrics_text(snapshot),
+            exit_code: 0,
+            content_type: "application/openmetrics-text".into(),
+        },
+        Ok(AdminVerb::Unspecified) | Err(_) => {
+            text_reply("unsupported admin verb\n", 2)
+        }
+    }
+}
+
+/// Handle one decoded admin frame and return a response frame.
+pub fn handle_admin_frame(
+    frame: Frame,
+    snapshot: &AdminSnapshot,
+) -> Result<Frame, AdminFrameError> {
+    if frame.envelope_version != PROTOCOL_VERSION {
+        return Err(AdminFrameError::UnsupportedEnvelopeVersion(
+            frame.envelope_version,
+        ));
+    }
+    if FrameKind::try_from(frame.kind) != Ok(FrameKind::Request) {
+        return Err(AdminFrameError::UnexpectedKind(frame.kind));
+    }
+    if frame.payload_protocol != ADMIN_PAYLOAD_PROTOCOL {
+        return Err(AdminFrameError::UnexpectedPayloadProtocol(
+            frame.payload_protocol,
+        ));
+    }
+    if PayloadEncoding::try_from(frame.payload_encoding) != Ok(PayloadEncoding::None) {
+        return Err(AdminFrameError::UnsupportedPayloadEncoding(
+            frame.payload_encoding,
+        ));
+    }
+
+    let request =
+        AdminRequest::decode(frame.payload.as_slice()).map_err(AdminFrameError::Decode)?;
+    let reply = render_admin_reply(snapshot, &request);
+    Ok(Frame {
+        envelope_version: PROTOCOL_VERSION,
+        kind: FrameKind::Response as i32,
+        payload_protocol: ADMIN_PAYLOAD_PROTOCOL,
+        payload: reply.encode_to_vec(),
+        request_id: frame.request_id,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: frame.traceparent,
+        tracestate: frame.tracestate,
+    })
+}
+
+/// Errors raised by admin frame validation/dispatch.
+#[derive(Debug, thiserror::Error)]
+pub enum AdminFrameError {
+    /// Unsupported frame envelope version.
+    #[error("unsupported admin frame envelope_version {0}")]
+    UnsupportedEnvelopeVersion(u32),
+    /// Admin frames must be requests.
+    #[error("admin frame kind must be REQUEST, got {0}")]
+    UnexpectedKind(i32),
+    /// Admin frame used the wrong payload protocol.
+    #[error("admin frame payload_protocol must be 0xAD01, got {0}")]
+    UnexpectedPayloadProtocol(u32),
+    /// Admin frame payload must be uncompressed.
+    #[error("admin frame payload must not be compressed, got {0}")]
+    UnsupportedPayloadEncoding(i32),
+    /// AdminRequest protobuf decoding failed.
+    #[error(transparent)]
+    Decode(prost::DecodeError),
+}
+
+fn json_reply(body: String) -> AdminReply {
+    AdminReply {
+        kind: AdminReplyKind::Json as i32,
+        body,
+        exit_code: 0,
+        content_type: "application/json".into(),
+    }
+}
+
+fn text_reply(body: impl Into<String>, exit_code: u32) -> AdminReply {
+    AdminReply {
+        kind: AdminReplyKind::Text as i32,
+        body: body.into(),
+        exit_code,
+        content_type: "text/plain".into(),
     }
 }
 

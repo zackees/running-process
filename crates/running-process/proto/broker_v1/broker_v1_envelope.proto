@@ -21,7 +21,7 @@ package running_process.broker.v1;
 message Frame {
   uint32 envelope_version = 1;     // ALWAYS 1 in v1 broker. Frozen.
   FrameKind kind = 2;
-  uint32 payload_protocol = 3;     // 0x00 for control-plane Hello/HelloReply; 0xADMIN for admin verbs
+  uint32 payload_protocol = 3;     // 0x00 for Hello/HelloReply; 0xAD01 for admin verbs
   bytes payload = 4;               // OPAQUE for non-control kinds
   uint64 request_id = 5;
   PayloadEncoding payload_encoding = 6;

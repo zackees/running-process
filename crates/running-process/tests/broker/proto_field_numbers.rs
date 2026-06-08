@@ -77,9 +77,19 @@ fn manifest_reserved_ranges_present() {
 }
 
 #[test]
+fn admin_reserved_ranges_present() {
+    let src = proto("broker_v1_admin.proto");
+    assert!(
+        src.matches("reserved 10 to 20").count() >= 4,
+        "AdminRequest, AdminReply, AdminVerb, and AdminReplyKind must reserve 10..20"
+    );
+}
+
+#[test]
 fn frozen_package_and_syntax() {
     for name in &[
         "broker_v1_envelope.proto",
+        "broker_v1_admin.proto",
         "broker_v1_manifest.proto",
         "broker_v1_service_def.proto",
     ] {

@@ -7,7 +7,8 @@
 //! All three .proto files share the `running_process.broker.v1`
 //! package, so prost-build emits a single Rust module containing
 //! every message and enum (Frame, Hello, HelloReply, Refused,
-//! Negotiated, CacheManifest, ServiceDefinition, LifecycleEvent, ...).
+//! Negotiated, AdminRequest, AdminReply, CacheManifest, ServiceDefinition,
+//! LifecycleEvent, ...).
 //! The prost-generated types are re-exported at the top of this
 //! module so existing call sites importing them under
 //! `running_process::broker::protocol::*` keep working.
