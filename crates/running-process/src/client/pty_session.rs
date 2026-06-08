@@ -37,16 +37,24 @@ use std::time::Duration;
 /// Request shape for spawning a daemon-owned PTY session.
 #[derive(Debug, Clone)]
 pub struct PtySpawnRequest {
+    /// Command and arguments to execute inside the PTY.
     pub argv: Vec<String>,
+    /// Working directory for the spawned process.
     pub cwd: Option<PathBuf>,
+    /// Environment variables to add or override for the spawned process.
     pub env: Vec<(String, String)>,
+    /// Whether to start from an empty environment instead of inheriting the daemon's environment.
     pub clear_inherited_env: bool,
+    /// Initial terminal row count.
     pub rows: u16,
+    /// Initial terminal column count.
     pub cols: u16,
+    /// Optional caller-defined owner string used for listing and filtering sessions.
     pub originator: Option<String>,
 }
 
 impl PtySpawnRequest {
+    /// Create a spawn request with default size and inherited environment.
     pub fn new<S: Into<String>>(argv: impl IntoIterator<Item = S>) -> Self {
         Self {
             argv: argv.into_iter().map(Into::into).collect(),
@@ -59,22 +67,26 @@ impl PtySpawnRequest {
         }
     }
 
+    /// Set the working directory for the spawned process.
     pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = Some(cwd.into());
         self
     }
 
+    /// Set the initial PTY size.
     pub fn with_size(mut self, rows: u16, cols: u16) -> Self {
         self.rows = rows;
         self.cols = cols;
         self
     }
 
+    /// Set the caller-defined owner string for this session.
     pub fn with_originator(mut self, originator: impl Into<String>) -> Self {
         self.originator = Some(originator.into());
         self
     }
 
+    /// Replace the request's explicit environment variables.
     pub fn with_envs<I, K, V>(mut self, env: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -89,8 +101,11 @@ impl PtySpawnRequest {
 /// Reply summary for a successful spawn.
 #[derive(Debug, Clone)]
 pub struct SpawnedPtySession {
+    /// Daemon-assigned PTY session identifier.
     pub session_id: String,
+    /// Process ID of the spawned session leader.
     pub pid: u32,
+    /// Creation time reported by the daemon, in seconds since the Unix epoch.
     pub created_at: f64,
 }
 
@@ -250,11 +265,17 @@ pub struct PtyAttachment {
 /// Errors specific to attach.
 #[derive(Debug)]
 pub enum AttachError {
+    /// Failed to open a socket connection to the daemon.
     Connect(std::io::Error),
+    /// I/O failed while exchanging attach or stream frames.
     Io(std::io::Error),
+    /// A daemon response or stream frame could not be decoded.
     Decode(prost::DecodeError),
+    /// The daemon rejected the attach request.
     Server {
+        /// Status code returned by the daemon.
         code: StatusCode,
+        /// Human-readable error message returned by the daemon.
         message: String,
     },
     /// The daemon never sent an AttachPtySessionResponse payload.
