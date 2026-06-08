@@ -8,6 +8,7 @@
 //! behind every field number and `reserved` range.
 
 pub mod backend_handle;
+pub mod backend_lib;
 pub mod backend_lifecycle;
 pub mod client;
 pub mod host_identity;

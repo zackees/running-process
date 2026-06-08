@@ -25,6 +25,17 @@ client: adopts transferred handle
 
 The `backend_pipe` field remains present for diagnostics and fallback.
 
+## Backend Acceptance Helper
+
+`running_process::broker::backend_lib::accept_handed_off` is the
+platform-neutral backend scaffold for this path. Platform modules will deliver
+raw token bytes plus an opaque connection payload through `HandedOffPayload<T>`.
+The helper parses the 128-bit token, consumes the matching pending token exactly
+once, and classifies the payload as `Accepted` or `Rejected`.
+
+The helper does not call `DuplicateHandle`, `sendmsg`, or `recvmsg`; those
+transport details remain isolated for the later Windows and Unix modules.
+
 ## Platform Mechanisms
 
 | Platform | Mechanism |
