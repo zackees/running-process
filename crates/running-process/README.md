@@ -44,4 +44,10 @@ Examples:
 - [Release-handles CLI](../../examples/release-handles-cli/)
 - [Custom isolation](../../examples/custom-isolation/)
 
+Contrib service templates:
+
+- [systemd user service](../../contrib/systemd/running-process-broker-v1.service)
+- [macOS LaunchAgent](../../contrib/launchd/com.zackees.running-process-broker-v1.plist)
+- [Windows service installer](../../contrib/windows-service/install.ps1)
+
 The authoritative v1 proto files live under `proto/broker_v1/`.
