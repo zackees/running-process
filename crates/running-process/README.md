@@ -20,6 +20,13 @@ Schema docs:
 - [Service definition](../../docs/v1-service-definition.md)
 - [Lifecycle events](../../docs/v1-lifecycle-events.md)
 
+Consumer adoption guides:
+
+- [clud](../../docs/consumer-adoption-clud.md)
+- [zccache](../../docs/consumer-adoption-zccache.md)
+- [soldr](../../docs/consumer-adoption-soldr.md)
+- [fbuild](../../docs/consumer-adoption-fbuild.md)
+
 Operations and rollout docs:
 
 - [Broker internal architecture](../../docs/v1-broker-architecture.md)
