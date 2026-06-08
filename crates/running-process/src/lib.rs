@@ -63,7 +63,9 @@ pub mod telemetry;
 // Wave 5 of #165: daemon runtime absorbed from `running-process-daemon`.
 // Heavy deps (tokio, sqlite, etc.) gated behind `feature = "daemon"`.
 #[cfg(feature = "daemon")]
+/// Daemon runtime APIs and helpers enabled by the `daemon` feature.
 pub mod daemon;
+/// PTY-backed process APIs.
 pub mod pty;
 mod public_symbols;
 mod rust_debug;
@@ -75,20 +77,20 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
-pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
+pub use console_detect::{ConsoleWindowInfo, monitor_console_windows};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
 #[cfg(feature = "originator-scan")]
-pub use originator::{find_processes_by_originator, OriginatorProcessInfo};
-pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
+pub use originator::{OriginatorProcessInfo, find_processes_by_originator};
+pub use rust_debug::{RustDebugScopeGuard, render_rust_debug_traces};
 pub use spawn::{
-    spawn, spawn_daemon, spawn_daemon_with_clear_env, DaemonChild, SpawnStdio, SpawnedChild,
-    StdioSource,
+    DaemonChild, SpawnStdio, SpawnedChild, StdioSource, spawn, spawn_daemon,
+    spawn_daemon_with_clear_env,
 };
 pub use terminal_graphics::{
+    CapabilityStatus, EvidenceStrength, GraphicsCapability, GraphicsProtocol, TerminalCapabilities,
+    TerminalCapabilityInput, TerminalGraphicsCapabilities, TerminalProbeEvidence,
     current_terminal_capabilities, current_terminal_capabilities_with_timeout,
-    detect_terminal_capabilities, CapabilityStatus, EvidenceStrength, GraphicsCapability,
-    GraphicsProtocol, TerminalCapabilities, TerminalCapabilityInput, TerminalGraphicsCapabilities,
-    TerminalProbeEvidence,
+    detect_terminal_capabilities,
 };
 pub use types::{
     CommandSpec, ProcessConfig, ProcessError, ReadStatus, RunOutput, StderrMode, StdinMode,
@@ -97,14 +99,15 @@ pub use types::{
 
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 #[cfg(unix)]
-pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
+pub use unix::{UnixSignal, unix_set_priority, unix_signal_process, unix_signal_process_group};
 #[cfg(windows)]
 pub(crate) use windows::{
-    assign_child_to_windows_kill_on_close_job_impl, windows_priority_flags, CapturePipeHandles,
-    WindowsJobHandle,
+    CapturePipeHandles, WindowsJobHandle, assign_child_to_windows_kill_on_close_job_impl,
+    windows_priority_flags,
 };
 
 #[macro_export]
+/// Create a scoped Rust debug trace label for the current function body.
 macro_rules! rp_rust_debug_scope {
     ($label:expr) => {
         let _running_process_rust_debug_scope =
@@ -161,6 +164,12 @@ impl SharedState {
     }
 }
 
+/// A cross-platform child process with optional output capture.
+///
+/// `NativeProcess` wraps [`std::process::Command`] with the crate's
+/// process-tree containment, capture draining, timeout, and terminal-control
+/// behavior. Methods are synchronous and are safe to call from ordinary
+/// blocking code.
 pub struct NativeProcess {
     config: ProcessConfig,
     child: Arc<Mutex<Option<ChildState>>>,
@@ -170,6 +179,9 @@ pub struct NativeProcess {
 }
 
 impl NativeProcess {
+    /// Create a process wrapper from a [`ProcessConfig`].
+    ///
+    /// The child is not spawned until [`Self::start`] is called.
     pub fn new(config: ProcessConfig) -> Self {
         Self {
             shared: Arc::new(SharedState::new(config.capture)),
@@ -182,6 +194,10 @@ impl NativeProcess {
 
     // Preserve a stable Rust frame here in release user dumps.
     #[inline(never)]
+    /// Spawn the configured child process.
+    ///
+    /// Returns [`ProcessError::AlreadyStarted`] if the same wrapper already
+    /// owns a running child.
     pub fn start(&self) -> Result<(), ProcessError> {
         public_symbols::rp_native_process_start_public(self)
     }
@@ -257,36 +273,39 @@ impl NativeProcess {
     fn spawn_exit_waiter(&self) {
         let child = Arc::clone(&self.child);
         let shared = Arc::clone(&self.shared);
-        thread::spawn(move || loop {
-            if shared.returncode.load(Ordering::Acquire) != RETURNCODE_NOT_SET {
-                return;
-            }
-            {
-                let mut guard = child.lock().expect("child mutex poisoned");
-                if let Some(child_state) = guard.as_mut() {
-                    match child_state.child.try_wait() {
-                        Ok(Some(status)) => {
-                            let code = exit_code(status);
-                            shared.returncode.store(code as i64, Ordering::Release);
-                            shared.condvar.notify_all();
-                            return;
-                        }
-                        Ok(None) => {}
-                        Err(_) => return,
-                    }
-                } else {
+        thread::spawn(move || {
+            loop {
+                if shared.returncode.load(Ordering::Acquire) != RETURNCODE_NOT_SET {
                     return;
                 }
+                {
+                    let mut guard = child.lock().expect("child mutex poisoned");
+                    if let Some(child_state) = guard.as_mut() {
+                        match child_state.child.try_wait() {
+                            Ok(Some(status)) => {
+                                let code = exit_code(status);
+                                shared.returncode.store(code as i64, Ordering::Release);
+                                shared.condvar.notify_all();
+                                return;
+                            }
+                            Ok(None) => {}
+                            Err(_) => return,
+                        }
+                    } else {
+                        return;
+                    }
+                }
+                // #199: intentional — capture thread polling for
+                // child-exit. `try_wait` is non-blocking by design;
+                // we can't block here because the thread also drains
+                // pipe state alongside the exit check. 10ms keeps the
+                // CPU cost negligible while staying responsive.
+                thread::sleep(Duration::from_millis(10));
             }
-            // #199: intentional — capture thread polling for
-            // child-exit. `try_wait` is non-blocking by design;
-            // we can't block here because the thread also drains
-            // pipe state alongside the exit check. 10ms keeps the
-            // CPU cost negligible while staying responsive.
-            thread::sleep(Duration::from_millis(10));
         });
     }
 
+    /// Write bytes to the child's stdin and then close stdin.
     pub fn write_stdin(&self, data: &[u8]) -> Result<(), ProcessError> {
         let mut guard = self.child.lock().expect("child mutex poisoned");
         let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
@@ -321,6 +340,9 @@ impl NativeProcess {
         Ok(())
     }
 
+    /// Check whether the child has exited without blocking.
+    ///
+    /// Returns `Ok(None)` while the process is still running.
     pub fn poll(&self) -> Result<Option<i32>, ProcessError> {
         // Fast path: check atomic set by background waiter thread.
         if let Some(code) = self.returncode() {
@@ -342,6 +364,10 @@ impl NativeProcess {
 
     // Preserve a stable Rust frame here in release user dumps.
     #[inline(never)]
+    /// Wait for the child to exit.
+    ///
+    /// When `timeout` is `Some`, returns [`ProcessError::Timeout`] if the
+    /// child does not exit before the duration elapses.
     pub fn wait(&self, timeout: Option<Duration>) -> Result<i32, ProcessError> {
         public_symbols::rp_native_process_wait_public(self, timeout)
     }
@@ -395,6 +421,7 @@ impl NativeProcess {
 
     // Preserve a stable Rust frame here in release user dumps.
     #[inline(never)]
+    /// Forcefully terminate the child process.
     pub fn kill(&self) -> Result<(), ProcessError> {
         public_symbols::rp_native_process_kill_public(self)
     }
@@ -436,6 +463,9 @@ impl NativeProcess {
         Ok(())
     }
 
+    /// Terminate the child process.
+    ///
+    /// This currently uses the same hard-kill path as [`Self::kill`].
     pub fn terminate(&self) -> Result<(), ProcessError> {
         self.kill()
     }
@@ -512,6 +542,7 @@ impl NativeProcess {
 
     // Preserve a stable Rust frame here in release user dumps.
     #[inline(never)]
+    /// Close the process wrapper by terminating the child when it is running.
     pub fn close(&self) -> Result<(), ProcessError> {
         public_symbols::rp_native_process_close_public(self)
     }
@@ -529,6 +560,7 @@ impl NativeProcess {
         Ok(())
     }
 
+    /// Return the child process id when the wrapper currently owns a child.
     pub fn pid(&self) -> Option<u32> {
         self.child
             .lock()
@@ -537,6 +569,7 @@ impl NativeProcess {
             .map(|state| state.child.id())
     }
 
+    /// Return the cached exit code when the child has exited.
     pub fn returncode(&self) -> Option<i32> {
         let v = self.shared.returncode.load(Ordering::Acquire);
         if v == RETURNCODE_NOT_SET {
@@ -546,6 +579,7 @@ impl NativeProcess {
         }
     }
 
+    /// Return whether captured output is queued for one stream.
     pub fn has_pending_stream(&self, stream: StreamKind) -> bool {
         if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
             return false;
@@ -557,11 +591,13 @@ impl NativeProcess {
         }
     }
 
+    /// Return whether captured combined output is queued.
     pub fn has_pending_combined(&self) -> bool {
         let guard = self.shared.queues.lock().expect("queue mutex poisoned");
         !guard.combined_queue.is_empty()
     }
 
+    /// Drain and return all queued output for one stream.
     pub fn drain_stream(&self, stream: StreamKind) -> Vec<Vec<u8>> {
         if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
             return Vec::new();
@@ -574,11 +610,16 @@ impl NativeProcess {
         queue.drain(..).collect()
     }
 
+    /// Drain and return all queued combined output events.
     pub fn drain_combined(&self) -> Vec<StreamEvent> {
         let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
         guard.combined_queue.drain(..).collect()
     }
 
+    /// Read the next captured chunk from one stream.
+    ///
+    /// Returns [`ReadStatus::Timeout`] when `timeout` elapses before output or
+    /// EOF is observed.
     pub fn read_stream(
         &self,
         stream: StreamKind,
@@ -644,6 +685,7 @@ impl NativeProcess {
 
     // Preserve a stable Rust frame here in release user dumps.
     #[inline(never)]
+    /// Read the next captured combined stream event.
     pub fn read_combined(&self, timeout: Option<Duration>) -> ReadStatus<StreamEvent> {
         public_symbols::rp_native_process_read_combined_public(self, timeout)
     }
@@ -689,6 +731,7 @@ impl NativeProcess {
         }
     }
 
+    /// Return the retained stdout history.
     pub fn captured_stdout(&self) -> Vec<Vec<u8>> {
         self.shared
             .queues
@@ -709,6 +752,7 @@ impl NativeProcess {
             .clone()
     }
 
+    /// Return the retained stderr history.
     pub fn captured_stderr(&self) -> Vec<Vec<u8>> {
         if self.config.stderr_mode == StderrMode::Stdout {
             return Vec::new();
@@ -735,6 +779,7 @@ impl NativeProcess {
             .clone()
     }
 
+    /// Return the retained combined stdout/stderr event history.
     pub fn captured_combined(&self) -> Vec<StreamEvent> {
         self.shared
             .queues
@@ -746,6 +791,7 @@ impl NativeProcess {
             .collect()
     }
 
+    /// Return the retained byte count for one captured stream.
     pub fn captured_stream_bytes(&self, stream: StreamKind) -> usize {
         if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
             return 0;
@@ -757,6 +803,7 @@ impl NativeProcess {
         }
     }
 
+    /// Return the retained byte count for combined captured output.
     pub fn captured_combined_bytes(&self) -> usize {
         self.shared
             .queues
@@ -765,6 +812,7 @@ impl NativeProcess {
             .combined_history_bytes
     }
 
+    /// Clear retained output history for one stream and return freed bytes.
     pub fn clear_captured_stream(&self, stream: StreamKind) -> usize {
         if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
             return 0;
@@ -788,6 +836,7 @@ impl NativeProcess {
         }
     }
 
+    /// Clear retained combined output history and return freed bytes.
     pub fn clear_captured_combined(&self) -> usize {
         let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
         let released = guard.combined_history_bytes;
