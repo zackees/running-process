@@ -5,17 +5,20 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use interprocess::local_socket::traits::Listener;
 use prost::Message;
+use serde::Serialize;
 use serde_json::json;
 
 use crate::broker::protocol::{
-    read_frame, write_frame, AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame,
-    FrameKind, FramingError, PayloadEncoding,
+    read_frame, write_frame, AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame, FrameKind,
+    FramingError, PayloadEncoding, ENVELOPE_VERSION, MAX_FRAME_BYTES, MAX_HELLO_BYTES,
 };
 
 use super::backend_registry::BackendRegistry;
 use super::connection::{bind_local_socket, BrokerConnectionError, LocalSocketCleanup};
+use super::spawn_coordinator::{
+    SpawnBudgetSnapshot, DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, DEFAULT_SPAWN_BUDGET_WINDOW,
+};
 use crate::broker::server::metrics::{MetricKind, BROKER_METRICS};
-use super::spawn_coordinator::SpawnBudgetSnapshot;
 
 /// Frozen admin JSON schema version.
 pub const ADMIN_SCHEMA_VERSION: u32 = 1;
@@ -23,6 +26,9 @@ pub const ADMIN_SCHEMA_VERSION: u32 = 1;
 pub const ADMIN_PAYLOAD_PROTOCOL: u32 = 0xAD01;
 
 const PROTOCOL_VERSION: u32 = 1;
+const DIAGNOSTIC_BUNDLE_FORMAT: &str = "tar.gz";
+const DIAGNOSTIC_BUNDLE_MODE: &str = "metadata-only";
+const DIAGNOSTIC_REDACTIONS: &[&str] = &["home", "secret-env", "acl-identities"];
 
 /// Snapshot consumed by admin verb renderers.
 #[derive(Clone, Debug)]
@@ -213,7 +219,7 @@ pub fn render_dump_json(snapshot: &AdminSnapshot) -> String {
         "command": "dump",
         "generated_at_unix_ms": snapshot.generated_at_unix_ms,
         "broker_instance": snapshot.broker_instance,
-        "effective_config": {},
+        "effective_config": effective_config_json(snapshot),
         "backend_table": snapshot.backends.iter().map(|backend| {
             json!({
                 "service_name": backend.service_name,
@@ -284,20 +290,28 @@ pub fn render_config_json(snapshot: &AdminSnapshot) -> String {
         "schema_version": ADMIN_SCHEMA_VERSION,
         "command": "config",
         "generated_at_unix_ms": snapshot.generated_at_unix_ms,
-        "values": {},
+        "values": effective_config_json(snapshot),
     })
     .to_string()
 }
 
 /// Render `diagnose --output <path>` summary JSON.
 pub fn render_diagnose_json(snapshot: &AdminSnapshot, output: &str) -> String {
+    let entries = diagnostic_bundle_entries_json(snapshot);
     json!({
         "schema_version": ADMIN_SCHEMA_VERSION,
         "command": "diagnose",
         "generated_at_unix_ms": snapshot.generated_at_unix_ms,
         "output": output,
-        "files": [],
-        "redactions": ["home", "secret-env", "acl-identities"],
+        "bundle": {
+            "format": DIAGNOSTIC_BUNDLE_FORMAT,
+            "mode": DIAGNOSTIC_BUNDLE_MODE,
+            "created": false,
+            "entries": entries,
+        },
+        "files": diagnostic_bundle_file_paths(snapshot),
+        "redactions": diagnostic_redaction_names(),
+        "redaction_policy": diagnostic_redaction_policy_json(),
     })
     .to_string()
 }
@@ -382,9 +396,7 @@ pub fn render_admin_reply(snapshot: &AdminSnapshot, request: &AdminRequest) -> A
             exit_code: 0,
             content_type: "application/openmetrics-text".into(),
         },
-        Ok(AdminVerb::Unspecified) | Err(_) => {
-            text_reply("unsupported admin verb\n", 2)
-        }
+        Ok(AdminVerb::Unspecified) | Err(_) => text_reply("unsupported admin verb\n", 2),
     }
 }
 
@@ -439,12 +451,11 @@ pub fn handle_admin_connection<S: Read + Write>(
     snapshot: &AdminSnapshot,
 ) -> Result<AdminReply, AdminConnectionError> {
     let request_bytes = read_frame(stream)?;
-    let request_frame = Frame::decode(request_bytes.as_slice())
-        .map_err(AdminConnectionError::DecodeFrame)?;
+    let request_frame =
+        Frame::decode(request_bytes.as_slice()).map_err(AdminConnectionError::DecodeFrame)?;
     let response_frame = handle_admin_frame(request_frame, snapshot)?;
     write_frame(stream, &response_frame.encode_to_vec())?;
-    AdminReply::decode(response_frame.payload.as_slice())
-        .map_err(AdminConnectionError::DecodeReply)
+    AdminReply::decode(response_frame.payload.as_slice()).map_err(AdminConnectionError::DecodeReply)
 }
 
 /// Run one blocking local-socket accept and serve exactly one admin request.
@@ -539,6 +550,156 @@ fn metric_value(name: &str, snapshot: &AdminSnapshot) -> String {
         "running_process_broker_v1_uptime_seconds" => snapshot.uptime.as_secs().to_string(),
         _ => "0".into(),
     }
+}
+
+fn effective_config_json(snapshot: &AdminSnapshot) -> serde_json::Value {
+    json!({
+        "broker": {
+            "broker_instance": sourced_value(&snapshot.broker_instance, "runtime"),
+            "broker_pid": sourced_value(snapshot.broker_pid, "runtime"),
+            "accepting_hello": sourced_value(snapshot.accepting_hello, "runtime"),
+        },
+        "protocol": {
+            "admin_payload_protocol": sourced_value(format!("0x{ADMIN_PAYLOAD_PROTOCOL:04X}"), "protocol-v1"),
+            "envelope_version": sourced_value(PROTOCOL_VERSION, "protocol-v1"),
+            "framing_version": sourced_value(ENVELOPE_VERSION, "protocol-v1"),
+        },
+        "limits": {
+            "max_frame_bytes": sourced_value(MAX_FRAME_BYTES, "protocol-v1"),
+            "max_hello_bytes": sourced_value(MAX_HELLO_BYTES, "protocol-v1"),
+            "connections_open": sourced_value(snapshot.connections_open, "runtime"),
+        },
+        "spawn_budget": {
+            "default_attempts_per_window": sourced_value(DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, "default"),
+            "default_window_ms": sourced_value(duration_ms(DEFAULT_SPAWN_BUDGET_WINDOW), "default"),
+            "active_budget_rows": sourced_value(snapshot.spawn_budgets.len(), "runtime"),
+        },
+        "diagnostics": {
+            "bundle_format": sourced_value(DIAGNOSTIC_BUNDLE_FORMAT, "schema-v1"),
+            "bundle_mode": sourced_value(DIAGNOSTIC_BUNDLE_MODE, "schema-v1"),
+            "redactions": sourced_value(diagnostic_redaction_names(), "schema-v1"),
+        },
+    })
+}
+
+fn diagnostic_bundle_entries_json(snapshot: &AdminSnapshot) -> Vec<serde_json::Value> {
+    vec![
+        diagnostic_bundle_entry("admin/status.json", "json", "status", true, false, None),
+        diagnostic_bundle_entry("admin/dump.json", "json", "dump", true, true, None),
+        diagnostic_bundle_entry(
+            "config/effective.json",
+            "json",
+            "effective-config",
+            true,
+            false,
+            None,
+        ),
+        diagnostic_bundle_entry(
+            "metrics/openmetrics.txt",
+            "openmetrics",
+            "metrics",
+            true,
+            false,
+            None,
+        ),
+        diagnostic_bundle_entry(
+            "events/lifecycle.jsonl",
+            "jsonl",
+            "lifecycle-events",
+            false,
+            true,
+            None,
+        ),
+        diagnostic_bundle_entry(
+            "manifest/backend-manifests.json",
+            "json",
+            "backend-manifest-index",
+            false,
+            true,
+            None,
+        ),
+        diagnostic_bundle_entry(
+            "process/backends.json",
+            "json",
+            "backend-table",
+            true,
+            true,
+            Some(snapshot.backends.len()),
+        ),
+        diagnostic_bundle_entry(
+            "system/summary.json",
+            "json",
+            "host-summary",
+            false,
+            true,
+            None,
+        ),
+    ]
+}
+
+fn diagnostic_bundle_file_paths(snapshot: &AdminSnapshot) -> Vec<String> {
+    diagnostic_bundle_entries_json(snapshot)
+        .into_iter()
+        .filter_map(|entry| {
+            entry
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn diagnostic_bundle_entry(
+    path: &str,
+    kind: &str,
+    source: &str,
+    required: bool,
+    redacted: bool,
+    record_count: Option<usize>,
+) -> serde_json::Value {
+    let mut entry = json!({
+        "path": path,
+        "kind": kind,
+        "source": source,
+        "required": required,
+        "redacted": redacted,
+    });
+    if let Some(record_count) = record_count {
+        entry["record_count"] = json!(record_count);
+    }
+    entry
+}
+
+fn diagnostic_redaction_names() -> Vec<&'static str> {
+    DIAGNOSTIC_REDACTIONS.to_vec()
+}
+
+fn diagnostic_redaction_policy_json() -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "name": "home",
+            "replacement": "~",
+        }),
+        json!({
+            "name": "secret-env",
+            "matches": ["KEY", "TOKEN", "SECRET", "PASS"],
+        }),
+        json!({
+            "name": "acl-identities",
+            "replacement": "stable-hash",
+        }),
+    ]
+}
+
+fn sourced_value(value: impl Serialize, source: &'static str) -> serde_json::Value {
+    json!({
+        "value": value,
+        "source": source,
+    })
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn unix_now_ms() -> u64 {

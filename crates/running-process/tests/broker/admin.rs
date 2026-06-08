@@ -184,6 +184,65 @@ fn dump_json_includes_spawn_budget_rows() {
 }
 
 #[test]
+fn config_json_includes_structured_effective_config() {
+    let value = parse_json(&render_config_json(&snapshot()));
+    let config = &value["values"];
+
+    assert_eq!(config["broker"]["broker_instance"]["value"], "shared");
+    assert_eq!(config["broker"]["broker_instance"]["source"], "runtime");
+    assert_eq!(config["broker"]["accepting_hello"]["value"], true);
+    assert_eq!(
+        config["protocol"]["admin_payload_protocol"]["value"],
+        "0xAD01"
+    );
+    assert_eq!(
+        config["protocol"]["envelope_version"]["source"],
+        "protocol-v1"
+    );
+    assert_eq!(config["limits"]["max_hello_bytes"]["value"], 64 * 1024);
+    assert_eq!(
+        config["spawn_budget"]["default_attempts_per_window"]["value"],
+        3
+    );
+    assert_eq!(config["diagnostics"]["bundle_format"]["value"], "tar.gz");
+    assert_eq!(config["diagnostics"]["redactions"]["value"][0], "home");
+}
+
+#[test]
+fn dump_json_reuses_effective_config_model() {
+    let snapshot = snapshot();
+    let dump = parse_json(&render_dump_json(&snapshot));
+    let config = parse_json(&render_config_json(&snapshot));
+
+    assert_eq!(dump["effective_config"], config["values"]);
+}
+
+#[test]
+fn diagnose_json_includes_deterministic_bundle_metadata() {
+    let value = parse_json(&render_diagnose_json(&snapshot(), "bundle.tar.gz"));
+    let bundle = &value["bundle"];
+
+    assert_eq!(bundle["format"], "tar.gz");
+    assert_eq!(bundle["mode"], "metadata-only");
+    assert_eq!(bundle["created"], false);
+    assert_eq!(value["files"][0], "admin/status.json");
+    assert_eq!(value["redactions"][1], "secret-env");
+    assert_eq!(value["redaction_policy"][2]["replacement"], "stable-hash");
+
+    let backend_entry = bundle["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "process/backends.json")
+        .unwrap();
+    assert_eq!(backend_entry["kind"], "json");
+    assert_eq!(backend_entry["source"], "backend-table");
+    assert_eq!(backend_entry["required"], true);
+    assert_eq!(backend_entry["redacted"], true);
+    assert_eq!(backend_entry["record_count"], 1);
+}
+
+#[test]
 fn admin_request_dispatches_status_json_reply() {
     let request = AdminRequest {
         verb: AdminVerb::Status as i32,
