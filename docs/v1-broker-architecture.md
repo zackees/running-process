@@ -24,7 +24,8 @@ backend lifecycle, and returns direct backend pipe addresses.
 | Framing | Reads and writes `[1][u32 length][prost body]` frames. |
 | Protocol | Decodes `Frame`, `Hello`, `HelloReply`, and admin payloads. |
 | Service registry | Loads and validates service-definition files, re-reading on `Hello`. |
-| Backend table | Tracks live backend processes by service and version. |
+| Instance resolver | Maps service definitions to shared, private, or explicit broker instances. |
+| Backend registry | Tracks verified backend handles by instance, service, and version. |
 | Spawn coordinator | Serializes backend startup for one service/version. |
 | Lifecycle monitor | Watches process death, idle timers, and shutdown drains. |
 | Manifest registry | Reads and writes central cache manifests. |
@@ -39,10 +40,11 @@ backend lifecycle, and returns direct backend pipe addresses.
    then decodes `Hello` from `Frame.payload`.
 4. Peer credential check validates the OS identity.
 5. Service registry resolves and revalidates the service definition.
-6. Backend table returns a live backend or asks the spawn coordinator to start
+6. Instance resolver selects the broker trust domain.
+7. Backend registry returns a live backend or asks the spawn coordinator to start
    one.
-7. Broker replies with `Negotiated` or `Refused`.
-8. Client disconnects and uses the backend pipe directly.
+8. Broker replies with `Negotiated` or `Refused`.
+9. Client disconnects and uses the backend pipe directly.
 
 The first server slice exposes this boundary as `HelloRequest`: the request
 contains the decoded `Hello`, the original `Frame` metadata, and the
@@ -51,7 +53,7 @@ platform peer-credential checks.
 
 ## Backend Table
 
-The backend table is keyed by:
+The backend registry is keyed by:
 
 ```text
 (broker_instance, service_name, service_version)
