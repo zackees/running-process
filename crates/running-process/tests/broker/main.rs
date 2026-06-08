@@ -33,6 +33,7 @@ mod names;
 mod perf_guard;
 mod proto_field_numbers;
 mod proto_roundtrip;
+mod recovery_one_retry;
 mod serve;
 mod service_def_loader;
 mod spawn_coordinator;
