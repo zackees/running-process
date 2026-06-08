@@ -7,15 +7,16 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use prost::Message;
-use running_process::broker::backend_handle::BackendHandle;
+use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
 use running_process::broker::protocol::{
-    hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, ErrorCode,
-    Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
+    hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, Endpoint,
+    ErrorCode, Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
 };
 use running_process::broker::server::{
     ensure_service_definition_dir, handle_hello_connection_with, service_definition_path,
-    BackendRegistry, BrokerInstanceKey, HelloRequest, HelloRouter, PeerIdentity,
-    ServiceDefinitionLoader, SpawnBudgetConfig, SpawnCoordinator,
+    BackendLaunchError, BackendLaunchRequest, BackendLauncher, BackendRegistry, BrokerInstanceKey,
+    HelloRequest, HelloRouter, PeerIdentity, ServiceDefinitionLoader, SpawnBudgetConfig,
+    SpawnCoordinator,
 };
 
 use crate::backend_handle_common::current_daemon;
@@ -108,6 +109,79 @@ fn registry_with_backend(instance: BrokerInstanceKey) -> (BackendRegistry, Strin
     (registry, expected_pipe)
 }
 
+fn current_backend_for(
+    service_name: &str,
+    service_version: &str,
+    instance: &BrokerInstanceKey,
+    endpoint_path: &str,
+) -> BackendHandle {
+    let endpoint = Endpoint {
+        namespace_id: instance.id(),
+        path: endpoint_path.into(),
+    };
+    let daemon = DaemonProcess::current_process(endpoint.clone(), Some(30)).unwrap();
+    BackendHandle::probe_with_service(service_name, service_version, &endpoint, &daemon).unwrap()
+}
+
+struct CurrentProcessLauncher {
+    endpoint_path: String,
+    calls: Mutex<usize>,
+}
+
+impl CurrentProcessLauncher {
+    fn new(endpoint_path: impl Into<String>) -> Self {
+        Self {
+            endpoint_path: endpoint_path.into(),
+            calls: Mutex::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        *self.calls.lock().unwrap()
+    }
+}
+
+impl BackendLauncher for CurrentProcessLauncher {
+    fn launch(
+        &self,
+        request: &BackendLaunchRequest<'_>,
+    ) -> Result<BackendHandle, BackendLaunchError> {
+        *self.calls.lock().unwrap() += 1;
+        Ok(current_backend_for(
+            &request.key.service_name,
+            &request.key.service_version,
+            &request.key.instance,
+            &self.endpoint_path,
+        ))
+    }
+}
+
+struct FailingLauncher {
+    calls: Mutex<usize>,
+}
+
+impl FailingLauncher {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        *self.calls.lock().unwrap()
+    }
+}
+
+impl BackendLauncher for FailingLauncher {
+    fn launch(
+        &self,
+        _request: &BackendLaunchRequest<'_>,
+    ) -> Result<BackendHandle, BackendLaunchError> {
+        *self.calls.lock().unwrap() += 1;
+        Err(BackendLaunchError::Launcher("test launcher failed".into()))
+    }
+}
+
 fn reply_code(reply: &running_process::broker::protocol::HelloReply) -> ErrorCode {
     match reply.result.as_ref().unwrap() {
         HelloReplyResult::Refused(refused) => ErrorCode::try_from(refused.code).unwrap(),
@@ -159,8 +233,7 @@ fn framed_connection_can_route_through_service_definition_router() {
     let router = HelloRouter::new(&loader, &registry);
     let mut request = request("zccache", "1.11.20");
     request.frame.request_id = 41;
-    request.frame.traceparent =
-        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into();
+    request.frame.traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into();
     let peer = request.peer.clone();
     let request_bytes = encode_framed_frame(&request.frame);
     let request_len = request_bytes.len();
@@ -231,6 +304,71 @@ fn router_reports_registry_miss_as_spawn_failed_placeholder() {
     let reply = router.handle_request(&request("zccache", "1.11.20"));
 
     assert_eq!(reply_code(&reply), ErrorCode::ErrorBackendSpawnFailed);
+}
+
+#[test]
+fn router_spawns_and_registers_backend_on_live_registry_miss() {
+    let definition = service_definition(BrokerIsolation::SharedBroker);
+    let tmp = service_dir_with_definition(&definition);
+    let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+    let registry = Mutex::new(BackendRegistry::new());
+    let spawn_coordinator = Mutex::new(SpawnCoordinator::with_config(SpawnBudgetConfig::new(
+        1,
+        Duration::from_secs(10),
+    )));
+    let endpoint_path = format!("rpb-v1-test-spawn-success-{}", std::process::id());
+    let launcher = CurrentProcessLauncher::new(&endpoint_path);
+    let router = HelloRouter::with_lifecycle_monitor(&loader, &registry)
+        .with_spawn_coordinator(&spawn_coordinator)
+        .with_backend_launcher(&launcher);
+
+    let first = router.handle_request(&request("zccache", "1.11.20"));
+
+    match first.result.unwrap() {
+        HelloReplyResult::Negotiated(negotiated) => {
+            assert_eq!(negotiated.backend_pipe, endpoint_path);
+            assert_eq!(negotiated.daemon_version, "1.11.20");
+        }
+        HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
+    }
+    assert_eq!(launcher.calls(), 1);
+    assert!(registry
+        .lock()
+        .unwrap()
+        .get(&BrokerInstanceKey::Shared, "zccache", "1.11.20")
+        .is_some());
+
+    let second = router.handle_request(&request("zccache", "1.11.20"));
+
+    assert!(matches!(
+        second.result,
+        Some(HelloReplyResult::Negotiated(_))
+    ));
+    assert_eq!(launcher.calls(), 1);
+}
+
+#[test]
+fn router_launch_failure_consumes_spawn_budget() {
+    let definition = service_definition(BrokerIsolation::SharedBroker);
+    let tmp = service_dir_with_definition(&definition);
+    let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+    let registry = Mutex::new(BackendRegistry::new());
+    let spawn_coordinator = Mutex::new(SpawnCoordinator::with_config(SpawnBudgetConfig::new(
+        1,
+        Duration::from_secs(10),
+    )));
+    let launcher = FailingLauncher::new();
+    let router = HelloRouter::with_lifecycle_monitor(&loader, &registry)
+        .with_spawn_coordinator(&spawn_coordinator)
+        .with_backend_launcher(&launcher);
+
+    let first = router.handle_request(&request("zccache", "1.11.20"));
+    let second = router.handle_request(&request("zccache", "1.11.20"));
+
+    assert_eq!(reply_code(&first), ErrorCode::ErrorBackendSpawnFailed);
+    assert_eq!(reply_code(&second), ErrorCode::ErrorRateLimited);
+    assert_eq!(launcher.calls(), 1);
+    assert!(registry.lock().unwrap().is_empty());
 }
 
 #[test]

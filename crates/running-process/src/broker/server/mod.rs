@@ -6,6 +6,7 @@
 //! logic testable without binding sockets or spawning backends.
 
 pub mod admin;
+pub mod backend_launcher;
 pub mod backend_endpoint_allocator;
 pub mod backend_registry;
 pub mod connection;
@@ -23,6 +24,11 @@ pub mod version_allow_list;
 pub use admin::{
     handle_admin_connection, serve_one_admin_socket, AdminBackend, AdminConnectionError,
     AdminFrameError, AdminSnapshot, AdminSpawnBudget, ADMIN_PAYLOAD_PROTOCOL, ADMIN_SCHEMA_VERSION,
+};
+pub use backend_launcher::{
+    BackendLaunchError, BackendLaunchRequest, BackendLauncher, CommandBackendLauncher,
+    BACKEND_ENV_ENDPOINT_NAMESPACE, BACKEND_ENV_ENDPOINT_PATH, BACKEND_ENV_INSTANCE,
+    BACKEND_ENV_SERVICE_NAME, BACKEND_ENV_SERVICE_VERSION,
 };
 pub use backend_endpoint_allocator::{
     BackendEndpointAllocator, BackendEndpointAllocatorError, DEFAULT_BACKEND_ENDPOINT_ATTEMPTS,
