@@ -7,6 +7,9 @@
 #![cfg(feature = "client")]
 
 mod cross_user_release_handles;
+mod cve_dbus_2014_3639;
+mod cve_dbus_2023_34969;
+mod cve_sccache_2023_1521;
 mod deferred_runtime_surfaces;
 mod manifest_tamper_detection;
 mod no_network_dependencies;
