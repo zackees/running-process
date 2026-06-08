@@ -47,6 +47,7 @@ mod metrics_names_frozen;
 mod names;
 mod peer_creds_drop;
 mod perf_guard;
+mod process_tree_lifecycle;
 mod proto_field_numbers;
 mod proto_roundtrip;
 mod recovery_one_retry;
