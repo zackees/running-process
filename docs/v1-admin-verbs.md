@@ -75,7 +75,82 @@ Returns a full debug snapshot.
   "command": "dump",
   "generated_at_unix_ms": 1700000000000,
   "broker_instance": "shared",
-  "effective_config": {},
+  "effective_config": {
+    "broker": {
+      "broker_instance": {
+        "value": "shared",
+        "source": "runtime"
+      },
+      "broker_pid": {
+        "value": 1234,
+        "source": "runtime"
+      },
+      "accepting_hello": {
+        "value": true,
+        "source": "runtime"
+      }
+    },
+    "protocol": {
+      "admin_payload_protocol": {
+        "value": "0xAD01",
+        "source": "protocol-v1"
+      },
+      "envelope_version": {
+        "value": 1,
+        "source": "protocol-v1"
+      },
+      "framing_version": {
+        "value": 1,
+        "source": "protocol-v1"
+      }
+    },
+    "limits": {
+      "max_frame_bytes": {
+        "value": 16777216,
+        "source": "protocol-v1"
+      },
+      "max_hello_bytes": {
+        "value": 65536,
+        "source": "protocol-v1"
+      },
+      "connections_open": {
+        "value": 1,
+        "source": "runtime"
+      }
+    },
+    "spawn_budget": {
+      "default_attempts_per_window": {
+        "value": 3,
+        "source": "default"
+      },
+      "default_window_ms": {
+        "value": 30000,
+        "source": "default"
+      },
+      "active_budget_rows": {
+        "value": 1,
+        "source": "runtime"
+      }
+    },
+    "diagnostics": {
+      "bundle_format": {
+        "value": "tar.gz",
+        "source": "schema-v1"
+      },
+      "bundle_mode": {
+        "value": "metadata-only",
+        "source": "schema-v1"
+      },
+      "redactions": {
+        "value": [
+          "home",
+          "secret-env",
+          "acl-identities"
+        ],
+        "source": "schema-v1"
+      }
+    }
+  },
   "backend_table": [],
   "spawn_budgets": [
     {
@@ -164,9 +239,35 @@ Returns effective broker configuration and the source of each value.
   "command": "config",
   "generated_at_unix_ms": 1700000000000,
   "values": {
-    "idle_timeout_secs": {
-      "value": 900,
-      "source": "service-definition"
+    "broker": {
+      "broker_instance": {
+        "value": "shared",
+        "source": "runtime"
+      }
+    },
+    "protocol": {
+      "admin_payload_protocol": {
+        "value": "0xAD01",
+        "source": "protocol-v1"
+      }
+    },
+    "limits": {
+      "max_hello_bytes": {
+        "value": 65536,
+        "source": "protocol-v1"
+      }
+    },
+    "spawn_budget": {
+      "default_attempts_per_window": {
+        "value": 3,
+        "source": "default"
+      }
+    },
+    "diagnostics": {
+      "bundle_mode": {
+        "value": "metadata-only",
+        "source": "schema-v1"
+      }
     }
   }
 }
@@ -174,7 +275,9 @@ Returns effective broker configuration and the source of each value.
 
 ## `diagnose --output bundle.tar.gz`
 
-Writes a diagnostic bundle and returns a summary.
+Returns deterministic diagnostic bundle metadata. The Phase 4 renderer does
+not create the archive; later lifecycle work can consume this schema to write
+the tarball.
 
 ```json
 {
@@ -182,15 +285,103 @@ Writes a diagnostic bundle and returns a summary.
   "command": "diagnose",
   "generated_at_unix_ms": 1700000000000,
   "output": "bundle.tar.gz",
+  "bundle": {
+    "format": "tar.gz",
+    "mode": "metadata-only",
+    "created": false,
+    "entries": [
+      {
+        "path": "admin/status.json",
+        "kind": "json",
+        "source": "status",
+        "required": true,
+        "redacted": false
+      },
+      {
+        "path": "admin/dump.json",
+        "kind": "json",
+        "source": "dump",
+        "required": true,
+        "redacted": true
+      },
+      {
+        "path": "config/effective.json",
+        "kind": "json",
+        "source": "effective-config",
+        "required": true,
+        "redacted": false
+      },
+      {
+        "path": "metrics/openmetrics.txt",
+        "kind": "openmetrics",
+        "source": "metrics",
+        "required": true,
+        "redacted": false
+      },
+      {
+        "path": "events/lifecycle.jsonl",
+        "kind": "jsonl",
+        "source": "lifecycle-events",
+        "required": false,
+        "redacted": true
+      },
+      {
+        "path": "manifest/backend-manifests.json",
+        "kind": "json",
+        "source": "backend-manifest-index",
+        "required": false,
+        "redacted": true
+      },
+      {
+        "path": "process/backends.json",
+        "kind": "json",
+        "source": "backend-table",
+        "required": true,
+        "redacted": true,
+        "record_count": 1
+      },
+      {
+        "path": "system/summary.json",
+        "kind": "json",
+        "source": "host-summary",
+        "required": false,
+        "redacted": true
+      }
+    ]
+  },
   "files": [
-    "manifest/zccache-1.11.20.json",
+    "admin/status.json",
+    "admin/dump.json",
+    "config/effective.json",
+    "metrics/openmetrics.txt",
     "events/lifecycle.jsonl",
-    "config/effective.json"
+    "manifest/backend-manifests.json",
+    "process/backends.json",
+    "system/summary.json"
   ],
   "redactions": [
     "home",
     "secret-env",
     "acl-identities"
+  ],
+  "redaction_policy": [
+    {
+      "name": "home",
+      "replacement": "~"
+    },
+    {
+      "name": "secret-env",
+      "matches": [
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASS"
+      ]
+    },
+    {
+      "name": "acl-identities",
+      "replacement": "stable-hash"
+    }
   ]
 }
 ```

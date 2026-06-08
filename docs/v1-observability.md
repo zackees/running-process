@@ -74,25 +74,27 @@ feeds real Hello round-trip samples into this module when the socket path lands.
 
 ## Diagnostic Bundle
 
-`diagnose --output bundle.tar.gz` writes a bundle with:
+`diagnose --output bundle.tar.gz` returns deterministic bundle metadata with
+`mode: "metadata-only"` and `created: false` in Phase 4. The renderer does not
+create the archive. Later lifecycle work can use the metadata to write a
+tarball with:
 
+- admin status JSON
+- admin dump JSON
+- effective broker config JSON
+- OpenMetrics text
 - decoded lifecycle events
-- central manifests
-- PID and lock files
+- central backend manifest index
 - running backend process ids
-- backend executable hashes
-- boot id
-- broker effective config
 - OS and kernel summary
-- disk-free summary
-- pipe namespace summary
 
 ## Redaction
 
-Diagnostic bundles redact:
+Diagnostic bundle metadata includes a redaction policy. Bundle writers must
+redact:
 
 - full home directory paths, rendered as `~`
 - environment variables with `KEY`, `TOKEN`, `SECRET`, or `PASS` in the name
 - ACL user and group identifiers, rendered as stable hashes
 
-Redaction happens before writing the archive.
+Redaction happens before writing any archive.
