@@ -1,8 +1,8 @@
 //! Client-side helpers for daemon-owned pipe-backed sessions
 //! (issue #130 milestone 3).
 //!
-//! Mirrors [`crate::pty_session`] for the pipe case. Sessions are spawned,
-//! listed, detached, and terminated via the regular [`DaemonClient`] RPC
+//! Mirrors [`crate::client::pty_session`] for the pipe case. Sessions are
+//! spawned, listed, detached, and terminated via the regular [`DaemonClient`] RPC
 //! channel. Stdin is also an RPC (`write_pipe_stdin`). Stdout/stderr are
 //! attached via [`PipeStreamAttachment`], which owns its own connection
 //! and pumps `PipeStreamFrame` payloads.

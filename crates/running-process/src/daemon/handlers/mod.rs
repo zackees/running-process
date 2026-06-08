@@ -1,7 +1,8 @@
 //! Request handlers for the daemon's IPC protocol.
 //!
-//! Each handler receives a [`DaemonRequest`] and a shared [`DaemonState`]
-//! reference, returning a fully-constructed [`DaemonResponse`].
+//! Each handler receives a [`crate::proto::daemon::DaemonRequest`] and a shared
+//! [`DaemonState`] reference, returning a fully-constructed
+//! [`crate::proto::daemon::DaemonResponse`].
 
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;

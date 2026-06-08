@@ -84,7 +84,7 @@ pub enum StdioSource<'a> {
     #[cfg(windows)]
     Handle(BorrowedHandle<'a>),
     /// Bind this slot to a caller-owned file descriptor. Equivalent to
-    /// [`StdioSource::Handle`] on Unix.
+    /// `StdioSource::Handle` on Unix.
     #[cfg(unix)]
     Fd(BorrowedFd<'a>),
     /// Create a fresh anonymous pipe. The child gets one end; the parent

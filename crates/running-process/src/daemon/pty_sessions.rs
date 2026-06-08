@@ -416,8 +416,9 @@ impl OwnedPtySession {
     ///
     /// `steal=false`: returns `Err(AttachError::AlreadyAttached)` if a client
     /// is currently attached.
-    /// `steal=true`: evicts the existing attachment (sends
-    /// [`OutboundFrame::Ended(Stolen)`]) before installing the new one.
+    /// `steal=true`: evicts the existing attachment by sending
+    /// `OutboundFrame::Ended(AttachmentEnded::Stolen)` before installing the
+    /// new one.
     pub fn attach(
         &self,
         steal: bool,

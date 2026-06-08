@@ -37,7 +37,7 @@ enum Commands {
         /// Command to run (executable plus arguments)
         #[arg(required = true, num_args = 1..)]
         cmd: Vec<String>,
-        /// Service name (defaults to basename of cmd[0])
+        /// Service name (defaults to basename of `cmd[0]`)
         #[arg(long)]
         name: Option<String>,
         /// Working directory
@@ -114,7 +114,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum MaintenanceCommands {
-    /// Ask live daemons to release any open handles under <PATH>.
+    /// Ask live daemons to release any open handles under `PATH`.
     ///
     /// POSIX: no-op (delete-on-close semantics make this unnecessary).
     /// Windows: Phase 1 ships a scaffold; the full handler ships in

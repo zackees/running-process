@@ -1,8 +1,8 @@
 //! Streaming attach handler for the daemon-owned PTY sessions
 //! (issue #130 milestone 2).
 //!
-//! After [`super::server::handle_connection_inner`] decodes a request of
-//! type `ATTACH_PTY_SESSION` it stops the normal request/response loop and
+//! After the daemon server decodes a request of type `ATTACH_PTY_SESSION`, it
+//! stops the normal request/response loop and
 //! hands the framed transport to [`run_attach_stream`]. From that point the
 //! same socket carries `PtyStreamFrame` (daemon → client) and
 //! `PtyInputFrame` (client → daemon) messages until either side disconnects

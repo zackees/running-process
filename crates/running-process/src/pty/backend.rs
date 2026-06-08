@@ -4,12 +4,12 @@
 //! `#[cfg(unix)]` branches around the underlying portable-pty calls.
 //! After the #150 rewrite we have two distinct backends:
 //!
-//! * Windows — [`conpty::ConPtyBackend`] (raw ConPTY via windows-sys
+//! * Windows - `conpty::ConPtyBackend` (raw ConPTY via windows-sys
 //!   with `PSEUDOCONSOLE_PASSTHROUGH_MODE` enabled)
-//! * Unix — [`unix::PortablePtyBackend`] (a thin wrapper around
+//! * Unix - `unix::PortablePtyBackend` (a thin wrapper around
 //!   portable-pty's native_pty_system, unchanged behavior)
 //!
-//! The [`Backend`] type alias resolves to one or the other per-target,
+//! The `Backend` type alias resolves to one or the other per-target,
 //! and `native_pty_process.rs` makes a single `Backend::openpty(...)`
 //! call instead of branching.
 
