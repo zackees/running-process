@@ -16,6 +16,7 @@ mod backend_endpoint_allocator;
 mod backend_registry;
 mod client;
 mod connection;
+mod contrib_templates;
 mod docs_escape_hatch;
 mod framing;
 mod hello_handler;
