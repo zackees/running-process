@@ -7,7 +7,10 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
+use std::sync::Arc;
+use std::thread;
 
+use interprocess::local_socket::traits::Listener;
 use prost::Message;
 
 use crate::broker::protocol::{
@@ -66,19 +69,49 @@ pub fn serve_one_local_socket(
     socket_path: &str,
     handler: &HelloHandler,
 ) -> Result<HelloReply, BrokerConnectionError> {
-    use interprocess::local_socket::prelude::*;
-    use interprocess::local_socket::ListenerOptions;
-
-    prepare_local_socket_path(socket_path)?;
-    let name = local_socket_name(socket_path)?;
-    let listener = ListenerOptions::new().name(name).create_sync()?;
-    secure_local_socket_path(socket_path)?;
+    let listener = bind_local_socket(socket_path)?;
+    let _cleanup = LocalSocketCleanup(socket_path);
 
     let mut stream = listener.accept()?;
     let peer = peer_identity_from_stream(&stream)?;
-    let reply = handle_hello_connection(&mut stream, handler, peer);
-    cleanup_local_socket_path(socket_path);
-    reply
+    handle_hello_connection(&mut stream, handler, peer)
+}
+
+/// Run a bounded blocking local-socket accept loop.
+///
+/// This is the synchronous Phase 4 test harness for the Hello accept
+/// path. It accepts `connection_count` peers, handles each connection
+/// on a worker thread, waits for all workers, then returns.
+pub fn serve_local_socket_connections(
+    socket_path: &str,
+    handler: Arc<HelloHandler>,
+    connection_count: usize,
+) -> Result<(), BrokerConnectionError> {
+    if connection_count == 0 {
+        return Ok(());
+    }
+
+    let listener = bind_local_socket(socket_path)?;
+    let _cleanup = LocalSocketCleanup(socket_path);
+    let mut workers = Vec::with_capacity(connection_count);
+
+    for _ in 0..connection_count {
+        let mut stream = listener.accept()?;
+        let peer = peer_identity_from_stream(&stream)?;
+        let handler = Arc::clone(&handler);
+        workers.push(thread::spawn(move || {
+            handle_hello_connection(&mut stream, handler.as_ref(), peer).map(|_| ())
+        }));
+    }
+
+    for worker in workers {
+        match worker.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(err),
+            Err(_) => return Err(BrokerConnectionError::WorkerPanic),
+        }
+    }
+    Ok(())
 }
 
 /// Convert the broker's platform socket path/name string into an
@@ -111,6 +144,29 @@ pub enum BrokerConnectionError {
     /// Local socket I/O failed.
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// A connection worker thread panicked.
+    #[error("broker connection worker panicked")]
+    WorkerPanic,
+}
+
+fn bind_local_socket(
+    socket_path: &str,
+) -> Result<interprocess::local_socket::Listener, BrokerConnectionError> {
+    use interprocess::local_socket::ListenerOptions;
+
+    prepare_local_socket_path(socket_path)?;
+    let name = local_socket_name(socket_path)?;
+    let listener = ListenerOptions::new().name(name).create_sync()?;
+    secure_local_socket_path(socket_path)?;
+    Ok(listener)
+}
+
+struct LocalSocketCleanup<'a>(&'a str);
+
+impl Drop for LocalSocketCleanup<'_> {
+    fn drop(&mut self) {
+        cleanup_local_socket_path(self.0);
+    }
 }
 
 fn write_response_frame<W: Write>(

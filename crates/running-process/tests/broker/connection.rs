@@ -1,6 +1,7 @@
 #![cfg(feature = "client")]
 
 use std::io::Cursor;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,8 +12,8 @@ use running_process::broker::protocol::{
     Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
 };
 use running_process::broker::server::{
-    handle_hello_connection, local_socket_name, serve_one_local_socket, HelloHandler, PeerIdentity,
-    RegisteredBackend,
+    handle_hello_connection, local_socket_name, serve_local_socket_connections,
+    serve_one_local_socket, HelloHandler, PeerIdentity, RegisteredBackend,
 };
 
 fn service_definition() -> ServiceDefinition {
@@ -184,6 +185,55 @@ fn serve_one_local_socket_round_trips_hello() {
         }
         HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
     }
+}
+
+#[test]
+fn serve_local_socket_connections_handles_concurrent_hellos() {
+    const CLIENTS: usize = 100;
+
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let server = thread::spawn(move || {
+        serve_local_socket_connections(&server_socket, Arc::new(handler()), CLIENTS)
+    });
+
+    let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let mut clients = Vec::with_capacity(CLIENTS);
+    for index in 0..CLIENTS {
+        let name = name.clone();
+        clients.push(thread::spawn(move || {
+            let mut client = connect_with_retry(name);
+            let mut request = hello(0);
+            request.request_id = format!("req-{index}");
+            let mut frame = frame_for_hello(&request);
+            frame.request_id = (index + 1) as u64;
+            write_frame(&mut client, &frame.encode_to_vec()).unwrap();
+
+            let response_bytes = read_frame(&mut client).unwrap();
+            let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
+            assert_eq!(FrameKind::try_from(response_frame.kind), Ok(FrameKind::Response));
+            assert_eq!(response_frame.request_id, (index + 1) as u64);
+            let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
+            match reply.result.unwrap() {
+                HelloReplyResult::Negotiated(negotiated) => negotiated.connection_id,
+                HelloReplyResult::Refused(refused) => {
+                    panic!("unexpected refusal for client {index}: {refused:?}")
+                }
+            }
+        }));
+    }
+
+    let mut connection_ids = Vec::with_capacity(CLIENTS);
+    for client in clients {
+        connection_ids.push(client.join().unwrap());
+    }
+    server.join().unwrap().unwrap();
+
+    connection_ids.sort_unstable();
+    connection_ids.dedup();
+    assert_eq!(connection_ids.len(), CLIENTS);
+    assert_eq!(connection_ids[0], 1);
+    assert_eq!(connection_ids[CLIENTS - 1], CLIENTS as u64);
 }
 
 fn connect_with_retry(
