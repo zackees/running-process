@@ -32,7 +32,8 @@ instead of sleeping for a fixed interval.
 
 Each service/version has a bounded spawn budget. Repeated crashes or failed
 starts produce `ERROR_RATE_LIMITED` with `retry_after_ms`. A successful stable
-backend replenishes the budget according to policy.
+backend replenishes the budget according to policy. The default budget allows
+3 spawn attempts per 30-second window.
 
 ## Recovery
 

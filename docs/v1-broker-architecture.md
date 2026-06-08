@@ -112,7 +112,7 @@ Each entry stores:
 ## Concurrency Rules
 
 - One spawn lock exists per service/version.
-- A per-instance/service/version spawn budget allows 3 attempts per 60-second
+- A per-instance/service/version spawn budget allows 3 attempts per 30-second
   window by default.
 - Only one spawn attempt may be in flight for a backend key at a time; duplicate
   attempts receive an in-progress error instead of starting another child.
