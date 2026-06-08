@@ -138,6 +138,23 @@ pub fn enumerate_central_for_host(
 
 /// Scan every `.pb` file in a registry and keep per-file errors.
 pub fn scan_central(registry_dir: &Path) -> Vec<ManifestScanEntry> {
+    match central_registry_permissions_are_private(registry_dir) {
+        Ok(true) => {}
+        Ok(false) => {
+            return vec![ManifestScanEntry {
+                path: registry_dir.to_path_buf(),
+                result: Err(ManifestError::InsecureRegistry(registry_dir.to_path_buf())),
+            }];
+        }
+        Err(_) if !registry_dir.exists() => return Vec::new(),
+        Err(err) => {
+            return vec![ManifestScanEntry {
+                path: registry_dir.to_path_buf(),
+                result: Err(ManifestError::Io(err)),
+            }];
+        }
+    }
+
     let read_dir = match fs::read_dir(registry_dir) {
         Ok(read_dir) => read_dir,
         Err(_) => return Vec::new(),
@@ -204,9 +221,13 @@ pub fn ensure_central_registry_dir(path: &Path) -> Result<(), ManifestError> {
     #[cfg(unix)]
     {
         set_private_dir_permissions(path)?;
-        if registry_is_group_or_other_writable(path)? {
-            return Err(ManifestError::InsecureRegistry(path.to_path_buf()));
-        }
+    }
+    #[cfg(windows)]
+    {
+        set_current_owner_only_dir_acl(path)?;
+    }
+    if !central_registry_permissions_are_private(path)? {
+        return Err(ManifestError::InsecureRegistry(path.to_path_buf()));
     }
     Ok(())
 }
@@ -385,6 +406,170 @@ fn registry_is_group_or_other_writable(path: &Path) -> io::Result<bool> {
     Ok(mode & 0o077 != 0)
 }
 
+#[cfg(unix)]
+fn central_registry_permissions_are_private(path: &Path) -> io::Result<bool> {
+    Ok(!registry_is_group_or_other_writable(path)?)
+}
+
+#[cfg(windows)]
+fn set_current_owner_only_dir_acl(path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+
+    let sd = LocalSecurityDescriptor::from_sddl("D:P(A;;FA;;;OW)")?;
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut dacl = std::ptr::null_mut();
+    let ok = unsafe { GetSecurityDescriptorDacl(sd.0, &mut present, &mut dacl, &mut defaulted) };
+    if ok == 0 || present == 0 || dacl.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            dacl,
+            std::ptr::null_mut(),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        Err(io::Error::from_raw_os_error(status as i32))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn central_registry_permissions_are_private(path: &Path) -> io::Result<bool> {
+    let sddl = registry_dacl_sddl(path)?;
+    let ace_count = sddl.matches("(A;;").count();
+    Ok(sddl.starts_with("D:P")
+        && ace_count == 1
+        && (sddl.contains("(A;;FA;;;OW)") || sddl.contains("(A;;0x1f01ff;;;OW)")))
+}
+
+#[cfg(windows)]
+fn registry_dacl_sddl(path: &Path) -> io::Result<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut sd,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let sd = LocalSecurityDescriptor(sd);
+
+    let mut sddl = std::ptr::null_mut();
+    let ok = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd.0,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut sddl,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 || sddl.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let _sddl_guard = LocalWideString(sddl);
+    let mut len = 0;
+    unsafe {
+        while *sddl.add(len) != 0 {
+            len += 1;
+        }
+    }
+    Ok(String::from_utf16_lossy(unsafe {
+        std::slice::from_raw_parts(sddl, len)
+    }))
+}
+
+#[cfg(windows)]
+struct LocalSecurityDescriptor(windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
+
+#[cfg(windows)]
+impl LocalSecurityDescriptor {
+    fn from_sddl(sddl: &str) -> io::Result<Self> {
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+
+        let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut sd = std::ptr::null_mut();
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 || sd.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(sd))
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for LocalSecurityDescriptor {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(self.0.cast());
+        }
+    }
+}
+
+#[cfg(windows)]
+struct LocalWideString(windows_sys::core::PWSTR);
+
+#[cfg(windows)]
+impl Drop for LocalWideString {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(self.0.cast());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +617,13 @@ mod tests {
         assert!(central_manifest_path(dir, "zccache", "1.2.3").is_ok());
         assert!(central_manifest_path(dir, "Zccache", "1.2.3").is_err());
         assert!(central_manifest_path(dir, "zccache", "../../../evil").is_err());
+    }
+
+    #[test]
+    fn central_registry_permissions_are_private_after_ensure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = tmp.path().join("registry");
+        ensure_central_registry_dir(&registry).unwrap();
+        assert!(central_registry_permissions_are_private(&registry).unwrap());
     }
 }
