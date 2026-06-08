@@ -22,6 +22,7 @@ Schema docs:
 
 Consumer adoption guides:
 
+- [Dashboard](../../docs/v1-consumer-adoption-dashboard.md)
 - [clud](../../docs/consumer-adoption-clud.md)
 - [zccache](../../docs/consumer-adoption-zccache.md)
 - [soldr](../../docs/consumer-adoption-soldr.md)
