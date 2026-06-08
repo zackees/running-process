@@ -15,7 +15,9 @@ use crate::broker::backend_lifecycle::identity::IdentityError;
 use crate::broker::protocol::{Endpoint, ServiceDefinition};
 
 use super::backend_registry::BackendRegistry;
-use super::connection::{serve_local_socket_connections_with, BrokerConnectionError};
+use super::connection::{
+    serve_local_socket_connections_with_policy, BrokerConnectionError, PeerCredentialPolicy,
+};
 use super::hello_handler::{HelloHandler, HelloHandlerError};
 use super::hello_router::HelloRouter;
 use super::instance::{BrokerInstanceError, BrokerInstanceKey};
@@ -75,10 +77,13 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
     } = build_registered_backend(&config)?;
     let registry = Mutex::new(registry);
     let router = HelloRouter::with_lifecycle_monitor(&loader, &registry);
-    serve_local_socket_connections_with(
+    let peer_policy =
+        PeerCredentialPolicy::current_user().ok_or(BrokerServeError::PeerPolicyUnavailable)?;
+    serve_local_socket_connections_with_policy(
         &config.socket_path,
         &router,
         config.max_connections.get(),
+        &peer_policy,
     )?;
     Ok(())
 }
@@ -171,6 +176,9 @@ pub enum BrokerServeError {
     /// Hello handler construction failed.
     #[error(transparent)]
     HelloHandler(#[from] HelloHandlerError),
+    /// The platform current-user peer policy could not be constructed.
+    #[error("current-user peer credential policy is unavailable")]
+    PeerPolicyUnavailable,
     /// Local-socket serving failed.
     #[error(transparent)]
     Connection(#[from] BrokerConnectionError),
