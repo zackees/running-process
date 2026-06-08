@@ -6,6 +6,7 @@
 
 #![cfg(feature = "client")]
 
+mod admin;
 mod backend_handle_boot_id;
 mod backend_handle_common;
 mod backend_handle_dead;

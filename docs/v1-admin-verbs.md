@@ -3,6 +3,10 @@
 Admin verbs use the broker control pipe with `Frame.payload_protocol = 0xADMIN`.
 Every JSON response uses `schema_version: 1`.
 
+The current Phase 4 binary can render every admin response locally. Pipe-backed
+admin transport wires these renderers to broker state when the accept loop
+lands.
+
 ## Common Envelope
 
 ```json
