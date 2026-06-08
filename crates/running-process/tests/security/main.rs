@@ -16,5 +16,6 @@ mod no_network_dependencies;
 mod pipe_name_validation;
 mod pipe_squatting;
 mod service_name_validation;
+mod unsafe_inventory;
 mod wanted_version_shell_injection;
 mod wanted_version_traversal;
