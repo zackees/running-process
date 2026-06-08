@@ -24,6 +24,7 @@ mod handoff_backend_lib;
 mod handoff_fallback_perm_denied;
 mod handoff_token_mismatch;
 mod handoff_transport;
+mod handoff_under_load;
 mod hello_handler;
 mod hello_rate_limit;
 mod hello_router;
