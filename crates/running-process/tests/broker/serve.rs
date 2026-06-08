@@ -10,9 +10,11 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::prelude::*;
 use prost::Message;
 use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
+use running_process::broker::client::send_admin_request;
 use running_process::broker::protocol::{
-    hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, Endpoint,
-    ErrorCode, Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
+    hello_reply::Result as HelloReplyResult, read_frame, write_frame, AdminReplyKind, AdminRequest,
+    AdminVerb, BrokerIsolation, Endpoint, ErrorCode, Frame, FrameKind, Hello, HelloReply,
+    PayloadEncoding, ServiceDefinition,
 };
 use running_process::broker::server::{
     build_hello_handler, ensure_service_definition_dir, local_socket_name,
@@ -20,6 +22,7 @@ use running_process::broker::server::{
     BackendLaunchError, BackendLaunchRequest, BackendLauncher, BrokerLaunchServeConfig,
     BrokerServeConfig, PeerIdentity,
 };
+use serde_json::Value;
 
 fn absolute_paths() -> (String, String) {
     let exe = std::env::current_exe().unwrap();
@@ -250,6 +253,45 @@ fn serve_launching_backends_launches_once_then_reuses_registry() {
     assert_negotiated_backend(first, &backend_endpoint);
     assert_negotiated_backend(second, &backend_endpoint);
     assert_eq!(launcher.launch_count(), 1);
+}
+
+#[test]
+fn serve_launching_backends_serves_admin_on_same_socket() {
+    let tmp = write_service_definition_dir();
+    let service_root = tmp.path().join("services");
+    let socket_name = unique_socket_name();
+    let backend_endpoint = unique_backend_endpoint();
+    let launcher = Arc::new(CurrentProcessLauncher::new(backend_endpoint.clone()));
+    let server_launcher = Arc::clone(&launcher);
+    let config = launch_serve_config(&service_root, socket_name.clone(), 2);
+    let server = thread::spawn(move || {
+        serve_launching_backends_with_launcher(config, server_launcher.as_ref())
+    });
+
+    let hello_reply = send_hello_roundtrip(&socket_name);
+    let admin_reply = send_admin_request(
+        &socket_name,
+        AdminRequest {
+            verb: AdminVerb::Status as i32,
+            json: true,
+            service_name: String::new(),
+            output_path: String::new(),
+        },
+    )
+    .unwrap();
+
+    server.join().unwrap().unwrap();
+    assert_negotiated_backend(hello_reply, &backend_endpoint);
+    assert_eq!(launcher.launch_count(), 1);
+    assert_eq!(
+        AdminReplyKind::try_from(admin_reply.kind),
+        Ok(AdminReplyKind::Json)
+    );
+    let value: Value = serde_json::from_str(&admin_reply.body).unwrap();
+    assert_eq!(value["command"], "status");
+    assert_eq!(value["backends"][0]["service_name"], "zccache");
+    assert_eq!(value["backends"][0]["service_version"], "1.11.20");
+    assert_eq!(value["backends"][0]["backend_pipe"], backend_endpoint);
 }
 
 fn send_hello_roundtrip(socket_name: &str) -> HelloReply {
