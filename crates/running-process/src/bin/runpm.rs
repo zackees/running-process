@@ -2,13 +2,14 @@
 // Daemon stubs respond OK; real lifecycle lands in Phase 2. See issue #106.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 
 use running_process::client::{connect_or_start, ClientError, DaemonClient};
+use running_process::maintenance::run_release_handles;
 use running_process::proto::daemon::{DaemonResponse, ServiceConfig, StatusCode};
 
 #[derive(Parser)]
@@ -104,6 +105,28 @@ enum Commands {
     Ping,
     /// Stop the running daemon
     Kill,
+    /// Maintenance subcommands (#228 Phase 1)
+    Maintenance {
+        #[command(subcommand)]
+        command: MaintenanceCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum MaintenanceCommands {
+    /// Ask live daemons to release any open handles under <PATH>.
+    ///
+    /// POSIX: no-op (delete-on-close semantics make this unnecessary).
+    /// Windows: Phase 1 ships a scaffold; the full handler ships in
+    /// Phase 2 once the manifest registry exists. See issue #230.
+    ReleaseHandles {
+        /// Filesystem path that the caller wants to rm -rf.
+        #[arg(long)]
+        path: PathBuf,
+        /// Emit a JSON document on stdout instead of a human-readable line.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -155,6 +178,7 @@ fn main() -> ExitCode {
         Commands::Unstartup => cmd_phase4_stub("unstartup"),
         Commands::Ping => cmd_ping(),
         Commands::Kill => cmd_kill(),
+        Commands::Maintenance { command } => cmd_maintenance(command),
     };
 
     run_to_exit(result)
@@ -291,6 +315,27 @@ where
 
 fn cmd_phase4_stub(label: &str) -> Result<()> {
     println!("runpm: {label} not yet implemented (Phase 4 — see #106)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance subcommands (#228 Phase 1)
+// ---------------------------------------------------------------------------
+
+fn cmd_maintenance(command: MaintenanceCommands) -> Result<()> {
+    match command {
+        MaintenanceCommands::ReleaseHandles { path, json } => cmd_release_handles(path, json),
+    }
+}
+
+fn cmd_release_handles(path: PathBuf, json: bool) -> Result<()> {
+    let outcome = run_release_handles(&path)
+        .with_context(|| format!("release-handles failed for {}", path.display()))?;
+    if json {
+        println!("{}", outcome.to_json());
+    } else {
+        println!("{}", outcome.message);
+    }
     Ok(())
 }
 
