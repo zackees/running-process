@@ -17,6 +17,8 @@ use serde_json::Value;
 
 use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::client::{send_admin_request, BrokerClientError};
+#[cfg(feature = "daemon")]
+use running_process::broker::lifecycle::CRASH_DUMP_DIR_ENV;
 use running_process::broker::protocol::{
     read_frame, write_frame, AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame, FrameKind,
     PayloadEncoding,
@@ -357,6 +359,25 @@ fn broker_cli_status_without_socket_uses_local_snapshot() {
     assert_eq!(value["command"], "status");
     assert_eq!(value["broker_instance"], "local");
     assert_eq!(value["accepting_hello"], false);
+}
+
+#[cfg(feature = "daemon")]
+#[test]
+fn broker_cli_installs_configured_crash_dump_dir_before_dispatch() {
+    let dir = std::env::temp_dir().join(format!(
+        "rpb-v1-crash-dumps-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let output = std::process::Command::new(broker_cli())
+        .env(CRASH_DUMP_DIR_ENV, &dir)
+        .arg("--version")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(dir.is_dir(), "crash dump dir was not created: {dir:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn admin_frame(request: AdminRequest, request_id: u64) -> Frame {

@@ -15,7 +15,7 @@ use running_process::broker::server::{
 };
 use running_process::broker::{
     client::send_admin_request,
-    lifecycle::refuse_privileged_run,
+    lifecycle::{crash_dump, refuse_privileged_run},
     protocol::{AdminReply, AdminRequest, AdminVerb},
 };
 
@@ -24,6 +24,10 @@ const ADMIN_SOCKET_ENV: &str = "RUNNING_PROCESS_BROKER_V1_SOCKET";
 fn main() {
     if let Err(err) = refuse_privileged_run() {
         eprintln!("{err}");
+        std::process::exit(1);
+    }
+    if let Err(err) = crash_dump::install("broker") {
+        eprintln!("failed to install broker crash dump handler: {err}");
         std::process::exit(1);
     }
 
