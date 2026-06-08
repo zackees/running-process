@@ -10,6 +10,7 @@ pub mod backend_endpoint_allocator;
 pub mod backend_registry;
 pub mod connection;
 pub mod hello_handler;
+pub mod hello_router;
 pub mod instance;
 pub mod metrics;
 pub mod perf_guard;
@@ -31,6 +32,7 @@ pub use connection::{
 pub use hello_handler::{
     HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend,
 };
+pub use hello_router::HelloRouter;
 pub use instance::{BrokerInstanceError, BrokerInstanceKey};
 pub use perf_guard::{
     enforce_hello_latency_budget, summarize_hello_latencies, HelloLatencySummary, PerfGuardError,

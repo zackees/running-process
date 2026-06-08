@@ -18,6 +18,7 @@ mod client;
 mod connection;
 mod framing;
 mod hello_handler;
+mod hello_router;
 mod instance;
 mod lifecycle_event_size;
 mod manifest_atomic;

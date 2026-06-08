@@ -74,6 +74,11 @@ number of Hello connections, then exits. It uses current-process backend
 identity as a temporary bridge; long-lived serving and spawn-managed backend
 identity remain the responsibility of the later spawn coordinator slice.
 
+`server::HelloRouter` is the broker-side routing layer for this path. It
+reloads `<service>.servicedef` for each request, checks the version policy,
+resolves the trust-domain instance, and turns backend-registry misses into the
+stable spawn-failed placeholder until real spawn-on-Hello is wired in.
+
 ## Backend Table
 
 The backend registry is keyed by:
