@@ -43,6 +43,10 @@ fn disabled_inputs_skip_handoff_with_silent_reconnect() {
         state.should_attempt(&backend, HandoffAttemptInputs::new(true, true, true), now),
         HandoffFallbackReason::FdPressureDisabled,
     );
+    assert_silent_reconnect(
+        state.should_attempt(&backend, HandoffAttemptInputs::adopted_backend(true), now),
+        HandoffFallbackReason::AdoptedBackend,
+    );
 }
 
 #[test]

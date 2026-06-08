@@ -6,6 +6,7 @@
 
 pub mod fallback;
 pub mod handoff_token;
+pub mod latency;
 pub mod pending;
 pub mod unix;
 pub mod windows;
@@ -19,6 +20,9 @@ pub use handoff_token::{
     HandoffToken, HandoffTokenError, HandoffTokenStore, HandoffTokenStoreConfig,
     DEFAULT_HANDOFF_TOKEN_COLLISION_ATTEMPTS, DEFAULT_HANDOFF_TOKEN_TTL,
     DEFAULT_MAX_PENDING_HANDOFF_TOKENS, HANDOFF_TOKEN_BYTES,
+};
+pub use latency::{
+    compare_handoff_latency, HandoffLatencyComparison, HandoffLatencyError, HandoffLatencySummary,
 };
 pub use pending::{
     PendingHandoffOverflow, PendingHandoffQueue, PendingHandoffQueueConfig,
