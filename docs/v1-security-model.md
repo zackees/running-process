@@ -88,6 +88,16 @@ The v1 release gate includes a dependency audit:
 - Vulnerable advisories block release until the advisory is resolved or a
   documented exception is approved by the maintainer.
 
+## Unsafe Inventory
+
+The v1 release gate includes a static broker unsafe-inventory guard. Security
+tests scan `crates/running-process/src/broker/**/*.rs` for lexical `unsafe`
+keyword usage and compare the per-file counts against an explicit inventory.
+
+Every broker unsafe-site count change is security-review relevant. Adding,
+removing, or moving broker `unsafe` usage requires updating the inventory and
+reviewing why the platform API boundary changed.
+
 ## Isolation Modes
 
 | Mode | Security property |
