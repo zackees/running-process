@@ -36,7 +36,7 @@ fn broadcast_release_handles_reaches_all_live_backends() {
     assert!(result.skipped_dead.is_empty());
     assert_eq!(
         model.backend(&zccache).unwrap().received_operations(),
-        &[operation.clone()]
+        std::slice::from_ref(&operation)
     );
     assert_eq!(
         model.backend(&soldr).unwrap().received_operations(),
