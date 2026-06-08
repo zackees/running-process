@@ -115,7 +115,30 @@ fn snapshot_reports_retry_after_when_budget_is_empty() {
 }
 
 #[test]
-fn default_budget_constants_are_stable() {
+fn default_budget_is_three_attempts_per_thirty_seconds() {
+    let now = Instant::now();
+    let mut coordinator = SpawnCoordinator::new();
+    let key = key("1.11.20");
+
     assert_eq!(DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, 3);
-    assert_eq!(DEFAULT_SPAWN_BUDGET_WINDOW, Duration::from_secs(60));
+    assert_eq!(DEFAULT_SPAWN_BUDGET_WINDOW, Duration::from_secs(30));
+
+    for attempt_number in 1..=3 {
+        let permit = coordinator.try_begin(key.clone(), now).unwrap();
+        assert_eq!(permit.attempt_number, attempt_number);
+        coordinator.finish(&key, SpawnOutcome::Failed, now);
+    }
+
+    assert!(matches!(
+        coordinator.try_begin(key.clone(), now + Duration::from_secs(29)),
+        Err(SpawnBeginError::BudgetExhausted {
+            retry_after,
+            remaining: 0
+        }) if retry_after == Duration::from_secs(1)
+    ));
+
+    let permit = coordinator
+        .try_begin(key, now + DEFAULT_SPAWN_BUDGET_WINDOW)
+        .unwrap();
+    assert_eq!(permit.attempt_number, 1);
 }

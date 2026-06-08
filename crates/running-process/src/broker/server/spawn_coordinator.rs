@@ -13,7 +13,7 @@ use super::backend_registry::BackendKey;
 pub const DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW: u32 = 3;
 
 /// Default backend spawn budget window.
-pub const DEFAULT_SPAWN_BUDGET_WINDOW: Duration = Duration::from_secs(60);
+pub const DEFAULT_SPAWN_BUDGET_WINDOW: Duration = Duration::from_secs(30);
 
 /// Spawn-budget tuning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
