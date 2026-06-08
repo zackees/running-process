@@ -54,8 +54,13 @@ fn user_sid_hash_runs_or_explains_why_not() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn pipe_names_share_v1_prefix() {
+    // macOS folds the canonical name into a 16-char hash to fit
+    // sun_path (104 bytes), so neither `rpb-v1-` nor the SID hash
+    // appears literally on that platform. See `macos_pipe_paths_*`
+    // tests below for the macOS-specific invariants.
     let shared = pick_one(&shared_broker_pipe(ALICE).unwrap());
     let private = pick_one(&private_broker_pipe(ALICE, "zccache").unwrap());
     let instance = pick_one(&explicit_instance_pipe(ALICE, "dev-build").unwrap());
@@ -70,6 +75,39 @@ fn pipe_names_share_v1_prefix() {
             "expected SID hash {ALICE} embedded in pipe path {s:?}"
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_pipe_paths_are_hashed_leaves() {
+    // On macOS the leaf is always `{16char-hash}.sock` so the canonical
+    // `rpb-v1-` prefix and the raw SID hash don't appear in the path
+    // string. We still want to assert: (a) it ends with `.sock`, (b)
+    // the leaf name is the expected 16-hex-char + `.sock` shape, and
+    // (c) different inputs produce different leaves.
+    let shared = pick_one(&shared_broker_pipe(ALICE).unwrap());
+    let private = pick_one(&private_broker_pipe(ALICE, "zccache").unwrap());
+    let instance = pick_one(&explicit_instance_pipe(ALICE, "dev-build").unwrap());
+    let backend = pick_one(&backend_pipe(ALICE, &[0u8; 16]).unwrap());
+    let mut leaves = std::collections::HashSet::new();
+    for s in [&shared, &private, &instance, &backend] {
+        assert!(s.ends_with(".sock"), "expected `.sock` suffix in {s:?}");
+        let leaf = std::path::Path::new(s)
+            .file_name()
+            .expect("path must have a leaf")
+            .to_string_lossy()
+            .into_owned();
+        // 16 hex chars + ".sock" = 21 chars
+        assert_eq!(leaf.len(), 21, "unexpected leaf length in {s:?}");
+        let hex = leaf.trim_end_matches(".sock");
+        assert!(
+            hex.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "leaf {leaf:?} must be lowercase hex"
+        );
+        leaves.insert(leaf);
+    }
+    assert_eq!(leaves.len(), 4, "each pipe-name input must hash uniquely");
 }
 
 #[test]
@@ -108,9 +146,19 @@ fn case_only_collision_is_rejected_not_silently_merged() {
     let mixed = private_broker_pipe(ALICE, "Zccache");
     assert!(mixed.is_err());
     // Spot-check that the lowercase form, which IS accepted, contains
-    // exactly the canonical service segment.
-    let lower_path = pick_one(&lower);
-    assert!(lower_path.contains("-svc-zccache"));
+    // exactly the canonical service segment. (macOS hashes the leaf,
+    // so the literal segment doesn't appear on that platform — we
+    // still assert success on Windows/Linux.)
+    #[cfg(not(target_os = "macos"))]
+    {
+        let lower_path = pick_one(&lower);
+        assert!(lower_path.contains("-svc-zccache"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Just touch the value so the binding isn't unused.
+        let _ = pick_one(&lower);
+    }
 }
 
 #[test]
@@ -163,8 +211,12 @@ fn macos_path_stays_under_sun_path() {
     );
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn backend_pipe_renders_random_as_hex() {
+    // macOS hashes the leaf to fit `sun_path`, so the literal hex
+    // doesn't appear on that platform — see `macos_pipe_paths_are_hashed_leaves`
+    // for the corresponding invariant.
     let bytes = [0xAB_u8; 16];
     let p = backend_pipe(ALICE, &bytes).unwrap();
     let s = pick_one(&p);

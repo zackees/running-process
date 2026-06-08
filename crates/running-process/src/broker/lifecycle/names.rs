@@ -36,6 +36,8 @@
 
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use crate::broker::lifecycle::sid::hash_to_16_hex;
 use crate::broker::lifecycle::sid::SidError;
 
 /// Errors that prevent computing a valid pipe path.
@@ -299,7 +301,17 @@ fn build_pipe_path(name: &str) -> Result<PipePath, PipePathError> {
     #[cfg(unix)]
     {
         let dir = unix_broker_socket_dir();
-        let candidate = dir.join(format!("{name}.sock"));
+        // macOS sun_path is only 104 bytes. Per the #228 spec, every
+        // macOS pipe name folds to `{16char-hash}.sock` — there is no
+        // budget to embed the full canonical name. Linux gets 108 bytes
+        // AND a guaranteed $XDG_RUNTIME_DIR (or short /tmp fallback),
+        // so we keep the full name there for debuggability.
+        let leaf = if cfg!(target_os = "macos") {
+            format!("{}.sock", hash_to_16_hex(name.as_bytes()))
+        } else {
+            format!("{name}.sock")
+        };
+        let candidate = dir.join(leaf);
         let candidate_str = candidate.to_string_lossy();
         let limit = if cfg!(target_os = "macos") {
             MACOS_SUN_PATH_MAX
@@ -335,18 +347,31 @@ fn unix_broker_socket_dir() -> PathBuf {
     // hash + length-limit tests stay deterministic. Callers that need
     // to actually bind the socket are expected to create the parent
     // directory themselves.
-    if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
-        PathBuf::from(d).join("running-process").join("broker")
-    } else if cfg!(target_os = "macos") {
-        if let Some(home) = dirs::home_dir() {
-            home.join("Library/Caches/running-process/broker")
-        } else {
-            PathBuf::from("/tmp/running-process-broker")
-        }
-    } else {
-        // Fallback: /tmp/running-process-{uid}/broker
+    #[cfg(target_os = "macos")]
+    {
+        // Per the #228 spec: macOS has no $XDG_RUNTIME_DIR and a tight
+        // 104-byte sun_path. Use `$TMPDIR/.rp-{uid}` so the parent dir
+        // stays short enough to leave room for the hashed leaf.
+        // `$TMPDIR` on macOS is per-user (e.g. `/var/folders/.../T/`)
+        // so the `-{uid}` suffix is technically redundant there, but
+        // we keep it so the path is well-formed when `$TMPDIR` is
+        // unset (CI containers, restricted launchd contexts) and we
+        // fall back to `/tmp`.
         let uid = unsafe { libc::getuid() };
-        PathBuf::from(format!("/tmp/running-process-{uid}/broker"))
+        let tmp = std::env::var_os("TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        return tmp.join(format!(".rp-{uid}"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
+            PathBuf::from(d).join("running-process").join("broker")
+        } else {
+            // Fallback: /tmp/running-process-{uid}/broker
+            let uid = unsafe { libc::getuid() };
+            PathBuf::from(format!("/tmp/running-process-{uid}/broker"))
+        }
     }
 }
 
@@ -365,12 +390,21 @@ mod tests {
             assert!(w.starts_with(r"\\.\pipe\rpb-v1-"));
             assert!(w.ends_with("-shared"));
         }
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "macos")))]
         {
             let u = p.unix.expect("unix form populated on Unix");
             let s = u.to_string_lossy();
             assert!(s.contains("rpb-v1-"));
             assert!(s.ends_with("-shared.sock"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // macOS folds the canonical name into a 16-char hash —
+            // the `rpb-v1-...-shared` segment is the *input* to the
+            // hash but doesn't survive into the path.
+            let u = p.unix.expect("unix form populated on macOS");
+            let s = u.to_string_lossy();
+            assert!(s.ends_with(".sock"));
         }
     }
 
@@ -409,7 +443,19 @@ mod tests {
             (None, Some(u)) => u.to_string_lossy().into_owned(),
             _ => panic!("exactly one form must be populated"),
         };
-        assert!(s.contains("-be-"));
-        assert!(s.contains(&"ab".repeat(16)));
+        // macOS folds the canonical name into a 16-char hash to fit
+        // `sun_path` (104 bytes), so the literal `-be-` segment and
+        // raw hex suffix don't appear on that platform — we still
+        // assert the leaf shape and uniqueness in the integration
+        // test `macos_pipe_paths_are_hashed_leaves`.
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(s.contains("-be-"));
+            assert!(s.contains(&"ab".repeat(16)));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(s.ends_with(".sock"));
+        }
     }
 }
