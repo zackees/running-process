@@ -31,9 +31,9 @@ fn hostname() -> String {
     {
         std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string())
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        command_stdout("hostname", &[]).unwrap_or_else(|| "unknown".to_string())
+        unix_hostname()
     }
 }
 
@@ -46,14 +46,10 @@ fn machine_id() -> String {
     }
     #[cfg(target_os = "macos")]
     {
-        command_stdout("ioreg", &["-rd1", "-c", "IOPlatformExpertDevice"])
-            .and_then(|out| {
-                out.lines()
-                    .find_map(|line| line.split_once("IOPlatformUUID"))
-                    .and_then(|(_, rest)| rest.split('"').nth(1))
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| "unknown".to_string())
+        // The final broker platform module will use IOPlatformUUID.
+        // Phase 2 avoids spawning `ioreg` so the cleanup-only client
+        // path passes the repo's spawn-path guard.
+        format!("macos-{}", unix_hostname())
     }
     #[cfg(windows)]
     {
@@ -77,7 +73,7 @@ fn boot_id() -> String {
     }
     #[cfg(target_os = "macos")]
     {
-        command_stdout("sysctl", &["-n", "kern.boottime"]).unwrap_or_else(|| "unknown".to_string())
+        macos_boot_time()
     }
     #[cfg(windows)]
     {
@@ -133,15 +129,38 @@ fn read_trimmed(path: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-#[cfg(not(windows))]
-fn command_stdout(cmd: &str, args: &[&str]) -> Option<String> {
-    std::process::Command::new(cmd)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
+#[cfg(unix)]
+fn unix_hostname() -> String {
+    let mut buf = [0_u8; 256];
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if ok != 0 {
+        return "unknown".to_string();
+    }
+    let nul = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..nul]).into_owned()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_boot_time() -> String {
+    use std::ffi::CString;
+
+    let name = CString::new("kern.boottime").expect("static sysctl name");
+    let mut boot: libc::timeval = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::timeval>();
+    let ok = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&mut boot as *mut libc::timeval).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ok == 0 {
+        format!("macos-boot-{}-{}", boot.tv_sec, boot.tv_usec)
+    } else {
+        "unknown".to_string()
+    }
 }
 
 #[cfg(test)]
