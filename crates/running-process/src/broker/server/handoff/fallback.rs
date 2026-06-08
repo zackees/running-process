@@ -57,6 +57,8 @@ pub struct HandoffAttemptInputs {
     pub service_policy_enabled: bool,
     /// Whether fd/handle pressure has temporarily disabled handoff attempts.
     pub fd_pressure_disabled: bool,
+    /// Whether this backend was adopted after broker restart rather than spawned by this broker.
+    pub backend_adopted_existing: bool,
 }
 
 impl HandoffAttemptInputs {
@@ -70,12 +72,23 @@ impl HandoffAttemptInputs {
             client_supports_handoff,
             service_policy_enabled,
             fd_pressure_disabled,
+            backend_adopted_existing: false,
         }
     }
 
     /// Inputs for the common path where both client and service permit handoff.
     pub fn enabled() -> Self {
         Self::new(true, true, false)
+    }
+
+    /// Inputs for an adopted backend that must use reconnect fallback.
+    pub fn adopted_backend(client_supports_handoff: bool) -> Self {
+        Self {
+            client_supports_handoff,
+            service_policy_enabled: true,
+            fd_pressure_disabled: false,
+            backend_adopted_existing: true,
+        }
     }
 }
 
@@ -152,6 +165,8 @@ pub enum HandoffFallbackReason {
     IntegrityMismatch,
     /// The backend did not acknowledge the handed-off connection in time.
     BackendAckTimeout,
+    /// The broker adopted an existing backend and cannot transfer handles from the old owner.
+    AdoptedBackend,
 }
 
 /// Failure observed after a platform-specific handoff attempt was started.
@@ -216,6 +231,9 @@ impl HandoffFallbackState {
         }
         if inputs.fd_pressure_disabled {
             return fallback(HandoffFallbackReason::FdPressureDisabled);
+        }
+        if inputs.backend_adopted_existing {
+            return fallback(HandoffFallbackReason::AdoptedBackend);
         }
 
         match self.rate_limit_for(backend, now) {

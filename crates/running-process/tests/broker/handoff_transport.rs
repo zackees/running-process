@@ -75,6 +75,19 @@ fn duplicate_handle_errors_map_to_fallback_safe_policy() {
         HandoffFallbackReason::PermissionDenied,
     );
 
+    let duplicate_failed = DuplicateHandleError::DuplicateFailed {
+        backend_pid: 4242,
+        raw_os_error: Some(5),
+    };
+    assert_eq!(
+        duplicate_failed.attempt_failure(),
+        Some(HandoffAttemptFailure::PermissionDenied)
+    );
+    assert_attempt_fallback_safe(
+        duplicate_failed.fallback_attempt_decision(),
+        HandoffFallbackReason::PermissionDenied,
+    );
+
     let integrity = DuplicateHandleError::IntegrityMismatch { backend_pid: 4242 };
     assert_eq!(
         integrity.attempt_failure(),
@@ -159,6 +172,20 @@ fn scm_rights_errors_map_to_fallback_safe_policy() {
     );
     assert_attempt_fallback_safe(
         would_block.fallback_attempt_decision(),
+        HandoffFallbackReason::BackendAckTimeout,
+    );
+
+    let send_failed = ScmRightsError::SendFailed {
+        fd: 17,
+        socket: socket.clone(),
+        raw_os_error: Some(11),
+    };
+    assert_eq!(
+        send_failed.attempt_failure(),
+        Some(HandoffAttemptFailure::BackendAckTimeout)
+    );
+    assert_attempt_fallback_safe(
+        send_failed.fallback_attempt_decision(),
         HandoffFallbackReason::BackendAckTimeout,
     );
 
