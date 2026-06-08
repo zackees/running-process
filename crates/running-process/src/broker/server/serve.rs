@@ -9,17 +9,18 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::broker::backend_handle::{BackendHandle, BackendHandleError, DaemonProcess};
 use crate::broker::backend_lifecycle::identity::IdentityError;
 use crate::broker::lifecycle::sid::SidError;
 use crate::broker::protocol::{Endpoint, ServiceDefinition};
 
+use super::admin::AdminSnapshot;
 use super::backend_launcher::{BackendLauncher, CommandBackendLauncher};
 use super::backend_registry::BackendRegistry;
-use super::connection::{
-    serve_local_socket_connections_with_policy, BrokerConnectionError, PeerCredentialPolicy,
-};
+use super::connection::{BrokerConnectionError, PeerCredentialPolicy};
+use super::control_socket::{serve_control_socket_connections_with_policy, ControlSocketError};
 use super::hello_handler::{HelloHandler, HelloHandlerError};
 use super::hello_router::HelloRouter;
 use super::instance::{BrokerInstanceError, BrokerInstanceKey};
@@ -109,15 +110,26 @@ impl BrokerLaunchServeConfig {
 /// Serve a bounded number of broker Hello connections.
 pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerServeError> {
     let RegisteredServeBackend {
-        loader, registry, ..
+        loader,
+        registry,
+        instance,
+        ..
     } = build_registered_backend(&config)?;
     let registry = Mutex::new(registry);
     let router = HelloRouter::with_lifecycle_monitor(&loader, &registry);
     let peer_policy =
         PeerCredentialPolicy::current_user().ok_or(BrokerServeError::PeerPolicyUnavailable)?;
-    serve_local_socket_connections_with_policy(
+    let started_at = Instant::now();
+    let snapshot_provider = || {
+        let registry = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        AdminSnapshot::from_registry(instance.id(), started_at.elapsed(), true, 0, &registry, &[])
+    };
+    serve_control_socket_connections_with_policy(
         &config.socket_path,
         &router,
+        snapshot_provider,
         config.max_connections.get(),
         &peer_policy,
     )?;
@@ -144,9 +156,17 @@ pub fn serve_launching_backends_with_launcher(
         .with_backend_launcher(launcher);
     let peer_policy =
         PeerCredentialPolicy::current_user().ok_or(BrokerServeError::PeerPolicyUnavailable)?;
-    serve_local_socket_connections_with_policy(
+    let started_at = Instant::now();
+    let snapshot_provider = || {
+        let registry = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        AdminSnapshot::from_registry("launch", started_at.elapsed(), true, 0, &registry, &[])
+    };
+    serve_control_socket_connections_with_policy(
         &config.socket_path,
         &router,
+        snapshot_provider,
         config.max_connections.get(),
         &peer_policy,
     )?;
@@ -250,4 +270,7 @@ pub enum BrokerServeError {
     /// Local-socket serving failed.
     #[error(transparent)]
     Connection(#[from] BrokerConnectionError),
+    /// Shared control-socket serving failed.
+    #[error(transparent)]
+    ControlSocket(#[from] ControlSocketError),
 }

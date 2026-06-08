@@ -10,6 +10,7 @@ pub mod backend_launcher;
 pub mod backend_endpoint_allocator;
 pub mod backend_registry;
 pub mod connection;
+pub mod control_socket;
 pub mod hello_handler;
 pub mod hello_router;
 pub mod instance;
@@ -42,6 +43,10 @@ pub use connection::{
     serve_local_socket_connections_with_policy, serve_one_local_socket, serve_one_local_socket_with,
     serve_one_local_socket_with_peer_policy, BrokerConnectionError, HelloResponder,
     PeerCredentialPolicy,
+};
+pub use control_socket::{
+    handle_control_connection_with_peer_policy, serve_control_socket_connections_with_policy,
+    ControlSocketError, ControlSocketReply,
 };
 pub use hello_handler::{
     HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend,

@@ -377,7 +377,7 @@ impl Drop for LocalSocketCleanup<'_> {
     }
 }
 
-fn write_response_frame<W: Write>(
+pub(super) fn write_response_frame<W: Write>(
     writer: &mut W,
     request_frame: Option<&Frame>,
     reply: &HelloReply,
@@ -405,7 +405,7 @@ fn write_response_frame<W: Write>(
     Ok(())
 }
 
-fn reply_for_framing_error(error: &FramingError) -> HelloReply {
+pub(super) fn reply_for_framing_error(error: &FramingError) -> HelloReply {
     match error {
         FramingError::UnsupportedFramingVersion { .. } => refused_reply(
             ErrorCode::ErrorVersionUnsupported,
@@ -423,7 +423,11 @@ fn reply_for_framing_error(error: &FramingError) -> HelloReply {
     }
 }
 
-fn refused_reply(code: ErrorCode, reason: impl Into<String>, retry_after_ms: u64) -> HelloReply {
+pub(super) fn refused_reply(
+    code: ErrorCode,
+    reason: impl Into<String>,
+    retry_after_ms: u64,
+) -> HelloReply {
     HelloReply {
         result: Some(HelloReplyResult::Refused(Refused {
             reason: reason.into(),
@@ -436,7 +440,7 @@ fn refused_reply(code: ErrorCode, reason: impl Into<String>, retry_after_ms: u64
     }
 }
 
-fn peer_identity_from_stream(
+pub(super) fn peer_identity_from_stream(
     stream: &interprocess::local_socket::Stream,
 ) -> Result<PeerIdentity, BrokerConnectionError> {
     use interprocess::local_socket::traits::StreamCommon;
