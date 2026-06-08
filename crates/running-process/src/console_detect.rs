@@ -6,8 +6,11 @@
 /// Metadata about a single visible window that appeared during monitoring.
 #[derive(Debug, Clone)]
 pub struct ConsoleWindowInfo {
+    /// Process id that owns the visible window.
     pub pid: u32,
+    /// Window title captured at enumeration time.
     pub title: String,
+    /// Native window handle represented as an integer for stable transport.
     pub hwnd: u64,
 }
 
@@ -108,6 +111,10 @@ pub use imp::monitor_console_windows;
 // Non-Windows stub
 // ---------------------------------------------------------------------------
 #[cfg(not(windows))]
+/// Monitor for new console windows during `duration`.
+///
+/// Non-Windows platforms do not expose Win32 console popups, so this returns an
+/// empty list.
 pub fn monitor_console_windows(_duration: std::time::Duration) -> Vec<ConsoleWindowInfo> {
     Vec::new()
 }
