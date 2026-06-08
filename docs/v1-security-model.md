@@ -73,20 +73,80 @@ The broker follows these filesystem rules:
 
 ## Dependency Audit
 
-The v1 release gate includes a dependency audit:
+The v1 release gate treats dependency changes as part of security review.
 
-- `cargo audit --deny warnings` runs on dependency changes, pushes to `main`,
-  manual dispatch, and the daily security schedule.
-- Security tests reject direct HTTP, TLS, browser-facing, and network RPC
-  dependencies in the `running-process` crate manifest. The broker's transport
-  stays local IPC by construction; adding a network stack requires an explicit
-  design issue before the dependency lands.
-- New dependencies are reviewed for known advisories, network stacks, TLS
-  stacks, serialization format drift, and unnecessary transitive weight.
-- Dependencies used by broker parsing, IPC, manifest, service-definition,
-  cleanup, handoff, and lifecycle paths are reviewed as security-sensitive.
-- Vulnerable advisories block release until the advisory is resolved or a
-  documented exception is approved by the maintainer.
+### Direct Dependency Review Policy
+
+Every new or materially changed runtime direct dependency in
+`crates/running-process/Cargo.toml` must be reviewed before merge. Runtime
+direct dependencies include entries under `[dependencies]` and target-specific
+runtime dependency sections.
+
+Reviewers check:
+
+- Known advisories with `cargo audit --deny warnings`.
+- Whether the dependency or its enabled features add HTTP, TLS, WebSocket,
+  browser-facing, remote RPC, or other network client/server capability.
+- Whether a smaller existing dependency or standard-library code covers the use
+  case.
+- Whether the dependency affects broker parsing, IPC, manifest,
+  service-definition, cleanup, handoff, or lifecycle paths. Those paths are
+  security-sensitive.
+- Transitive dependency weight and serialization format drift.
+
+A dependency added only for trivial formatting, parsing, path handling, or
+command glue should be rejected unless the design issue records why local code
+would be less safe.
+
+### Local IPC And No-Network Commitment
+
+The broker's v1 transport is Windows named pipes and Unix-domain sockets only.
+The broker must not bind TCP, UDP, localhost HTTP, browser-facing transports, or
+remote RPC endpoints, and it must not add a dependency path that does so for
+broker operation.
+
+The `running-process` crate must not add direct dependencies whose purpose is
+HTTP, TLS, WebSocket, browser-facing transport, or network RPC. It also must not
+enable transitive features that create network listeners or clients for broker
+operation. Adding a network-capable dependency or feature requires a design
+issue that updates this security model before merge.
+
+Security tests enforce the current forbidden direct-dependency list for the
+`running-process` crate manifest.
+
+### Cargo Audit Schedule
+
+`.github/workflows/security-audit.yml` runs
+`cargo audit --deny warnings`:
+
+- On pull requests touching `.github/workflows/security-audit.yml`,
+  `Cargo.lock`, any `Cargo.toml`, or this security model.
+- On pushes to `main` touching the same paths.
+- Daily through the scheduled security-audit workflow.
+- By manual `workflow_dispatch`.
+
+The scheduled run is the backstop for newly disclosed advisories when no
+repository files have changed.
+
+### Exception Process
+
+Known-vulnerable dependencies, denied audit warnings, and dependency-policy
+violations block release by default. An exception must be documented in a
+GitHub issue before merge and approved by the maintainer.
+
+The exception record must include:
+
+- The dependency, version, advisory or policy violation, and affected broker
+  path.
+- Why no safer dependency or local implementation is suitable.
+- Whether the exception affects the local-IPC/no-network commitment.
+- The mitigation, owner, and expiration or review date.
+- Any required update to tests, workflow configuration, or this document so the
+  exception stays visible and narrow.
+
+An exception does not silently weaken the no-network commitment. Any exception
+that adds network capability to broker operation requires a new security-model
+revision before the dependency lands.
 
 ## Unsafe Inventory
 
