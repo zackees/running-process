@@ -12,6 +12,7 @@ mod backend_handle_dead;
 mod backend_handle_probe;
 mod backend_handle_recycled;
 mod framing;
+mod hello_handler;
 mod lifecycle_event_size;
 mod manifest_atomic;
 mod manifest_boot_id;

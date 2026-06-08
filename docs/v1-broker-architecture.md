@@ -35,13 +35,19 @@ backend lifecycle, and returns direct backend pipe addresses.
 
 1. Listener accepts one local IPC connection.
 2. Framing layer reads the initial frame with the 64 KiB `Hello` cap.
-3. Protocol layer decodes `Frame` and `Hello`.
+3. Protocol layer decodes `Frame`, verifies it is a control-plane request,
+   then decodes `Hello` from `Frame.payload`.
 4. Peer credential check validates the OS identity.
 5. Service registry resolves the service definition.
 6. Backend table returns a live backend or asks the spawn coordinator to start
    one.
 7. Broker replies with `Negotiated` or `Refused`.
 8. Client disconnects and uses the backend pipe directly.
+
+The first server slice exposes this boundary as `HelloRequest`: the request
+contains the decoded `Hello`, the original `Frame` metadata, and the
+OS-verified peer identity. Later accept-loop code uses the same structure after
+platform peer-credential checks.
 
 ## Backend Table
 
