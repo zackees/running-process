@@ -10,7 +10,7 @@ The v1 broker work is documented as a stable spec alongside the implementation:
 
 - Core spec: [architecture](docs/v1-architecture-overview.md), [frozen commitments](docs/v1-frozen-commitments.md), [pipe naming](docs/v1-pipe-naming.md), [platform behavior](docs/v1-platform-behavior.md), [security model](docs/v1-security-model.md)
 - Schemas: [wire envelope](docs/v1-wire-envelope.md), [cache manifest](docs/v1-cache-manifest.md), [service definition](docs/v1-service-definition.md), [lifecycle events](docs/v1-lifecycle-events.md)
-- Consumer adoption: [clud](docs/consumer-adoption-clud.md), [zccache](docs/consumer-adoption-zccache.md), [soldr](docs/consumer-adoption-soldr.md), [fbuild](docs/consumer-adoption-fbuild.md)
+- Consumer adoption: [dashboard](docs/v1-consumer-adoption-dashboard.md), [clud](docs/consumer-adoption-clud.md), [zccache](docs/consumer-adoption-zccache.md), [soldr](docs/consumer-adoption-soldr.md), [fbuild](docs/consumer-adoption-fbuild.md)
 - Operations: [broker architecture](docs/v1-broker-architecture.md), [admin verbs](docs/v1-admin-verbs.md), [backend lifecycle](docs/v1-backend-lifecycle.md), [handoff optimization](docs/v1-handoff-optimization.md), [observability](docs/v1-observability.md)
 - Rollout: [policy](docs/v1-rollout-policy.md), [escape hatch](docs/v1-escape-hatch.md), [troubleshooting](docs/v1-troubleshooting.md)
 - Examples: [minimal consumer](examples/minimal-consumer/), [release-handles CLI](examples/release-handles-cli/), [custom isolation](examples/custom-isolation/)
