@@ -7,7 +7,9 @@
 //! See `proto/broker_v1_*.proto` and the parent issue for the rationale
 //! behind every field number and `reserved` range.
 
+pub mod host_identity;
 pub mod lifecycle;
+pub mod manifest;
 pub mod protocol;
 
 /// Framing byte for every v1 broker connection. Wire layout:

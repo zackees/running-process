@@ -36,6 +36,11 @@ required-features = ["daemon"]
 name = "daemon-trampoline"
 path = "src/bin/trampoline.rs"
 
+[[bin]]
+name = "running-process-cleanup"
+path = "src/bin/running-process-cleanup.rs"
+required-features = ["client"]
+
 [features]
 # Final feature scheme per #165:
 # * `core`   — always-available API (spawn / pty / containment).
@@ -49,7 +54,7 @@ path = "src/bin/trampoline.rs"
 default = ["client"]
 core = []
 telemetry = []
-client = ["dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs", "dep:anyhow", "dep:clap", "dep:blake3"]
+client = ["dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs", "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2"]
 daemon = [
     "client",
     "interprocess/tokio",
@@ -64,7 +69,7 @@ libc = "0.2"
 portable-pty = "0.9"
 sysinfo = "0.30"
 thiserror = { workspace = true }
-winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi", "ioapiset", "jobapi2", "namedpipeapi", "processthreadsapi", "winnt", "minwindef", "windef", "winuser", "consoleapi", "processenv", "synchapi", "winbase", "wincon", "tlhelp32", "securitybaseapi", "winerror"] }
+winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi", "ioapiset", "jobapi2", "namedpipeapi", "processthreadsapi", "winnt", "minwindef", "windef", "winuser", "consoleapi", "processenv", "synchapi", "winbase", "wincon", "tlhelp32", "securitybaseapi", "winerror", "sysinfoapi"] }
 # Wave 4 of #165: client-feature deps. All optional so the always-on
 # `core` API stays a minimal-dep leaf.
 prost = { version = "0.14", optional = true }
@@ -78,6 +83,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 # `src/broker/lifecycle/sid.rs`. blake3 is small (no_std-capable,
 # no transitive deps beyond `arrayref`/`arrayvec` and `cc`-built SIMD).
 blake3 = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
 # Wave 5 of #165: daemon-feature deps. All optional.
 tokio = { version = "1", features = ["full"], optional = true }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
@@ -117,11 +123,13 @@ test-watchdog = { path = "../test-watchdog" }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_IO",
     "Win32_System_Memory",
     "Win32_System_Pipes",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_Debug",
 ] }
