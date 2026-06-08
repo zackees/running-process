@@ -1,24 +1,34 @@
 #![cfg(feature = "client")]
 
+#[cfg(feature = "daemon")]
+use std::io;
 use std::io::Cursor;
+#[cfg(feature = "daemon")]
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "daemon")]
+use interprocess::local_socket::traits::Listener;
+#[cfg(feature = "daemon")]
+use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use serde_json::Value;
 
 use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::client::{send_admin_request, BrokerClientError};
 use running_process::broker::protocol::{
-    read_frame, write_frame, AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame,
-    FrameKind, PayloadEncoding,
+    read_frame, write_frame, AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame, FrameKind,
+    PayloadEncoding,
 };
 use running_process::broker::server::admin::{
-    handle_admin_connection, handle_admin_frame, render_admin_reply,
-    render_backend_health_json, render_config_json, render_diagnose_json, render_dump_json,
-    render_healthz, render_list_instances_json, render_metrics_text, render_readyz,
-    render_status_json, AdminBackend, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION,
+    handle_admin_connection, handle_admin_frame, render_admin_reply, render_backend_health_json,
+    render_config_json, render_diagnose_json, render_dump_json, render_healthz,
+    render_list_instances_json, render_metrics_text, render_readyz, render_status_json,
+    AdminBackend, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION,
 };
+#[cfg(feature = "daemon")]
+use running_process::broker::server::local_socket_name;
 use running_process::broker::server::{
     serve_one_admin_socket, BackendKey, BackendRegistry, BrokerInstanceKey, SpawnBudgetSnapshot,
     ADMIN_PAYLOAD_PROTOCOL,
@@ -182,7 +192,10 @@ fn admin_request_dispatches_status_json_reply() {
 
     let reply = render_admin_reply(&snapshot(), &request);
 
-    assert_eq!(AdminReplyKind::try_from(reply.kind), Ok(AdminReplyKind::Json));
+    assert_eq!(
+        AdminReplyKind::try_from(reply.kind),
+        Ok(AdminReplyKind::Json)
+    );
     assert_eq!(reply.exit_code, 0);
     assert_eq!(reply.content_type, "application/json");
     let value = parse_json(&reply.body);
@@ -222,7 +235,10 @@ fn admin_frame_round_trips_response_metadata_and_payload() {
         "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     );
     assert_eq!(response.tracestate, "vendor=value");
-    assert_eq!(AdminReplyKind::try_from(reply.kind), Ok(AdminReplyKind::Json));
+    assert_eq!(
+        AdminReplyKind::try_from(reply.kind),
+        Ok(AdminReplyKind::Json)
+    );
     assert_eq!(parse_json(&reply.body)["command"], "backend-health");
 }
 
@@ -242,7 +258,10 @@ fn admin_frame_rejects_non_admin_payload_protocol() {
 
     let err = handle_admin_frame(frame, &snapshot()).unwrap_err();
 
-    assert_eq!(err.to_string(), "admin frame payload_protocol must be 0xAD01, got 0");
+    assert_eq!(
+        err.to_string(),
+        "admin frame payload_protocol must be 0xAD01, got 0"
+    );
 }
 
 #[test]
@@ -267,11 +286,19 @@ fn handle_admin_connection_writes_admin_reply_frame() {
     let reply = AdminReply::decode(response_frame.payload.as_slice()).unwrap();
 
     assert_eq!(returned_reply, reply);
-    assert_eq!(FrameKind::try_from(response_frame.kind), Ok(FrameKind::Response));
+    assert_eq!(
+        FrameKind::try_from(response_frame.kind),
+        Ok(FrameKind::Response)
+    );
     assert_eq!(response_frame.payload_protocol, ADMIN_PAYLOAD_PROTOCOL);
     assert_eq!(response_frame.request_id, 77);
-    assert_eq!(AdminReplyKind::try_from(reply.kind), Ok(AdminReplyKind::Openmetrics));
-    assert!(reply.body.contains("running_process_broker_v1_connections_open 1"));
+    assert_eq!(
+        AdminReplyKind::try_from(reply.kind),
+        Ok(AdminReplyKind::Openmetrics)
+    );
+    assert!(reply
+        .body
+        .contains("running_process_broker_v1_connections_open 1"));
 }
 
 #[test]
@@ -290,8 +317,46 @@ fn serve_one_admin_socket_round_trips_client_request() {
     let server_reply = server.join().unwrap().unwrap();
 
     assert_eq!(server_reply, client_reply);
-    assert_eq!(AdminReplyKind::try_from(client_reply.kind), Ok(AdminReplyKind::Json));
+    assert_eq!(
+        AdminReplyKind::try_from(client_reply.kind),
+        Ok(AdminReplyKind::Json)
+    );
     assert_eq!(parse_json(&client_reply.body)["command"], "status");
+}
+
+#[cfg(feature = "daemon")]
+#[test]
+fn broker_cli_status_queries_live_admin_socket() {
+    let socket_name = unique_socket_name();
+    let server = spawn_admin_socket_once(socket_name.clone());
+
+    let output = std::process::Command::new(broker_cli())
+        .args(["--socket", &socket_name, "status", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let value = parse_json(&stdout(&output));
+    assert_eq!(value["command"], "status");
+    assert_eq!(value["broker_instance"], "shared");
+    assert_eq!(value["accepting_hello"], true);
+    let server_reply = server.join().unwrap().unwrap();
+    assert_eq!(server_reply.exit_code, 0);
+}
+
+#[cfg(feature = "daemon")]
+#[test]
+fn broker_cli_status_without_socket_uses_local_snapshot() {
+    let output = std::process::Command::new(broker_cli())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let value = parse_json(&stdout(&output));
+    assert_eq!(value["command"], "status");
+    assert_eq!(value["broker_instance"], "local");
+    assert_eq!(value["accepting_hello"], false);
 }
 
 fn admin_frame(request: AdminRequest, request_id: u64) -> Frame {
@@ -355,4 +420,70 @@ fn unique_suffix() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos()
+}
+
+#[cfg(feature = "daemon")]
+fn spawn_admin_socket_once(socket_name: String) -> thread::JoinHandle<io::Result<AdminReply>> {
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let listener = bind_test_socket(&socket_name)?;
+        ready_tx.send(()).unwrap();
+        let mut stream = listener.accept()?;
+        let reply = handle_admin_connection(&mut stream, &snapshot())
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        cleanup_test_socket(&socket_name);
+        Ok(reply)
+    });
+    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    handle
+}
+
+#[cfg(feature = "daemon")]
+fn bind_test_socket(socket_name: &str) -> io::Result<interprocess::local_socket::Listener> {
+    prepare_test_socket(socket_name)?;
+    let name = local_socket_name(socket_name)?;
+    ListenerOptions::new().name(name).create_sync()
+}
+
+#[cfg(feature = "daemon")]
+fn prepare_test_socket(socket_name: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let path = std::path::Path::new(socket_name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(windows)]
+    let _ = socket_name;
+
+    Ok(())
+}
+
+#[cfg(feature = "daemon")]
+fn cleanup_test_socket(socket_name: &str) {
+    #[cfg(unix)]
+    {
+        let _ = std::fs::remove_file(socket_name);
+    }
+
+    #[cfg(windows)]
+    let _ = socket_name;
+}
+
+#[cfg(feature = "daemon")]
+fn broker_cli() -> &'static str {
+    env!("CARGO_BIN_EXE_running-process-broker-v1")
+}
+
+#[cfg(feature = "daemon")]
+fn stdout(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(feature = "daemon")]
+fn stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
 }
