@@ -5,6 +5,7 @@
 //! The first slice keeps the core Hello validation and negotiation
 //! logic testable without binding sockets or spawning backends.
 
+pub mod admin;
 pub mod backend_registry;
 pub mod hello_handler;
 pub mod instance;
@@ -14,6 +15,7 @@ pub mod service_def_loader;
 pub mod trace_context;
 pub mod version_allow_list;
 
+pub use admin::{AdminBackend, AdminSnapshot, ADMIN_SCHEMA_VERSION};
 pub use backend_registry::{BackendKey, BackendRegistry};
 pub use hello_handler::{
     HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend,
