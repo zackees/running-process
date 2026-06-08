@@ -74,7 +74,7 @@ impl PeerCredentialPolicy {
 /// Handles a decoded broker Hello frame and returns the protocol reply.
 ///
 /// This keeps the frame I/O boundary independent from the concrete routing
-/// strategy. Tests and bounded serve mode can use [`HelloHandler`], while the
+/// strategy. Tests and preloaded-backend serve mode can use [`HelloHandler`], while the
 /// broker accept loop can route through [`HelloRouter`].
 pub trait HelloResponder {
     /// Decode and answer a broker Hello frame for an OS-verified peer.

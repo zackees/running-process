@@ -4,10 +4,9 @@ Admin verbs use the broker control pipe with `Frame.payload_protocol = 0xAD01`.
 Every JSON response uses `schema_version: 1`.
 
 Admin request frames carry `AdminRequest` protobuf payloads and response frames
-carry `AdminReply` protobuf payloads. The current Phase 4 code can dispatch
-typed admin frames through one-shot local-socket server/client helpers; the
-long-lived broker accept loop still needs to route its live control pipe
-connections to this dispatcher.
+carry `AdminReply` protobuf payloads. The Phase 4 control-socket accept loop
+routes live Hello and admin frames over the same broker endpoint; focused tests
+still use one-shot local-socket server/client helpers.
 
 ## Frame Payload
 

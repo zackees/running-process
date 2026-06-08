@@ -1,10 +1,10 @@
-//! Bounded broker serve-mode wiring for registered and launch-backed backends.
+//! Broker serve-mode wiring for registered and launch-backed backends.
 //!
 //! Phase 4 grows the long-lived daemon incrementally. This module connects the
 //! existing service-definition loader, broker instance routing, backend
 //! registry, backend launch coordination, and framed local-socket accept loop.
-//! The long-lived daemon loop will replace these bounded entry points once the
-//! broker lifecycle surface is ready.
+//! Tests can still request bounded runs while the CLI defaults to accepting
+//! until process exit.
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -20,7 +20,10 @@ use super::admin::AdminSnapshot;
 use super::backend_launcher::{BackendLauncher, CommandBackendLauncher};
 use super::backend_registry::BackendRegistry;
 use super::connection::{BrokerConnectionError, PeerCredentialPolicy};
-use super::control_socket::{serve_control_socket_connections_with_policy, ControlSocketError};
+use super::control_socket::{
+    serve_control_socket_connections_with_limit_and_policy, ControlSocketConnectionLimit,
+    ControlSocketError,
+};
 use super::hello_handler::{HelloHandler, HelloHandlerError};
 use super::hello_router::HelloRouter;
 use super::instance::{BrokerInstanceError, BrokerInstanceKey};
@@ -43,19 +46,19 @@ pub struct BrokerServeConfig {
     pub backend_endpoint: String,
     /// Directory containing `<service>.servicedef` protobuf files.
     pub service_definition_dir: PathBuf,
-    /// Number of Hello connections to accept before returning.
-    pub max_connections: NonZeroUsize,
+    /// Optional number of control-socket connections to accept before returning.
+    pub max_connections: Option<NonZeroUsize>,
 }
 
-/// Configuration for bounded serve mode that launches backends on Hello miss.
+/// Configuration for serve mode that launches backends on Hello miss.
 #[derive(Clone, Debug)]
 pub struct BrokerLaunchServeConfig {
     /// Local socket path or Windows pipe name to bind.
     pub socket_path: String,
     /// Directory containing `<service>.servicedef` protobuf files.
     pub service_definition_dir: PathBuf,
-    /// Number of Hello connections to accept before returning.
-    pub max_connections: NonZeroUsize,
+    /// Optional number of control-socket connections to accept before returning.
+    pub max_connections: Option<NonZeroUsize>,
 }
 
 impl BrokerServeConfig {
@@ -73,15 +76,43 @@ impl BrokerServeConfig {
             service_version: service_version.into(),
             backend_endpoint: backend_endpoint.into(),
             service_definition_dir: service_definition_dir(),
-            max_connections: NonZeroUsize::new(max_connections)
-                .ok_or(BrokerServeError::InvalidMaxConnections)?,
+            max_connections: Some(
+                NonZeroUsize::new(max_connections)
+                    .ok_or(BrokerServeError::InvalidMaxConnections)?,
+            ),
         })
+    }
+
+    /// Build an unbounded serve config using the platform service-definition
+    /// directory.
+    pub fn unbounded(
+        socket_path: impl Into<String>,
+        service_name: impl Into<String>,
+        service_version: impl Into<String>,
+        backend_endpoint: impl Into<String>,
+    ) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+            service_name: service_name.into(),
+            service_version: service_version.into(),
+            backend_endpoint: backend_endpoint.into(),
+            service_definition_dir: service_definition_dir(),
+            max_connections: None,
+        }
     }
 
     /// Override the service-definition directory.
     pub fn with_service_definition_dir(mut self, root: impl Into<PathBuf>) -> Self {
         self.service_definition_dir = root.into();
         self
+    }
+
+    /// Return the configured accept-loop connection limit.
+    pub fn connection_limit(&self) -> ControlSocketConnectionLimit {
+        self.max_connections.map_or(
+            ControlSocketConnectionLimit::Unbounded,
+            ControlSocketConnectionLimit::Bounded,
+        )
     }
 }
 
@@ -95,15 +126,35 @@ impl BrokerLaunchServeConfig {
         Ok(Self {
             socket_path: socket_path.into(),
             service_definition_dir: service_definition_dir(),
-            max_connections: NonZeroUsize::new(max_connections)
-                .ok_or(BrokerServeError::InvalidMaxConnections)?,
+            max_connections: Some(
+                NonZeroUsize::new(max_connections)
+                    .ok_or(BrokerServeError::InvalidMaxConnections)?,
+            ),
         })
+    }
+
+    /// Build an unbounded launch-backed serve config using the platform
+    /// service-definition directory.
+    pub fn unbounded(socket_path: impl Into<String>) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+            service_definition_dir: service_definition_dir(),
+            max_connections: None,
+        }
     }
 
     /// Override the service-definition directory.
     pub fn with_service_definition_dir(mut self, root: impl Into<PathBuf>) -> Self {
         self.service_definition_dir = root.into();
         self
+    }
+
+    /// Return the configured accept-loop connection limit.
+    pub fn connection_limit(&self) -> ControlSocketConnectionLimit {
+        self.max_connections.map_or(
+            ControlSocketConnectionLimit::Unbounded,
+            ControlSocketConnectionLimit::Bounded,
+        )
     }
 }
 
@@ -126,11 +177,11 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         AdminSnapshot::from_registry(instance.id(), started_at.elapsed(), true, 0, &registry, &[])
     };
-    serve_control_socket_connections_with_policy(
+    serve_control_socket_connections_with_limit_and_policy(
         &config.socket_path,
         &router,
         snapshot_provider,
-        config.max_connections.get(),
+        config.connection_limit(),
         &peer_policy,
     )?;
     Ok(())
@@ -163,11 +214,11 @@ pub fn serve_launching_backends_with_launcher(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         AdminSnapshot::from_registry("launch", started_at.elapsed(), true, 0, &registry, &[])
     };
-    serve_control_socket_connections_with_policy(
+    serve_control_socket_connections_with_limit_and_policy(
         &config.socket_path,
         &router,
         snapshot_provider,
-        config.max_connections.get(),
+        config.connection_limit(),
         &peer_policy,
     )?;
     Ok(())

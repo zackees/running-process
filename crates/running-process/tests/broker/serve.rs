@@ -20,7 +20,7 @@ use running_process::broker::server::{
     build_hello_handler, ensure_service_definition_dir, local_socket_name,
     serve_launching_backends_with_launcher, serve_registered_backend, service_definition_path,
     BackendLaunchError, BackendLaunchRequest, BackendLauncher, BrokerLaunchServeConfig,
-    BrokerServeConfig, PeerIdentity,
+    BrokerServeConfig, ControlSocketConnectionLimit, PeerIdentity,
 };
 use serde_json::Value;
 
@@ -148,6 +148,47 @@ fn build_hello_handler_uses_service_definition_and_backend_registry() {
         }
         HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
     }
+}
+
+#[test]
+fn serve_configs_are_unbounded_until_test_limit_is_requested() {
+    let tmp = write_service_definition_dir();
+    let service_root = tmp.path().join("services");
+    let backend_endpoint = unique_backend_endpoint();
+
+    let registered = BrokerServeConfig::unbounded(
+        "unused-test-socket",
+        "zccache",
+        "1.11.20",
+        backend_endpoint.clone(),
+    )
+    .with_service_definition_dir(&service_root);
+    let bounded_registered = serve_config(
+        &service_root,
+        "unused-bounded-test-socket",
+        backend_endpoint,
+        2,
+    );
+    let launch = BrokerLaunchServeConfig::unbounded("unused-launch-test-socket")
+        .with_service_definition_dir(&service_root);
+    let bounded_launch = launch_serve_config(&service_root, "unused-bounded-launch-test-socket", 3);
+
+    assert_eq!(
+        registered.connection_limit(),
+        ControlSocketConnectionLimit::Unbounded
+    );
+    assert_eq!(
+        launch.connection_limit(),
+        ControlSocketConnectionLimit::Unbounded
+    );
+    assert!(matches!(
+        bounded_registered.connection_limit(),
+        ControlSocketConnectionLimit::Bounded(limit) if limit.get() == 2
+    ));
+    assert!(matches!(
+        bounded_launch.connection_limit(),
+        ControlSocketConnectionLimit::Bounded(limit) if limit.get() == 3
+    ));
 }
 
 #[test]
