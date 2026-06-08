@@ -13,6 +13,7 @@ pub mod host_identity;
 pub mod lifecycle;
 pub mod manifest;
 pub mod protocol;
+pub mod server;
 
 /// Framing byte for every v1 broker connection. Wire layout:
 /// `[u8 framing_version=1][u32 LE body_length][prost body]`.

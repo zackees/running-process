@@ -39,8 +39,10 @@ Every `Frame` carries:
 - `traceparent`
 - `tracestate`
 
-The broker forwards trace context from client handshake to backend lifecycle
-work and admin diagnostics.
+The broker keeps the full `Frame` beside the decoded `Hello` during
+negotiation. `traceparent`, `tracestate`, and `request_id` therefore survive
+validation and are available to backend lifecycle work, metrics, and admin
+diagnostics.
 
 ## Metrics
 

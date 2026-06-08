@@ -94,3 +94,13 @@ labels {
 The broker validates service definitions on every `Hello` path through a lazy
 reload check. Invalid files are refused with a stable machine-readable code and
 a human-readable reason.
+
+## Version Policy
+
+`min_version` is a semver floor. A `Hello.wanted_version` below that floor is
+refused with `ERROR_VERSION_BLOCKED`.
+
+`version_allow_list` is an optional exact-match allow-list. When it is
+non-empty, the requested version must appear in the list. This prevents
+resurrection of backend versions that were removed for correctness or security
+reasons.

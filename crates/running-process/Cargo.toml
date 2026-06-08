@@ -41,6 +41,11 @@ name = "running-process-cleanup"
 path = "src/bin/running-process-cleanup.rs"
 required-features = ["client"]
 
+[[bin]]
+name = "running-process-broker-v1"
+path = "src/bin/running-process-broker-v1.rs"
+required-features = ["daemon"]
+
 [features]
 # Final feature scheme per #165:
 # * `core`   — always-available API (spawn / pty / containment).
