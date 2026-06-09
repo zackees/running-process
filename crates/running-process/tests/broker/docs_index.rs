@@ -71,6 +71,7 @@ fn consumer_adoption_dashboard_tracks_current_wave() {
             "zackees/soldr/pull/721",
             "zackees/soldr/pull/722",
             "zackees/soldr/pull/723",
+            "zackees/soldr/pull/724",
             "zackees/zccache/pull/708",
             "zackees/zccache/pull/709",
             "FastLED/fbuild/pull/529",
