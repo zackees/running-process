@@ -14,7 +14,7 @@ use running_process::broker::server::local_socket_name;
 
 #[test]
 fn connect_to_backend_direct_connects_to_cached_endpoint_when_versions_match() {
-    let cached_backend = unique_socket_name("hello-skip-backend");
+    let cached_backend = unique_socket_name("backend");
     let backend = spawn_accept_once(cached_backend.clone());
 
     let mut request = ConnectBackendRequest::new("missing-broker", "zccache", "1.11.20", "1.11.20");
@@ -30,10 +30,19 @@ fn connect_to_backend_direct_connects_to_cached_endpoint_when_versions_match() {
 }
 
 fn spawn_accept_once(socket_name: String) -> thread::JoinHandle<io::Result<()>> {
+    let display_name = socket_name.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let listener = bind_test_socket(&socket_name)?;
-        ready_tx.send(()).unwrap();
+        let listener = match bind_test_socket(&socket_name) {
+            Ok(listener) => {
+                ready_tx.send(Ok(())).unwrap();
+                listener
+            }
+            Err(err) => {
+                let _ = ready_tx.send(Err(err.to_string()));
+                return Err(err);
+            }
+        };
         let mut stream = listener.accept()?;
         let mut byte = [0_u8; 1];
         stream.read_exact(&mut byte)?;
@@ -41,7 +50,11 @@ fn spawn_accept_once(socket_name: String) -> thread::JoinHandle<io::Result<()>> 
         cleanup_test_socket(&socket_name);
         Ok(())
     });
-    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    match ready_rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("failed to bind hello-skip backend socket {display_name}: {err}"),
+        Err(err) => panic!("timed out waiting for hello-skip backend socket readiness: {err}"),
+    }
     handle
 }
 
@@ -84,18 +97,14 @@ fn unique_socket_name(label: &str) -> String {
 
 #[cfg(unix)]
 fn unique_socket_name(label: &str) -> String {
-    let dir = if cfg!(target_os = "macos") {
-        std::path::PathBuf::from("/tmp")
-    } else {
-        std::env::temp_dir()
-    };
-    dir.join(format!(
-        "rpb-v1-{label}-{}-{}.sock",
-        std::process::id(),
-        unique_suffix()
-    ))
-    .to_string_lossy()
-    .into_owned()
+    std::env::temp_dir()
+        .join(format!(
+            "rpb-v1-{label}-{}-{}.sock",
+            std::process::id(),
+            unique_suffix()
+        ))
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn unique_suffix() -> u128 {
