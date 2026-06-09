@@ -8,12 +8,15 @@ use std::time::Duration;
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::ListenerOptions;
 use running_process::broker::client::{
-    connect_to_backend, BackendConnectionRoute, ConnectBackendRequest,
+    broker_disabled_by_env, connect_to_backend, BackendConnectionRoute, ConnectBackendRequest,
+    RUNNING_PROCESS_DISABLE_ENV,
 };
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
 use running_process::broker::server::{
     handle_hello_connection, local_socket_name, HelloHandler, PeerIdentity, RegisteredBackend,
 };
+
+static DISABLE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn service_definition() -> ServiceDefinition {
     ServiceDefinition {
@@ -37,6 +40,60 @@ fn handler(backend_endpoint: &str) -> HelloHandler {
             server_capabilities: 0x01,
         })
         .unwrap()
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn remove(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
+
+    fn set(key: &'static str, value: &str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+#[test]
+fn broker_disabled_by_env_is_false_when_unset() {
+    let _lock = DISABLE_ENV_LOCK.lock().unwrap();
+    let _guard = EnvVarGuard::remove(RUNNING_PROCESS_DISABLE_ENV);
+
+    assert!(!broker_disabled_by_env().unwrap());
+}
+
+#[test]
+fn broker_disabled_by_env_is_true_for_canonical_value() {
+    let _lock = DISABLE_ENV_LOCK.lock().unwrap();
+    let _guard = EnvVarGuard::set(RUNNING_PROCESS_DISABLE_ENV, "1");
+
+    assert!(broker_disabled_by_env().unwrap());
+}
+
+#[test]
+fn broker_disabled_by_env_rejects_unknown_values() {
+    let _lock = DISABLE_ENV_LOCK.lock().unwrap();
+    let _guard = EnvVarGuard::set(RUNNING_PROCESS_DISABLE_ENV, "true");
+
+    let err = broker_disabled_by_env().unwrap_err();
+
+    assert_eq!(err.value, "true");
 }
 
 #[test]
