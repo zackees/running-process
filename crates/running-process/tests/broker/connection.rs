@@ -1,6 +1,6 @@
 #![cfg(feature = "client")]
 
-use std::io::Cursor;
+use std::io::{self, Cursor};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -405,6 +405,69 @@ fn serve_local_socket_connections_handles_herd_at_attachment_cap() {
     );
 }
 
+#[test]
+fn serve_local_socket_connections_rejects_admission_after_attachment_cap() {
+    const ADMISSION_CAP: usize = 64;
+    const OVERFLOW_ATTEMPTS: usize = 16;
+
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let server = thread::spawn(move || {
+        serve_local_socket_connections(&server_socket, Arc::new(handler()), ADMISSION_CAP)
+    });
+
+    let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let herd = Arc::new(Barrier::new(ADMISSION_CAP));
+    let mut clients = Vec::with_capacity(ADMISSION_CAP);
+    for index in 0..ADMISSION_CAP {
+        let name = name.clone();
+        let herd = Arc::clone(&herd);
+        clients.push(thread::spawn(move || {
+            let mut client = connect_with_retry(name);
+            herd.wait();
+
+            let mut request = hello(0);
+            request.request_id = format!("req-overcap-{index}");
+            let mut frame = frame_for_hello(&request);
+            frame.request_id = (index + 1) as u64;
+            write_frame(&mut client, &frame.encode_to_vec()).unwrap();
+
+            let response_bytes = read_frame(&mut client).unwrap();
+            let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
+            assert_eq!(
+                FrameKind::try_from(response_frame.kind),
+                Ok(FrameKind::Response)
+            );
+            let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
+            match reply.result.unwrap() {
+                HelloReplyResult::Negotiated(negotiated) => negotiated.connection_id,
+                HelloReplyResult::Refused(refused) => {
+                    panic!("unexpected refusal for admitted client {index}: {refused:?}")
+                }
+            }
+        }));
+    }
+
+    let mut connection_ids = Vec::with_capacity(ADMISSION_CAP);
+    for client in clients {
+        connection_ids.push(client.join().unwrap());
+    }
+    server.join().unwrap().unwrap();
+    connection_ids.sort_unstable();
+
+    assert_eq!(
+        connection_ids,
+        (1..=ADMISSION_CAP as u64).collect::<Vec<_>>(),
+        "the broker must assign IDs only to the admitted attachment budget"
+    );
+    for _ in 0..OVERFLOW_ATTEMPTS {
+        assert!(
+            try_connect_with_deadline(name.clone(), Duration::from_millis(100)).is_err(),
+            "over-cap clients must not be admitted after the bounded accept loop returns"
+        );
+    }
+}
+
 fn connect_with_retry(
     name: interprocess::local_socket::Name<'static>,
 ) -> interprocess::local_socket::Stream {
@@ -419,6 +482,22 @@ fn connect_with_retry(
                 thread::sleep(Duration::from_millis(10));
             }
             Err(err) => panic!("timed out connecting to broker local socket: {err}"),
+        }
+    }
+}
+
+fn try_connect_with_deadline(
+    name: interprocess::local_socket::Name<'static>,
+    timeout: Duration,
+) -> io::Result<interprocess::local_socket::Stream> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match LocalSocketStream::connect(name.borrow()) {
+            Ok(stream) => return Ok(stream),
+            Err(err) if Instant::now() < deadline && is_pending_bind_error(&err) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => return Err(err),
         }
     }
 }
