@@ -44,12 +44,7 @@ fn connect_to_backend_uses_cached_endpoint_when_versions_match() {
     let cached_backend = unique_socket_name("cached-backend");
     let backend = spawn_accept_once(cached_backend.clone());
 
-    let mut request = ConnectBackendRequest::new(
-        "missing-broker",
-        "zccache",
-        "1.11.20",
-        "1.11.20",
-    );
+    let mut request = ConnectBackendRequest::new("missing-broker", "zccache", "1.11.20", "1.11.20");
     request.cached_backend_endpoint = Some(&cached_backend);
     let connection = connect_to_backend(request).unwrap();
 
@@ -67,12 +62,30 @@ fn connect_to_backend_falls_back_to_broker_when_cache_missing() {
     let backend = spawn_accept_once(backend_endpoint.clone());
     let broker = spawn_broker_once(broker_endpoint.clone(), backend_endpoint.clone());
 
-    let request = ConnectBackendRequest::new(
-        &broker_endpoint,
-        "zccache",
-        "1.11.20",
-        "1.11.20",
+    let request = ConnectBackendRequest::new(&broker_endpoint, "zccache", "1.11.20", "1.11.20");
+    let connection = connect_to_backend(request).unwrap();
+
+    assert_eq!(connection.endpoint, backend_endpoint);
+    assert_eq!(connection.route, BackendConnectionRoute::BrokerNegotiated);
+    assert_eq!(
+        connection.negotiated.as_ref().unwrap().daemon_version,
+        "1.11.20"
     );
+    drop(connection.stream);
+    broker.join().unwrap().unwrap();
+    backend.join().unwrap().unwrap();
+}
+
+#[test]
+fn connect_to_backend_falls_back_to_broker_when_cached_endpoint_is_stale() {
+    let broker_endpoint = unique_socket_name("broker-stale-cache");
+    let backend_endpoint = unique_socket_name("backend-stale-cache");
+    let stale_cached_endpoint = unique_socket_name("stale-cached-backend");
+    let backend = spawn_accept_once(backend_endpoint.clone());
+    let broker = spawn_broker_once(broker_endpoint.clone(), backend_endpoint.clone());
+
+    let mut request = ConnectBackendRequest::new(&broker_endpoint, "zccache", "1.11.20", "1.11.20");
+    request.cached_backend_endpoint = Some(&stale_cached_endpoint);
     let connection = connect_to_backend(request).unwrap();
 
     assert_eq!(connection.endpoint, backend_endpoint);
@@ -93,12 +106,7 @@ fn connect_to_backend_does_not_skip_when_versions_differ() {
     let backend = spawn_accept_once(backend_endpoint.clone());
     let broker = spawn_broker_once(broker_endpoint.clone(), backend_endpoint.clone());
 
-    let mut request = ConnectBackendRequest::new(
-        &broker_endpoint,
-        "zccache",
-        "1.11.20",
-        "1.11.19",
-    );
+    let mut request = ConnectBackendRequest::new(&broker_endpoint, "zccache", "1.11.20", "1.11.19");
     request.cached_backend_endpoint = Some("missing-cached-backend");
     let connection = connect_to_backend(request).unwrap();
 
@@ -144,9 +152,7 @@ fn spawn_broker_once(
     handle
 }
 
-fn bind_test_socket(
-    socket_name: &str,
-) -> io::Result<interprocess::local_socket::Listener> {
+fn bind_test_socket(socket_name: &str) -> io::Result<interprocess::local_socket::Listener> {
     prepare_test_socket(socket_name)?;
     let name = local_socket_name(socket_name)?;
     ListenerOptions::new().name(name).create_sync()
