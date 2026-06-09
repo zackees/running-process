@@ -468,6 +468,65 @@ fn serve_local_socket_connections_rejects_admission_after_attachment_cap() {
     }
 }
 
+#[test]
+fn serve_local_socket_connections_refuses_malformed_hello_flood() {
+    const MALFORMED_CLIENTS: usize = 96;
+
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let server = thread::spawn(move || {
+        serve_local_socket_connections(&server_socket, Arc::new(handler()), MALFORMED_CLIENTS)
+    });
+
+    let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let herd = Arc::new(Barrier::new(MALFORMED_CLIENTS));
+    let mut clients = Vec::with_capacity(MALFORMED_CLIENTS);
+    for index in 0..MALFORMED_CLIENTS {
+        let name = name.clone();
+        let herd = Arc::clone(&herd);
+        clients.push(thread::spawn(move || {
+            let mut client = connect_with_retry(name);
+            herd.wait();
+
+            let expected_reason = if index % 2 == 0 {
+                write_frame(&mut client, &[0xFF, 0xFF, 0xFF]).unwrap();
+                "malformed broker Frame"
+            } else {
+                let mut frame = frame_for_hello(&hello(0));
+                frame.request_id = (index + 1) as u64;
+                frame.payload = vec![0xFF, 0xFF, 0xFF];
+                write_frame(&mut client, &frame.encode_to_vec()).unwrap();
+                "malformed Hello payload"
+            };
+
+            let response_bytes = read_frame(&mut client).unwrap();
+            let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
+            assert_eq!(
+                FrameKind::try_from(response_frame.kind),
+                Ok(FrameKind::Response)
+            );
+            let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
+            match reply.result.unwrap() {
+                HelloReplyResult::Refused(refused) => {
+                    assert_eq!(
+                        ErrorCode::try_from(refused.code),
+                        Ok(ErrorCode::ErrorPeerRejected)
+                    );
+                    assert_eq!(refused.reason, expected_reason);
+                }
+                HelloReplyResult::Negotiated(negotiated) => {
+                    panic!("expected refusal for malformed client {index}, got {negotiated:?}")
+                }
+            }
+        }));
+    }
+
+    for client in clients {
+        client.join().unwrap();
+    }
+    server.join().unwrap().unwrap();
+}
+
 fn connect_with_retry(
     name: interprocess::local_socket::Name<'static>,
 ) -> interprocess::local_socket::Stream {
