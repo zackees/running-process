@@ -529,6 +529,14 @@ fn serve_local_socket_connections_refuses_malformed_hello_flood() {
 
 #[test]
 fn serve_local_socket_connections_rate_limits_concurrent_hello_flood() {
+    if std::env::consts::OS == "macos" {
+        eprintln!(
+            "skipping live peer-PID rate-limit proof on macOS: local socket peer credentials do \
+             not expose a verified peer PID"
+        );
+        return;
+    }
+
     const RATE_LIMIT: usize = 8;
     const CLIENTS: usize = 32;
 
