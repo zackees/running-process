@@ -210,11 +210,15 @@ where
     R: HelloResponder + ?Sized,
 {
     let listener = bind_local_socket(socket_path)?;
-    let _cleanup = LocalSocketCleanup(socket_path);
-
-    let mut stream = listener.accept()?;
-    let peer = peer_identity_from_stream(&stream)?;
-    handle_hello_connection_with_peer_policy(&mut stream, responder, peer, peer_policy)
+    let cleanup = LocalSocketCleanup(socket_path);
+    let result = (|| {
+        let mut stream = listener.accept()?;
+        let peer = peer_identity_from_stream(&stream)?;
+        handle_hello_connection_with_peer_policy(&mut stream, responder, peer, peer_policy)
+    })();
+    drop(listener);
+    drop(cleanup);
+    result
 }
 
 /// Run a bounded blocking local-socket accept loop.
@@ -247,34 +251,39 @@ pub fn serve_local_socket_connections_with_peer_policy(
     }
 
     let listener = bind_local_socket(socket_path)?;
-    let _cleanup = LocalSocketCleanup(socket_path);
-    let mut workers = Vec::with_capacity(connection_count);
-    let peer_policy = Arc::new(peer_policy.clone());
+    let cleanup = LocalSocketCleanup(socket_path);
+    let result = (|| {
+        let mut workers = Vec::with_capacity(connection_count);
+        let peer_policy = Arc::new(peer_policy.clone());
 
-    for _ in 0..connection_count {
-        let mut stream = listener.accept()?;
-        let peer = peer_identity_from_stream(&stream)?;
-        let handler = Arc::clone(&handler);
-        let peer_policy = Arc::clone(&peer_policy);
-        workers.push(thread::spawn(move || {
-            handle_hello_connection_with_peer_policy(
-                &mut stream,
-                handler.as_ref(),
-                peer,
-                peer_policy.as_ref(),
-            )
-            .map(|_| ())
-        }));
-    }
-
-    for worker in workers {
-        match worker.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err),
-            Err(_) => return Err(BrokerConnectionError::WorkerPanic),
+        for _ in 0..connection_count {
+            let mut stream = listener.accept()?;
+            let peer = peer_identity_from_stream(&stream)?;
+            let handler = Arc::clone(&handler);
+            let peer_policy = Arc::clone(&peer_policy);
+            workers.push(thread::spawn(move || {
+                handle_hello_connection_with_peer_policy(
+                    &mut stream,
+                    handler.as_ref(),
+                    peer,
+                    peer_policy.as_ref(),
+                )
+                .map(|_| ())
+            }));
         }
-    }
-    Ok(())
+
+        for worker in workers {
+            match worker.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => return Err(err),
+                Err(_) => return Err(BrokerConnectionError::WorkerPanic),
+            }
+        }
+        Ok(())
+    })();
+    drop(listener);
+    drop(cleanup);
+    result
 }
 
 /// Run a bounded blocking local-socket accept loop with a pluggable responder.
@@ -313,15 +322,23 @@ where
     }
 
     let listener = bind_local_socket(socket_path)?;
-    let _cleanup = LocalSocketCleanup(socket_path);
-
-    for _ in 0..connection_count {
-        let mut stream = listener.accept()?;
-        let peer = peer_identity_from_stream(&stream)?;
-        let _ =
-            handle_hello_connection_with_peer_policy(&mut stream, responder, peer, peer_policy)?;
-    }
-    Ok(())
+    let cleanup = LocalSocketCleanup(socket_path);
+    let result = (|| {
+        for _ in 0..connection_count {
+            let mut stream = listener.accept()?;
+            let peer = peer_identity_from_stream(&stream)?;
+            let _ = handle_hello_connection_with_peer_policy(
+                &mut stream,
+                responder,
+                peer,
+                peer_policy,
+            )?;
+        }
+        Ok(())
+    })();
+    drop(listener);
+    drop(cleanup);
+    result
 }
 
 /// Convert the broker's platform socket path/name string into an

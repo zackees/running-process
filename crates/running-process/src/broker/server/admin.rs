@@ -468,10 +468,14 @@ pub fn serve_one_admin_socket(
     snapshot: &AdminSnapshot,
 ) -> Result<AdminReply, AdminConnectionError> {
     let listener = bind_local_socket(socket_path)?;
-    let _cleanup = LocalSocketCleanup(socket_path);
-
-    let mut stream = listener.accept()?;
-    handle_admin_connection(&mut stream, snapshot)
+    let cleanup = LocalSocketCleanup(socket_path);
+    let result = (|| {
+        let mut stream = listener.accept()?;
+        handle_admin_connection(&mut stream, snapshot)
+    })();
+    drop(listener);
+    drop(cleanup);
+    result
 }
 
 /// Errors raised by admin frame validation/dispatch.

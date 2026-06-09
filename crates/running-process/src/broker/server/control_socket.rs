@@ -147,22 +147,26 @@ where
     F: Fn() -> AdminSnapshot,
 {
     let listener = bind_local_socket(socket_path)?;
-    let _cleanup = LocalSocketCleanup(socket_path);
-
-    let mut accepted = 0;
-    while connection_limit.should_continue(accepted) {
-        let mut stream = listener.accept().map_err(BrokerConnectionError::Io)?;
-        accepted += 1;
-        let peer = peer_identity_from_stream(&stream)?;
-        let _reply = handle_control_connection_with_peer_policy(
-            &mut stream,
-            hello_responder,
-            &snapshot_provider,
-            peer,
-            peer_policy,
-        )?;
-    }
-    Ok(())
+    let cleanup = LocalSocketCleanup(socket_path);
+    let result = (|| {
+        let mut accepted = 0;
+        while connection_limit.should_continue(accepted) {
+            let mut stream = listener.accept().map_err(BrokerConnectionError::Io)?;
+            accepted += 1;
+            let peer = peer_identity_from_stream(&stream)?;
+            let _reply = handle_control_connection_with_peer_policy(
+                &mut stream,
+                hello_responder,
+                &snapshot_provider,
+                peer,
+                peer_policy,
+            )?;
+        }
+        Ok(())
+    })();
+    drop(listener);
+    drop(cleanup);
+    result
 }
 
 fn write_admin_response_frame<W: Write>(
