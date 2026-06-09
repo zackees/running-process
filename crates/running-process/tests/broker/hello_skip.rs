@@ -84,14 +84,18 @@ fn unique_socket_name(label: &str) -> String {
 
 #[cfg(unix)]
 fn unique_socket_name(label: &str) -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-{label}-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
+    let dir = if cfg!(target_os = "macos") {
+        std::path::PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    dir.join(format!(
+        "rpb-v1-{label}-{}-{}.sock",
+        std::process::id(),
+        unique_suffix()
+    ))
+    .to_string_lossy()
+    .into_owned()
 }
 
 fn unique_suffix() -> u128 {
