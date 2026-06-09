@@ -33,6 +33,6 @@ pub use unix::{
     UnixFileDescriptor, UnixHandoffSocket, SCM_RIGHTS_TRANSPORT_SUPPORTED,
 };
 pub use windows::{
-    DuplicateHandleAttempt, DuplicateHandleError, DuplicateHandleResult, DuplicateHandleSuccess,
-    WindowsHandleValue, DUPLICATE_HANDLE_TRANSPORT_SUPPORTED,
+    try_duplicate_handle, DuplicateHandleAttempt, DuplicateHandleError, DuplicateHandleResult,
+    DuplicateHandleSuccess, WindowsHandleValue, DUPLICATE_HANDLE_TRANSPORT_SUPPORTED,
 };
