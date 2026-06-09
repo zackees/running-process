@@ -26,8 +26,9 @@ fn pick_path(path: running_process::broker::lifecycle::PipePath) -> String {
 
 #[test]
 fn shared_service_uses_shared_instance() {
-    let key = BrokerInstanceKey::from_service_definition(&definition(BrokerIsolation::SharedBroker))
-        .unwrap();
+    let key =
+        BrokerInstanceKey::from_service_definition(&definition(BrokerIsolation::SharedBroker))
+            .unwrap();
 
     assert_eq!(key, BrokerInstanceKey::Shared);
     assert_eq!(key.id(), "shared");
@@ -63,13 +64,18 @@ fn explicit_service_uses_named_instance() {
         }
     );
     assert_eq!(key.id(), "explicit:ci-trusted");
-    assert!(pick_path(key.pipe_path(USER_HASH).unwrap()).contains("ci-trusted"));
+    let path = pick_path(key.pipe_path(USER_HASH).unwrap());
+    #[cfg(target_os = "macos")]
+    assert!(path.ends_with(".sock"));
+    #[cfg(not(target_os = "macos"))]
+    assert!(path.contains("ci-trusted"));
 }
 
 #[test]
 fn explicit_service_requires_instance_name() {
-    let err = BrokerInstanceKey::from_service_definition(&definition(BrokerIsolation::ExplicitInstance))
-        .unwrap_err();
+    let err =
+        BrokerInstanceKey::from_service_definition(&definition(BrokerIsolation::ExplicitInstance))
+            .unwrap_err();
 
     assert!(err.to_string().contains("requires explicit_instance"));
 }
