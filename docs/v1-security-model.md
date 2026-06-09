@@ -74,6 +74,10 @@ The broker follows these filesystem rules:
 ## Dependency Audit
 
 The v1 release gate treats dependency changes as part of security review.
+The current direct runtime dependency inventory is published in
+`docs/v1-dependency-surface.md`. Security tests compare that inventory with
+`crates/running-process/Cargo.toml`, so dependency additions must update the
+review record in the same PR.
 
 ### Direct Dependency Review Policy
 
