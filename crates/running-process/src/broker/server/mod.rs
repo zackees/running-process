@@ -92,8 +92,8 @@ pub use serve::{
 };
 pub use service_def_loader::{
     ensure_service_definition_dir, service_definition_dir, service_definition_path,
-    validate_service_definition_for_service, ServiceDefinitionError, ServiceDefinitionLoader,
-    SERVICE_DEF_DIR_ENV, SERVICE_DEF_EXTENSION,
+    validate_service_definition_for_service, write_service_definition, ServiceDefinitionError,
+    ServiceDefinitionLoader, SERVICE_DEF_DIR_ENV, SERVICE_DEF_EXTENSION,
 };
 pub use spawn_coordinator::{
     acquire_spawn_lock, SpawnBeginError, SpawnBudgetConfig, SpawnBudgetSnapshot, SpawnCoordinator,
