@@ -11,8 +11,8 @@ use std::os::unix::fs::PermissionsExt;
 use prost::Message;
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
 use running_process::broker::server::{
-    ensure_service_definition_dir, service_definition_path, ServiceDefinitionError,
-    ServiceDefinitionLoader,
+    ensure_service_definition_dir, service_definition_path, write_service_definition,
+    ServiceDefinitionError, ServiceDefinitionLoader,
 };
 #[cfg(windows)]
 use running_process::broker::server::{service_definition_dir, SERVICE_DEF_DIR_ENV};
@@ -93,6 +93,19 @@ fn loader_reads_valid_service_definition() {
     assert_eq!(loaded.version_allow_list, vec!["1.11.20"]);
 }
 
+#[test]
+fn write_service_definition_creates_private_directory_and_round_trips() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("services");
+
+    let path = write_service_definition(&root, &service_definition()).unwrap();
+    let loaded = ServiceDefinitionLoader::new(&root).load("zccache").unwrap();
+
+    assert_eq!(path, service_definition_path(&root, "zccache").unwrap());
+    assert_eq!(loaded.service_name, "zccache");
+    assert_eq!(loaded.min_version, "1.10.0");
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_default_service_definition_dir_uses_roaming_appdata_services() {
@@ -115,14 +128,14 @@ fn windows_service_definition_dir_override_is_private_and_loadable() {
     let _override = EnvVarGuard::set_path(SERVICE_DEF_DIR_ENV, &root);
 
     let default_root = service_definition_dir();
-    ensure_service_definition_dir(&default_root).unwrap();
-    write_definition_for(&default_root, "zccache", &service_definition());
+    let path = write_service_definition(&default_root, &service_definition()).unwrap();
 
     let loaded = ServiceDefinitionLoader::default_root()
         .lookup_or_reload("zccache")
         .unwrap();
 
     assert_eq!(default_root, root);
+    assert_eq!(path, root.join("zccache.servicedef"));
     assert_eq!(loaded.service_name, "zccache");
     assert_eq!(loaded.min_version, "1.10.0");
 }

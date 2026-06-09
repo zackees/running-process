@@ -53,10 +53,7 @@ impl ServiceDefinitionLoader {
     }
 
     /// Reload one service definition from disk.
-    pub fn reload(
-        &self,
-        service_name: &str,
-    ) -> Result<ServiceDefinition, ServiceDefinitionError> {
+    pub fn reload(&self, service_name: &str) -> Result<ServiceDefinition, ServiceDefinitionError> {
         self.load(service_name)
     }
 
@@ -111,6 +108,21 @@ pub fn service_definition_dir() -> PathBuf {
 pub fn ensure_service_definition_dir(path: &Path) -> Result<(), ServiceDefinitionError> {
     secure_dir::ensure_private_dir(path)?;
     ensure_loadable_service_definition_dir(path)
+}
+
+/// Validate and write one `.servicedef` file into `root`.
+///
+/// Consumer installers and development tools should use this helper instead of
+/// duplicating protobuf serialization and service-definition path logic.
+pub fn write_service_definition(
+    root: &Path,
+    definition: &ServiceDefinition,
+) -> Result<PathBuf, ServiceDefinitionError> {
+    ensure_service_definition_dir(root)?;
+    validate_service_definition_for_service(definition, &definition.service_name)?;
+    let path = service_definition_path(root, &definition.service_name)?;
+    fs::write(&path, definition.encode_to_vec())?;
+    Ok(path)
 }
 
 /// Compute the file path for one service definition.
@@ -215,15 +227,14 @@ pub enum ServiceDefinitionError {
 
 fn ensure_loadable_service_definition_dir(path: &Path) -> Result<(), ServiceDefinitionError> {
     if !secure_dir::private_dir_permissions_are_private(path)? {
-        return Err(ServiceDefinitionError::InsecureDirectory(path.to_path_buf()));
+        return Err(ServiceDefinitionError::InsecureDirectory(
+            path.to_path_buf(),
+        ));
     }
     Ok(())
 }
 
-fn validate_absolute_path(
-    field: &'static str,
-    value: &str,
-) -> Result<(), ServiceDefinitionError> {
+fn validate_absolute_path(field: &'static str, value: &str) -> Result<(), ServiceDefinitionError> {
     if value.is_empty() {
         return Err(ServiceDefinitionError::InvalidPath {
             field,
