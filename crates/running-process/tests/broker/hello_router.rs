@@ -437,6 +437,39 @@ fn router_spawn_budget_is_per_service_version() {
 }
 
 #[test]
+fn router_spawn_budget_allows_distinct_version_flood_once() {
+    let versions: Vec<String> = (20..36).map(|patch| format!("1.11.{patch}")).collect();
+    let mut definition = service_definition(BrokerIsolation::SharedBroker);
+    definition.version_allow_list = versions.clone();
+    let tmp = service_dir_with_definition(&definition);
+    let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+    let registry = BackendRegistry::new();
+    let spawn_coordinator = Mutex::new(SpawnCoordinator::with_config(SpawnBudgetConfig::new(
+        1,
+        Duration::from_secs(10),
+    )));
+    let router = HelloRouter::new(&loader, &registry).with_spawn_coordinator(&spawn_coordinator);
+
+    for version in &versions {
+        let first = router.handle_request(&request("zccache", version));
+        assert_eq!(
+            reply_code(&first),
+            ErrorCode::ErrorBackendSpawnFailed,
+            "first distinct-version request should be admitted for {version}"
+        );
+    }
+
+    for version in &versions {
+        let second = router.handle_request(&request("zccache", version));
+        assert_eq!(
+            reply_code(&second),
+            ErrorCode::ErrorRateLimited,
+            "second request should exhaust the per-version spawn budget for {version}"
+        );
+    }
+}
+
+#[test]
 fn router_respects_service_definition_instance_isolation() {
     let definition = service_definition(BrokerIsolation::PrivateBroker);
     let tmp = service_dir_with_definition(&definition);
