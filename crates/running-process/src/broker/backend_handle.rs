@@ -207,6 +207,26 @@ impl BackendHandle {
         Connection::connect(&self.daemon_process.ipc_endpoint).map_err(BackendHandleError::Connect)
     }
 
+    /// Duplicate a broker-owned pipe handle into this verified backend process.
+    ///
+    /// This is the Windows bridge between `BackendHandle` identity verification
+    /// and the optional Phase 6 `DuplicateHandle` transport. The caller still
+    /// owns delivery of the paired handoff token to the backend and must wait
+    /// for backend acknowledgement before reporting handoff success.
+    #[cfg(windows)]
+    pub fn try_duplicate_windows_handoff_handle(
+        &self,
+        pipe_handle: crate::broker::server::handoff::WindowsHandleValue,
+        handoff_token: crate::broker::server::handoff::HandoffToken,
+    ) -> crate::broker::server::handoff::DuplicateHandleResult {
+        let attempt = crate::broker::server::handoff::DuplicateHandleAttempt::new(
+            pipe_handle,
+            self.daemon_process.pid,
+            handoff_token,
+        );
+        crate::broker::server::handoff::try_duplicate_handle(&attempt)
+    }
+
     /// Send a graceful shutdown signal and wait until the process exits.
     ///
     /// On Windows this foundation returns `GracefulTerminateUnsupported` until

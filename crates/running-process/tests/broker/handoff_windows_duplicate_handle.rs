@@ -1,17 +1,28 @@
 #![cfg(all(feature = "client", windows))]
 
+use std::fs;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use interprocess::local_socket::traits::Listener;
+use interprocess::local_socket::ListenerOptions;
+use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
+use running_process::broker::backend_lifecycle::probe::handle_endpoint_probe;
+use running_process::broker::protocol::Endpoint;
 use running_process::broker::server::handoff::{
     try_duplicate_handle, DuplicateHandleAttempt, HandoffToken, WindowsHandleValue,
     HANDOFF_TOKEN_BYTES,
 };
+use running_process::broker::server::local_socket_name;
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 
 const CHILD_HELPER_ENV: &str = "RUNNING_PROCESS_DUP_HANDLE_CHILD";
+const CHILD_ENDPOINT_ENV: &str = "RUNNING_PROCESS_DUP_HANDLE_ENDPOINT";
+const CHILD_READY_FILE_ENV: &str = "RUNNING_PROCESS_DUP_HANDLE_READY_FILE";
 const CHILD_HELPER_TEST: &str =
     "handoff_windows_duplicate_handle::windows_duplicate_handle_child_helper";
 const CHILD_RESULT_MARKER: &str = "running-process-duplicate-handle-child";
@@ -102,10 +113,105 @@ fn windows_duplicate_handle_passes_pipe_to_child_process() {
 }
 
 #[test]
+fn backend_handle_windows_duplicate_handle_passes_pipe_to_verified_child_process() {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+    let token = HandoffToken::from_bytes([
+        0x63, 0x54, 0x11, 0x00, 0x9a, 0xbc, 0xde, 0xf0, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc,
+        0xfe,
+    ]);
+    let token_hex = token_to_hex(&token);
+    let payload = b"running-process verified BackendHandle DuplicateHandle smoke";
+    let endpoint = child_endpoint();
+    let ready_file = child_ready_file();
+    let _ = fs::remove_file(&ready_file);
+
+    let mut read_pipe: HANDLE = std::ptr::null_mut();
+    let mut write_pipe: HANDLE = std::ptr::null_mut();
+    let created = unsafe { CreatePipe(&mut read_pipe, &mut write_pipe, std::ptr::null_mut(), 0) };
+    assert_ne!(created, 0, "CreatePipe must create a real pipe pair");
+    assert_valid_handle(read_pipe);
+    assert_valid_handle(write_pipe);
+
+    let read_pipe = unsafe { OwnedHandle::from_raw_handle(read_pipe.cast()) };
+    let write_pipe = unsafe { OwnedHandle::from_raw_handle(write_pipe.cast()) };
+    let mut child = ChildProcess::spawn_with_endpoint(&endpoint.path, &ready_file);
+    wait_for_ready_file(&ready_file);
+
+    let daemon = daemon_for_child(child.id(), endpoint.clone());
+    let backend =
+        BackendHandle::probe_with_service("zccache", "1.11.20", &endpoint, &daemon).unwrap();
+    let duplicated = match backend.try_duplicate_windows_handoff_handle(
+        WindowsHandleValue::new(read_pipe.as_raw_handle() as usize),
+        token,
+    ) {
+        Ok(success) => success,
+        Err(err) => {
+            child.kill();
+            panic!("BackendHandle DuplicateHandle into child process failed: {err}");
+        }
+    };
+
+    assert_eq!(duplicated.backend_pid, child.id());
+    assert_eq!(duplicated.handoff_token, token);
+
+    {
+        let stdin = child.stdin();
+        writeln!(
+            stdin,
+            "{} {} {}",
+            duplicated.duplicated_handle.get(),
+            token_hex,
+            payload.len()
+        )
+        .expect("must send duplicated handle manifest to child helper");
+    }
+    drop(child.take_stdin());
+    drop(read_pipe);
+
+    let mut written = 0;
+    let write_ok = unsafe {
+        WriteFile(
+            write_pipe.as_raw_handle() as HANDLE,
+            payload.as_ptr().cast(),
+            payload.len() as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(write_ok, 0, "WriteFile must write through the pipe");
+    assert_eq!(written as usize, payload.len());
+    drop(write_pipe);
+
+    let output = child.wait_with_output();
+    let _ = fs::remove_file(&ready_file);
+    assert!(
+        output.status.success(),
+        "child helper failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = format!(
+        "{CHILD_RESULT_MARKER} token={token_hex} payload={}",
+        String::from_utf8_lossy(payload)
+    );
+    assert!(
+        stdout.contains(&expected),
+        "verified child helper must echo the paired token and transferred payload\nexpected: {expected}\nstdout:\n{stdout}"
+    );
+}
+
+#[test]
 #[ignore = "spawned by windows_duplicate_handle_passes_pipe_to_child_process"]
 fn windows_duplicate_handle_child_helper() {
     if std::env::var_os(CHILD_HELPER_ENV).is_none() {
         return;
+    }
+
+    if let Some(endpoint_path) = std::env::var_os(CHILD_ENDPOINT_ENV) {
+        serve_child_endpoint_probe_once(&endpoint_path.to_string_lossy());
     }
 
     let mut manifest = String::new();
@@ -157,20 +263,18 @@ struct ChildProcess {
 
 impl ChildProcess {
     fn spawn() -> Self {
-        let child = Command::new(std::env::current_exe().expect("test binary path"))
-            .args([
-                "--ignored",
-                "--exact",
-                CHILD_HELPER_TEST,
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(CHILD_HELPER_ENV, "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let child = child_command()
             .spawn()
             .expect("must spawn DuplicateHandle child helper");
+        Self { child: Some(child) }
+    }
+
+    fn spawn_with_endpoint(endpoint_path: &str, ready_file: &Path) -> Self {
+        let child = child_command()
+            .env(CHILD_ENDPOINT_ENV, endpoint_path)
+            .env(CHILD_READY_FILE_ENV, ready_file)
+            .spawn()
+            .expect("must spawn verified DuplicateHandle child helper");
         Self { child: Some(child) }
     }
 
@@ -211,6 +315,79 @@ impl ChildProcess {
             .wait_with_output()
             .expect("must wait for DuplicateHandle child helper")
     }
+}
+
+fn child_command() -> Command {
+    let mut command = Command::new(std::env::current_exe().expect("test binary path"));
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            CHILD_HELPER_TEST,
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD_HELPER_ENV, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn child_endpoint() -> Endpoint {
+    Endpoint {
+        namespace_id: "verified-child".into(),
+        path: format!(
+            r"\\.\pipe\rpb-v1-bh-dh-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ),
+    }
+}
+
+fn child_ready_file() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "running-process-duplicate-handle-ready-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ))
+}
+
+fn daemon_for_child(pid: u32, ipc_endpoint: Endpoint) -> DaemonProcess {
+    let mut daemon = DaemonProcess::current_process(ipc_endpoint, Some(30)).unwrap();
+    daemon.pid = pid;
+    daemon
+}
+
+fn serve_child_endpoint_probe_once(endpoint_path: &str) {
+    let endpoint = Endpoint {
+        namespace_id: "verified-child".into(),
+        path: endpoint_path.into(),
+    };
+    let daemon = DaemonProcess::current_process(endpoint.clone(), Some(30)).unwrap();
+    let name = local_socket_name(&endpoint.path).unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .create_sync()
+        .expect("child helper must bind endpoint probe socket");
+    if let Some(ready_file) = std::env::var_os(CHILD_READY_FILE_ENV) {
+        fs::write(PathBuf::from(ready_file), b"ready").expect("child helper must write ready file");
+    }
+    let mut stream = listener
+        .accept()
+        .expect("child helper must accept endpoint probe");
+    handle_endpoint_probe(&mut stream, &daemon).expect("child helper must answer endpoint probe");
+}
+
+fn wait_for_ready_file(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("child helper did not report endpoint readiness at {path:?}");
 }
 
 impl Drop for ChildProcess {
@@ -278,4 +455,11 @@ fn parse_token_hex(hex: &str) -> [u8; HANDOFF_TOKEN_BYTES] {
 fn assert_valid_handle(handle: HANDLE) {
     assert!(!handle.is_null());
     assert_ne!(handle, INVALID_HANDLE_VALUE);
+}
+
+fn unique_suffix() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
 }
