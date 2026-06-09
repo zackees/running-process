@@ -24,6 +24,13 @@ Each row is machine-checked by
 values with GitHub Actions run URLs and artifact names only after the campaign
 has completed successfully.
 
+The release evidence run is the `security-fuzz` workflow dispatched with
+`fuzz_seconds=3600` or larger. The workflow runs one matrix job per fuzz target
+so all eight one-hour campaigns can complete in parallel. Each successful
+release-dispatch job uploads `release-fuzz-evidence-<target>`, which contains a
+run summary and the target corpus path. Record the workflow run URL and the
+matching per-target artifact name in the table below.
+
 | Target | minimum_seconds | release_run_url | corpus_or_artifact | status |
 |---|---:|---|---|---|
 | `fuzz_cache_manifest_decode` | 3600 | TBD | TBD | pending |

@@ -88,8 +88,23 @@ fn security_fuzz_workflow_has_required_ci_controls() {
     assert_yaml_key(&workflow, "workflow_dispatch");
     assert_contains(
         &workflow,
-        "path: crates/running-process/fuzz/corpus",
-        "workflow must cache the fuzz corpus path",
+        "strategy:",
+        "workflow must run fuzz targets as independent matrix jobs",
+    );
+    assert_contains(
+        &workflow,
+        "fail-fast: false",
+        "workflow matrix must keep collecting evidence after one target fails",
+    );
+    assert_contains(
+        &workflow,
+        "name: cargo-fuzz (${{ matrix.target }})",
+        "workflow job name must identify the matrix fuzz target",
+    );
+    assert_contains(
+        &workflow,
+        "path: crates/running-process/fuzz/corpus/${{ matrix.target }}",
+        "workflow must cache the fuzz corpus path per target",
     );
     assert_contains(
         &workflow,
@@ -98,8 +113,8 @@ fn security_fuzz_workflow_has_required_ci_controls() {
     );
     assert_contains(
         &workflow,
-        "path: crates/running-process/fuzz/artifacts",
-        "workflow must upload cargo-fuzz artifacts",
+        "path: crates/running-process/fuzz/artifacts/${{ matrix.target }}",
+        "workflow must upload cargo-fuzz artifacts per target",
     );
     assert_contains(
         &workflow,
@@ -108,13 +123,28 @@ fn security_fuzz_workflow_has_required_ci_controls() {
     );
     assert_contains(
         &workflow,
-        r#"FUZZ_SECONDS="${FUZZ_SECONDS:-30}""#,
+        r#"fuzz_seconds="${FUZZ_SECONDS:-30}""#,
         "pull_request fuzz runs must default to 30 seconds per target",
     );
     assert_contains(
         &workflow,
-        r#"FUZZ_SECONDS="${FUZZ_SECONDS:-1800}""#,
-        "scheduled and manual fuzz runs must default to 1800 seconds per target",
+        r#"fuzz_seconds="${fuzz_seconds:-3600}""#,
+        "workflow_dispatch fuzz runs must default to one hour per target",
+    );
+    assert_contains(
+        &workflow,
+        r#"fuzz_seconds="${FUZZ_SECONDS:-1800}""#,
+        "scheduled fuzz runs must default to 1800 seconds per target",
+    );
+    assert_contains(
+        &workflow,
+        r#"release_evidence=true"#,
+        "release dispatch runs must mark evidence uploads when fuzz_seconds is at least 3600",
+    );
+    assert_contains(
+        &workflow,
+        "name: release-fuzz-evidence-${{ matrix.target }}",
+        "successful release fuzz runs must upload per-target evidence artifacts",
     );
 
     let fuzz_run = workflow
@@ -124,6 +154,10 @@ fn security_fuzz_workflow_has_required_ci_controls() {
     assert!(
         fuzz_run.contains(r#"-max_total_time="${FUZZ_SECONDS}""#),
         "cargo-fuzz run must use -max_total_time from FUZZ_SECONDS: {fuzz_run}"
+    );
+    assert!(
+        fuzz_run.contains(r#""${{ matrix.target }}""#),
+        "cargo-fuzz run must execute exactly one matrix target per job: {fuzz_run}"
     );
     assert!(
         fuzz_run.contains("-timeout=30"),
@@ -208,42 +242,47 @@ fn toml_string_assignment(line: &str, key: &str) -> Option<String> {
 
 fn workflow_fuzz_targets(workflow: &str) -> Vec<String> {
     let mut targets = Vec::new();
-    let mut in_array = false;
+    let mut in_target_list = false;
+    let mut target_indent = 0;
 
     for line in workflow.lines() {
         let trimmed = line.trim();
-        if !in_array {
-            let Some(rest) = trimmed.strip_prefix("targets=(") else {
+        if !in_target_list {
+            if trimmed != "target:" {
                 continue;
-            };
-            in_array = true;
-            if collect_bash_array_words(rest, &mut targets) {
-                return targets;
             }
+            in_target_list = true;
+            target_indent = indent_len(line);
             continue;
         }
 
-        if collect_bash_array_words(trimmed, &mut targets) {
-            return targets;
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let indent = indent_len(line);
+        if indent <= target_indent && !trimmed.starts_with("- ") {
+            break;
+        }
+
+        let Some(target) = trimmed.strip_prefix("- ") else {
+            continue;
+        };
+        let target = target.trim_matches(|ch| ch == '\'' || ch == '"');
+        if !target.is_empty() {
+            targets.push(target.to_owned());
         }
     }
 
-    panic!("security-fuzz workflow must declare a targets=(...) bash array");
+    if targets.is_empty() {
+        panic!("security-fuzz workflow must declare a matrix.target list");
+    }
+
+    targets
 }
 
-fn collect_bash_array_words(text: &str, targets: &mut Vec<String>) -> bool {
-    let text = text.split('#').next().unwrap_or("").trim();
-    let done = text.contains(')');
-    let text = text.replace(')', " ");
-
-    for word in text.split_whitespace() {
-        let word = word.trim_matches(|ch| ch == '\'' || ch == '"');
-        if !word.is_empty() {
-            targets.push(word.to_owned());
-        }
-    }
-
-    done
+fn indent_len(line: &str) -> usize {
+    line.chars().take_while(|ch| *ch == ' ').count()
 }
 
 fn target_name_set(targets: &[FuzzTarget]) -> BTreeSet<String> {
@@ -323,13 +362,14 @@ mod tests {
     }
 
     #[test]
-    fn security_fuzz_workflow_parser_reads_bash_target_array() {
+    fn security_fuzz_workflow_parser_reads_matrix_target_list() {
         let targets = workflow_fuzz_targets(
             r#"
-            targets=(
-              fuzz_one
-              "fuzz_two"
-            )
+            strategy:
+              matrix:
+                target:
+                  - fuzz_one
+                  - "fuzz_two"
             "#,
         );
 

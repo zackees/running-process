@@ -64,6 +64,14 @@ fn fuzz_campaign_signoff_records_release_evidence_fields() {
         FUZZ_SIGNOFF_DOC.contains("security-fuzz` workflow run with `fuzz_seconds=3600`"),
         "signoff artifact must require a one-hour workflow-dispatch campaign"
     );
+    assert!(
+        FUZZ_SIGNOFF_DOC.contains("one matrix job per fuzz target"),
+        "signoff artifact must require matrixed per-target release evidence"
+    );
+    assert!(
+        FUZZ_SIGNOFF_DOC.contains("release-fuzz-evidence-<target>"),
+        "signoff artifact must name the per-target release evidence artifact convention"
+    );
 
     for field in REQUIRED_RELEASE_EVIDENCE_FIELDS {
         assert!(
@@ -93,8 +101,10 @@ fn security_fuzz_workflow_supports_one_hour_release_dispatch() {
         "fuzz_seconds:",
         "Use 3600 for v1 release signoff evidence.",
         r#"default: "3600""#,
-        r#"FUZZ_SECONDS="${{ inputs.fuzz_seconds }}""#,
-        r#"FUZZ_SECONDS="${FUZZ_SECONDS:-3600}""#,
+        r#"fuzz_seconds="${{ inputs.fuzz_seconds }}""#,
+        r#"fuzz_seconds="${fuzz_seconds:-3600}""#,
+        r#"if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${fuzz_seconds}" -ge 3600 ]]; then"#,
+        "name: release-fuzz-evidence-${{ matrix.target }}",
     ] {
         assert!(
             workflow.contains(needle),
