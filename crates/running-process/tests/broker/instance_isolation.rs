@@ -4,7 +4,6 @@ use std::fs;
 use std::path::Path;
 
 use prost::Message;
-use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::protocol::{
     hello_reply::Result as HelloReplyResult, BrokerIsolation, ErrorCode, Frame, FrameKind, Hello,
     PayloadEncoding, ServiceDefinition,
@@ -14,7 +13,7 @@ use running_process::broker::server::{
     HelloRequest, HelloRouter, PeerIdentity, ServiceDefinitionLoader,
 };
 
-use crate::backend_handle_common::current_daemon;
+use crate::backend_handle_common::{current_daemon, verified_backend_from_daemon};
 
 fn absolute_paths() -> (String, String) {
     let exe = std::env::current_exe().unwrap();
@@ -100,9 +99,7 @@ fn request() -> HelloRequest {
 fn registry_with_shared_backend() -> (BackendRegistry, String) {
     let daemon = current_daemon();
     let expected_pipe = daemon.ipc_endpoint.path.clone();
-    let handle =
-        BackendHandle::probe_with_service("zccache", "1.11.20", &daemon.ipc_endpoint, &daemon)
-            .unwrap();
+    let handle = verified_backend_from_daemon("zccache", "1.11.20", &daemon);
     let mut registry = BackendRegistry::new();
     registry.insert(BrokerInstanceKey::Shared, handle);
     (registry, expected_pipe)

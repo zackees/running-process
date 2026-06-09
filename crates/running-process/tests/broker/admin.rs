@@ -15,7 +15,6 @@ use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use serde_json::Value;
 
-use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::client::{send_admin_request, BrokerClientError};
 #[cfg(feature = "daemon")]
 use running_process::broker::lifecycle::CRASH_DUMP_DIR_ENV;
@@ -36,7 +35,7 @@ use running_process::broker::server::{
     ADMIN_PAYLOAD_PROTOCOL,
 };
 
-use crate::backend_handle_common::current_daemon;
+use crate::backend_handle_common::{current_daemon, verified_backend_from_daemon};
 
 fn snapshot() -> AdminSnapshot {
     AdminSnapshot {
@@ -127,9 +126,7 @@ fn metrics_text_contains_frozen_metric_names() {
 fn admin_snapshot_from_registry_includes_live_backend_rows() {
     let daemon = current_daemon();
     let expected_pipe = daemon.ipc_endpoint.path.clone();
-    let handle =
-        BackendHandle::probe_with_service("zccache", "1.11.20", &daemon.ipc_endpoint, &daemon)
-            .unwrap();
+    let handle = verified_backend_from_daemon("zccache", "1.11.20", &daemon);
     let mut registry = BackendRegistry::new();
     registry.insert(BrokerInstanceKey::Shared, handle);
 

@@ -19,10 +19,12 @@ use running_process::broker::protocol::{
 use running_process::broker::server::{
     build_hello_handler, ensure_service_definition_dir, local_socket_name,
     serve_launching_backends_with_launcher, serve_registered_backend, service_definition_path,
-    BackendLaunchError, BackendLaunchRequest, BackendLauncher, BrokerLaunchServeConfig,
-    BrokerServeConfig, ControlSocketConnectionLimit, PeerIdentity,
+    BackendLaunchError, BackendLaunchRequest, BackendLauncher, BrokerInstanceKey,
+    BrokerLaunchServeConfig, BrokerServeConfig, ControlSocketConnectionLimit, PeerIdentity,
 };
 use serde_json::Value;
+
+use crate::backend_handle_common::{spawn_endpoint_probe_once, verified_backend_from_daemon};
 
 fn absolute_paths() -> (String, String) {
     let exe = std::env::current_exe().unwrap();
@@ -125,6 +127,7 @@ fn frame_for_hello(request: &Hello) -> Frame {
 fn build_hello_handler_uses_service_definition_and_backend_registry() {
     let tmp = write_service_definition_dir();
     let backend_endpoint = unique_backend_endpoint();
+    let backend_probe = spawn_configured_backend_probe(&backend_endpoint);
     let config = serve_config(
         &tmp.path().join("services"),
         "unused-test-socket",
@@ -133,6 +136,7 @@ fn build_hello_handler_uses_service_definition_and_backend_registry() {
     );
 
     let handler = build_hello_handler(&config).unwrap();
+    backend_probe.join().unwrap().unwrap();
     let reply = handler.handle_frame(
         frame_for_hello(&hello(0)),
         PeerIdentity {
@@ -196,6 +200,7 @@ fn serve_registered_backend_round_trips_loaded_service_definition() {
     let tmp = write_service_definition_dir();
     let socket_name = unique_socket_name();
     let backend_endpoint = unique_backend_endpoint();
+    let backend_probe = spawn_configured_backend_probe(&backend_endpoint);
     let config = serve_config(
         &tmp.path().join("services"),
         socket_name.clone(),
@@ -214,6 +219,7 @@ fn serve_registered_backend_round_trips_loaded_service_definition() {
     let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
 
     server.join().unwrap().unwrap();
+    backend_probe.join().unwrap().unwrap();
     assert_eq!(
         FrameKind::try_from(response_frame.kind),
         Ok(FrameKind::Response)
@@ -234,6 +240,7 @@ fn serve_registered_backend_rereads_service_definition_for_accepted_hello() {
     let service_root = tmp.path().join("services");
     let socket_name = unique_socket_name();
     let backend_endpoint = unique_backend_endpoint();
+    let backend_probe = spawn_configured_backend_probe(&backend_endpoint);
     let config = serve_config(
         &service_root,
         socket_name.clone(),
@@ -255,6 +262,7 @@ fn serve_registered_backend_rereads_service_definition_for_accepted_hello() {
     let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
 
     server.join().unwrap().unwrap();
+    backend_probe.join().unwrap().unwrap();
     assert_eq!(
         FrameKind::try_from(response_frame.kind),
         Ok(FrameKind::Response)
@@ -360,6 +368,17 @@ fn assert_negotiated_backend(reply: HelloReply, expected_endpoint: &str) {
     }
 }
 
+fn spawn_configured_backend_probe(
+    backend_endpoint: &str,
+) -> thread::JoinHandle<std::io::Result<()>> {
+    let endpoint = Endpoint {
+        namespace_id: BrokerInstanceKey::Shared.id(),
+        path: backend_endpoint.into(),
+    };
+    let daemon = DaemonProcess::current_process(endpoint, Some(30)).unwrap();
+    spawn_endpoint_probe_once(daemon)
+}
+
 struct CurrentProcessLauncher {
     endpoint_path: String,
     launch_count: AtomicUsize,
@@ -389,12 +408,11 @@ impl BackendLauncher for CurrentProcessLauncher {
             path: self.endpoint_path.clone(),
         };
         let daemon = DaemonProcess::current_process(endpoint.clone(), Some(30))?;
-        Ok(BackendHandle::probe_with_service(
-            request.key.service_name.clone(),
-            request.key.service_version.clone(),
-            &endpoint,
+        Ok(verified_backend_from_daemon(
+            &request.key.service_name,
+            &request.key.service_version,
             &daemon,
-        )?)
+        ))
     }
 }
 

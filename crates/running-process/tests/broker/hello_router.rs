@@ -19,7 +19,7 @@ use running_process::broker::server::{
     SpawnCoordinator, TraceContext,
 };
 
-use crate::backend_handle_common::current_daemon;
+use crate::backend_handle_common::{current_daemon, verified_backend_from_daemon};
 
 fn absolute_paths() -> (String, String) {
     let exe = std::env::current_exe().unwrap();
@@ -101,9 +101,7 @@ fn request(service_name: &str, wanted_version: &str) -> HelloRequest {
 fn registry_with_backend(instance: BrokerInstanceKey) -> (BackendRegistry, String) {
     let daemon = current_daemon();
     let expected_pipe = daemon.ipc_endpoint.path.clone();
-    let handle =
-        BackendHandle::probe_with_service("zccache", "1.11.20", &daemon.ipc_endpoint, &daemon)
-            .unwrap();
+    let handle = verified_backend_from_daemon("zccache", "1.11.20", &daemon);
     let mut registry = BackendRegistry::new();
     registry.insert(instance, handle);
     (registry, expected_pipe)
@@ -120,7 +118,7 @@ fn current_backend_for(
         path: endpoint_path.into(),
     };
     let daemon = DaemonProcess::current_process(endpoint.clone(), Some(30)).unwrap();
-    BackendHandle::probe_with_service(service_name, service_version, &endpoint, &daemon).unwrap()
+    verified_backend_from_daemon(service_name, service_version, &daemon)
 }
 
 struct CurrentProcessLauncher {

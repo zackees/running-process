@@ -4,7 +4,7 @@ use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
 use running_process::broker::server::{BackendRegistry, BrokerInstanceKey};
 
-use crate::backend_handle_common::current_daemon;
+use crate::backend_handle_common::verified_current_backend;
 
 fn service_definition(service_name: &str, isolation: BrokerIsolation) -> ServiceDefinition {
     ServiceDefinition {
@@ -20,8 +20,7 @@ fn service_definition(service_name: &str, isolation: BrokerIsolation) -> Service
 }
 
 fn handle(service_name: &str, version: &str) -> BackendHandle {
-    let daemon = current_daemon();
-    BackendHandle::probe_with_service(service_name, version, &daemon.ipc_endpoint, &daemon).unwrap()
+    verified_current_backend(service_name, version)
 }
 
 #[test]
