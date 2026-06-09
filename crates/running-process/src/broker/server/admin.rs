@@ -15,6 +15,7 @@ use crate::broker::protocol::{
 
 use super::backend_registry::BackendRegistry;
 use super::connection::{bind_local_socket, BrokerConnectionError, LocalSocketCleanup};
+use super::service_def_loader::{service_definition_dir, SERVICE_DEF_DIR_ENV};
 use super::spawn_coordinator::{
     SpawnBudgetSnapshot, DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, DEFAULT_SPAWN_BUDGET_WINDOW,
 };
@@ -573,6 +574,12 @@ fn effective_config_json(snapshot: &AdminSnapshot) -> serde_json::Value {
             "max_hello_bytes": sourced_value(MAX_HELLO_BYTES, "protocol-v1"),
             "connections_open": sourced_value(snapshot.connections_open, "runtime"),
         },
+        "paths": {
+            "service_definition_dir": sourced_value(
+                service_definition_dir().display().to_string(),
+                service_definition_dir_source(),
+            ),
+        },
         "spawn_budget": {
             "default_attempts_per_window": sourced_value(DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, "default"),
             "default_window_ms": sourced_value(duration_ms(DEFAULT_SPAWN_BUDGET_WINDOW), "default"),
@@ -584,6 +591,14 @@ fn effective_config_json(snapshot: &AdminSnapshot) -> serde_json::Value {
             "redactions": sourced_value(diagnostic_redaction_names(), "schema-v1"),
         },
     })
+}
+
+fn service_definition_dir_source() -> &'static str {
+    if std::env::var_os(SERVICE_DEF_DIR_ENV).is_some() {
+        "env:RUNNING_PROCESS_SERVICE_DEF_DIR"
+    } else {
+        "platform-default"
+    }
 }
 
 fn diagnostic_bundle_entries_json(snapshot: &AdminSnapshot) -> Vec<serde_json::Value> {
