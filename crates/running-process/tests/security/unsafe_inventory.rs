@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
     UnsafeInventoryEntry {
         path: "src/broker/backend_lifecycle/verify_pid.rs",
-        unsafe_count: 16,
+        unsafe_count: 19,
     },
     UnsafeInventoryEntry {
         path: "src/broker/host_identity.rs",

@@ -162,6 +162,11 @@ Every broker unsafe-site count change is security-review relevant. Adding,
 removing, or moving broker `unsafe` usage requires updating the inventory and
 reviewing why the platform API boundary changed.
 
+The `backend_lifecycle/verify_pid.rs` inventory includes the Windows process
+path identity probe. That probe opens the target process with limited query
+rights, calls `QueryFullProcessImageNameW`, and closes the OS handle before the
+stored daemon executable path and SHA-256 are accepted.
+
 ## Isolation Modes
 
 | Mode | Security property |
