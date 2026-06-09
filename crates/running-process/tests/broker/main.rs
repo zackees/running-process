@@ -30,6 +30,8 @@ mod handoff_latency;
 mod handoff_token_mismatch;
 mod handoff_transport;
 mod handoff_under_load;
+#[cfg(windows)]
+mod handoff_windows_duplicate_handle;
 mod hello_concurrent;
 mod hello_handler;
 mod hello_rate_limit;

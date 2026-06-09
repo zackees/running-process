@@ -61,11 +61,12 @@ of relying on one OS to prove all transports. Each platform runs:
 
 ```text
 soldr cargo test -p running-process --test broker --features client handoff -- --nocapture
+soldr cargo test -p running-process --test broker --features client windows_duplicate_handle_passes_pipe_to_child_process -- --nocapture
 ```
 
 | Platform | Transport expectation | Acceptance evidence |
 |---|---|---|
-| Windows | `DuplicateHandle` enabled, `SCM_RIGHTS` disabled | `DUPLICATE_HANDLE_TRANSPORT_SUPPORTED` matches the Windows target; fallback tests prove permission, integrity, and ack-timeout failures stay silent reconnects. |
+| Windows | `DuplicateHandle` enabled, `SCM_RIGHTS` disabled | `DUPLICATE_HANDLE_TRANSPORT_SUPPORTED` matches the Windows target; fallback tests prove permission, integrity, and ack-timeout failures stay silent reconnects. `handoff_windows_duplicate_handle::windows_duplicate_handle_passes_pipe_to_child_process` duplicates a real pipe handle into a child process, closes the broker-owned read handle, and proves the child reads bytes while echoing the paired 128-bit handoff token. |
 | Linux | `SCM_RIGHTS` enabled, `DuplicateHandle` disabled | `SCM_RIGHTS_TRANSPORT_SUPPORTED` matches the Unix target; Unix transport tests pass a descriptor and 128-bit token through the handoff socket. |
 | macOS | `SCM_RIGHTS` enabled, `DuplicateHandle` disabled | The same Unix transport and fallback evidence must pass on macOS so the optimization does not rely on Linux-only socket behavior. |
 
