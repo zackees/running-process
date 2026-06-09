@@ -8,6 +8,8 @@ RUNNING_PROCESS_DISABLE=1
 
 Participating consumers read this variable before attempting broker discovery.
 When it is set to `1`, the consumer uses its direct daemon path.
+Rust consumers can use `running_process::broker::client::broker_disabled_by_env`
+to parse the shared contract and then select their own direct fallback path.
 
 ## Values
 

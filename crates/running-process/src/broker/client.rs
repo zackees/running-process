@@ -14,6 +14,29 @@ use crate::broker::server::{local_socket_name, ADMIN_PAYLOAD_PROTOCOL};
 const PROTOCOL_VERSION: u32 = 1;
 const CONTROL_PAYLOAD_PROTOCOL: u32 = 0;
 
+/// Canonical emergency escape hatch for participating broker consumers.
+pub const RUNNING_PROCESS_DISABLE_ENV: &str = "RUNNING_PROCESS_DISABLE";
+/// Value that disables broker usage and keeps the consumer on its direct path.
+pub const RUNNING_PROCESS_DISABLE_VALUE: &str = "1";
+
+/// Return whether the canonical broker escape hatch is enabled.
+///
+/// This helper only parses the shared environment contract. Consumers still
+/// own the direct fallback path they should use when this returns `true`.
+pub fn broker_disabled_by_env() -> Result<bool, BrokerDisableEnvError> {
+    let Some(value) = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV) else {
+        return Ok(false);
+    };
+    let value = value.to_string_lossy();
+    if value == RUNNING_PROCESS_DISABLE_VALUE {
+        Ok(true)
+    } else {
+        Err(BrokerDisableEnvError {
+            value: value.into_owned(),
+        })
+    }
+}
+
 /// Inputs for [`connect_to_backend`].
 #[derive(Clone, Debug)]
 pub struct ConnectBackendRequest<'a> {
@@ -162,8 +185,8 @@ pub fn send_admin_request(
     write_frame(&mut stream, &request_frame.encode_to_vec())?;
 
     let response_bytes = read_frame(&mut stream)?;
-    let response_frame = Frame::decode(response_bytes.as_slice())
-        .map_err(BrokerClientError::DecodeFrame)?;
+    let response_frame =
+        Frame::decode(response_bytes.as_slice()).map_err(BrokerClientError::DecodeFrame)?;
     validate_response_frame(
         &response_frame,
         ADMIN_PAYLOAD_PROTOCOL,
@@ -179,11 +202,9 @@ pub fn connect_local_socket(endpoint: &str) -> io::Result<interprocess::local_so
     LocalSocketStream::connect(name)
 }
 
-fn broker_hello(
-    request: &ConnectBackendRequest<'_>,
-) -> Result<Negotiated, BrokerClientError> {
-    let mut stream = connect_local_socket(request.broker_endpoint)
-        .map_err(BrokerClientError::BrokerConnect)?;
+fn broker_hello(request: &ConnectBackendRequest<'_>) -> Result<Negotiated, BrokerClientError> {
+    let mut stream =
+        connect_local_socket(request.broker_endpoint).map_err(BrokerClientError::BrokerConnect)?;
     let hello = request.hello();
     let request_frame = Frame {
         envelope_version: PROTOCOL_VERSION,
@@ -199,8 +220,8 @@ fn broker_hello(
     write_frame(&mut stream, &request_frame.encode_to_vec())?;
 
     let response_bytes = read_frame(&mut stream)?;
-    let response_frame = Frame::decode(response_bytes.as_slice())
-        .map_err(BrokerClientError::DecodeFrame)?;
+    let response_frame =
+        Frame::decode(response_bytes.as_slice()).map_err(BrokerClientError::DecodeFrame)?;
     validate_response_frame(
         &response_frame,
         CONTROL_PAYLOAD_PROTOCOL,
@@ -208,11 +229,13 @@ fn broker_hello(
     )?;
     let reply = HelloReply::decode(response_frame.payload.as_slice())
         .map_err(BrokerClientError::DecodeHelloReply)?;
-    match reply.result.ok_or(BrokerClientError::MissingHelloReplyResult)? {
+    match reply
+        .result
+        .ok_or(BrokerClientError::MissingHelloReplyResult)?
+    {
         HelloReplyResult::Negotiated(negotiated) => Ok(negotiated),
         HelloReplyResult::Refused(refused) => Err(BrokerClientError::Refused {
-            code: ErrorCode::try_from(refused.code)
-                .unwrap_or(ErrorCode::Unspecified),
+            code: ErrorCode::try_from(refused.code).unwrap_or(ErrorCode::Unspecified),
             reason: refused.reason,
             retry_after_ms: refused.retry_after_ms,
         }),
@@ -245,6 +268,14 @@ fn validate_response_frame(
         ));
     }
     Ok(())
+}
+
+/// Invalid value for the canonical broker disable variable.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("RUNNING_PROCESS_DISABLE must be unset or 1, got {value:?}")]
+pub struct BrokerDisableEnvError {
+    /// Value read from `RUNNING_PROCESS_DISABLE`.
+    pub value: String,
 }
 
 /// Errors produced by broker client helpers.
