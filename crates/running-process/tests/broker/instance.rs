@@ -24,6 +24,16 @@ fn pick_path(path: running_process::broker::lifecycle::PipePath) -> String {
         .unwrap()
 }
 
+fn assert_instance_path_contains_identity(path: &str, identity: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = identity;
+        assert!(path.ends_with(".sock"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    assert!(path.contains(identity));
+}
+
 #[test]
 fn shared_service_uses_shared_instance() {
     let key =
@@ -32,7 +42,8 @@ fn shared_service_uses_shared_instance() {
 
     assert_eq!(key, BrokerInstanceKey::Shared);
     assert_eq!(key.id(), "shared");
-    assert!(pick_path(key.pipe_path(USER_HASH).unwrap()).contains("shared"));
+    let path = pick_path(key.pipe_path(USER_HASH).unwrap());
+    assert_instance_path_contains_identity(&path, "shared");
 }
 
 #[test]
@@ -48,7 +59,8 @@ fn private_service_uses_service_scoped_instance() {
         }
     );
     assert_eq!(key.id(), "private:zccache");
-    assert!(pick_path(key.pipe_path(USER_HASH).unwrap()).contains("zccache"));
+    let path = pick_path(key.pipe_path(USER_HASH).unwrap());
+    assert_instance_path_contains_identity(&path, "zccache");
 }
 
 #[test]
@@ -65,10 +77,7 @@ fn explicit_service_uses_named_instance() {
     );
     assert_eq!(key.id(), "explicit:ci-trusted");
     let path = pick_path(key.pipe_path(USER_HASH).unwrap());
-    #[cfg(target_os = "macos")]
-    assert!(path.ends_with(".sock"));
-    #[cfg(not(target_os = "macos"))]
-    assert!(path.contains("ci-trusted"));
+    assert_instance_path_contains_identity(&path, "ci-trusted");
 }
 
 #[test]
