@@ -201,6 +201,14 @@ fn config_json_includes_structured_effective_config() {
         config["spawn_budget"]["default_attempts_per_window"]["value"],
         3
     );
+    let service_def_dir = config["paths"]["service_definition_dir"]["value"]
+        .as_str()
+        .expect("service definition dir must render as a string");
+    assert!(!service_def_dir.is_empty());
+    assert!(matches!(
+        config["paths"]["service_definition_dir"]["source"].as_str(),
+        Some("platform-default" | "env:RUNNING_PROCESS_SERVICE_DEF_DIR")
+    ));
     assert_eq!(config["diagnostics"]["bundle_format"]["value"], "tar.gz");
     assert_eq!(config["diagnostics"]["redactions"]["value"][0], "home");
 }

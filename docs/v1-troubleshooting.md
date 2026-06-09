@@ -31,7 +31,8 @@ Checks:
 1. Verify the `.servicedef` file exists in the platform service directory.
 2. Verify the parent directory is current-user-only.
 3. Verify `service_name` matches `[a-z0-9-]{1,64}`.
-4. Run `config --effective --json` for the broker instance.
+4. Run `config --effective --json` for the broker instance and inspect
+   `paths.service_definition_dir`.
 
 ## Version Refused
 

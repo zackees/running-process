@@ -2,6 +2,8 @@
 
 use std::fs;
 use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -9,9 +11,12 @@ use std::os::unix::fs::PermissionsExt;
 use prost::Message;
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
 use running_process::broker::server::{
-    ensure_service_definition_dir, service_definition_path, ServiceDefinitionError,
-    ServiceDefinitionLoader,
+    ensure_service_definition_dir, service_definition_dir, service_definition_path,
+    ServiceDefinitionError, ServiceDefinitionLoader, SERVICE_DEF_DIR_ENV,
 };
+
+#[cfg(windows)]
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn absolute_paths() -> (String, String) {
     let exe = std::env::current_exe().unwrap();
@@ -41,6 +46,37 @@ fn write_definition_for(root: &Path, service_name: &str, definition: &ServiceDef
     fs::write(path, definition.encode_to_vec()).unwrap();
 }
 
+#[cfg(windows)]
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+#[cfg(windows)]
+impl EnvVarGuard {
+    fn remove(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
+
+    fn set_path(key: &'static str, value: &Path) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 #[test]
 fn loader_reads_valid_service_definition() {
     let tmp = tempfile::tempdir().unwrap();
@@ -53,6 +89,40 @@ fn loader_reads_valid_service_definition() {
     assert_eq!(loaded.service_name, "zccache");
     assert_eq!(loaded.min_version, "1.10.0");
     assert_eq!(loaded.version_allow_list, vec!["1.11.20"]);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_default_service_definition_dir_uses_roaming_appdata_services() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _override = EnvVarGuard::remove(SERVICE_DEF_DIR_ENV);
+    let appdata = PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA must be set"));
+
+    assert_eq!(
+        service_definition_dir(),
+        appdata.join("running-process").join("services")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_service_definition_dir_override_is_private_and_loadable() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("overridden-services");
+    let _override = EnvVarGuard::set_path(SERVICE_DEF_DIR_ENV, &root);
+
+    let default_root = service_definition_dir();
+    ensure_service_definition_dir(&default_root).unwrap();
+    write_definition_for(&default_root, "zccache", &service_definition());
+
+    let loaded = ServiceDefinitionLoader::default_root()
+        .lookup_or_reload("zccache")
+        .unwrap();
+
+    assert_eq!(default_root, root);
+    assert_eq!(loaded.service_name, "zccache");
+    assert_eq!(loaded.min_version, "1.10.0");
 }
 
 #[test]
