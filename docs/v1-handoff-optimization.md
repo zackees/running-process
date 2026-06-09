@@ -69,6 +69,25 @@ soldr cargo test -p running-process --test broker --features client handoff -- -
 | Linux | `SCM_RIGHTS` enabled, `DuplicateHandle` disabled | `SCM_RIGHTS_TRANSPORT_SUPPORTED` matches the Unix target; Unix transport tests pass a descriptor and 128-bit token through the handoff socket. |
 | macOS | `SCM_RIGHTS` enabled, `DuplicateHandle` disabled | The same Unix transport and fallback evidence must pass on macOS so the optimization does not rely on Linux-only socket behavior. |
 
+## End-to-End Acceptance Evidence
+
+`handoff_end_to_end_acceptance` pins the platform-neutral success contract that
+Phase 6 must preserve once the production client/broker/backend path is wired:
+
+- `HandoffFallbackState` must allow an enabled backend to attempt handoff.
+- `DuplicateHandleSuccess` and `ScmRightsSuccess` must carry the same 128-bit
+  token that the backend is expecting.
+- `accept_handed_off` must accept each transport payload exactly once, consume
+  the pending token, and reject replay with `TokenNotPending`.
+- `TokenMismatch` must reject the transport payload, leave the pending token
+  retryable, and map the broker attempt to the existing silent reconnect
+  fallback.
+
+This is acceptance evidence for the handoff control contract. It does not close
+Phase 6 by itself; final acceptance still requires real client-to-broker-to-backend
+smoke evidence for Windows `DuplicateHandle`, Linux/macOS `SCM_RIGHTS`, and
+measured latency against the reconnect fallback.
+
 ## Fallback Triggers
 
 The broker returns the baseline `backend_pipe` path when:
