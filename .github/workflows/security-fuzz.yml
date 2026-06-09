@@ -10,6 +10,11 @@ on:
   schedule:
     - cron: "17 9 * * *"
   workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "Seconds per fuzz target. Use 3600 for v1 release signoff evidence."
+        required: false
+        default: "3600"
 
 jobs:
   cargo-fuzz:
@@ -44,6 +49,9 @@ jobs:
 
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             FUZZ_SECONDS="${FUZZ_SECONDS:-30}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            FUZZ_SECONDS="${{ inputs.fuzz_seconds }}"
+            FUZZ_SECONDS="${FUZZ_SECONDS:-3600}"
           else
             FUZZ_SECONDS="${FUZZ_SECONDS:-1800}"
           fi

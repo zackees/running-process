@@ -12,6 +12,7 @@ mod cve_dbus_2023_34969;
 mod cve_sccache_2023_1521;
 mod deferred_runtime_surfaces;
 mod dependency_surface;
+mod fuzz_campaign_signoff;
 mod manifest_tamper_detection;
 mod no_network_dependencies;
 mod pipe_name_validation;

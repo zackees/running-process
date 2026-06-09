@@ -167,6 +167,16 @@ path identity probe. That probe opens the target process with limited query
 rights, calls `QueryFullProcessImageNameW`, and closes the OS handle before the
 stored daemon executable path and SHA-256 are accepted.
 
+## Fuzz Campaign And Reviewer Signoff
+
+The v1 release gate requires one-hour fuzz campaign evidence for every
+`cargo-fuzz` target plus explicit security reviewer signoff. The required
+artifact format is published in `docs/v1-fuzz-campaign-signoff.md`, and
+security tests compare its target matrix with `crates/running-process/fuzz`.
+
+#241 cannot close until that artifact records successful release-candidate fuzz
+runs, audit and regression evidence, and an approved reviewer decision.
+
 ## Isolation Modes
 
 | Mode | Security property |
