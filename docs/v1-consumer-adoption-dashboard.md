@@ -3,55 +3,54 @@
 This dashboard mirrors the cross-consumer tracker in
 [#242](https://github.com/zackees/running-process/issues/242) for repo-local
 documentation. The consumer tracker issues remain the source of truth; this
-document intentionally records no milestone as complete until those trackers
-are updated.
+document records the current narrowed-regime status from those trackers.
 
 ## Consumers
 
 | Consumer | Tracker issue | Adoption summary |
 |---|---|---|
-| soldr-daemon | [zackees/soldr#718](https://github.com/zackees/soldr/issues/718) | Recommended first adopter. soldr already uses prost payloads, so adoption focuses on broker discovery, `BackendHandle`, `.servicedef` packaging, broker-client wiring, and rollout discipline. |
-| zccache | [zackees/zccache#698](https://github.com/zackees/zccache/issues/698) | High-traffic consumer. zccache keeps its direct bincode path during transition while adding the prost v1 broker path and coordinated default-on rollout. The current prost slice covers control-plane requests and responses, including `Clear` / `Cleared`, but the full request family migration is still open. |
-| clud | [zackees/clud#308](https://github.com/zackees/clud/issues/308) | Migrates from the legacy JSON direct path to the prost v1 broker path. Framed prost is now the default daemon wire when `CLUD_DAEMON_WIRE` is unset or empty, with `CLUD_DAEMON_WIRE=json` retained as the explicit fallback. |
-| fbuild | [FastLED/fbuild#510](https://github.com/FastLED/fbuild/issues/510) | External consumer tracker in `FastLED/fbuild`. The first adoption work records the current daemon, wire, cache, and rollback inventory before changing runtime behavior. |
+| soldr-daemon | [zackees/soldr#718](https://github.com/zackees/soldr/issues/718) (closed minimal) | Minimal current-regime path is merged through soldr#721/#722/#723. Active `BackendHandle` probing, local `.servicedef` install, and `RUNNING_PROCESS_DISABLE=1` fallback are present; package/postinstall install, `connect_to_backend`, broad matrix, lint/dylint, and rollout remain deferred. |
+| zccache | [zackees/zccache#698](https://github.com/zackees/zccache/issues/698) (closed minimal) | Minimal current-regime path is merged through zccache#708/#709. Direct daemon identity probing uses `BackendHandle` when identity is available, and `RUNNING_PROCESS_DISABLE=1` keeps direct IPC fallback; package `.servicedef`, full broker client, published-crate/full-matrix evidence, and full prost/Frame migration remain deferred. |
+| clud | [zackees/clud#308](https://github.com/zackees/clud/issues/308) (closed minimal) | Current-regime clud work is diagnostics-only. clud#319 reports direct daemon fallback, previews the canonical `clud.servicedef` path, and explicitly reports broker client wiring as deferred. |
+| fbuild | [FastLED/fbuild#510](https://github.com/FastLED/fbuild/issues/510) (closed minimal) | Minimal current-regime path is merged through fbuild#529/#530. fbuild has a service metadata/direct-fallback seam and diagnostics-only service-definition preview; active `BackendHandle`, real binary package install, `connect_to_backend`, and broad acceptance remain deferred. |
 
-## Current Wave Snapshot
+## Current Minimal-Regime Snapshot
 
 This section records the latest landed adoption evidence so the repo-local
 dashboard does not lag the #242 issue comments.
 
 | Item | Latest landed evidence | Dashboard impact |
 |---|---|---|
-| [#232 BackendHandle](https://github.com/zackees/running-process/issues/232) | [running-process#346](https://github.com/zackees/running-process/pull/346) added executable-path identity proof, then #232 was reopened because endpoint-response probing, downstream migration beyond scaffolding, and three-OS runtime signoff remain. | BackendHandle stays open for every consumer. The soldr scaffold is useful evidence, but not completion. |
-| [clud#316](https://github.com/zackees/clud/pull/316) | clud made framed prost the default daemon wire when `CLUD_DAEMON_WIRE` is unset or empty, while keeping `CLUD_DAEMON_WIRE=json` as the legacy JSON fallback. | clud wire migration advances, but broker-client integration, compatibility, perf, service definition, and rollout gates remain open. |
-| [zccache#705](https://github.com/zackees/zccache/pull/705) | zccache added live v16 prost `Clear` / `Cleared` support and routes `zccache clear` through prost-first selection with v15 bincode fallback. | zccache wire migration advances, but non-control request families, full enum conversion, compatibility, perf, service definition, and broker-client gates remain open. |
-| [#344 dependency surface](https://github.com/zackees/running-process/pull/344) | running-process added machine-checked dependency-surface documentation. | Security documentation evidence improved, but #241 still needs fuzz-campaign evidence and final reviewer signoff. |
-| [#345 handoff evidence](https://github.com/zackees/running-process/pull/345) | running-process added cross-OS handoff acceptance evidence tests and docs. | Phase 6 evidence improved, but #237 remains open for full end-to-end handoff rollout evidence. |
+| [zackees/soldr#721](https://github.com/zackees/soldr/pull/721) / [#722](https://github.com/zackees/soldr/pull/722) / [#723](https://github.com/zackees/soldr/pull/723) | soldr added active `BackendHandle` endpoint probing, local `soldr-daemon.servicedef` writing/install during direct daemon spawn, and `RUNNING_PROCESS_DISABLE=1` direct fallback. | soldr#718 is closed minimal; package/postinstall install coverage and broker-client wiring stay deferred. |
+| [zackees/zccache#708](https://github.com/zackees/zccache/pull/708) / [#709](https://github.com/zackees/zccache/pull/709) | zccache added the minimal `BackendHandle` daemon probe path and then made `RUNNING_PROCESS_DISABLE=1` bypass that probe for direct IPC fallback. | zccache#698 is closed minimal; published crate/full matrix, package `.servicedef`, `connect_to_backend`, and full prost/Frame migration stay deferred. |
+| [FastLED/fbuild#529](https://github.com/FastLED/fbuild/pull/529) / [#530](https://github.com/FastLED/fbuild/pull/530) | fbuild added a service metadata/direct-fallback seam, service-definition template stub, and diagnostics-only `fbuild daemon running-process --json` / `servicedef --json` preview. | FastLED/fbuild#510 is closed minimal; real binary install, active `BackendHandle`, and broker-client wiring stay deferred. |
+| [zackees/clud#319](https://github.com/zackees/clud/pull/319) | clud added diagnostics-only `clud daemon running-process --json` plus the `servicedef` alias, reporting direct daemon fallback and deferred broker client wiring. | zackees/clud#308 is closed minimal under the current regime; real broker adoption remains deferred. |
 
 ## Milestone Dashboard
 
-Status language matches #242 and stays conservative. Do not mark a cell
-complete here unless the corresponding consumer tracker has been updated.
+Status language matches #242 and records the current narrowed regime. "Closed
+minimal" means the consumer tracker was closed after the minimal working or
+diagnostic surface landed; it does not mean full v1 broker adoption is done.
 
 | Consumer | Tracker issue | BackendHandle | .servicedef | Broker client | Default-on | Escape-hatch removal |
 |---|---|---|---|---|---|---|
-| soldr-daemon | [zackees/soldr#718](https://github.com/zackees/soldr/issues/718) | Partial scaffold in soldr#719; still gated by reopened [#232](https://github.com/zackees/running-process/issues/232) | Open / not started | Open / not started; gated by [#235](https://github.com/zackees/running-process/issues/235) | Blocked on [#238](https://github.com/zackees/running-process/issues/238) | Blocked on [#239](https://github.com/zackees/running-process/issues/239) plus coordinated release wave |
-| zccache | [zackees/zccache#698](https://github.com/zackees/zccache/issues/698) | Open / not started; gated by reopened [#232](https://github.com/zackees/running-process/issues/232) | Open / not started | Partial prost control path through zccache#705; still gated by [#235](https://github.com/zackees/running-process/issues/235) | Blocked on [#238](https://github.com/zackees/running-process/issues/238) | Blocked on [#239](https://github.com/zackees/running-process/issues/239) plus coordinated release wave |
-| clud | [zackees/clud#308](https://github.com/zackees/clud/issues/308) | Open / not started; gated by reopened [#232](https://github.com/zackees/running-process/issues/232) | Open / not started | Partial prost default daemon wire via clud#316; still gated by [#235](https://github.com/zackees/running-process/issues/235) | Blocked on [#238](https://github.com/zackees/running-process/issues/238) | Blocked on [#239](https://github.com/zackees/running-process/issues/239) plus coordinated release wave |
-| fbuild | [FastLED/fbuild#510](https://github.com/FastLED/fbuild/issues/510) | Open / not started; gated by reopened [#232](https://github.com/zackees/running-process/issues/232) | Open / not started | Open / not started; gated by [#235](https://github.com/zackees/running-process/issues/235) | Blocked on [#238](https://github.com/zackees/running-process/issues/238) | Blocked on [#239](https://github.com/zackees/running-process/issues/239) plus coordinated release wave |
+| soldr-daemon | [zackees/soldr#718](https://github.com/zackees/soldr/issues/718) (closed minimal) | Active probe merged in [zackees/soldr#721](https://github.com/zackees/soldr/pull/721); release + 3-OS acceptance deferred | CLI install merged in [zackees/soldr#722](https://github.com/zackees/soldr/pull/722); package/postinstall auto-install deferred | `RUNNING_PROCESS_DISABLE=1` honored in [zackees/soldr#723](https://github.com/zackees/soldr/pull/723); `connect_to_backend` deferred | Deferred / stubbed on [#238](https://github.com/zackees/running-process/issues/238) | Deferred / stubbed on [#239](https://github.com/zackees/running-process/issues/239) |
+| zccache | [zackees/zccache#698](https://github.com/zackees/zccache/issues/698) (closed minimal) | Minimal `BackendHandle` daemon probe merged in [zackees/zccache#708](https://github.com/zackees/zccache/pull/708); published crate + full matrix deferred | Stubbed/deferred; no package servicedef yet | `RUNNING_PROCESS_DISABLE=1` honored in [zackees/zccache#709](https://github.com/zackees/zccache/pull/709); direct IPC fallback works; `connect_to_backend` deferred | Deferred / stubbed on [#238](https://github.com/zackees/running-process/issues/238) | Deferred / stubbed on [#239](https://github.com/zackees/running-process/issues/239) |
+| clud | [zackees/clud#308](https://github.com/zackees/clud/issues/308) (closed minimal) | Diagnostics-only direct daemon fallback merged in [zackees/clud#319](https://github.com/zackees/clud/pull/319); `BackendHandle` deferred | Diagnostics preview for canonical `clud.servicedef` merged in [zackees/clud#319](https://github.com/zackees/clud/pull/319); binary/package install deferred | [zackees/clud#319](https://github.com/zackees/clud/pull/319) reports `broker_client_wired: false` and direct fallback; `connect_to_backend` deferred | Deferred / stubbed on [#238](https://github.com/zackees/running-process/issues/238) | Deferred / stubbed on [#239](https://github.com/zackees/running-process/issues/239) |
+| fbuild | [FastLED/fbuild#510](https://github.com/FastLED/fbuild/issues/510) (closed minimal) | Minimal direct-fallback seam merged in [FastLED/fbuild#529](https://github.com/FastLED/fbuild/pull/529); active `BackendHandle` probe deferred | Template stub merged in [FastLED/fbuild#529](https://github.com/FastLED/fbuild/pull/529); diagnostics preview merged in [FastLED/fbuild#530](https://github.com/FastLED/fbuild/pull/530); binary package install deferred | Diagnostics-only direct fallback in [FastLED/fbuild#530](https://github.com/FastLED/fbuild/pull/530); `connect_to_backend` deferred until stable broker APIs are worth pinning | Deferred / stubbed on [#238](https://github.com/zackees/running-process/issues/238) | Deferred / stubbed on [#239](https://github.com/zackees/running-process/issues/239) |
 
 ## Dependency Gates
 
 | Gate | Milestone | Dashboard rule |
 |---|---|---|
-| [#232 Phase 2.5 BackendHandle](https://github.com/zackees/running-process/issues/232) | BackendHandle | Reopened after #346; consumers stay open until endpoint-response identity probing, downstream migrations, and three-OS runtime signoff prove completion. |
-| [#235 Phase 4 broker](https://github.com/zackees/running-process/issues/235) | Broker client | Consumers stay open until they wire the broker client helper and its Hello-skip plus broker fallback behavior. |
-| [#238 Phase 7 rollout](https://github.com/zackees/running-process/issues/238) | Default-on | Default-on stays blocked until the phase 7 rollout gates are green for each consumer. |
-| [#239 Phase 8 escape-hatch removal](https://github.com/zackees/running-process/issues/239) | Escape-hatch removal | Escape-hatch removal stays blocked until the coordinated phase 8 release wave across all four consumers. |
+| [#232 Phase 2.5 BackendHandle](https://github.com/zackees/running-process/issues/232) | BackendHandle | Minimal consumer slices landed where useful; full downstream migration and three-OS runtime signoff remain deferred. |
+| [#235 Phase 4 broker](https://github.com/zackees/running-process/issues/235) | Broker client | Consumers record direct fallback or diagnostics-only status; `connect_to_backend` and Hello-skip wiring remain deferred. |
+| [#238 Phase 7 rollout](https://github.com/zackees/running-process/issues/238) | Default-on | Default-on rollout is explicitly deferred under the current minimal regime. |
+| [#239 Phase 8 escape-hatch removal](https://github.com/zackees/running-process/issues/239) | Escape-hatch removal | Escape-hatch removal is explicitly deferred until a later coordinated release wave. |
 
-The `.servicedef` milestone remains open for every consumer until that
-consumer's installer or package ships a v1 service definition using the schema
-and platform locations documented in [v1 service definition](v1-service-definition.md).
+Full `.servicedef` package/install coverage remains deferred unless the
+consumer row above names a local CLI/template/diagnostic surface as already
+merged. Binary package install is not considered complete in this regime.
 
 ## Related Docs
 
