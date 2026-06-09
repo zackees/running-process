@@ -214,3 +214,71 @@ fn scm_rights_transport_reports_unsupported_off_unix() {
     assert_eq!(err, ScmRightsError::UnsupportedPlatform);
     assert!(err.is_fallback_safe());
 }
+
+#[cfg(windows)]
+#[test]
+fn duplicate_handle_transport_duplicates_real_pipe_handle() {
+    use running_process::broker::server::handoff::try_duplicate_handle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+
+    let mut read_pipe: HANDLE = std::ptr::null_mut();
+    let mut write_pipe: HANDLE = std::ptr::null_mut();
+    let created = unsafe { CreatePipe(&mut read_pipe, &mut write_pipe, std::ptr::null_mut(), 0) };
+    assert_ne!(created, 0, "CreatePipe must create a real pipe pair");
+    assert_valid_handle(read_pipe);
+    assert_valid_handle(write_pipe);
+
+    let attempt = DuplicateHandleAttempt::new(
+        WindowsHandleValue::new(read_pipe as usize),
+        std::process::id(),
+        token(0x66),
+    );
+    let duplicated = try_duplicate_handle(&attempt).expect("DuplicateHandle should succeed");
+
+    unsafe {
+        CloseHandle(read_pipe);
+    }
+
+    let payload = b"running-process handoff";
+    let mut written = 0;
+    let write_ok = unsafe {
+        WriteFile(
+            write_pipe,
+            payload.as_ptr().cast(),
+            payload.len() as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(write_ok, 0, "WriteFile must write through the pipe");
+    assert_eq!(written as usize, payload.len());
+    unsafe {
+        CloseHandle(write_pipe);
+    }
+
+    let duplicated_handle = duplicated.duplicated_handle.get() as HANDLE;
+    let mut buffer = [0u8; 64];
+    let mut bytes_read = 0;
+    let read_ok = unsafe {
+        ReadFile(
+            duplicated_handle,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+            &mut bytes_read,
+            std::ptr::null_mut(),
+        )
+    };
+    unsafe {
+        CloseHandle(duplicated_handle);
+    }
+
+    assert_ne!(read_ok, 0, "ReadFile must read from the duplicated handle");
+    assert_eq!(&buffer[..bytes_read as usize], payload);
+
+    fn assert_valid_handle(handle: HANDLE) {
+        assert!(!handle.is_null());
+        assert_ne!(handle, INVALID_HANDLE_VALUE);
+    }
+}
