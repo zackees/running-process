@@ -11,9 +11,11 @@ use std::os::unix::fs::PermissionsExt;
 use prost::Message;
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
 use running_process::broker::server::{
-    ensure_service_definition_dir, service_definition_dir, service_definition_path,
-    ServiceDefinitionError, ServiceDefinitionLoader, SERVICE_DEF_DIR_ENV,
+    ensure_service_definition_dir, service_definition_path, ServiceDefinitionError,
+    ServiceDefinitionLoader,
 };
+#[cfg(windows)]
+use running_process::broker::server::{service_definition_dir, SERVICE_DEF_DIR_ENV};
 
 #[cfg(windows)]
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
