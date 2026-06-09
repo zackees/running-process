@@ -12,6 +12,7 @@ const REQUIRED_V1_DOCS: &[&str] = &[
     "docs/v1-cache-manifest.md",
     "docs/v1-service-definition.md",
     "docs/v1-lifecycle-events.md",
+    "docs/v1-consumer-adoption-dashboard.md",
     "docs/consumer-adoption-clud.md",
     "docs/consumer-adoption-zccache.md",
     "docs/consumer-adoption-soldr.md",
@@ -54,6 +55,32 @@ const README_EXAMPLE_LINKS: &[&str] = &[
 #[test]
 fn required_v1_broker_docs_exist() {
     assert_paths_exist(REQUIRED_V1_DOCS);
+}
+
+#[test]
+fn consumer_adoption_dashboard_tracks_current_wave() {
+    let root = repo_root();
+    let dashboard_path = root.join("docs/v1-consumer-adoption-dashboard.md");
+    let dashboard = read(&dashboard_path);
+
+    assert_doc_contains_all(
+        &dashboard,
+        "docs/v1-consumer-adoption-dashboard.md",
+        &[
+            "running-process/pull/346",
+            "#232 was reopened",
+            "endpoint-response probing",
+            "clud/pull/316",
+            "CLUD_DAEMON_WIRE=json",
+            "legacy JSON fallback",
+            "zccache/pull/705",
+            "Clear` / `Cleared",
+            "running-process/pull/344",
+            "machine-checked dependency-surface",
+            "running-process/pull/345",
+            "cross-OS handoff acceptance evidence",
+        ],
+    );
 }
 
 #[test]
@@ -182,4 +209,18 @@ fn display_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+fn assert_doc_contains_all(text: &str, label: &str, required: &[&str]) {
+    let missing = required
+        .iter()
+        .copied()
+        .filter(|needle| !text.contains(needle))
+        .collect::<Vec<_>>();
+
+    assert!(
+        missing.is_empty(),
+        "{label} is missing current #242 adoption dashboard markers:\n{}",
+        missing.join("\n")
+    );
 }
