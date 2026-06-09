@@ -1,7 +1,8 @@
 //! Process identity verification for backend handles.
 
+use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::broker::backend_lifecycle::identity::{self, DaemonProcess};
 use crate::broker::host_identity;
@@ -24,7 +25,18 @@ pub fn verify_daemon_process(expected: &DaemonProcess) -> Result<ProcessHandle, 
     }
 
     let handle = ProcessHandle::open(expected.pid)?;
-    let exe_path = process_exe_path(expected.pid).unwrap_or_else(|_| expected.exe_path.clone());
+    let exe_path = process_exe_path(expected.pid).map_err(|source| VerifyPidError::ExePath {
+        pid: expected.pid,
+        source,
+    })?;
+    if !same_exe_path(&exe_path, &expected.exe_path) {
+        return Err(VerifyPidError::ExePathMismatch {
+            pid: expected.pid,
+            expected: expected.exe_path.clone(),
+            actual: exe_path,
+        });
+    }
+
     let actual_sha256 =
         identity::sha256_file(&exe_path).map_err(|source| VerifyPidError::ExeHash {
             pid: expected.pid,
@@ -84,6 +96,26 @@ pub enum VerifyPidError {
         path: PathBuf,
         /// Underlying I/O error.
         source: io::Error,
+    },
+    /// The executable path for the process could not be read.
+    #[error("failed to resolve executable path for pid {pid}: {source}")]
+    ExePath {
+        /// Process ID being verified.
+        pid: u32,
+        /// Underlying platform error.
+        source: io::Error,
+    },
+    /// The executable path did not match the manifest identity.
+    #[error(
+        "daemon executable path mismatch for pid {pid}: expected {expected:?}, actual {actual:?}"
+    )]
+    ExePathMismatch {
+        /// Process ID being verified.
+        pid: u32,
+        /// Executable path stored with the daemon identity.
+        expected: PathBuf,
+        /// Executable path reported by the operating system.
+        actual: PathBuf,
     },
     /// The executable hash did not match the manifest identity.
     #[error("daemon executable sha256 mismatch for pid {pid}")]
@@ -411,7 +443,34 @@ fn process_exe_path(pid: u32) -> Result<PathBuf, io::Error> {
         std::fs::read_link(format!("/proc/{pid}/exe"))
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut path = vec![0_u16; 32768];
+        let mut len = path.len() as u32;
+        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut len) };
+        let source = io::Error::last_os_error();
+        unsafe {
+            CloseHandle(handle);
+        }
+        if ok == 0 {
+            return Err(source);
+        }
+
+        path.truncate(len as usize);
+        Ok(PathBuf::from(String::from_utf16_lossy(&path)))
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
     {
         let mut system = sysinfo::System::new_all();
         system.refresh_processes();
@@ -425,4 +484,26 @@ fn process_exe_path(pid: u32) -> Result<PathBuf, io::Error> {
             "process executable path not found",
         ))
     }
+}
+
+fn same_exe_path(actual: &Path, expected: &Path) -> bool {
+    let actual = fs::canonicalize(actual).unwrap_or_else(|_| actual.to_path_buf());
+    let expected = fs::canonicalize(expected).unwrap_or_else(|_| expected.to_path_buf());
+
+    #[cfg(windows)]
+    {
+        comparable_windows_path(&actual) == comparable_windows_path(&expected)
+    }
+
+    #[cfg(not(windows))]
+    {
+        actual == expected
+    }
+}
+
+#[cfg(windows)]
+fn comparable_windows_path(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    let path = path.strip_prefix("//?/").unwrap_or(&path);
+    path.to_ascii_lowercase()
 }
