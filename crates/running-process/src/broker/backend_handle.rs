@@ -4,8 +4,8 @@
 //! daemons and direct-daemon consumers. A cache manifest records where a daemon
 //! is listening and which process identity it claimed when the manifest was
 //! written. Probing turns that persisted identity into an owned handle only
-//! after the endpoint tuple, current boot ID, process liveness, executable
-//! path, and executable digest still match.
+//! after the endpoint tuple, active IPC response, current boot ID, process
+//! liveness, executable path, and executable digest still match.
 //!
 //! Consumers should use this module at the boundary where they would otherwise
 //! trust a manifest, PID file, socket path, or named-pipe path from disk.
@@ -80,10 +80,11 @@ pub struct BackendHandle {
 impl BackendHandle {
     /// Connect to an existing backend by endpoint and verify process identity.
     ///
-    /// This first-pass probe verifies the endpoint identity tuple, current boot
+    /// This probe verifies the endpoint identity tuple, requires the endpoint
+    /// to answer the nonce-based IPC identity probe, then verifies current boot
     /// ID, process liveness, executable path, and executable SHA-256. It
-    /// returns `None` for stale manifests, dead PIDs, or mismatched daemon
-    /// binaries.
+    /// returns `None` for stale manifests, dead PIDs, mismatched daemon
+    /// binaries, or endpoints that do not answer as the expected backend.
     ///
     /// Use this when the caller already has service metadata elsewhere and only
     /// needs to know whether the daemon identity is still valid.
