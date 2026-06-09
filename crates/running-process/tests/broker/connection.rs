@@ -527,6 +527,83 @@ fn serve_local_socket_connections_refuses_malformed_hello_flood() {
     server.join().unwrap().unwrap();
 }
 
+#[test]
+fn serve_local_socket_connections_rate_limits_concurrent_hello_flood() {
+    const RATE_LIMIT: usize = 8;
+    const CLIENTS: usize = 32;
+
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let server = thread::spawn(move || {
+        let handler = handler().with_rate_limit(RATE_LIMIT as u32, Duration::from_secs(60));
+        serve_local_socket_connections(&server_socket, Arc::new(handler), CLIENTS)
+    });
+
+    let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let herd = Arc::new(Barrier::new(CLIENTS));
+    let mut clients = Vec::with_capacity(CLIENTS);
+    for index in 0..CLIENTS {
+        let name = name.clone();
+        let herd = Arc::clone(&herd);
+        clients.push(thread::spawn(move || {
+            let mut client = connect_with_retry(name);
+            herd.wait();
+
+            let mut request = hello(0);
+            request.request_id = format!("req-rate-limit-{index}");
+            let mut frame = frame_for_hello(&request);
+            frame.request_id = (index + 1) as u64;
+            write_frame(&mut client, &frame.encode_to_vec()).unwrap();
+
+            let response_bytes = read_frame(&mut client).unwrap();
+            let response_frame = Frame::decode(response_bytes.as_slice()).unwrap();
+            assert_eq!(
+                FrameKind::try_from(response_frame.kind),
+                Ok(FrameKind::Response)
+            );
+            assert_eq!(response_frame.request_id, (index + 1) as u64);
+            let reply = HelloReply::decode(response_frame.payload.as_slice()).unwrap();
+            match reply.result.unwrap() {
+                HelloReplyResult::Negotiated(negotiated) => Ok(negotiated.connection_id),
+                HelloReplyResult::Refused(refused) => {
+                    assert_eq!(
+                        ErrorCode::try_from(refused.code),
+                        Ok(ErrorCode::ErrorRateLimited)
+                    );
+                    assert_eq!(refused.reason, "Hello rate limit exceeded");
+                    assert!(
+                        refused.retry_after_ms > 0,
+                        "rate-limited clients should receive a retry hint"
+                    );
+                    Err(())
+                }
+            }
+        }));
+    }
+
+    let mut connection_ids = Vec::with_capacity(RATE_LIMIT);
+    let mut rate_limited = 0;
+    for client in clients {
+        match client.join().unwrap() {
+            Ok(connection_id) => connection_ids.push(connection_id),
+            Err(()) => rate_limited += 1,
+        }
+    }
+    server.join().unwrap().unwrap();
+
+    connection_ids.sort_unstable();
+    assert_eq!(
+        connection_ids,
+        (1..=RATE_LIMIT as u64).collect::<Vec<_>>(),
+        "only the per-peer rate-limit budget should negotiate"
+    );
+    assert_eq!(
+        rate_limited,
+        CLIENTS - RATE_LIMIT,
+        "every over-budget client should receive ERROR_RATE_LIMITED"
+    );
+}
+
 fn connect_with_retry(
     name: interprocess::local_socket::Name<'static>,
 ) -> interprocess::local_socket::Stream {
