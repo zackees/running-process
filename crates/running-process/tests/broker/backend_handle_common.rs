@@ -55,33 +55,62 @@ pub fn spawn_endpoint_probe_response_once(
     endpoint_path: String,
     response_daemon: DaemonProcess,
 ) -> thread::JoinHandle<io::Result<()>> {
+    let display_path = endpoint_path.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let listener = bind_test_socket(&endpoint_path)?;
-        ready_tx.send(()).unwrap();
+        let listener = bind_ready_test_socket(&endpoint_path, &ready_tx)?;
         let mut stream = listener.accept()?;
         handle_endpoint_probe(&mut stream, &response_daemon)
             .map_err(|err| io::Error::other(err.to_string()))?;
         cleanup_test_socket(&endpoint_path);
         Ok(())
     });
-    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    await_test_socket_ready(&ready_rx, &display_path);
     handle
 }
 
 pub fn spawn_endpoint_accept_then_close_once(
     endpoint_path: String,
 ) -> thread::JoinHandle<io::Result<()>> {
+    let display_path = endpoint_path.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let listener = bind_test_socket(&endpoint_path)?;
-        ready_tx.send(()).unwrap();
+        let listener = bind_ready_test_socket(&endpoint_path, &ready_tx)?;
         let _stream = listener.accept()?;
         cleanup_test_socket(&endpoint_path);
         Ok(())
     });
-    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    await_test_socket_ready(&ready_rx, &display_path);
     handle
+}
+
+/// Bind the test listener and report setup success/failure through the
+/// readiness channel so the spawning test panics with the real bind error
+/// instead of an opaque `Disconnected` from a dropped sender.
+fn bind_ready_test_socket(
+    socket_name: &str,
+    ready_tx: &mpsc::Sender<Result<(), String>>,
+) -> io::Result<interprocess::local_socket::Listener> {
+    match bind_test_socket(socket_name) {
+        Ok(listener) => {
+            ready_tx.send(Ok(())).unwrap();
+            Ok(listener)
+        }
+        Err(err) => {
+            let _ = ready_tx.send(Err(err.to_string()));
+            Err(err)
+        }
+    }
+}
+
+fn await_test_socket_ready(ready_rx: &mpsc::Receiver<Result<(), String>>, display_path: &str) {
+    match ready_rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("failed to bind backend-handle test socket {display_path}: {err}"),
+        Err(err) => {
+            panic!("timed out waiting for backend-handle test socket {display_path}: {err}")
+        }
+    }
 }
 
 pub fn impossible_pid() -> u32 {
@@ -100,9 +129,12 @@ fn test_endpoint_path() -> String {
 
     #[cfg(unix)]
     {
+        // Keep the leaf name short: macOS temp dirs live under deep
+        // `/var/folders/...` paths and `sun_path` tops out around 104
+        // bytes, so a verbose name makes the bind fail deterministically.
         std::env::temp_dir()
             .join(format!(
-                "running-process-backend-handle-test-{}-{}.sock",
+                "rpb-v1-bht-{}-{}.sock",
                 std::process::id(),
                 unique_suffix()
             ))

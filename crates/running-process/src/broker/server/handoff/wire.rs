@@ -2,7 +2,7 @@
 //! connection (#354, slice 6).
 //!
 //! Earlier slices abstracted delivery of the `(handle value, token)` pair
-//! behind [`HandoffDelivery`](super::HandoffDelivery) because the v1
+//! behind [`HandoffDelivery`] because the v1
 //! envelope reserved no backend→broker ACK frame. This module closes that
 //! gap with two envelope messages riding the existing v1 frame layout on a
 //! framed broker↔backend connection:
@@ -18,8 +18,8 @@
 //! how Hello (`0x00`), admin verbs (`0xAD01`), and endpoint probes
 //! (`0xB232`) share the envelope.
 //!
-//! [`WireHandoffDelivery`] implements [`HandoffDelivery`](super::HandoffDelivery)
-//! over any framed `Read + Write` stream (the same local-socket framing used
+//! [`WireHandoffDelivery`] implements [`HandoffDelivery`] over any framed
+//! `Read + Write` stream (the same local-socket framing used
 //! by every other broker connection). Any malformed frame, token-echo
 //! mismatch, correlation-id mismatch, refused ACK, or overdue ACK is
 //! reported as a delivery error; the orchestration in
