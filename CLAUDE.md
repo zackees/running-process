@@ -82,6 +82,7 @@ running-process-daemon start|stop|status|list|kill-zombies
 - `RUNNING_PROCESS_NO_TRACKING=1` — disable daemon IPC
 - `RUNNING_PROCESS_DAEMON_SCOPE=dev` — CWD-scoped daemon for test isolation
 - `RUST_LOG=debug` — daemon log level
+- `RUNNING_PROCESS_FAKE_BACKEND=<path>` — TEST-ONLY broker seam: `connect_to_backend` dials `<path>` directly, skipping broker negotiation entirely (never set in production; `RUNNING_PROCESS_DISABLE=1` takes precedence)
 
 ## CLIs
 

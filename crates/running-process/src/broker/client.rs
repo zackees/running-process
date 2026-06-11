@@ -26,6 +26,19 @@ pub const DEFAULT_HANDOFF_READY_TIMEOUT: Duration = Duration::from_secs(2);
 pub const RUNNING_PROCESS_DISABLE_ENV: &str = "RUNNING_PROCESS_DISABLE";
 /// Value that disables broker usage and keeps the consumer on its direct path.
 pub const RUNNING_PROCESS_DISABLE_VALUE: &str = "1";
+/// TEST-ONLY seam that points the client at a fake backend endpoint (#354).
+///
+/// When set and non-empty, [`connect_to_backend`] connects directly to the
+/// given endpoint (same local-socket transport as the Hello-skip cache path)
+/// and skips broker discovery, Hello negotiation, and version checks
+/// entirely. A connect failure is returned as-is — there is no fallback to
+/// the real broker path, so tests that set this seam stay deterministic.
+///
+/// **Never set this in production.** It bypasses every broker safety check.
+/// The canonical escape hatch [`RUNNING_PROCESS_DISABLE_ENV`]`=1` takes
+/// precedence: when the broker is disabled, the fake-backend seam is ignored
+/// too.
+pub const RUNNING_PROCESS_FAKE_BACKEND_ENV: &str = "RUNNING_PROCESS_FAKE_BACKEND";
 
 /// Return whether the canonical broker escape hatch is enabled.
 ///
@@ -152,7 +165,13 @@ fn client_capabilities() -> u64 {
 /// How [`connect_to_backend`] reached the returned backend endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendConnectionRoute {
-    /// Connected directly to a cached backend endpoint.
+    /// Connected directly to a known backend endpoint, skipping Hello.
+    ///
+    /// Used for the cached-endpoint fast path and, deliberately reused to
+    /// avoid a new enum variant (a semver hazard for exhaustive matches),
+    /// for the [`RUNNING_PROCESS_FAKE_BACKEND_ENV`] test seam. A
+    /// fake-backend connection is distinguishable because the caller set the
+    /// env var and [`BackendConnection::endpoint`] equals its value.
     HelloSkip,
     /// Asked the broker via Hello, then connected to the negotiated endpoint.
     BrokerNegotiated,
@@ -206,6 +225,13 @@ impl BackendConnection {
 
 /// Connect to a backend with the v1 Hello-skip fast path.
 ///
+/// TEST seam: when [`RUNNING_PROCESS_FAKE_BACKEND_ENV`] is set to a
+/// non-empty endpoint (and `RUNNING_PROCESS_DISABLE=1` is not engaged), the
+/// client connects directly to that endpoint and returns
+/// [`BackendConnectionRoute::HelloSkip`] with no negotiation. A connect
+/// failure is returned ([`BrokerClientError::BackendConnect`]) without
+/// falling back to the broker path. Never set the seam in production.
+///
 /// When `cached_backend_endpoint` is present and `wanted_version ==
 /// self_version`, this tries the cached backend endpoint first. On miss,
 /// or when the versions differ, it sends a broker `Hello`, reads the
@@ -222,6 +248,16 @@ impl BackendConnection {
 pub fn connect_to_backend(
     request: ConnectBackendRequest<'_>,
 ) -> Result<BackendConnection, BrokerClientError> {
+    if let Some(endpoint) = fake_backend_endpoint_from_env() {
+        let stream = connect_local_socket(&endpoint).map_err(BrokerClientError::BackendConnect)?;
+        return Ok(BackendConnection {
+            stream,
+            endpoint,
+            route: BackendConnectionRoute::HelloSkip,
+            negotiated: None,
+        });
+    }
+
     if request.can_hello_skip() {
         if let Some(endpoint) = request.cached_backend_endpoint {
             if let Ok(stream) = connect_local_socket(endpoint) {
@@ -262,6 +298,27 @@ pub fn connect_to_backend(
         route: BackendConnectionRoute::BrokerNegotiated,
         negotiated: Some(negotiated),
     })
+}
+
+/// Read the [`RUNNING_PROCESS_FAKE_BACKEND_ENV`] test seam, if active.
+///
+/// Returns `Some(endpoint)` only when the variable is set to a non-empty
+/// value AND the canonical disable hatch is not engaged
+/// (`RUNNING_PROCESS_DISABLE=1` takes precedence — a disabled broker ignores
+/// the fake seam too, mirroring the consumer-side disable contract). An
+/// invalid `RUNNING_PROCESS_DISABLE` value is a configuration error that
+/// [`broker_disabled_by_env`] surfaces to consumers before they reach
+/// `connect_to_backend`; it does not suppress the seam here.
+fn fake_backend_endpoint_from_env() -> Option<String> {
+    let value = std::env::var_os(RUNNING_PROCESS_FAKE_BACKEND_ENV)?;
+    let value = value.to_string_lossy();
+    if value.is_empty() {
+        return None;
+    }
+    if matches!(broker_disabled_by_env(), Ok(true)) {
+        return None;
+    }
+    Some(value.into_owned())
 }
 
 /// True when the broker negotiated handle passing for this connection: the

@@ -6,8 +6,8 @@ use std::thread;
 
 use interprocess::local_socket::prelude::*;
 use running_process::broker::client::{
-    broker_disabled_by_env, connect_to_backend, BackendConnectionRoute, ConnectBackendRequest,
-    RUNNING_PROCESS_DISABLE_ENV,
+    broker_disabled_by_env, connect_to_backend, BackendConnectionRoute, BrokerClientError,
+    ConnectBackendRequest, RUNNING_PROCESS_DISABLE_ENV, RUNNING_PROCESS_FAKE_BACKEND_ENV,
 };
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
 use running_process::broker::server::{
@@ -173,6 +173,102 @@ fn connect_to_backend_does_not_skip_when_versions_differ() {
     assert_eq!(connection.endpoint, backend_endpoint);
     drop(connection.stream);
     broker.join().unwrap().unwrap();
+    backend.join().unwrap().unwrap();
+}
+
+#[test]
+fn connect_to_backend_uses_fake_backend_seam_when_set() {
+    let _lock = DISABLE_ENV_LOCK.lock().unwrap();
+    let fake_backend = unique_socket_name("fake-backend");
+    let backend = spawn_accept_once(fake_backend.clone());
+    let _disable_guard = EnvVarGuard::remove(RUNNING_PROCESS_DISABLE_ENV);
+    let _fake_guard = EnvVarGuard::set(RUNNING_PROCESS_FAKE_BACKEND_ENV, &fake_backend);
+
+    // A cached endpoint that does not exist proves the seam takes
+    // precedence over both the Hello-skip cache and the broker path.
+    let mut request = ConnectBackendRequest::new("missing-broker", "zccache", "1.11.20", "1.11.20");
+    request.cached_backend_endpoint = Some("missing-cached-backend");
+    let connection = connect_to_backend(request).unwrap();
+
+    assert_eq!(connection.endpoint, fake_backend);
+    assert_eq!(connection.route, BackendConnectionRoute::HelloSkip);
+    assert!(connection.negotiated.is_none());
+    drop(connection.stream);
+    backend.join().unwrap().unwrap();
+}
+
+#[test]
+fn connect_to_backend_ignores_fake_backend_seam_when_broker_disabled() {
+    let _lock = DISABLE_ENV_LOCK.lock().unwrap();
+    let broker_endpoint = unique_socket_name("broker-fake-disabled");
+    let backend_endpoint = unique_socket_name("backend-fake-disabled");
+    let backend = spawn_accept_once(backend_endpoint.clone());
+    let broker = spawn_broker_once(broker_endpoint.clone(), backend_endpoint.clone());
+    let _disable_guard = EnvVarGuard::set(RUNNING_PROCESS_DISABLE_ENV, "1");
+    let _fake_guard = EnvVarGuard::set(RUNNING_PROCESS_FAKE_BACKEND_ENV, "missing-fake-backend");
+
+    let request = ConnectBackendRequest::new(&broker_endpoint, "zccache", "1.11.20", "1.11.20");
+    let connection = connect_to_backend(request).unwrap();
+
+    assert_eq!(connection.endpoint, backend_endpoint);
+    assert_eq!(connection.route, BackendConnectionRoute::BrokerNegotiated);
+    drop(connection.stream);
+    broker.join().unwrap().unwrap();
+    backend.join().unwrap().unwrap();
+}
+
+#[test]
+fn connect_to_backend_fake_backend_connect_error_does_not_fall_back() {
+    let _lock = DISABLE_ENV_LOCK.lock().unwrap();
+    let _disable_guard = EnvVarGuard::remove(RUNNING_PROCESS_DISABLE_ENV);
+    let _fake_guard = EnvVarGuard::set(RUNNING_PROCESS_FAKE_BACKEND_ENV, "missing-fake-backend");
+
+    let request = ConnectBackendRequest::new("missing-broker", "zccache", "1.11.20", "1.11.20");
+    let error = connect_to_backend(request).unwrap_err();
+
+    // BackendConnect (not BrokerConnect) proves the client tried the fake
+    // endpoint and returned its error instead of falling back to the broker.
+    assert!(
+        matches!(error, BrokerClientError::BackendConnect(_)),
+        "expected BackendConnect, got {error:?}"
+    );
+}
+
+#[test]
+fn connect_to_backend_ignores_empty_fake_backend_seam() {
+    let _lock = DISABLE_ENV_LOCK.lock().unwrap();
+    let broker_endpoint = unique_socket_name("broker-fake-empty");
+    let backend_endpoint = unique_socket_name("backend-fake-empty");
+    let backend = spawn_accept_once(backend_endpoint.clone());
+    let broker = spawn_broker_once(broker_endpoint.clone(), backend_endpoint.clone());
+    let _disable_guard = EnvVarGuard::remove(RUNNING_PROCESS_DISABLE_ENV);
+    let _fake_guard = EnvVarGuard::set(RUNNING_PROCESS_FAKE_BACKEND_ENV, "");
+
+    let request = ConnectBackendRequest::new(&broker_endpoint, "zccache", "1.11.20", "1.11.20");
+    let connection = connect_to_backend(request).unwrap();
+
+    assert_eq!(connection.endpoint, backend_endpoint);
+    assert_eq!(connection.route, BackendConnectionRoute::BrokerNegotiated);
+    drop(connection.stream);
+    broker.join().unwrap().unwrap();
+    backend.join().unwrap().unwrap();
+}
+
+#[test]
+fn connect_to_backend_ignores_unset_fake_backend_seam() {
+    let _lock = DISABLE_ENV_LOCK.lock().unwrap();
+    let cached_backend = unique_socket_name("cached-backend-no-fake");
+    let backend = spawn_accept_once(cached_backend.clone());
+    let _disable_guard = EnvVarGuard::remove(RUNNING_PROCESS_DISABLE_ENV);
+    let _fake_guard = EnvVarGuard::remove(RUNNING_PROCESS_FAKE_BACKEND_ENV);
+
+    let mut request = ConnectBackendRequest::new("missing-broker", "zccache", "1.11.20", "1.11.20");
+    request.cached_backend_endpoint = Some(&cached_backend);
+    let connection = connect_to_backend(request).unwrap();
+
+    assert_eq!(connection.endpoint, cached_backend);
+    assert_eq!(connection.route, BackendConnectionRoute::HelloSkip);
+    drop(connection.stream);
     backend.join().unwrap().unwrap();
 }
 
