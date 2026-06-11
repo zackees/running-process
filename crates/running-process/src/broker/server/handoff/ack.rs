@@ -4,14 +4,15 @@
 //! handoff complete: the backend must report that it adopted the passed
 //! handle before a broker-side deadline. This module owns that contract.
 //!
-//! Transport note: the v1 envelope reserves no backend-to-broker control
-//! frame for handoff ACKs, and adding one is out of scope for this slice.
-//! The ACK is therefore an in-process broker API — the backend acceptance
-//! path (`backend_lib::accept_handed_off`) consumes the one-time token, and
-//! the broker-side caller that observes that acceptance reports it through
-//! [`HandoffAckRegistry::acknowledge`]. Until an ACK arrives within the
-//! deadline, `Negotiated.backend_pipe` reconnect remains the correctness
-//! path; an expired handoff is abandoned and falls back to reconnect.
+//! Transport note: since #354 slice 6 the v1 envelope carries a
+//! backend-to-broker `HandoffAck` frame (see [`super::wire`]); the broker
+//! observes it through
+//! [`WireHandoffDelivery`](super::wire::WireHandoffDelivery) and reports it
+//! here through [`HandoffAckRegistry::acknowledge`]. The backend acceptance
+//! path (`backend_lib::accept_handed_off`) consumes the one-time token
+//! before the ACK is sent. Until an ACK arrives within the deadline,
+//! `Negotiated.backend_pipe` reconnect remains the correctness path; an
+//! expired handoff is abandoned and falls back to reconnect.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

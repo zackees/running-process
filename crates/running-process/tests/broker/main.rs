@@ -41,6 +41,7 @@ mod handoff_unix_orchestrate;
 mod handoff_windows_duplicate_handle;
 #[cfg(windows)]
 mod handoff_windows_orchestrate;
+mod handoff_wire;
 mod hello_concurrent;
 mod hello_handler;
 mod hello_rate_limit;
