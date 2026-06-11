@@ -204,6 +204,15 @@ impl HandoffTokenStore {
         Ok(())
     }
 
+    /// Revoke one pending token without consuming it.
+    ///
+    /// Returns true when the token was pending. The broker uses this when a
+    /// handoff is abandoned (backend ACK deadline expired) so a late backend
+    /// presentation of the token is rejected as not pending.
+    pub fn revoke(&mut self, token: &HandoffToken) -> bool {
+        self.pending.remove(token).is_some()
+    }
+
     /// Drop every expired token and return how many entries were removed.
     pub fn prune_expired(&mut self, now: Instant) -> usize {
         self.prune_expired_except(now, None)

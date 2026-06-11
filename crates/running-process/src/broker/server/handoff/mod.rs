@@ -4,6 +4,7 @@
 //! module owns the reusable verification pieces that both `DuplicateHandle`
 //! and `SCM_RIGHTS` paths will need before a handed-off connection is trusted.
 
+pub mod ack;
 pub mod fallback;
 pub mod handoff_token;
 pub mod latency;
@@ -11,6 +12,10 @@ pub mod pending;
 pub mod unix;
 pub mod windows;
 
+pub use ack::{
+    AcknowledgedHandoff, ExpiredHandoff, HandoffAckError, HandoffAckRegistry,
+    PendingHandoffBackend, DEFAULT_HANDOFF_ACK_DEADLINE,
+};
 pub use fallback::{
     HandoffAttemptDecision, HandoffAttemptFailure, HandoffAttemptInputs, HandoffFallbackDecision,
     HandoffFallbackPolicy, HandoffFallbackReason, HandoffFallbackState,
