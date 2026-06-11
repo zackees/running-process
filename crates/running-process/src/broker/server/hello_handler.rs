@@ -12,14 +12,14 @@ use std::time::{Duration, Instant};
 
 use prost::Message;
 
+use crate::broker::capabilities::{handoff_transport_available, CAP_HANDLE_PASSING};
 use crate::broker::lifecycle::names::{validate_service_name, validate_version, PipePathError};
 use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, ErrorCode, Frame, FrameKind, Hello, HelloReply,
     Negotiated, PayloadEncoding, Refused, ServiceDefinition,
 };
-use crate::broker::server::version_allow_list::{
-    check_version_allowed, VersionPolicyBlock,
-};
+use crate::broker::server::handoff::HandoffTokenStore;
+use crate::broker::server::version_allow_list::{check_version_allowed, VersionPolicyBlock};
 use crate::broker::server::TraceContext;
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -109,6 +109,7 @@ pub struct HelloHandler {
     backends: HashMap<String, RegisteredBackend>,
     next_connection_id: AtomicU64,
     rate_limiter: PeerRateLimiter,
+    handoff_tokens: Mutex<HandoffTokenStore>,
 }
 
 impl HelloHandler {
@@ -118,7 +119,19 @@ impl HelloHandler {
             backends: HashMap::new(),
             next_connection_id: AtomicU64::new(1),
             rate_limiter: PeerRateLimiter::default(),
+            handoff_tokens: Mutex::new(HandoffTokenStore::new()),
         }
+    }
+
+    /// Lock the pending handoff token store owned by this handler.
+    ///
+    /// The backend-side acceptance path
+    /// (`backend_lib::accept_handed_off`) consumes pending tokens from
+    /// this store exactly once.
+    pub fn handoff_token_store(&self) -> std::sync::MutexGuard<'_, HandoffTokenStore> {
+        self.handoff_tokens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Override the per-peer Hello rate limit.
@@ -176,20 +189,43 @@ impl HelloHandler {
         }
 
         let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
+        let handle_passed_token = self.issue_handoff_token(hello.client_capabilities);
+        let mut server_capabilities = backend.server_capabilities;
+        if !handle_passed_token.is_empty() {
+            server_capabilities |= CAP_HANDLE_PASSING;
+        }
         refused_or_negotiated(HelloReplyResult::Negotiated(Negotiated {
             negotiated_protocol: PROTOCOL_VERSION,
             daemon_version: backend.daemon_version.clone(),
             backend_pipe: backend.backend_pipe.clone(),
             warnings: Vec::new(),
-            server_capabilities: backend.server_capabilities,
+            server_capabilities,
             keepalive_interval_secs: if hello.client_keepalive_secs == 0 {
                 DEFAULT_KEEPALIVE_SECS
             } else {
                 hello.client_keepalive_secs
             },
-            handle_passed_token: Vec::new(),
+            handle_passed_token,
             connection_id,
         }))
+    }
+
+    /// Issue a pending handoff token when both sides support handle passing.
+    ///
+    /// Returns the 16 token bytes for `Negotiated.handle_passed_token`, or an
+    /// empty vec when the client did not advertise [`CAP_HANDLE_PASSING`], the
+    /// build lacks a handoff transport, or issuance failed (capacity or
+    /// randomness). Issuance failure silently downgrades to the reconnect
+    /// path: the reply omits both the token and the capability bit so the
+    /// client never expects a handoff that cannot happen.
+    fn issue_handoff_token(&self, client_capabilities: u64) -> Vec<u8> {
+        if client_capabilities & CAP_HANDLE_PASSING == 0 || !handoff_transport_available() {
+            return Vec::new();
+        }
+        match self.handoff_token_store().issue(Instant::now()) {
+            Ok(token) => token.into_bytes().to_vec(),
+            Err(_) => Vec::new(),
+        }
     }
 }
 
