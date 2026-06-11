@@ -5,6 +5,7 @@ use std::io;
 use interprocess::local_socket::prelude::*;
 use prost::Message;
 
+use crate::broker::capabilities::{handoff_transport_available, CAP_HANDLE_PASSING};
 use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, read_frame, write_frame, AdminReply, AdminRequest,
     ErrorCode, Frame, FrameKind, FramingError, Hello, HelloReply, Negotiated, PayloadEncoding,
@@ -92,7 +93,7 @@ impl<'a> ConnectBackendRequest<'a> {
             service_name: self.service_name.into(),
             wanted_version: self.wanted_version.into(),
             client_version: self.client_version.into(),
-            client_capabilities: 0,
+            client_capabilities: client_capabilities(),
             auth_token: Vec::new(),
             request_id: "hello".into(),
             connection_id: 0,
@@ -103,6 +104,20 @@ impl<'a> ConnectBackendRequest<'a> {
             capability_token: Vec::new(),
             client_keepalive_secs: self.client_keepalive_secs,
         }
+    }
+}
+
+/// Capability bitmap this client advertises in `Hello.client_capabilities`.
+///
+/// [`CAP_HANDLE_PASSING`] is advertised only when the build carries a
+/// platform handoff transport (Windows `DuplicateHandle`, Unix
+/// `SCM_RIGHTS`) — currently both, but kept explicit so an exotic target
+/// degrades cleanly to the reconnect path.
+fn client_capabilities() -> u64 {
+    if handoff_transport_available() {
+        CAP_HANDLE_PASSING
+    } else {
+        0
     }
 }
 
@@ -126,6 +141,23 @@ pub struct BackendConnection {
     pub route: BackendConnectionRoute,
     /// Broker negotiation metadata when the broker path was used.
     pub negotiated: Option<Negotiated>,
+}
+
+impl BackendConnection {
+    /// Pending one-time handoff token issued by the broker, if any.
+    ///
+    /// Non-empty only when both sides negotiated `CAP_HANDLE_PASSING`. In the
+    /// current slice the client never adopts a passed handle: even when a
+    /// token is present, [`connect_to_backend`] still connects via
+    /// `Negotiated.backend_pipe` and the route stays
+    /// [`BackendConnectionRoute::BrokerNegotiated`]. The token is exposed for
+    /// the future handle-adoption slice (#354).
+    pub fn handoff_token(&self) -> Option<&[u8]> {
+        self.negotiated
+            .as_ref()
+            .map(|negotiated| negotiated.handle_passed_token.as_slice())
+            .filter(|token| !token.is_empty())
+    }
 }
 
 /// Connect to a backend with the v1 Hello-skip fast path.

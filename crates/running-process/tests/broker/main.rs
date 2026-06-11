@@ -23,6 +23,7 @@ mod docs_index;
 mod framing;
 mod handoff_adopted_backend;
 mod handoff_backend_lib;
+mod handoff_capability;
 mod handoff_cross_os_acceptance;
 mod handoff_end_to_end_acceptance;
 mod handoff_fallback_perm_denied;
