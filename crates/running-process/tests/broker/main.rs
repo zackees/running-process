@@ -21,6 +21,7 @@ mod contrib_templates;
 mod docs_escape_hatch;
 mod docs_index;
 mod framing;
+mod golden_bytes;
 mod handoff_ack_deadline;
 mod handoff_adopted_backend;
 mod handoff_adoption;
