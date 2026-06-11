@@ -29,7 +29,8 @@ pub use handoff_token::{
     DEFAULT_MAX_PENDING_HANDOFF_TOKENS, HANDOFF_TOKEN_BYTES,
 };
 pub use latency::{
-    compare_handoff_latency, HandoffLatencyComparison, HandoffLatencyError, HandoffLatencySummary,
+    collect_latency_samples, compare_handoff_latency, summarize_latency_samples,
+    HandoffLatencyComparison, HandoffLatencyError, HandoffLatencySummary,
 };
 #[cfg(windows)]
 pub use orchestrate::execute_verified_windows_handoff;
