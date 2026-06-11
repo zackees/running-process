@@ -151,6 +151,23 @@ impl HandoffAckRegistry {
         })
     }
 
+    /// Abandon one pending handoff before its ACK deadline.
+    ///
+    /// Used when a broker-side step (handle duplication or delivery) fails
+    /// after issuance: the pending entry is removed and the one-time token
+    /// is revoked from `tokens` even when the entry was already gone, so a
+    /// late backend presentation of the token is always rejected. Returns
+    /// the backend identity when an entry was pending.
+    pub fn abandon(
+        &mut self,
+        tokens: &mut HandoffTokenStore,
+        token: &HandoffToken,
+    ) -> Option<PendingHandoffBackend> {
+        let entry = self.pending.remove(token);
+        tokens.revoke(token);
+        entry.map(|entry| entry.backend)
+    }
+
     /// Expire every pending handoff whose ACK deadline has passed.
     ///
     /// Each expired handoff has its one-time token revoked from `tokens`

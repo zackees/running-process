@@ -29,11 +29,14 @@ mod handoff_cross_os_acceptance;
 mod handoff_end_to_end_acceptance;
 mod handoff_fallback_perm_denied;
 mod handoff_latency;
+mod handoff_orchestrate;
 mod handoff_token_mismatch;
 mod handoff_transport;
 mod handoff_under_load;
 #[cfg(windows)]
 mod handoff_windows_duplicate_handle;
+#[cfg(windows)]
+mod handoff_windows_orchestrate;
 mod hello_concurrent;
 mod hello_handler;
 mod hello_rate_limit;
