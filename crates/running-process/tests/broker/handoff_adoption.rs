@@ -16,7 +16,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::prelude::*;
-use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use running_process::broker::capabilities::CAP_HANDLE_PASSING;
 use running_process::broker::client::{
@@ -28,7 +27,11 @@ use running_process::broker::protocol::{
 };
 use running_process::broker::server::handoff::handoff_ready_frame;
 use running_process::broker::server::{
-    handle_hello_connection, local_socket_name, HelloHandler, PeerIdentity, RegisteredBackend,
+    handle_hello_connection, HelloHandler, PeerIdentity, RegisteredBackend,
+};
+
+use crate::socket_common::{
+    await_test_socket_ready, bind_ready_test_socket, cleanup_test_socket, unique_socket_name,
 };
 
 const READY_TIMEOUT: Duration = Duration::from_millis(300);
@@ -100,10 +103,10 @@ fn spawn_broker(
     backend_endpoint: String,
     scenario: BrokerScenario,
 ) -> thread::JoinHandle<io::Result<()>> {
+    let display_name = broker_endpoint.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let listener = bind_test_socket(&broker_endpoint)?;
-        ready_tx.send(()).unwrap();
+        let listener = bind_ready_test_socket(&broker_endpoint, &ready_tx)?;
         let mut stream = listener.accept()?;
         let reply = handle_hello_connection(&mut stream, &handler(&backend_endpoint), peer())
             .map_err(|err| io::Error::other(err.to_string()))?;
@@ -156,7 +159,7 @@ fn spawn_broker(
         cleanup_test_socket(&broker_endpoint);
         Ok(())
     });
-    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    await_test_socket_ready(&ready_rx, &display_name);
     handle
 }
 
@@ -329,10 +332,10 @@ fn spawn_raw_negotiated_broker(
     handle_passed_token: Vec<u8>,
     server_capabilities: u64,
 ) -> thread::JoinHandle<io::Result<()>> {
+    let display_name = broker_endpoint.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let listener = bind_test_socket(&broker_endpoint)?;
-        ready_tx.send(()).unwrap();
+        let listener = bind_ready_test_socket(&broker_endpoint, &ready_tx)?;
         let mut stream = listener.accept()?;
         let _hello = running_process::broker::protocol::read_frame(&mut stream)
             .map_err(|err| io::Error::other(err.to_string()))?;
@@ -364,75 +367,19 @@ fn spawn_raw_negotiated_broker(
         cleanup_test_socket(&broker_endpoint);
         Ok(())
     });
-    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    await_test_socket_ready(&ready_rx, &display_name);
     handle
 }
 
 fn spawn_accept_once(socket_name: String) -> thread::JoinHandle<io::Result<()>> {
+    let display_name = socket_name.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let listener = bind_test_socket(&socket_name)?;
-        ready_tx.send(()).unwrap();
+        let listener = bind_ready_test_socket(&socket_name, &ready_tx)?;
         let _stream = listener.accept()?;
         cleanup_test_socket(&socket_name);
         Ok(())
     });
-    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    await_test_socket_ready(&ready_rx, &display_name);
     handle
-}
-
-fn bind_test_socket(socket_name: &str) -> io::Result<interprocess::local_socket::Listener> {
-    prepare_test_socket(socket_name)?;
-    let name = local_socket_name(socket_name)?;
-    ListenerOptions::new().name(name).create_sync()
-}
-
-fn prepare_test_socket(socket_name: &str) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        let path = std::path::Path::new(socket_name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[cfg(windows)]
-    let _ = socket_name;
-
-    Ok(())
-}
-
-fn cleanup_test_socket(socket_name: &str) {
-    #[cfg(unix)]
-    {
-        let _ = std::fs::remove_file(socket_name);
-    }
-
-    #[cfg(windows)]
-    let _ = socket_name;
-}
-
-#[cfg(windows)]
-fn unique_socket_name(label: &str) -> String {
-    format!("rpb-v1-{label}-{}-{}", std::process::id(), unique_suffix())
-}
-
-#[cfg(unix)]
-fn unique_socket_name(label: &str) -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-{label}-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn unique_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
 }

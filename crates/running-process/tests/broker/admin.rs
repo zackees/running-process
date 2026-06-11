@@ -10,8 +10,6 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "daemon")]
 use interprocess::local_socket::traits::Listener;
-#[cfg(feature = "daemon")]
-use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use serde_json::Value;
 
@@ -28,8 +26,6 @@ use running_process::broker::server::admin::{
     render_list_instances_json, render_metrics_text, render_readyz, render_status_json,
     AdminBackend, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION,
 };
-#[cfg(feature = "daemon")]
-use running_process::broker::server::local_socket_name;
 use running_process::broker::server::{
     serve_one_admin_socket, BackendKey, BackendRegistry, BrokerInstanceKey, SpawnBudgetSnapshot,
     ADMIN_PAYLOAD_PROTOCOL,
@@ -483,23 +479,11 @@ fn is_pending_bind_error(err: &std::io::Error) -> bool {
     )
 }
 
-#[cfg(windows)]
 fn unique_socket_name() -> String {
-    format!("rpb-v1-admin-{}-{}", std::process::id(), unique_suffix())
+    crate::socket_common::unique_socket_name("admin")
 }
 
-#[cfg(unix)]
-fn unique_socket_name() -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-admin-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
-}
-
+#[cfg(feature = "daemon")]
 fn unique_suffix() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -509,53 +493,18 @@ fn unique_suffix() -> u128 {
 
 #[cfg(feature = "daemon")]
 fn spawn_admin_socket_once(socket_name: String) -> thread::JoinHandle<io::Result<AdminReply>> {
+    let display_name = socket_name.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let listener = bind_test_socket(&socket_name)?;
-        ready_tx.send(()).unwrap();
+        let listener = crate::socket_common::bind_ready_test_socket(&socket_name, &ready_tx)?;
         let mut stream = listener.accept()?;
         let reply = handle_admin_connection(&mut stream, &snapshot())
             .map_err(|err| io::Error::other(err.to_string()))?;
-        cleanup_test_socket(&socket_name);
+        crate::socket_common::cleanup_test_socket(&socket_name);
         Ok(reply)
     });
-    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    crate::socket_common::await_test_socket_ready(&ready_rx, &display_name);
     handle
-}
-
-#[cfg(feature = "daemon")]
-fn bind_test_socket(socket_name: &str) -> io::Result<interprocess::local_socket::Listener> {
-    prepare_test_socket(socket_name)?;
-    let name = local_socket_name(socket_name)?;
-    ListenerOptions::new().name(name).create_sync()
-}
-
-#[cfg(feature = "daemon")]
-fn prepare_test_socket(socket_name: &str) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        let path = std::path::Path::new(socket_name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[cfg(windows)]
-    let _ = socket_name;
-
-    Ok(())
-}
-
-#[cfg(feature = "daemon")]
-fn cleanup_test_socket(socket_name: &str) {
-    #[cfg(unix)]
-    {
-        let _ = std::fs::remove_file(socket_name);
-    }
-
-    #[cfg(windows)]
-    let _ = socket_name;
 }
 
 #[cfg(feature = "daemon")]

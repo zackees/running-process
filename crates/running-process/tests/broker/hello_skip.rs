@@ -12,6 +12,8 @@ use running_process::broker::client::{
 };
 use running_process::broker::server::local_socket_name;
 
+use crate::socket_common::unique_socket_name;
+
 #[test]
 fn connect_to_backend_direct_connects_to_cached_endpoint_when_versions_match() {
     let cached_backend = unique_socket_name("backend");
@@ -88,28 +90,4 @@ fn cleanup_test_socket(socket_name: &str) {
 
     #[cfg(windows)]
     let _ = socket_name;
-}
-
-#[cfg(windows)]
-fn unique_socket_name(label: &str) -> String {
-    format!("rpb-v1-{label}-{}-{}", std::process::id(), unique_suffix())
-}
-
-#[cfg(unix)]
-fn unique_socket_name(label: &str) -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-{label}-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn unique_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
 }

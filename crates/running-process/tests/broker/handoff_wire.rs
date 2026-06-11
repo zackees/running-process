@@ -32,6 +32,8 @@ use running_process::broker::server::handoff::{
 };
 use running_process::broker::server::local_socket_name;
 
+use crate::socket_common::unique_socket_name;
+
 const BACKEND_PID: u32 = 4242;
 const SERVICE: &str = "zccache";
 const CORRELATION_ID: u64 = 0xC0FFEE;
@@ -107,30 +109,6 @@ fn cleanup_test_socket(socket_name: &str) {
 
     #[cfg(windows)]
     let _ = socket_name;
-}
-
-#[cfg(windows)]
-fn unique_socket_name(label: &str) -> String {
-    format!("rpb-v1-{label}-{}-{}", std::process::id(), unique_suffix())
-}
-
-#[cfg(unix)]
-fn unique_socket_name(label: &str) -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-{label}-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn unique_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
 }
 
 fn assert_fallback(

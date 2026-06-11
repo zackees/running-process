@@ -40,6 +40,8 @@ use running_process::broker::server::handoff::{
 };
 use running_process::broker::server::local_socket_name;
 
+use crate::socket_common::unique_socket_name;
+
 const WARMUP_ITERATIONS: usize = 5;
 const MEASURED_ITERATIONS: usize = 50;
 const CLIENT_PAYLOAD: &[u8] = b"running-process handoff latency probe";
@@ -175,22 +177,6 @@ fn cleanup_test_socket(socket_name: &str) {
 }
 
 #[cfg(windows)]
-fn unique_socket_name(label: &str) -> String {
-    format!("rpb-v1-{label}-{}-{}", std::process::id(), unique_suffix())
-}
-
-#[cfg(unix)]
-fn unique_socket_name(label: &str) -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-{label}-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
-}
-
 fn unique_suffix() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
