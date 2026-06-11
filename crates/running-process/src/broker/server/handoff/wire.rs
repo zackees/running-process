@@ -96,6 +96,35 @@ pub fn handoff_ack_frame(ack: &HandoffAck) -> Frame {
     }
 }
 
+/// Build the v1 frame relaying one completed handoff to the CLIENT (#354,
+/// slice 7).
+///
+/// After the backend ACKs a [`HandoffOffer`], the broker relays the
+/// backend's [`HandoffAck`] verbatim to the waiting client on the client's
+/// original broker connection — the same socket that carried Hello and is
+/// now backend-served. The relay rides the envelope as a broker→client push
+/// (`FRAME_KIND_EVENT`) under [`HANDOFF_PAYLOAD_PROTOCOL`], mirroring how
+/// the offer/ACK pair rides the broker↔backend control connection. The
+/// client matches the relay by the one-time token echo (the only handoff
+/// secret it knows); the correlation id is broker↔backend bookkeeping that
+/// the client does not validate.
+pub fn handoff_ready_frame(ack: &HandoffAck) -> Frame {
+    let mut payload = Vec::with_capacity(64);
+    ack.encode(&mut payload)
+        .expect("prost encoding HandoffAck into Vec cannot fail because Vec writes are infallible");
+    Frame {
+        envelope_version: PROTOCOL_VERSION,
+        kind: FrameKind::Event as i32,
+        payload_protocol: HANDOFF_PAYLOAD_PROTOCOL,
+        payload,
+        request_id: ack.correlation_id,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: String::new(),
+        tracestate: String::new(),
+    }
+}
+
 /// Validate the envelope fields shared by both handoff frame directions.
 ///
 /// Returns the expected-vs-actual mismatch as a static description so both
@@ -107,6 +136,7 @@ pub fn validate_handoff_frame(frame: &Frame, expected_kind: FrameKind) -> Result
     if FrameKind::try_from(frame.kind) != Ok(expected_kind) {
         return Err(match expected_kind {
             FrameKind::Request => "kind is not REQUEST",
+            FrameKind::Event => "kind is not EVENT",
             _ => "kind is not RESPONSE",
         });
     }

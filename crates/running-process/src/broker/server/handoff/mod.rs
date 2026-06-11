@@ -58,6 +58,6 @@ pub use windows::{
     DuplicateHandleSuccess, WindowsHandleValue, DUPLICATE_HANDLE_TRANSPORT_SUPPORTED,
 };
 pub use wire::{
-    handoff_ack_frame, handoff_offer_frame, validate_handoff_frame, WireHandoffDelivery,
-    HANDOFF_PAYLOAD_PROTOCOL,
+    handoff_ack_frame, handoff_offer_frame, handoff_ready_frame, validate_handoff_frame,
+    WireHandoffDelivery, HANDOFF_PAYLOAD_PROTOCOL,
 };
