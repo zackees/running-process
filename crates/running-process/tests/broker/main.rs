@@ -29,6 +29,7 @@ mod handoff_cross_os_acceptance;
 mod handoff_end_to_end_acceptance;
 mod handoff_fallback_perm_denied;
 mod handoff_latency;
+mod handoff_latency_e2e;
 mod handoff_orchestrate;
 mod handoff_token_mismatch;
 mod handoff_transport;

@@ -7,6 +7,32 @@
 
 use std::time::Duration;
 
+/// Collect one warmed-up latency sample set.
+///
+/// `sample` runs once per iteration and returns the duration of the region
+/// the caller timed (callers measure with [`std::time::Instant`], the
+/// process-wide monotonic clock, so wall-clock adjustments cannot skew the
+/// samples). The first `warmup` iterations run but are discarded so cold
+/// caches, lazy allocations, and first-connection costs do not distort the
+/// measured distribution.
+pub fn collect_latency_samples<F>(warmup: usize, iterations: usize, mut sample: F) -> Vec<Duration>
+where
+    F: FnMut() -> Duration,
+{
+    for _ in 0..warmup {
+        let _ = sample();
+    }
+    (0..iterations).map(|_| sample()).collect()
+}
+
+/// Summarize one measured sample set at the frozen P50/P99 percentiles.
+///
+/// Returns `None` when no samples were collected, so harnesses cannot
+/// report percentiles for an empty run.
+pub fn summarize_latency_samples(samples: &[Duration]) -> Option<HandoffLatencySummary> {
+    summarize_handoff_latencies(samples, EmptySampleSet::Handoff).ok()
+}
+
 /// Percentile summary for one handoff latency sample set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HandoffLatencySummary {

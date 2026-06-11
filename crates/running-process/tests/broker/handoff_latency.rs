@@ -2,10 +2,52 @@
 
 use std::time::Duration;
 
-use running_process::broker::server::handoff::{compare_handoff_latency, HandoffLatencyError};
+use running_process::broker::server::handoff::{
+    collect_latency_samples, compare_handoff_latency, summarize_latency_samples,
+    HandoffLatencyError,
+};
 
 fn micros(value: u64) -> Duration {
     Duration::from_micros(value)
+}
+
+#[test]
+fn collect_latency_samples_discards_warmup_and_keeps_measured_iterations() {
+    let mut calls = 0_u64;
+    let samples = collect_latency_samples(3, 5, || {
+        calls += 1;
+        micros(calls)
+    });
+
+    assert_eq!(calls, 8, "warmup iterations must still run the operation");
+    assert_eq!(
+        samples,
+        vec![micros(4), micros(5), micros(6), micros(7), micros(8)],
+        "warmup samples must be discarded, measured samples kept in order"
+    );
+}
+
+#[test]
+fn collect_latency_samples_with_zero_iterations_collects_nothing() {
+    let mut calls = 0_usize;
+    let samples = collect_latency_samples(2, 0, || {
+        calls += 1;
+        micros(1)
+    });
+
+    assert_eq!(calls, 2);
+    assert!(samples.is_empty());
+}
+
+#[test]
+fn summarize_latency_samples_reports_ordered_percentiles_or_nothing() {
+    assert_eq!(summarize_latency_samples(&[]), None);
+
+    let summary = summarize_latency_samples(&[micros(30), micros(10), micros(20)]).unwrap();
+    assert_eq!(summary.sample_count, 3);
+    assert_eq!(summary.p50, micros(20));
+    assert_eq!(summary.p99, micros(30));
+    assert!(summary.p50 <= summary.p99);
 }
 
 #[test]
