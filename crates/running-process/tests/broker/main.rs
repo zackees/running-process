@@ -68,6 +68,7 @@ mod proto_roundtrip;
 mod recovery_one_retry;
 mod serve;
 mod service_def_loader;
+mod socket_common;
 mod spawn_coordinator;
 mod spawn_wait;
 mod trace_propagation;

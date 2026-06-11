@@ -7,10 +7,9 @@
 use std::io;
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use interprocess::local_socket::prelude::*;
-use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use running_process::broker::backend_lib::{
     accept_handed_off, parse_handoff_token, HandedOffPayload, HandoffRejectionReason,
@@ -24,8 +23,11 @@ use running_process::broker::protocol::{
     PayloadEncoding, ServiceDefinition,
 };
 use running_process::broker::server::{
-    handle_hello_connection, local_socket_name, HelloHandler, PeerIdentity, RegisteredBackend,
-    HANDOFF_TOKEN_BYTES,
+    handle_hello_connection, HelloHandler, PeerIdentity, RegisteredBackend, HANDOFF_TOKEN_BYTES,
+};
+
+use crate::socket_common::{
+    await_test_socket_ready, bind_ready_test_socket, cleanup_test_socket, unique_socket_name,
 };
 
 const BASE_SERVER_CAPABILITIES: u64 = 1 << 8;
@@ -194,15 +196,15 @@ fn connect_to_backend_exposes_token_and_keeps_reconnect_route() {
 }
 
 fn spawn_accept_once(socket_name: String) -> thread::JoinHandle<io::Result<()>> {
+    let display_name = socket_name.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let listener = bind_test_socket(&socket_name)?;
-        ready_tx.send(()).unwrap();
+        let listener = bind_ready_test_socket(&socket_name, &ready_tx)?;
         let _stream = listener.accept()?;
         cleanup_test_socket(&socket_name);
         Ok(())
     });
-    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    await_test_socket_ready(&ready_rx, &display_name);
     handle
 }
 
@@ -210,10 +212,10 @@ fn spawn_broker_once(
     broker_endpoint: String,
     backend_endpoint: String,
 ) -> thread::JoinHandle<io::Result<()>> {
+    let display_name = broker_endpoint.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let listener = bind_test_socket(&broker_endpoint)?;
-        ready_tx.send(()).unwrap();
+        let listener = bind_ready_test_socket(&broker_endpoint, &ready_tx)?;
         let mut stream = listener.accept()?;
         let peer = PeerIdentity {
             pid: std::process::id(),
@@ -224,62 +226,6 @@ fn spawn_broker_once(
         cleanup_test_socket(&broker_endpoint);
         Ok(())
     });
-    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    await_test_socket_ready(&ready_rx, &display_name);
     handle
-}
-
-fn bind_test_socket(socket_name: &str) -> io::Result<interprocess::local_socket::Listener> {
-    prepare_test_socket(socket_name)?;
-    let name = local_socket_name(socket_name)?;
-    ListenerOptions::new().name(name).create_sync()
-}
-
-fn prepare_test_socket(socket_name: &str) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        let path = std::path::Path::new(socket_name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[cfg(windows)]
-    let _ = socket_name;
-
-    Ok(())
-}
-
-fn cleanup_test_socket(socket_name: &str) {
-    #[cfg(unix)]
-    {
-        let _ = std::fs::remove_file(socket_name);
-    }
-
-    #[cfg(windows)]
-    let _ = socket_name;
-}
-
-#[cfg(windows)]
-fn unique_socket_name(label: &str) -> String {
-    format!("rpb-v1-{label}-{}-{}", std::process::id(), unique_suffix())
-}
-
-#[cfg(unix)]
-fn unique_socket_name(label: &str) -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-{label}-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn unique_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
 }

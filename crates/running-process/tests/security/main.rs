@@ -20,6 +20,8 @@ mod pipe_squatting;
 mod security_audit_workflow;
 mod security_fuzz_workflow;
 mod service_name_validation;
+#[path = "../broker/socket_common.rs"]
+mod socket_common;
 mod unsafe_inventory;
 mod wanted_version_shell_injection;
 mod wanted_version_traversal;

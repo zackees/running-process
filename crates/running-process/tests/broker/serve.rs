@@ -444,51 +444,10 @@ fn is_pending_bind_error(err: &std::io::Error) -> bool {
     )
 }
 
-#[cfg(windows)]
 fn unique_socket_name() -> String {
-    format!(
-        "rpb-v1-serve-mode-{}-{}",
-        std::process::id(),
-        unique_suffix()
-    )
+    crate::socket_common::unique_socket_name("serve-mode")
 }
 
-#[cfg(unix)]
-fn unique_socket_name() -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-serve-mode-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
-}
-
-#[cfg(windows)]
 fn unique_backend_endpoint() -> String {
-    format!(
-        "rpb-v1-backend-endpoint-{}-{}",
-        std::process::id(),
-        unique_suffix()
-    )
-}
-
-#[cfg(unix)]
-fn unique_backend_endpoint() -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-backend-endpoint-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn unique_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
+    crate::socket_common::unique_socket_name("backend-endpoint")
 }

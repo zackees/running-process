@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::{fs, path::Path};
@@ -183,32 +183,8 @@ fn account_id(kind: &'static str) -> &'static str {
     }
 }
 
-#[cfg(windows)]
 fn unique_socket_name() -> String {
-    format!(
-        "rpb-v1-security-dbus-cleanup-{}-{}",
-        std::process::id(),
-        unique_suffix()
-    )
-}
-
-#[cfg(unix)]
-fn unique_socket_name() -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "rpb-v1-security-dbus-cleanup-{}-{}.sock",
-            std::process::id(),
-            unique_suffix()
-        ))
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn unique_suffix() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
+    crate::socket_common::unique_socket_name("security-dbus-cleanup")
 }
 
 fn cleanup_test_socket(socket_name: &str) {
