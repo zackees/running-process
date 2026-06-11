@@ -15,8 +15,7 @@ fn proto_root() -> PathBuf {
 
 fn proto(name: &str) -> String {
     let path = proto_root().join(name);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 #[test]
@@ -36,6 +35,11 @@ fn envelope_reserved_ranges_present() {
     assert!(
         src.contains("reserved 10 to 20"),
         "ErrorCode must reserve enum values 10..20"
+    );
+    // HandoffOffer and HandoffAck each reserve 5..10 (#354 slice 6)
+    assert!(
+        src.matches("reserved 5 to 10").count() >= 2,
+        "HandoffOffer and HandoffAck must each reserve field numbers 5..10"
     );
 }
 

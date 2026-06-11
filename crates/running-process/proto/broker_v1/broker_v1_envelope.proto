@@ -105,3 +105,30 @@ enum ErrorCode {
   ERROR_FD_PRESSURE = 9;            // reserved for v1.x SELF_DEMOTE
   reserved 10 to 20;
 }
+
+// Broker -> backend offer to adopt a handed-off client connection
+// (#354 slice 6). Rides Frame.payload with kind = FRAME_KIND_REQUEST
+// and payload_protocol = 0xD0FF (HANDOFF_PAYLOAD_PROTOCOL in code) on
+// the broker<->backend control connection, mirroring how Hello (0x00),
+// admin verbs (0xAD01), and endpoint probes (0xB232) ride the envelope.
+message HandoffOffer {
+  // Duplicated handle value as it appears in the BACKEND's handle table
+  // (Windows DuplicateHandle path). Zero on Unix, where the fd travels
+  // with the message via SCM_RIGHTS instead of by value.
+  uint64 handle_value = 1;
+  bytes token = 2;                  // 16-byte one-time handoff token
+  string service_name = 3;          // service the handoff was negotiated for
+  uint64 correlation_id = 4;        // request/connection correlation; echoed in HandoffAck
+  reserved 5 to 10;
+}
+
+// Backend -> broker acknowledgement of a HandoffOffer. Rides
+// Frame.payload with kind = FRAME_KIND_RESPONSE and
+// payload_protocol = 0xD0FF on the same control connection.
+message HandoffAck {
+  bytes token = 1;                  // echo of HandoffOffer.token
+  bool accepted = 2;                // true when the backend adopted the connection
+  string error_detail = 3;          // human-readable detail when accepted = false
+  uint64 correlation_id = 4;        // echo of HandoffOffer.correlation_id
+  reserved 5 to 10;
+}

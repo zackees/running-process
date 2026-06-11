@@ -10,17 +10,22 @@ use prost::Message;
 use running_process::broker::protocol::{
     hello_reply::Result as HelloReplyResult, AdminReply, AdminReplyKind, AdminRequest, AdminVerb,
     BrokerIsolation, CacheManifest, CacheRoot, CacheRootKind, CleanupPolicy, DaemonProcess,
-    Endpoint, ErrorCode, EventKind, Frame, FrameKind, Hello, HelloReply, HostIdentity,
-    LifecycleEvent, ManifestRef, Negotiated, ObservabilityInfo, Operation, OperationKind,
-    Ownership, PayloadEncoding, Quota, Refused, ServiceDefinition, StorageDisposition,
-    TeardownHook, TeardownKind,
+    Endpoint, ErrorCode, EventKind, Frame, FrameKind, HandoffAck, HandoffOffer, Hello, HelloReply,
+    HostIdentity, LifecycleEvent, ManifestRef, Negotiated, ObservabilityInfo, Operation,
+    OperationKind, Ownership, PayloadEncoding, Quota, Refused, ServiceDefinition,
+    StorageDisposition, TeardownHook, TeardownKind,
 };
 
 fn assert_roundtrip<M: Message + PartialEq + std::fmt::Debug + Default>(msg: M) {
     let mut buf = Vec::new();
     msg.encode(&mut buf).expect("encode");
     let back = M::decode(buf.as_slice()).expect("decode");
-    assert_eq!(msg, back, "roundtrip mismatch for {}", std::any::type_name::<M>());
+    assert_eq!(
+        msg,
+        back,
+        "roundtrip mismatch for {}",
+        std::any::type_name::<M>()
+    );
 }
 
 #[test]
@@ -95,6 +100,28 @@ fn hello_reply_refused_roundtrip() {
         result: Some(HelloReplyResult::Refused(refused)),
     };
     assert_roundtrip(reply);
+}
+
+#[test]
+fn handoff_offer_roundtrip() {
+    let offer = HandoffOffer {
+        handle_value: 0xB0B,
+        token: vec![0x42; 16],
+        service_name: "zccache".into(),
+        correlation_id: 0xC0FFEE,
+    };
+    assert_roundtrip(offer);
+}
+
+#[test]
+fn handoff_ack_roundtrip() {
+    let ack = HandoffAck {
+        token: vec![0x42; 16],
+        accepted: false,
+        error_detail: "handoff token mismatch".into(),
+        correlation_id: 0xC0FFEE,
+    };
+    assert_roundtrip(ack);
 }
 
 #[test]

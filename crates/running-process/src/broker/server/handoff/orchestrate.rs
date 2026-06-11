@@ -24,15 +24,15 @@
 //!
 //! # Delivery mechanism
 //!
-//! The v1 envelope reserves no broker-to-backend control frame and the
-//! broker holds no persistent control channel into launched backends
-//! (backends receive configuration through environment variables at spawn
-//! time). Until a production wire frame exists, delivery of the
-//! `(handle value, token)` pair is abstracted behind the [`HandoffDelivery`]
-//! trait so the orchestration sequence, token lifecycle, and fallback
-//! contract are exercised today (tests deliver over the child-helper
-//! stdin/stdout protocol from the #358/#363 smoke tests) and a wire-frame
-//! delivery can plug in later without changing this state machine.
+//! Delivery of the `(handle value, token)` pair is abstracted behind the
+//! [`HandoffDelivery`] trait so the orchestration sequence, token
+//! lifecycle, and fallback contract stay transport-agnostic. The
+//! production implementation is
+//! [`WireHandoffDelivery`](super::wire::WireHandoffDelivery) (#354 slice
+//! 6), which sends a `HandoffOffer` frame over a framed broker↔backend
+//! control connection and waits for the matching `HandoffAck`; tests also
+//! deliver over the child-helper stdin/stdout protocol from the #358/#363
+//! smoke tests.
 //!
 //! # Handle leak contract
 //!

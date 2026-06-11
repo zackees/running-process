@@ -13,6 +13,7 @@ pub mod orchestrate_unix;
 pub mod pending;
 pub mod unix;
 pub mod windows;
+pub mod wire;
 
 pub use ack::{
     AcknowledgedHandoff, ExpiredHandoff, HandoffAckError, HandoffAckRegistry,
@@ -55,4 +56,8 @@ pub use unix::{
 pub use windows::{
     try_duplicate_handle, DuplicateHandleAttempt, DuplicateHandleError, DuplicateHandleResult,
     DuplicateHandleSuccess, WindowsHandleValue, DUPLICATE_HANDLE_TRANSPORT_SUPPORTED,
+};
+pub use wire::{
+    handoff_ack_frame, handoff_offer_frame, validate_handoff_frame, WireHandoffDelivery,
+    HANDOFF_PAYLOAD_PROTOCOL,
 };
