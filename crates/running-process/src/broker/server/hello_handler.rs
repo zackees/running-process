@@ -15,8 +15,9 @@ use prost::Message;
 use crate::broker::capabilities::{handoff_transport_available, CAP_HANDLE_PASSING};
 use crate::broker::lifecycle::names::{validate_service_name, validate_version, PipePathError};
 use crate::broker::protocol::{
-    hello_reply::Result as HelloReplyResult, ErrorCode, Frame, FrameKind, Hello, HelloReply,
-    Negotiated, PayloadEncoding, Refused, ServiceDefinition,
+    hello_reply::Result as HelloReplyResult, validate_frame_envelope, ErrorCode, Frame, FrameKind,
+    FrameValidationError, Hello, HelloReply, Negotiated, Refused, ServiceDefinition,
+    CONTROL_PAYLOAD_PROTOCOL, PROTOCOL_VERSION,
 };
 use crate::broker::server::handoff::{
     AcknowledgedHandoff, ExpiredHandoff, HandoffAckError, HandoffAckRegistry, HandoffToken,
@@ -25,9 +26,7 @@ use crate::broker::server::handoff::{
 use crate::broker::server::version_allow_list::{check_version_allowed, VersionPolicyBlock};
 use crate::broker::server::TraceContext;
 
-const PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_KEEPALIVE_SECS: u64 = 30 * 60;
-const CONTROL_PAYLOAD_PROTOCOL: u32 = 0;
 const DEFAULT_RATE_LIMIT_MAX_PER_WINDOW: u32 = 256;
 const DEFAULT_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
 
@@ -54,34 +53,30 @@ pub struct HelloRequest {
 impl HelloRequest {
     /// Decode a v1 control-plane Hello from a validated frame.
     pub fn decode(frame: Frame, peer: PeerIdentity) -> Result<Self, Refused> {
-        if frame.envelope_version != PROTOCOL_VERSION {
-            return Err(refused(
-                ErrorCode::ErrorVersionUnsupported,
-                "frame envelope_version is not v1",
-                0,
-            ));
-        }
-        if FrameKind::try_from(frame.kind) != Ok(FrameKind::Request) {
-            return Err(refused(
-                ErrorCode::ErrorPeerRejected,
-                "Hello frame kind must be REQUEST",
-                0,
-            ));
-        }
-        if frame.payload_protocol != CONTROL_PAYLOAD_PROTOCOL {
-            return Err(refused(
-                ErrorCode::ErrorPeerRejected,
-                "Hello frame payload_protocol must be control-plane",
-                0,
-            ));
-        }
-        if PayloadEncoding::try_from(frame.payload_encoding) != Ok(PayloadEncoding::None) {
-            return Err(refused(
-                ErrorCode::ErrorPeerRejected,
-                "Hello payload must not be compressed",
-                0,
-            ));
-        }
+        validate_frame_envelope(&frame, FrameKind::Request, CONTROL_PAYLOAD_PROTOCOL).map_err(
+            |error| match error {
+                FrameValidationError::EnvelopeVersion { .. } => refused(
+                    ErrorCode::ErrorVersionUnsupported,
+                    "frame envelope_version is not v1",
+                    0,
+                ),
+                FrameValidationError::Kind { .. } => refused(
+                    ErrorCode::ErrorPeerRejected,
+                    "Hello frame kind must be REQUEST",
+                    0,
+                ),
+                FrameValidationError::PayloadProtocol { .. } => refused(
+                    ErrorCode::ErrorPeerRejected,
+                    "Hello frame payload_protocol must be control-plane",
+                    0,
+                ),
+                FrameValidationError::PayloadEncoding { .. } => refused(
+                    ErrorCode::ErrorPeerRejected,
+                    "Hello payload must not be compressed",
+                    0,
+                ),
+            },
+        )?;
         let hello = Hello::decode(frame.payload.as_slice())
             .map_err(|_| refused(ErrorCode::ErrorPeerRejected, "malformed Hello payload", 0))?;
         Ok(Self { frame, hello, peer })

@@ -11,15 +11,18 @@ use crate::broker::backend_lifecycle::identity::{DaemonProcess, IdentityError};
 use crate::broker::backend_lifecycle::verify_pid::{self, ProcessHandle, VerifyPidError};
 use crate::broker::protocol::{
     self, read_frame, write_frame, Endpoint, Frame, FrameKind, FramingError, PayloadEncoding,
-    ENVELOPE_VERSION, MAX_FRAME_BYTES,
+    ENVELOPE_VERSION, MAX_FRAME_BYTES, PROTOCOL_VERSION,
 };
 
-const PROTOCOL_VERSION: u32 = 1;
 const PROBE_NONCE_BYTES: usize = 32;
 const NONBLOCKING_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Payload protocol reserved for `BackendHandle` endpoint identity probes.
-pub const BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL: u32 = 0xB232;
+///
+/// Re-exported from the authoritative
+/// [`registry`](crate::broker::protocol::registry), which owns every v1
+/// payload-protocol ID (#375).
+pub use crate::broker::protocol::registry::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
 
 /// Default deadline for the active endpoint-response proof.
 pub const DEFAULT_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);

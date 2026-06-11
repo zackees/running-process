@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, ErrorCode, Frame, HelloReply, Refused,
-    ServiceDefinition,
+    ServiceDefinition, PROTOCOL_VERSION,
 };
 use crate::broker::server::{
     check_version_allowed, BackendKey, BackendLaunchRequest, BackendLauncher, BackendRegistry,
@@ -20,8 +20,6 @@ use crate::broker::server::{
     RegisteredBackend, ServiceDefinitionError, ServiceDefinitionLoader, SpawnBeginError,
     SpawnCoordinator, SpawnOutcome, TraceContext, VersionPolicyBlock,
 };
-
-const PROTOCOL_VERSION: u32 = 1;
 
 /// Routes decoded Hello requests through service definitions and backend state.
 #[derive(Clone, Copy)]

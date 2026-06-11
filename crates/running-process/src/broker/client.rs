@@ -10,15 +10,13 @@ use prost::Message;
 
 use crate::broker::capabilities::{handoff_transport_available, CAP_HANDLE_PASSING};
 use crate::broker::protocol::{
-    hello_reply::Result as HelloReplyResult, read_frame, write_frame, AdminReply, AdminRequest,
-    ErrorCode, Frame, FrameKind, FramingError, HandoffAck, Hello, HelloReply, Negotiated,
-    PayloadEncoding,
+    hello_reply::Result as HelloReplyResult, read_frame, validate_frame_envelope, write_frame,
+    AdminReply, AdminRequest, ErrorCode, Frame, FrameKind, FrameValidationError, FramingError,
+    HandoffAck, Hello, HelloReply, Negotiated, PayloadEncoding, ADMIN_PAYLOAD_PROTOCOL,
+    CONTROL_PAYLOAD_PROTOCOL, PROTOCOL_VERSION,
 };
 use crate::broker::server::handoff::validate_handoff_frame;
-use crate::broker::server::{local_socket_name, ADMIN_PAYLOAD_PROTOCOL};
-
-const PROTOCOL_VERSION: u32 = 1;
-const CONTROL_PAYLOAD_PROTOCOL: u32 = 0;
+use crate::broker::server::local_socket_name;
 
 /// Default wall-clock bound on waiting for the broker's handoff-ready relay
 /// before silently downgrading to the `backend_pipe` reconnect path.
@@ -410,27 +408,16 @@ fn validate_response_frame(
     expected_payload_protocol: u32,
     payload_protocol_error: &'static str,
 ) -> Result<(), BrokerClientError> {
-    if frame.envelope_version != PROTOCOL_VERSION {
-        return Err(BrokerClientError::UnexpectedResponseFrame(
-            "envelope_version is not v1",
-        ));
-    }
-    if FrameKind::try_from(frame.kind) != Ok(FrameKind::Response) {
-        return Err(BrokerClientError::UnexpectedResponseFrame(
-            "kind is not RESPONSE",
-        ));
-    }
-    if frame.payload_protocol != expected_payload_protocol {
-        return Err(BrokerClientError::UnexpectedResponseFrame(
-            payload_protocol_error,
-        ));
-    }
-    if PayloadEncoding::try_from(frame.payload_encoding) != Ok(PayloadEncoding::None) {
-        return Err(BrokerClientError::UnexpectedResponseFrame(
-            "payload is compressed",
-        ));
-    }
-    Ok(())
+    validate_frame_envelope(frame, FrameKind::Response, expected_payload_protocol).map_err(
+        |error| {
+            BrokerClientError::UnexpectedResponseFrame(match error {
+                FrameValidationError::EnvelopeVersion { .. } => "envelope_version is not v1",
+                FrameValidationError::Kind { .. } => "kind is not RESPONSE",
+                FrameValidationError::PayloadProtocol { .. } => payload_protocol_error,
+                FrameValidationError::PayloadEncoding { .. } => "payload is compressed",
+            })
+        },
+    )
 }
 
 /// Invalid value for the canonical broker disable variable.
