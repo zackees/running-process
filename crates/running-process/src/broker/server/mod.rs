@@ -6,8 +6,8 @@
 //! logic testable without binding sockets or spawning backends.
 
 pub mod admin;
-pub mod backend_launcher;
 pub mod backend_endpoint_allocator;
+pub mod backend_launcher;
 pub mod backend_registry;
 pub mod broadcast;
 pub mod connection;
@@ -31,14 +31,14 @@ pub use admin::{
     handle_admin_connection, serve_one_admin_socket, AdminBackend, AdminConnectionError,
     AdminFrameError, AdminSnapshot, AdminSpawnBudget, ADMIN_PAYLOAD_PROTOCOL, ADMIN_SCHEMA_VERSION,
 };
+pub use backend_endpoint_allocator::{
+    BackendEndpointAllocator, BackendEndpointAllocatorError, DEFAULT_BACKEND_ENDPOINT_ATTEMPTS,
+};
 pub use backend_launcher::{
     BackendLaunchError, BackendLaunchRequest, BackendLauncher, CommandBackendLauncher,
     BACKEND_ENV_ENDPOINT_NAMESPACE, BACKEND_ENV_ENDPOINT_PATH, BACKEND_ENV_INSTANCE,
     BACKEND_ENV_SERVICE_NAME, BACKEND_ENV_SERVICE_VERSION, BACKEND_ENV_TRACEPARENT,
     BACKEND_ENV_TRACESTATE,
-};
-pub use backend_endpoint_allocator::{
-    BackendEndpointAllocator, BackendEndpointAllocatorError, DEFAULT_BACKEND_ENDPOINT_ATTEMPTS,
 };
 pub use backend_registry::{BackendKey, BackendRegistry};
 pub use broadcast::{
@@ -50,24 +50,25 @@ pub use connection::{
     handle_hello_connection, handle_hello_connection_with,
     handle_hello_connection_with_peer_policy, local_socket_name, serve_local_socket_connections,
     serve_local_socket_connections_with, serve_local_socket_connections_with_peer_policy,
-    serve_local_socket_connections_with_policy, serve_one_local_socket, serve_one_local_socket_with,
-    serve_one_local_socket_with_peer_policy, BrokerConnectionError, HelloResponder,
-    PeerCredentialPolicy,
+    serve_local_socket_connections_with_policy, serve_one_local_socket,
+    serve_one_local_socket_with, serve_one_local_socket_with_peer_policy, BrokerConnectionError,
+    HelloResponder, PeerCredentialPolicy,
 };
 pub use control_socket::{
     handle_control_connection_with_peer_policy,
     serve_control_socket_connections_with_limit_and_policy,
-    serve_control_socket_connections_with_policy, ControlSocketConnectionLimit,
-    ControlSocketError, ControlSocketReply,
+    serve_control_socket_connections_with_policy, ControlSocketConnectionLimit, ControlSocketError,
+    ControlSocketReply,
 };
 pub use handoff::{
+    AcknowledgedHandoff, ExpiredHandoff, HandoffAckError, HandoffAckRegistry,
     HandoffAttemptDecision, HandoffAttemptFailure, HandoffAttemptInputs, HandoffFallbackDecision,
     HandoffFallbackPolicy, HandoffFallbackReason, HandoffFallbackState, HandoffToken,
-    HandoffTokenError, HandoffTokenStore, HandoffTokenStoreConfig, PendingHandoffOverflow,
-    PendingHandoffQueue, PendingHandoffQueueConfig,
-    DEFAULT_HANDOFF_FAILED_ATTEMPTS_PER_WINDOW, DEFAULT_HANDOFF_FAILED_ATTEMPT_WINDOW,
-    DEFAULT_HANDOFF_TOKEN_COLLISION_ATTEMPTS, DEFAULT_HANDOFF_TOKEN_TTL,
-    DEFAULT_MAX_PENDING_HANDOFF_TOKENS, DEFAULT_MAX_PENDING_HANDOFFS,
+    HandoffTokenError, HandoffTokenStore, HandoffTokenStoreConfig, PendingHandoffBackend,
+    PendingHandoffOverflow, PendingHandoffQueue, PendingHandoffQueueConfig,
+    DEFAULT_HANDOFF_ACK_DEADLINE, DEFAULT_HANDOFF_FAILED_ATTEMPTS_PER_WINDOW,
+    DEFAULT_HANDOFF_FAILED_ATTEMPT_WINDOW, DEFAULT_HANDOFF_TOKEN_COLLISION_ATTEMPTS,
+    DEFAULT_HANDOFF_TOKEN_TTL, DEFAULT_MAX_PENDING_HANDOFFS, DEFAULT_MAX_PENDING_HANDOFF_TOKENS,
     DEFAULT_PENDING_HANDOFF_TTL, HANDOFF_TOKEN_BYTES,
 };
 pub use hello_handler::{

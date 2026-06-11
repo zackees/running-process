@@ -18,7 +18,10 @@ use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, ErrorCode, Frame, FrameKind, Hello, HelloReply,
     Negotiated, PayloadEncoding, Refused, ServiceDefinition,
 };
-use crate::broker::server::handoff::HandoffTokenStore;
+use crate::broker::server::handoff::{
+    AcknowledgedHandoff, ExpiredHandoff, HandoffAckError, HandoffAckRegistry, HandoffToken,
+    HandoffTokenStore, PendingHandoffBackend,
+};
 use crate::broker::server::version_allow_list::{check_version_allowed, VersionPolicyBlock};
 use crate::broker::server::TraceContext;
 
@@ -110,6 +113,7 @@ pub struct HelloHandler {
     next_connection_id: AtomicU64,
     rate_limiter: PeerRateLimiter,
     handoff_tokens: Mutex<HandoffTokenStore>,
+    handoff_acks: Mutex<HandoffAckRegistry>,
 }
 
 impl HelloHandler {
@@ -120,7 +124,14 @@ impl HelloHandler {
             next_connection_id: AtomicU64::new(1),
             rate_limiter: PeerRateLimiter::default(),
             handoff_tokens: Mutex::new(HandoffTokenStore::new()),
+            handoff_acks: Mutex::new(HandoffAckRegistry::new()),
         }
+    }
+
+    /// Override the backend ACK deadline for pending handoffs.
+    pub fn with_handoff_ack_deadline(self, ack_deadline: Duration) -> Self {
+        *self.handoff_ack_registry() = HandoffAckRegistry::with_ack_deadline(ack_deadline);
+        self
     }
 
     /// Lock the pending handoff token store owned by this handler.
@@ -132,6 +143,42 @@ impl HelloHandler {
         self.handoff_tokens
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Lock the pending handoff ACK registry owned by this handler.
+    ///
+    /// Every token issued during Hello negotiation is registered here and
+    /// must be acknowledged via [`HelloHandler::acknowledge_handoff`] before
+    /// the ACK deadline, or it is abandoned by
+    /// [`HelloHandler::expire_overdue_handoffs`].
+    pub fn handoff_ack_registry(&self) -> std::sync::MutexGuard<'_, HandoffAckRegistry> {
+        self.handoff_acks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Record that the backend adopted a handed-off connection.
+    ///
+    /// Completes the pending handoff registered at Hello time and revokes the
+    /// one-time token. Lock order: ACK registry, then token store.
+    pub fn acknowledge_handoff(
+        &self,
+        token: &HandoffToken,
+        now: Instant,
+    ) -> Result<AcknowledgedHandoff, HandoffAckError> {
+        let mut acks = self.handoff_ack_registry();
+        let mut tokens = self.handoff_token_store();
+        acks.acknowledge(&mut tokens, token, now)
+    }
+
+    /// Abandon every pending handoff whose backend ACK deadline has passed.
+    ///
+    /// Each returned expiry has had its token revoked; callers must use the
+    /// `backend_pipe` reconnect fallback for the affected connections.
+    pub fn expire_overdue_handoffs(&self, now: Instant) -> Vec<ExpiredHandoff> {
+        let mut acks = self.handoff_ack_registry();
+        let mut tokens = self.handoff_token_store();
+        acks.expire_overdue(&mut tokens, now)
     }
 
     /// Override the per-peer Hello rate limit.
@@ -189,7 +236,8 @@ impl HelloHandler {
         }
 
         let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
-        let handle_passed_token = self.issue_handoff_token(hello.client_capabilities);
+        let handle_passed_token =
+            self.issue_handoff_token(hello.client_capabilities, &hello.service_name);
         let mut server_capabilities = backend.server_capabilities;
         if !handle_passed_token.is_empty() {
             server_capabilities |= CAP_HANDLE_PASSING;
@@ -218,12 +266,23 @@ impl HelloHandler {
     /// randomness). Issuance failure silently downgrades to the reconnect
     /// path: the reply omits both the token and the capability bit so the
     /// client never expects a handoff that cannot happen.
-    fn issue_handoff_token(&self, client_capabilities: u64) -> Vec<u8> {
+    ///
+    /// Each issued token is also registered as awaiting a backend ACK; the
+    /// handoff is only complete once [`HelloHandler::acknowledge_handoff`]
+    /// succeeds before the registry deadline.
+    fn issue_handoff_token(&self, client_capabilities: u64, service_name: &str) -> Vec<u8> {
         if client_capabilities & CAP_HANDLE_PASSING == 0 || !handoff_transport_available() {
             return Vec::new();
         }
-        match self.handoff_token_store().issue(Instant::now()) {
-            Ok(token) => token.into_bytes().to_vec(),
+        let now = Instant::now();
+        // Lock order: ACK registry, then token store (matches the ACK paths).
+        let mut acks = self.handoff_ack_registry();
+        let mut tokens = self.handoff_token_store();
+        match tokens.issue(now) {
+            Ok(token) => {
+                acks.register(token, PendingHandoffBackend::for_service(service_name), now);
+                token.into_bytes().to_vec()
+            }
             Err(_) => Vec::new(),
         }
     }
