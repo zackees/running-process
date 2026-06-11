@@ -9,6 +9,7 @@ pub mod fallback;
 pub mod handoff_token;
 pub mod latency;
 pub mod orchestrate;
+pub mod orchestrate_unix;
 pub mod pending;
 pub mod unix;
 pub mod windows;
@@ -36,6 +37,11 @@ pub use orchestrate::{
     execute_windows_handoff, execute_windows_handoff_with_transport, CompletedWindowsHandoff,
     HandoffDelivery, HandoffDeliveryError, WindowsHandoffFallback, WindowsHandoffOutcome,
     WindowsHandoffRequest, WindowsHandoffStage,
+};
+pub use orchestrate_unix::{
+    execute_unix_handoff, execute_unix_handoff_with_transport, CompletedUnixHandoff,
+    UnixHandoffAckWait, UnixHandoffFallback, UnixHandoffOutcome, UnixHandoffRequest,
+    UnixHandoffStage,
 };
 pub use pending::{
     PendingHandoffOverflow, PendingHandoffQueue, PendingHandoffQueueConfig,

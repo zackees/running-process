@@ -33,6 +33,9 @@ mod handoff_orchestrate;
 mod handoff_token_mismatch;
 mod handoff_transport;
 mod handoff_under_load;
+#[cfg(unix)]
+mod handoff_unix_e2e_orchestrate;
+mod handoff_unix_orchestrate;
 #[cfg(windows)]
 mod handoff_windows_duplicate_handle;
 #[cfg(windows)]
