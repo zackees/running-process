@@ -11,6 +11,7 @@ use serde_json::json;
 use crate::broker::protocol::{
     read_frame, write_frame, AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame, FrameKind,
     FramingError, PayloadEncoding, ENVELOPE_VERSION, MAX_FRAME_BYTES, MAX_HELLO_BYTES,
+    PROTOCOL_VERSION,
 };
 
 use super::backend_registry::BackendRegistry;
@@ -24,9 +25,12 @@ use crate::broker::server::metrics::{MetricKind, BROKER_METRICS};
 /// Frozen admin JSON schema version.
 pub const ADMIN_SCHEMA_VERSION: u32 = 1;
 /// Payload protocol value for v1 admin request/reply frames.
-pub const ADMIN_PAYLOAD_PROTOCOL: u32 = 0xAD01;
+///
+/// Re-exported from the authoritative
+/// [`registry`](crate::broker::protocol::registry), which owns every v1
+/// payload-protocol ID (#375).
+pub use crate::broker::protocol::registry::ADMIN_PAYLOAD_PROTOCOL;
 
-const PROTOCOL_VERSION: u32 = 1;
 const DIAGNOSTIC_BUNDLE_FORMAT: &str = "tar.gz";
 const DIAGNOSTIC_BUNDLE_MODE: &str = "metadata-only";
 const DIAGNOSTIC_REDACTIONS: &[&str] = &["home", "secret-env", "acl-identities"];

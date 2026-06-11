@@ -15,12 +15,10 @@ use prost::Message;
 
 use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, read_frame_with_cap, write_frame, ErrorCode, Frame,
-    FrameKind, FramingError, HelloReply, PayloadEncoding, Refused, MAX_HELLO_BYTES,
+    FrameKind, FramingError, HelloReply, PayloadEncoding, Refused, CONTROL_PAYLOAD_PROTOCOL,
+    MAX_HELLO_BYTES, PROTOCOL_VERSION,
 };
 use crate::broker::server::{HelloHandler, HelloRouter, PeerIdentity};
-
-const PROTOCOL_VERSION: u32 = 1;
-const CONTROL_PAYLOAD_PROTOCOL: u32 = 0;
 
 /// Peer credential policy applied before reading a Hello frame.
 #[derive(Clone, Debug, PartialEq, Eq)]

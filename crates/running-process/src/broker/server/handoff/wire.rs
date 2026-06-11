@@ -44,7 +44,8 @@ use std::time::Instant;
 use prost::Message;
 
 use crate::broker::protocol::{
-    read_frame, write_frame, Frame, FrameKind, HandoffAck, HandoffOffer, PayloadEncoding,
+    read_frame, validate_frame_envelope, write_frame, Frame, FrameKind, FrameValidationError,
+    HandoffAck, HandoffOffer, PayloadEncoding, PROTOCOL_VERSION,
 };
 use crate::broker::server::handoff::handoff_token::HandoffToken;
 use crate::broker::server::handoff::orchestrate::{HandoffDelivery, HandoffDeliveryError};
@@ -52,12 +53,12 @@ use crate::broker::server::handoff::windows::WindowsHandleValue;
 
 /// Payload protocol reserved for broker↔backend handoff offer/ACK frames.
 ///
-/// Lives in the same envelope-multiplexing space as the control plane
-/// (`0x00`), admin verbs (`0xAD01`), and backend-handle endpoint probes
-/// (`0xB232`).
-pub const HANDOFF_PAYLOAD_PROTOCOL: u32 = 0xD0FF;
-
-const PROTOCOL_VERSION: u32 = 1;
+/// Re-exported from the authoritative
+/// [`registry`](crate::broker::protocol::registry), which owns every v1
+/// payload-protocol ID (#375). Lives in the same envelope-multiplexing
+/// space as the control plane (`0x00`), admin verbs (`0xAD01`), and
+/// backend-handle endpoint probes (`0xB232`).
+pub use crate::broker::protocol::registry::HANDOFF_PAYLOAD_PROTOCOL;
 
 /// Build the v1 frame carrying one broker→backend [`HandoffOffer`].
 pub fn handoff_offer_frame(offer: &HandoffOffer) -> Frame {
@@ -130,23 +131,18 @@ pub fn handoff_ready_frame(ack: &HandoffAck) -> Frame {
 /// Returns the expected-vs-actual mismatch as a static description so both
 /// the broker and backend sides report wire violations uniformly.
 pub fn validate_handoff_frame(frame: &Frame, expected_kind: FrameKind) -> Result<(), &'static str> {
-    if frame.envelope_version != PROTOCOL_VERSION {
-        return Err("envelope_version is not v1");
-    }
-    if FrameKind::try_from(frame.kind) != Ok(expected_kind) {
-        return Err(match expected_kind {
-            FrameKind::Request => "kind is not REQUEST",
-            FrameKind::Event => "kind is not EVENT",
-            _ => "kind is not RESPONSE",
-        });
-    }
-    if frame.payload_protocol != HANDOFF_PAYLOAD_PROTOCOL {
-        return Err("payload_protocol is not handoff");
-    }
-    if PayloadEncoding::try_from(frame.payload_encoding) != Ok(PayloadEncoding::None) {
-        return Err("payload is compressed");
-    }
-    Ok(())
+    validate_frame_envelope(frame, expected_kind, HANDOFF_PAYLOAD_PROTOCOL).map_err(|error| {
+        match error {
+            FrameValidationError::EnvelopeVersion { .. } => "envelope_version is not v1",
+            FrameValidationError::Kind { .. } => match expected_kind {
+                FrameKind::Request => "kind is not REQUEST",
+                FrameKind::Event => "kind is not EVENT",
+                _ => "kind is not RESPONSE",
+            },
+            FrameValidationError::PayloadProtocol { .. } => "payload_protocol is not handoff",
+            FrameValidationError::PayloadEncoding { .. } => "payload is compressed",
+        }
+    })
 }
 
 /// [`HandoffDelivery`] implementation that sends [`HandoffOffer`] frames to

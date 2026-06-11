@@ -21,8 +21,15 @@ mod prost_generated {
 pub use prost_generated::*;
 
 pub mod framing;
+pub mod registry;
+pub mod validate;
 
 pub use framing::{
     read_frame, read_frame_with_cap, write_frame, FramingError, ENVELOPE_VERSION, MAX_FRAME_BYTES,
     MAX_HELLO_BYTES,
 };
+pub use registry::{
+    ADMIN_PAYLOAD_PROTOCOL, BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL, CONTROL_PAYLOAD_PROTOCOL,
+    HANDOFF_PAYLOAD_PROTOCOL, PROTOCOL_VERSION,
+};
+pub use validate::{validate_frame_envelope, FrameValidationError};
