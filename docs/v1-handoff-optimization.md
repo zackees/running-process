@@ -20,10 +20,38 @@ This path is always supported and remains the fallback.
 client -> broker: Hello
 broker -> backend: open or reuse backend pipe
 broker -> client: Negotiated { handle_passed_token }
-client: adopts transferred handle
+broker -> backend: HandoffOffer (0xD0FF)   # duplicates the CLIENT connection
+backend -> broker: HandoffAck (0xD0FF)
+broker -> client: handoff-ready relay (EVENT frame, 0xD0FF, HandoffAck)
+client: keeps its existing connection — now backend-served
 ```
 
 The `backend_pipe` field remains present for diagnostics and fallback.
+
+## Client Adoption Signaling
+
+Client adoption is **verifiable and opt-in**
+(`ConnectBackendRequest::adopt_handed_off_connection`, default `false`).
+Because the broker-side handoff completes asynchronously after `Negotiated`
+(offer → backend ACK), the client never adopts blindly: it waits — bounded by
+`ConnectBackendRequest::handoff_ready_timeout` (default 2s) — for the broker's
+handoff-ready relay on the same connection that carried Hello. The relay is a
+broker→client push (`FRAME_KIND_EVENT`) under the `0xD0FF` handoff payload
+protocol whose payload is the backend's `HandoffAck`; the client requires
+`accepted = true` and a token echo matching its negotiated one-time
+`handle_passed_token` (the only handoff secret the client knows — the
+correlation id is broker↔backend bookkeeping). Brokers build the relay with
+`handoff_ready_frame`.
+
+On a confirmed relay the returned route is
+`BackendConnectionRoute::HandlePassed` and the client keeps the socket it
+already has; `BackendConnection::endpoint` still reports `backend_pipe` for
+Hello-skip caching. Any failure — opt-out, missing capability bit, empty
+token, relay timeout, refused or malformed relay, token mismatch — silently
+downgrades to the baseline `backend_pipe` reconnect
+(`BackendConnectionRoute::BrokerNegotiated`); adoption failure is never an
+error by itself, and the bounded wait runs the blocking framed read on a
+helper thread so the client can never hang on a silent broker.
 
 ## Backend Acceptance Helper
 
