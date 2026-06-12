@@ -12,8 +12,7 @@
 //!    the verified backend process on Windows, `sendmsg(SCM_RIGHTS)` over
 //!    the handoff connection on Unix — paired with the one-time token,
 //! 3. send the [`HandoffOffer`](crate::broker::protocol::HandoffOffer)
-//!    frame and wait for the backend
-//!    [`HandoffAck`](crate::broker::protocol::HandoffAck) through
+//!    frame and wait for the backend [`HandoffAck`] through
 //!    [`WireHandoffDelivery`], bounded by the
 //!    [`HandoffAckRegistry`] ACK deadline, and
 //! 4. on acceptance, relay the handoff-ready EVENT frame

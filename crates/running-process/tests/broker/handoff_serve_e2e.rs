@@ -16,7 +16,8 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,14 +26,16 @@ use prost::Message;
 use running_process::broker::backend_handle::DaemonProcess;
 use running_process::broker::backend_lib::wire::{read_handoff_offer, respond_to_handoff_offer};
 use running_process::broker::client::{
-    connect_to_backend, BackendConnection, BackendConnectionRoute, ConnectBackendRequest,
+    connect_local_socket, connect_to_backend, BackendConnection, BackendConnectionRoute,
+    ConnectBackendRequest,
 };
 use running_process::broker::protocol::{
     BrokerIsolation, Endpoint, HandoffOffer, ServiceDefinition,
 };
 use running_process::broker::server::{
     ensure_service_definition_dir, serve_registered_backend, service_definition_path,
-    BrokerInstanceKey, BrokerServeConfig, HandoffToken, HandoffTokenStore, HANDOFF_TOKEN_BYTES,
+    BrokerInstanceKey, BrokerServeConfig, BrokerServeError, HandoffToken, HandoffTokenStore,
+    HANDOFF_TOKEN_BYTES,
 };
 
 use crate::backend_handle_common::spawn_endpoint_probe_once;
@@ -62,9 +65,10 @@ fn serve_handoff_completes_and_client_adopts_connection() {
         1,
     )
     .with_handoff_endpoint(handoff_endpoint);
-    let server = thread::spawn(move || serve_registered_backend(config));
+    let (server, serve_errors) = spawn_serve(config);
 
-    let mut connection = connect_backend_with_retry(&socket_name, Duration::from_secs(10));
+    let mut connection =
+        connect_backend_with_retry(&socket_name, Duration::from_secs(10), &serve_errors);
 
     assert_eq!(connection.route, BackendConnectionRoute::HandlePassed);
     assert_eq!(
@@ -94,27 +98,84 @@ fn rejected_handoff_silently_downgrades_to_backend_pipe() {
     let backend_probe = spawn_configured_backend_probe(&backend_endpoint);
     let handoff_backend =
         spawn_backend_handoff_listener(handoff_endpoint.clone(), BackendBehavior::Reject);
+    // Spare serve slots: a connection attempt that fails mid-negotiation on
+    // a slow runner still consumes one bounded-accept slot, and with a
+    // single slot the broker would exit (unlinking its socket) while the
+    // client keeps retrying against ENOENT for the full deadline. Leftover
+    // slots are drained below so the bounded loop still terminates.
     let config = serve_config(
         tmp.path().join("services").as_path(),
         socket_name.clone(),
         backend_endpoint.clone(),
-        1,
+        REJECT_SERVE_CONNECTIONS,
     )
     .with_handoff_endpoint(handoff_endpoint);
-    let server = thread::spawn(move || serve_registered_backend(config));
+    let (server, serve_errors) = spawn_serve(config);
     // The startup probe owns the backend endpoint until verification ends;
     // only then can the reconnect listener take its place.
     backend_probe.join().unwrap().unwrap();
-    let reconnect_backend = spawn_reconnect_accept_once(backend_endpoint.clone());
+    let reconnect_backend = ReconnectBackend::spawn(backend_endpoint.clone());
 
-    let connection = connect_backend_with_retry(&socket_name, Duration::from_millis(300));
+    // The ready wait is EOF-bounded on Unix (the rejecting backend closes
+    // the transferred fd) but runs to the full timeout on Windows, where
+    // the duplicated handle stays open in the backend process — so keep it
+    // bounded, just not so tight a loaded runner can race it.
+    let connection =
+        connect_backend_with_retry(&socket_name, Duration::from_secs(2), &serve_errors);
 
     assert_eq!(connection.route, BackendConnectionRoute::BrokerNegotiated);
     assert_eq!(connection.endpoint, backend_endpoint);
     drop(connection.stream);
+    drain_serve_slots(&server, &socket_name);
     server.join().unwrap().unwrap();
     handoff_backend.join().unwrap().unwrap();
-    reconnect_backend.join().unwrap().unwrap();
+    reconnect_backend.stop().unwrap();
+}
+
+/// Serve slots for the reject test: one for the asserted downgrade
+/// connection plus headroom for attempts that fail while the harness is
+/// still settling on a loaded runner.
+const REJECT_SERVE_CONNECTIONS: usize = 8;
+
+/// Spawn `serve_registered_backend`, mirroring any serve error into a
+/// channel so [`connect_backend_with_retry`] can fail fast with the real
+/// cause instead of burning its whole deadline retrying against a broker
+/// socket that was never bound (or was torn down on early exit).
+fn spawn_serve(
+    config: BrokerServeConfig,
+) -> (
+    thread::JoinHandle<Result<(), BrokerServeError>>,
+    mpsc::Receiver<String>,
+) {
+    let (error_tx, error_rx) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let result = serve_registered_backend(config);
+        if let Err(err) = &result {
+            let _ = error_tx.send(err.to_string());
+        }
+        result
+    });
+    (handle, error_rx)
+}
+
+/// Consume any bounded-accept slots left over after the asserted
+/// connection, so the serve thread terminates and its result can be
+/// asserted. Each drain dial is a full non-adopting Hello negotiation;
+/// its reconnect lands on the still-running [`ReconnectBackend`] loop.
+fn drain_serve_slots(
+    server: &thread::JoinHandle<Result<(), BrokerServeError>>,
+    broker_endpoint: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !server.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out draining leftover broker serve slots on {broker_endpoint}"
+        );
+        let request = ConnectBackendRequest::new(broker_endpoint, "zccache", "1.11.20", "1.11.20");
+        let _ = connect_to_backend(request);
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// What the test backend does with the broker's handoff offer.
@@ -332,38 +393,79 @@ fn recv_fd_and_token(
     }
 }
 
-/// Accept one reconnect on the backend endpoint, retrying the bind while
-/// the just-closed startup-probe listener still holds the pipe name.
-fn spawn_reconnect_accept_once(backend_endpoint: String) -> thread::JoinHandle<io::Result<()>> {
-    let display_name = backend_endpoint.clone();
-    let (ready_tx, ready_rx) = mpsc::channel();
-    let handle = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let listener = loop {
-            match bind_test_socket(&backend_endpoint) {
-                Ok(listener) => break listener,
-                Err(error) if Instant::now() < deadline => {
-                    let _ = error;
-                    thread::sleep(Duration::from_millis(10));
+/// Reconnect listener on the backend endpoint that accepts every dial —
+/// the asserted downgrade reconnect plus any retried or drain
+/// connections — until explicitly stopped.
+///
+/// A single-accept listener here is a race on a loaded runner: one stray
+/// dial consumes the only accept and unlinks the socket, so every later
+/// reconnect fails with ENOENT.
+struct ReconnectBackend {
+    endpoint: String,
+    stop: Arc<AtomicBool>,
+    handle: thread::JoinHandle<io::Result<()>>,
+}
+
+impl ReconnectBackend {
+    /// Bind with retry while the just-closed startup-probe listener still
+    /// holds the pipe name, then accept in a loop until [`Self::stop`].
+    fn spawn(backend_endpoint: String) -> Self {
+        let display_name = backend_endpoint.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let endpoint = backend_endpoint.clone();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let listener = loop {
+                match bind_test_socket(&backend_endpoint) {
+                    Ok(listener) => break listener,
+                    Err(error) if Instant::now() < deadline => {
+                        let _ = error;
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return Err(error);
+                    }
                 }
-                Err(error) => {
-                    let _ = ready_tx.send(Err(error.to_string()));
-                    return Err(error);
-                }
+            };
+            ready_tx.send(Ok(())).unwrap();
+            while !thread_stop.load(Ordering::SeqCst) {
+                drop(listener.accept()?);
             }
-        };
-        ready_tx.send(Ok(())).unwrap();
-        let _stream = listener.accept()?;
-        cleanup_test_socket(&backend_endpoint);
-        Ok(())
-    });
-    await_test_socket_ready(&ready_rx, &display_name);
-    handle
+            cleanup_test_socket(&backend_endpoint);
+            Ok(())
+        });
+        await_test_socket_ready(&ready_rx, &display_name);
+        Self {
+            endpoint,
+            stop,
+            handle,
+        }
+    }
+
+    /// Signal shutdown, wake the blocked accept with one throwaway dial,
+    /// and join the listener thread.
+    fn stop(self) -> io::Result<()> {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = connect_local_socket(&self.endpoint);
+        self.handle.join().unwrap()
+    }
 }
 
 /// Opted-in client connect, retrying only while the broker socket is not
 /// yet bound. Each successful dial performs one full Hello negotiation.
-fn connect_backend_with_retry(broker_endpoint: &str, ready_timeout: Duration) -> BackendConnection {
+///
+/// Fails fast with the real serve error when the broker thread has
+/// already exited — otherwise that error stays trapped in its un-joined
+/// handle while this loop burns the full deadline on opaque connection
+/// refusals.
+fn connect_backend_with_retry(
+    broker_endpoint: &str,
+    ready_timeout: Duration,
+    serve_errors: &mpsc::Receiver<String>,
+) -> BackendConnection {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let mut request =
@@ -373,6 +475,12 @@ fn connect_backend_with_retry(broker_endpoint: &str, ready_timeout: Duration) ->
         match connect_to_backend(request) {
             Ok(connection) => return connection,
             Err(err) => {
+                if let Ok(serve_error) = serve_errors.try_recv() {
+                    panic!(
+                        "broker serve loop on {broker_endpoint} failed: {serve_error} \
+                         (last client error: {err})"
+                    );
+                }
                 if Instant::now() >= deadline {
                     panic!("timed out connecting through broker {broker_endpoint}: {err}");
                 }
