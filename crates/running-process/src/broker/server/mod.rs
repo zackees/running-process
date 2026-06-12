@@ -12,6 +12,7 @@ pub mod backend_registry;
 pub mod broadcast;
 pub mod connection;
 pub mod control_socket;
+pub mod fd_pressure;
 pub mod handoff;
 pub mod handoff_serve;
 pub mod hello_handler;
@@ -30,7 +31,8 @@ pub mod version_allow_list;
 
 pub use admin::{
     handle_admin_connection, serve_one_admin_socket, AdminBackend, AdminConnectionError,
-    AdminFrameError, AdminSnapshot, AdminSpawnBudget, ADMIN_PAYLOAD_PROTOCOL, ADMIN_SCHEMA_VERSION,
+    AdminFrameError, AdminInodePressure, AdminSnapshot, AdminSpawnBudget, ADMIN_PAYLOAD_PROTOCOL,
+    ADMIN_SCHEMA_VERSION,
 };
 pub use backend_endpoint_allocator::{
     BackendEndpointAllocator, BackendEndpointAllocatorError, DEFAULT_BACKEND_ENDPOINT_ATTEMPTS,
@@ -57,10 +59,16 @@ pub use connection::{
 };
 pub use control_socket::{
     handle_control_connection_with_peer_policy,
+    handle_control_connection_with_peer_policy_and_fd_guard,
     serve_control_socket_connections_with_limit_and_policy,
     serve_control_socket_connections_with_limit_policy_and_post_hello,
+    serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard,
     serve_control_socket_connections_with_policy, ControlSocketConnectionLimit, ControlSocketError,
     ControlSocketReply,
+};
+pub use fd_pressure::{
+    fd_exhaustion_error_for_tests, is_fd_exhaustion_error, FdPressureConfig, FdPressureDecision,
+    FdPressureGuard, DEFAULT_FD_PRESSURE_RECOVERY_ACCEPTS, DEFAULT_FD_PRESSURE_RETRY_AFTER_MS,
 };
 pub use handoff::{
     AcknowledgedHandoff, ExpiredHandoff, HandoffAckError, HandoffAckRegistry,

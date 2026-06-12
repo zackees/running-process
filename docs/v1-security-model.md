@@ -167,6 +167,12 @@ path identity probe. That probe opens the target process with limited query
 rights, calls `QueryFullProcessImageNameW`, and closes the OS handle before the
 stored daemon executable path and SHA-256 are accepted.
 
+The `fs_health.rs` inventory covers the Unix inode-pressure probe (#390): two
+`unsafe` sites zero-initialize a `libc::statvfs` struct and call
+`libc::statvfs(3)` on the daemon data directory path. The path is a
+broker-owned constant (never peer-supplied), the struct is stack-local, and
+only the inode counters are read out.
+
 ## Fuzz Campaign And Reviewer Signoff
 
 The v1 release gate requires one-hour fuzz campaign evidence for every

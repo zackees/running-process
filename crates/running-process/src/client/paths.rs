@@ -139,6 +139,21 @@ pub fn shadow_dir() -> PathBuf {
     }
 }
 
+/// Returns the daemon data directory (where the SQLite tracking database
+/// lives) WITHOUT creating it. Read-only callers (doctor, status probes)
+/// use this; [`db_path`] keeps its create-on-derive behavior.
+pub fn data_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        local_app_data_dir()
+    }
+
+    #[cfg(unix)]
+    {
+        state_dir_unix()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Platform helpers
 // ---------------------------------------------------------------------------

@@ -54,6 +54,69 @@ pub struct AdminSnapshot {
     pub backends: Vec<AdminBackend>,
     /// Known spawn budget rows.
     pub spawn_budgets: Vec<AdminSpawnBudget>,
+    /// Whether the broker self-demoted under fd pressure (#390).
+    pub fd_pressure_demoted: bool,
+    /// Inode usage of the daemon data dir filesystem (#390).
+    pub inode_pressure: AdminInodePressure,
+}
+
+/// Inode usage row for `status --json` (#390). On Windows (and on Unix
+/// filesystems without a fixed inode table) `supported` is false and the
+/// counters are absent rather than faked.
+#[derive(Clone, Debug, Default)]
+pub struct AdminInodePressure {
+    /// Whether inode accounting applies to the probed filesystem.
+    pub supported: bool,
+    /// Probe failure detail, when the probe itself errored.
+    pub error: Option<String>,
+    /// Total inodes (only meaningful when `supported`).
+    pub total: u64,
+    /// Free inodes (only meaningful when `supported`).
+    pub free: u64,
+}
+
+impl AdminInodePressure {
+    /// Probe the daemon data dir filesystem.
+    pub fn probe() -> Self {
+        match crate::broker::fs_health::daemon_data_dir_inode_usage() {
+            Ok(Some(usage)) => Self {
+                supported: true,
+                error: None,
+                total: usage.total,
+                free: usage.free,
+            },
+            Ok(None) => Self::default(),
+            Err(err) => Self {
+                supported: false,
+                error: Some(err.to_string()),
+                total: 0,
+                free: 0,
+            },
+        }
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        if self.supported {
+            let usage = crate::broker::fs_health::InodeUsage {
+                total: self.total,
+                free: self.free,
+            };
+            json!({
+                "supported": true,
+                "inodes_total": self.total,
+                "inodes_free": self.free,
+                "inodes_used": usage.used(),
+                "used_ratio": usage.used_ratio(),
+            })
+        } else {
+            json!({
+                "supported": false,
+                "detail": self.error.clone().unwrap_or_else(|| {
+                    "inode accounting not applicable on this filesystem".into()
+                }),
+            })
+        }
+    }
 }
 
 impl AdminSnapshot {
@@ -68,6 +131,8 @@ impl AdminSnapshot {
             connections_open: 0,
             backends: Vec::new(),
             spawn_budgets: Vec::new(),
+            fd_pressure_demoted: false,
+            inode_pressure: AdminInodePressure::probe(),
         }
     }
 
@@ -132,7 +197,21 @@ impl AdminSnapshot {
                 .iter()
                 .map(AdminSpawnBudget::from_snapshot)
                 .collect(),
+            fd_pressure_demoted: false,
+            inode_pressure: AdminInodePressure::probe(),
         }
+    }
+
+    /// Record the broker's fd-pressure demotion state (#390).
+    pub fn with_fd_pressure_demoted(mut self, demoted: bool) -> Self {
+        self.fd_pressure_demoted = demoted;
+        self
+    }
+
+    /// Override the inode-pressure row (tests / deterministic snapshots).
+    pub fn with_inode_pressure(mut self, inode_pressure: AdminInodePressure) -> Self {
+        self.inode_pressure = inode_pressure;
+        self
     }
 }
 
@@ -203,6 +282,10 @@ pub fn render_status_json(snapshot: &AdminSnapshot) -> String {
         "uptime_seconds": snapshot.uptime.as_secs_f64(),
         "accepting_hello": snapshot.accepting_hello,
         "connections_open": snapshot.connections_open,
+        "fd_pressure": {
+            "demoted": snapshot.fd_pressure_demoted,
+        },
+        "inode_pressure": snapshot.inode_pressure.to_json(),
         "backends": snapshot.backends.iter().map(|backend| {
             json!({
                 "service_name": backend.service_name,

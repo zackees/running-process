@@ -24,7 +24,7 @@ use running_process::broker::server::admin::{
     handle_admin_connection, handle_admin_frame, render_admin_reply, render_backend_health_json,
     render_config_json, render_diagnose_json, render_dump_json, render_healthz,
     render_list_instances_json, render_metrics_text, render_readyz, render_status_json,
-    AdminBackend, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION,
+    AdminBackend, AdminInodePressure, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION,
 };
 use running_process::broker::server::{
     serve_one_admin_socket, BackendKey, BackendRegistry, BrokerInstanceKey, SpawnBudgetSnapshot,
@@ -60,6 +60,13 @@ fn snapshot() -> AdminSnapshot {
             in_flight: false,
             retry_after_ms: None,
         }],
+        fd_pressure_demoted: false,
+        inode_pressure: AdminInodePressure {
+            supported: true,
+            error: None,
+            total: 1000,
+            free: 900,
+        },
     }
 }
 
@@ -75,6 +82,51 @@ fn status_json_uses_common_admin_envelope() {
     assert_eq!(value["command"], "status");
     assert_eq!(value["broker_instance"], "shared");
     assert_eq!(value["backends"][0]["service_name"], "zccache");
+}
+
+#[test]
+fn status_json_surfaces_fd_pressure_demotion_state() {
+    let value = parse_json(&render_status_json(&snapshot()));
+    assert_eq!(value["fd_pressure"]["demoted"], false);
+
+    let demoted = snapshot().with_fd_pressure_demoted(true);
+    let value = parse_json(&render_status_json(&demoted));
+    assert_eq!(value["fd_pressure"]["demoted"], true);
+    assert_eq!(value["accepting_hello"], true);
+}
+
+#[test]
+fn status_json_surfaces_inode_pressure() {
+    let value = parse_json(&render_status_json(&snapshot()));
+    let inode = &value["inode_pressure"];
+    assert_eq!(inode["supported"], true);
+    assert_eq!(inode["inodes_total"], 1000);
+    assert_eq!(inode["inodes_free"], 900);
+    assert_eq!(inode["inodes_used"], 100);
+    assert!((inode["used_ratio"].as_f64().unwrap() - 0.1).abs() < 1e-9);
+}
+
+#[test]
+fn status_json_inode_pressure_not_applicable_has_no_fake_numbers() {
+    let snapshot = snapshot().with_inode_pressure(AdminInodePressure::default());
+    let value = parse_json(&render_status_json(&snapshot));
+    let inode = &value["inode_pressure"];
+    assert_eq!(inode["supported"], false);
+    assert!(inode.get("inodes_total").is_none());
+    assert!(inode.get("inodes_free").is_none());
+    assert!(inode["detail"].is_string());
+}
+
+#[test]
+fn live_inode_probe_matches_platform_expectations() {
+    let probe = AdminInodePressure::probe();
+    if cfg!(windows) {
+        assert!(!probe.supported, "inodes do not apply on Windows");
+    }
+    if probe.supported {
+        assert!(probe.total > 0);
+        assert!(probe.free <= probe.total);
+    }
 }
 
 #[test]

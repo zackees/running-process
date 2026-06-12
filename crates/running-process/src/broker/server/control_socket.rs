@@ -21,6 +21,7 @@ use super::connection::{
     write_response_frame, BrokerConnectionError, HelloResponder, LocalSocketCleanup,
     PeerCredentialPolicy,
 };
+use super::fd_pressure::{FdPressureDecision, FdPressureGuard};
 use super::hello_handler::PeerIdentity;
 
 /// Result of handling one control socket connection.
@@ -65,6 +66,33 @@ where
     R: HelloResponder + ?Sized,
     F: Fn() -> AdminSnapshot + ?Sized,
 {
+    handle_control_connection_with_peer_policy_and_fd_guard(
+        stream,
+        hello_responder,
+        snapshot_provider,
+        peer,
+        peer_policy,
+        None,
+    )
+}
+
+/// Handle one already-accepted broker control connection, refusing Hello
+/// frames with `ERROR_FD_PRESSURE` while `fd_guard` reports a demotion
+/// (#390). Admin frames are always served so `status` can surface the
+/// demoted state.
+pub fn handle_control_connection_with_peer_policy_and_fd_guard<S, R, F>(
+    stream: &mut S,
+    hello_responder: &R,
+    snapshot_provider: &F,
+    peer: PeerIdentity,
+    peer_policy: &PeerCredentialPolicy,
+    fd_guard: Option<&FdPressureGuard>,
+) -> Result<ControlSocketReply, ControlSocketError>
+where
+    S: Read + Write,
+    R: HelloResponder + ?Sized,
+    F: Fn() -> AdminSnapshot + ?Sized,
+{
     if !peer_policy.allows(&peer) {
         return Ok(ControlSocketReply::DroppedPeer);
     }
@@ -100,6 +128,8 @@ where
             "initial Hello frame exceeds 64 KiB",
             0,
         )
+    } else if let Some(guard) = fd_guard.filter(|guard| guard.is_demoted()) {
+        guard.refusal_reply()
     } else {
         hello_responder.handle_frame(request_frame.clone(), peer)
     };
@@ -168,27 +198,80 @@ pub fn serve_control_socket_connections_with_limit_policy_and_post_hello<R, F, H
     snapshot_provider: F,
     connection_limit: ControlSocketConnectionLimit,
     peer_policy: &PeerCredentialPolicy,
-    mut post_hello: H,
+    post_hello: H,
 ) -> Result<(), ControlSocketError>
 where
     R: HelloResponder + ?Sized,
     F: Fn() -> AdminSnapshot,
     H: FnMut(&mut interprocess::local_socket::Stream, &HelloReply),
 {
+    let fd_guard = FdPressureGuard::default();
+    serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard(
+        socket_path,
+        hello_responder,
+        snapshot_provider,
+        connection_limit,
+        peer_policy,
+        post_hello,
+        &fd_guard,
+    )
+}
+
+/// Run a broker control-socket accept loop with fd-pressure self-demotion
+/// (#390).
+///
+/// `fd_guard` is shared so callers can surface the demotion state in admin
+/// snapshots. When `accept()` fails with EMFILE/ENFILE the loop demotes
+/// instead of returning the error: subsequent Hello connections receive a
+/// structured `ERROR_FD_PRESSURE` refusal (admin verbs keep working), and
+/// the guard recovers automatically after a streak of successful accepts.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard<R, F, H>(
+    socket_path: &str,
+    hello_responder: &R,
+    snapshot_provider: F,
+    connection_limit: ControlSocketConnectionLimit,
+    peer_policy: &PeerCredentialPolicy,
+    mut post_hello: H,
+    fd_guard: &FdPressureGuard,
+) -> Result<(), ControlSocketError>
+where
+    R: HelloResponder + ?Sized,
+    F: Fn() -> AdminSnapshot,
+    H: FnMut(&mut interprocess::local_socket::Stream, &HelloReply),
+{
+    /// Back-off between accepts while demoted so a hard fd-exhaustion loop
+    /// cannot spin the broker's CPU at 100%.
+    const FD_PRESSURE_ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
     let listener = bind_local_socket(socket_path)?;
     let cleanup = LocalSocketCleanup(socket_path);
     let result = (|| {
         let mut accepted = 0;
         while connection_limit.should_continue(accepted) {
-            let mut stream = listener.accept().map_err(BrokerConnectionError::Io)?;
+            let mut stream = match listener.accept() {
+                Ok(stream) => {
+                    fd_guard.on_accept_ok();
+                    stream
+                }
+                Err(err) => {
+                    if fd_guard.on_accept_error(&err) == FdPressureDecision::Demoted {
+                        accepted += 1;
+                        std::thread::sleep(FD_PRESSURE_ACCEPT_BACKOFF);
+                        continue;
+                    }
+                    return Err(BrokerConnectionError::Io(err).into());
+                }
+            };
             accepted += 1;
             let peer = peer_identity_from_stream(&stream)?;
-            let reply = handle_control_connection_with_peer_policy(
+            let reply = handle_control_connection_with_peer_policy_and_fd_guard(
                 &mut stream,
                 hello_responder,
                 &snapshot_provider,
                 peer,
                 peer_policy,
+                Some(fd_guard),
             )?;
             if let ControlSocketReply::Hello(hello_reply) = &reply {
                 post_hello(&mut stream, hello_reply);
