@@ -118,6 +118,11 @@ ALLOWED_RUST_SPAWN = {
     # Test-only watchdog crate: spawns procdump.exe with .output()
     # which is .spawn() + wait under the hood.
     Path("crates/test-watchdog/src/lib.rs"),
+    # Broker endpoint probe: `thread::Builder::spawn` (a thread, not a
+    # process) hosting the blocking local-socket connect so the probe
+    # deadline can bound it — interprocess::Stream::connect has no
+    # portable timeout and can hang in connect(2) on macOS (#399).
+    Path("crates/running-process/src/broker/backend_lifecycle/probe.rs"),
     # Testbins: bare std::Command::spawn on Unix only (see comment in
     # testbins/src/bin/spawner.rs — sanitized spawn isn't usable there
     # because of the setpgid-vs-killpg interaction the containment test

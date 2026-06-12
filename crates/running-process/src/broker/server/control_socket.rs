@@ -255,7 +255,14 @@ where
                     stream
                 }
                 Err(err) => {
+                    let was_demoted = fd_guard.is_demoted();
                     if fd_guard.on_accept_error(&err) == FdPressureDecision::Demoted {
+                        if !was_demoted {
+                            eprintln!(
+                                "running-process-broker: accept on {socket_path} demoted \
+                                 under fd pressure: {err}"
+                            );
+                        }
                         accepted += 1;
                         std::thread::sleep(FD_PRESSURE_ACCEPT_BACKOFF);
                         continue;
@@ -269,10 +276,17 @@ where
                 &mut stream,
                 hello_responder,
                 &snapshot_provider,
-                peer,
+                peer.clone(),
                 peer_policy,
                 Some(fd_guard),
             )?;
+            if reply == ControlSocketReply::DroppedPeer {
+                eprintln!(
+                    "running-process-broker: dropped connection on {socket_path} from peer \
+                     pid={} uid_or_sid={:?}: credential policy refused",
+                    peer.pid, peer.uid_or_sid
+                );
+            }
             if let ControlSocketReply::Hello(hello_reply) = &reply {
                 post_hello(&mut stream, hello_reply);
             }
