@@ -14,10 +14,8 @@ use running_process::broker::server::{
     ensure_service_definition_dir, service_definition_path, write_service_definition,
     ServiceDefinitionError, ServiceDefinitionLoader,
 };
-#[cfg(windows)]
 use running_process::broker::server::{service_definition_dir, SERVICE_DEF_DIR_ENV};
 
-#[cfg(windows)]
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn absolute_paths() -> (String, String) {
@@ -48,13 +46,11 @@ fn write_definition_for(root: &Path, service_name: &str, definition: &ServiceDef
     fs::write(path, definition.encode_to_vec()).unwrap();
 }
 
-#[cfg(windows)]
 struct EnvVarGuard {
     key: &'static str,
     original: Option<std::ffi::OsString>,
 }
 
-#[cfg(windows)]
 impl EnvVarGuard {
     fn remove(key: &'static str) -> Self {
         let original = std::env::var_os(key);
@@ -69,7 +65,6 @@ impl EnvVarGuard {
     }
 }
 
-#[cfg(windows)]
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
         match &self.original {
@@ -119,9 +114,54 @@ fn windows_default_service_definition_dir_uses_roaming_appdata_services() {
     );
 }
 
-#[cfg(windows)]
+#[cfg(target_os = "macos")]
 #[test]
-fn windows_service_definition_dir_override_is_private_and_loadable() {
+fn macos_default_service_definition_dir_uses_application_support() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _override = EnvVarGuard::remove(SERVICE_DEF_DIR_ENV);
+    let home = dirs::home_dir().expect("home dir must resolve on macOS runners");
+
+    assert_eq!(
+        service_definition_dir(),
+        home.join("Library")
+            .join("Application Support")
+            .join("running-process")
+            .join("services")
+    );
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn linux_default_service_definition_dir_uses_xdg_config_home() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _override = EnvVarGuard::remove(SERVICE_DEF_DIR_ENV);
+    let tmp = tempfile::tempdir().unwrap();
+    let _xdg = EnvVarGuard::set_path("XDG_CONFIG_HOME", tmp.path());
+
+    assert_eq!(
+        service_definition_dir(),
+        tmp.path().join("running-process").join("services")
+    );
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn linux_default_service_definition_dir_falls_back_to_home_config() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _override = EnvVarGuard::remove(SERVICE_DEF_DIR_ENV);
+    let _xdg = EnvVarGuard::remove("XDG_CONFIG_HOME");
+    let home = dirs::home_dir().expect("home dir must resolve on Linux runners");
+
+    assert_eq!(
+        service_definition_dir(),
+        home.join(".config")
+            .join("running-process")
+            .join("services")
+    );
+}
+
+#[test]
+fn service_definition_dir_override_is_private_and_loadable() {
     let _lock = ENV_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("overridden-services");

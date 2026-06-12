@@ -61,6 +61,24 @@ jobs:
       - name: Integration Tests
         run: uv run --module ci.run_logged logs/integration-test.log -- uv run --module ci.test --live-only -ra --strict-markers
 
+      # Servicedef install-path proof (#386): exercises the *platform-default*
+      # service-definition directory as a fresh package install — CLI install,
+      # config path/source assertion, doctor PASS, Unix permission negative
+      # probe — with RUNNING_PROCESS_SERVICE_DEF_DIR deliberately unset.
+      - name: Build broker CLI for servicedef proof
+        run: cargo build -p running-process --features daemon --bin running-process-broker-v1
+
+      - name: Servicedef install-path proof
+        run: uv run --module ci.run_logged logs/servicedef-proof.log -- uv run --module ci.servicedef_proof
+
+      - name: Upload servicedef proof evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: servicedef-proof-${{ inputs.runs-on }}
+          path: logs/servicedef-proof-*.json
+          if-no-files-found: warn
+
       - name: Display failure diagnostics
         if: ${{ failure() || cancelled() }}
         shell: bash
