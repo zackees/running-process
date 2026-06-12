@@ -54,6 +54,13 @@ pub mod maintenance;
 #[cfg(feature = "client")]
 pub mod cleanup;
 
+// #415: consumer-consumable conformance test kit. Gated behind the
+// off-by-default `test-support` cargo feature (which implies `client`)
+// so the helpers ship in the published crate but only compile when a
+// consumer opts in as a dev-dependency.
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 // Lightweight tee sink primitives for callers that want transcript/log
 // fan-out without pulling in the full daemon runtime.
 #[cfg(feature = "telemetry")]
