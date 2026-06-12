@@ -113,7 +113,18 @@ pub fn read_endpoint_probe_request<S: Read>(
     let request_bytes = read_frame(stream)?;
     let frame =
         Frame::decode(request_bytes.as_slice()).map_err(EndpointProbeServerError::DecodeFrame)?;
-    validate_endpoint_probe_request_frame(&frame)?;
+    endpoint_probe_request_from_frame(&frame)
+}
+
+/// Validate an already-decoded frame as an endpoint probe request.
+///
+/// Exposed for the [`crate::broker::backend_sdk`] endpoint mux (#412),
+/// which decodes frames from a consumer-owned read buffer instead of an
+/// exclusive stream.
+pub fn endpoint_probe_request_from_frame(
+    frame: &Frame,
+) -> Result<EndpointProbeRequest, EndpointProbeServerError> {
+    validate_endpoint_probe_request_frame(frame)?;
     let nonce = frame
         .payload
         .as_slice()
@@ -122,8 +133,8 @@ pub fn read_endpoint_probe_request<S: Read>(
     Ok(EndpointProbeRequest {
         request_id: frame.request_id,
         nonce,
-        traceparent: frame.traceparent,
-        tracestate: frame.tracestate,
+        traceparent: frame.traceparent.clone(),
+        tracestate: frame.tracestate.clone(),
     })
 }
 
@@ -262,7 +273,15 @@ fn endpoint_probe_request_frame(request_id: u64, nonce: &[u8; PROBE_NONCE_BYTES]
     }
 }
 
-fn endpoint_probe_response_frame(request: &EndpointProbeRequest, daemon: &DaemonProcess) -> Frame {
+/// Build the endpoint-probe response frame for a validated request.
+///
+/// Exposed for the [`crate::broker::backend_sdk`] endpoint mux (#412),
+/// which answers probes from a consumer-owned read buffer instead of an
+/// exclusive stream.
+pub fn endpoint_probe_response_frame(
+    request: &EndpointProbeRequest,
+    daemon: &DaemonProcess,
+) -> Frame {
     let mut payload = Vec::with_capacity(PROBE_NONCE_BYTES + 128);
     payload.extend_from_slice(&request.nonce);
     daemon.to_proto().encode(&mut payload).expect(
@@ -282,7 +301,12 @@ fn endpoint_probe_response_frame(request: &EndpointProbeRequest, daemon: &Daemon
     }
 }
 
-fn validate_endpoint_probe_request_frame(frame: &Frame) -> Result<(), EndpointProbeServerError> {
+/// Validate one frame against the endpoint-probe request contract.
+///
+/// Exposed for the [`crate::broker::backend_sdk`] endpoint mux (#412).
+pub fn validate_endpoint_probe_request_frame(
+    frame: &Frame,
+) -> Result<(), EndpointProbeServerError> {
     if frame.envelope_version != PROTOCOL_VERSION {
         return Err(EndpointProbeServerError::UnexpectedFrame(
             "envelope_version is not v1",

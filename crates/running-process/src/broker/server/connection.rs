@@ -435,6 +435,11 @@ pub(super) fn reply_for_framing_error(error: &FramingError) -> HelloReply {
         FramingError::UnexpectedEof { .. } | FramingError::Io(_) => {
             refused_reply(ErrorCode::ErrorPeerRejected, "incomplete Hello frame", 0)
         }
+        // Buffer-level codec variant (#412); the stream-level reads used
+        // here never produce it, but a malformed body is a peer fault.
+        FramingError::Decode(_) => {
+            refused_reply(ErrorCode::ErrorPeerRejected, "malformed Hello frame", 0)
+        }
     }
 }
 

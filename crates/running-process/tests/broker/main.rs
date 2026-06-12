@@ -14,6 +14,7 @@ mod backend_handle_dead;
 mod backend_handle_probe;
 mod backend_handle_recycled;
 mod backend_registry;
+mod backend_sdk;
 mod broadcast_release_handles;
 mod client;
 mod connection;

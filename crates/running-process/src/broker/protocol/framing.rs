@@ -89,6 +89,15 @@ pub enum FramingError {
     /// Raw I/O error from the underlying stream.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
+
+    /// The frame body was not a valid prost `Frame` message.
+    ///
+    /// Produced by the buffer-level
+    /// [`try_decode_framed`](super::frame_ext::try_decode_framed)
+    /// codec (#412); the stream-level [`read_frame`] returns raw body
+    /// bytes and leaves prost decoding to the caller.
+    #[error("failed to decode Frame body: {0}")]
+    Decode(#[from] prost::DecodeError),
 }
 
 /// Read one v1 frame from `reader` with the default 16 MiB cap.
