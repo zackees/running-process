@@ -82,6 +82,21 @@ stale backend handles before each lookup. It uses current-process backend
 identity as a temporary bridge; spawn-managed backend identity remains the
 responsibility of the later spawn coordinator slice.
 
+### `--handoff-endpoint` (opt-in handle-passing handoff)
+
+Passing `--handoff-endpoint <backend-handoff-socket-or-pipe>` opts the serve
+loop into the handle-passing handoff (#387,
+[v1 handoff optimization](v1-handoff-optimization.md)). After a Hello that
+negotiated handle passing, the broker dials this endpoint, transfers the
+client connection to the backend (`DuplicateHandle` on Windows,
+`SCM_RIGHTS` on Unix) paired with the one-time token, and relays the
+handoff-ready event to the client. Omitting the flag — the default —
+disables handoff entirely; negotiated clients always reconnect through
+`--backend-endpoint`. Handoff failures are never client-visible errors:
+clients silently fall back to the reconnect path. Per the measured
+serve-path latency evidence, handoff remains opt-in (see the
+default-policy decision in the handoff doc).
+
 `server::HelloRouter` is the broker-side routing layer for this path. It
 reloads `<service>.servicedef` for each request, checks the version policy,
 resolves the trust-domain instance, and turns backend-registry misses into the

@@ -35,6 +35,7 @@ mod handoff_latency;
 mod handoff_latency_e2e;
 mod handoff_orchestrate;
 mod handoff_serve_e2e;
+mod handoff_serve_latency;
 mod handoff_token_mismatch;
 mod handoff_transport;
 mod handoff_under_load;

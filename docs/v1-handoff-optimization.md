@@ -197,6 +197,90 @@ carry a heavy tail. The Windows delivery channel in this harness is a child
 stdin/stdout line protocol, so its numbers are an upper bound for a real wire
 frame.
 
+### Serve-path evidence (production wiring, 2026-06-11)
+
+The harness numbers above predate the serve-side wiring. With #387 merged,
+`handoff_serve_latency::serve_path_handoff_vs_reconnect_latency_evidence`
+measures the same comparison through the REAL `serve_registered_backend`
+accept loop: an opted-in `connect_to_backend` against a serve config with
+`with_handoff_endpoint` (full Hello → platform handoff → offer/ACK wire
+frames → handoff-ready relay → adoption) versus a non-opted-in client
+against the same serve loop with handoff disabled (full Hello →
+`backend_pipe` reconnect — the production default). Both timed regions end
+after one probe/reply byte round trip on the resulting backend connection,
+so every sample proves the route serves traffic. Same methodology: 5
+warmup + 50 measured iterations, nearest-rank P50/P99.
+
+Reproduce with:
+
+```text
+soldr cargo test -p running-process --features client --test broker serve_path_handoff_vs_reconnect_latency_evidence -- --nocapture
+```
+
+Measured on 2026-06-11 (debug builds):
+
+| Platform | Handoff P50 | Handoff P99 | Reconnect P50 | Reconnect P99 |
+|---|---|---|---|---|
+| Windows (`DuplicateHandle`, production serve loop) | 495 us | 1076 us | 377 us | 571 us |
+| Linux (`SCM_RIGHTS`, production serve loop) | pending docker run | pending docker run | pending docker run | pending docker run |
+| macOS (`SCM_RIGHTS`, production serve loop) | pending CI runner | pending CI runner | pending CI runner | pending CI runner |
+
+The Windows numbers were stable across three runs (handoff P50 482–544 us,
+P99 892–1641 us; reconnect P50 302–403 us, P99 534–682 us; the table records
+the median run). Honest reading: through the production serve path the
+handoff route pays the full Hello **plus** the broker→backend handoff dial,
+`DuplicateHandle`, offer/ACK frames, and the handoff-ready relay — all
+serialized in the broker accept loop — while reconnect pays only Hello plus
+one extra local-socket connect. On Windows that makes reconnect faster at
+both P50 and P99; the P99-tail advantage that `SCM_RIGHTS` showed in the
+pre-wiring Linux harness has not yet been demonstrated through the serve
+path.
+
+### Default-policy decision (Phase 7)
+
+**Handoff stays opt-in.** Phase 7 does not flip
+`BrokerServeConfig::handoff_endpoint` (or the client's
+`adopt_handed_off_connection`) to default-on.
+
+Justification: the latency gate for making handoff the default has always
+been `compare_handoff_latency`'s contract — strictly faster at both P50 and
+P99 — and the measured evidence fails it. The pre-wiring harness already
+showed reconnect cheaper at P50 on both Windows and Linux, and the new
+serve-path numbers above show that through the production wiring on Windows
+reconnect is faster at **both** percentiles (377 us vs 495 us at P50, 571 us
+vs 1076 us at P99): the per-connection broker→backend offer/ACK round trip
+costs more than the fresh `backend_pipe` connect it replaces. The remaining
+case for handoff is the tail-latency tightness `SCM_RIGHTS` showed in the
+pre-wiring Linux harness (P99 156 us vs 463 us), which must be reproduced
+through the production serve path (the "pending docker run" row) before it
+can justify changing the default on Unix. Until a platform shows a
+strictly-faster serve-path result, the optimization remains available to
+operators who opt in via `--handoff-endpoint` and clients that opt in via
+`adopt_handed_off_connection`, with the reconnect path staying the
+authoritative default.
+
+## Operations: enabling the serve-path handoff
+
+Serve mode keeps handoff off unless the broker is started with the backend
+handoff endpoint (see `docs/v1-broker-architecture.md` for the full serve
+usage):
+
+```bash
+running-process-broker-v1 --serve <socket-path-or-pipe-name> \
+  --service zccache \
+  --version 1.11.20 \
+  --backend-endpoint <backend-socket-or-pipe> \
+  --handoff-endpoint <backend-handoff-socket-or-pipe>
+```
+
+`--handoff-endpoint <path>` maps to
+`BrokerServeConfig::with_handoff_endpoint` and names the endpoint the
+backend listens on for the broker's `HandoffOffer`/`HandoffAck` exchange.
+Omitting the flag (the default) disables handoff entirely: negotiated
+clients always reconnect through `--backend-endpoint`. Handoff failures
+with the flag set are silent optimization failures — clients fall back to
+the reconnect path with no client-visible error.
+
 ## Capability Bits
 
 Handoff is negotiated through additive capability bits in `Hello` and
