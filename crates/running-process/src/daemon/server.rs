@@ -21,6 +21,7 @@ use crate::proto::daemon::{DaemonRequest, DaemonResponse, RequestType, StatusCod
 
 use crate::daemon::attach_stream;
 use crate::daemon::config::DaemonConfig;
+use crate::daemon::emergency_reserve::EmergencyReserve;
 use crate::daemon::handlers::{self, DaemonState};
 use crate::daemon::pipe_attach_stream;
 use crate::daemon::pipe_sessions::PipeSessionRegistry;
@@ -56,6 +57,13 @@ impl DaemonServer {
         let registry = Arc::new(Registry::open(std::path::Path::new(&db_path))?);
         let pty_sessions = Arc::new(PtySessionRegistry::new());
         let pipe_sessions = Arc::new(PipeSessionRegistry::new());
+        // #390: pre-allocate the ENOSPC delete-to-recover reserve next to
+        // the SQLite db. Never fails startup — degraded mode is logged.
+        let reserve_dir = std::path::Path::new(&db_path)
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let emergency_reserve = Arc::new(EmergencyReserve::initialize_in(&reserve_dir));
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = Arc::new(DaemonState {
@@ -71,6 +79,7 @@ impl DaemonServer {
             registry,
             pty_sessions,
             pipe_sessions,
+            emergency_reserve,
         });
         Ok(Self { state, shutdown_rx })
     }
@@ -135,13 +144,28 @@ impl DaemonServer {
                             let peer_shutdown = self.shutdown_rx.clone();
                             let peer_state = Arc::clone(&self.state);
                             tokio::spawn(async move {
+                                let reserve = Arc::clone(&peer_state.emergency_reserve);
                                 if let Err(e) = handle_connection(stream, peer_shutdown, peer_state).await {
                                     warn!("connection handler error: {e}");
+                                    // #390: a full disk surfaces here as an io
+                                    // write error; release the reserve so
+                                    // shutdown bookkeeping can still write.
+                                    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                                        reserve.release_if_enospc(io_err, "connection handler error");
+                                    } else {
+                                        reserve.release_if_disk_full_message(
+                                            &e.to_string(),
+                                            "connection handler error",
+                                        );
+                                    }
                                 }
                             });
                         }
                         Err(e) => {
                             error!("accept error: {e}");
+                            self.state
+                                .emergency_reserve
+                                .release_if_enospc(&e, "listener accept error");
                             // #199: intentional — back-off against a
                             // pathological accept failure that would
                             // otherwise spin the daemon's CPU at 100%.
@@ -644,6 +668,10 @@ mod tests {
             registry,
             pty_sessions,
             pipe_sessions,
+            emergency_reserve: Arc::new(EmergencyReserve::initialize_at(
+                tmp_dir.path().join("emergency-reserve.bin"),
+                4096,
+            )),
         };
         (state, tmp_dir)
     }

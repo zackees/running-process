@@ -12,8 +12,8 @@ use running_process::broker::client::{
     RUNNING_PROCESS_DISABLE_ENV, RUNNING_PROCESS_FAKE_BACKEND_ENV,
 };
 use running_process::broker::doctor::{
-    broker_endpoint_check, env_var_checks, platform_path_budget_check, run_doctor,
-    service_definition_checks, version_check, DoctorCheck, DoctorOptions, DoctorReport,
+    broker_endpoint_check, env_var_checks, inode_pressure_check, platform_path_budget_check,
+    run_doctor, service_definition_checks, version_check, DoctorCheck, DoctorOptions, DoctorReport,
     DoctorStatus,
 };
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
@@ -171,6 +171,7 @@ fn run_doctor_produces_named_checks_and_valid_json() {
         "broker:endpoint",
         "servicedef:dir",
         "sockets:runtime-dir",
+        "filesystem:inodes",
         "platform:path-budget",
         "build:version",
     ] {
@@ -185,6 +186,38 @@ fn run_doctor_produces_named_checks_and_valid_json() {
     );
     let value: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
     assert_eq!(value["command"], "doctor");
+}
+
+// ---------------------------------------------------------------------------
+// Inode-pressure check (#390)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inode_pressure_check_reports_per_platform() {
+    let check = inode_pressure_check();
+    assert_eq!(check.name, "filesystem:inodes");
+    #[cfg(windows)]
+    {
+        assert_eq!(check.status, DoctorStatus::Pass);
+        assert!(check.detail.contains("not applicable on Windows"));
+        assert!(
+            !check.detail.contains("inodes free"),
+            "windows must not fake inode numbers: {}",
+            check.detail
+        );
+    }
+    #[cfg(unix)]
+    {
+        // A healthy dev box passes; a filesystem with no inode table
+        // also passes as not-applicable. Either way it never panics and
+        // never FAILs on a machine with normal headroom.
+        assert_ne!(
+            check.status,
+            DoctorStatus::Fail,
+            "unexpected inode FAIL: {}",
+            check.detail
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

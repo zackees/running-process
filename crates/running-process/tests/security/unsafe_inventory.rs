@@ -8,6 +8,10 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
         unsafe_count: 19,
     },
     UnsafeInventoryEntry {
+        path: "src/broker/fs_health.rs",
+        unsafe_count: 2,
+    },
+    UnsafeInventoryEntry {
         path: "src/broker/host_identity.rs",
         unsafe_count: 8,
     },

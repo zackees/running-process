@@ -252,6 +252,9 @@ pub fn run_doctor(options: &DoctorOptions) -> DoctorReport {
     checks.extend(isolated("sockets:runtime-dir", || {
         vec![socket_hygiene_check()]
     }));
+    checks.extend(isolated("filesystem:inodes", || {
+        vec![inode_pressure_check()]
+    }));
     checks.extend(isolated("platform:path-budget", || {
         vec![platform_path_budget_check()]
     }));
@@ -686,6 +689,63 @@ fn broker_runtime_dir() -> Option<PathBuf> {
     let pipe = shared_broker_pipe(&sid_hash).ok()?;
     pipe.unix
         .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+// ---------------------------------------------------------------------------
+// 4b. Inode pressure on the daemon data dir filesystem (#390)
+// ---------------------------------------------------------------------------
+
+/// Free-inode fraction below which the check WARNs.
+const INODE_WARN_FREE_RATIO: f64 = 0.05;
+/// Free-inode fraction below which the check FAILs.
+const INODE_FAIL_FREE_RATIO: f64 = 0.01;
+
+/// Report inode usage/headroom of the daemon data dir filesystem.
+///
+/// Windows filesystems have no fixed inode table, so the check PASSes as
+/// not-applicable there instead of faking numbers. Same for Unix
+/// filesystems reporting a zero inode total (e.g. btrfs).
+pub fn inode_pressure_check() -> DoctorCheck {
+    const NAME: &str = "filesystem:inodes";
+    let dir = crate::client::paths::data_dir();
+    let display = dir.display();
+    match crate::broker::fs_health::daemon_data_dir_inode_usage() {
+        Ok(Some(usage)) => {
+            let free_ratio = if usage.total == 0 {
+                1.0
+            } else {
+                usage.free as f64 / usage.total as f64
+            };
+            let detail = format!(
+                "{display}: {} of {} inodes free ({:.1}% used)",
+                usage.free,
+                usage.total,
+                usage.used_ratio() * 100.0
+            );
+            if free_ratio < INODE_FAIL_FREE_RATIO {
+                DoctorCheck::fail(
+                    NAME,
+                    format!("{detail} — inode exhaustion imminent; daemon writes will ENOSPC"),
+                )
+            } else if free_ratio < INODE_WARN_FREE_RATIO {
+                DoctorCheck::warn(NAME, format!("{detail} — low inode headroom"))
+            } else {
+                DoctorCheck::pass(NAME, detail)
+            }
+        }
+        Ok(None) => DoctorCheck::pass(
+            NAME,
+            if cfg!(windows) {
+                format!("not applicable on Windows ({display} has no fixed inode table)")
+            } else {
+                format!("{display}: filesystem reports no fixed inode table (not applicable)")
+            },
+        ),
+        Err(err) => DoctorCheck::warn(
+            NAME,
+            format!("cannot probe inode usage of {display}: {err}"),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------

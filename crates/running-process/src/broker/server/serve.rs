@@ -21,10 +21,10 @@ use super::backend_launcher::{BackendLauncher, CommandBackendLauncher};
 use super::backend_registry::BackendRegistry;
 use super::connection::{BrokerConnectionError, PeerCredentialPolicy};
 use super::control_socket::{
-    serve_control_socket_connections_with_limit_and_policy,
-    serve_control_socket_connections_with_limit_policy_and_post_hello,
+    serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard,
     ControlSocketConnectionLimit, ControlSocketError,
 };
+use super::fd_pressure::FdPressureGuard;
 use super::handoff_serve::{complete_negotiated_handoff, ServeHandoffContext};
 use super::hello_handler::{HelloHandler, HelloHandlerError};
 use super::hello_router::HelloRouter;
@@ -187,13 +187,23 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
     let peer_policy =
         PeerCredentialPolicy::current_user().ok_or(BrokerServeError::PeerPolicyUnavailable)?;
     let started_at = Instant::now();
+    let fd_guard = FdPressureGuard::default();
     let snapshot_provider = || {
         let registry = registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        AdminSnapshot::from_registry(instance.id(), started_at.elapsed(), true, 0, &registry, &[])
+        let demoted = fd_guard.is_demoted();
+        AdminSnapshot::from_registry(
+            instance.id(),
+            started_at.elapsed(),
+            !demoted,
+            0,
+            &registry,
+            &[],
+        )
+        .with_fd_pressure_demoted(demoted)
     };
-    serve_control_socket_connections_with_limit_policy_and_post_hello(
+    serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard(
         &config.socket_path,
         &router,
         snapshot_provider,
@@ -213,6 +223,7 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
             };
             complete_negotiated_handoff(&ctx, stream, reply);
         },
+        &fd_guard,
     )?;
     Ok(())
 }
@@ -238,18 +249,23 @@ pub fn serve_launching_backends_with_launcher(
     let peer_policy =
         PeerCredentialPolicy::current_user().ok_or(BrokerServeError::PeerPolicyUnavailable)?;
     let started_at = Instant::now();
+    let fd_guard = FdPressureGuard::default();
     let snapshot_provider = || {
         let registry = registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        AdminSnapshot::from_registry("launch", started_at.elapsed(), true, 0, &registry, &[])
+        let demoted = fd_guard.is_demoted();
+        AdminSnapshot::from_registry("launch", started_at.elapsed(), !demoted, 0, &registry, &[])
+            .with_fd_pressure_demoted(demoted)
     };
-    serve_control_socket_connections_with_limit_and_policy(
+    serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard(
         &config.socket_path,
         &router,
         snapshot_provider,
         config.connection_limit(),
         &peer_policy,
+        |_stream, _reply| {},
+        &fd_guard,
     )?;
     Ok(())
 }
