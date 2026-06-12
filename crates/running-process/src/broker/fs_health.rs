@@ -59,10 +59,13 @@ pub fn inode_usage(path: &Path) -> std::io::Result<Option<InodeUsage>> {
         if stats.f_files == 0 {
             return Ok(None);
         }
-        Ok(Some(InodeUsage {
+        // fsfilcnt_t is u64 on Linux but u32 on macOS; keep explicit casts.
+        #[allow(clippy::unnecessary_cast)]
+        let usage = InodeUsage {
             total: stats.f_files as u64,
             free: stats.f_favail as u64,
-        }))
+        };
+        Ok(Some(usage))
     }
 }
 
