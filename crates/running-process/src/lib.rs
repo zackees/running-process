@@ -70,6 +70,7 @@ pub mod pty;
 mod public_symbols;
 mod rust_debug;
 pub mod spawn;
+pub mod systemd_killmode;
 pub mod terminal_graphics;
 mod types;
 #[cfg(unix)]

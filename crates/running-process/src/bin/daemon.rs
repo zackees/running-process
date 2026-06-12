@@ -166,6 +166,11 @@ fn main() {
             db_path,
         } => {
             init_logging();
+            // #391: warn at startup when a systemd KillMode would reap
+            // spawned children on unit stop. Silent when not under systemd.
+            if let Some(warning) = running_process::systemd_killmode::probe().warning() {
+                tracing::warn!("{warning}");
+            }
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             rt.block_on(async {
                 let scope_name = scope.clone().unwrap_or_else(|| "global".to_string());

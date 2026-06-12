@@ -120,6 +120,46 @@ Checks:
 2. Drop manifests whose `boot_id` differs from the current runner.
 3. Keep cache roots and manifest registry in the same cache key family.
 
+## Cleanup Verification Checklist
+
+`running-process-cleanup verify [--json] [--scope-hash <hash>]` (#391)
+reconciles every artifact class the daemon can leave behind. It is
+READ-ONLY: stale residue is reported, never deleted. Each location is
+reported as `CLEAN`, `ACTIVE`, `PRESENT`, `STALE`, `ORPHANED`, or `ERROR`;
+the exit code is nonzero only when a location could not be inspected
+(`ERROR`).
+
+| Class | Expected location | Stale / orphaned when |
+|---|---|---|
+| `socket` | Unix: `$XDG_RUNTIME_DIR/running-process/daemon{-hash}.sock`; Windows: `\\.\pipe\running-process-daemon-{user}{-hash}` (no filesystem residue) | socket file exists but nothing accepts connections |
+| `pid-file` | Unix: socket dir, `daemon{-hash}.pid`; Windows: `%LOCALAPPDATA%\running-process\daemon{-hash}.pid` | recorded pid is dead or the file is unparsable |
+| `servicedef` | platform service-definition dir (`*.servicedef`, see [v1 service definition](v1-service-definition.md)) | non-`.servicedef` entries in the directory are orphaned; the definitions themselves are persistent config |
+| `database` | `tracked-pids{-hash}.sqlite3` in the daemon data dir (persists across runs) | `-wal` / `-shm` sidecars present with no live daemon (unclean shutdown) |
+| `logs` | `*.log` files in the daemon data dir (none expected by default) | reported with count/size, never deleted |
+| `emergency-reserve` | `emergency-reserve.bin` (32 MiB) next to the SQLite db (#390) | wrong size (partial pre-allocation); absence is clean — it is re-armed at every daemon startup |
+| `shadow` | shadow-copy dir (`run/` under the platform data/runtime dir) | contents persist by design; reported with entry count for manual pruning |
+
+The `--json` document extends the registry verify output with an additive
+`artifacts` object: `{"schema_version":1,"exit_code":0,"findings":0,
+"checks":[{"class":"socket","location":"...","status":"CLEAN","detail":"..."}]}`.
+
+## systemd KillMode Reaps Spawned Children
+
+Symptoms (Linux, daemon running as a systemd unit):
+
+- spawned children die when the daemon's unit stops or restarts
+- startup log contains `KillMode=control-group` warning
+
+systemd's default `KillMode=control-group` kills every process in the
+unit's cgroup on stop. The daemon detects this at startup (#391): when
+`INVOCATION_ID` indicates systemd management it resolves the owning unit
+from `/proc/self/cgroup` and queries `systemctl show -p KillMode <unit>`,
+emitting a WARN when the mode is `control-group` or undeterminable. The
+same assessment surfaces as the `platform:systemd-killmode` doctor check.
+
+Fix: set `KillMode=process` (or `mixed`) in the unit file so children can
+outlive the daemon (see `contrib/systemd/`).
+
 ## Network Filesystem Refusal
 
 Symptoms:

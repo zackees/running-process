@@ -44,6 +44,11 @@ ALLOWED_RUST_COMMAND_NEW = {
     # `crates/running-process/src/broker/lifecycle/sid.rs` for the
     # full justification in the module docs.
     Path("crates/running-process/src/broker/lifecycle/sid.rs"),
+    # systemd KillMode startup probe (Linux only): fixed-argument
+    # read-only `systemctl show -p KillMode <unit>` query at daemon
+    # startup, before any child is spawned, with no user input. See
+    # `crates/running-process/src/systemd_killmode.rs` module docs.
+    Path("crates/running-process/src/systemd_killmode.rs"),
     # Broker backend launcher: constructs a reviewed Command only to
     # hand it to the sanitized `spawn_daemon` surface. The module owns
     # service-definition validation, canonical endpoint allocation, and

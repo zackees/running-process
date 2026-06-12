@@ -18,6 +18,17 @@ use std::path::PathBuf;
 /// [`interprocess::local_socket::ToFsName::to_fs_name`] with
 /// [`GenericFilePath`](interprocess::local_socket::GenericFilePath).
 pub fn socket_path(scope_hash: Option<&str>) -> String {
+    #[cfg(unix)]
+    {
+        // Ensure the directory exists.
+        let _ = std::fs::create_dir_all(runtime_dir_unix());
+    }
+    socket_path_view(scope_hash)
+}
+
+/// Read-only variant of [`socket_path`]: derives the same endpoint string
+/// without creating any directory. Used by read-only inspectors (#391).
+pub fn socket_path_view(scope_hash: Option<&str>) -> String {
     let suffix = match scope_hash {
         Some(h) => format!("-{h}"),
         None => String::new(),
@@ -31,10 +42,7 @@ pub fn socket_path(scope_hash: Option<&str>) -> String {
 
     #[cfg(unix)]
     {
-        let dir = runtime_dir_unix();
-        // Ensure the directory exists.
-        let _ = std::fs::create_dir_all(&dir);
-        format!("{}/daemon{suffix}.sock", dir.display())
+        format!("{}/daemon{suffix}.sock", runtime_dir_unix().display())
     }
 }
 
@@ -64,6 +72,16 @@ pub fn make_socket_name(path: &str) -> std::io::Result<interprocess::local_socke
 /// - **Linux/macOS**: same directory as the socket, with `.pid` extension.
 /// - **Windows**: `%LOCALAPPDATA%\running-process\daemon{-hash}.pid`
 pub fn pid_file_path(scope_hash: Option<&str>) -> PathBuf {
+    let path = pid_file_path_view(scope_hash);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    path
+}
+
+/// Read-only variant of [`pid_file_path`]: derives the same path without
+/// creating any directory. Used by read-only inspectors (#391).
+pub fn pid_file_path_view(scope_hash: Option<&str>) -> PathBuf {
     let suffix = match scope_hash {
         Some(h) => format!("-{h}"),
         None => String::new(),
@@ -71,16 +89,12 @@ pub fn pid_file_path(scope_hash: Option<&str>) -> PathBuf {
 
     #[cfg(windows)]
     {
-        let base = local_app_data_dir();
-        let _ = std::fs::create_dir_all(&base);
-        base.join(format!("daemon{suffix}.pid"))
+        local_app_data_dir().join(format!("daemon{suffix}.pid"))
     }
 
     #[cfg(unix)]
     {
-        let dir = runtime_dir_unix();
-        let _ = std::fs::create_dir_all(&dir);
-        dir.join(format!("daemon{suffix}.pid"))
+        runtime_dir_unix().join(format!("daemon{suffix}.pid"))
     }
 }
 
@@ -90,24 +104,21 @@ pub fn pid_file_path(scope_hash: Option<&str>) -> PathBuf {
 ///   (fallback: `~/.local/state/running-process/tracked-pids{-hash}.sqlite3`)
 /// - **Windows**: `%LOCALAPPDATA%\running-process\tracked-pids{-hash}.sqlite3`
 pub fn db_path(scope_hash: Option<&str>) -> PathBuf {
+    let path = db_path_view(scope_hash);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    path
+}
+
+/// Read-only variant of [`db_path`]: derives the same path without creating
+/// any directory. Used by read-only inspectors (#391).
+pub fn db_path_view(scope_hash: Option<&str>) -> PathBuf {
     let suffix = match scope_hash {
         Some(h) => format!("-{h}"),
         None => String::new(),
     };
-
-    #[cfg(windows)]
-    {
-        let base = local_app_data_dir();
-        let _ = std::fs::create_dir_all(&base);
-        base.join(format!("tracked-pids{suffix}.sqlite3"))
-    }
-
-    #[cfg(unix)]
-    {
-        let dir = state_dir_unix();
-        let _ = std::fs::create_dir_all(&dir);
-        dir.join(format!("tracked-pids{suffix}.sqlite3"))
-    }
+    data_dir().join(format!("tracked-pids{suffix}.sqlite3"))
 }
 
 /// Returns the shadow directory used for ephemeral run data.
@@ -116,26 +127,28 @@ pub fn db_path(scope_hash: Option<&str>) -> PathBuf {
 /// - **Linux**: `$XDG_RUNTIME_DIR/running-process/run/`
 /// - **macOS**: `$HOME/Library/Caches/running-process/run/`
 pub fn shadow_dir() -> PathBuf {
+    let dir = shadow_dir_view();
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Read-only variant of [`shadow_dir`]: derives the same path without
+/// creating any directory. Used by read-only inspectors (#391).
+pub fn shadow_dir_view() -> PathBuf {
     #[cfg(windows)]
     {
-        let dir = local_app_data_dir().join("run");
-        let _ = std::fs::create_dir_all(&dir);
-        dir
+        local_app_data_dir().join("run")
     }
 
     #[cfg(target_os = "macos")]
     {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let dir = home.join("Library/Caches/running-process/run");
-        let _ = std::fs::create_dir_all(&dir);
-        dir
+        home.join("Library/Caches/running-process/run")
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let dir = runtime_dir_unix().join("run");
-        let _ = std::fs::create_dir_all(&dir);
-        dir
+        runtime_dir_unix().join("run")
     }
 }
 

@@ -19,7 +19,11 @@
 //!    directory (connect-refused ⇒ stale). Reported, not deleted.
 //! 5. Platform path budget: derived pipe/socket path length against the
 //!    platform limit (`MAX_PATH` on Windows, `sun_path` on Unix).
-//! 6. Version/build info: crate version, negotiated protocol version, and
+//! 6. systemd KillMode (#391): WARN when systemd-managed with
+//!    `KillMode=control-group` (or undeterminable). The only check that may
+//!    spawn a process — a read-only `systemctl show -p KillMode` query on
+//!    Linux, and only when `INVOCATION_ID` indicates systemd management.
+//! 7. Version/build info: crate version, negotiated protocol version, and
 //!    framing version.
 //!
 //! Every check is fault-isolated: a panic inside one check is converted to
@@ -257,6 +261,9 @@ pub fn run_doctor(options: &DoctorOptions) -> DoctorReport {
     }));
     checks.extend(isolated("platform:path-budget", || {
         vec![platform_path_budget_check()]
+    }));
+    checks.extend(isolated("platform:systemd-killmode", || {
+        vec![systemd_killmode_check()]
     }));
     checks.extend(isolated("build:version", || vec![version_check()]));
     DoctorReport { checks }
@@ -801,7 +808,37 @@ pub fn platform_path_budget_check() -> DoctorCheck {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Version/build info
+// 6. systemd KillMode (#391)
+// ---------------------------------------------------------------------------
+
+/// WARN when running under a systemd unit whose KillMode would reap
+/// spawned children on unit stop (`control-group`, systemd's default), or
+/// when systemd-managed but the KillMode cannot be determined.
+pub fn systemd_killmode_check() -> DoctorCheck {
+    const NAME: &str = "platform:systemd-killmode";
+    use crate::systemd_killmode::{probe, KillModeAssessment};
+    let assessment = probe();
+    match assessment.warning() {
+        Some(warning) => DoctorCheck::warn(NAME, warning),
+        None => match assessment {
+            KillModeAssessment::Safe { unit, kill_mode } => DoctorCheck::pass(
+                NAME,
+                format!("systemd unit {unit} uses KillMode={kill_mode} (children survive stop)"),
+            ),
+            _ => DoctorCheck::pass(
+                NAME,
+                if cfg!(target_os = "linux") {
+                    "not running under systemd"
+                } else {
+                    "not applicable on this platform"
+                },
+            ),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 7. Version/build info
 // ---------------------------------------------------------------------------
 
 /// Report crate, protocol, and framing versions. Always PASS.

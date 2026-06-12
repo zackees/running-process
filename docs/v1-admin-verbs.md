@@ -411,6 +411,9 @@ Checks (each PASS / WARN / FAIL with a one-line detail):
   never deleted — doctor is read-only)
 - derived pipe/socket path length against the platform budget
   (`MAX_PATH` / `sun_path`)
+- systemd KillMode (#391): WARN when the owning unit uses
+  `KillMode=control-group` (or it cannot be determined) — Linux only,
+  silent when not systemd-managed
 - crate, protocol, and framing versions
 
 Exit code is `0` when no check FAILs (WARNs do not fail) and `1` otherwise.

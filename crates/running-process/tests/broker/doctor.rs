@@ -13,8 +13,8 @@ use running_process::broker::client::{
 };
 use running_process::broker::doctor::{
     broker_endpoint_check, env_var_checks, inode_pressure_check, platform_path_budget_check,
-    run_doctor, service_definition_checks, version_check, DoctorCheck, DoctorOptions, DoctorReport,
-    DoctorStatus,
+    run_doctor, service_definition_checks, systemd_killmode_check, version_check, DoctorCheck,
+    DoctorOptions, DoctorReport, DoctorStatus,
 };
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
 use running_process::broker::server::{
@@ -173,6 +173,7 @@ fn run_doctor_produces_named_checks_and_valid_json() {
         "sockets:runtime-dir",
         "filesystem:inodes",
         "platform:path-budget",
+        "platform:systemd-killmode",
         "build:version",
     ] {
         find_check(&report.checks, name);
@@ -217,6 +218,29 @@ fn inode_pressure_check_reports_per_platform() {
             "unexpected inode FAIL: {}",
             check.detail
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// systemd KillMode check (#391)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn systemd_killmode_check_never_fails() {
+    let check = systemd_killmode_check();
+    assert_eq!(check.name, "platform:systemd-killmode");
+    // Off-Linux (and on Linux outside systemd) the check passes; under a
+    // systemd unit it may WARN — but it must never FAIL.
+    assert_ne!(
+        check.status,
+        DoctorStatus::Fail,
+        "unexpected FAIL: {}",
+        check.detail
+    );
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert_eq!(check.status, DoctorStatus::Pass);
+        assert!(check.detail.contains("not applicable"));
     }
 }
 

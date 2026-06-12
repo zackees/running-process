@@ -17,6 +17,8 @@ pub mod list;
 pub mod prune;
 /// Uninstall cleanup operations for service-owned roots.
 pub mod uninstall;
+/// Exhaustive daemon-artifact reconciliation for `cleanup verify` (#391).
+pub mod verify_artifacts;
 /// Basic cleanup verification helpers.
 pub mod verify_basic;
 
