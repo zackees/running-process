@@ -23,5 +23,8 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-ENTRYPOINT ["sh", "-lc"]
-CMD ["uv run --script install && uv run --no-editable -m ci.lint"]
+# No ENTRYPOINT: ci/linux_docker.py passes `sh -lc <command>` as the
+# container command. An `["sh", "-lc"]` entrypoint would turn that into
+# `sh -lc sh -lc <command>`, which runs a bare `sh` that exits 0 without
+# executing anything — lint silently "passed" without running.
+CMD ["sh", "-lc", "uv run --script install && uv run --no-editable -m ci.lint"]
