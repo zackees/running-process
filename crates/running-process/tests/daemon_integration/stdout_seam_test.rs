@@ -76,16 +76,14 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx & echo done> \"{done_str}\""
     let socket_for_client = socket.clone();
     let done_for_client = done.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket_for_client).expect("connect");
+        let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
         let spawned = client
             .spawn_command(&SpawnCommandRequest::shell(command))
             .expect("spawn_command");
         assert!(spawned.pid > 0);
 
         // Poll for the done marker — up to 10s, scaled on CI.
-        let deadline =
-            std::time::Instant::now() + scaled(std::time::Duration::from_secs(10));
+        let deadline = std::time::Instant::now() + scaled(std::time::Duration::from_secs(10));
         while !done_for_client.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -193,17 +191,14 @@ async fn concurrent_subprocesses_write_distinct_files() {
         }
 
         // Wait for all three marker files. Generous deadline.
-        let deadline =
-            std::time::Instant::now() + scaled(std::time::Duration::from_secs(10));
-        while !files_for_client.iter().all(|p| p.exists())
-            && std::time::Instant::now() < deadline
-        {
+        let deadline = std::time::Instant::now() + scaled(std::time::Duration::from_secs(10));
+        while !files_for_client.iter().all(|p| p.exists()) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
         for (path, expected) in files_for_client.iter().zip(expected_for_client.iter()) {
-            let contents = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+            let contents =
+                std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
             assert!(
                 contents.contains(expected),
                 "expected {expected:?} in {path:?}, got {contents:?}"
@@ -237,9 +232,7 @@ async fn subprocess_outlives_daemon_shutdown_without_pipe_dangling() {
     // The subprocess sleeps long enough that we'll have killed the daemon
     // by the time it gets to writing the marker.
     let command = if cfg!(windows) {
-        format!(
-            "ping 127.0.0.1 -n 3 >NUL & echo survived> \"{marker_str}\""
-        )
+        format!("ping 127.0.0.1 -n 3 >NUL & echo survived> \"{marker_str}\"")
     } else {
         format!("sleep 2; printf survived > \"{marker_str}\"")
     };
@@ -348,7 +341,10 @@ async fn spawn_response_pid_is_alive() {
         // (no race here because the subprocess sleeps 2s before exiting).
         std::thread::sleep(scaled(std::time::Duration::from_millis(300)));
         let list_resp = client.list_active().expect("list_active");
-        let processes = list_resp.list_active.expect("list_active payload").processes;
+        let processes = list_resp
+            .list_active
+            .expect("list_active payload")
+            .processes;
         let tracked = processes
             .iter()
             .find(|p| p.pid == spawned.pid)

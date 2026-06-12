@@ -89,8 +89,7 @@ async fn workaround_stdin_via_temp_file_and_argv() {
     let socket_for_client = socket.clone();
     let result_for_client = result.clone();
     let task_result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket_for_client).expect("connect");
+        let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
         let _ = client
             .spawn_command(&SpawnCommandRequest::shell(command))
             .expect("spawn_command");
@@ -124,8 +123,7 @@ async fn workaround_stdout_via_shell_redirect_to_file() {
     let socket_for_client = socket.clone();
     let out_for_client = out.clone();
     let task_result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket_for_client).expect("connect");
+        let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
         let _ = client
             .spawn_command(&SpawnCommandRequest::shell(command))
             .expect("spawn_command");
@@ -167,8 +165,7 @@ async fn workaround_stderr_via_shell_redirect_to_file() {
     let socket_for_client = socket.clone();
     let err_for_client = err.clone();
     let task_result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket_for_client).expect("connect");
+        let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
         let _ = client
             .spawn_command(&SpawnCommandRequest::shell(command))
             .expect("spawn_command");
@@ -212,8 +209,7 @@ async fn workaround_stdout_and_stderr_to_distinct_files() {
     let out_for_client = out.clone();
     let err_for_client = err.clone();
     let task_result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket_for_client).expect("connect");
+        let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
         let _ = client
             .spawn_command(&SpawnCommandRequest::shell(command))
             .expect("spawn_command");
@@ -255,16 +251,13 @@ async fn workaround_stdout_and_stderr_merged_to_one_file() {
     let command = if cfg!(windows) {
         format!("(echo OUT-LINE & echo ERR-LINE 1>&2) > \"{merged_str}\" 2>&1")
     } else {
-        format!(
-            "(printf 'OUT-LINE\\n'; printf 'ERR-LINE\\n' 1>&2) > \"{merged_str}\" 2>&1"
-        )
+        format!("(printf 'OUT-LINE\\n'; printf 'ERR-LINE\\n' 1>&2) > \"{merged_str}\" 2>&1")
     };
 
     let socket_for_client = socket.clone();
     let merged_for_client = merged.clone();
     let task_result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket_for_client).expect("connect");
+        let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
         let _ = client
             .spawn_command(&SpawnCommandRequest::shell(command))
             .expect("spawn_command");
@@ -345,15 +338,13 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 1>&2) 2> \"{err_str}\""
     let socket_for_client = socket.clone();
     let err_for_client = err.clone();
     let task_result = tokio::task::spawn_blocking(move || {
-        let mut client =
-            DaemonClient::connect_to(&socket_for_client).expect("connect");
+        let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
         let _ = client
             .spawn_command(&SpawnCommandRequest::shell(command))
             .expect("spawn_command");
 
         // Poll for ≥ 1 MiB on the file.
-        let deadline =
-            std::time::Instant::now() + scaled(std::time::Duration::from_secs(20));
+        let deadline = std::time::Instant::now() + scaled(std::time::Duration::from_secs(20));
         loop {
             if let Ok(meta) = std::fs::metadata(&err_for_client) {
                 if meta.len() >= 1024 * 1024 {
@@ -364,9 +355,7 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 1>&2) 2> \"{err_str}\""
                 let observed = std::fs::metadata(&err_for_client)
                     .map(|m| m.len())
                     .unwrap_or(0);
-                panic!(
-                    "stderr file never reached 1 MiB (got {observed} bytes)"
-                );
+                panic!("stderr file never reached 1 MiB (got {observed} bytes)");
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }

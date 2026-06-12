@@ -9,8 +9,7 @@ use running_process::maintenance::run_release_handles;
 
 #[test]
 fn release_handles_phase1_stub_returns_no_manifests_message() {
-    let outcome =
-        run_release_handles(Path::new(r"C:\Users\example\worktree")).expect("ok");
+    let outcome = run_release_handles(Path::new(r"C:\Users\example\worktree")).expect("ok");
     assert!(
         outcome.already_clean,
         "Phase 1 stub should always report already_clean=true"
@@ -37,8 +36,7 @@ fn release_handles_rejects_empty_path() {
 
 #[test]
 fn release_handles_json_output_is_well_formed() {
-    let outcome =
-        run_release_handles(Path::new(r"C:\Users\example\worktree")).expect("ok");
+    let outcome = run_release_handles(Path::new(r"C:\Users\example\worktree")).expect("ok");
     let json = outcome.to_json();
     // Backslashes must be escaped in JSON strings.
     assert!(json.contains("C:\\\\Users\\\\example\\\\worktree"));

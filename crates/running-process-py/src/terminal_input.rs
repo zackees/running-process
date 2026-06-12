@@ -8,7 +8,7 @@ use running_process::pty::terminal_input::{
 
 use crate::helpers::to_py_err;
 
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub(crate) struct NativeTerminalInputEvent {
     pub(crate) data: Vec<u8>,
@@ -49,7 +49,7 @@ impl NativeTerminalInput {
         py: Python<'_>,
         timeout: Option<f64>,
     ) -> PyResult<TerminalInputEventRecord> {
-        py.allow_threads(|| {
+        py.detach(|| {
             self.inner.wait_for_event(timeout).map_err(|err| match err {
                 TerminalInputError::Closed => {
                     PyRuntimeError::new_err("Native terminal input is closed")
@@ -138,11 +138,11 @@ impl NativeTerminalInput {
     }
 
     fn stop(&self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| self.inner.stop_impl().map_err(to_py_err))
+        py.detach(|| self.inner.stop_impl().map_err(to_py_err))
     }
 
     fn close(&self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| self.inner.stop_impl().map_err(to_py_err))
+        py.detach(|| self.inner.stop_impl().map_err(to_py_err))
     }
 
     pub(crate) fn available(&self) -> bool {

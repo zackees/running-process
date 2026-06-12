@@ -27,7 +27,14 @@ use super::{scaled, start_server_with_tempdb};
 /// Locate the env-dump testbin. Builds it on demand.
 fn env_dump_path() -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", "testbin-env-dump", "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            "testbin-env-dump",
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("cargo build");
@@ -44,8 +51,7 @@ fn env_dump_path() -> PathBuf {
             {
                 if let Some(exe) = v["executable"].as_str() {
                     let p = PathBuf::from(exe);
-                    let deadline =
-                        std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                     while !p.exists() && std::time::Instant::now() < deadline {
                         std::thread::sleep(std::time::Duration::from_millis(50));
                     }
@@ -100,18 +106,13 @@ async fn default_inherits_daemon_env_and_layers_caller_env() {
     let out = workdir.path().join("env.dump");
 
     // Build the shell command: invoke env-dump with the output path.
-    let command = format!(
-        "{} {}",
-        shell_quote_path(&dump_bin),
-        shell_quote_path(&out)
-    );
+    let command = format!("{} {}", shell_quote_path(&dump_bin), shell_quote_path(&out));
 
     let socket_for_client = socket.clone();
     let out_for_client = out.clone();
     let task = tokio::task::spawn_blocking(move || {
         let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
-        let req = SpawnCommandRequest::shell(command)
-            .with_env("RP_TEST_LAYERED", "from-caller");
+        let req = SpawnCommandRequest::shell(command).with_env("RP_TEST_LAYERED", "from-caller");
         let _ = client.spawn_command(&req).expect("spawn_command");
 
         let env_map = read_env_file(&out_for_client);
@@ -151,17 +152,12 @@ async fn replace_mode_subprocess_sees_only_caller_env() {
     let workdir = tempfile::tempdir().expect("tempdir");
     let out = workdir.path().join("env.dump");
 
-    let command = format!(
-        "{} {}",
-        shell_quote_path(&dump_bin),
-        shell_quote_path(&out)
-    );
+    let command = format!("{} {}", shell_quote_path(&dump_bin), shell_quote_path(&out));
 
     // Caller-supplied env: only the platform essentials the shell
     // wrapper actually needs + our probe var.
-    let mut caller_env: Vec<(String, String)> = vec![
-        ("RP_TEST_REPLACED".to_string(), "from-replace".to_string()),
-    ];
+    let mut caller_env: Vec<(String, String)> =
+        vec![("RP_TEST_REPLACED".to_string(), "from-replace".to_string())];
     if cfg!(windows) {
         // cmd.exe needs SystemRoot to load DLLs. Copy it from the
         // test's own env so it matches whatever the runner uses.
@@ -259,11 +255,7 @@ async fn layer_mode_caller_env_wins_ties_against_inherited() {
     let workdir = tempfile::tempdir().expect("tempdir");
     let out = workdir.path().join("env.dump");
 
-    let command = format!(
-        "{} {}",
-        shell_quote_path(&dump_bin),
-        shell_quote_path(&out)
-    );
+    let command = format!("{} {}", shell_quote_path(&dump_bin), shell_quote_path(&out));
 
     // PATH almost certainly exists in the daemon's inherited env.
     // We override it with a deterministic value via the caller env.
@@ -328,11 +320,7 @@ async fn windows_case_insensitive_override_beats_inherited_path() {
     let workdir = tempfile::tempdir().expect("tempdir");
     let out = workdir.path().join("env.dump");
 
-    let command = format!(
-        "{} {}",
-        shell_quote_path(&dump_bin),
-        shell_quote_path(&out)
-    );
+    let command = format!("{} {}", shell_quote_path(&dump_bin), shell_quote_path(&out));
 
     let inherited_marker = "C:\\should-not-win-marker";
     let override_marker = "C:\\override-marker";

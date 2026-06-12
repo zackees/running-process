@@ -12,8 +12,8 @@ use crate::registry::{
 
 #[test]
 fn process_registry_register_list_unregister() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let test_pid = 99999u32;
         // Register
         native_register_process(test_pid, "test", "test-command", None).unwrap();
@@ -50,8 +50,8 @@ fn tracked_process_db_path_returns_ok() {
 
 #[test]
 fn process_registry_register_with_cwd() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let test_pid = 99998u32;
         native_register_process(test_pid, "test", "test-cmd", Some("/tmp/test".to_string()))
             .unwrap();
@@ -68,8 +68,8 @@ fn process_registry_register_with_cwd() {
 
 #[test]
 fn process_registry_double_register_overwrites() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let test_pid = 99997u32;
         native_register_process(test_pid, "first", "cmd1", None).unwrap();
         native_register_process(test_pid, "second", "cmd2", None).unwrap();
@@ -86,8 +86,8 @@ fn process_registry_double_register_overwrites() {
 
 #[test]
 fn process_registry_unregister_nonexistent_no_error() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         // Should not error when unregistering a PID that doesn't exist
         let result = native_unregister_process(99996);
         assert!(result.is_ok());
@@ -98,8 +98,8 @@ fn process_registry_unregister_nonexistent_no_error() {
 
 #[test]
 fn list_tracked_processes_returns_ok() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let result = list_tracked_processes();
         assert!(result.is_ok());
     });
@@ -109,7 +109,7 @@ fn list_tracked_processes_returns_ok() {
 
 #[test]
 fn tracked_process_db_path_with_env() {
-    pyo3::prepare_freethreaded_python();
+    pyo3::Python::initialize();
     with_locked_env_var(
         "RUNNING_PROCESS_PID_DB",
         Some("/custom/path/db.sqlite3"),
@@ -122,7 +122,7 @@ fn tracked_process_db_path_with_env() {
 
 #[test]
 fn tracked_process_db_path_empty_env_falls_back() {
-    pyo3::prepare_freethreaded_python();
+    pyo3::Python::initialize();
     with_locked_env_var("RUNNING_PROCESS_PID_DB", Some("   "), || {
         let result = tracked_process_db_path().unwrap();
         assert_eq!(

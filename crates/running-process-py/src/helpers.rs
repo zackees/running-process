@@ -6,9 +6,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use running_process::pty::terminal_input as core_terminal_input;
-use running_process::{
-    CommandSpec, ProcessError, StderrMode, StdinMode, StreamKind,
-};
+use running_process::{CommandSpec, ProcessError, StderrMode, StdinMode, StreamKind};
 use sysinfo::{Pid, System};
 
 pub(crate) fn to_py_err(err: impl std::fmt::Display) -> PyErr {
@@ -95,7 +93,7 @@ pub(crate) fn parse_command(command: &Bound<'_, PyAny>, shell: bool) -> PyResult
         return Ok(CommandSpec::Shell(command));
     }
 
-    if let Ok(command) = command.downcast::<PyList>() {
+    if let Ok(command) = command.cast::<PyList>() {
         let argv = command.extract::<Vec<String>>()?;
         if argv.is_empty() {
             return Err(PyValueError::new_err("command cannot be empty"));

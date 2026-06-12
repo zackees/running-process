@@ -4,10 +4,10 @@
 use std::process::Command;
 use std::sync::Arc;
 
-use crate::ORIGINATOR_ENV_VAR;
 use crate::proto::daemon::{
     DaemonRequest, DaemonResponse, KeyValue, SpawnDaemonResponse, StatusCode,
 };
+use crate::ORIGINATOR_ENV_VAR;
 use sysinfo::{Pid, ProcessRefreshKind, System};
 
 use crate::daemon::registry::{self, TrackedEntry};
@@ -141,9 +141,8 @@ fn spawn_and_track_detached(
     // + close-extra-fds on Unix. The `clear_env` flag is the bit that
     // makes Rust stdlib's `command.env_clear()` actually observable
     // through our manual CreateProcessW path on Windows.
-    let mut detached =
-        crate::spawn_daemon_with_clear_env(&mut command, clear_inherited_env)
-            .map_err(|e| format!("failed to spawn detached command: {e}"))?;
+    let mut detached = crate::spawn_daemon_with_clear_env(&mut command, clear_inherited_env)
+        .map_err(|e| format!("failed to spawn detached command: {e}"))?;
 
     let pid = detached.id();
     let created_at = process_created_at(pid).unwrap_or_else(unix_now_seconds);

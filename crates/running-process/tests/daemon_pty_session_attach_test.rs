@@ -30,7 +30,14 @@ use std::time::{Duration, Instant};
 /// Locate (and build, if needed) the path of a `testbin-*` binary.
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", name, "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            name,
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("cargo build for testbin failed");
@@ -126,8 +133,9 @@ async fn spawn_attach_detach_reattach_terminate_lifecycle() {
         // 3. Attach via a separate connection. The first attach succeeds and
         //    receives an empty initial backlog.
         // -------------------------------------------------------------------
-        let mut attach_a = PtyAttachment::attach_to(&socket_for_test, &spawned.session_id, 30, 100, false)
-            .expect("first attach");
+        let mut attach_a =
+            PtyAttachment::attach_to(&socket_for_test, &spawned.session_id, 30, 100, false)
+                .expect("first attach");
         // For sleeper, no output is produced yet so the backlog is empty.
         // Resize-on-attach should have happened — verify via list.
         let after_attach = control.list_pty_sessions("").expect("list after attach");
@@ -181,8 +189,9 @@ async fn spawn_attach_detach_reattach_terminate_lifecycle() {
         // -------------------------------------------------------------------
         // 7. Reattach from a fresh connection; the second attach succeeds.
         // -------------------------------------------------------------------
-        let _attach_b = PtyAttachment::attach_to(&socket_for_test, &spawned.session_id, 24, 80, false)
-            .expect("reattach");
+        let _attach_b =
+            PtyAttachment::attach_to(&socket_for_test, &spawned.session_id, 24, 80, false)
+                .expect("reattach");
 
         // -------------------------------------------------------------------
         // 8. Terminate; the reader thread observes the exit, records

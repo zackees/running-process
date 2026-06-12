@@ -27,7 +27,14 @@ use std::time::{Duration, Instant};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", name, "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            name,
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("cargo build for testbin failed");
@@ -104,10 +111,7 @@ fn drain_attachment(att: &mut PtyAttachment, deadline: Instant) -> Vec<u8> {
 #[cfg(windows)]
 fn windows_build_number() -> Option<u32> {
     use std::process::Command;
-    let output = Command::new("cmd")
-        .args(["/c", "ver"])
-        .output()
-        .ok()?;
+    let output = Command::new("cmd").args(["/c", "ver"]).output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     // "Microsoft Windows [Version 10.0.19045.6093]"
     let v = stdout.split('.').nth(2)?;

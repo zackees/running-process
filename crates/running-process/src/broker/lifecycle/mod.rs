@@ -13,17 +13,17 @@
 
 pub mod crash_dump;
 pub mod names;
-pub mod process_tree;
 pub mod privilege;
+pub mod process_tree;
 pub mod sid;
 
+pub use crash_dump::{CrashDumpError, CRASH_DUMP_DIR_ENV};
 pub use names::{
     backend_pipe, explicit_instance_pipe, private_broker_pipe, shared_broker_pipe, PipePath,
     PipePathError,
 };
-pub use crash_dump::{CrashDumpError, CRASH_DUMP_DIR_ENV};
-pub use process_tree::{ProcessTreeCleanup, ProcessTreeError};
 pub use privilege::{
     refuse_privileged_run, PrivilegeError, PrivilegedIdentity, ALLOW_PRIVILEGED_ENV,
 };
+pub use process_tree::{ProcessTreeCleanup, ProcessTreeError};
 pub use sid::{user_sid_hash, SidError};

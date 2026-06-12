@@ -114,7 +114,7 @@ pub(crate) fn native_launch_detached(
         .unwrap_or_default();
 
     let spawned = py
-        .allow_threads(move || {
+        .detach(move || {
             let mut request = running_process::client::SpawnCommandRequest::shell(command);
             if let Some(cwd) = cwd {
                 request = request.with_cwd(cwd);

@@ -9,13 +9,13 @@ pub mod accept_handed_off;
 pub mod wire;
 
 pub use crate::broker::server::{
+    HandoffToken, HandoffTokenError, HandoffTokenStore, HandoffTokenStoreConfig,
     DEFAULT_HANDOFF_TOKEN_COLLISION_ATTEMPTS, DEFAULT_HANDOFF_TOKEN_TTL,
-    DEFAULT_MAX_PENDING_HANDOFF_TOKENS, HANDOFF_TOKEN_BYTES, HandoffToken, HandoffTokenError,
-    HandoffTokenStore, HandoffTokenStoreConfig,
+    DEFAULT_MAX_PENDING_HANDOFF_TOKENS, HANDOFF_TOKEN_BYTES,
 };
 pub use accept_handed_off::{
-    AcceptedHandoff, HandedOffPayload, HandoffAcceptance, HandoffRejectionReason, RejectedHandoff,
-    accept_handed_off, parse_handoff_token,
+    accept_handed_off, parse_handoff_token, AcceptedHandoff, HandedOffPayload, HandoffAcceptance,
+    HandoffRejectionReason, RejectedHandoff,
 };
 pub use wire::{
     read_handoff_offer, respond_to_handoff_offer, serve_handoff_offer, write_handoff_ack,

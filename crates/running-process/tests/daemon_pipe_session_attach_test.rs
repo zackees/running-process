@@ -20,7 +20,14 @@ use std::time::{Duration, Instant};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", name, "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            name,
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("cargo build failed");
@@ -160,7 +167,9 @@ async fn spawn_attach_stdout_then_terminate_lifecycle() {
             false,
         ) {
             Ok(_) => panic!("second attach should not succeed without steal"),
-            Err(running_process::daemon::pipe_session::PipeAttachError::Server { code, .. }) => {
+            Err(running_process::daemon::pipe_session::PipeAttachError::Server {
+                code, ..
+            }) => {
                 assert_eq!(
                     code,
                     running_process::proto::daemon::StatusCode::AlreadyAttached

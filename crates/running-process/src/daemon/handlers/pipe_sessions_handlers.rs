@@ -165,7 +165,9 @@ pub fn handle_detach_pipe_stream(request: &DaemonRequest, state: &DaemonState) -
     };
     session.notify_attached(
         stream,
-        crate::daemon::pty_sessions::OutboundFrame::Ended(crate::daemon::pty_sessions::AttachmentEnded::Detached),
+        crate::daemon::pty_sessions::OutboundFrame::Ended(
+            crate::daemon::pty_sessions::AttachmentEnded::Detached,
+        ),
     );
     session.clear_attachment(stream);
     DaemonResponse {
@@ -200,7 +202,11 @@ pub fn handle_terminate_pipe_session(
             )
         }
     };
-    let grace_ms = if req.grace_ms == 0 { 2000 } else { req.grace_ms };
+    let grace_ms = if req.grace_ms == 0 {
+        2000
+    } else {
+        req.grace_ms
+    };
     if let Err(e) = session.terminate(std::time::Duration::from_millis(grace_ms as u64)) {
         return error_pty_response(request.id, StatusCode::Internal, e.to_string());
     }

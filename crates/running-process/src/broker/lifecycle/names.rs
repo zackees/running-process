@@ -110,10 +110,7 @@ pub fn shared_broker_pipe(user_sid_hash: &str) -> Result<PipePath, PipePathError
 /// Compute the private-broker pipe address for a single service.
 ///
 /// Service names must match `[a-z0-9-]{1,64}`.
-pub fn private_broker_pipe(
-    user_sid_hash: &str,
-    service: &str,
-) -> Result<PipePath, PipePathError> {
+pub fn private_broker_pipe(user_sid_hash: &str, service: &str) -> Result<PipePath, PipePathError> {
     validate_sid_hash(user_sid_hash)?;
     validate_service_name(service)?;
     build_pipe_path(&format!("{PIPE_PREFIX}-{user_sid_hash}-svc-{service}"))
@@ -123,10 +120,7 @@ pub fn private_broker_pipe(
 ///
 /// `name` must match `[a-z0-9-]{1,64}` and is otherwise unrestricted.
 /// Used for tests and multi-instance dev setups.
-pub fn explicit_instance_pipe(
-    user_sid_hash: &str,
-    name: &str,
-) -> Result<PipePath, PipePathError> {
+pub fn explicit_instance_pipe(user_sid_hash: &str, name: &str) -> Result<PipePath, PipePathError> {
     validate_sid_hash(user_sid_hash)?;
     validate_service_name(name)?; // same `[a-z0-9-]{1,64}` rule
     build_pipe_path(&format!("{PIPE_PREFIX}-{user_sid_hash}-inst-{name}"))
@@ -138,10 +132,7 @@ pub fn explicit_instance_pipe(
 /// `random128` is a 16-byte (128-bit) random suffix the broker
 /// generates per connection. Rendered as lowercase hex to keep the
 /// pipe name in the `[a-z0-9-]` charset.
-pub fn backend_pipe(
-    user_sid_hash: &str,
-    random128: &[u8; 16],
-) -> Result<PipePath, PipePathError> {
+pub fn backend_pipe(user_sid_hash: &str, random128: &[u8; 16]) -> Result<PipePath, PipePathError> {
     validate_sid_hash(user_sid_hash)?;
     let mut suffix = String::with_capacity(32);
     for b in random128 {

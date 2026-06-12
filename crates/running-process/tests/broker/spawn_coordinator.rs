@@ -15,10 +15,8 @@ fn key(version: &str) -> BackendKey {
 #[test]
 fn spawn_budget_exhaustion_is_per_backend_key() {
     let now = Instant::now();
-    let mut coordinator = SpawnCoordinator::with_config(SpawnBudgetConfig::new(
-        2,
-        Duration::from_secs(10),
-    ));
+    let mut coordinator =
+        SpawnCoordinator::with_config(SpawnBudgetConfig::new(2, Duration::from_secs(10)));
     let first_key = key("1.11.20");
     let second_key = key("1.11.21");
 
@@ -43,10 +41,8 @@ fn spawn_budget_exhaustion_is_per_backend_key() {
 #[test]
 fn cooldown_resets_spawn_budget() {
     let now = Instant::now();
-    let mut coordinator = SpawnCoordinator::with_config(SpawnBudgetConfig::new(
-        1,
-        Duration::from_secs(10),
-    ));
+    let mut coordinator =
+        SpawnCoordinator::with_config(SpawnBudgetConfig::new(1, Duration::from_secs(10)));
     let key = key("1.11.20");
 
     coordinator.try_begin(key.clone(), now).unwrap();
@@ -79,10 +75,8 @@ fn single_flight_blocks_duplicate_spawn_for_same_key() {
 #[test]
 fn finishing_success_resets_failure_budget() {
     let now = Instant::now();
-    let mut coordinator = SpawnCoordinator::with_config(SpawnBudgetConfig::new(
-        2,
-        Duration::from_secs(10),
-    ));
+    let mut coordinator =
+        SpawnCoordinator::with_config(SpawnBudgetConfig::new(2, Duration::from_secs(10)));
     let key = key("1.11.20");
 
     coordinator.try_begin(key.clone(), now).unwrap();
@@ -100,10 +94,8 @@ fn finishing_success_resets_failure_budget() {
 #[test]
 fn snapshot_reports_retry_after_when_budget_is_empty() {
     let now = Instant::now();
-    let mut coordinator = SpawnCoordinator::with_config(SpawnBudgetConfig::new(
-        1,
-        Duration::from_secs(10),
-    ));
+    let mut coordinator =
+        SpawnCoordinator::with_config(SpawnBudgetConfig::new(1, Duration::from_secs(10)));
     let key = key("1.11.20");
 
     coordinator.try_begin(key.clone(), now).unwrap();

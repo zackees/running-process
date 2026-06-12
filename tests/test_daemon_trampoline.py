@@ -22,8 +22,17 @@ def _trampoline_binary() -> Path:
         ROOT / "src" / "running_process" / "assets" / f"daemon-trampoline{ext}",
     ]
     for c in candidates:
-        if c.exists():
-            return c
+        if not c.exists():
+            continue
+        try:
+            # Probe that the binary actually executes on this platform: a
+            # mounted target/ dir can hold a foreign-libc ELF (e.g. glibc
+            # binary exec'd in a musl container fails ENOENT on its
+            # interpreter).
+            subprocess.run([str(c)], capture_output=True, timeout=30, check=False)
+        except OSError:
+            continue
+        return c
     raise unittest.SkipTest(
         "daemon-trampoline binary not built; run `cargo build --bin daemon-trampoline`"
     )

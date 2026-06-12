@@ -1,12 +1,12 @@
+use running_process::pty::terminal_input::TerminalInputEventRecord;
+#[cfg(all(windows, test))]
+use running_process::pty::terminal_input::NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV;
 #[cfg(windows)]
 use running_process::pty::terminal_input::{
     control_character_for_unicode, format_terminal_input_bytes, native_terminal_input_mode,
     native_terminal_input_trace_target, repeat_terminal_input_bytes, repeated_modified_sequence,
     repeated_tilde_sequence, terminal_input_modifier_parameter, translate_console_key_event,
 };
-#[cfg(all(windows, test))]
-use running_process::pty::terminal_input::NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV;
-use running_process::pty::terminal_input::TerminalInputEventRecord;
 
 #[cfg(windows)]
 use winapi::um::wincon::{
@@ -71,13 +71,9 @@ fn translate_terminal_input_preserves_submit_hint_for_enter() {
 #[test]
 #[cfg(windows)]
 fn translate_terminal_input_keeps_shift_enter_non_submit() {
-    let event = translate_console_key_event(&key_event(
-        VK_RETURN as u16,
-        '\r' as u16,
-        SHIFT_PRESSED,
-        1,
-    ))
-    .expect("shift-enter should translate");
+    let event =
+        translate_console_key_event(&key_event(VK_RETURN as u16, '\r' as u16, SHIFT_PRESSED, 1))
+            .expect("shift-enter should translate");
     // Shift+Enter emits CSI u sequence so downstream apps can
     // distinguish it from plain Enter.
     assert_eq!(event.data, b"\x1b[13;2u");
@@ -356,9 +352,8 @@ fn translate_console_key_shift_end() {
 #[cfg(windows)]
 fn translate_console_key_ctrl_home() {
     use winapi::um::winuser::VK_HOME;
-    let event =
-        translate_console_key_event(&key_event(VK_HOME as u16, 0, LEFT_CTRL_PRESSED, 1))
-            .expect("Ctrl+Home should translate");
+    let event = translate_console_key_event(&key_event(VK_HOME as u16, 0, LEFT_CTRL_PRESSED, 1))
+        .expect("Ctrl+Home should translate");
     assert_eq!(event.data, b"\x1b[1;5H");
     assert!(event.ctrl);
 }
@@ -377,9 +372,8 @@ fn translate_console_key_shift_delete() {
 #[cfg(windows)]
 fn translate_console_key_ctrl_page_up() {
     use winapi::um::winuser::VK_PRIOR;
-    let event =
-        translate_console_key_event(&key_event(VK_PRIOR as u16, 0, LEFT_CTRL_PRESSED, 1))
-            .expect("Ctrl+PageUp should translate");
+    let event = translate_console_key_event(&key_event(VK_PRIOR as u16, 0, LEFT_CTRL_PRESSED, 1))
+        .expect("Ctrl+PageUp should translate");
     assert_eq!(event.data, b"\x1b[5;5~");
     assert!(event.ctrl);
 }
@@ -550,7 +544,7 @@ fn terminal_input_inject_and_consume_event() {
 #[test]
 #[cfg(not(windows))]
 fn terminal_input_start_errors_on_non_windows() {
-    pyo3::prepare_freethreaded_python();
+    pyo3::Python::initialize();
     let input = NativeTerminalInput::new();
     let result = input.start();
     assert!(result.is_err());

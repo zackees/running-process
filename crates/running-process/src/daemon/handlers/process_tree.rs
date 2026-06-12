@@ -1,9 +1,7 @@
 //! `GetProcessTree` handler — builds a human-readable tree display via
 //! sysinfo.
 
-use crate::proto::daemon::{
-    DaemonRequest, DaemonResponse, GetProcessTreeResponse, StatusCode,
-};
+use crate::proto::daemon::{DaemonRequest, DaemonResponse, GetProcessTreeResponse, StatusCode};
 use sysinfo::{Pid, System};
 
 use super::util::error_response;

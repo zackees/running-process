@@ -79,8 +79,8 @@ fn same_process_identity_wrong_time_no_match() {
 
 #[test]
 fn native_launch_detached_rejects_empty_command_without_daemon() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let err = native_launch_detached(py, "   ".to_string(), None, None, None)
             .expect_err("empty commands should be rejected before daemon IPC");
         assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));

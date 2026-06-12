@@ -5,8 +5,8 @@ use running_process::pty::NativePtyProcess as CoreNativePtyProcess;
 
 #[test]
 fn pty_process_empty_argv_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let result = CoreNativePtyProcess::new(vec![], None, None, 24, 80, None);
         assert!(result.is_err());
     });
@@ -17,8 +17,8 @@ fn pty_process_empty_argv_errors() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_start_already_started_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -36,8 +36,8 @@ fn pty_process_start_already_started_errors() {
 
 #[test]
 fn pty_process_pid_none_before_start() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         assert!(process.pid().unwrap().is_none());
@@ -47,8 +47,8 @@ fn pty_process_pid_none_before_start() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_lifecycle_start_wait_close() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -66,8 +66,8 @@ fn pty_process_lifecycle_start_wait_close() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_poll_none_while_running() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -87,8 +87,8 @@ fn pty_process_poll_none_while_running() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_nonzero_exit_code() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -104,8 +104,8 @@ fn pty_process_nonzero_exit_code() {
 
 #[test]
 fn pty_process_write_before_start_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         assert!(process.write_impl(b"test", false).is_err());
@@ -115,8 +115,8 @@ fn pty_process_write_before_start_errors() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_input_metrics_tracked() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -137,8 +137,8 @@ fn pty_process_input_metrics_tracked() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_resize_while_running() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -154,8 +154,8 @@ fn pty_process_resize_while_running() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_kill_running_process() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -170,8 +170,8 @@ fn pty_process_kill_running_process() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_terminate_running_process() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -187,8 +187,8 @@ fn pty_process_terminate_running_process() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_close_already_closed_is_noop() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         process.start_impl().unwrap();
@@ -201,8 +201,8 @@ fn pty_process_close_already_closed_is_noop() {
 #[test]
 #[cfg(not(windows))]
 fn pty_process_wait_timeout_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -217,8 +217,8 @@ fn pty_process_wait_timeout_errors() {
 
 #[test]
 fn pty_process_send_interrupt_before_start_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         assert!(process.send_interrupt_impl().is_err());
@@ -227,8 +227,8 @@ fn pty_process_send_interrupt_before_start_errors() {
 
 #[test]
 fn pty_process_terminate_before_start_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         assert!(process.terminate_impl().is_err());
@@ -237,8 +237,8 @@ fn pty_process_terminate_before_start_errors() {
 
 #[test]
 fn pty_process_kill_before_start_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         assert!(process.kill_impl().is_err());
@@ -249,8 +249,8 @@ fn pty_process_kill_before_start_errors() {
 
 #[test]
 fn pty_process_mark_reader_closed() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         // reader should not be closed initially
@@ -262,8 +262,8 @@ fn pty_process_mark_reader_closed() {
 
 #[test]
 fn pty_process_store_returncode_sets_value() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         assert!(process.returncode.lock().unwrap().is_none());
@@ -274,8 +274,8 @@ fn pty_process_store_returncode_sets_value() {
 
 #[test]
 fn pty_process_record_input_metrics_tracks_data() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         assert_eq!(process.pty_input_bytes_total(), 0);
@@ -299,8 +299,8 @@ fn pty_process_record_input_metrics_tracks_data() {
 #[test]
 #[cfg(windows)]
 fn pty_process_start_and_close_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -317,8 +317,8 @@ fn pty_process_start_and_close_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_poll_none_while_running_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -338,8 +338,8 @@ fn pty_process_poll_none_while_running_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_kill_running_process_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -354,8 +354,8 @@ fn pty_process_kill_running_process_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_terminate_running_process_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -371,8 +371,8 @@ fn pty_process_terminate_running_process_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_close_not_started_is_ok_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         // close before start should be ok (handles are None)
@@ -383,8 +383,8 @@ fn pty_process_close_not_started_is_ok_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_start_already_started_errors_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -401,8 +401,8 @@ fn pty_process_start_already_started_errors_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_resize_while_running_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -418,8 +418,8 @@ fn pty_process_resize_while_running_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_write_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -437,8 +437,8 @@ fn pty_process_write_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_input_metrics_tracked_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -459,8 +459,8 @@ fn pty_process_input_metrics_tracked_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_send_interrupt_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec![
             "python".to_string(),
             "-c".to_string(),
@@ -477,8 +477,8 @@ fn pty_process_send_interrupt_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_with_cwd_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let tmp = std::env::temp_dir();
         let cwd = tmp.to_str().unwrap().to_string();
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
@@ -491,8 +491,8 @@ fn pty_process_with_cwd_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_with_env_windows() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let mut env_pairs = Vec::new();
         if let Ok(path) = std::env::var("PATH") {
             env_pairs.push(("PATH".to_string(), path));
@@ -506,8 +506,7 @@ fn pty_process_with_env_windows() {
             "-c".to_string(),
             "import os; print(os.environ.get('RP_TEST_PTY', 'MISSING'))".to_string(),
         ];
-        let process =
-            CoreNativePtyProcess::new(argv, None, Some(env_pairs), 24, 80, None).unwrap();
+        let process = CoreNativePtyProcess::new(argv, None, Some(env_pairs), 24, 80, None).unwrap();
         process.start_impl().unwrap();
         assert!(process.close_impl().is_ok());
     });
@@ -518,8 +517,8 @@ fn pty_process_with_env_windows() {
 #[test]
 #[cfg(windows)]
 fn pty_process_terminal_input_relay_not_active_initially() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         use std::sync::atomic::Ordering;
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
@@ -530,8 +529,8 @@ fn pty_process_terminal_input_relay_not_active_initially() {
 #[test]
 #[cfg(windows)]
 fn pty_process_stop_terminal_input_relay_noop_when_not_started() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let argv = vec!["python".to_string(), "-c".to_string(), "pass".to_string()];
         let process = CoreNativePtyProcess::new(argv, None, None, 24, 80, None).unwrap();
         process.stop_terminal_input_relay_impl(); // should not panic
@@ -544,7 +543,7 @@ fn pty_process_stop_terminal_input_relay_noop_when_not_started() {
 #[cfg(windows)]
 fn assign_child_to_job_null_handle_errors() {
     use running_process::pty::assign_child_to_windows_kill_on_close_job;
-    pyo3::prepare_freethreaded_python();
+    pyo3::Python::initialize();
     let result = assign_child_to_windows_kill_on_close_job(None);
     assert!(result.is_err());
 }
@@ -553,7 +552,7 @@ fn assign_child_to_job_null_handle_errors() {
 #[cfg(windows)]
 fn apply_windows_pty_priority_none_handle_ok() {
     use running_process::pty::apply_windows_pty_priority;
-    pyo3::prepare_freethreaded_python();
+    pyo3::Python::initialize();
     // None handle with any nice value should be Ok (early return)
     assert!(apply_windows_pty_priority(None, Some(5)).is_ok());
     assert!(apply_windows_pty_priority(None, None).is_ok());
@@ -563,7 +562,7 @@ fn apply_windows_pty_priority_none_handle_ok() {
 #[cfg(windows)]
 fn apply_windows_pty_priority_zero_nice_noop() {
     use running_process::pty::apply_windows_pty_priority;
-    pyo3::prepare_freethreaded_python();
+    pyo3::Python::initialize();
     // Some handle with nice=0 → flags=0 → early return Ok
     use std::os::windows::io::AsRawHandle;
     let current = std::process::Command::new("cmd")

@@ -20,8 +20,8 @@ use std::ptr;
 
 use windows_sys::Win32::System::Console::HPCON;
 use windows_sys::Win32::System::Threading::{
-    DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, UpdateProcThreadAttribute,
+    DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
+    LPPROC_THREAD_ATTRIBUTE_LIST,
 };
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
@@ -94,9 +94,7 @@ impl ProcThreadAttributeList {
 impl Drop for ProcThreadAttributeList {
     fn drop(&mut self) {
         unsafe {
-            DeleteProcThreadAttributeList(
-                self.buffer.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST
-            )
+            DeleteProcThreadAttributeList(self.buffer.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST)
         };
     }
 }

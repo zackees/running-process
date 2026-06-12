@@ -15,7 +15,7 @@ use std::os::windows::io::{AsRawHandle, OwnedHandle, RawHandle};
 
 use windows_sys::Win32::Foundation::{GetLastError, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessId, INFINITE, TerminateProcess, WaitForSingleObject,
+    GetExitCodeProcess, GetProcessId, TerminateProcess, WaitForSingleObject, INFINITE,
 };
 
 /// Return code GetExitCodeProcess reports while the process is still

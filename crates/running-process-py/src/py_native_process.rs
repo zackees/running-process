@@ -100,7 +100,7 @@ impl PyNativeProcess {
     fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<i32> {
         match &self.backend {
             NativeProcessBackend::Running(process) => process.wait(py, timeout),
-            NativeProcessBackend::Pty(process) => py.allow_threads(|| process.wait(timeout)),
+            NativeProcessBackend::Pty(process) => py.detach(|| process.wait(timeout)),
         }
     }
 

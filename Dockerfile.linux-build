@@ -41,10 +41,12 @@ COPY crates/test-watchdog/Cargo.toml /work/crates/test-watchdog/Cargo.toml
 COPY testbins/Cargo.toml /work/testbins/Cargo.toml
 
 RUN mkdir -p /work/crates/running-process/src/bin \
+    /work/crates/running-process/examples \
     /work/crates/running-process-py/src \
     /work/crates/test-watchdog/src \
     /work/testbins/src/bin \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process/src/lib.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process/examples/handoff_rollout_evidence.rs \
  && printf "fn main() {}\n" > /work/crates/running-process/src/bin/runpm.rs \
  && printf "fn main() {}\n" > /work/crates/running-process/src/bin/daemon.rs \
  && printf "fn main() {}\n" > /work/crates/running-process/src/bin/trampoline.rs \

@@ -22,7 +22,11 @@ DEFAULT_RUST_TEST_TIMEOUT_SECONDS = 60.0
 # + reader-thread join — can stay quiet for 10s+ at a time, so the
 # supervisor's idle window needs more headroom than the parallel POSIX path.
 WINDOWS_RUST_TEST_TIMEOUT_SECONDS = 180.0
-DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 180.0
+# The containerized run includes a silent maturin release build of the
+# project wheel ("Building running-process @ file:///work"), which can stay
+# quiet for ~3 minutes — give the idle watchdog the same headroom as the
+# release-build phase.
+DEFAULT_LINUX_TEST_TIMEOUT_SECONDS = 600.0
 DEFAULT_RELEASE_BUILD_TIMEOUT_SECONDS = 600.0
 DEFAULT_PYTEST_TIMEOUT_SECONDS = 40.0
 COMMAND_TIMEOUT_ENV = "RUNNING_PROCESS_TEST_COMMAND_TIMEOUT_SECONDS"

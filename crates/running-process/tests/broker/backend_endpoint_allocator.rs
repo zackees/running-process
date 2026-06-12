@@ -16,7 +16,10 @@ fn allocator_returns_endpoint_in_requested_namespace() {
         .unwrap();
 
     assert_eq!(endpoint.namespace_id, "shared");
-    assert_eq!(endpoint.path, pick_one(&backend_pipe(USER_HASH, &[0xAB_u8; 16]).unwrap()));
+    assert_eq!(
+        endpoint.path,
+        pick_one(&backend_pipe(USER_HASH, &[0xAB_u8; 16]).unwrap())
+    );
 }
 
 #[test]

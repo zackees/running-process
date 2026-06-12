@@ -60,14 +60,18 @@ def reproducible_requested(env: dict[str, str] | None = None) -> bool:
 
 def head_commit_epoch(root: Path) -> int:
     """Return the HEAD commit time, clamped to the zip epoch floor."""
-    result = subprocess.run(
-        ["git", "log", "-1", "--format=%ct"],
-        cwd=root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
     epoch = _EPOCH_FLOOR
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ct"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        # No git binary (e.g. minimal containers) — fall back to the floor.
+        return epoch
     if result.returncode == 0:
         with contextlib.suppress(ValueError):
             epoch = int(result.stdout.strip())

@@ -26,7 +26,14 @@ use running_process::{spawn, SpawnStdio, StdioSource};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", name, "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            name,
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("failed to run cargo build");
@@ -88,10 +95,7 @@ fn echo_env_command(var: &str) -> Command {
     #[cfg(windows)]
     {
         let mut c = Command::new("cmd.exe");
-        c.arg("/D")
-            .arg("/S")
-            .arg("/C")
-            .arg(format!("echo %{var}%"));
+        c.arg("/D").arg("/S").arg("/C").arg(format!("echo %{var}%"));
         c
     }
     #[cfg(unix)]
@@ -288,7 +292,8 @@ fn env_value_with_newline() {
 fn env_name_reserved_windows_device() {
     let sleeper = testbin_path("testbin-sleeper");
     let mut cmd = Command::new(&sleeper);
-    cmd.env("CON", "console-device-name").env("NUL", "null-device-name");
+    cmd.env("CON", "console-device-name")
+        .env("NUL", "null-device-name");
     let mut child = spawn(&mut cmd, pipe_stdio()).expect("spawn with reserved-name env vars");
     let _ = child.kill();
     let _ = child.wait();
@@ -315,12 +320,18 @@ fn env_case_sensitivity_difference() {
         // Windows folds — the LAST insertion wins regardless of case.
         // Rust's HashMap-backed env preserves insertion order; the
         // second `.env(...)` clobbers the first.
-        assert_eq!(observed, "different-case-value", "Windows case-folds env names");
+        assert_eq!(
+            observed, "different-case-value",
+            "Windows case-folds env names"
+        );
     }
     #[cfg(unix)]
     {
         // Unix preserves both — `RP_TEST_CASE_X` keeps its first value.
-        assert_eq!(observed, "lowercase-key-value", "Unix preserves env-name case");
+        assert_eq!(
+            observed, "lowercase-key-value",
+            "Unix preserves env-name case"
+        );
     }
 }
 
@@ -337,7 +348,10 @@ fn env_value_with_equals_signs() {
     let observed = String::from_utf8_lossy(&out);
     let observed = observed.trim_end_matches(['\r', '\n']);
 
-    assert_eq!(observed, "a=b=c=d", "env value with embedded `=` must pass through");
+    assert_eq!(
+        observed, "a=b=c=d",
+        "env value with embedded `=` must pass through"
+    );
 }
 
 // ── 10. NUL byte in argv ────────────────────────────────────────────────────
@@ -433,7 +447,10 @@ fn stdout_pipe_does_not_inject_cr() {
         // utility. Use `python -c` if available; otherwise fall back
         // to `cmd /c <NUL set /p=...` which writes 0 newlines. Tests
         // can opt out cleanly.
-        cmd.arg("/D").arg("/S").arg("/C").arg("<NUL set /p=\"x\" & cmd /c exit 0");
+        cmd.arg("/D")
+            .arg("/S")
+            .arg("/C")
+            .arg("<NUL set /p=\"x\" & cmd /c exit 0");
     }
     #[cfg(unix)]
     {

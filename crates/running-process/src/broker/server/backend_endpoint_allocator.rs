@@ -24,10 +24,7 @@ pub struct BackendEndpointAllocator {
 
 impl BackendEndpointAllocator {
     /// Create an allocator for one per-user broker namespace.
-    pub fn new(
-        user_sid_hash: impl Into<String>,
-        namespace_id: impl Into<String>,
-    ) -> Self {
+    pub fn new(user_sid_hash: impl Into<String>, namespace_id: impl Into<String>) -> Self {
         Self {
             user_sid_hash: user_sid_hash.into(),
             namespace_id: namespace_id.into(),

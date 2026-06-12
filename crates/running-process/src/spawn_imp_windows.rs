@@ -1,9 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::{
-    AsRawHandle, FromRawHandle, OwnedHandle as StdOwnedHandle, RawHandle,
-};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle as StdOwnedHandle, RawHandle};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use std::sync::Arc;
 use std::thread;
@@ -12,9 +10,7 @@ use std::time::Duration;
 use winapi::shared::minwindef::{BOOL, DWORD, FALSE, TRUE};
 use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};
 use winapi::um::handleapi::{CloseHandle, DuplicateHandle, INVALID_HANDLE_VALUE};
-use winapi::um::jobapi2::{
-    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-};
+use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
 use winapi::um::minwinbase::SECURITY_ATTRIBUTES;
 use winapi::um::namedpipeapi::CreateNamedPipeW;
 use winapi::um::processenv::GetStdHandle;
@@ -32,10 +28,9 @@ use winapi::um::winbase::{
     STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, WAIT_OBJECT_0,
 };
 use winapi::um::winnt::{
-    JobObjectExtendedLimitInformation, DUPLICATE_SAME_ACCESS, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, GENERIC_READ, GENERIC_WRITE, HANDLE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JobObjectExtendedLimitInformation, DUPLICATE_SAME_ACCESS, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    GENERIC_READ, GENERIC_WRITE, HANDLE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 
 // PROC_THREAD_ATTRIBUTE_HANDLE_LIST = ProcThreadAttributeValue(2, FALSE,
@@ -212,10 +207,10 @@ fn create_pipe_pair(dir: PipeDir) -> io::Result<(OverlappedHandle, SyncHandle)> 
             name_w.as_ptr(),
             parent_open_mode | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            1,             // nMaxInstances: only one client
-            64 * 1024,     // nOutBufferSize
-            64 * 1024,     // nInBufferSize
-            0,             // nDefaultTimeOut: use default (50 ms)
+            1,         // nMaxInstances: only one client
+            64 * 1024, // nOutBufferSize
+            64 * 1024, // nInBufferSize
+            0,         // nDefaultTimeOut: use default (50 ms)
             std::ptr::null_mut(),
         )
     };
@@ -459,9 +454,15 @@ pub fn spawn(
     // CreateProcessW, so dropping `stdin_slot.child_handle` etc.
     // below is fine. The OverlappedHandle::into_child_* methods are
     // the only conversion paths to a Rust ChildStd* — see #115.
-    let stdin_pipe = stdin_slot.parent_end.map(OverlappedHandle::into_child_stdin);
-    let stdout_pipe = stdout_slot.parent_end.map(OverlappedHandle::into_child_stdout);
-    let stderr_pipe = stderr_slot.parent_end.map(OverlappedHandle::into_child_stderr);
+    let stdin_pipe = stdin_slot
+        .parent_end
+        .map(OverlappedHandle::into_child_stdin);
+    let stdout_pipe = stdout_slot
+        .parent_end
+        .map(OverlappedHandle::into_child_stdout);
+    let stderr_pipe = stderr_slot
+        .parent_end
+        .map(OverlappedHandle::into_child_stderr);
 
     // Optional drain watcher: wait on process exit, then sleep
     // `drain_timeout`, then close our wrapper-held copies (none on
@@ -845,10 +846,7 @@ fn quote(arg: &str) -> String {
     out
 }
 
-fn build_env_block(
-    overrides: Vec<(OsString, Option<OsString>)>,
-    clear_env: bool,
-) -> Vec<u16> {
+fn build_env_block(overrides: Vec<(OsString, Option<OsString>)>, clear_env: bool) -> Vec<u16> {
     use std::collections::BTreeMap;
     // Windows env var names are case-INSENSITIVE at the kernel level
     // (CreateProcessW + the env block accept any case but

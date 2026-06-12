@@ -75,7 +75,7 @@ impl NativePtyBuffer {
             Timeout,
         }
 
-        let outcome = py.allow_threads(|| -> WaitOutcome {
+        let outcome = py.detach(|| -> WaitOutcome {
             let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs_f64(secs));
             let mut guard = self.state.lock().expect("pty buffer mutex poisoned");
             loop {

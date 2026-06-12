@@ -6,14 +6,14 @@
 
 #![cfg(feature = "client")]
 
-use running_process::broker::lifecycle::names::{
-    backend_pipe, explicit_instance_pipe, private_broker_pipe, shared_broker_pipe,
-    validate_service_name, validate_version, PipePath, PipePathError,
-};
 #[cfg(target_os = "macos")]
 use running_process::broker::lifecycle::names::MACOS_SUN_PATH_MAX;
 #[cfg(windows)]
 use running_process::broker::lifecycle::names::WINDOWS_MAX_PATH;
+use running_process::broker::lifecycle::names::{
+    backend_pipe, explicit_instance_pipe, private_broker_pipe, shared_broker_pipe,
+    validate_service_name, validate_version, PipePath, PipePathError,
+};
 use running_process::broker::lifecycle::sid::{hash_to_16_hex, user_sid_hash};
 
 const ALICE: &str = "deadbeefdeadbeef";
