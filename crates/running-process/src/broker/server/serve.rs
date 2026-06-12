@@ -21,9 +21,11 @@ use super::backend_launcher::{BackendLauncher, CommandBackendLauncher};
 use super::backend_registry::BackendRegistry;
 use super::connection::{BrokerConnectionError, PeerCredentialPolicy};
 use super::control_socket::{
-    serve_control_socket_connections_with_limit_and_policy, ControlSocketConnectionLimit,
-    ControlSocketError,
+    serve_control_socket_connections_with_limit_and_policy,
+    serve_control_socket_connections_with_limit_policy_and_post_hello,
+    ControlSocketConnectionLimit, ControlSocketError,
 };
+use super::handoff_serve::{complete_negotiated_handoff, ServeHandoffContext};
 use super::hello_handler::{HelloHandler, HelloHandlerError};
 use super::hello_router::HelloRouter;
 use super::instance::{BrokerInstanceError, BrokerInstanceKey};
@@ -48,6 +50,11 @@ pub struct BrokerServeConfig {
     pub service_definition_dir: PathBuf,
     /// Optional number of control-socket connections to accept before returning.
     pub max_connections: Option<NonZeroUsize>,
+    /// Optional backend handoff endpoint enabling the Phase 6 handle-passing
+    /// optimization (#387). `None` (the default) disables handoff entirely:
+    /// negotiated clients always reconnect through `backend_endpoint`. This
+    /// matches the opt-in Phase 6 gate in `docs/v1-rollout-policy.md`.
+    pub handoff_endpoint: Option<String>,
 }
 
 /// Configuration for serve mode that launches backends on Hello miss.
@@ -80,6 +87,7 @@ impl BrokerServeConfig {
                 NonZeroUsize::new(max_connections)
                     .ok_or(BrokerServeError::InvalidMaxConnections)?,
             ),
+            handoff_endpoint: None,
         })
     }
 
@@ -98,12 +106,20 @@ impl BrokerServeConfig {
             backend_endpoint: backend_endpoint.into(),
             service_definition_dir: service_definition_dir(),
             max_connections: None,
+            handoff_endpoint: None,
         }
     }
 
     /// Override the service-definition directory.
     pub fn with_service_definition_dir(mut self, root: impl Into<PathBuf>) -> Self {
         self.service_definition_dir = root.into();
+        self
+    }
+
+    /// Opt in to the Phase 6 handle-passing handoff by configuring the
+    /// backend handoff endpoint the broker dials after negotiation (#387).
+    pub fn with_handoff_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.handoff_endpoint = Some(endpoint.into());
         self
     }
 
@@ -177,12 +193,26 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         AdminSnapshot::from_registry(instance.id(), started_at.elapsed(), true, 0, &registry, &[])
     };
-    serve_control_socket_connections_with_limit_and_policy(
+    serve_control_socket_connections_with_limit_policy_and_post_hello(
         &config.socket_path,
         &router,
         snapshot_provider,
         config.connection_limit(),
         &peer_policy,
+        |stream, reply| {
+            // Off by default: no handoff endpoint means no handoff attempt.
+            let Some(handoff_endpoint) = config.handoff_endpoint.as_deref() else {
+                return;
+            };
+            let ctx = ServeHandoffContext {
+                handoff_endpoint,
+                service_name: &config.service_name,
+                service_version: &config.service_version,
+                instance: &instance,
+                registry: &registry,
+            };
+            complete_negotiated_handoff(&ctx, stream, reply);
+        },
     )?;
     Ok(())
 }

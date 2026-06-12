@@ -49,6 +49,8 @@ pub use pending::{
     PendingHandoffOverflow, PendingHandoffQueue, PendingHandoffQueueConfig,
     DEFAULT_MAX_PENDING_HANDOFFS, DEFAULT_PENDING_HANDOFF_TTL,
 };
+#[cfg(unix)]
+pub use unix::try_send_scm_rights_over;
 pub use unix::{
     try_send_scm_rights, ScmRightsAttempt, ScmRightsError, ScmRightsResult, ScmRightsSuccess,
     UnixFileDescriptor, UnixHandoffSocket, SCM_RIGHTS_TRANSPORT_SUPPORTED,

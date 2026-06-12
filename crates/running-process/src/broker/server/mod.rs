@@ -13,6 +13,7 @@ pub mod broadcast;
 pub mod connection;
 pub mod control_socket;
 pub mod handoff;
+pub mod handoff_serve;
 pub mod hello_handler;
 pub mod hello_router;
 pub mod idle_coord;
@@ -57,6 +58,7 @@ pub use connection::{
 pub use control_socket::{
     handle_control_connection_with_peer_policy,
     serve_control_socket_connections_with_limit_and_policy,
+    serve_control_socket_connections_with_limit_policy_and_post_hello,
     serve_control_socket_connections_with_policy, ControlSocketConnectionLimit, ControlSocketError,
     ControlSocketReply,
 };
@@ -71,6 +73,7 @@ pub use handoff::{
     DEFAULT_HANDOFF_TOKEN_TTL, DEFAULT_MAX_PENDING_HANDOFFS, DEFAULT_MAX_PENDING_HANDOFF_TOKENS,
     DEFAULT_PENDING_HANDOFF_TTL, HANDOFF_TOKEN_BYTES,
 };
+pub use handoff_serve::{complete_negotiated_handoff, ServeHandoffContext};
 pub use hello_handler::{
     HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend,
 };
