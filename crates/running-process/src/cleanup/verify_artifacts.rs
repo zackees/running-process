@@ -11,8 +11,8 @@
 //!
 //! Every check is a pure function over injected paths/probes so tests can
 //! exercise each class with temp dirs on all platforms; only the
-//! [`ArtifactPaths::from_environment`] constructor and the default probes
-//! in [`run`] touch the real environment.
+//! `ArtifactPaths::from_environment` constructor and the default probes
+//! in `run` touch the real environment.
 
 use std::path::{Path, PathBuf};
 
@@ -242,7 +242,7 @@ pub fn run(paths: &ArtifactPaths) -> ArtifactReport {
     run_with_probes(paths, &process_is_alive, &connect)
 }
 
-/// [`run`] with injected liveness/connect probes (test seam).
+/// `run` with injected liveness/connect probes (test seam).
 pub fn run_with_probes(
     paths: &ArtifactPaths,
     pid_is_alive: &dyn Fn(u32) -> bool,
