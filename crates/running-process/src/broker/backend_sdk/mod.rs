@@ -32,10 +32,14 @@
 //! [`BackendHandle::probe_with_service`]: crate::broker::backend_handle::BackendHandle::probe_with_service
 
 mod frame_client;
+#[cfg(feature = "client-async")]
+mod frame_client_async;
 mod identity_file;
 mod mux;
 
 pub use frame_client::{FrameClient, FrameClientError};
+#[cfg(feature = "client-async")]
+pub use frame_client_async::AsyncFrameClient;
 pub use identity_file::{
     read_daemon_identity_file, remove_daemon_identity_file, try_read_daemon_identity_file,
     write_daemon_identity_file,
