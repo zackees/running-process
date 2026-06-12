@@ -14,7 +14,8 @@ use crate::broker::protocol::{
     ENVELOPE_VERSION, MAX_FRAME_BYTES, PROTOCOL_VERSION,
 };
 
-const PROBE_NONCE_BYTES: usize = 32;
+/// Byte length of the random challenge carried by endpoint probe requests.
+pub const PROBE_NONCE_BYTES: usize = 32;
 const NONBLOCKING_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Payload protocol reserved for `BackendHandle` endpoint identity probes.
@@ -338,7 +339,14 @@ fn validate_endpoint_probe_response_frame(
     Ok(())
 }
 
-fn decode_response_identity(
+/// Decode the identity payload of one endpoint probe response.
+///
+/// The payload is untrusted (it comes from whatever process answered the
+/// probed endpoint — this is the squat-detection path): a 32-byte nonce echo
+/// followed by a prost-encoded [`protocol::DaemonProcess`]. The nonce must
+/// match `expected_nonce` before the identity bytes are decoded and
+/// normalized through [`DaemonProcess::try_from`]. Exposed for fuzzing.
+pub fn decode_response_identity(
     payload: &[u8],
     expected_nonce: &[u8; PROBE_NONCE_BYTES],
 ) -> Result<DaemonProcess, EndpointProbeError> {
@@ -419,8 +427,29 @@ fn read_probe_frame_with_deadline(
     stream: &mut interprocess::local_socket::Stream,
     deadline: Instant,
 ) -> Result<Vec<u8>, EndpointProbeError> {
+    parse_probe_frame(|buf| read_exact_with_deadline(stream, buf, deadline))
+}
+
+/// Read one length-prefixed probe frame from an in-memory or blocking reader.
+///
+/// This drives the same byte-level parser as the nonblocking
+/// deadline-enforcing read used by [`probe_endpoint_response`]; it is exposed
+/// so fuzzing and tests can feed the framing logic from a
+/// [`std::io::Cursor`]. EOF surfaces as [`EndpointProbeError::Io`] instead of
+/// being retried against a deadline.
+pub fn read_probe_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>, EndpointProbeError> {
+    parse_probe_frame(|buf| reader.read_exact(buf).map_err(EndpointProbeError::Io))
+}
+
+/// Pure byte-level probe frame parse shared by the deadline-enforcing read
+/// and the fuzzing seam: a 1-byte envelope version ([`ENVELOPE_VERSION`]), a
+/// little-endian `u32` body length capped at [`MAX_FRAME_BYTES`], then the
+/// body bytes.
+fn parse_probe_frame(
+    mut read_exact: impl FnMut(&mut [u8]) -> Result<(), EndpointProbeError>,
+) -> Result<Vec<u8>, EndpointProbeError> {
     let mut version = [0_u8; 1];
-    read_exact_with_deadline(stream, &mut version, deadline)?;
+    read_exact(&mut version)?;
     if version[0] != ENVELOPE_VERSION {
         return Err(EndpointProbeError::UnsupportedFramingVersion {
             got: version[0],
@@ -429,7 +458,7 @@ fn read_probe_frame_with_deadline(
     }
 
     let mut len = [0_u8; 4];
-    read_exact_with_deadline(stream, &mut len, deadline)?;
+    read_exact(&mut len)?;
     let body_length = u32::from_le_bytes(len) as usize;
     if body_length > MAX_FRAME_BYTES {
         return Err(EndpointProbeError::FrameTooLarge {
@@ -440,7 +469,7 @@ fn read_probe_frame_with_deadline(
 
     let mut body = vec![0_u8; body_length];
     if body_length > 0 {
-        read_exact_with_deadline(stream, &mut body, deadline)?;
+        read_exact(&mut body)?;
     }
     Ok(body)
 }
