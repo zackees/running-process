@@ -1,5 +1,19 @@
 # zccache Consumer Adoption Guide
 
+> **Status (#412): partially superseded.** The migration steps below
+> describe the eventual full-broker path (`Hello` negotiation,
+> `ServiceDefinition`, `CacheManifest`), which remains **deferred**
+> under the minimal regime recorded in the
+> [adoption dashboard](v1-consumer-adoption-dashboard.md). What zccache
+> actually landed is the direct-endpoint pattern: `BackendHandle`
+> identity probing plus an opaque Frame lane
+> (payload protocol `0x7A63`, registered in
+> `running_process::broker::protocol::registry`) on zccache's own
+> daemon endpoint — no broker, no Hello. New integrations should follow
+> [INTEGRATE.md](INTEGRATE.md) and the `backend_sdk` module instead of
+> the steps below; this guide stays as the reference for the future
+> full-broker wave.
+
 This guide defines the zccache migration from its legacy bincode wire to the v1
 running-process prost broker wire.
 

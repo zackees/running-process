@@ -10,6 +10,7 @@
 pub mod backend_handle;
 pub mod backend_lib;
 pub mod backend_lifecycle;
+pub mod backend_sdk;
 pub mod capabilities;
 pub mod client;
 pub mod doctor;
