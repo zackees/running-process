@@ -54,6 +54,7 @@ merged. Binary package install is not considered complete in this regime.
 
 ## Related Docs
 
+- [Integrate your daemon (one-page quickstart)](INTEGRATE.md)
 - [clud consumer adoption guide](consumer-adoption-clud.md)
 - [zccache consumer adoption guide](consumer-adoption-zccache.md)
 - [soldr consumer adoption guide](consumer-adoption-soldr.md)
