@@ -10,7 +10,8 @@ use clap::{Parser, Subcommand};
 
 use running_process::broker::manifest;
 use running_process::cleanup::{
-    actions_json, instances, list, parse_duration_secs, prune, uninstall, verify_basic,
+    actions_json, instances, list, parse_duration_secs, prune, uninstall, verify_artifacts,
+    verify_basic,
 };
 
 #[derive(Parser)]
@@ -73,11 +74,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Basic registry consistency verification.
+    /// Registry consistency verification plus exhaustive daemon-artifact
+    /// reconciliation (#391): socket, pid file, .servicedef files, SQLite
+    /// registry (incl. WAL/SHM), log files, emergency reserve, shadow dir.
+    /// Read-only: nothing is deleted.
     Verify {
         /// Emit JSON.
         #[arg(long)]
         json: bool,
+        /// Reconcile the artifacts of this scope hash instead of the
+        /// global daemon scope.
+        #[arg(long)]
+        scope_hash: Option<String>,
     },
     /// Enumerate visible broker instances.
     Instances {
@@ -167,21 +175,36 @@ fn run() -> Result<()> {
                 print_actions(&actions, confirm);
             }
         }
-        Commands::Verify { json } => {
+        Commands::Verify { json, scope_hash } => {
             let report = verify_basic::run(&registry_dir);
+            let artifact_paths =
+                verify_artifacts::ArtifactPaths::from_environment(scope_hash.as_deref());
+            let artifacts = verify_artifacts::run(&artifact_paths);
             if json {
-                println!("{}", verify_basic::render_json(&report));
-            } else if report.findings.is_empty() {
-                println!("verified {} manifest(s); no findings", report.scanned);
+                // Additive extension of the frozen verify JSON shape: the
+                // registry document gains an `artifacts` object (#391).
+                let mut document: serde_json::Value =
+                    serde_json::from_str(&verify_basic::render_json(&report))
+                        .context("internal: verify JSON did not round-trip")?;
+                document["artifacts"] = artifacts.to_json_value();
+                println!("{document}");
             } else {
-                for finding in &report.findings {
-                    println!(
-                        "{}: {}: {}",
-                        finding.severity,
-                        finding.path.display(),
-                        finding.message
-                    );
+                if report.findings.is_empty() {
+                    println!("verified {} manifest(s); no findings", report.scanned);
+                } else {
+                    for finding in &report.findings {
+                        println!(
+                            "{}: {}: {}",
+                            finding.severity,
+                            finding.path.display(),
+                            finding.message
+                        );
+                    }
                 }
+                print!("{}", artifacts.render_text());
+            }
+            if artifacts.exit_code() != 0 {
+                anyhow::bail!("artifact verification could not inspect every location");
             }
         }
         Commands::Instances { status, json } => {
