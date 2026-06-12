@@ -3,11 +3,7 @@
 use crate::proto::daemon::{DaemonResponse, StatusCode};
 
 /// Build an error `DaemonResponse` with no payload.
-pub(super) fn error_response(
-    request_id: u64,
-    code: StatusCode,
-    message: String,
-) -> DaemonResponse {
+pub(super) fn error_response(request_id: u64, code: StatusCode, message: String) -> DaemonResponse {
     DaemonResponse {
         request_id,
         code: code as i32,

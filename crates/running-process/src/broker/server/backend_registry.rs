@@ -113,11 +113,7 @@ impl BackendRegistry {
         service_definition: &ServiceDefinition,
         service_version: &str,
     ) -> Option<RegisteredBackend> {
-        let handle = self.get(
-            instance,
-            &service_definition.service_name,
-            service_version,
-        )?;
+        let handle = self.get(instance, &service_definition.service_name, service_version)?;
         Some(RegisteredBackend {
             service_definition: service_definition.clone(),
             daemon_version: handle.service_version.clone(),
@@ -161,7 +157,11 @@ mod tests {
 
         registry.insert(
             live_key.instance.clone(),
-            handle(&live_key.service_name, &live_key.service_version, std::process::id()),
+            handle(
+                &live_key.service_name,
+                &live_key.service_version,
+                std::process::id(),
+            ),
         );
         registry.insert(
             dead_key.instance.clone(),

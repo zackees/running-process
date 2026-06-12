@@ -21,8 +21,7 @@ fn happy_path_roundtrip() {
     let written = write_frame(&mut buf, &payload).expect("write");
     assert_eq!(written, 5 + payload.len(), "frame is 5-byte header + body");
     assert_eq!(
-        buf[0],
-        ENVELOPE_VERSION,
+        buf[0], ENVELOPE_VERSION,
         "first byte must be framing version"
     );
 
@@ -72,7 +71,10 @@ fn oversize_returns_frame_too_large() {
     let mut cursor = Cursor::new(frame);
     let err = read_frame_with_cap(&mut cursor, cap).unwrap_err();
     match err {
-        FramingError::FrameTooLarge { body_length, cap: c } => {
+        FramingError::FrameTooLarge {
+            body_length,
+            cap: c,
+        } => {
             assert_eq!(body_length, (cap + 1));
             assert_eq!(c, cap);
         }

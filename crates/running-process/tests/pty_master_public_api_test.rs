@@ -64,18 +64,20 @@ fn pty_master_resize_and_get_size_through_handles() {
     }
 
     {
-        let guard = process
-            .handles
-            .lock()
-            .expect("pty handles mutex poisoned");
+        let guard = process.handles.lock().expect("pty handles mutex poisoned");
         let handles = guard.as_ref().expect("handles populated");
 
         // Initial size should match openpty.
-        let initial = handles
-            .master
-            .get_size()
-            .expect("get_size after openpty");
-        assert_eq!(initial, PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 });
+        let initial = handles.master.get_size().expect("get_size after openpty");
+        assert_eq!(
+            initial,
+            PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0
+            }
+        );
 
         // Resize → get_size returns the new value.
         let new_size = PtySize {

@@ -78,20 +78,20 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
-pub use console_detect::{ConsoleWindowInfo, monitor_console_windows};
+pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
 #[cfg(feature = "originator-scan")]
-pub use originator::{OriginatorProcessInfo, find_processes_by_originator};
-pub use rust_debug::{RustDebugScopeGuard, render_rust_debug_traces};
+pub use originator::{find_processes_by_originator, OriginatorProcessInfo};
+pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
-    DaemonChild, SpawnStdio, SpawnedChild, StdioSource, spawn, spawn_daemon,
-    spawn_daemon_with_clear_env,
+    spawn, spawn_daemon, spawn_daemon_with_clear_env, DaemonChild, SpawnStdio, SpawnedChild,
+    StdioSource,
 };
 pub use terminal_graphics::{
-    CapabilityStatus, EvidenceStrength, GraphicsCapability, GraphicsProtocol, TerminalCapabilities,
-    TerminalCapabilityInput, TerminalGraphicsCapabilities, TerminalProbeEvidence,
     current_terminal_capabilities, current_terminal_capabilities_with_timeout,
-    detect_terminal_capabilities,
+    detect_terminal_capabilities, CapabilityStatus, EvidenceStrength, GraphicsCapability,
+    GraphicsProtocol, TerminalCapabilities, TerminalCapabilityInput, TerminalGraphicsCapabilities,
+    TerminalProbeEvidence,
 };
 pub use types::{
     CommandSpec, ProcessConfig, ProcessError, ReadStatus, RunOutput, StderrMode, StdinMode,
@@ -100,11 +100,11 @@ pub use types::{
 
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 #[cfg(unix)]
-pub use unix::{UnixSignal, unix_set_priority, unix_signal_process, unix_signal_process_group};
+pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
 #[cfg(windows)]
 pub(crate) use windows::{
-    CapturePipeHandles, WindowsJobHandle, assign_child_to_windows_kill_on_close_job_impl,
-    windows_priority_flags,
+    assign_child_to_windows_kill_on_close_job_impl, windows_priority_flags, CapturePipeHandles,
+    WindowsJobHandle,
 };
 
 #[macro_export]

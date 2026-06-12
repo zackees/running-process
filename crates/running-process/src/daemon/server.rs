@@ -492,9 +492,10 @@ async fn handle_connection_inner(
         if RequestType::try_from(request.r#type) == Ok(RequestType::AttachPipeStream) {
             let attach_req = request.attach_pipe_stream.clone().unwrap_or_default();
             let state_arc = Arc::clone(state);
-            if let Err(e) =
-                pipe_attach_stream::run_pipe_attach_stream(framed, request_id, attach_req, state_arc)
-                    .await
+            if let Err(e) = pipe_attach_stream::run_pipe_attach_stream(
+                framed, request_id, attach_req, state_arc,
+            )
+            .await
             {
                 warn!("pipe attach stream ended with error: {e}");
             }
@@ -580,18 +581,14 @@ fn dispatch_request(
             handlers::handle_terminate_pipe_session(request, state)
         }
         Ok(RequestType::WritePipeStdin) => handlers::handle_write_pipe_stdin(request, state),
-        Ok(RequestType::GetSessionBacklog) => {
-            handlers::handle_get_session_backlog(request, state)
-        }
+        Ok(RequestType::GetSessionBacklog) => handlers::handle_get_session_backlog(request, state),
         Ok(RequestType::PurgeExitedSessions) => {
             handlers::handle_purge_exited_sessions(request, state)
         }
         Ok(RequestType::BulkTerminateSessions) => {
             handlers::handle_bulk_terminate_sessions(request, state)
         }
-        Ok(RequestType::ResizePtySession) => {
-            handlers::handle_resize_pty_session(request, state)
-        }
+        Ok(RequestType::ResizePtySession) => handlers::handle_resize_pty_session(request, state),
         Ok(RequestType::RegisterSessionTee) => {
             handlers::handle_register_session_tee(request, state)
         }

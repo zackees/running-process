@@ -24,7 +24,14 @@ use std::time::{Duration, Instant};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", name, "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            name,
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("cargo build failed");
@@ -115,9 +122,7 @@ async fn pty_terminate_records_soft_or_hard_outcome() {
         let deadline = Instant::now() + Duration::from_secs(15);
         let outcome = loop {
             let listed = client.list_pty_sessions("").expect("list");
-            if let Some(entry) =
-                listed.iter().find(|s| s.session_id == session.session_id)
-            {
+            if let Some(entry) = listed.iter().find(|s| s.session_id == session.session_id) {
                 if entry.exited {
                     break entry.termination_outcome;
                 }
@@ -163,9 +168,7 @@ async fn pipe_terminate_records_soft_or_hard_outcome() {
         let deadline = Instant::now() + Duration::from_secs(15);
         let outcome = loop {
             let listed = client.list_pipe_sessions("").expect("list");
-            if let Some(entry) =
-                listed.iter().find(|s| s.session_id == session.session_id)
-            {
+            if let Some(entry) = listed.iter().find(|s| s.session_id == session.session_id) {
                 if entry.exited {
                     break entry.termination_outcome;
                 }

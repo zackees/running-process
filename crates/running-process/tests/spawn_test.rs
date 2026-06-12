@@ -8,9 +8,9 @@
 //! 4. test_spawn_child_exit_bounded_drain — child writes & exits, parent reads
 //!    after delay then EOFs.
 
+use std::io::Read;
 #[cfg(not(target_os = "macos"))]
 use std::io::{BufRead, BufReader};
-use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -19,7 +19,14 @@ use running_process::{spawn, SpawnStdio, StdioSource};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", name, "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            name,
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("failed to run cargo build");

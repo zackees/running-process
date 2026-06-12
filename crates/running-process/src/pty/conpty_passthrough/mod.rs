@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::COORD;
 use windows_sys::Win32::System::Threading::{
-    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+    CreateProcessW, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
     STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
@@ -61,7 +61,7 @@ pub(super) mod proc_thread_attr;
 pub(super) mod pseudoconsole;
 
 use child::ConPtyChild;
-use pipes::{PipeDirection, create_pipe};
+use pipes::{create_pipe, PipeDirection};
 use proc_thread_attr::ProcThreadAttributeList;
 use pseudoconsole::PseudoConsole;
 

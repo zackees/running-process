@@ -19,8 +19,8 @@ use std::io;
 
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Console::{
-    ClosePseudoConsole, CreatePseudoConsole, HPCON, PSEUDOCONSOLE_INHERIT_CURSOR,
-    ResizePseudoConsole, COORD,
+    ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
+    PSEUDOCONSOLE_INHERIT_CURSOR,
 };
 
 use super::PSEUDOCONSOLE_PASSTHROUGH_MODE;

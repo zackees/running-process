@@ -214,9 +214,7 @@ fn linux_machine_id() -> Result<String, SidError> {
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {
-                return Err(SidError::PlatformLookup(format!(
-                    "read {path}: {err}"
-                )));
+                return Err(SidError::PlatformLookup(format!("read {path}: {err}")));
             }
         }
     }

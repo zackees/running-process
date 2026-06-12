@@ -9,7 +9,7 @@
 use std::time::Instant;
 
 use crate::broker::server::{
-    HANDOFF_TOKEN_BYTES, HandoffToken, HandoffTokenError, HandoffTokenStore,
+    HandoffToken, HandoffTokenError, HandoffTokenStore, HANDOFF_TOKEN_BYTES,
 };
 
 /// Platform-neutral payload delivered to a backend accept loop.

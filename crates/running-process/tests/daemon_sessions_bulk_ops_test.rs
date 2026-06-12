@@ -16,7 +16,14 @@ use std::time::{Duration, Instant};
 
 fn testbin_path(name: &str) -> PathBuf {
     let output = Command::new(env!("CARGO"))
-        .args(["build", "-p", "testbins", "--bin", name, "--message-format=json"])
+        .args([
+            "build",
+            "-p",
+            "testbins",
+            "--bin",
+            name,
+            "--message-format=json",
+        ])
         .stderr(std::process::Stdio::inherit())
         .output()
         .expect("cargo build failed");
@@ -116,9 +123,7 @@ async fn purge_removes_only_exited_sessions() {
         }
 
         // Purge should remove the exited session but leave the alive one.
-        let purged = client
-            .purge_exited_sessions("bulk-purge")
-            .expect("purge");
+        let purged = client.purge_exited_sessions("bulk-purge").expect("purge");
         assert_eq!(purged.pty_purged, 0);
         assert_eq!(purged.pipe_purged, 1);
 
