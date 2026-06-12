@@ -201,7 +201,13 @@ def pytest_shell_command(pytest_args: list[str]) -> str:
 
 
 def lint_shell_command() -> str:
-    return "uv run --script install && uv run --no-editable -m ci.lint"
+    # Keep the container's venv out of the mounted /work tree: a host
+    # (Windows/macOS) .venv is not usable in the container and uv would
+    # otherwise try to delete and recreate it in place.
+    return (
+        "export UV_PROJECT_ENVIRONMENT=/tmp/running-process-linux-venv && "
+        "uv run --script install && uv run --no-editable -m ci.lint"
+    )
 
 
 def debug_shell_command(*, command: str | None, pytest_args: list[str]) -> str:

@@ -243,7 +243,10 @@ def main() -> int:
     # In CI, cargo check is redundant — the next step (lint/build/test) compiles the workspace.
     if in_ci:
         return 0
-    return subprocess.run(["soldr", "cargo", "check", "--workspace"]).returncode
+    # soldr is the preferred (caching) cargo launcher but is a host-global
+    # install; fresh containers (e.g. the Linux lint image) won't have it.
+    runner = ["soldr", "cargo"] if shutil.which("soldr") else ["cargo"]
+    return subprocess.run([*runner, "check", "--workspace"]).returncode
 
 
 if __name__ == "__main__":
