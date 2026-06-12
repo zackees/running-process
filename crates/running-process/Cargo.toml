@@ -46,6 +46,14 @@ name = "running-process-broker-v1"
 path = "src/bin/running-process-broker-v1.rs"
 required-features = ["daemon"]
 
+[[example]]
+# Dev-only evidence harness for #387: deploys the real broker binary plus
+# a separate backend process and measures the opt-in handle-passing
+# handoff against the reconnect fallback. Never shipped; see
+# docs/v1-handoff-optimization.md for the recorded numbers.
+name = "handoff_rollout_evidence"
+required-features = ["client"]
+
 [features]
 # Final feature scheme per #165:
 # * `core`   — always-available API (spawn / pty / containment).
