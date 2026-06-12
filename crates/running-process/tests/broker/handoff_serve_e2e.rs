@@ -41,8 +41,8 @@ use crate::socket_common::{
     unique_socket_name,
 };
 
-const CLIENT_PROBE: u8 = 0xC3;
-const BACKEND_REPLY: u8 = 0x5A;
+pub(crate) const CLIENT_PROBE: u8 = 0xC3;
+pub(crate) const BACKEND_REPLY: u8 = 0x5A;
 
 #[test]
 fn serve_handoff_completes_and_client_adopts_connection() {
@@ -59,6 +59,7 @@ fn serve_handoff_completes_and_client_adopts_connection() {
         tmp.path().join("services").as_path(),
         socket_name.clone(),
         backend_endpoint.clone(),
+        1,
     )
     .with_handoff_endpoint(handoff_endpoint);
     let server = thread::spawn(move || serve_registered_backend(config));
@@ -97,6 +98,7 @@ fn rejected_handoff_silently_downgrades_to_backend_pipe() {
         tmp.path().join("services").as_path(),
         socket_name.clone(),
         backend_endpoint.clone(),
+        1,
     )
     .with_handoff_endpoint(handoff_endpoint);
     let server = thread::spawn(move || serve_registered_backend(config));
@@ -116,7 +118,7 @@ fn rejected_handoff_silently_downgrades_to_backend_pipe() {
 }
 
 /// What the test backend does with the broker's handoff offer.
-enum BackendBehavior {
+pub(crate) enum BackendBehavior {
     /// Echo-accept the offered token, adopt the transferred connection,
     /// and serve one probe/reply byte exchange on it.
     Accept,
@@ -145,7 +147,7 @@ fn spawn_backend_handoff_listener(
 }
 
 #[cfg(windows)]
-fn serve_one_handoff(
+pub(crate) fn serve_one_handoff(
     stream: &mut interprocess::local_socket::Stream,
     behavior: &BackendBehavior,
 ) -> io::Result<()> {
@@ -234,7 +236,7 @@ fn overlapped_transfer(
 }
 
 #[cfg(unix)]
-fn serve_one_handoff(
+pub(crate) fn serve_one_handoff(
     stream: &mut interprocess::local_socket::Stream,
     behavior: &BackendBehavior,
 ) -> io::Result<()> {
@@ -380,17 +382,26 @@ fn connect_backend_with_retry(broker_endpoint: &str, ready_timeout: Duration) ->
     }
 }
 
-fn serve_config(
+pub(crate) fn serve_config(
     service_root: &Path,
     socket_path: String,
     backend_endpoint: String,
+    max_connections: usize,
 ) -> BrokerServeConfig {
-    BrokerServeConfig::new(socket_path, "zccache", "1.11.20", backend_endpoint, 1)
-        .unwrap()
-        .with_service_definition_dir(service_root)
+    BrokerServeConfig::new(
+        socket_path,
+        "zccache",
+        "1.11.20",
+        backend_endpoint,
+        max_connections,
+    )
+    .unwrap()
+    .with_service_definition_dir(service_root)
 }
 
-fn spawn_configured_backend_probe(backend_endpoint: &str) -> thread::JoinHandle<io::Result<()>> {
+pub(crate) fn spawn_configured_backend_probe(
+    backend_endpoint: &str,
+) -> thread::JoinHandle<io::Result<()>> {
     let endpoint = Endpoint {
         namespace_id: BrokerInstanceKey::Shared.id(),
         path: backend_endpoint.into(),
@@ -414,7 +425,7 @@ fn service_definition() -> ServiceDefinition {
     }
 }
 
-fn write_service_definition_dir() -> tempfile::TempDir {
+pub(crate) fn write_service_definition_dir() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("services");
     ensure_service_definition_dir(&root).unwrap();
