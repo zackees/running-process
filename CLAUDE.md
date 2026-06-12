@@ -23,7 +23,7 @@ A Rust-backed Python library (v3.0.15) for subprocess and PTY process management
   - Three binaries in `src/bin/`: `runpm` (requires `client`), `running-process-daemon` (requires `daemon`), `daemon-trampoline` (no required-features).
   - `proto/daemon.proto` compiled by `build.rs` (prost-build + protox).
 - **`running-process-py`**: PyO3 bindings. Contains `NativePtyProcess` alongside the pipe backend. Exposes a unified `PyNativeProcess` with `NativeProcessBackend` enum dispatching to either `NativeRunningProcess` or `NativePtyProcess`. Depends on `running-process` with `features = ["client", "originator-scan"]`.
-- `crates/test-watchdog/` (publish=false): Windows hang-dump helper used as dev-dep by `running-process` tests.
+- `crates/test-watchdog/` (publish=false): cross-platform hang-dump helper used as dev-dep by `running-process` tests (procdump minidump on Windows, gdb/lldb all-thread backtraces on Unix).
 - `testbins/`: 8 test-fixture binaries.
 
 **Python-Rust bridge**: `running_process._native` module compiled via maturin. Python's `PseudoTerminalProcess.start()` calls `NativeProcess.for_pty()` which creates a `NativePtyProcess` on the Rust side.
@@ -52,6 +52,7 @@ RUNNING_PROCESS_LIVE_TESTS=1 uv run pytest -m live tests -v  # Integration tests
 **Per-test deadlock guard.** Every test (Rust + Python) gets a hard 2-minute wall-clock kill so a hung test can't stall CI indefinitely:
 - Rust runs through `cargo nextest` (auto-installed by `ci/test.py` if missing); `.config/nextest.toml` sets `slow-timeout.terminate-after = 2 × 60s`. On fire nextest prints `TIMEOUT [...] <crate>::<test_file> <test_name>` plus captured stdout/stderr.
 - Python uses `pytest-timeout` with `timeout = 120, timeout_method = "thread"` in `pyproject.toml`. On fire pytest prints a `+++ Timeout +++` banner with every thread's Python stack — enough to identify the hung test from CI logs.
+- Rust tests that opt into `test_watchdog::install(timeout, message, dump_path)` (e.g. `tests/containment_test.rs`) additionally get an out-of-process dump *before* nextest's kill: on Windows a full minidump via `procdump -ma`; on Linux/macOS all-thread backtraces via `gdb -p <pid> -batch -ex 'thread apply all bt'` (or `lldb --batch -o 'thread backtrace all'`), printed to stderr and written to `dump_path`. Works for non-cooperative hangs (thread blocked in a syscall); on Linux the watchdog sets `PR_SET_PTRACER_ANY` so the child debugger may attach even under Yama `ptrace_scope=1`. Missing debugger → one-line note, never an extra failure.
 Override per-invocation when needed: `cargo nextest run -- --slow-timeout 30s --terminate-after 1` or `pytest --timeout=300`.
 
 **Linting:**
