@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub(crate) struct NativeSignalBool {
     pub(crate) value: Arc<AtomicBool>,

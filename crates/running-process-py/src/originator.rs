@@ -4,7 +4,7 @@ use running_process::{find_processes_by_originator, OriginatorProcessInfo};
 
 // ── Originator process scanning ─────────────────────────────────────────────
 
-#[pyclass(name = "OriginatorProcessInfo")]
+#[pyclass(name = "OriginatorProcessInfo", skip_from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyOriginatorProcessInfo {
     #[pyo3(get)]

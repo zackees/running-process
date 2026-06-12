@@ -38,8 +38,8 @@ fn pty_buffer_close() {
 
 #[test]
 fn pty_buffer_drain_returns_recorded_chunks() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(false, "utf-8", "replace");
         buf.record_output(b"chunk1");
         buf.record_output(b"chunk2");
@@ -51,8 +51,8 @@ fn pty_buffer_drain_returns_recorded_chunks() {
 
 #[test]
 fn pty_buffer_output_returns_full_history() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(true, "utf-8", "replace");
         buf.record_output(b"hello ");
         buf.record_output(b"world");
@@ -64,8 +64,8 @@ fn pty_buffer_output_returns_full_history() {
 
 #[test]
 fn pty_buffer_output_since_offset() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(true, "utf-8", "replace");
         buf.record_output(b"hello ");
         buf.record_output(b"world");
@@ -77,8 +77,8 @@ fn pty_buffer_output_since_offset() {
 
 #[test]
 fn pty_buffer_read_non_blocking_empty() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(false, "utf-8", "replace");
         let result = buf.read_non_blocking(py).unwrap();
         assert!(result.is_none());
@@ -87,8 +87,8 @@ fn pty_buffer_read_non_blocking_empty() {
 
 #[test]
 fn pty_buffer_read_non_blocking_with_data() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(false, "utf-8", "replace");
         buf.record_output(b"data");
         let result = buf.read_non_blocking(py).unwrap();
@@ -98,8 +98,8 @@ fn pty_buffer_read_non_blocking_with_data() {
 
 #[test]
 fn pty_buffer_read_closed_returns_error() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(false, "utf-8", "replace");
         buf.close();
         let result = buf.read_non_blocking(py);
@@ -109,8 +109,8 @@ fn pty_buffer_read_closed_returns_error() {
 
 #[test]
 fn pty_buffer_read_with_timeout() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(false, "utf-8", "replace");
         let result = buf.read(py, Some(0.05));
         // Should timeout since no data
@@ -120,8 +120,8 @@ fn pty_buffer_read_with_timeout() {
 
 #[test]
 fn pty_buffer_text_mode_decodes_utf8() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(true, "utf-8", "replace");
         buf.record_output("héllo".as_bytes());
         let result = buf.read_non_blocking(py).unwrap().unwrap();
@@ -132,8 +132,8 @@ fn pty_buffer_text_mode_decodes_utf8() {
 
 #[test]
 fn pty_buffer_bytes_mode_returns_bytes() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(false, "utf-8", "replace");
         buf.record_output(b"\xff\xfe");
         let result = buf.read_non_blocking(py).unwrap().unwrap();
@@ -146,8 +146,8 @@ fn pty_buffer_bytes_mode_returns_bytes() {
 
 #[test]
 fn pty_buffer_multiple_record_and_drain() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(false, "utf-8", "replace");
         buf.record_output(b"a");
         buf.record_output(b"b");
@@ -162,8 +162,8 @@ fn pty_buffer_multiple_record_and_drain() {
 
 #[test]
 fn pty_buffer_output_since_beyond_length() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(true, "utf-8", "replace");
         buf.record_output(b"hi");
         let output = buf.output_since(py, 999).unwrap();
@@ -243,8 +243,8 @@ fn pty_buffer_record_multiple_chunks_all_available() {
 
 #[test]
 fn pty_buffer_decode_chunk_text_mode() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(true, "utf-8", "replace");
         let result = buf.decode_chunk(py, b"hello").unwrap();
         let text: String = result.extract(py).unwrap();
@@ -254,8 +254,8 @@ fn pty_buffer_decode_chunk_text_mode() {
 
 #[test]
 fn pty_buffer_decode_chunk_binary_mode() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let buf = NativePtyBuffer::new(false, "utf-8", "replace");
         let result = buf.decode_chunk(py, b"\xff\xfe").unwrap();
         let bytes: Vec<u8> = result.extract(py).unwrap();

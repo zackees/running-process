@@ -25,8 +25,8 @@ pub(crate) fn make_idle_detector(
 
 #[test]
 fn idle_detector_mark_exit_returns_process_exit() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let det = make_idle_detector(py, 10.0, true, 0.0);
         det.mark_exit(42, false);
         let (triggered, reason, _idle_for, returncode) = det.wait(py, Some(1.0));
@@ -38,8 +38,8 @@ fn idle_detector_mark_exit_returns_process_exit() {
 
 #[test]
 fn idle_detector_mark_exit_interrupted() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let det = make_idle_detector(py, 10.0, true, 0.0);
         det.mark_exit(1, true);
         let (triggered, reason, _idle_for, returncode) = det.wait(py, Some(1.0));
@@ -51,8 +51,8 @@ fn idle_detector_mark_exit_interrupted() {
 
 #[test]
 fn idle_detector_timeout_when_not_idle() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let det = make_idle_detector(py, 10.0, true, 0.0);
         let (triggered, reason, _idle_for, returncode) = det.wait(py, Some(0.05));
         assert!(!triggered);
@@ -63,8 +63,8 @@ fn idle_detector_timeout_when_not_idle() {
 
 #[test]
 fn idle_detector_triggers_when_already_idle() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         // initial_idle_for=1.0 means it thinks it's been idle for 1 second
         // timeout_seconds=0.5 means 0.5s idle triggers
         let det = make_idle_detector(py, 0.5, true, 1.0);
@@ -76,8 +76,8 @@ fn idle_detector_triggers_when_already_idle() {
 
 #[test]
 fn idle_detector_disabled_does_not_trigger() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let det = make_idle_detector(py, 0.01, false, 1.0);
         let (triggered, reason, _idle_for, _returncode) = det.wait(py, Some(0.1));
         assert!(!triggered);
@@ -87,8 +87,8 @@ fn idle_detector_disabled_does_not_trigger() {
 
 #[test]
 fn idle_detector_record_input_resets_idle() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let det = make_idle_detector(py, 0.5, true, 1.0);
         // Recording input should reset the idle timer
         det.record_input(5);
@@ -101,8 +101,8 @@ fn idle_detector_record_input_resets_idle() {
 
 #[test]
 fn idle_detector_record_output_resets_idle() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let det = make_idle_detector(py, 0.5, true, 1.0);
         // Recording visible output should reset idle timer
         det.record_output(b"visible output");
@@ -114,8 +114,8 @@ fn idle_detector_record_output_resets_idle() {
 
 #[test]
 fn idle_detector_control_churn_only_no_reset_when_not_counted() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
         let det = NativeIdleDetector::new(
             py, 0.05, 0.0, 0.01, signal, true, true,
@@ -135,8 +135,8 @@ fn idle_detector_control_churn_only_no_reset_when_not_counted() {
 
 #[test]
 fn idle_detector_record_input_zero_bytes_no_reset() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let det = make_idle_detector(py, 0.05, true, 1.0);
         // Recording 0 bytes should NOT reset idle timer
         det.record_input(0);
@@ -148,8 +148,8 @@ fn idle_detector_record_input_zero_bytes_no_reset() {
 
 #[test]
 fn idle_detector_record_output_empty_no_reset() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let det = make_idle_detector(py, 0.05, true, 1.0);
         // Recording empty output should NOT reset idle timer
         det.record_output(b"");
@@ -161,8 +161,8 @@ fn idle_detector_record_output_empty_no_reset() {
 
 #[test]
 fn idle_detector_enabled_getter_and_setter() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let det = make_idle_detector(py, 1.0, true, 0.0);
         assert!(det.enabled());
         det.set_enabled(false);
@@ -176,8 +176,8 @@ fn idle_detector_enabled_getter_and_setter() {
 
 #[test]
 fn idle_detector_wait_idle_timeout_with_initial_idle() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
         let detector =
             NativeIdleDetector::new(py, 0.01, 0.01, 0.001, signal, true, true, true, 100.0);
@@ -190,11 +190,10 @@ fn idle_detector_wait_idle_timeout_with_initial_idle() {
 
 #[test]
 fn idle_detector_record_output_only_control_churn_with_flag() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-        let detector =
-            NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
+        let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
         let state_before = detector.core.state.lock().unwrap().last_reset_at;
         std::thread::sleep(std::time::Duration::from_millis(10));
         detector.record_output(b"\x1b[H");
@@ -205,11 +204,10 @@ fn idle_detector_record_output_only_control_churn_with_flag() {
 
 #[test]
 fn idle_detector_record_output_only_control_churn_without_flag() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-        let detector =
-            NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, false, 5.0);
+        let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, false, 5.0);
         let state_before = detector.core.state.lock().unwrap().last_reset_at;
         std::thread::sleep(std::time::Duration::from_millis(10));
         detector.record_output(b"\x1b[H");
@@ -220,11 +218,10 @@ fn idle_detector_record_output_only_control_churn_without_flag() {
 
 #[test]
 fn idle_detector_record_output_not_enabled() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-        let detector =
-            NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, false, true, 5.0);
+        let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, false, true, 5.0);
         let state_before = detector.core.state.lock().unwrap().last_reset_at;
         std::thread::sleep(std::time::Duration::from_millis(10));
         detector.record_output(b"visible");
@@ -235,11 +232,10 @@ fn idle_detector_record_output_not_enabled() {
 
 #[test]
 fn idle_detector_record_input_not_enabled() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-        let detector =
-            NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, false, true, true, 5.0);
+        let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, false, true, true, 5.0);
         let state_before = detector.core.state.lock().unwrap().last_reset_at;
         std::thread::sleep(std::time::Duration::from_millis(10));
         detector.record_input(100);
@@ -250,11 +246,10 @@ fn idle_detector_record_input_not_enabled() {
 
 #[test]
 fn idle_detector_record_input_nonzero_bytes_resets() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-        let detector =
-            NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
+        let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
         let state_before = detector.core.state.lock().unwrap().last_reset_at;
         std::thread::sleep(std::time::Duration::from_millis(10));
         detector.record_input(100);
@@ -265,11 +260,10 @@ fn idle_detector_record_input_nonzero_bytes_resets() {
 
 #[test]
 fn idle_detector_record_output_visible_resets() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-        let detector =
-            NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
+        let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 5.0);
         let state_before = detector.core.state.lock().unwrap().last_reset_at;
         std::thread::sleep(std::time::Duration::from_millis(10));
         detector.record_output(b"visible output");
@@ -280,11 +274,10 @@ fn idle_detector_record_output_visible_resets() {
 
 #[test]
 fn idle_detector_mark_exit_sets_returncode() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let signal = pyo3::Py::new(py, NativeSignalBool::new(true)).unwrap();
-        let detector =
-            NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 0.0);
+        let detector = NativeIdleDetector::new(py, 1.0, 0.5, 0.1, signal, true, true, true, 0.0);
         detector.mark_exit(42, false);
         let state = detector.core.state.lock().unwrap();
         assert_eq!(state.returncode, Some(42));

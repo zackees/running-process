@@ -26,12 +26,12 @@ mod tests;
 
 // Re-exports for cross-module access (used by public_symbols.rs and tests).
 pub(crate) use containment::PyContainedProcessGroup;
+#[cfg(windows)]
+pub(crate) use debug_traces::native_test_hang_in_rust;
 pub(crate) use debug_traces::{
     monitor_console_windows, native_dump_rust_debug_traces, native_test_capture_rust_debug_trace,
     native_windows_terminal_input_bytes,
 };
-#[cfg(windows)]
-pub(crate) use debug_traces::native_test_hang_in_rust;
 pub(crate) use idle_detector::NativeIdleDetector;
 pub(crate) use metrics::NativeProcessMetrics;
 pub(crate) use originator::{py_find_processes_by_originator, PyOriginatorProcessInfo};

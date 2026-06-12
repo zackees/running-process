@@ -27,8 +27,8 @@ pub(crate) fn make_test_running_process(py: Python<'_>) -> NativeRunningProcess 
 
 #[test]
 fn find_expect_match_literal_found() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let process = make_test_running_process(py);
         let result = process
             .find_expect_match("hello world", "world", None)
@@ -44,8 +44,8 @@ fn find_expect_match_literal_found() {
 
 #[test]
 fn find_expect_match_literal_not_found() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let process = make_test_running_process(py);
         let result = process
             .find_expect_match("hello world", "missing", None)
@@ -56,8 +56,8 @@ fn find_expect_match_literal_not_found() {
 
 #[test]
 fn find_expect_match_regex_found() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let process = make_test_running_process(py);
         let re = Regex::new(r"\d+").unwrap();
         let result = process
@@ -73,8 +73,8 @@ fn find_expect_match_regex_found() {
 
 #[test]
 fn find_expect_match_regex_with_groups() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let process = make_test_running_process(py);
         let re = Regex::new(r"(\d+) (\w+)").unwrap();
         let result = process
@@ -90,8 +90,8 @@ fn find_expect_match_regex_with_groups() {
 
 #[test]
 fn find_expect_match_regex_not_found() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let process = make_test_running_process(py);
         let re = Regex::new(r"\d+").unwrap();
         let result = process
@@ -104,8 +104,8 @@ fn find_expect_match_regex_not_found() {
 #[test]
 #[allow(clippy::invalid_regex)]
 fn find_expect_match_invalid_regex_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|_py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
         let result = Regex::new(r"[invalid");
         assert!(result.is_err());
     });

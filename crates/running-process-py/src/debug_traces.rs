@@ -84,7 +84,7 @@ pub(crate) fn native_test_hang_in_rust(ready_path: String, release_path: String)
 /// Returns a list of dicts, each with keys: ``pid`` (int), ``title`` (str),
 /// ``hwnd`` (int).  On non-Windows platforms this always returns an empty list.
 #[pyfunction]
-pub(crate) fn monitor_console_windows(py: Python<'_>, duration_secs: f64) -> PyResult<PyObject> {
+pub(crate) fn monitor_console_windows(py: Python<'_>, duration_secs: f64) -> PyResult<Py<PyAny>> {
     let duration = Duration::from_secs_f64(duration_secs);
     let infos = running_process::monitor_console_windows(duration);
     let list = PyList::empty(py);
@@ -95,5 +95,5 @@ pub(crate) fn monitor_console_windows(py: Python<'_>, duration_secs: f64) -> PyR
         dict.set_item("hwnd", info.hwnd)?;
         list.append(dict)?;
     }
-    Ok(list.into())
+    Ok(list.into_any().unbind())
 }

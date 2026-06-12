@@ -81,6 +81,6 @@ impl NativeIdleDetector {
         py: Python<'_>,
         timeout: Option<f64>,
     ) -> (bool, String, f64, Option<i32>) {
-        py.allow_threads(|| self.core.wait(timeout))
+        py.detach(|| self.core.wait(timeout))
     }
 }

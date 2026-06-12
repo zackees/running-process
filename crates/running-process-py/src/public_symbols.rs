@@ -2,10 +2,12 @@
 
 use pyo3::prelude::*;
 
-use crate::process::NativeRunningProcess;
 use crate::priority::native_apply_process_nice_impl;
 #[cfg(windows)]
-use crate::priority::{windows_apply_process_priority_impl, windows_generate_console_ctrl_break_impl};
+use crate::priority::{
+    windows_apply_process_priority_impl, windows_generate_console_ctrl_break_impl,
+};
+use crate::process::NativeRunningProcess;
 
 #[unsafe(no_mangle)]
 #[inline(never)]

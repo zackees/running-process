@@ -8,8 +8,8 @@ use crate::helpers::{parse_command, stderr_mode, stdin_mode, stream_kind};
 
 #[test]
 fn parse_command_string_with_shell() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let cmd = pyo3::types::PyString::new(py, "echo hello");
         let result = parse_command(cmd.as_any(), true).unwrap();
         assert!(matches!(result, CommandSpec::Shell(ref s) if s == "echo hello"));
@@ -18,8 +18,8 @@ fn parse_command_string_with_shell() {
 
 #[test]
 fn parse_command_string_without_shell_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let cmd = pyo3::types::PyString::new(py, "echo hello");
         let result = parse_command(cmd.as_any(), false);
         assert!(result.is_err());
@@ -28,8 +28,8 @@ fn parse_command_string_without_shell_errors() {
 
 #[test]
 fn parse_command_list_without_shell() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let cmd = pyo3::types::PyList::new(py, ["echo", "hello"]).unwrap();
         let result = parse_command(cmd.as_any(), false).unwrap();
         assert!(matches!(result, CommandSpec::Argv(ref v) if v.len() == 2));
@@ -38,8 +38,8 @@ fn parse_command_list_without_shell() {
 
 #[test]
 fn parse_command_list_with_shell_joins() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let cmd = pyo3::types::PyList::new(py, ["echo", "hello"]).unwrap();
         let result = parse_command(cmd.as_any(), true).unwrap();
         assert!(matches!(result, CommandSpec::Shell(ref s) if s == "echo hello"));
@@ -48,8 +48,8 @@ fn parse_command_list_with_shell_joins() {
 
 #[test]
 fn parse_command_empty_list_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let cmd = pyo3::types::PyList::empty(py);
         let result = parse_command(cmd.as_any(), false);
         assert!(result.is_err());
@@ -58,8 +58,8 @@ fn parse_command_empty_list_errors() {
 
 #[test]
 fn parse_command_invalid_type_errors() {
-    pyo3::prepare_freethreaded_python();
-    pyo3::Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
         let cmd = 42i32.into_pyobject(py).unwrap();
         let result = parse_command(cmd.as_any(), false);
         assert!(result.is_err());

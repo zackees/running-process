@@ -6,9 +6,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use running_process::pty::{
-    self as core_pty, NativePtyProcess as CoreNativePtyProcess, PtyError,
-};
+use running_process::pty::{self as core_pty, NativePtyProcess as CoreNativePtyProcess, PtyError};
 
 use crate::helpers::to_py_err;
 use crate::idle_detector::NativeIdleDetector;
@@ -65,7 +63,7 @@ impl NativePtyProcess {
 
     #[pyo3(signature = (timeout=None))]
     pub(crate) fn read_chunk(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
-        let result = py.allow_threads(|| self.inner.read_chunk_impl(timeout));
+        let result = py.detach(|| self.inner.read_chunk_impl(timeout));
         match result {
             Ok(Some(chunk)) => Ok(PyBytes::new(py, &chunk).into_any().unbind()),
             Ok(None) => Err(PyTimeoutError::new_err(
@@ -81,7 +79,7 @@ impl NativePtyProcess {
         py: Python<'_>,
         timeout: Option<f64>,
     ) -> PyResult<bool> {
-        Ok(py.allow_threads(|| self.inner.wait_for_reader_closed_impl(timeout)))
+        Ok(py.detach(|| self.inner.wait_for_reader_closed_impl(timeout)))
     }
 
     #[pyo3(signature = (data, submit=false))]
@@ -123,12 +121,12 @@ impl NativePtyProcess {
 
     #[inline(never)]
     pub(crate) fn terminate(&self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| self.inner.terminate_impl().map_err(Self::pty_err_to_py))
+        py.detach(|| self.inner.terminate_impl().map_err(Self::pty_err_to_py))
     }
 
     #[inline(never)]
     pub(crate) fn kill(&self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| self.inner.kill_impl().map_err(Self::pty_err_to_py))
+        py.detach(|| self.inner.kill_impl().map_err(Self::pty_err_to_py))
     }
 
     #[inline(never)]
@@ -182,7 +180,7 @@ impl NativePtyProcess {
         timeout: Option<f64>,
         drain_timeout: f64,
     ) -> PyResult<i32> {
-        py.allow_threads(|| {
+        py.detach(|| {
             self.inner
                 .wait_and_drain_impl(timeout, drain_timeout)
                 .map_err(Self::pty_err_to_py)
@@ -232,7 +230,7 @@ impl NativePtyProcess {
             thread::sleep(Duration::from_millis(1));
         });
 
-        let result = py.allow_threads(|| detector.core.wait(timeout));
+        let result = py.detach(|| detector.core.wait(timeout));
 
         self.inner.detach_idle_detector();
         let _ = exit_watcher.join();
@@ -245,6 +243,6 @@ impl NativePtyProcess {
     }
 
     pub(crate) fn close(&self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| self.inner.close_impl().map_err(Self::pty_err_to_py))
+        py.detach(|| self.inner.close_impl().map_err(Self::pty_err_to_py))
     }
 }

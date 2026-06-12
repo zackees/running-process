@@ -1,6 +1,6 @@
-use pyo3::prelude::*;
 #[cfg(windows)]
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::prelude::*;
 
 #[cfg(unix)]
 use running_process::unix_set_priority;
@@ -29,9 +29,7 @@ pub(crate) fn native_apply_process_nice_impl(pid: u32, nice: i32) -> PyResult<()
 
 #[cfg(windows)]
 pub(crate) fn windows_apply_process_priority_impl(pid: u32, nice: i32) -> PyResult<()> {
-    running_process::rp_rust_debug_scope!(
-        "running_process_py::windows_apply_process_priority"
-    );
+    running_process::rp_rust_debug_scope!("running_process_py::windows_apply_process_priority");
     use winapi::um::handleapi::CloseHandle;
     use winapi::um::processthreadsapi::{OpenProcess, SetPriorityClass};
     use winapi::um::winbase::{
