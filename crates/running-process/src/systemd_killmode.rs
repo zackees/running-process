@@ -129,8 +129,7 @@ pub fn unit_from_cgroup(cgroup: &str) -> Option<String> {
         let path = line.rsplit_once(':').map(|(_, path)| path)?;
         let unit = path
             .split('/')
-            .filter(|component| component.ends_with(".service") || component.ends_with(".scope"))
-            .next_back();
+            .rfind(|component| component.ends_with(".service") || component.ends_with(".scope"));
         if let Some(unit) = unit {
             return Some(unit.to_string());
         }
