@@ -193,4 +193,10 @@ def clean_env() -> dict[str, str]:
 
 
 def build_env() -> dict[str, str]:
-    return clean_env()
+    env = clean_env()
+    # Imported lazily to avoid a circular import (ci.reproducible uses
+    # the path helpers defined above).
+    from ci.reproducible import apply_reproducible_env
+
+    # No-op unless RUNNING_PROCESS_REPRODUCIBLE=1 is set (#392).
+    return apply_reproducible_env(env, repo_root())
