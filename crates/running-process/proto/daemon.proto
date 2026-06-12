@@ -366,6 +366,11 @@ message StatusResponse {
   string scope                  = 7;
   string scope_hash             = 8;
   string scope_cwd              = 9;
+  // ENOSPC emergency-reserve lifecycle state (#390): "armed",
+  // "released" (deleted to recover from a full disk), or "degraded"
+  // (pre-allocation failed at startup). Additive field; older clients
+  // ignore it.
+  string emergency_reserve      = 10;
 }
 
 message TrackedProcess {

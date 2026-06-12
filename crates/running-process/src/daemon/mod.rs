@@ -5,6 +5,7 @@ pub use crate::client::pty_session;
 
 pub mod attach_stream;
 pub mod config;
+pub mod emergency_reserve;
 pub mod handlers;
 pub mod idle;
 pub mod pipe_attach_stream;

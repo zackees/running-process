@@ -28,6 +28,12 @@ fn test_state() -> (DaemonState, tempfile::TempDir) {
         registry,
         pty_sessions,
         pipe_sessions,
+        emergency_reserve: Arc::new(
+            crate::daemon::emergency_reserve::EmergencyReserve::initialize_at(
+                tmp_dir.path().join("emergency-reserve.bin"),
+                4096,
+            ),
+        ),
     };
     (state, tmp_dir)
 }

@@ -77,6 +77,12 @@ fn build_test_state(scope: &str) -> (DaemonState, tempfile::TempDir) {
         registry,
         pty_sessions,
         pipe_sessions,
+        emergency_reserve: Arc::new(
+            running_process::daemon::emergency_reserve::EmergencyReserve::initialize_at(
+                tmp.path().join("emergency-reserve.bin"),
+                4096,
+            ),
+        ),
     };
     (state, tmp)
 }

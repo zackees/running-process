@@ -43,6 +43,7 @@ pub fn handle_status(request: &DaemonRequest, state: &DaemonState) -> DaemonResp
             scope: state.scope.clone(),
             scope_hash: state.scope_hash.clone(),
             scope_cwd: state.scope_cwd.clone(),
+            emergency_reserve: state.emergency_reserve.state().as_str().to_string(),
         }),
         ..Default::default()
     }
