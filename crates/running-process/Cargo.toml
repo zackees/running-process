@@ -76,6 +76,10 @@ daemon = [
     "dep:rusqlite", "dep:toml",
 ]
 originator-scan = []               # used by running-process-py for cwd-tagging
+# #415: consumer-consumable conformance test kit
+# (`crate::test_support::conformance`). Off by default; consumers opt in
+# from their `dev-dependencies`.
+test-support = ["client"]
 
 [dependencies]
 libc = "0.2"

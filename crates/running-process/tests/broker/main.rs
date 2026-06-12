@@ -17,6 +17,8 @@ mod backend_registry;
 mod backend_sdk;
 mod broadcast_release_handles;
 mod client;
+#[cfg(feature = "test-support")]
+mod conformance_kit;
 mod connection;
 mod contrib_templates;
 mod docs_escape_hatch;
