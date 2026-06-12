@@ -33,18 +33,22 @@ matching per-target artifact name in the table below.
 
 | Target | minimum_seconds | release_run_url | corpus_or_artifact | status |
 |---|---:|---|---|---|
-| `fuzz_admin_decode` | 3600 | TBD | TBD | pending |
-| `fuzz_cache_manifest_decode` | 3600 | TBD | TBD | pending |
-| `fuzz_frame_decode` | 3600 | TBD | TBD | pending |
-| `fuzz_framing_read` | 3600 | TBD | TBD | pending |
-| `fuzz_handoff_decode` | 3600 | TBD | TBD | pending |
-| `fuzz_hello_decode` | 3600 | TBD | TBD | pending |
-| `fuzz_helloreply_decode` | 3600 | TBD | TBD | pending |
-| `fuzz_pipe_name_parse` | 3600 | TBD | TBD | pending |
-| `fuzz_probe_framing_read` | 3600 | TBD | TBD | pending |
-| `fuzz_probe_identity_decode` | 3600 | TBD | TBD | pending |
-| `fuzz_service_def_decode` | 3600 | TBD | TBD | pending |
-| `fuzz_service_name_validate` | 3600 | TBD | TBD | pending |
+| `fuzz_admin_decode` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_admin_decode | passed |
+| `fuzz_cache_manifest_decode` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_cache_manifest_decode | passed |
+| `fuzz_frame_decode` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_frame_decode | passed |
+| `fuzz_framing_read` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_framing_read | passed |
+| `fuzz_handoff_decode` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_handoff_decode | passed |
+| `fuzz_hello_decode` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_hello_decode | passed |
+| `fuzz_helloreply_decode` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_helloreply_decode | passed |
+| `fuzz_pipe_name_parse` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_pipe_name_parse | passed |
+| `fuzz_probe_framing_read` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_probe_framing_read | passed |
+| `fuzz_probe_identity_decode` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_probe_identity_decode | passed |
+| `fuzz_service_def_decode` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_service_def_decode | passed |
+| `fuzz_service_name_validate` | 3600 | https://github.com/zackees/running-process/actions/runs/27405384619 | release-fuzz-evidence-fuzz_service_name_validate | passed |
+
+All twelve campaigns ran 61 minutes each on commit `f0c2db1` via
+`workflow_dispatch` with `fuzz_seconds=3600` (2026-06-12), with zero crashes
+and one `release-fuzz-evidence-<target>` artifact per target.
 
 ## Required Release Evidence
 
