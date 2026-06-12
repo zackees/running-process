@@ -253,6 +253,69 @@ the P99-tail advantage that `SCM_RIGHTS` showed in the pre-wiring Linux
 harness does **not** survive the serve path (830 us handoff vs 610 us
 reconnect at P99).
 
+### Out-of-process rollout evidence (production deployment, 2026-06-12)
+
+The serve-path numbers above still ran the serve loop and the client in
+one test binary. The `handoff_rollout_evidence` example
+(`crates/running-process/examples/handoff_rollout_evidence.rs`) closes
+the remaining gap by deploying the production topology as real separate
+OS processes: a **server process** running the production
+`serve_registered_backend` accept loop (the same function
+`running-process-broker-v1 --serve` invokes) together with the backend
+side (startup endpoint-identity probe, production offer/ACK handoff wire
+exchange or `backend_pipe` reconnect listener), and a **client process**
+performing the opt-in `connect_to_backend` across the process boundary.
+Every timed sample asserts the expected route
+(`HandlePassed` / `BrokerNegotiated`) and ends with a probe/reply byte
+round trip on the resulting backend connection. Same methodology: 5
+warmup + 50 measured iterations, nearest-rank P50/P99.
+
+**Topology constraint discovered during the rollout attempt:** the
+registered-backend serve mode verifies its startup endpoint probe
+against the serving process's OWN identity (pid / exe_path /
+exe_sha256 in `build_registered_backend`, serve.rs). A standalone
+`running-process-broker-v1 --serve` process fronting a *separate*
+backend process therefore fails startup with
+`endpoint probe response identity did not match expected daemon
+identity: pid`. The supported production deployment co-locates the
+serve loop in the backend service process; only the client is a foreign
+process. (Cross-process `DuplicateHandle` into a distinct backend pid
+remains separately evidenced by
+`handoff_latency_e2e::windows_bench`, which duplicates into a live
+child process.) A fully split broker/backend topology would need an
+identity-verification story first and is out of scope for #387.
+
+Reproduce with:
+
+```text
+soldr cargo build -p running-process --features client --example handoff_rollout_evidence
+target/<triple>/debug/examples/handoff_rollout_evidence driver
+```
+
+Measured on 2026-06-12 (debug builds, rustc 1.94.1; AMD Ryzen 7 3700X
+desktop, Windows 10 Pro host; Linux inside the
+`running-process/linux-lint:local` Docker container, Debian 12 glibc on
+WSL2 kernel 6.18, same host):
+
+| Platform | Handoff P50 | Handoff P99 | Reconnect P50 | Reconnect P99 |
+|---|---|---|---|---|
+| Windows (`DuplicateHandle`, out-of-process client) | 428 us | 652 us | 312 us | 400 us |
+| Linux (`SCM_RIGHTS`, out-of-process client, Dockerized) | 522 us | 904 us | 244 us | 447 us |
+
+Stable across runs — Windows (4 runs): handoff P50 425–447 us, P99
+652–844 us; reconnect P50 301–315 us, P99 400–533 us. Linux (3 runs):
+handoff P50 502–535 us, P99 904–1228 us; reconnect P50 244–316 us, P99
+447–567 us. Each table row records the median run.
+
+Honest reading: the out-of-process numbers reproduce the in-process
+serve-path result almost exactly — reconnect is faster at both P50 and
+P99 on both platforms, by roughly the same margins (the per-connection
+broker→backend offer/ACK round trip plus the handoff-ready relay costs
+more than the fresh `backend_pipe` connect it replaces). Crossing a
+real process boundary adds no surprises in either direction, and all
+50×2×2×2 measured connections adopted (or reconnected) on the expected
+route with zero fallbacks.
+
 ### Default-policy decision (Phase 7)
 
 **Handoff stays opt-in.** Phase 7 does not flip
@@ -272,7 +335,16 @@ the pre-wiring Linux harness (P99 156 us vs 463 us), but the Dockerized
 Linux serve-path run did **not** reproduce it: reconnect is faster at both
 percentiles on Linux too (207 us vs 575 us at P50, 610 us vs 830 us at
 P99), so the Linux evidence now confirms the stay-opt-in decision rather
-than challenging it. Until a platform shows a
+than challenging it. The 2026-06-12 out-of-process rollout evidence
+(real server and client processes, table above) re-confirms the same
+verdict on both platforms with production-shaped deployments: reconnect
+wins at both percentiles on Windows (312 us vs 428 us at P50, 400 us vs
+652 us at P99) and on Linux (244 us vs 522 us at P50, 447 us vs 904 us
+at P99), with every opted-in connection adopting cleanly — the
+mechanism is sound; it is just not faster than the fallback it
+replaces. **Decision (2026-06-12): handoff remains opt-in in Phase 7;
+the reconnect fallback stays the authoritative correctness path.**
+Until a platform shows a
 strictly-faster serve-path result, the optimization remains available to
 operators who opt in via `--handoff-endpoint` and clients that opt in via
 `adopt_handed_off_connection`, with the reconnect path staying the
