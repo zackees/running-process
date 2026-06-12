@@ -3,6 +3,22 @@
 This guide lists operator-facing broker failure modes and the matching first
 checks.
 
+## First Check: `doctor`
+
+Run the read-only environment diagnostics before anything else:
+
+```text
+running-process-broker-v1 doctor
+running-process-broker-v1 doctor --json
+```
+
+`doctor` checks every `RUNNING_PROCESS_*` environment knob, broker endpoint
+reachability (with a Hello probe reporting daemon version, protocol, and
+capabilities), service-definition directory health and per-`.servicedef`
+validation, stale Unix socket files, the platform path budget, and build
+versions. It never repairs anything. Exit code `1` means at least one check
+FAILed. See [v1 admin verbs](v1-admin-verbs.md) for the full check list.
+
 ## Broker Not Running
 
 Symptoms:

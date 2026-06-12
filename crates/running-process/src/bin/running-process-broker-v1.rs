@@ -15,6 +15,7 @@ use running_process::broker::server::{
 };
 use running_process::broker::{
     client::send_admin_request,
+    doctor::{run_doctor, DoctorOptions},
     lifecycle::{crash_dump, process_tree, refuse_privileged_run},
     protocol::{AdminReply, AdminRequest, AdminVerb},
 };
@@ -134,6 +135,24 @@ fn main() {
             }
             println!("{}", render_diagnose_json(&snapshot, output));
         }
+        Some("doctor") => {
+            // Read-only local diagnostics (#354, v1.x-5). Unlike the admin
+            // verbs above, doctor never requires a live broker: it derives
+            // the default endpoint when no --socket override is given and
+            // reports unreachability as a WARN rather than an error.
+            let options = DoctorOptions {
+                broker_endpoint: admin_socket.clone(),
+                service_definition_dir: option_value(&rest[1..], "--service-def-dir")
+                    .map(Into::into),
+            };
+            let report = run_doctor(&options);
+            if has_flag(&rest[1..], "--json") {
+                println!("{}", report.to_json());
+            } else {
+                print!("{}", report.render_text());
+            }
+            std::process::exit(report.exit_code());
+        }
         Some("metrics") => {
             let command = AdminCommand::text(AdminVerb::Metrics);
             if let Some(endpoint) = admin_socket.as_deref() {
@@ -247,6 +266,7 @@ fn print_help(program: &str) {
     println!("{program} [--socket <endpoint>] config --effective --json");
     println!("{program} [--socket <endpoint>] diagnose --output <bundle.tar.gz>");
     println!("{program} [--socket <endpoint>] metrics");
+    println!("{program} [--socket <endpoint>] doctor [--json] [--service-def-dir <dir>]");
     println!("{program} --serve-once <socket-path-or-pipe-name>");
     println!(
         "{program} --serve <socket-path-or-pipe-name> --service <name> --version <semver> --backend-endpoint <path> [--service-def-dir <dir>] [--max-connections <n>]"
