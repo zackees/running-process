@@ -58,6 +58,34 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_probe_framing_read"
+path = "fuzz_targets/fuzz_probe_framing_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_probe_identity_decode"
+path = "fuzz_targets/fuzz_probe_identity_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_admin_decode"
+path = "fuzz_targets/fuzz_admin_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_handoff_decode"
+path = "fuzz_targets/fuzz_handoff_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_pipe_name_parse"
 path = "fuzz_targets/fuzz_pipe_name_parse.rs"
 test = false

@@ -31,6 +31,10 @@ jobs:
           - fuzz_cache_manifest_decode
           - fuzz_service_def_decode
           - fuzz_framing_read
+          - fuzz_probe_framing_read
+          - fuzz_probe_identity_decode
+          - fuzz_admin_decode
+          - fuzz_handoff_decode
           - fuzz_pipe_name_parse
           - fuzz_service_name_validate
     env:
