@@ -222,19 +222,36 @@ Measured on 2026-06-11 (debug builds):
 | Platform | Handoff P50 | Handoff P99 | Reconnect P50 | Reconnect P99 |
 |---|---|---|---|---|
 | Windows (`DuplicateHandle`, production serve loop) | 495 us | 1076 us | 377 us | 571 us |
-| Linux (`SCM_RIGHTS`, production serve loop) | pending docker run | pending docker run | pending docker run | pending docker run |
+| Linux (`SCM_RIGHTS`, production serve loop, Dockerized) | 575 us | 830 us | 207 us | 610 us |
 | macOS (`SCM_RIGHTS`, production serve loop) | pending CI runner | pending CI runner | pending CI runner | pending CI runner |
 
 The Windows numbers were stable across three runs (handoff P50 482–544 us,
 P99 892–1641 us; reconnect P50 302–403 us, P99 534–682 us; the table records
-the median run). Honest reading: through the production serve path the
+the median run). The Linux numbers were measured 2026-06-11 inside Docker
+(`rust:latest` glibc container with the repo-pinned toolchain, debug
+profile, same Windows 10 host) and were likewise stable across three runs
+(handoff P50 564–629 us, P99 828–1550 us; reconnect P50 207–274 us,
+P99 482–633 us; the table records the median run). The two serve-path
+`handoff_serve_e2e` tests (adopt + rejected-downgrade) pass in the same
+container, confirming the production `SCM_RIGHTS` path on Linux.
+
+The macOS row stays pending: as of 2026-06-11 the macOS unit-test CI jobs
+(ARM and x86) abort before reaching this benchmark because
+`handoff_serve_e2e::rejected_handoff_silently_downgrades_to_backend_pipe`
+fails on macOS runners — the broker serve socket never binds and the
+client retries time out with `No such file or directory`. That
+macOS-specific failure needs its own investigation before serve-path
+numbers can be captured there.
+
+Honest reading: through the production serve path the
 handoff route pays the full Hello **plus** the broker→backend handoff dial,
-`DuplicateHandle`, offer/ACK frames, and the handoff-ready relay — all
-serialized in the broker accept loop — while reconnect pays only Hello plus
-one extra local-socket connect. On Windows that makes reconnect faster at
-both P50 and P99; the P99-tail advantage that `SCM_RIGHTS` showed in the
-pre-wiring Linux harness has not yet been demonstrated through the serve
-path.
+`DuplicateHandle` (Windows) or `sendmsg(SCM_RIGHTS)` (Linux), offer/ACK
+frames, and the handoff-ready relay — all serialized in the broker accept
+loop — while reconnect pays only Hello plus one extra local-socket connect.
+On both Windows and Linux that makes reconnect faster at both P50 and P99;
+the P99-tail advantage that `SCM_RIGHTS` showed in the pre-wiring Linux
+harness does **not** survive the serve path (830 us handoff vs 610 us
+reconnect at P99).
 
 ### Default-policy decision (Phase 7)
 
@@ -249,11 +266,13 @@ showed reconnect cheaper at P50 on both Windows and Linux, and the new
 serve-path numbers above show that through the production wiring on Windows
 reconnect is faster at **both** percentiles (377 us vs 495 us at P50, 571 us
 vs 1076 us at P99): the per-connection broker→backend offer/ACK round trip
-costs more than the fresh `backend_pipe` connect it replaces. The remaining
-case for handoff is the tail-latency tightness `SCM_RIGHTS` showed in the
-pre-wiring Linux harness (P99 156 us vs 463 us), which must be reproduced
-through the production serve path (the "pending docker run" row) before it
-can justify changing the default on Unix. Until a platform shows a
+costs more than the fresh `backend_pipe` connect it replaces. The last
+open case for handoff was the tail-latency tightness `SCM_RIGHTS` showed in
+the pre-wiring Linux harness (P99 156 us vs 463 us), but the Dockerized
+Linux serve-path run did **not** reproduce it: reconnect is faster at both
+percentiles on Linux too (207 us vs 575 us at P50, 610 us vs 830 us at
+P99), so the Linux evidence now confirms the stay-opt-in decision rather
+than challenging it. Until a platform shows a
 strictly-faster serve-path result, the optimization remains available to
 operators who opt in via `--handoff-endpoint` and clients that opt in via
 `adopt_handed_off_connection`, with the reconnect path staying the
