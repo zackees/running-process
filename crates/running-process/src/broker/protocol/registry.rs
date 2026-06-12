@@ -238,10 +238,10 @@ mod tests {
     #[test]
     fn frozen_consumer_registry_values() {
         use super::{
-            is_first_party, is_private_use_id, is_registered_consumer_id,
+            is_first_party, is_private_use_id, is_registered_consumer_id, CLUD_PAYLOAD_PROTOCOL,
             CONSUMER_PAYLOAD_PROTOCOL_MAX, CONSUMER_PAYLOAD_PROTOCOL_MIN,
             PRIVATE_USE_PAYLOAD_PROTOCOL_MAX, PRIVATE_USE_PAYLOAD_PROTOCOL_MIN,
-            CLUD_PAYLOAD_PROTOCOL, ZCCACHE_PAYLOAD_PROTOCOL,
+            ZCCACHE_PAYLOAD_PROTOCOL,
         };
 
         assert_eq!(CONSUMER_PAYLOAD_PROTOCOL_MIN, 0x7000);
