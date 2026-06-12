@@ -200,6 +200,19 @@ fn hello_rejects_peer_pid_mismatch() {
 }
 
 #[test]
+fn hello_accepts_claimed_pid_when_kernel_peer_pid_unavailable() {
+    // macOS LOCAL_PEERCRED carries no pid, so PeerIdentity.pid is 0 there.
+    // A nonzero client-claimed pid must not be refused against that 0.
+    let request = hello();
+    let kernel_blind_peer = PeerIdentity {
+        pid: 0,
+        uid_or_sid: "test-peer".into(),
+    };
+
+    assert_negotiated(handler().handle_frame(frame_for_hello(&request), kernel_blind_peer));
+}
+
+#[test]
 fn hello_rate_limit_refuses_after_peer_budget() {
     let handler = limited_handler(2);
     let request = hello();

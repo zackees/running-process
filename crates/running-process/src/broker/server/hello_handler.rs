@@ -396,7 +396,9 @@ fn validate_hello_shape(hello: &Hello, peer: &PeerIdentity) -> Option<Refused> {
             0,
         ));
     }
-    if hello.peer_pid != 0 && hello.peer_pid != peer.pid {
+    // peer.pid == 0 means the kernel did not report a peer pid (macOS
+    // LOCAL_PEERCRED has no pid field), so there is nothing to cross-check.
+    if hello.peer_pid != 0 && peer.pid != 0 && hello.peer_pid != peer.pid {
         return Some(refused(
             ErrorCode::ErrorPeerRejected,
             "peer_pid does not match verified peer",
