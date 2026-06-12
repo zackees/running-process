@@ -9,6 +9,9 @@ use running_process::broker::server::admin::{
     render_healthz, render_list_instances_json, render_metrics_text, render_status_json,
     AdminSnapshot,
 };
+use running_process::broker::server::service_def_loader::{
+    service_definition_dir, write_service_definition, SERVICE_DEF_DIR_ENV,
+};
 use running_process::broker::server::{
     serve_launching_backends, serve_one_local_socket, serve_registered_backend,
     BrokerLaunchServeConfig, BrokerServeConfig, HelloHandler,
@@ -17,7 +20,7 @@ use running_process::broker::{
     client::send_admin_request,
     doctor::{run_doctor, DoctorOptions},
     lifecycle::{crash_dump, process_tree, refuse_privileged_run},
-    protocol::{AdminReply, AdminRequest, AdminVerb},
+    protocol::{AdminReply, AdminRequest, AdminVerb, BrokerIsolation, ServiceDefinition},
 };
 
 const ADMIN_SOCKET_ENV: &str = "RUNNING_PROCESS_BROKER_V1_SOCKET";
@@ -153,6 +156,14 @@ fn main() {
             }
             std::process::exit(report.exit_code());
         }
+        Some("servicedef") => {
+            // Postinstall-style service-definition management (#386).
+            // `servicedef install` is the shell-callable surface over
+            // `write_service_definition` so package postinstall scripts can
+            // land a `.servicedef` into the platform-default directory
+            // without duplicating protobuf or path logic.
+            run_servicedef_command(&program, &rest[1..]);
+        }
         Some("metrics") => {
             let command = AdminCommand::text(AdminVerb::Metrics);
             if let Some(endpoint) = admin_socket.as_deref() {
@@ -258,6 +269,99 @@ fn main() {
     }
 }
 
+fn run_servicedef_command(program: &str, args: &[String]) -> ! {
+    match args.first().map(String::as_str) {
+        Some("install") => run_servicedef_install(&args[1..]),
+        Some(other) => {
+            eprintln!("unsupported servicedef subcommand {other:?} (expected install)");
+            print_help(program);
+            std::process::exit(2);
+        }
+        None => {
+            eprintln!("servicedef requires a subcommand (install)");
+            print_help(program);
+            std::process::exit(2);
+        }
+    }
+}
+
+fn run_servicedef_install(args: &[String]) -> ! {
+    let service = required_servicedef_option(args, "--service");
+    let binary_path = required_servicedef_option(args, "--binary-path");
+    let isolation = match option_value(args, "--isolation").unwrap_or("private") {
+        "private" => BrokerIsolation::PrivateBroker,
+        "shared" => BrokerIsolation::SharedBroker,
+        "explicit" => BrokerIsolation::ExplicitInstance,
+        other => {
+            eprintln!("--isolation must be private, shared, or explicit; got {other:?}");
+            std::process::exit(2);
+        }
+    };
+    let definition = ServiceDefinition {
+        service_name: service.into(),
+        binary_path: binary_path.into(),
+        isolation: isolation as i32,
+        explicit_instance: option_value(args, "--explicit-instance")
+            .unwrap_or_default()
+            .into(),
+        per_version_binary_dir: option_value(args, "--per-version-binary-dir")
+            .unwrap_or_default()
+            .into(),
+        min_version: option_value(args, "--min-version")
+            .unwrap_or_default()
+            .into(),
+        version_allow_list: option_values(args, "--allow-version"),
+        labels: Default::default(),
+    };
+    let (root, dir_source) = match option_value(args, "--service-def-dir") {
+        Some(dir) => (std::path::PathBuf::from(dir), "flag:--service-def-dir"),
+        None => (
+            service_definition_dir(),
+            default_service_definition_dir_source(),
+        ),
+    };
+    match write_service_definition(&root, &definition) {
+        Ok(path) => {
+            if has_flag(args, "--json") {
+                let payload = serde_json::json!({
+                    "service_name": definition.service_name,
+                    "path": path.display().to_string(),
+                    "dir": root.display().to_string(),
+                    "dir_source": dir_source,
+                });
+                println!("{payload}");
+            } else {
+                println!(
+                    "installed {} (service-definition dir source: {dir_source})",
+                    path.display()
+                );
+            }
+            std::process::exit(0);
+        }
+        Err(err) => {
+            eprintln!("servicedef install failed: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Match the `paths.service_definition_dir` source label reported by
+/// `config --effective --json`.
+fn default_service_definition_dir_source() -> &'static str {
+    if std::env::var_os(SERVICE_DEF_DIR_ENV).is_some() {
+        "env:RUNNING_PROCESS_SERVICE_DEF_DIR"
+    } else {
+        "platform-default"
+    }
+}
+
+fn required_servicedef_option<'a>(args: &'a [String], option: &str) -> &'a str {
+    option_value(args, option).unwrap_or_else(|| {
+        eprintln!("{option} is required for servicedef install");
+        std::process::exit(2);
+    })
+}
+
 fn print_help(program: &str) {
     println!("{program} [--help] [--version]");
     println!("{program} [--socket <endpoint>] status [--json]");
@@ -270,6 +374,9 @@ fn print_help(program: &str) {
     println!("{program} [--socket <endpoint>] diagnose --output <bundle.tar.gz>");
     println!("{program} [--socket <endpoint>] metrics");
     println!("{program} [--socket <endpoint>] doctor [--json] [--service-def-dir <dir>]");
+    println!(
+        "{program} servicedef install --service <name> --binary-path <abs-path> [--min-version <semver>] [--per-version-binary-dir <abs-path>] [--isolation private|shared|explicit] [--explicit-instance <name>] [--allow-version <semver>]... [--service-def-dir <dir>] [--json]"
+    );
     println!("{program} --serve-once <socket-path-or-pipe-name>");
     println!(
         "{program} --serve <socket-path-or-pipe-name> --service <name> --version <semver> --backend-endpoint <path> [--service-def-dir <dir>] [--max-connections <n>] [--handoff-endpoint <path>]"
@@ -380,6 +487,13 @@ fn option_value<'a>(args: &'a [String], option: &str) -> Option<&'a str> {
     args.windows(2)
         .find(|window| window[0] == option)
         .map(|window| window[1].as_str())
+}
+
+fn option_values(args: &[String], option: &str) -> Vec<String> {
+    args.windows(2)
+        .filter(|window| window[0] == option)
+        .map(|window| window[1].clone())
+        .collect()
 }
 
 fn required_option<'a>(args: &'a [String], option: &str) -> &'a str {
