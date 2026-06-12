@@ -76,7 +76,7 @@ pub fn probe_endpoint_response_with_timeout(
         .map_err(EndpointProbeError::EncodeFrame)?;
 
     let deadline = Instant::now() + timeout;
-    let mut stream = connect_endpoint(endpoint)?;
+    let mut stream = connect_endpoint_with_deadline(endpoint, deadline)?;
     stream
         .set_nonblocking(true)
         .map_err(EndpointProbeError::ConfigureNonblocking)?;
@@ -391,8 +391,19 @@ fn same_daemon_identity(left: &DaemonProcess, right: &DaemonProcess) -> bool {
         && same_endpoint(&left.ipc_endpoint, &right.ipc_endpoint)
 }
 
-fn connect_endpoint(
+/// Connect to the probe endpoint with a hard deadline.
+///
+/// `interprocess::local_socket::Stream::connect` is a blocking syscall with
+/// no portable timeout: on macOS a bound-but-never-accepted Unix socket can
+/// park the caller in `connect(2)` indefinitely once the (tiny) listen
+/// backlog is full, which would silently wedge the broker serve thread
+/// before it ever binds its own control socket (#399). Run the blocking
+/// connect on a helper thread and bound the wait with the probe deadline;
+/// on timeout the helper thread owns (and eventually drops) the abandoned
+/// stream — the same leak-on-timeout pattern as the client handoff wait.
+fn connect_endpoint_with_deadline(
     endpoint: &Endpoint,
+    deadline: Instant,
 ) -> Result<interprocess::local_socket::Stream, EndpointProbeError> {
     if endpoint.path.is_empty() {
         return Err(EndpointProbeError::Connect(io::Error::new(
@@ -400,8 +411,36 @@ fn connect_endpoint(
             "backend endpoint path is empty",
         )));
     }
-    let name = endpoint_name(&endpoint.path).map_err(EndpointProbeError::LocalSocketName)?;
-    interprocess::local_socket::Stream::connect(name).map_err(EndpointProbeError::Connect)
+    // Validate the name synchronously so naming errors keep their own variant.
+    endpoint_name(&endpoint.path).map_err(EndpointProbeError::LocalSocketName)?;
+
+    let path = endpoint.path.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::Builder::new()
+        .name("rp-endpoint-probe-connect".to_string())
+        .spawn(move || {
+            let result = match endpoint_name(&path) {
+                Ok(name) => interprocess::local_socket::Stream::connect(name),
+                Err(err) => Err(err),
+            };
+            // Receiver gone means the probe timed out; drop the stream here.
+            let _ = tx.send(result);
+        })
+        .map_err(EndpointProbeError::Connect)?;
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match rx.recv_timeout(remaining) {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(err)) => Err(EndpointProbeError::Connect(err)),
+        Err(_) => Err(EndpointProbeError::Connect(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "backend endpoint probe connect timed out after the probe deadline \
+                 (endpoint {}): the listener exists but never completed the connection",
+                endpoint.path
+            ),
+        ))),
+    }
 }
 
 fn write_probe_frame_with_deadline(

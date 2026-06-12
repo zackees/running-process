@@ -49,6 +49,11 @@ pub(crate) const BACKEND_REPLY: u8 = 0x5A;
 
 #[test]
 fn serve_handoff_completes_and_client_adopts_connection() {
+    let _watchdog = test_watchdog::install(
+        Duration::from_secs(90),
+        "serve_handoff_completes_and_client_adopts_connection appears to be hung",
+        None,
+    );
     let tmp = write_service_definition_dir();
     let socket_name = unique_socket_name("handoff-serve-ok");
     // No listener is ever re-bound on the backend endpoint after the
@@ -67,8 +72,12 @@ fn serve_handoff_completes_and_client_adopts_connection() {
     .with_handoff_endpoint(handoff_endpoint);
     let (server, serve_errors) = spawn_serve(config);
 
-    let mut connection =
-        connect_backend_with_retry(&socket_name, Duration::from_secs(10), &serve_errors);
+    let mut connection = connect_backend_with_retry(
+        &socket_name,
+        Duration::from_secs(10),
+        &server,
+        &serve_errors,
+    );
 
     assert_eq!(connection.route, BackendConnectionRoute::HandlePassed);
     assert_eq!(
@@ -91,6 +100,11 @@ fn serve_handoff_completes_and_client_adopts_connection() {
 
 #[test]
 fn rejected_handoff_silently_downgrades_to_backend_pipe() {
+    let _watchdog = test_watchdog::install(
+        Duration::from_secs(90),
+        "rejected_handoff_silently_downgrades_to_backend_pipe appears to be hung",
+        None,
+    );
     let tmp = write_service_definition_dir();
     let socket_name = unique_socket_name("handoff-serve-rej");
     let backend_endpoint = unique_socket_name("handoff-serve-rej-be");
@@ -121,7 +135,7 @@ fn rejected_handoff_silently_downgrades_to_backend_pipe() {
     // the duplicated handle stays open in the backend process — so keep it
     // bounded, just not so tight a loaded runner can race it.
     let connection =
-        connect_backend_with_retry(&socket_name, Duration::from_secs(2), &serve_errors);
+        connect_backend_with_retry(&socket_name, Duration::from_secs(2), &server, &serve_errors);
 
     assert_eq!(connection.route, BackendConnectionRoute::BrokerNegotiated);
     assert_eq!(connection.endpoint, backend_endpoint);
@@ -460,13 +474,21 @@ impl ReconnectBackend {
 /// Fails fast with the real serve error when the broker thread has
 /// already exited — otherwise that error stays trapped in its un-joined
 /// handle while this loop burns the full deadline on opaque connection
-/// refusals.
+/// refusals. Every distinct client error seen across the retry loop is
+/// recorded (with counts and first-seen offsets) and replayed in the
+/// panic message, so a deadline failure names the whole error sequence —
+/// e.g. an early `Refused` burst followed by an ENOENT tail proves the
+/// broker bound, burned its bounded accept slots silently, and unlinked
+/// its socket — instead of only the final opaque error (#399).
 fn connect_backend_with_retry(
     broker_endpoint: &str,
     ready_timeout: Duration,
+    server: &thread::JoinHandle<Result<(), BrokerServeError>>,
     serve_errors: &mpsc::Receiver<String>,
 ) -> BackendConnection {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(15);
+    let mut history = ErrorHistory::default();
     loop {
         let mut request =
             ConnectBackendRequest::new(broker_endpoint, "zccache", "1.11.20", "1.11.20");
@@ -475,18 +497,63 @@ fn connect_backend_with_retry(
         match connect_to_backend(request) {
             Ok(connection) => return connection,
             Err(err) => {
+                history.record(err.to_string(), started.elapsed());
                 if let Ok(serve_error) = serve_errors.try_recv() {
                     panic!(
-                        "broker serve loop on {broker_endpoint} failed: {serve_error} \
-                         (last client error: {err})"
+                        "broker serve loop on {broker_endpoint} failed: {serve_error}\n{}",
+                        history.render()
+                    );
+                }
+                if server.is_finished() {
+                    panic!(
+                        "broker serve thread on {broker_endpoint} exited (Ok) before the \
+                         client succeeded — bounded accept slots likely consumed \
+                         silently\n{}",
+                        history.render()
                     );
                 }
                 if Instant::now() >= deadline {
-                    panic!("timed out connecting through broker {broker_endpoint}: {err}");
+                    panic!(
+                        "timed out connecting through broker {broker_endpoint}\n{}",
+                        history.render()
+                    );
                 }
                 thread::sleep(Duration::from_millis(10));
             }
         }
+    }
+}
+
+/// Deduplicated client-error log for [`connect_backend_with_retry`]:
+/// distinct error messages in first-seen order, each with an occurrence
+/// count and the elapsed offset of its first sighting.
+#[derive(Default)]
+struct ErrorHistory {
+    entries: Vec<(String, usize, Duration)>,
+}
+
+impl ErrorHistory {
+    fn record(&mut self, message: String, elapsed: Duration) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|(seen, _, _)| *seen == message)
+        {
+            entry.1 += 1;
+        } else {
+            self.entries.push((message, 1, elapsed));
+        }
+    }
+
+    fn render(&self) -> String {
+        let mut out = String::from("client error history (first-seen order):");
+        for (message, count, first_seen) in &self.entries {
+            out.push_str(&format!(
+                "\n  [x{count}, first at {:.3}s] {message}",
+                first_seen.as_secs_f64()
+            ));
+        }
+        out
     }
 }
 
