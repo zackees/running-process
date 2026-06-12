@@ -111,6 +111,32 @@ pub fn try_send_scm_rights(attempt: &ScmRightsAttempt) -> ScmRightsResult {
     platform_try_send_scm_rights(attempt)
 }
 
+/// Send the broker-held file descriptor and token over an already-connected
+/// Unix-domain handoff socket.
+///
+/// [`try_send_scm_rights`] dials a fresh connection per attempt; the
+/// production serve path instead reuses the framed broker↔backend handoff
+/// connection so the `SCM_RIGHTS` message and the [`HandoffOffer`
+/// frame](crate::broker::protocol::HandoffOffer) travel over the same
+/// stream. The caller keeps ownership of both descriptors.
+#[cfg(unix)]
+pub fn try_send_scm_rights_over(
+    socket_fd: std::os::fd::RawFd,
+    attempt: &ScmRightsAttempt,
+) -> ScmRightsResult {
+    send_fd_with_token(
+        socket_fd,
+        attempt.fd.raw(),
+        attempt.handoff_token.as_bytes(),
+        &attempt.backend_socket.path,
+    )?;
+    Ok(ScmRightsSuccess::new(
+        attempt.fd,
+        attempt.backend_socket.clone(),
+        attempt.handoff_token,
+    ))
+}
+
 /// Failure from a future `sendmsg(SCM_RIGHTS)` handoff attempt.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ScmRightsError {

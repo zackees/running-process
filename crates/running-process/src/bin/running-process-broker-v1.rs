@@ -206,6 +206,9 @@ fn main() {
             if let Some(root) = option_value(&rest[2..], "--service-def-dir") {
                 config = config.with_service_definition_dir(root);
             }
+            if let Some(handoff_endpoint) = option_value(&rest[2..], "--handoff-endpoint") {
+                config = config.with_handoff_endpoint(handoff_endpoint);
+            }
 
             if let Err(err) = serve_registered_backend(config) {
                 eprintln!("serve failed: {err}");
@@ -269,7 +272,7 @@ fn print_help(program: &str) {
     println!("{program} [--socket <endpoint>] doctor [--json] [--service-def-dir <dir>]");
     println!("{program} --serve-once <socket-path-or-pipe-name>");
     println!(
-        "{program} --serve <socket-path-or-pipe-name> --service <name> --version <semver> --backend-endpoint <path> [--service-def-dir <dir>] [--max-connections <n>]"
+        "{program} --serve <socket-path-or-pipe-name> --service <name> --version <semver> --backend-endpoint <path> [--service-def-dir <dir>] [--max-connections <n>] [--handoff-endpoint <path>]"
     );
     println!(
         "{program} --serve-launch <socket-path-or-pipe-name> [--service-def-dir <dir>] [--max-connections <n>]"

@@ -178,6 +178,12 @@ impl<S> WireHandoffDelivery<S> {
         self.correlation_id
     }
 
+    /// Borrow the underlying connection (e.g. to read its raw fd for the
+    /// Unix `SCM_RIGHTS` send that precedes the offer frame).
+    pub fn stream(&self) -> &S {
+        &self.stream
+    }
+
     /// Unwrap the underlying connection (e.g. to keep using it after a
     /// completed handoff).
     pub fn into_stream(self) -> S {

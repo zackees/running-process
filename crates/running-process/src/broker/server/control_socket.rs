@@ -146,6 +146,35 @@ where
     R: HelloResponder + ?Sized,
     F: Fn() -> AdminSnapshot,
 {
+    serve_control_socket_connections_with_limit_policy_and_post_hello(
+        socket_path,
+        hello_responder,
+        snapshot_provider,
+        connection_limit,
+        peer_policy,
+        |_stream, _reply| {},
+    )
+}
+
+/// Run a broker control-socket accept loop with a post-Hello connection hook.
+///
+/// `post_hello` runs after a Hello reply has been written, with the client
+/// connection still open. The production serve path uses it to attempt the
+/// optional handle-passing handoff (#387) when negotiation issued a handoff
+/// token; the hook must stay silent toward the client on failure.
+pub fn serve_control_socket_connections_with_limit_policy_and_post_hello<R, F, H>(
+    socket_path: &str,
+    hello_responder: &R,
+    snapshot_provider: F,
+    connection_limit: ControlSocketConnectionLimit,
+    peer_policy: &PeerCredentialPolicy,
+    mut post_hello: H,
+) -> Result<(), ControlSocketError>
+where
+    R: HelloResponder + ?Sized,
+    F: Fn() -> AdminSnapshot,
+    H: FnMut(&mut interprocess::local_socket::Stream, &HelloReply),
+{
     let listener = bind_local_socket(socket_path)?;
     let cleanup = LocalSocketCleanup(socket_path);
     let result = (|| {
@@ -154,13 +183,16 @@ where
             let mut stream = listener.accept().map_err(BrokerConnectionError::Io)?;
             accepted += 1;
             let peer = peer_identity_from_stream(&stream)?;
-            let _reply = handle_control_connection_with_peer_policy(
+            let reply = handle_control_connection_with_peer_policy(
                 &mut stream,
                 hello_responder,
                 &snapshot_provider,
                 peer,
                 peer_policy,
             )?;
+            if let ControlSocketReply::Hello(hello_reply) = &reply {
+                post_hello(&mut stream, hello_reply);
+            }
         }
         Ok(())
     })();
