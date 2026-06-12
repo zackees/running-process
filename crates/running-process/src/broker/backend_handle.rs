@@ -89,6 +89,12 @@ impl BackendHandle {
     /// Use this when the caller already has service metadata elsewhere and only
     /// needs to know whether the daemon identity is still valid.
     ///
+    /// **BLOCKING.** Performs synchronous IPC up to
+    /// [`probe::DEFAULT_ENDPOINT_PROBE_TIMEOUT`]
+    /// (500 ms). From a tokio task, call from `spawn_blocking` or
+    /// switch to [`Self::probe_async`] (requires the `client-async`
+    /// feature).
+    ///
     /// ```no_run
     /// use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
     /// use running_process::broker::protocol::Endpoint;
@@ -103,11 +109,32 @@ impl BackendHandle {
         Self::probe_with_service("", "", endpoint, expected).ok()
     }
 
+    /// Async counterpart of [`Self::probe`] (#414).
+    ///
+    /// Performs the same identity checks but all I/O runs on the
+    /// current tokio runtime, so tokio daemons (zccache, soldr, clud)
+    /// can call this directly instead of wrapping in `spawn_blocking`.
+    ///
+    /// Available when the `client-async` cargo feature is enabled.
+    #[cfg(feature = "client-async")]
+    pub async fn probe_async(endpoint: &Endpoint, expected: &DaemonProcess) -> Option<Self> {
+        Self::probe_with_service_async("", "", endpoint, expected)
+            .await
+            .ok()
+    }
+
     /// Probe an existing backend and attach service metadata to the handle.
     ///
     /// This is the preferred constructor for direct-daemon consumers because it
     /// preserves the logical service tuple alongside the verified process
     /// identity.
+    ///
+    /// **BLOCKING.** Performs synchronous IPC up to
+    /// [`probe::DEFAULT_ENDPOINT_PROBE_TIMEOUT`]
+    /// (500 ms). From a tokio task, call from `spawn_blocking` or use
+    /// [`Self::probe_with_service_async`] (requires the
+    /// `client-async` feature) instead — calling this directly from
+    /// an async context will block the runtime worker thread.
     ///
     /// ```no_run
     /// use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
@@ -126,6 +153,49 @@ impl BackendHandle {
         expected: &DaemonProcess,
     ) -> Result<Self> {
         let process_handle = probe::probe_endpoint(endpoint, expected)?;
+        Ok(Self::from_verified(
+            service_name.into(),
+            service_version.into(),
+            expected.clone(),
+            process_handle,
+        ))
+    }
+
+    /// Async counterpart of [`Self::probe_with_service`] (#414).
+    ///
+    /// Performs the same identity checks (endpoint tuple, PID, exe
+    /// path, exe SHA-256, boot ID, and the live nonce probe) but all
+    /// I/O runs on the current tokio runtime. This is the preferred
+    /// entry point for tokio daemons (zccache, soldr, clud) — calling
+    /// the blocking [`Self::probe_with_service`] from an async
+    /// context blocks the runtime worker thread.
+    ///
+    /// Available when the `client-async` cargo feature is enabled.
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "client-async")]
+    /// # async fn example(
+    /// #     endpoint: running_process::broker::protocol::Endpoint,
+    /// #     expected: running_process::broker::backend_handle::DaemonProcess,
+    /// # ) -> running_process::broker::backend_handle::Result<()> {
+    /// use running_process::broker::backend_handle::BackendHandle;
+    ///
+    /// let handle = BackendHandle::probe_with_service_async(
+    ///     "zccache", "0.8.0", &endpoint, &expected,
+    /// ).await?;
+    /// assert!(handle.is_alive());
+    /// # Ok(()) }
+    /// ```
+    #[cfg(feature = "client-async")]
+    pub async fn probe_with_service_async(
+        service_name: impl Into<String>,
+        service_version: impl Into<String>,
+        endpoint: &Endpoint,
+        expected: &DaemonProcess,
+    ) -> Result<Self> {
+        let process_handle =
+            crate::broker::backend_lifecycle::probe_async::probe_endpoint_async(endpoint, expected)
+                .await?;
         Ok(Self::from_verified(
             service_name.into(),
             service_version.into(),

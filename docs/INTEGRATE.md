@@ -99,24 +99,59 @@ tokio, async-std, threads, or blocking I/O unchanged. Connection-fatal
 
 ## 3. Client side: probe, then talk
 
+### Async (tokio daemons — default)
+
+Tokio daemons (zccache, soldr, clud) should enable the
+`client-async` cargo feature and use the async surface so probes and
+requests don't have to be wrapped in `spawn_blocking` at every call
+site:
+
+```toml
+[dependencies]
+running-process = { version = "4", features = ["client-async"] }
+```
+
+```rust
+use running_process::broker::backend_handle::BackendHandle;
+use running_process::broker::backend_sdk::{read_daemon_identity_file, AsyncFrameClient};
+
+let Some(expected) = read_daemon_identity_file(&identity_path) else {
+    return fallback_to_pid_file(); // old daemons, missing sidecar
+};
+let handle = BackendHandle::probe_with_service_async(
+    "my-daemon", env!("CARGO_PKG_VERSION"), &expected.ipc_endpoint, &expected,
+).await?;
+
+let mut client = AsyncFrameClient::connect(&handle.daemon_process.ipc_endpoint).await?;
+let response = client.request(MY_PAYLOAD_PROTOCOL, my_encoded_request).await?;
+// response.payload is yours; request-id correlation already verified.
+```
+
+The async layer holds the canonical synchronous probe/frame wire and
+runs each round-trip on `tokio::task::spawn_blocking`. The wire is
+frozen v1 and identical to the blocking surface; the only thing that
+differs at the call site is `.await` instead of an outer
+`spawn_blocking` wrap.
+
+### Blocking (sync daemons or non-tokio runtimes)
+
 ```rust
 use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::backend_sdk::{read_daemon_identity_file, FrameClient};
 
 let Some(expected) = read_daemon_identity_file(&identity_path) else {
-    return fallback_to_pid_file(); // old daemons, missing sidecar
+    return fallback_to_pid_file();
 };
 let handle = BackendHandle::probe_with_service(
     "my-daemon", env!("CARGO_PKG_VERSION"), &expected.ipc_endpoint, &expected,
 )?;
-
 let mut client = FrameClient::connect(&handle.daemon_process.ipc_endpoint)?;
 let response = client.request(MY_PAYLOAD_PROTOCOL, my_encoded_request)?;
-// response.payload is yours; request-id correlation already verified.
 ```
 
-`probe_with_service` and `FrameClient` are blocking — call through
-`spawn_blocking` (or equivalent) from async code.
+These blocking entry points are correct from synchronous code and
+from `spawn_blocking` worker threads; calling them directly from an
+async task without `spawn_blocking` blocks the runtime worker thread.
 
 ## 4. Test it
 

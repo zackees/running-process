@@ -6,10 +6,13 @@
 //! request ids, frames the payload, and validates that the response
 //! echoes the id and payload protocol.
 //!
-//! The client is deliberately **blocking** — running-process's `client`
-//! feature carries no async runtime. Async daemons wrap calls in their
-//! runtime's `spawn_blocking`, the same pattern required by
-//! [`BackendHandle::probe_with_service`].
+//! This client is **blocking**. The default `client` cargo feature
+//! carries no async runtime, so async daemons either wrap calls in
+//! their runtime's `spawn_blocking` or enable the `client-async`
+//! feature and use the async twin
+//! [`AsyncFrameClient`](super::AsyncFrameClient) instead (#414).
+//! Calling [`FrameClient::request`] from a tokio task without
+//! `spawn_blocking` will block the runtime worker thread.
 //!
 //! [`BackendHandle::probe_with_service`]: crate::broker::backend_handle::BackendHandle::probe_with_service
 

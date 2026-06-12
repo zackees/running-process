@@ -15,6 +15,8 @@ mod backend_handle_probe;
 mod backend_handle_recycled;
 mod backend_registry;
 mod backend_sdk;
+#[cfg(feature = "client-async")]
+mod backend_sdk_async;
 mod broadcast_release_handles;
 mod client;
 mod connection;

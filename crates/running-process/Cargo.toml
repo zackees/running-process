@@ -68,10 +68,24 @@ default = ["client"]
 core = []
 telemetry = []
 client = ["dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs", "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2", "dep:getrandom"]
+# Opt-in async client surface for tokio daemons (#414). Adds async
+# variants of `BackendHandle::probe_with_service` and `FrameClient`
+# on top of the existing blocking surface. The synchronous probe and
+# frame wire is the wire-of-record; the async layer wraps each
+# round-trip in `tokio::task::spawn_blocking` so the caller's task
+# yields the runtime worker thread without us duplicating the v1
+# wire against `AsyncRead`/`AsyncWrite`. That keeps the tokio
+# footprint minimal — only `rt` + `time` are required.
+client-async = [
+    "client",
+    "dep:tokio",
+]
 daemon = [
     "client",
+    "client-async",
     "interprocess/tokio",
     "dep:tokio", "dep:tokio-util", "dep:bytes", "dep:futures-util",
+    "tokio/full",
     "dep:tracing", "dep:tracing-subscriber",
     "dep:rusqlite", "dep:toml",
 ]
@@ -99,7 +113,12 @@ blake3 = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
 getrandom = { version = "0.4", optional = true }
 # Wave 5 of #165: daemon-feature deps. All optional.
-tokio = { version = "1", features = ["full"], optional = true }
+# tokio: `client-async` (#414) only needs the `rt` (spawn_blocking)
+# and `time` (`tokio::time::timeout`) features; the `daemon` feature
+# layers `tokio/full` on top below. Cargo unifies feature sets, so
+# any consumer enabling both ends up with the daemon footprint
+# exactly as before.
+tokio = { version = "1", default-features = false, features = ["rt", "time"], optional = true }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 bytes = { version = "1", optional = true }
 futures-util = { version = "0.3", features = ["sink"], optional = true }
