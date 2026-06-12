@@ -390,3 +390,42 @@ the tarball.
 
 Returns OpenMetrics text. Metric names are defined in
 [v1 observability](v1-observability.md).
+
+## `doctor [--json] [--service-def-dir <dir>]`
+
+Read-only local environment diagnostics (#354, v1.x-5 from #228). Unlike the
+admin verbs above, `doctor` runs entirely in the CLI process — it does not
+require (or speak) the admin payload protocol, so it works when no broker is
+running at all. `--socket <endpoint>` overrides the probed broker endpoint;
+otherwise the per-user shared-broker endpoint is derived.
+
+Checks (each PASS / WARN / FAIL with a one-line detail):
+
+- every `RUNNING_PROCESS_*` environment knob, with a loud WARN when the
+  test-only `RUNNING_PROCESS_FAKE_BACKEND` seam is set
+- broker endpoint reachability, including a deadline-bounded Hello probe
+  that reports daemon version, protocol range, and decoded capability bits
+- service-definition directory permissions plus per-`.servicedef` file
+  parse/validation results
+- stale `*.sock` files in the broker runtime directory (Unix; reported,
+  never deleted — doctor is read-only)
+- derived pipe/socket path length against the platform budget
+  (`MAX_PATH` / `sun_path`)
+- crate, protocol, and framing versions
+
+Exit code is `0` when no check FAILs (WARNs do not fail) and `1` otherwise.
+
+```json
+{
+  "schema_version": 1,
+  "command": "doctor",
+  "exit_code": 0,
+  "checks": [
+    {
+      "check": "env:RUNNING_PROCESS_DISABLE",
+      "status": "PASS",
+      "detail": "unset (broker enabled)"
+    }
+  ]
+}
+```
