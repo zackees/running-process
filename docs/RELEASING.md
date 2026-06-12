@@ -81,6 +81,14 @@ These need to exist on the repo *before* the first real release runs:
   `running-process-daemon` archives (`.tar.gz` for unix, `.zip` for
   Windows), `install.sh`, `install.ps1`, and `SHA256SUMS`.
 
+## Reproducible builds
+
+Set `RUNNING_PROCESS_REPRODUCIBLE=1` to normalize timestamps, absolute
+build paths, and incremental-compilation noise so two builds of the
+same commit are byte-identical. The seam, the build-twice/compare-SHA256
+verification recipe, and the Linux CI spot-check are documented in
+[reproducible-builds.md](reproducible-builds.md).
+
 ## Failure modes & recovery
 
 | Symptom | What it means | Fix |

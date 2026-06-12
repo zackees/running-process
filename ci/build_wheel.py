@@ -83,7 +83,7 @@ def install_wheel(wheel: Path, *, env: dict[str, str]) -> int:
     return 0
 
 
-def build_trampoline(mode: BuildMode) -> int:
+def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> int:
     """Build the daemon-trampoline binary and copy it into package assets."""
     import json as json_mod
     import shutil
@@ -104,6 +104,7 @@ def build_trampoline(mode: BuildMode) -> int:
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr, flush=True)
@@ -152,12 +153,12 @@ def run_build(mode: BuildMode) -> int:
     )
     from ci.verify_release_symbols import format_release_artifact_report, verify_release_artifact
 
-    rc = build_trampoline(mode)
+    env = build_env()
+    rc = build_trampoline(mode, env=env)
     if rc != 0:
         print("trampoline build failed", file=sys.stderr, flush=True)
         return rc
 
-    env = build_env()
     rustc_args: list[str] = []
     if mode == "release":
         env = apply_tiny_pdb_env(env)
