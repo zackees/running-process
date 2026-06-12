@@ -3,7 +3,11 @@ name = "test-watchdog"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Test-only watchdog: dumps process state on hang. Windows-only; no-op elsewhere."
+description = "Test-only watchdog: dumps process state on hang. Minidump via procdump on Windows; all-thread backtraces via gdb/lldb on Unix."
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# PR_SET_PTRACER so the child debugger may attach under Yama ptrace_scope=1.
+libc = "0.2"
 
 [lints]
 workspace = true

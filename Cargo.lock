@@ -1407,6 +1407,9 @@ dependencies = [
 [[package]]
 name = "test-watchdog"
 version = "0.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "testbins"
