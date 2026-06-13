@@ -140,6 +140,32 @@ fn parse_duration_secs(value: &str) -> Result<u64, String> {
     Ok(n.saturating_mul(unit_secs))
 }
 
+/// Set the visible process/thread name for the running daemon (#222).
+///
+/// The daemon binary is still `running-process-daemon` (renaming it is out
+/// of Phase 2 scope), but the *visible long-running identity* must be
+/// `runpm-daemon`. On Linux `prctl(PR_SET_NAME)` renames the main thread,
+/// which is what `ps`, `top`, and `/proc/<pid>/comm` report. On other
+/// platforms this is currently a no-op; full argv0 rewriting there is
+/// tracked as follow-up work.
+fn set_daemon_process_name(name: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        // PR_SET_NAME truncates to 15 bytes + NUL; "runpm-daemon" fits.
+        if let Ok(cstr) = std::ffi::CString::new(name) {
+            // SAFETY: prctl with PR_SET_NAME and a valid NUL-terminated
+            // pointer only writes the calling thread's name.
+            unsafe {
+                libc::prctl(libc::PR_SET_NAME, cstr.as_ptr() as libc::c_ulong, 0, 0, 0);
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = name;
+    }
+}
+
 /// Initialize structured logging via `tracing-subscriber`.
 ///
 /// Logs go to stderr (standard daemon practice).  The level is controlled by
@@ -165,6 +191,11 @@ fn main() {
             socket_path,
             db_path,
         } => {
+            // #222: the long-running supervisor identity is `runpm-daemon`,
+            // not the launcher binary name. Rename the process so it shows
+            // up that way in `ps`/`top` without renaming the binary (which
+            // would churn paths, spawn, and packaging across phases).
+            set_daemon_process_name("runpm-daemon");
             init_logging();
             // #391: warn at startup when a systemd KillMode would reap
             // spawned children on unit stop. Silent when not under systemd.
