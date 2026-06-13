@@ -1,5 +1,17 @@
 # soldr Consumer Adoption Guide
 
+> **Status (#412): partially superseded.** The full-broker migration below
+> (`Hello` negotiation, `ServiceDefinition`, `CacheManifest`) remains
+> **deferred** under the minimal regime recorded in the
+> [adoption dashboard](v1-consumer-adoption-dashboard.md). What soldr actually
+> landed (soldr#721–724) is the direct-endpoint pattern: active `BackendHandle`
+> identity probing, a local `soldr-daemon.servicedef`, a `daemon-identity` JSON
+> sidecar, and `RUNNING_PROCESS_DISABLE=1` direct fallback — no broker, no
+> Hello. When the deferred `connect_to_backend` work resumes it should target
+> the `backend_sdk` `FrameClient`/`BackendEndpointMux`/`DaemonProcess` sidecar
+> helpers and follow [INTEGRATE.md](INTEGRATE.md) instead of the steps below;
+> this guide stays as the reference for the future full-broker wave.
+
 This guide defines soldr-daemon adoption of the v1 running-process broker.
 soldr already uses prost for its service payloads, so the migration focuses on
 broker discovery, service registration, manifests, and rollback behavior.

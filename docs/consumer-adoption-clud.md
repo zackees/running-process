@@ -1,5 +1,18 @@
 # clud Consumer Adoption Guide
 
+> **Status (#412): partially superseded.** The full-broker migration below
+> (`Hello` negotiation, `ServiceDefinition`, `CacheManifest`) remains
+> **deferred** under the minimal regime recorded in the
+> [adoption dashboard](v1-consumer-adoption-dashboard.md). What clud actually
+> landed (clud#319) is diagnostics-only (`clud daemon running-process --json`
+> reports direct daemon fallback and `broker_client_wired: false`); clud's
+> payload protocol `0x7C4C` is registered in
+> `running_process::broker::protocol::registry`. When broker wiring resumes it
+> should follow [INTEGRATE.md](INTEGRATE.md) and the `backend_sdk` module
+> (`FrameClient`/`BackendEndpointMux`/`DaemonProcess` sidecar) instead of the
+> steps below; this guide stays as the reference for the future full-broker
+> wave.
+
 This guide defines the clud migration from its legacy JSON control wire to the
 v1 running-process prost broker wire.
 
