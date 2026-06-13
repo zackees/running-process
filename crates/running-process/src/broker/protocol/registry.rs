@@ -43,6 +43,7 @@
 //! |----------|------------------------------|------------------------------------------------------------------|
 //! | `0x7A63` | [`ZCCACHE_PAYLOAD_PROTOCOL`] | zccache (`"zc"` in ASCII; zccache FrameV1 request/response lane) |
 //! | `0x7C4C` | [`CLUD_PAYLOAD_PROTOCOL`]    | clud (`0x7C4C` = `"|L"`; clud daemon Frame v1 request/response lane) |
+//! | `0x7EB1` | [`FBUILD_PAYLOAD_PROTOCOL`]  | fbuild (FastLED/fbuild daemon Frame v1 request/response lane) |
 //!
 //! Use [`crate::register_payload_protocol!`] in consumer crates to pin
 //! the chosen ID with compile-time range and collision checks.
@@ -111,6 +112,12 @@ pub const ZCCACHE_PAYLOAD_PROTOCOL: u32 = 0x7A63;
 /// [`crate::register_payload_protocol!`]-style compile-time asserts; the
 /// authoritative registration lives here.
 pub const CLUD_PAYLOAD_PROTOCOL: u32 = 0x7C4C;
+
+/// Registered consumer ID: fbuild's opaque Frame v1 request/response lane
+/// (FastLED/fbuild daemon control plane; zackees/running-process#437). fbuild
+/// pins this value on its side with [`crate::register_payload_protocol!`]; the
+/// authoritative registration lives here.
+pub const FBUILD_PAYLOAD_PROTOCOL: u32 = 0x7EB1;
 
 /// All first-party payload-protocol IDs, in registry-table order.
 ///
@@ -239,7 +246,7 @@ mod tests {
     fn frozen_consumer_registry_values() {
         use super::{
             is_first_party, is_private_use_id, is_registered_consumer_id, CLUD_PAYLOAD_PROTOCOL,
-            CONSUMER_PAYLOAD_PROTOCOL_MAX, CONSUMER_PAYLOAD_PROTOCOL_MIN,
+            CONSUMER_PAYLOAD_PROTOCOL_MAX, CONSUMER_PAYLOAD_PROTOCOL_MIN, FBUILD_PAYLOAD_PROTOCOL,
             PRIVATE_USE_PAYLOAD_PROTOCOL_MAX, PRIVATE_USE_PAYLOAD_PROTOCOL_MIN,
             ZCCACHE_PAYLOAD_PROTOCOL,
         };
@@ -250,7 +257,10 @@ mod tests {
         assert_eq!(PRIVATE_USE_PAYLOAD_PROTOCOL_MAX, 0xFFFF);
         assert_eq!(ZCCACHE_PAYLOAD_PROTOCOL, 0x7A63);
         assert_eq!(CLUD_PAYLOAD_PROTOCOL, 0x7C4C);
+        assert_eq!(FBUILD_PAYLOAD_PROTOCOL, 0x7EB1);
         assert_ne!(CLUD_PAYLOAD_PROTOCOL, ZCCACHE_PAYLOAD_PROTOCOL);
+        assert_ne!(FBUILD_PAYLOAD_PROTOCOL, ZCCACHE_PAYLOAD_PROTOCOL);
+        assert_ne!(FBUILD_PAYLOAD_PROTOCOL, CLUD_PAYLOAD_PROTOCOL);
 
         assert!(is_registered_consumer_id(ZCCACHE_PAYLOAD_PROTOCOL));
         assert!(!is_first_party(ZCCACHE_PAYLOAD_PROTOCOL));
@@ -259,6 +269,10 @@ mod tests {
         assert!(is_registered_consumer_id(CLUD_PAYLOAD_PROTOCOL));
         assert!(!is_first_party(CLUD_PAYLOAD_PROTOCOL));
         assert!(!is_private_use_id(CLUD_PAYLOAD_PROTOCOL));
+
+        assert!(is_registered_consumer_id(FBUILD_PAYLOAD_PROTOCOL));
+        assert!(!is_first_party(FBUILD_PAYLOAD_PROTOCOL));
+        assert!(!is_private_use_id(FBUILD_PAYLOAD_PROTOCOL));
 
         // First-party IDs must never drift into the consumer range.
         for id in super::FIRST_PARTY_PAYLOAD_PROTOCOLS {
