@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — `into_backend_io()`: hand the live broker socket back to the consumer
+## 4.4.0 — `into_backend_io()`: hand the live broker socket back to the consumer
 
 Adds [`BrokerSession::into_backend_io`](https://github.com/zackees/zccache/issues/720) (and its `AsyncBrokerSession` twin) so a consumer that has finished broker adoption can stop speaking the FrameV1 request/response wire and take ownership of the live negotiated socket to run its own protocol over it.
 
