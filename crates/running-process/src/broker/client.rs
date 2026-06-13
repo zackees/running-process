@@ -550,7 +550,7 @@ impl BrokerClientError {
     }
 }
 
-/// Stable, matchable classification of a broker [`HelloReply::Refused`] code.
+/// Stable, matchable classification of a broker `HelloReply::Refused` code.
 ///
 /// This is the consumer-facing decision surface for the broker's refusal
 /// codes: the wire carries an [`ErrorCode`] `i32`, but a future broker may add

@@ -50,6 +50,37 @@ def _expected_cargo_test_cmd(python: str) -> list[str]:
     return cmd
 
 
+def _expected_seam_test_cmd(python: str) -> list[str]:
+    """Build the expected supervised test-seams nextest pass (#433 R4)."""
+    timeout = (
+        str(ci_test.WINDOWS_RUST_TEST_TIMEOUT_SECONDS)
+        if ci_test.sys.platform == "win32"
+        else str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
+    )
+    cmd = [
+        python,
+        "-m",
+        "running_process.cli",
+        "--timeout",
+        timeout,
+        "--",
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "running-process",
+        "--features",
+        "test-seams",
+        "--test",
+        "broker",
+        "-E",
+        "test(fake_backend)",
+    ]
+    if ci_test.sys.platform == "win32":
+        cmd += ["--test-threads", "1"]
+    return cmd
+
+
 def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     commands: list[list[str]] = []
     fake_python = Path("/tmp/fake-venv/bin/python")
@@ -82,6 +113,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     assert commands == [
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
+        _expected_seam_test_cmd(python),
         [
             python,
             "-m",
@@ -158,6 +190,7 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     assert commands == [
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
+        _expected_seam_test_cmd(python),
         [
             python,
             "-m",
@@ -198,6 +231,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     assert commands == [
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
+        _expected_seam_test_cmd(python),
         [
             python,
             "-m",
@@ -366,6 +400,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     assert commands == [
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
+        _expected_seam_test_cmd(python),
         [
             python,
             "-m",

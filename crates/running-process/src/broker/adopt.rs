@@ -1,7 +1,7 @@
 //! One-call broker adoption: negotiate → dial → ready-to-talk client (#433 R1).
 //!
 //! [`connect_to_backend`] returns a raw
-//! [`BackendConnection`](crate::broker::client::BackendConnection) — a bare
+//! [`BackendConnection`] — a bare
 //! socket the consumer must still wrap in a [`FrameClient`] before it can send
 //! a single request. Every consumer (zccache, soldr, clud, fbuild) repeats the
 //! same three lines: check the disable env, call `connect_to_backend`, wrap the
@@ -35,7 +35,7 @@ use crate::broker::protocol::{Frame, Negotiated};
 /// A negotiated, dialed, and framed broker backend connection.
 ///
 /// Produced by [`BrokerSession::adopt`]. Wraps the
-/// [`BackendConnection`](crate::broker::client::BackendConnection) stream in a
+/// [`BackendConnection`] stream in a
 /// [`FrameClient`] so the caller can issue correlated request/response frames
 /// immediately, while still exposing how the connection was reached
 /// ([`route`](Self::route)), the cacheable [`endpoint`](Self::endpoint), and the
