@@ -248,6 +248,7 @@ impl BackendConnection {
 pub fn connect_to_backend(
     request: ConnectBackendRequest<'_>,
 ) -> Result<BackendConnection, BrokerClientError> {
+    #[cfg(feature = "test-seams")]
     if let Some(endpoint) = fake_backend_endpoint_from_env() {
         let stream = connect_local_socket(&endpoint).map_err(BrokerClientError::BackendConnect)?;
         return Ok(BackendConnection {
@@ -309,6 +310,12 @@ pub fn connect_to_backend(
 /// invalid `RUNNING_PROCESS_DISABLE` value is a configuration error that
 /// [`broker_disabled_by_env`] surfaces to consumers before they reach
 /// `connect_to_backend`; it does not suppress the seam here.
+///
+/// Gated behind the off-by-default `test-seams` feature (#433 R4) so the test
+/// backdoor is physically absent from every production build of
+/// [`connect_to_backend`]. Consumers depend on `running-process` with
+/// `features = ["client", ...]`; `test-seams` is never in that set.
+#[cfg(feature = "test-seams")]
 fn fake_backend_endpoint_from_env() -> Option<String> {
     let value = std::env::var_os(RUNNING_PROCESS_FAKE_BACKEND_ENV)?;
     let value = value.to_string_lossy();
@@ -525,4 +532,61 @@ pub enum BrokerClientError {
     /// Broker returned an empty backend endpoint.
     #[error("broker negotiated an empty backend endpoint")]
     EmptyBackendPipe,
+}
+
+impl BrokerClientError {
+    /// Classify a broker refusal into a stable, matchable kind (#433 R7).
+    ///
+    /// Returns `Some` only for [`BrokerClientError::Refused`]; every other
+    /// (transport/decoding) error returns `None`. Consumers branch on
+    /// [`RefusalKind`] instead of pattern-matching the raw `i32`
+    /// [`ErrorCode`], so retry/escalate decisions stay readable and survive
+    /// the addition of future codes (mapped to [`RefusalKind::Other`]).
+    pub fn refusal_kind(&self) -> Option<RefusalKind> {
+        match self {
+            BrokerClientError::Refused { code, .. } => Some(RefusalKind::from_code(*code)),
+            _ => None,
+        }
+    }
+}
+
+/// Stable, matchable classification of a broker `HelloReply::Refused` code.
+///
+/// This is the consumer-facing decision surface for the broker's refusal
+/// codes: the wire carries an [`ErrorCode`] `i32`, but a future broker may add
+/// codes a consumer's build predates. Matching on `RefusalKind` keeps consumer
+/// retry logic exhaustive and forward-compatible — any unrecognized code lands
+/// in [`RefusalKind::Other`] rather than silently mismatching.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalKind {
+    /// The requested version is below the backend's `min_version` or otherwise
+    /// not offered. Caller should upgrade/downgrade, not blindly retry.
+    VersionUnsupported,
+    /// The requested version is explicitly blocked (e.g. yanked). Do not retry
+    /// with the same version.
+    VersionBlocked,
+    /// The service name is unknown to this broker. A configuration error;
+    /// retrying will not help.
+    ServiceUnknown,
+    /// The broker is rate-limiting this peer. Honour `retry_after_ms`.
+    RateLimited,
+    /// The broker is shutting down. Retry against a fresh broker.
+    ShuttingDown,
+    /// Any other refusal code (peer rejected, internal, fd pressure, spawn
+    /// failure, unspecified, or a code newer than this build understands).
+    Other(ErrorCode),
+}
+
+impl RefusalKind {
+    /// Map a wire [`ErrorCode`] to its [`RefusalKind`].
+    pub fn from_code(code: ErrorCode) -> Self {
+        match code {
+            ErrorCode::ErrorVersionUnsupported => RefusalKind::VersionUnsupported,
+            ErrorCode::ErrorVersionBlocked => RefusalKind::VersionBlocked,
+            ErrorCode::ErrorServiceUnknown => RefusalKind::ServiceUnknown,
+            ErrorCode::ErrorRateLimited => RefusalKind::RateLimited,
+            ErrorCode::ErrorShuttingDown => RefusalKind::ShuttingDown,
+            other => RefusalKind::Other(other),
+        }
+    }
 }

@@ -18,6 +18,7 @@ mod backend_sdk;
 #[cfg(feature = "client-async")]
 mod backend_sdk_async;
 mod broadcast_release_handles;
+mod builders;
 mod client;
 #[cfg(feature = "test-support")]
 mod conformance_kit;
@@ -82,5 +83,6 @@ mod servicedef_cli;
 mod socket_common;
 mod spawn_coordinator;
 mod spawn_wait;
+mod toy_three_party;
 mod trace_propagation;
 mod verify_pid;
