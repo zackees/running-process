@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — `into_backend_io()`: hand the live broker socket back to the consumer
+
+Adds [`BrokerSession::into_backend_io`](https://github.com/zackees/zccache/issues/720) (and its `AsyncBrokerSession` twin) so a consumer that has finished broker adoption can stop speaking the FrameV1 request/response wire and take ownership of the live negotiated socket to run its own protocol over it.
+
+- New `BrokerSession::into_backend_io() -> Result<OwnedBackendIo, IntoBackendIoError>` and `AsyncBrokerSession::into_backend_io()`. On Unix `OwnedBackendIo::into_owned_fd()` yields an `OwnedFd` (and `OwnedBackendIo: AsFd`) that wraps directly into a `std::os::unix::net::UnixStream`.
+- Windows `OwnedHandle` support is deferred; `into_backend_io()` returns `IntoBackendIoError::WindowsUnsupported` there for now.
+- Supporting surface: `FrameClient::buffered_len()` / `into_stream()` and `AsyncFrameClient::into_blocking()`.
+- The frozen FrameV1 wire (`0x7A63` payload protocol) is untouched — this is purely an additive escape hatch from the frame lane to the raw socket.
+
+Additive only; no existing API changes and the Python ABI is unchanged.
+
 ## 4.0.1 — Restore public access to PTY backend traits
 
 Surfaced by clud during the 4.0.0 rollout (see [meta tracker](https://github.com/zackees/running-process/issues/203)).

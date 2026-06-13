@@ -108,6 +108,29 @@ impl FrameClient {
     pub fn next_request_id(&self) -> u64 {
         self.next_request_id
     }
+
+    /// Bytes the internal frame reader has buffered but not yet consumed.
+    ///
+    /// Zero on a client that has issued no [`Self::request`]. A consumer that
+    /// wants to take the raw socket back out via [`Self::into_stream`] checks
+    /// this first: nonzero means there is response data the bare socket would
+    /// not carry, so the take must be refused.
+    pub fn buffered_len(&self) -> usize {
+        self.stream.buffer().len()
+    }
+
+    /// Consume the client and return the underlying local-socket stream.
+    ///
+    /// Hands the negotiated socket back to a consumer that will speak its own
+    /// wire over it (see [`BrokerSession::into_backend_io`]). Any bytes still
+    /// buffered by the frame reader are dropped, so callers must verify
+    /// [`Self::buffered_len`] is zero before calling — which it always is on a
+    /// freshly adopted session that has issued no request.
+    ///
+    /// [`BrokerSession::into_backend_io`]: crate::broker::adopt::BrokerSession::into_backend_io
+    pub fn into_stream(self) -> interprocess::local_socket::Stream {
+        self.stream.into_inner()
+    }
 }
 
 /// Errors returned by [`FrameClient`].
