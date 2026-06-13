@@ -5,6 +5,33 @@ This dashboard mirrors the cross-consumer tracker in
 documentation. The consumer tracker issues remain the source of truth; this
 document records the current narrowed-regime status from those trackers.
 
+## Final state (2026-06-12)
+
+The minimal-regime consumer adoption work is complete and every first-party
+consumer has shipped a release on top of running-process 4.2.0:
+
+| Consumer | Released version | Broker payload protocol | Adoption regime |
+|---|---|---|---|
+| soldr | 0.7.54 | — (daemon-side `BackendHandle` probe) | opt-in, direct fallback retained |
+| zccache | 1.11.22 | `0x7A63` registered | opt-in, direct IPC fallback retained |
+| fbuild | 2.2.27 | — (diagnostics/direct-fallback seam) | opt-in, direct fallback retained |
+| clud | 2.1.0 | `0x7C4C` registered | opt-in, direct fallback retained |
+
+All consumers adopted the broker **opt-in** with `RUNNING_PROCESS_DISABLE=1` (or
+the equivalent direct daemon path) retained as the correctness fallback.
+Default-on rollout and escape-hatch removal are **explicitly deferred** — see the
+Phase 7 / Phase 8 disposition in [v1-rollout-policy.md](v1-rollout-policy.md) and
+[#388](https://github.com/zackees/running-process/issues/388).
+
+The remaining deferred broker-completion work formerly tracked under
+[#354](https://github.com/zackees/running-process/issues/354) is now carried by
+the triage meta [#421](https://github.com/zackees/running-process/issues/421) and
+its sub-issues — second-pass integration SDK
+([#412](https://github.com/zackees/running-process/issues/412)), runpm supervisor
+([#222](https://github.com/zackees/running-process/issues/222)), and process
+observation ([#221](https://github.com/zackees/running-process/issues/221)) — plus
+the rollout disposition in #388. No deferred #228 work is left untracked.
+
 ## Consumers
 
 | Consumer | Tracker issue | Adoption summary |
@@ -45,8 +72,8 @@ diagnostic surface landed; it does not mean full v1 broker adoption is done.
 |---|---|---|
 | [#232 Phase 2.5 BackendHandle](https://github.com/zackees/running-process/issues/232) | BackendHandle | Minimal consumer slices landed where useful; full downstream migration and three-OS runtime signoff remain deferred. |
 | [#235 Phase 4 broker](https://github.com/zackees/running-process/issues/235) | Broker client | Consumers record direct fallback or diagnostics-only status; `connect_to_backend` and Hello-skip wiring remain deferred. |
-| [#238 Phase 7 rollout](https://github.com/zackees/running-process/issues/238) | Default-on | Default-on rollout is explicitly deferred under the current minimal regime. |
-| [#239 Phase 8 escape-hatch removal](https://github.com/zackees/running-process/issues/239) | Escape-hatch removal | Escape-hatch removal is explicitly deferred until a later coordinated release wave. |
+| [#238 Phase 7 rollout](https://github.com/zackees/running-process/issues/238) | Default-on | Default-on rollout is explicitly re-deferred; disposition tracked in [#388](https://github.com/zackees/running-process/issues/388) and [v1-rollout-policy.md](v1-rollout-policy.md). |
+| [#239 Phase 8 escape-hatch removal](https://github.com/zackees/running-process/issues/239) | Escape-hatch removal | Escape-hatch removal is explicitly re-deferred; `RUNNING_PROCESS_DISABLE=1` stays load-bearing per [#388](https://github.com/zackees/running-process/issues/388). |
 
 Full `.servicedef` package/install coverage remains deferred unless the
 consumer row above names a local CLI/template/diagnostic surface as already
