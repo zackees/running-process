@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 
 use running_process::client::{connect_or_start, ClientError, DaemonClient};
 use running_process::maintenance::run_release_handles;
-use running_process::proto::daemon::{DaemonResponse, ServiceConfig, StatusCode};
+use running_process::proto::daemon::{DaemonResponse, ServiceConfig, ServiceState, StatusCode};
 
 #[derive(Parser)]
 #[command(
@@ -70,7 +70,11 @@ enum Commands {
     },
     /// List all supervised services
     #[command(alias = "ls", alias = "status")]
-    List,
+    List {
+        /// Emit JSON instead of a human-readable table
+        #[arg(long)]
+        json: bool,
+    },
     /// Show details about a single service
     #[command(alias = "describe")]
     Show {
@@ -160,7 +164,7 @@ fn main() -> ExitCode {
         Commands::Delete { target } => {
             cmd_simple_target("delete", &target, |c, t| c.service_delete(t))
         }
-        Commands::List => cmd_list(),
+        Commands::List { json } => cmd_list(json),
         Commands::Show { target } => cmd_show(&target),
         Commands::Logs {
             target,
@@ -267,19 +271,38 @@ fn cmd_start(
 
     let mut client = connect()?;
     let resp = client.service_start(config).map_err(client_err)?;
-    print_status("start", &resp)
+    ensure_ok("start", &resp)?;
+    if let Some(svc) = resp.service_start.and_then(|r| r.service) {
+        println!(
+            "started '{}' (id={}, pid={}, status={})",
+            svc.name, svc.id, svc.pid, svc.status
+        );
+    }
+    Ok(())
 }
 
-fn cmd_list() -> Result<()> {
+fn cmd_list(json: bool) -> Result<()> {
     let mut client = connect()?;
     let resp = client.service_list().map_err(client_err)?;
-    print_status("list", &resp)
+    ensure_ok("list", &resp)?;
+    let services = resp.service_list.map(|r| r.services).unwrap_or_default();
+    if json {
+        print_services_json(&services);
+    } else {
+        print_services_table(&services);
+    }
+    Ok(())
 }
 
 fn cmd_show(target: &str) -> Result<()> {
     let mut client = connect()?;
     let resp = client.service_describe(target).map_err(client_err)?;
-    print_status("show", &resp)
+    ensure_ok("show", &resp)?;
+    match resp.service_describe.and_then(|r| r.service) {
+        Some(svc) => print_service_detail(&svc),
+        None => println!("no such service: {target}"),
+    }
+    Ok(())
 }
 
 fn cmd_logs(target: &str, lines: u32, follow: bool) -> Result<()> {
@@ -301,7 +324,18 @@ where
 {
     let mut client = connect()?;
     let resp = call(&mut client, target).map_err(client_err)?;
-    print_status(label, &resp)
+    ensure_ok(label, &resp)?;
+    let count = match label {
+        "stop" => resp.service_stop.as_ref().map(|r| r.stopped_count),
+        "restart" => resp.service_restart.as_ref().map(|r| r.restarted_count),
+        "delete" => resp.service_delete.as_ref().map(|r| r.deleted_count),
+        _ => None,
+    };
+    match count {
+        Some(n) => println!("{label}: {n} service(s)"),
+        None => println!("OK: {label}"),
+    }
+    Ok(())
 }
 
 fn cmd_no_arg<F>(label: &str, call: F) -> Result<()>
@@ -353,8 +387,14 @@ fn client_err(err: ClientError) -> anyhow::Error {
 }
 
 fn print_status(label: &str, resp: &DaemonResponse) -> Result<()> {
+    ensure_ok(label, resp)?;
+    println!("OK: {label}");
+    Ok(())
+}
+
+/// Return an error if the daemon responded with a non-OK status code.
+fn ensure_ok(label: &str, resp: &DaemonResponse) -> Result<()> {
     if resp.code == StatusCode::Ok as i32 {
-        println!("OK: {label}");
         Ok(())
     } else {
         Err(anyhow!(
@@ -365,6 +405,75 @@ fn print_status(label: &str, resp: &DaemonResponse) -> Result<()> {
                 resp.message.clone()
             }
         ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Service rendering
+// ---------------------------------------------------------------------------
+
+fn print_services_table(services: &[ServiceState]) {
+    if services.is_empty() {
+        println!("no services");
+        return;
+    }
+    println!(
+        "{:<4} {:<20} {:<10} {:<8} {:<8} COMMAND",
+        "ID", "NAME", "STATUS", "PID", "RESTARTS"
+    );
+    for s in services {
+        let command = s
+            .config
+            .as_ref()
+            .map(|c| c.cmd.join(" "))
+            .unwrap_or_default();
+        println!(
+            "{:<4} {:<20} {:<10} {:<8} {:<8} {}",
+            s.id, s.name, s.status, s.pid, s.restart_count, command
+        );
+    }
+}
+
+fn print_service_detail(s: &ServiceState) {
+    println!("name:          {}", s.name);
+    println!("id:            {}", s.id);
+    println!("status:        {}", s.status);
+    println!("pid:           {}", s.pid);
+    println!("restart_count: {}", s.restart_count);
+    println!("last_exit:     {}", s.last_exit_code);
+    if let Some(c) = &s.config {
+        println!("command:       {}", c.cmd.join(" "));
+        if !c.cwd.is_empty() {
+            println!("cwd:           {}", c.cwd);
+        }
+        println!("autorestart:   {}", c.autorestart);
+        println!("max_restarts:  {}", c.max_restarts);
+    }
+}
+
+fn print_services_json(services: &[ServiceState]) {
+    let values: Vec<serde_json::Value> = services
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "status": s.status,
+                "pid": s.pid,
+                "restart_count": s.restart_count,
+                "last_started_at": s.last_started_at,
+                "last_exited_at": s.last_exited_at,
+                "last_exit_code": s.last_exit_code,
+                "command": s.config.as_ref().map(|c| c.cmd.clone()).unwrap_or_default(),
+                "cwd": s.config.as_ref().map(|c| c.cwd.clone()).unwrap_or_default(),
+                "autorestart": s.config.as_ref().map(|c| c.autorestart).unwrap_or(false),
+                "max_restarts": s.config.as_ref().map(|c| c.max_restarts).unwrap_or(0),
+            })
+        })
+        .collect();
+    match serde_json::to_string_pretty(&values) {
+        Ok(s) => println!("{s}"),
+        Err(e) => eprintln!("failed to serialize JSON: {e}"),
     }
 }
 

@@ -65,6 +65,14 @@ impl DaemonServer {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let emergency_reserve = Arc::new(EmergencyReserve::initialize_in(&reserve_dir));
 
+        // runpm services share the tracking SQLite db and write per-service
+        // logs under <data>/services/ (#222 Phase 2).
+        let services_log_dir = reserve_dir.join("services");
+        let services = Arc::new(crate::daemon::services::ServiceRegistry::open(
+            std::path::Path::new(&db_path),
+            services_log_dir,
+        )?);
+
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = Arc::new(DaemonState {
             start_time: std::time::Instant::now(),
@@ -79,6 +87,7 @@ impl DaemonServer {
             registry,
             pty_sessions,
             pipe_sessions,
+            services,
             emergency_reserve,
         });
         Ok(Self { state, shutdown_rx })
@@ -132,6 +141,13 @@ impl DaemonServer {
             runtime_gc_state,
             config.runtime_gc_interval_secs,
             config.runtime_gc_stale_after_secs,
+        ));
+        // runpm service supervisor: watches supervised children and applies
+        // the restart policy on unexpected exit (#222 Phase 2).
+        let supervisor_state = Arc::clone(&self.state);
+        let supervisor_handle = tokio::spawn(crate::daemon::services::supervisor_loop(
+            supervisor_state,
+            1,
         ));
 
         let mut shutdown_rx = self.shutdown_rx.clone();
@@ -194,6 +210,7 @@ impl DaemonServer {
         // Wait for the reaper task to finish (it watches the same shutdown signal).
         let _ = reaper_handle.await;
         let _ = runtime_gc_handle.await;
+        let _ = supervisor_handle.await;
 
         // Cleanup socket file on Unix.
         #[cfg(unix)]
@@ -652,6 +669,13 @@ mod tests {
         let registry = Arc::new(Registry::open(&db_path).unwrap());
         let pty_sessions = Arc::new(crate::daemon::pty_sessions::PtySessionRegistry::new());
         let pipe_sessions = Arc::new(crate::daemon::pipe_sessions::PipeSessionRegistry::new());
+        let services = Arc::new(
+            crate::daemon::services::ServiceRegistry::open(
+                &db_path,
+                tmp_dir.path().join("services"),
+            )
+            .unwrap(),
+        );
         let state = DaemonState {
             start_time: Instant::now(),
             version: "0.0.0-test".to_string(),
@@ -665,6 +689,7 @@ mod tests {
             registry,
             pty_sessions,
             pipe_sessions,
+            services,
             emergency_reserve: Arc::new(EmergencyReserve::initialize_at(
                 tmp_dir.path().join("emergency-reserve.bin"),
                 4096,

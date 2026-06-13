@@ -92,6 +92,8 @@ pub struct DaemonState {
     pub pty_sessions: Arc<PtySessionRegistry>,
     /// In-memory registry of daemon-owned pipe sessions (issue #130 M3).
     pub pipe_sessions: Arc<PipeSessionRegistry>,
+    /// SQLite-backed registry of supervised services (runpm Phase 2, #222).
+    pub services: Arc<crate::daemon::services::ServiceRegistry>,
     /// Pre-allocated ENOSPC delete-to-recover reserve (#390).
     pub emergency_reserve: Arc<crate::daemon::emergency_reserve::EmergencyReserve>,
 }

@@ -70,6 +70,13 @@ fn build_test_state(scope: &str) -> (DaemonState, tempfile::TempDir) {
     let registry = Arc::new(Registry::open(&db_path).expect("registry"));
     let pty_sessions = Arc::new(PtySessionRegistry::new());
     let pipe_sessions = Arc::new(PipeSessionRegistry::new());
+    let services = Arc::new(
+        running_process::daemon::services::ServiceRegistry::open(
+            &db_path,
+            tmp.path().join("services"),
+        )
+        .expect("service registry"),
+    );
     let (shutdown_tx, _rx) = watch::channel(false);
     let state = DaemonState {
         start_time: Instant::now(),
@@ -84,6 +91,7 @@ fn build_test_state(scope: &str) -> (DaemonState, tempfile::TempDir) {
         registry,
         pty_sessions,
         pipe_sessions,
+        services,
         emergency_reserve: Arc::new(
             running_process::daemon::emergency_reserve::EmergencyReserve::initialize_at(
                 tmp.path().join("emergency-reserve.bin"),

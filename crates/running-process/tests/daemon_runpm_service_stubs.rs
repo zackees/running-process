@@ -1,15 +1,12 @@
 #![cfg(feature = "daemon")]
-//! Phase 1 integration tests for the runpm `SERVICE_*` daemon RPC stubs (#106).
+//! Phase 2 integration tests for the runpm `SERVICE_*` daemon RPCs (#222).
 //!
-//! Each new request type (`ServiceStart` ... `ServiceResurrect`, enum values
-//! 50-59) currently dispatches to a stub handler that responds with
-//! `StatusCode::Ok` and a default-valued payload. These tests exercise every
-//! wrapper on `DaemonClient` to verify the full proto round-trip — request
-//! type dispatch, handler invocation, and response payload presence.
-//!
-//! All 10 RPCs are exercised against a single `DaemonServer` instance to
-//! minimize fixture setup cost; if any individual RPC needs richer coverage
-//! later, it can be split out into a dedicated test.
+//! Phase 1 only exercised the stub round-trip; Phase 2 makes `start`, `stop`,
+//! `restart`, `delete`, `list`, and `describe` real lifecycle operations. This
+//! test drives a real (cross-platform) supervised service through that
+//! lifecycle against a live `DaemonServer`, asserting on populated payloads.
+//! `logs`/`flush` (Phase 3) and `save`/`resurrect` (Phase 4) remain stubs and
+//! are still exercised for round-trip coverage.
 //!
 //! Uses `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` because
 //! `DaemonClient` performs blocking synchronous I/O — a single-threaded
@@ -53,13 +50,30 @@ fn start_server(scope: &str) -> (tokio::task::JoinHandle<()>, String) {
     (handle, socket)
 }
 
+/// Pick a long-lived, cross-platform command so the service stays online
+/// long enough to be observed by `list`/`describe` before we stop it.
+fn long_lived_cmd() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec![
+            "cmd".into(),
+            "/C".into(),
+            "ping -n 300 127.0.0.1 > NUL".into(),
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        vec!["sleep".into(), "300".into()]
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Combined Phase 1 stub roundtrip — exercises all 10 SERVICE_* RPCs against
-// a single server/client to keep fixture cost low.
+// Phase 2 lifecycle: start -> list -> describe -> stop -> restart -> delete,
+// then the still-stubbed logs/flush/save/resurrect RPCs.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_all_service_stubs_return_ok() {
+async fn test_service_lifecycle_and_remaining_stubs() {
     let scope = test_scope!();
     let (server_handle, socket) = start_server(&scope);
 
@@ -69,28 +83,53 @@ async fn test_all_service_stubs_return_ok() {
     let result = tokio::task::spawn_blocking(move || {
         let mut client = DaemonClient::connect_to(&socket).expect("failed to connect to daemon");
 
-        // --- ServiceStart -----------------------------------------------
+        // --- ServiceStart (real spawn) ----------------------------------
         let cfg = ServiceConfig {
             name: "test-svc".into(),
-            cmd: vec!["echo".into(), "hi".into()],
+            cmd: long_lived_cmd(),
             cwd: ".".into(),
             env: Default::default(),
             autorestart: false,
             max_restarts: 0,
             restart_delay_ms: 0,
-            kill_timeout_ms: 0,
+            kill_timeout_ms: 500,
             min_uptime_ms: 0,
         };
         let resp = client.service_start(cfg).expect("service_start failed");
         assert_eq!(
             resp.code,
             StatusCode::Ok as i32,
-            "service_start should return OK"
+            "service_start should be OK"
         );
-        assert!(
-            resp.service_start.is_some(),
-            "service_start response should carry a service_start payload"
+        let svc = resp
+            .service_start
+            .and_then(|r| r.service)
+            .expect("service_start should carry a populated service");
+        assert_eq!(svc.name, "test-svc");
+        assert_eq!(svc.status, "online");
+        assert!(svc.pid > 0, "online service should have a pid");
+
+        // --- ServiceList -----------------------------------------------
+        let resp = client.service_list().expect("service_list failed");
+        assert_eq!(
+            resp.code,
+            StatusCode::Ok as i32,
+            "service_list should be OK"
         );
+        let services = resp.service_list.expect("list payload").services;
+        assert_eq!(services.len(), 1, "exactly one service should be listed");
+        assert_eq!(services[0].name, "test-svc");
+
+        // --- ServiceDescribe -------------------------------------------
+        let resp = client
+            .service_describe("test-svc")
+            .expect("service_describe failed");
+        assert_eq!(resp.code, StatusCode::Ok as i32, "describe should be OK");
+        let described = resp
+            .service_describe
+            .and_then(|r| r.service)
+            .expect("describe should carry a service");
+        assert_eq!(described.name, "test-svc");
 
         // --- ServiceStop ------------------------------------------------
         let resp = client
@@ -99,68 +138,46 @@ async fn test_all_service_stubs_return_ok() {
         assert_eq!(
             resp.code,
             StatusCode::Ok as i32,
-            "service_stop should return OK"
+            "service_stop should be OK"
         );
-        assert!(
-            resp.service_stop.is_some(),
-            "service_stop response should carry a service_stop payload"
+        assert_eq!(
+            resp.service_stop.expect("stop payload").stopped_count,
+            1,
+            "one service should be stopped"
         );
 
         // --- ServiceRestart --------------------------------------------
         let resp = client
             .service_restart("test-svc")
             .expect("service_restart failed");
+        assert_eq!(resp.code, StatusCode::Ok as i32, "restart should be OK");
         assert_eq!(
-            resp.code,
-            StatusCode::Ok as i32,
-            "service_restart should return OK"
-        );
-        assert!(
-            resp.service_restart.is_some(),
-            "service_restart response should carry a service_restart payload"
+            resp.service_restart
+                .expect("restart payload")
+                .restarted_count,
+            1,
+            "one service should be restarted"
         );
 
         // --- ServiceDelete ---------------------------------------------
         let resp = client
             .service_delete("test-svc")
             .expect("service_delete failed");
+        assert_eq!(resp.code, StatusCode::Ok as i32, "delete should be OK");
         assert_eq!(
-            resp.code,
-            StatusCode::Ok as i32,
-            "service_delete should return OK"
-        );
-        assert!(
-            resp.service_delete.is_some(),
-            "service_delete response should carry a service_delete payload"
+            resp.service_delete.expect("delete payload").deleted_count,
+            1,
+            "one service should be deleted"
         );
 
-        // --- ServiceList -----------------------------------------------
+        // Deleted service should no longer be listed.
         let resp = client.service_list().expect("service_list failed");
-        assert_eq!(
-            resp.code,
-            StatusCode::Ok as i32,
-            "service_list should return OK"
-        );
         assert!(
-            resp.service_list.is_some(),
-            "service_list response should carry a service_list payload"
+            resp.service_list.expect("list payload").services.is_empty(),
+            "service list should be empty after delete"
         );
 
-        // --- ServiceDescribe -------------------------------------------
-        let resp = client
-            .service_describe("test-svc")
-            .expect("service_describe failed");
-        assert_eq!(
-            resp.code,
-            StatusCode::Ok as i32,
-            "service_describe should return OK"
-        );
-        assert!(
-            resp.service_describe.is_some(),
-            "service_describe response should carry a service_describe payload"
-        );
-
-        // --- ServiceLogs -----------------------------------------------
+        // --- ServiceLogs (Phase 3 stub) --------------------------------
         let resp = client
             .service_logs("test-svc", 100, false)
             .expect("service_logs failed");

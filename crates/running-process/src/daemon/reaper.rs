@@ -302,6 +302,13 @@ mod tests {
         let registry = Arc::new(Registry::open(&db_path).unwrap());
         let pty_sessions = Arc::new(crate::daemon::pty_sessions::PtySessionRegistry::new());
         let pipe_sessions = Arc::new(crate::daemon::pipe_sessions::PipeSessionRegistry::new());
+        let services = Arc::new(
+            crate::daemon::services::ServiceRegistry::open(
+                &db_path,
+                tmp_dir.path().join("services"),
+            )
+            .unwrap(),
+        );
         let state = DaemonState {
             start_time: Instant::now(),
             version: "0.0.0-test".to_string(),
@@ -315,6 +322,7 @@ mod tests {
             registry,
             pty_sessions,
             pipe_sessions,
+            services,
             emergency_reserve: Arc::new(
                 crate::daemon::emergency_reserve::EmergencyReserve::initialize_at(
                     tmp_dir.path().join("emergency-reserve.bin"),

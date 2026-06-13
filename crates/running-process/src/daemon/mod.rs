@@ -16,5 +16,6 @@ pub mod reaper;
 pub mod registry;
 pub mod runtime_gc;
 pub mod server;
+pub mod services;
 pub mod shadow;
 pub mod telemetry;
