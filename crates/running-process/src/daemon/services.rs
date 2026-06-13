@@ -7,7 +7,7 @@
 //! restart policy) plus *runtime state* (status, pid, restart count, exit
 //! info). Definitions and state are written through to a SQLite `services`
 //! table so they survive daemon restarts; the in-memory map of
-//! [`OwnedService`] holds the live child process and its log-writer threads.
+//! `OwnedService` holds the live child process and its log-writer threads.
 //!
 //! Supervision (restart-on-exit with exponential backoff, a max-restart
 //! window, and a min-uptime threshold) runs in the daemon-owned background
