@@ -1,5 +1,18 @@
 # fbuild Consumer Adoption Guide
 
+> **Status (#412): partially superseded.** The full-broker migration below
+> remains **deferred** under the minimal regime recorded in the
+> [adoption dashboard](v1-consumer-adoption-dashboard.md). What fbuild actually
+> landed (fbuild#529/#530) is a service-metadata/direct-fallback seam plus a
+> diagnostics-only `fbuild daemon running-process --json` preview — no
+> running-process code dependency yet. The deferred active `BackendHandle`
+> probe is the planned §6 measurement run for the second-pass SDK: add the
+> `running-process` dep (features `client`, `backend-sdk`), probe via
+> `probe_with_service_async` + a `DaemonProcess` identity sidecar, serve probes
+> via `BackendEndpointMux`, and validate with the conformance kit per
+> [INTEGRATE.md](INTEGRATE.md). This guide stays as the reference for the future
+> full-broker wave.
+
 This guide defines the fbuild adoption path for the v1 running-process broker.
 The running-process repository does not contain fbuild source, so the first
 fbuild adoption PR records the exact current fbuild wire and cache layout in
