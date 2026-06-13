@@ -6,9 +6,14 @@ use std::thread;
 
 use interprocess::local_socket::prelude::*;
 use running_process::broker::client::{
-    broker_disabled_by_env, connect_to_backend, BackendConnectionRoute, BrokerClientError,
-    ConnectBackendRequest, RUNNING_PROCESS_DISABLE_ENV, RUNNING_PROCESS_FAKE_BACKEND_ENV,
+    broker_disabled_by_env, connect_to_backend, BackendConnectionRoute, ConnectBackendRequest,
+    RefusalKind, RUNNING_PROCESS_DISABLE_ENV,
 };
+use running_process::broker::protocol::ErrorCode;
+// #433 R4: the fake-backend seam compiles only under `test-seams`. Its tests
+// (and the symbols they alone use) are gated to the same feature.
+#[cfg(feature = "test-seams")]
+use running_process::broker::client::{BrokerClientError, RUNNING_PROCESS_FAKE_BACKEND_ENV};
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
 use running_process::broker::server::{
     handle_hello_connection, HelloHandler, PeerIdentity, RegisteredBackend,
@@ -176,6 +181,7 @@ fn connect_to_backend_does_not_skip_when_versions_differ() {
     backend.join().unwrap().unwrap();
 }
 
+#[cfg(feature = "test-seams")]
 #[test]
 fn connect_to_backend_uses_fake_backend_seam_when_set() {
     let _lock = DISABLE_ENV_LOCK.lock().unwrap();
@@ -197,6 +203,7 @@ fn connect_to_backend_uses_fake_backend_seam_when_set() {
     backend.join().unwrap().unwrap();
 }
 
+#[cfg(feature = "test-seams")]
 #[test]
 fn connect_to_backend_ignores_fake_backend_seam_when_broker_disabled() {
     let _lock = DISABLE_ENV_LOCK.lock().unwrap();
@@ -217,6 +224,7 @@ fn connect_to_backend_ignores_fake_backend_seam_when_broker_disabled() {
     backend.join().unwrap().unwrap();
 }
 
+#[cfg(feature = "test-seams")]
 #[test]
 fn connect_to_backend_fake_backend_connect_error_does_not_fall_back() {
     let _lock = DISABLE_ENV_LOCK.lock().unwrap();
@@ -234,6 +242,7 @@ fn connect_to_backend_fake_backend_connect_error_does_not_fall_back() {
     );
 }
 
+#[cfg(feature = "test-seams")]
 #[test]
 fn connect_to_backend_ignores_empty_fake_backend_seam() {
     let _lock = DISABLE_ENV_LOCK.lock().unwrap();
@@ -254,6 +263,7 @@ fn connect_to_backend_ignores_empty_fake_backend_seam() {
     backend.join().unwrap().unwrap();
 }
 
+#[cfg(feature = "test-seams")]
 #[test]
 fn connect_to_backend_ignores_unset_fake_backend_seam() {
     let _lock = DISABLE_ENV_LOCK.lock().unwrap();
@@ -270,6 +280,63 @@ fn connect_to_backend_ignores_unset_fake_backend_seam() {
     assert_eq!(connection.route, BackendConnectionRoute::HelloSkip);
     drop(connection.stream);
     backend.join().unwrap().unwrap();
+}
+
+#[test]
+fn refusal_kind_maps_wire_codes() {
+    assert_eq!(
+        RefusalKind::from_code(ErrorCode::ErrorVersionUnsupported),
+        RefusalKind::VersionUnsupported
+    );
+    assert_eq!(
+        RefusalKind::from_code(ErrorCode::ErrorVersionBlocked),
+        RefusalKind::VersionBlocked
+    );
+    assert_eq!(
+        RefusalKind::from_code(ErrorCode::ErrorServiceUnknown),
+        RefusalKind::ServiceUnknown
+    );
+    assert_eq!(
+        RefusalKind::from_code(ErrorCode::ErrorRateLimited),
+        RefusalKind::RateLimited
+    );
+    assert_eq!(
+        RefusalKind::from_code(ErrorCode::ErrorShuttingDown),
+        RefusalKind::ShuttingDown
+    );
+    // Codes without a dedicated kind fall into Other, preserving the raw code.
+    assert_eq!(
+        RefusalKind::from_code(ErrorCode::ErrorInternal),
+        RefusalKind::Other(ErrorCode::ErrorInternal)
+    );
+}
+
+#[test]
+fn connect_to_backend_classifies_unknown_service_refusal() {
+    let broker_endpoint = unique_socket_name("broker-refuse-unknown");
+    let backend_endpoint = unique_socket_name("backend-refuse-unknown");
+    let broker = spawn_broker_once(broker_endpoint.clone(), backend_endpoint.clone());
+
+    // The broker only registered "zccache"; an unknown service is refused.
+    let request = ConnectBackendRequest::new(&broker_endpoint, "not-registered", "1.0.0", "1.0.0");
+    let error = connect_to_backend(request).unwrap_err();
+
+    assert_eq!(error.refusal_kind(), Some(RefusalKind::ServiceUnknown));
+    broker.join().unwrap().unwrap();
+}
+
+#[test]
+fn connect_to_backend_classifies_blocked_version_refusal() {
+    let broker_endpoint = unique_socket_name("broker-refuse-version");
+    let backend_endpoint = unique_socket_name("backend-refuse-version");
+    let broker = spawn_broker_once(broker_endpoint.clone(), backend_endpoint.clone());
+
+    // "9.9.9" is not in the registered version_allow_list → blocked.
+    let request = ConnectBackendRequest::new(&broker_endpoint, "zccache", "9.9.9", "9.9.9");
+    let error = connect_to_backend(request).unwrap_err();
+
+    assert_eq!(error.refusal_kind(), Some(RefusalKind::VersionBlocked));
+    broker.join().unwrap().unwrap();
 }
 
 fn spawn_accept_once(socket_name: String) -> thread::JoinHandle<io::Result<()>> {

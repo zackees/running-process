@@ -7,10 +7,12 @@
 //! See `proto/broker_v1_*.proto` and the parent issue for the rationale
 //! behind every field number and `reserved` range.
 
+pub mod adopt;
 pub mod backend_handle;
 pub mod backend_lib;
 pub mod backend_lifecycle;
 pub mod backend_sdk;
+pub mod builders;
 pub mod capabilities;
 pub mod client;
 pub mod doctor;

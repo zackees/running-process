@@ -90,6 +90,11 @@ daemon = [
     "dep:rusqlite", "dep:toml",
 ]
 originator-scan = []               # used by running-process-py for cwd-tagging
+# #433 R4: opt-in test seam. Gates the `RUNNING_PROCESS_FAKE_BACKEND` backdoor
+# inside `connect_to_backend`. OFF by default and never listed by production
+# consumers, so the backdoor is physically absent from every shipped build.
+# Enabled only by the crate's own test pass (see `ci/test.py`).
+test-seams = ["client"]
 # #415: consumer-consumable conformance test kit
 # (`crate::test_support::conformance`). Off by default; consumers opt in
 # from their `dev-dependencies`.

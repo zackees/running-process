@@ -332,6 +332,32 @@ def main(argv: list[str] | None = None) -> int:
             if run(cargo_cmd) != 0:
                 return 1
 
+            # #433 R4: the RUNNING_PROCESS_FAKE_BACKEND seam is compiled out of
+            # the default build (it must never ship in production). Exercise its
+            # tests in a dedicated pass with the opt-in `test-seams` feature so
+            # the backdoor stays covered without leaking into shipped binaries.
+            seam_test_args = cargo_command(
+                "nextest",
+                "run",
+                "-p",
+                "running-process",
+                "--features",
+                "test-seams",
+                "--test",
+                "broker",
+                "-E",
+                "test(fake_backend)",
+            )
+            if sys.platform == "win32":
+                seam_test_args += ["--test-threads", "1"]
+            seam_cmd = supervised_command(
+                python,
+                *seam_test_args,
+                timeout=rust_test_timeout,
+            )
+            if run(seam_cmd) != 0:
+                return 1
+
         # -- Python non-live tests --
         cov_first = list(_COV_PYTEST_FIRST) if coverage else []
         if not _pytest_exit_is_acceptable(
