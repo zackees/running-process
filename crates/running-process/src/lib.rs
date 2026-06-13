@@ -9,14 +9,21 @@
 use std::collections::VecDeque;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::observer::ObserverEmitter;
+
 pub mod console_detect;
 pub mod containment;
 mod helpers;
+// Phase 1 of #221: process-observation capability model + portable
+// lifecycle baseline. Core-feature-clean (std-only: mpsc + SystemTime),
+// so the started/exited baseline is available to the base library
+// without pulling in the daemon runtime.
+pub mod observer;
 #[cfg(feature = "originator-scan")]
 pub mod originator;
 // Wave 3+4 of #165: proto module + IPC client absorbed from the
@@ -87,6 +94,10 @@ mod windows;
 
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
+pub use observer::{
+    CapabilitySupport, CategoryCapability, EventCategory, ObserverCapabilities, ObserverConfig,
+    ObserverEvent, ObserverEventKind, ObserverSubscriber,
+};
 #[cfg(feature = "originator-scan")]
 pub use originator::{find_processes_by_originator, OriginatorProcessInfo};
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
@@ -149,6 +160,14 @@ struct SharedState {
     /// Atomic exit code. `RETURNCODE_NOT_SET` means "not exited yet".
     /// Updated by a background waiter thread — reading is lock-free.
     returncode: AtomicI64,
+    /// Phase 1 of #221: optional lifecycle-event emitter. `None` means
+    /// observation is off (the off-by-default path), so the lifecycle
+    /// hooks are inert. When `Some`, `started` is emitted once at spawn
+    /// and `exited` exactly once on the first returncode transition.
+    observer: Option<ObserverEmitter>,
+    /// Guards against emitting more than one `exited` event when several
+    /// code paths (waiter thread, `poll`, `kill`) race to record the exit.
+    observer_exit_emitted: AtomicBool,
 }
 
 struct ChildState {
@@ -159,6 +178,10 @@ struct ChildState {
 
 impl SharedState {
     fn new(capture: bool) -> Self {
+        Self::with_observer(capture, None)
+    }
+
+    fn with_observer(capture: bool, observer: Option<ObserverEmitter>) -> Self {
         let queues = QueueState {
             stdout_closed: !capture,
             stderr_closed: !capture,
@@ -168,6 +191,23 @@ impl SharedState {
             queues: Mutex::new(queues),
             condvar: Condvar::new(),
             returncode: AtomicI64::new(RETURNCODE_NOT_SET),
+            observer,
+            observer_exit_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Emit the lifecycle `exited` event exactly once, regardless of which
+    /// code path first observes the exit. No-op when observation is off.
+    fn emit_exited(&self, pid: u32, exit_code: i32) {
+        let Some(emitter) = self.observer.as_ref() else {
+            return;
+        };
+        if self
+            .observer_exit_emitted
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            emitter.emit_exited(pid, exit_code);
         }
     }
 }
@@ -189,10 +229,42 @@ pub struct NativeProcess {
 impl NativeProcess {
     /// Create a process wrapper from a [`ProcessConfig`].
     ///
-    /// The child is not spawned until [`Self::start`] is called.
+    /// The child is not spawned until [`Self::start`] is called. Process
+    /// observation is **off by default**: no lifecycle events are emitted
+    /// unless [`Self::with_observer`] is used instead.
     pub fn new(config: ProcessConfig) -> Self {
+        Self::new_with_observer(config, None)
+    }
+
+    /// Create a process wrapper with process observation enabled (Phase 1
+    /// of #221).
+    ///
+    /// Returns the wrapper paired with an [`ObserverSubscriber`] that
+    /// receives a [`started`](crate::ObserverEventKind::Started) event when
+    /// [`Self::start`] spawns the child and exactly one
+    /// [`exited`](crate::ObserverEventKind::Exited) event when the child is
+    /// reaped — for the categories the `config` requests that are actually
+    /// `Supported` (only [`Lifecycle`](crate::EventCategory::Lifecycle) in
+    /// Phase 1; see [`ObserverCapabilities::negotiate`](crate::ObserverCapabilities::negotiate)).
+    ///
+    /// The emitter never blocks on a slow or dropped subscriber.
+    pub fn with_observer(
+        config: ProcessConfig,
+        observer: crate::observer::ObserverConfig,
+    ) -> (Self, ObserverSubscriber) {
+        let (emitter, subscriber) = ObserverEmitter::new(observer);
+        let process = Self::new_with_observer(config, Some(emitter));
+        (process, subscriber)
+    }
+
+    fn new_with_observer(config: ProcessConfig, observer: Option<ObserverEmitter>) -> Self {
+        let shared = match observer {
+            // Off-by-default path: no emitter, no observation state.
+            None => SharedState::new(config.capture),
+            Some(emitter) => SharedState::with_observer(config.capture, Some(emitter)),
+        };
         Self {
-            shared: Arc::new(SharedState::new(config.capture)),
+            shared: Arc::new(shared),
             child: Arc::new(Mutex::new(None)),
             config,
             #[cfg(windows)]
@@ -234,6 +306,11 @@ impl NativeProcess {
 
         let mut child = command.spawn().map_err(ProcessError::Spawn)?;
         log_spawned_child_pid(child.id()).map_err(ProcessError::Spawn)?;
+        // Phase 1 of #221: emit the lifecycle `started` event. No-op when
+        // observation is off (the common, off-by-default path).
+        if let Some(emitter) = self.shared.observer.as_ref() {
+            emitter.emit_started(child.id());
+        }
         #[cfg(windows)]
         let job = public_symbols::rp_assign_child_to_windows_kill_on_close_job_public(&child)
             .map_err(ProcessError::Spawn)?;
@@ -289,10 +366,15 @@ impl NativeProcess {
                 {
                     let mut guard = child.lock().expect("child mutex poisoned");
                     if let Some(child_state) = guard.as_mut() {
+                        let pid = child_state.child.id();
                         match child_state.child.try_wait() {
                             Ok(Some(status)) => {
                                 let code = exit_code(status);
                                 shared.returncode.store(code as i64, Ordering::Release);
+                                // Phase 1 of #221: lifecycle `exited`. Emit
+                                // before notifying waiters and is guarded so
+                                // only the first exit-observer fires.
+                                shared.emit_exited(pid, code);
                                 shared.condvar.notify_all();
                                 return;
                             }
@@ -360,11 +442,13 @@ impl NativeProcess {
         let Some(child_state) = guard.as_mut() else {
             return Ok(self.returncode());
         };
+        let pid = child_state.child.id();
         let child = &mut child_state.child;
         let status = child.try_wait().map_err(ProcessError::Io)?;
         if let Some(status) = status {
             let code = exit_code(status);
             self.set_returncode(code);
+            self.shared.emit_exited(pid, code);
             return Ok(Some(code));
         }
         Ok(None)
@@ -439,9 +523,14 @@ impl NativeProcess {
         {
             let mut guard = self.child.lock().expect("child mutex poisoned");
             let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
+            let pid = child.id();
             child.kill().map_err(ProcessError::Io)?;
             let status = child.wait().map_err(ProcessError::Io)?;
-            self.set_returncode(exit_code(status));
+            let code = exit_code(status);
+            self.set_returncode(code);
+            // Phase 1 of #221: a killed child still produces a lifecycle
+            // `exited` event (guarded against double-emit by the waiter).
+            self.shared.emit_exited(pid, code);
         }
         // On Windows, interrupt any pending blocking `read()` in the
         // per-stream reader threads so they fall out of their loops
