@@ -104,6 +104,103 @@ impl BrokerSession {
     pub fn into_client(self) -> FrameClient {
         self.client
     }
+
+    /// Consume the session and hand back the live negotiated socket as an
+    /// owned OS handle (#720).
+    ///
+    /// After adoption has driven the broker handshake to completion, a
+    /// consumer that wants to stop speaking the FrameV1 request/response wire
+    /// and run its own protocol over the same connection calls this to take
+    /// ownership of the raw socket. On Unix the result wraps an
+    /// `OwnedFd`; the Windows `OwnedHandle` path is deferred, so this returns
+    /// `IntoBackendIoError::WindowsUnsupported` there for now.
+    ///
+    /// Fails with [`IntoBackendIoError::BufferedResidual`] if the frame
+    /// reader has buffered response bytes the bare socket would not carry —
+    /// which never happens on a freshly adopted session that has issued no
+    /// [`request`](Self::request).
+    pub fn into_backend_io(self) -> Result<OwnedBackendIo, IntoBackendIoError> {
+        let buffered = self.client.buffered_len();
+        if buffered != 0 {
+            return Err(IntoBackendIoError::BufferedResidual { buffered });
+        }
+        OwnedBackendIo::from_local_socket_stream(self.client.into_stream())
+    }
+}
+
+/// A live negotiated backend socket handed back as an owned OS handle (#720).
+///
+/// Produced by [`BrokerSession::into_backend_io`] /
+/// `AsyncBrokerSession::into_backend_io`. On Unix it owns an `OwnedFd` the
+/// consumer can wrap in its own transport (e.g.
+/// `std::os::unix::net::UnixStream::from`); the Windows `OwnedHandle` path is
+/// deferred (#720), so the type is never constructed on Windows.
+#[derive(Debug)]
+pub struct OwnedBackendIo {
+    // The Windows handle path is deferred (#720). The type still exists so the
+    // `into_backend_io` signature is platform-stable, but it carries no handle
+    // on Windows and is only ever returned as `Err(WindowsUnsupported)`.
+    #[cfg(unix)]
+    fd: std::os::fd::OwnedFd,
+}
+
+impl OwnedBackendIo {
+    #[cfg(unix)]
+    fn from_local_socket_stream(
+        stream: interprocess::local_socket::Stream,
+    ) -> Result<Self, IntoBackendIoError> {
+        match stream {
+            interprocess::local_socket::Stream::UdSocket(uds) => Ok(Self {
+                fd: std::os::fd::OwnedFd::from(uds),
+            }),
+        }
+    }
+
+    #[cfg(windows)]
+    fn from_local_socket_stream(
+        _stream: interprocess::local_socket::Stream,
+    ) -> Result<Self, IntoBackendIoError> {
+        Err(IntoBackendIoError::WindowsUnsupported)
+    }
+
+    /// Consume and return the raw owned file descriptor.
+    #[cfg(unix)]
+    pub fn into_owned_fd(self) -> std::os::fd::OwnedFd {
+        self.fd
+    }
+}
+
+#[cfg(unix)]
+impl std::os::fd::AsFd for OwnedBackendIo {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+/// Errors from [`BrokerSession::into_backend_io`] /
+/// [`AsyncBrokerSession::into_backend_io`].
+#[derive(Debug, thiserror::Error)]
+pub enum IntoBackendIoError {
+    /// The frame reader still holds buffered response bytes that the bare
+    /// socket would not carry, so the raw handle cannot be taken without
+    /// losing them.
+    #[error(
+        "frame client has {buffered} buffered response byte(s); cannot hand off the raw socket without losing them"
+    )]
+    BufferedResidual {
+        /// Number of bytes buffered by the frame reader.
+        buffered: usize,
+    },
+    /// The async frame client was poisoned by a prior request panic, so its
+    /// inner blocking client is gone.
+    #[cfg(feature = "client-async")]
+    #[error("async frame client was poisoned by a prior request panic")]
+    Poisoned,
+    /// `into_backend_io()` is not yet supported on Windows; the `OwnedHandle`
+    /// path is deferred (#720).
+    #[cfg(windows)]
+    #[error("into_backend_io() is not yet supported on Windows; the OwnedHandle path is deferred (#720)")]
+    WindowsUnsupported,
 }
 
 /// Errors from [`BrokerSession::adopt`] / [`AsyncBrokerSession::adopt`].
@@ -269,5 +366,25 @@ impl AsyncBrokerSession {
     /// Consume the session and return the owned async frame client.
     pub fn into_client(self) -> crate::broker::backend_sdk::AsyncFrameClient {
         self.client
+    }
+
+    /// Consume the session and hand back the live negotiated socket as an
+    /// owned OS handle (#720).
+    ///
+    /// Async twin of [`BrokerSession::into_backend_io`]. No `.await` is
+    /// needed: the inner blocking client already owns the connected socket, so
+    /// taking the raw handle out is a synchronous unwrap. Fails with
+    /// [`IntoBackendIoError::Poisoned`] if a prior [`request`](Self::request)
+    /// panicked inside `spawn_blocking` and left the client slot empty.
+    pub fn into_backend_io(self) -> Result<OwnedBackendIo, IntoBackendIoError> {
+        let client = self
+            .client
+            .into_blocking()
+            .ok_or(IntoBackendIoError::Poisoned)?;
+        let buffered = client.buffered_len();
+        if buffered != 0 {
+            return Err(IntoBackendIoError::BufferedResidual { buffered });
+        }
+        OwnedBackendIo::from_local_socket_stream(client.into_stream())
     }
 }

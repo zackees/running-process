@@ -64,6 +64,7 @@ mod hello_version_blocked;
 mod idle_coord;
 mod instance;
 mod instance_isolation;
+mod into_backend_io;
 mod lifecycle_event_size;
 mod manifest_atomic;
 mod manifest_boot_id;

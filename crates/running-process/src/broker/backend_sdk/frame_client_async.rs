@@ -167,6 +167,17 @@ impl AsyncFrameClient {
     pub fn next_request_id(&self) -> Option<u64> {
         self.inner.as_ref().map(FrameClient::next_request_id)
     }
+
+    /// Recover the owned blocking [`FrameClient`], or `None` if a prior
+    /// request panicked inside `spawn_blocking` and poisoned the slot.
+    ///
+    /// Used by [`AsyncBrokerSession::into_backend_io`] to take the
+    /// negotiated socket back out without crossing another async hop.
+    ///
+    /// [`AsyncBrokerSession::into_backend_io`]: crate::broker::adopt::AsyncBrokerSession::into_backend_io
+    pub fn into_blocking(self) -> Option<FrameClient> {
+        self.inner
+    }
 }
 
 fn join_error_to_client(join_err: tokio::task::JoinError) -> FrameClientError {
