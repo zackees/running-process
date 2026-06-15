@@ -40,7 +40,9 @@ use windows_sys::Win32::Foundation::{HANDLE, HMODULE};
 use windows_sys::Win32::System::Console::{COORD, HPCON};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryExW};
 
-use super::{conpty_acquire, win_version};
+#[cfg(feature = "client")]
+use super::conpty_acquire;
+use super::win_version;
 
 /// `LOAD_LIBRARY_SEARCH_APPLICATION_DIR`. Restricts the DLL search to
 /// the loading executable's own directory — no PATH, no CWD, no other
@@ -157,6 +159,7 @@ fn resolve_production(force_system: bool) -> (ConPtyApi, ConPtySource) {
         }
     }
 
+    #[cfg(feature = "client")]
     match conpty_acquire::ensure_cached_sidecar() {
         Ok(cache_dir) => {
             let dll = cache_dir.join("conpty.dll");

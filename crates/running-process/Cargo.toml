@@ -67,7 +67,14 @@ required-features = ["client"]
 default = ["client"]
 core = []
 telemetry = []
-client = ["dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs", "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2", "dep:getrandom"]
+client = [
+    "dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs",
+    "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2", "dep:getrandom",
+    # #445: Windows-only sidecar self-acquisition. These deps live under
+    # `[target.'cfg(windows)'.dependencies]` so enabling the feature on
+    # non-Windows targets is a cargo-level no-op for them.
+    "dep:ureq", "dep:zstd", "dep:tar",
+]
 # Opt-in async client surface for tokio daemons (#414). Adds async
 # variants of `BackendHandle::probe_with_service` and `FrameClient`
 # on top of the existing blocking surface. The synchronous probe and
@@ -182,15 +189,12 @@ windows-sys = { version = "0.59", features = [
 # #445: transparent Win10 ConPTY sidecar self-acquisition. The runtime
 # fetches a per-arch zstd-19 compressed tarball from this crate's
 # matching GitHub release on first ConPTY use, caches it, and loads
-# `conpty.dll` from there. ureq uses rustls so we don't drag in a C
-# OpenSSL build on Windows.
-ureq = { version = "2", default-features = false, features = ["tls"] }
-zstd = { version = "0.13", default-features = false }
-tar = { version = "0.4", default-features = false }
-# `dirs` was previously optional under the `client` feature; bring it
-# in unconditionally on Windows so the sidecar cache path resolves
-# regardless of features.
-dirs = "6"
+# `conpty.dll` from there. Gated optional and pulled in by the `client`
+# feature (which also enables `dirs` for cache-path discovery). ureq
+# uses rustls so we don't drag in a C OpenSSL build on Windows.
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
+zstd = { version = "0.13", default-features = false, optional = true }
+tar = { version = "0.4", default-features = false, optional = true }
 
 # Wave 5 of #165: extra dev-deps absorbed from `running-process-daemon`
 # for its windows-only and unix-only integration tests.
