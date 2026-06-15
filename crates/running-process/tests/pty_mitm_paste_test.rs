@@ -203,7 +203,6 @@ fn child_paste_enable_sequence_reaches_host() {
              `\\x1b[?2004h` follows the handshake byte. Substrate-byte transit is \
              still covered by every other test in this file. See #452."
         );
-        return;
     }
     #[cfg(not(windows))]
     {
@@ -246,7 +245,7 @@ fn four_megabyte_paste_survives_slow_consumer() {
     // until the testbin's printable handshake byte arrives, fencing
     // against the POSIX line-discipline race that would otherwise
     // cook host writes before `cfmakeraw` lands.
-    let handshake_deadline = Instant::now() + Duration::from_secs(20);
+    let handshake_deadline = Instant::now() + Duration::from_secs(40);
     let mut saw_handshake = false;
     while !saw_handshake && Instant::now() < handshake_deadline {
         if let Ok(Some(chunk)) = process.read_chunk_impl(Some(0.1)) {

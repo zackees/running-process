@@ -283,10 +283,13 @@ impl EchoerSession {
             process,
             prefetched: Mutex::new(VecDeque::new()),
         };
-        // Generous 20 s budget; Windows Server 2025 CI runners
-        // sometimes show ConPTY startup chatter for several seconds
-        // before the testbin's first stdout byte arrives.
-        let handshake = Duration::from_secs(20);
+        // Generous 40 s budget; Windows Server 2025 CI runners
+        // schedule the testbin process behind nextest's parallel
+        // pool so the first child stdout byte can take a while to
+        // arrive — empirically up to ~25 s under contention on
+        // x86_64-windows. We allow margin on top. nextest's
+        // 2-minute slow-timeout still bounds the worst case.
+        let handshake = Duration::from_secs(40);
         let drained = session.drain_raw_until_byte(STARTUP_HANDSHAKE_BYTE, handshake);
         let ack_pos = drained
             .iter()
