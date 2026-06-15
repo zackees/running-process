@@ -34,27 +34,26 @@ pub fn mitm_byte_exact_supported() -> bool {
     }
     #[cfg(windows)]
     {
-        // #452: the original Server-2025-wide skip (build 26100) was
-        // a stop-gap because the testbin's `\x06` ACK never reached
-        // the master pipe. Investigation traced that to ConPTY (in
-        // virtual-screen mode when PASSTHROUGH_MODE didn't take
-        // effect) silently filtering ASCII C0 control bytes from
-        // the rendered output. The handshake now uses a printable
-        // marker byte (see `STARTUP_HANDSHAKE_BYTE` below) so the
-        // sync fence survives ConPTY's renderer. We can therefore
-        // honor the build-number gate again.
+        // #452 ongoing investigation: the printable
+        // `STARTUP_HANDSHAKE_BYTE` below makes the spawn fence survive
+        // ConPTY's virtual-screen renderer on Server 2025 — Hypothesis 2
+        // from #452 is partially confirmed (~27 of 28 tests pass with
+        // it). But a *second* substrate issue surfaced under
+        // windows-2025 CI: whichever MITM test runs *second* in a
+        // binary (after the first one succeeds) consistently fails its
+        // own spawn handshake even with nextest serialization in
+        // place — the testbin process spawns but its stdout never
+        // surfaces on the master pipe. The root cause is not yet
+        // identified and needs proper diagnostics on a real Server
+        // 2025 host. Until then keep the Windows-wide skip.
         //
-        // Investigators can still flip behavior with
-        // `RUNNING_PROCESS_FORCE_MITM_WINDOWS=1` to bypass the gate
-        // and exercise the diagnostic path.
+        // Investigators can drive the diagnostic path with
+        // `RUNNING_PROCESS_FORCE_MITM_WINDOWS=1`.
         if std::env::var_os("RUNNING_PROCESS_FORCE_MITM_WINDOWS").is_some() {
             return true;
         }
-        let build = windows_build_number().unwrap_or(0);
-        if build >= 22000 {
-            return true;
-        }
-        sidecar_conpty_dll_present()
+        let _ = windows_build_number();
+        false
     }
 }
 
