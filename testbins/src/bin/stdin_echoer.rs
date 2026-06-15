@@ -93,11 +93,18 @@ fn main() {
     // Without this fence, the kernel's line discipline (still in
     // cooked mode at host-write time) would echo control characters
     // back as `^X` form, breaking byte-exact MITM assertions.
+    //
+    // Diagnostic (#452): also write a one-line marker to stderr
+    // before and after the ACK so a future Windows-substrate
+    // investigation can confirm the testbin actually executed even
+    // when ConPTY swallows the stdout ACK on the master pipe.
+    eprintln!("testbin-stdin-echoer: about to write ACK 0x06 to stdout");
     {
         let mut guard = stdout.lock().expect("stdout mutex poisoned");
         guard.write_all(b"\x06").expect("ack write");
         guard.flush().expect("ack flush");
     }
+    eprintln!("testbin-stdin-echoer: ACK written and flushed; entering read loop");
 
     if advertise_paste {
         // Bracketed-paste enable sequence per xterm DEC mode 2004.

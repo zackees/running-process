@@ -44,9 +44,65 @@ pub fn mitm_byte_exact_supported() -> bool {
         // Server 2025 behavior is understood (follow-up issue #452),
         // skip all byte-exact MITM tests on Windows. The
         // substrate guarantee remains validated by Linux/macOS CI.
+        //
+        // Investigators can flip the skip with
+        // `RUNNING_PROCESS_FORCE_MITM_WINDOWS=1` to drive the
+        // diagnostic path and capture the rich panic message added
+        // alongside this hatch (#452).
+        if std::env::var_os("RUNNING_PROCESS_FORCE_MITM_WINDOWS").is_some() {
+            return true;
+        }
         let _ = windows_build_number();
         false
     }
+}
+
+/// Diagnostic message rendered when `EchoerSession::spawn`'s startup
+/// handshake fails. Captures everything an investigator needs to
+/// triage #452 from a CI log: the Windows build number, the resolved
+/// ConPTY backend kind (kernel32 vs sidecar), the count and hex of
+/// every byte the master pipe yielded in the handshake window, and
+/// the env-var override that lets them flip the skip locally.
+fn spawn_handshake_failure_diagnostic(drained: &[u8], handshake: Duration) -> String {
+    let backend = backend_description();
+    let host = host_description();
+    let drained_hex = drained
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let preview_ascii = drained
+        .iter()
+        .map(|&b| {
+            if (0x20..0x7f).contains(&b) {
+                b as char
+            } else {
+                '.'
+            }
+        })
+        .collect::<String>();
+    format!(
+        "testbin-stdin-echoer never emitted startup ACK in {handshake:?}\n  \
+             host:    {host}\n  \
+             backend: {backend}\n  \
+             drained: {} bytes [{drained_hex}]\n  \
+             ascii:   \"{preview_ascii}\"\n  \
+             hint:    if drained matches `1b 5b 36 6e`, ConPTY is in non-passthrough mode and \
+                      synthesized a DSR cursor query — see #452 for the Windows Server 2025 \
+                      investigation. Re-run with RUNNING_PROCESS_FORCE_MITM_WINDOWS=1 to drive \
+                      this path manually.",
+        drained.len(),
+    )
+}
+
+#[cfg(windows)]
+fn backend_description() -> String {
+    format!("{:?}", running_process::pty::current_backend_kind())
+}
+
+#[cfg(not(windows))]
+fn backend_description() -> String {
+    "n/a (POSIX PTY)".to_string()
 }
 
 /// Print a uniform skip line. Use at the top of every test that
@@ -220,10 +276,8 @@ impl EchoerSession {
         let drained = session.drain_raw_until_byte(0x06, handshake);
         let ack_pos = drained.iter().position(|&b| b == 0x06).unwrap_or_else(|| {
             panic!(
-                "testbin-stdin-echoer never emitted startup ACK in {handshake:?}; \
-                 drained {} bytes: {:02x?}",
-                drained.len(),
-                drained
+                "{}",
+                spawn_handshake_failure_diagnostic(&drained, handshake)
             )
         });
         // Retain everything *after* the ACK for the next test-visible
