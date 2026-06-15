@@ -59,6 +59,16 @@ fn main() {
     // than locking std's stdout because std's StdoutLock is !Send.
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
 
+    // Startup handshake: emit ASCII ACK (0x06) immediately. The host-
+    // side helper drains until ACK before any test-visible writes,
+    // which fences against the POSIX line-discipline race where the
+    // kernel cooks `\x1b` -> `^[` before `cfmakeraw` has been applied.
+    {
+        let mut guard = stdout.lock().expect("stdout mutex poisoned");
+        guard.write_all(b"\x06").expect("ack write");
+        guard.flush().expect("ack flush");
+    }
+
     if advertise_paste {
         // Bracketed-paste enable sequence per xterm DEC mode 2004.
         let mut guard = stdout.lock().expect("stdout mutex poisoned");
