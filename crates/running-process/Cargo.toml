@@ -156,6 +156,11 @@ serde_json = "1"
 # Compiles proto/daemon.proto into OUT_DIR.
 prost-build = "0.14"
 protox = "0.9"
+# #447: build.rs parses `conpty-sidecar.sha256.toml` (at workspace root)
+# to bake the per-arch SHA-256 verification table into the crate at
+# compile time. The runtime then verifies the fetched sidecar against
+# the table before decompression.
+toml = "0.8"
 
 [dev-dependencies]
 # Platform-default service-definition dir tests (#386) assert against
