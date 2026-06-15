@@ -34,21 +34,21 @@ pub fn mitm_byte_exact_supported() -> bool {
     }
     #[cfg(windows)]
     {
-        // Empirically: on Windows Server 2025 (build 26100, the
-        // current GitHub `windows-latest` runner), even though
-        // `PSEUDOCONSOLE_PASSTHROUGH_MODE` should be honored by
-        // build number, the testbin's startup ACK byte (`\x06`)
-        // never reaches the master pipe — the only bytes that
-        // arrive are ConPTY's own DSR queries. The same testbin
-        // works on POSIX. Until the Windows ConPTY substrate's
-        // Server 2025 behavior is understood (follow-up issue #452),
-        // skip all byte-exact MITM tests on Windows. The
-        // substrate guarantee remains validated by Linux/macOS CI.
+        // #452 ongoing investigation: the printable
+        // `STARTUP_HANDSHAKE_BYTE` below makes the spawn fence survive
+        // ConPTY's virtual-screen renderer on Server 2025 — Hypothesis 2
+        // from #452 is partially confirmed (~27 of 28 tests pass with
+        // it). But a *second* substrate issue surfaced under
+        // windows-2025 CI: whichever MITM test runs *second* in a
+        // binary (after the first one succeeds) consistently fails its
+        // own spawn handshake even with nextest serialization in
+        // place — the testbin process spawns but its stdout never
+        // surfaces on the master pipe. The root cause is not yet
+        // identified and needs proper diagnostics on a real Server
+        // 2025 host. Until then keep the Windows-wide skip.
         //
-        // Investigators can flip the skip with
-        // `RUNNING_PROCESS_FORCE_MITM_WINDOWS=1` to drive the
-        // diagnostic path and capture the rich panic message added
-        // alongside this hatch (#452).
+        // Investigators can drive the diagnostic path with
+        // `RUNNING_PROCESS_FORCE_MITM_WINDOWS=1`.
         if std::env::var_os("RUNNING_PROCESS_FORCE_MITM_WINDOWS").is_some() {
             return true;
         }
@@ -56,6 +56,17 @@ pub fn mitm_byte_exact_supported() -> bool {
         false
     }
 }
+
+/// Byte the testbin emits at startup as a synchronization fence,
+/// and the byte the helper drains until.
+///
+/// We use a printable ASCII byte (`'R'` = 0x52, picked because it
+/// does not appear in any of the test payloads) rather than the
+/// previous `\x06` (ACK) marker. On Windows Server 2025 (#452) ConPTY
+/// in virtual-screen mode silently dropped the ASCII C0 control
+/// byte from the master pipe — a printable byte survives the
+/// renderer round-trip.
+pub const STARTUP_HANDSHAKE_BYTE: u8 = b'R';
 
 /// Diagnostic message rendered when `EchoerSession::spawn`'s startup
 /// handshake fails. Captures everything an investigator needs to
@@ -243,15 +254,17 @@ pub struct EchoerSession {
 
 impl EchoerSession {
     /// Spawn `testbin-stdin-echoer` with the given argv tail and
-    /// wait for its startup ACK byte (`\x06`).
+    /// wait for its startup handshake byte
+    /// (`STARTUP_HANDSHAKE_BYTE`, currently `'R'`).
     ///
     /// The handshake fences against the POSIX line-discipline race:
     /// without it, the host's first `write_stdin` could race the
     /// testbin's `cfmakeraw` and trigger cooked-mode echo
-    /// (`\x1b` → `^[`). Bytes the testbin wrote *after* the ACK
-    /// (e.g. the bracketed-paste enable sequence when
-    /// `--advertise-paste` is set) are retained in the session's
-    /// `prefetched` buffer and consumed by subsequent reads.
+    /// (`\x1b` → `^[`). Bytes the testbin wrote *after* the
+    /// handshake byte (e.g. the bracketed-paste enable sequence
+    /// when `--advertise-paste` is set) are retained in the
+    /// session's `prefetched` buffer and consumed by subsequent
+    /// reads.
     ///
     /// `args` are appended to the testbin invocation (e.g.
     /// `["--advertise-paste"]` or `["--exit-on", "0x04"]`).
@@ -269,17 +282,23 @@ impl EchoerSession {
             process,
             prefetched: Mutex::new(VecDeque::new()),
         };
-        // Generous 20 s budget; Windows Server 2025 CI runners
-        // sometimes show ConPTY startup chatter for several seconds
-        // before the testbin's first stdout byte arrives.
-        let handshake = Duration::from_secs(20);
-        let drained = session.drain_raw_until_byte(0x06, handshake);
-        let ack_pos = drained.iter().position(|&b| b == 0x06).unwrap_or_else(|| {
-            panic!(
-                "{}",
-                spawn_handshake_failure_diagnostic(&drained, handshake)
-            )
-        });
+        // Generous 40 s budget; Windows Server 2025 CI runners
+        // schedule the testbin process behind nextest's parallel
+        // pool so the first child stdout byte can take a while to
+        // arrive — empirically up to ~25 s under contention on
+        // x86_64-windows. We allow margin on top. nextest's
+        // 2-minute slow-timeout still bounds the worst case.
+        let handshake = Duration::from_secs(40);
+        let drained = session.drain_raw_until_byte(STARTUP_HANDSHAKE_BYTE, handshake);
+        let ack_pos = drained
+            .iter()
+            .position(|&b| b == STARTUP_HANDSHAKE_BYTE)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}",
+                    spawn_handshake_failure_diagnostic(&drained, handshake)
+                )
+            });
         // Retain everything *after* the ACK for the next test-visible
         // read. The ACK itself is the handshake marker and is dropped.
         if ack_pos + 1 < drained.len() {

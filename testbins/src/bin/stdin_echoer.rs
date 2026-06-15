@@ -86,13 +86,19 @@ fn main() {
     // than locking std's stdout because std's StdoutLock is !Send.
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
 
-    // Startup handshake: emit ASCII ACK (0x06) immediately. The host-
-    // side helper (`EchoerSession::spawn`) drains until ACK before
-    // returning, which guarantees that the POSIX `cfmakeraw` above
-    // has been applied before the host issues its first `write_stdin`.
-    // Without this fence, the kernel's line discipline (still in
-    // cooked mode at host-write time) would echo control characters
-    // back as `^X` form, breaking byte-exact MITM assertions.
+    // Startup handshake: emit printable ASCII `R` (0x52) immediately.
+    // The host-side helper (`EchoerSession::spawn`) drains until this
+    // byte before returning, which guarantees that the POSIX
+    // `cfmakeraw` above has been applied before the host issues its
+    // first `write_stdin`. Without this fence, the kernel's line
+    // discipline (still in cooked mode at host-write time) would echo
+    // control characters back as `^X` form, breaking byte-exact MITM
+    // assertions.
+    //
+    // #452: we used `\x06` (ASCII ACK) here originally, but on
+    // Windows Server 2025 (build 26100) ConPTY in virtual-screen mode
+    // silently filtered the C0 control byte from the master pipe.
+    // A printable byte survives the renderer round-trip.
     //
     // We deliberately do NOT emit any extra debug bytes here: under a
     // PTY both stdout and stderr route through the same slave, so an
@@ -102,8 +108,8 @@ fn main() {
     // fire when the handshake actually fails.
     {
         let mut guard = stdout.lock().expect("stdout mutex poisoned");
-        guard.write_all(b"\x06").expect("ack write");
-        guard.flush().expect("ack flush");
+        guard.write_all(b"R").expect("handshake write");
+        guard.flush().expect("handshake flush");
     }
 
     if advertise_paste {
