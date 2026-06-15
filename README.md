@@ -45,6 +45,46 @@ On those platforms, `RunningProcess.pseudo_terminal(...)`, `wait_for_expect(...)
 
 `Pty.is_available()` remains as a compatibility shim and only reports `False` on unsupported platforms.
 
+### Windows 10 ConPTY sidecar
+
+`running-process` enables `PSEUDOCONSOLE_PASSTHROUGH_MODE` on Windows so the
+master pipe receives the child's raw ANSI bytes instead of conhost's
+synthesized re-emission. The flag is only honored natively on Windows 11 /
+Server 2022 (build 22000+). On Windows 10, Microsoft's official answer is the
+[`Microsoft.Windows.Console.ConPTY` NuGet redistributable][nuget-conpty] — a
+paired `conpty.dll` + `OpenConsole.exe` that intercepts `CreatePseudoConsole`
+and runs a modern OpenConsole instance instead of the system conhost.
+
+At first ConPTY use, `running-process` picks the backend dynamically:
+
+- **Windows 11+** → calls `kernel32!CreatePseudoConsole` directly (no extra
+  files needed).
+- **Windows 10** → loads `conpty.dll` from the directory containing the host
+  executable via `LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_APPLICATION_DIR`,
+  then dispatches through it. If the sidecar is absent the loader falls back
+  to `kernel32` (legacy virtual-screen renderer) with a one-line warning;
+  nothing crashes.
+
+The library does **not** vendor the redistributable. Consumers that need
+Windows 10 byte-exact passthrough are expected to fetch the NuGet package
+pinned in [`WINDOWS_CONPTY_VERSION.txt`](WINDOWS_CONPTY_VERSION.txt) and ship
+`conpty.dll` + `OpenConsole.exe` next to their executable at packaging time.
+This mirrors the WezTerm / Windows Terminal pattern.
+
+Security: only the executable's directory is searched — never `PATH`, never
+the current working directory. A planted `conpty.dll` elsewhere on disk
+cannot be picked up.
+
+Env vars:
+
+- `RUNNING_PROCESS_USE_SYSTEM_CONPTY=1` — force the kernel32 backend even on
+  Windows 10. Escape hatch for the rare case where a bundled `conpty.dll`
+  misbehaves.
+- `RUNNING_PROCESS_CONPTY_DIAGNOSTICS=1` — log the selected backend and the
+  detected Windows build to stderr on first ConPTY use.
+
+[nuget-conpty]: https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/
+
 ## Terminal Graphics Capabilities
 
 Rust callers can inspect terminal graphics support with
