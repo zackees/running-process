@@ -39,6 +39,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// categories exist so capability negotiation can report them as
 /// `unavailable` with an honest reason until their Phase 3 platform backends
 /// land.
+///
+/// Marked `#[non_exhaustive]` per #431: Phase 3 will refine these categories
+/// (and possibly add sub-categories) without forcing every consumer to bump
+/// to a new major version of the crate. Out-of-crate matchers must include a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventCategory {
     /// Process start and exit for children spawned by this crate.
@@ -75,6 +81,11 @@ impl EventCategory {
 }
 
 /// Negotiated support level for a single [`EventCategory`].
+///
+/// Marked `#[non_exhaustive]` per #431: later phases may introduce richer
+/// support gradations (e.g. a `Degraded` variant distinct from `Partial`)
+/// without breaking out-of-crate matchers.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilitySupport {
     /// The category is fully observable on this platform.
@@ -182,9 +193,77 @@ impl ObserverCapabilities {
     pub fn is_supported(&self, category: EventCategory) -> bool {
         self.support(category) == CapabilitySupport::Supported
     }
+
+    /// Return the capability matrix as four fixed-width rows suitable for
+    /// downstream UX (e.g. a clud CLI flag — see Phase 4 of #221 / #431).
+    ///
+    /// Each row is `[category, support, backend, reason]`. Row order matches
+    /// [`EventCategory::ALL`], so consumers can rely on a stable layout. The
+    /// strings are owned so callers can paint colors / pad columns without
+    /// borrowing from `self`.
+    pub fn to_table_rows(&self) -> Vec<[String; 4]> {
+        self.categories
+            .iter()
+            .map(|entry| {
+                [
+                    entry.category.as_str().to_string(),
+                    entry.support.as_str().to_string(),
+                    entry.backend.to_string(),
+                    entry.reason.to_string(),
+                ]
+            })
+            .collect()
+    }
+
+    /// Render the capability matrix as a single human-readable string.
+    ///
+    /// The output is deterministic per category set so a UI can snapshot or
+    /// diff it. Layout:
+    ///
+    /// ```text
+    /// observer capabilities:
+    ///   lifecycle    supported    portable-lifecycle  started/exited emitted from the crate spawn and reap path
+    ///   file         unavailable  none                requires Phase 3 platform backend (seccomp/eBPF/ETW)
+    ///   network      unavailable  none                requires Phase 3 platform backend (seccomp/eBPF/ETW)
+    ///   process      unavailable  none                requires Phase 3 platform backend (seccomp/eBPF/ETW)
+    /// ```
+    ///
+    /// Phase 4 (#431) consumers like the clud CLI use this to show the
+    /// actually negotiated matrix rather than claiming syscall coverage the
+    /// active backends do not provide.
+    pub fn render_summary(&self) -> String {
+        // Compute column widths from the longest entry per column so the
+        // output stays aligned as future categories / backends land.
+        let rows = self.to_table_rows();
+        let mut widths = [0usize; 3];
+        for row in &rows {
+            for (i, cell) in row[..3].iter().enumerate() {
+                widths[i] = widths[i].max(cell.len());
+            }
+        }
+        let mut out = String::from("observer capabilities:\n");
+        for row in &rows {
+            out.push_str(&format!(
+                "  {cat:<cw$}  {sup:<sw$}  {bk:<bw$}  {reason}\n",
+                cat = row[0],
+                sup = row[1],
+                bk = row[2],
+                reason = row[3],
+                cw = widths[0],
+                sw = widths[1],
+                bw = widths[2],
+            ));
+        }
+        out
+    }
 }
 
 /// What happened to an observed process.
+///
+/// Marked `#[non_exhaustive]` per #431: Phase 3 will add variants for File,
+/// Network, and Process events. Out-of-crate matchers must include a
+/// wildcard arm to remain forward-compatible across minor releases.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObserverEventKind {
     /// The child process was spawned. Carries no extra payload.
