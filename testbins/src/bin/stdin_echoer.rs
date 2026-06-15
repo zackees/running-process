@@ -25,7 +25,34 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// On POSIX hosts the default PTY line discipline echoes input back
+/// to the master and renders control characters in caret form
+/// (`\x1b` → `^[`). Both behaviors break the byte-exact MITM
+/// guarantee the #448 / #449 tests assert. Put stdin into raw mode
+/// so the host master pipe sees only what we explicitly write back.
+///
+/// On Windows ConPTY in PASSTHROUGH_MODE handles this for us — no
+/// action needed.
+#[cfg(unix)]
+fn enter_raw_mode() {
+    use libc::{cfmakeraw, tcgetattr, tcsetattr, termios, TCSANOW};
+    unsafe {
+        let fd = 0; // STDIN_FILENO
+        let mut t: termios = std::mem::zeroed();
+        if tcgetattr(fd, &mut t) != 0 {
+            return;
+        }
+        cfmakeraw(&mut t);
+        let _ = tcsetattr(fd, TCSANOW, &t);
+    }
+}
+
+#[cfg(not(unix))]
+fn enter_raw_mode() {}
+
 fn main() {
+    enter_raw_mode();
+
     let mut advertise_paste = false;
     let mut no_echo = false;
     let mut exit_on: Option<u8> = None;
