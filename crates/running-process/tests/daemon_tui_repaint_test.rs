@@ -126,17 +126,27 @@ fn windows_build_number() -> Option<u32> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn raw_ansi_bytes_flow_through_pty_to_ring_buffer() {
     // #150 W8: PSEUDOCONSOLE_PASSTHROUGH_MODE is only honored on
-    // Windows 11 / Server 2022 (build 22000+). On Win10 ConPTY
-    // silently ignores the flag and the master pipe sees only
-    // synthesized DSR queries instead of the child's raw bytes —
-    // skip with a clear note. POSIX PTYs (Linux/macOS) are
-    // passthrough by design, so this test runs there.
+    // Windows 11 / Server 2022 (build 22000+). On Win10 the system
+    // ConPTY silently ignores the flag and the master pipe sees only
+    // synthesized DSR queries instead of the child's raw bytes.
+    //
+    // #443 added a sidecar path: a Win10 host can drop the
+    // Microsoft.Windows.Console.ConPTY redistributable's `conpty.dll`
+    // next to the test binary and the bundled OpenConsole will honor
+    // PASSTHROUGH_MODE. We don't ship that binary in CI, so the Win10
+    // branch still skips — but un-skip is now a packaging change, not
+    // a code change. Re-enable by placing `conpty.dll` from the pinned
+    // NuGet version (see `WINDOWS_CONPTY_VERSION.txt`) next to the
+    // test binary; the skip block below will fall through.
+    //
+    // POSIX PTYs (Linux/macOS) are passthrough by design, so this
+    // test runs there.
     if let Some(build) = windows_build_number() {
         if build < 22000 {
             eprintln!(
                 "SKIPPED: PSEUDOCONSOLE_PASSTHROUGH_MODE requires Windows 11+ \
-                 (current build {build}). The ConPty implementation is correct \
-                 but the OS won't honor the flag — see #150 module doc."
+                 (current build {build}) or a sidecar conpty.dll next to the \
+                 test binary — see WINDOWS_CONPTY_VERSION.txt and #443."
             );
             return;
         }
