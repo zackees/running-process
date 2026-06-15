@@ -52,6 +52,13 @@ path = "src/bin/tui_counter.rs"
 name = "testbin-stdin-echoer"
 path = "src/bin/stdin_echoer.rs"
 
+[[bin]]
+# #449: backpressure fixture. Reads stdin in `--buf-size` chunks but
+# sleeps `--sleep-ms` between reads, so the host has to tolerate a
+# slow consumer when injecting multi-MB pastes.
+name = "testbin-slow-stdin-reader"
+path = "src/bin/slow_stdin_reader.rs"
+
 # Unconditional because `dies_after_spawn` uses `running_process::{spawn, SpawnStdio}`
 # on every platform. `spawner` also uses it but only inside `#[cfg(windows)]` blocks.
 [dependencies]
