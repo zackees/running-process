@@ -24,6 +24,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 use tracing::{debug, info, warn};
 
+use crate::daemon::services_snapshot::SNAPSHOT_FILE_NAME;
+
 use crate::{
     CommandSpec, NativeProcess, ProcessConfig, ReadStatus, StderrMode, StdinMode, StreamKind,
 };
@@ -236,7 +238,11 @@ pub struct ServiceRegistry {
     live: Mutex<HashMap<String, Arc<OwnedService>>>,
     /// Directory under which per-service log files are written.
     log_dir: PathBuf,
-    next_id: AtomicU32,
+    /// Where save/resurrect persist a JSON snapshot of every row in the
+    /// `services` table. Co-located with the SQLite file so the snapshot
+    /// shares the same per-scope local directory.
+    pub(crate) snapshot_path: PathBuf,
+    pub(crate) next_id: AtomicU32,
 }
 
 impl ServiceRegistry {
@@ -285,12 +291,26 @@ impl ServiceRegistry {
             })
             .unwrap_or(0);
 
+        // Snapshot file co-located with the SQLite db (same per-scope
+        // local directory).
+        let snapshot_path = db_path
+            .parent()
+            .map(|p| p.join(SNAPSHOT_FILE_NAME))
+            .unwrap_or_else(|| PathBuf::from(SNAPSHOT_FILE_NAME));
+
         Ok(Self {
             db: Mutex::new(conn),
             live: Mutex::new(HashMap::new()),
             log_dir,
+            snapshot_path,
             next_id: AtomicU32::new(max_id + 1),
         })
+    }
+
+    /// Path to the JSON snapshot file used by `save`/`resurrect`. Always
+    /// co-located with the SQLite registry file.
+    pub fn snapshot_path(&self) -> &Path {
+        &self.snapshot_path
     }
 
     // -- Persistence helpers -------------------------------------------------
@@ -380,7 +400,22 @@ impl ServiceRegistry {
             .ok_or_else(|| ServiceError::NotFound(target.to_string()))
     }
 
-    fn upsert_def(&self, def: &ServiceDef, id: u32) -> Result<(), ServiceError> {
+    /// Persist a service definition without spawning a child. Used by the
+    /// snapshot resurrect path (Phase 4) and by tests that need a row in
+    /// the table without the lifecycle side effects. If `name` already
+    /// exists the row is updated in place; otherwise a fresh id is
+    /// allocated.
+    pub fn register_def(&self, def: ServiceDef) -> Result<ServiceRecord, ServiceError> {
+        let id = match self.fetch(&def.name)? {
+            Some(rec) => rec.id,
+            None => self.next_id.fetch_add(1, Ordering::Relaxed),
+        };
+        self.upsert_def(&def, id)?;
+        self.fetch(&def.name)?
+            .ok_or(ServiceError::NotFound(def.name))
+    }
+
+    pub(crate) fn upsert_def(&self, def: &ServiceDef, id: u32) -> Result<(), ServiceError> {
         let db = self.db.lock().unwrap();
         let cmd_json = serde_json::to_string(&def.cmd).unwrap_or_else(|_| "[]".into());
         let env_json = serde_json::to_string(&def.env).unwrap_or_else(|_| "[]".into());
@@ -566,7 +601,7 @@ impl ServiceRegistry {
     /// Spawn (or respawn) the child for `def` and register the live handle.
     /// Marks the service online and persists the pid. Does NOT bump the
     /// restart count (callers do that for restarts).
-    fn spawn_child(&self, def: &ServiceDef) -> Result<u32, ServiceError> {
+    pub(crate) fn spawn_child(&self, def: &ServiceDef) -> Result<u32, ServiceError> {
         if def.cmd.is_empty() {
             return Err(ServiceError::InvalidConfig("cmd must not be empty".into()));
         }
@@ -661,7 +696,7 @@ impl ServiceRegistry {
             .ok_or(ServiceError::NotFound(def.name))
     }
 
-    fn is_live(&self, name: &str) -> bool {
+    pub(crate) fn is_live(&self, name: &str) -> bool {
         self.live
             .lock()
             .unwrap()

@@ -61,6 +61,12 @@ pub mod maintenance;
 #[cfg(feature = "client")]
 pub mod cleanup;
 
+// Phase 4 of #222 (#427): per-OS boot autostart for the runpm daemon.
+// Gated behind `feature = "client"` because the only consumer is the
+// `runpm` CLI binary, which is itself client-gated.
+#[cfg(feature = "client")]
+pub mod boot_autostart;
+
 // Phase 5 of #222 (#428): `runpm.toml` parser used by the `runpm` CLI
 // to batch-start `[[app]]` entries. Lives in the library (not under
 // `src/bin/`) so the integration test in `tests/runpm_toml_config.rs`

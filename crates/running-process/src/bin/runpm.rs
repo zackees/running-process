@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 
+use running_process::boot_autostart;
 use running_process::client::{connect_or_start, ClientError, DaemonClient};
 use running_process::maintenance::run_release_handles;
 use running_process::proto::daemon::{DaemonResponse, ServiceConfig, ServiceState, StatusCode};
@@ -118,9 +119,11 @@ enum Commands {
     Save,
     /// Restore services from the latest snapshot
     Resurrect,
-    /// Install runpm to start at boot (Phase 4 stub)
+    /// Install runpm to start at boot (per-OS: systemd user unit on
+    /// Linux, launchd LaunchAgent on macOS, Task Scheduler ONLOGON task
+    /// on Windows). See #427.
     Startup,
-    /// Uninstall runpm boot integration (Phase 4 stub)
+    /// Uninstall runpm boot integration.
     Unstartup,
     /// Ping the daemon
     Ping,
@@ -196,8 +199,8 @@ fn main() -> ExitCode {
         }
         Commands::Save => cmd_no_arg("save", |c| c.service_save()),
         Commands::Resurrect => cmd_no_arg("resurrect", |c| c.service_resurrect()),
-        Commands::Startup => cmd_phase4_stub("startup"),
-        Commands::Unstartup => cmd_phase4_stub("unstartup"),
+        Commands::Startup => cmd_startup(),
+        Commands::Unstartup => cmd_unstartup(),
         Commands::Ping => cmd_ping(),
         Commands::Kill => cmd_kill(),
         Commands::Maintenance { command } => cmd_maintenance(command),
@@ -542,9 +545,63 @@ where
     print_status(label, &resp)
 }
 
-fn cmd_phase4_stub(label: &str) -> Result<()> {
-    println!("runpm: {label} not yet implemented (Phase 4 — see #106)");
+/// `runpm startup` — install per-OS boot autostart for the daemon.
+///
+/// The daemon binary path is resolved by looking for
+/// `running-process-daemon` next to the currently-running `runpm`
+/// executable (the layout `cargo install running-process` produces);
+/// if that lookup fails we fall back to a `PATH` lookup so an operator
+/// who installed only the daemon binary via a system package still
+/// gets a working install.
+fn cmd_startup() -> Result<()> {
+    let daemon = resolve_daemon_binary()?;
+    let path = boot_autostart::install(&daemon)
+        .map_err(|e| anyhow!("failed to install boot autostart: {e}"))?;
+    println!("runpm startup: installed boot autostart at {path}");
     Ok(())
+}
+
+/// `runpm unstartup` — remove per-OS boot autostart for the daemon.
+fn cmd_unstartup() -> Result<()> {
+    boot_autostart::uninstall().map_err(|e| anyhow!("failed to uninstall boot autostart: {e}"))?;
+    println!("runpm unstartup: removed boot autostart");
+    Ok(())
+}
+
+/// Resolve the absolute path of the `running-process-daemon` binary the
+/// boot autostart unit should launch. Strategy:
+///   1. Look next to the currently-running `runpm` executable for
+///      `running-process-daemon{exe_suffix}`. This is the layout that
+///      `cargo install running-process` and any system package would
+///      produce.
+///   2. Fall back to `which running-process-daemon` (via `Command::new`
+///      with no path qualifier — the OS PATH search does the heavy lifting).
+fn resolve_daemon_binary() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("could not resolve current_exe for runpm")?;
+    let sibling = exe.parent().map(|p| {
+        #[cfg(windows)]
+        {
+            p.join("running-process-daemon.exe")
+        }
+        #[cfg(not(windows))]
+        {
+            p.join("running-process-daemon")
+        }
+    });
+    if let Some(p) = sibling {
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    // Fall back to a bare name; whatever PATH resolves wins. We do NOT
+    // probe with `which` because the daemon's not actually invoked
+    // here, just referenced; if the PATH lookup turns out wrong, the
+    // operator will see it the first time the unit fires.
+    Ok(PathBuf::from(if cfg!(windows) {
+        "running-process-daemon.exe"
+    } else {
+        "running-process-daemon"
+    }))
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use crate::daemon::services::{ServiceDef, ServiceError, ServiceRecord};
+use crate::daemon::services_snapshot::{resurrect_from_snapshot, save_snapshot};
 use crate::proto::daemon::{
     DaemonRequest, DaemonResponse, ServiceConfig, ServiceDeleteResponse, ServiceDescribeResponse,
     ServiceFlushResponse, ServiceListResponse, ServiceLogsResponse, ServiceRestartResponse,
@@ -274,24 +275,43 @@ pub fn handle_service_flush(request: &DaemonRequest, state: &DaemonState) -> Dae
     }
 }
 
-/// Phase 4 stub for `ServiceSave` — snapshot persistence ships in Phase 4 (#222).
-pub fn handle_service_save(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
-    DaemonResponse {
-        request_id: request.id,
-        code: StatusCode::Ok as i32,
-        message: String::new(),
-        service_save: Some(ServiceSaveResponse::default()),
-        ..Default::default()
+/// `ServiceSave` (Phase 4 — #427): write the current `services` table to an
+/// atomic JSON snapshot next to the SQLite db. The response carries the
+/// absolute snapshot path and the row count so the operator can verify
+/// the write without re-listing.
+pub fn handle_service_save(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    match save_snapshot(&state.services) {
+        Ok((path, count)) => DaemonResponse {
+            request_id: request.id,
+            code: StatusCode::Ok as i32,
+            message: String::new(),
+            service_save: Some(ServiceSaveResponse {
+                snapshot_path: path.to_string_lossy().into_owned(),
+                service_count: count,
+            }),
+            ..Default::default()
+        },
+        Err(e) => err_response(request, e),
     }
 }
 
-/// Phase 4 stub for `ServiceResurrect` — snapshot restore ships in Phase 4 (#222).
-pub fn handle_service_resurrect(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
-    DaemonResponse {
-        request_id: request.id,
-        code: StatusCode::Ok as i32,
-        message: String::new(),
-        service_resurrect: Some(ServiceResurrectResponse::default()),
-        ..Default::default()
+/// `ServiceResurrect` (Phase 4 — #427): rehydrate definitions from the
+/// JSON snapshot and re-launch every service that was `online` when it was
+/// saved. Idempotent: a second call updates existing rows in place via
+/// `INSERT OR REPLACE`. Returns the total number of definitions restored
+/// (re-launches are best-effort; per-service spawn failures are warned and
+/// counted via the daemon's tracing output rather than failing the batch).
+pub fn handle_service_resurrect(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    match resurrect_from_snapshot(&state.services) {
+        Ok((restored, _restarted)) => DaemonResponse {
+            request_id: request.id,
+            code: StatusCode::Ok as i32,
+            message: String::new(),
+            service_resurrect: Some(ServiceResurrectResponse {
+                restored_count: restored,
+            }),
+            ..Default::default()
+        },
+        Err(e) => err_response(request, e),
     }
 }
