@@ -193,7 +193,12 @@ impl EchoerSession {
             .expect("construct NativePtyProcess");
         process.start_impl().expect("start NativePtyProcess");
         let session = Self { process };
-        let handshake = Duration::from_secs(5);
+        // Generous 20 s budget — on Windows Server 2025 CI runners
+        // the master pipe sometimes shows ConPTY's startup chatter
+        // (`\x1b[6n` DSR query) for several seconds before the
+        // testbin process's first stdout byte arrives. nextest's
+        // 2-minute per-test wall clock still bounds the overall test.
+        let handshake = Duration::from_secs(20);
         let drained = session.drain_until_contains(b"\x06", handshake);
         assert!(
             drained.contains(&0x06),
