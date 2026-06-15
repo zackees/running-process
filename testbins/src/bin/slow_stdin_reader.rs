@@ -9,7 +9,31 @@
 use std::io::{Read, Write};
 use std::time::Duration;
 
+/// On POSIX hosts the default PTY line discipline cooks input bytes
+/// (echoes, renders control characters as `^X`, and translates CR/LF).
+/// All three would defeat the byte-exact paste tests in #449. Apply
+/// `cfmakeraw` to stdin so the line discipline is removed entirely on
+/// POSIX. Windows ConPTY in PASSTHROUGH_MODE handles this for us.
+#[cfg(unix)]
+fn enter_raw_mode() {
+    use libc::{cfmakeraw, tcgetattr, tcsetattr, termios, TCSANOW};
+    unsafe {
+        let fd = 0; // STDIN_FILENO
+        let mut t: termios = std::mem::zeroed();
+        if tcgetattr(fd, &mut t) != 0 {
+            return;
+        }
+        cfmakeraw(&mut t);
+        let _ = tcsetattr(fd, TCSANOW, &t);
+    }
+}
+
+#[cfg(not(unix))]
+fn enter_raw_mode() {}
+
 fn main() {
+    enter_raw_mode();
+
     let mut sleep_ms: u64 = 20;
     let mut buf_size: usize = 4096;
 
