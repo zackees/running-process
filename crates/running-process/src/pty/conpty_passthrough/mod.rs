@@ -62,6 +62,10 @@ pub(in crate::pty) mod child;
 #[cfg(feature = "client")]
 pub(super) mod conpty_acquire;
 pub(super) mod conpty_api;
+// #447: compile-time SHA-256 verification table for the Win10 sidecar.
+// Gated on `client` to match `conpty_acquire`.
+#[cfg(feature = "client")]
+pub(super) mod conpty_sidecar_hashes;
 pub(super) mod pipes;
 pub(super) mod proc_thread_attr;
 pub(super) mod pseudoconsole;

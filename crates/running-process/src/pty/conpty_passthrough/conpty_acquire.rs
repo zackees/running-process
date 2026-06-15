@@ -144,6 +144,52 @@ fn fetch_and_extract(cache_dir: &Path) -> io::Result<()> {
     let bytes = http_get(&url)
         .map_err(|e| io::Error::other(format!("conpty sidecar fetch from {url} failed: {e}")))?;
 
+    // #447: SHA-256 verify the downloaded bytes against the compile-time
+    // baseline before we touch them further. A mismatch discards the
+    // fetch and falls through to the kernel32 path with a one-line
+    // diagnostic; no decompression on bad bytes.
+    if let Some(expected) = super::conpty_sidecar_hashes::expected_for_current_arch() {
+        let actual_hex = sha256_hex(&bytes);
+        if !ct_eq(&actual_hex, expected.sha256_hex) {
+            diag(|| {
+                format!(
+                    "ConPTY sidecar SHA-256 mismatch — discarding fetch; \
+                     expected {} (size {}), got {} (size {}); see #447",
+                    expected.sha256_hex,
+                    expected.size_bytes,
+                    actual_hex,
+                    bytes.len(),
+                )
+            });
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "conpty sidecar hash mismatch: expected {}, got {}",
+                    expected.sha256_hex, actual_hex
+                ),
+            ));
+        }
+        if expected.size_bytes != 0 && expected.size_bytes != bytes.len() as u64 {
+            // Collision-resistance means this branch is unreachable in
+            // practice when the SHA matched, but log defensively if the
+            // manifest carried a stale size_bytes field.
+            diag(|| {
+                format!(
+                    "ConPTY sidecar size mismatch (sha matched): expected {} got {}",
+                    expected.size_bytes,
+                    bytes.len()
+                )
+            });
+        }
+    } else {
+        diag(|| {
+            format!(
+                "no expected sha for arch {}; downloading without verification",
+                arch_dir()
+            )
+        });
+    }
+
     let parent = cache_dir
         .parent()
         .ok_or_else(|| io::Error::other("cache dir has no parent"))?;
@@ -246,6 +292,47 @@ fn diag(f: impl FnOnce() -> String) {
     }
 }
 
+/// Lowercase-hex SHA-256 of `bytes`. Kept as a helper so the runtime
+/// fetch path and `verify_asset` produce the same string format.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Constant-time string equality. Both inputs are expected to be
+/// lowercase ASCII hex strings of the same length; the length check
+/// itself short-circuits, but the byte comparison does not branch on
+/// match status. Avoids pulling in `subtle` for a 7-line primitive.
+fn ct_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.bytes().zip(b.bytes()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Test-only verification helper exercised by the unit tests below.
+/// Wraps the same SHA-256 comparison the runtime fetch path performs
+/// inside `fetch_and_extract`, so a regression in either side is caught
+/// here without needing a network fixture.
+#[cfg(test)]
+pub(super) fn verify_asset(
+    bytes: &[u8],
+    expected: &super::conpty_sidecar_hashes::ExpectedAsset,
+) -> Result<(), String> {
+    let actual = sha256_hex(bytes);
+    if !ct_eq(&actual, expected.sha256_hex) {
+        return Err(format!(
+            "sha mismatch: expected {}, got {}",
+            expected.sha256_hex, actual
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +411,44 @@ mod tests {
         assert!(url.contains(arch_dir()), "got {url}");
         assert!(url.starts_with("https://github.com/zackees/running-process/releases/download/"));
         assert!(url.ends_with(".tar.zst"));
+    }
+
+    /// #447: matching bytes verify cleanly against a known SHA-256.
+    /// SHA-256 of "hello world" is the canonical hex literal below;
+    /// `python -c "import hashlib;print(hashlib.sha256(b'hello world').hexdigest())"`.
+    #[test]
+    fn verify_asset_accepts_matching_sha() {
+        let bytes = b"hello world".to_vec();
+        let expected = super::super::conpty_sidecar_hashes::ExpectedAsset {
+            sha256_hex: "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            size_bytes: 11,
+        };
+        verify_asset(&bytes, &expected).expect("matching sha should verify");
+    }
+
+    /// #447: a single flipped byte must be rejected with a mismatch
+    /// error, not silently accepted.
+    #[test]
+    fn verify_asset_rejects_flipped_byte() {
+        let bytes = b"hello world".to_vec();
+        let expected = super::super::conpty_sidecar_hashes::ExpectedAsset {
+            sha256_hex: "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            size_bytes: 11,
+        };
+        let mut tampered = bytes.clone();
+        tampered[0] ^= 0x01;
+        let err = verify_asset(&tampered, &expected).expect_err("flipped byte should reject");
+        assert!(err.contains("sha mismatch"), "got: {err}");
+    }
+
+    /// `ct_eq` accepts equal-length matching strings and rejects on
+    /// any length or byte difference.
+    #[test]
+    fn ct_eq_matches_and_rejects() {
+        assert!(ct_eq("abc", "abc"));
+        assert!(!ct_eq("abc", "abd"));
+        assert!(!ct_eq("abc", "ab"));
+        assert!(!ct_eq("", "x"));
+        assert!(ct_eq("", ""));
     }
 }

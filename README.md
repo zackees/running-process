@@ -72,11 +72,31 @@ and runs a modern OpenConsole instance instead of the system conhost.
 
 Trust model: HTTPS to github.com plus GitHub's content-locked release assets
 mean an attacker who could substitute the sidecar could also substitute the
-crate itself. No additional integrity surface is added.
+crate itself. The runtime additionally SHA-256 verifies the downloaded bytes
+against a per-arch hash baked into the crate at compile time (see Integrity
+below) — defense-in-depth on top of HTTPS.
 
 Pre-staging for air-gapped hosts: drop `conpty.dll` + `OpenConsole.exe` next
 to the host executable. That path is checked before the cache and before any
 network access, so air-gapped deployments never need network.
+
+#### Integrity
+
+Each fetched sidecar asset has its SHA-256 baked into the crate at compile time
+from `conpty-sidecar.sha256.toml` (the same manifest the release workflow
+uploads alongside the tarballs). The runtime compares the downloaded bytes
+against that hash before decompressing — a mismatch logs both hashes
+(`RUNNING_PROCESS_CONPTY_DIAGNOSTICS=1` shows it without the `kernel32`
+fallback noise) and falls back to `kernel32`. This catches a mirror or
+caching proxy corrupting bytes in flight and tightens the audit story when
+an operator wants to compare runtime behavior against the published
+`SHA256SUMS` for the release.
+
+Pre-release dev checkouts ship with an empty manifest, so the runtime skips
+verification with a one-line `[diag] no expected sha for arch <arch>;
+downloading without verification` log line. The release workflow rewrites
+the manifest before wheels and the crate are built so each shipped artifact
+bakes in hashes matching the tarballs uploaded to that same release (#447).
 
 Env vars:
 

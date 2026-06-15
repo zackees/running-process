@@ -22,6 +22,17 @@ on:
         required: false
         type: boolean
         default: false
+      sidecar-manifest-artifact:
+        # #447: name of an actions/upload-artifact artifact containing
+        # `conpty-sidecar.sha256.toml`. When set, that file is copied
+        # to the workspace root before the wheel build so build.rs
+        # bakes the per-arch SHAs into the compiled crate. The default
+        # empty string preserves the existing dev/CI behavior (an
+        # empty manifest → runtime falls back to fetch-without-verify
+        # with a single diagnostic line).
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       build-mode:
@@ -74,6 +85,26 @@ jobs:
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
+
+      # #447: pull the ConPTY sidecar SHA manifest staged by the caller
+      # workflow's `build-sidecars` job so build.rs bakes the per-arch
+      # SHAs into the wheel. No-op when the input is empty (CI / local
+      # use), where the placeholder manifest in the repo root applies.
+      - name: Stage sidecar manifest at workspace root
+        if: ${{ inputs.sidecar-manifest-artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.sidecar-manifest-artifact }}
+          path: sidecar-in
+
+      - name: Copy sidecar manifest into place
+        if: ${{ inputs.sidecar-manifest-artifact != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp sidecar-in/conpty-sidecar.sha256.toml ./conpty-sidecar.sha256.toml
+          echo "Manifest staged for wheel build:"
+          cat ./conpty-sidecar.sha256.toml
 
       - name: Build wheel (${{ inputs.build-mode || 'dev' }})
         run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
