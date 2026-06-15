@@ -169,7 +169,16 @@ pub struct EchoerSession {
 }
 
 impl EchoerSession {
-    /// Spawn `testbin-stdin-echoer` with the given argv tail.
+    /// Spawn `testbin-stdin-echoer` with the given argv tail and
+    /// wait for its startup-handshake ACK byte (0x06) on stdout.
+    ///
+    /// The handshake is the synchronization point that guarantees
+    /// the testbin has applied `cfmakeraw` to its stdin before the
+    /// caller issues any `write_stdin`. Without it, the host's first
+    /// write would race the line-discipline transition: in cooked
+    /// mode the kernel echoes control bytes (e.g. `\x1b` → `^[`)
+    /// back to the master, defeating the byte-exact MITM
+    /// assertions.
     ///
     /// `args` are appended to the testbin invocation (e.g.
     /// `["--advertise-paste"]` or `["--exit-on", "0x04"]`).
@@ -183,7 +192,17 @@ impl EchoerSession {
         let process = NativePtyProcess::new(argv, None, None, 24, 80, None)
             .expect("construct NativePtyProcess");
         process.start_impl().expect("start NativePtyProcess");
-        Self { process }
+        let session = Self { process };
+        let handshake = Duration::from_secs(5);
+        let drained = session.drain_until_contains(b"\x06", handshake);
+        assert!(
+            drained.iter().any(|&b| b == 0x06),
+            "testbin-stdin-echoer never emitted startup ACK in {handshake:?}; \
+             drained {} bytes: {:02x?}",
+            drained.len(),
+            drained
+        );
+        session
     }
 
     /// Write `data` to the child's stdin in one syscall. Does not
