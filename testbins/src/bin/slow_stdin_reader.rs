@@ -66,6 +66,14 @@ fn main() {
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
 
+    // Startup ACK handshake. Mirrors `testbin-stdin-echoer`: the
+    // test driver drains until ACK before issuing any host write,
+    // which fences against the line-discipline race where the
+    // kernel cooks `\x1b` -> `^[` before `cfmakeraw` has been
+    // applied.
+    stdout.write_all(b"\x06").expect("ack write");
+    stdout.flush().expect("ack flush");
+
     let mut buf = vec![0u8; buf_size];
     let interval = Duration::from_millis(sleep_ms);
     loop {

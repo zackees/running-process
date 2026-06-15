@@ -5,8 +5,10 @@
 //! and an opinionated `assert_received_exact` that fails fast with
 //! a hex diff when the child's echoed bytes drift from expected.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use running_process::pty::NativePtyProcess;
@@ -164,12 +166,28 @@ pub fn testbin_path(name: &str) -> PathBuf {
 /// Round-trip session for stdin-side MITM tests. Holds the
 /// `NativePtyProcess`, exposes write + drain primitives, and tears
 /// down cleanly on `Drop`.
+///
+/// The `prefetched` buffer captures bytes the spawn-time handshake
+/// over-drained past the ACK marker. Subsequent reads consume them
+/// before pulling new bytes off the master pipe, so tests that
+/// inspect startup-time child writes (e.g. the `--advertise-paste`
+/// flow in #449 test 8) still see them.
 pub struct EchoerSession {
     process: NativePtyProcess,
+    prefetched: Mutex<VecDeque<u8>>,
 }
 
 impl EchoerSession {
-    /// Spawn `testbin-stdin-echoer` with the given argv tail.
+    /// Spawn `testbin-stdin-echoer` with the given argv tail and
+    /// wait for its startup ACK byte (`\x06`).
+    ///
+    /// The handshake fences against the POSIX line-discipline race:
+    /// without it, the host's first `write_stdin` could race the
+    /// testbin's `cfmakeraw` and trigger cooked-mode echo
+    /// (`\x1b` → `^[`). Bytes the testbin wrote *after* the ACK
+    /// (e.g. the bracketed-paste enable sequence when
+    /// `--advertise-paste` is set) are retained in the session's
+    /// `prefetched` buffer and consumed by subsequent reads.
     ///
     /// `args` are appended to the testbin invocation (e.g.
     /// `["--advertise-paste"]` or `["--exit-on", "0x04"]`).
@@ -183,7 +201,69 @@ impl EchoerSession {
         let process = NativePtyProcess::new(argv, None, None, 24, 80, None)
             .expect("construct NativePtyProcess");
         process.start_impl().expect("start NativePtyProcess");
-        Self { process }
+        let session = Self {
+            process,
+            prefetched: Mutex::new(VecDeque::new()),
+        };
+        let handshake = Duration::from_secs(5);
+        let drained = session.drain_raw_until_byte(0x06, handshake);
+        let ack_pos = drained.iter().position(|&b| b == 0x06).unwrap_or_else(|| {
+            panic!(
+                "testbin-stdin-echoer never emitted startup ACK in {handshake:?}; \
+                 drained {} bytes: {:02x?}",
+                drained.len(),
+                drained
+            )
+        });
+        // Retain everything *after* the ACK for the next test-visible
+        // read. The ACK itself is the handshake marker and is dropped.
+        if ack_pos + 1 < drained.len() {
+            session
+                .prefetched
+                .lock()
+                .expect("prefetched mutex poisoned")
+                .extend(drained[ack_pos + 1..].iter().copied());
+        }
+        session
+    }
+
+    /// Internal: raw read from the master pipe until either `target`
+    /// byte appears or `timeout` elapses. Unlike the public
+    /// `drain_until_contains`, this does NOT consult the prefetched
+    /// buffer — used at spawn time before prefetched has anything in
+    /// it.
+    fn drain_raw_until_byte(&self, target: u8, timeout: Duration) -> Vec<u8> {
+        let mut out = Vec::new();
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let slice = remaining.min(Duration::from_millis(100));
+            match self.process.read_chunk_impl(Some(slice.as_secs_f64())) {
+                Ok(Some(bytes)) => {
+                    out.extend_from_slice(&bytes);
+                    if out.iter().any(|&b| b == target) {
+                        return out;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => panic!("read_chunk_impl error: {e:?}"),
+            }
+        }
+        out
+    }
+
+    /// Drain bytes from the prefetched buffer (max `max_bytes`).
+    /// Returns whatever was queued; never blocks.
+    fn drain_prefetched(&self, max_bytes: usize) -> Vec<u8> {
+        let mut guard = self.prefetched.lock().expect("prefetched mutex poisoned");
+        let take = max_bytes.min(guard.len());
+        let mut out = Vec::with_capacity(take);
+        for _ in 0..take {
+            if let Some(b) = guard.pop_front() {
+                out.push(b);
+            }
+        }
+        out
     }
 
     /// Write `data` to the child's stdin in one syscall. Does not
@@ -196,11 +276,18 @@ impl EchoerSession {
             .unwrap_or_else(|e| panic!("write_stdin({} bytes) failed: {e:?}", data.len()));
     }
 
-    /// Read raw chunks from the child's stdout for up to `timeout`,
-    /// returning the concatenated bytes seen. Returns early once
-    /// `target_len` bytes have arrived (if `Some`).
+    /// Read bytes from the child's stdout for up to `timeout`,
+    /// returning the concatenated bytes seen. Drains the spawn-time
+    /// prefetched buffer before pulling fresh bytes off the master
+    /// pipe. Returns early once `target_len` bytes have arrived (if
+    /// `Some`).
     pub fn drain_for(&self, timeout: Duration, target_len: Option<usize>) -> Vec<u8> {
-        let mut out = Vec::new();
+        let mut out = self.drain_prefetched(target_len.unwrap_or(usize::MAX));
+        if let Some(target) = target_len {
+            if out.len() >= target {
+                return out;
+            }
+        }
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -245,10 +332,15 @@ impl EchoerSession {
         }
     }
 
-    /// Drain stdout until either `expected` is contained or `timeout`
-    /// elapses. Returns the full drained buffer for further inspection.
+    /// Drain stdout until either `needle` is contained or `timeout`
+    /// elapses. Drains the prefetched buffer first, then reads from
+    /// the master pipe. Returns the full drained buffer for further
+    /// inspection.
     pub fn drain_until_contains(&self, needle: &[u8], timeout: Duration) -> Vec<u8> {
-        let mut out = Vec::new();
+        let mut out = self.drain_prefetched(usize::MAX);
+        if !out.is_empty() && out.windows(needle.len()).any(|w| w == needle) {
+            return out;
+        }
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
