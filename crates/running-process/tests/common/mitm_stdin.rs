@@ -41,7 +41,7 @@ pub fn mitm_byte_exact_supported() -> bool {
         // never reaches the master pipe — the only bytes that
         // arrive are ConPTY's own DSR queries. The same testbin
         // works on POSIX. Until the Windows ConPTY substrate's
-        // Server 2025 behavior is understood (follow-up issue),
+        // Server 2025 behavior is understood (follow-up issue #452),
         // skip all byte-exact MITM tests on Windows. The
         // substrate guarantee remains validated by Linux/macOS CI.
         let _ = windows_build_number();
