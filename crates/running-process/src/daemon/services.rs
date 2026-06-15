@@ -466,9 +466,10 @@ impl ServiceRegistry {
     // -- Spawn / lifecycle ---------------------------------------------------
 
     /// Return the `(stdout_path, stderr_path)` for a service. The name is
-    /// sanitized through [`sanitize_name`] before being joined with the log
-    /// directory — this is the defense against path-traversal for any handler
-    /// that takes the service name from an RPC payload.
+    /// sanitized through the crate-private `sanitize_name` helper before being
+    /// joined with the log directory — this is the defense against
+    /// path-traversal for any handler that takes the service name from an RPC
+    /// payload.
     pub fn log_paths(&self, name: &str) -> (PathBuf, PathBuf) {
         let safe = sanitize_name(name);
         (
@@ -522,15 +523,15 @@ impl ServiceRegistry {
     }
 
     /// Truncate the `stdout` + `stderr` log files for `target` to zero bytes.
-    /// The writer threads in [`spawn_log_writer`] hold the files in append
-    /// mode, so opening a fresh handle with `truncate(true)` re-zeros the
-    /// file without disturbing the appender (the next append resumes at
+    /// The crate-private writer threads (`spawn_log_writer`) hold the files in
+    /// append mode, so opening a fresh handle with `truncate(true)` re-zeros
+    /// the file without disturbing the appender (the next append resumes at
     /// offset 0 on both Windows and POSIX).
     ///
-    /// Returns `Ok(true)` if a service matched and at least one log file was
-    /// touched (truncated or already absent). `target == "all"` flushes every
-    /// service and returns `Ok(count_of_services_flushed)` via the wrapper
-    /// in [`Self::flush`]. A missing single-target resolves to `NotFound`.
+    /// Returns `Ok(count)` where `count` is the number of services whose log
+    /// pair was touched (truncated or already absent). `target == "all"`
+    /// flushes every service; otherwise the single named service is flushed.
+    /// A missing single-target resolves to `NotFound`.
     pub fn flush_logs(&self, target: &str) -> Result<u32, ServiceError> {
         if target == "all" || target.is_empty() {
             let names: Vec<String> = self.list()?.into_iter().map(|r| r.def.name).collect();
