@@ -9,7 +9,36 @@
 use std::io::{Read, Write};
 use std::time::Duration;
 
+/// On POSIX hosts the default PTY line discipline is in canonical
+/// (ICANON) mode with ECHO on. ICANON buffers stdin until newline so
+/// large pastes of non-newline bytes (the 4 MB of 0xCD this fixture
+/// receives in #449 test 9) can't drain — the testbin's `read` blocks
+/// indefinitely. ECHO doubles every byte back to the master, which
+/// also distorts the byte-exact assertions.
+///
+/// Apply `cfmakeraw` to stdin so the line discipline is removed
+/// entirely on POSIX. Windows ConPTY in PASSTHROUGH_MODE doesn't
+/// need this — bytes flow through the input pipe verbatim.
+#[cfg(unix)]
+fn enter_raw_mode() {
+    use libc::{cfmakeraw, tcgetattr, tcsetattr, termios, TCSANOW};
+    unsafe {
+        let fd = 0; // STDIN_FILENO
+        let mut t: termios = std::mem::zeroed();
+        if tcgetattr(fd, &mut t) != 0 {
+            return;
+        }
+        cfmakeraw(&mut t);
+        let _ = tcsetattr(fd, TCSANOW, &t);
+    }
+}
+
+#[cfg(not(unix))]
+fn enter_raw_mode() {}
+
 fn main() {
+    enter_raw_mode();
+
     let mut sleep_ms: u64 = 20;
     let mut buf_size: usize = 4096;
 
