@@ -205,7 +205,10 @@ impl EchoerSession {
             process,
             prefetched: Mutex::new(VecDeque::new()),
         };
-        let handshake = Duration::from_secs(5);
+        // Generous 20 s budget; Windows Server 2025 CI runners
+        // sometimes show ConPTY startup chatter for several seconds
+        // before the testbin's first stdout byte arrives.
+        let handshake = Duration::from_secs(20);
         let drained = session.drain_raw_until_byte(0x06, handshake);
         let ack_pos = drained.iter().position(|&b| b == 0x06).unwrap_or_else(|| {
             panic!(

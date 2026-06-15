@@ -221,7 +221,7 @@ fn four_megabyte_paste_survives_slow_consumer() {
     // until the testbin's ASCII ACK byte arrives, fencing against
     // the POSIX line-discipline race that would otherwise cook
     // host writes before `cfmakeraw` lands.
-    let handshake_deadline = Instant::now() + Duration::from_secs(5);
+    let handshake_deadline = Instant::now() + Duration::from_secs(20);
     let mut saw_ack = false;
     while !saw_ack && Instant::now() < handshake_deadline {
         if let Ok(Some(chunk)) = process.read_chunk_impl(Some(0.1)) {
