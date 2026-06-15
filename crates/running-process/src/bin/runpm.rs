@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -11,6 +12,15 @@ use clap::{Parser, Subcommand};
 use running_process::client::{connect_or_start, ClientError, DaemonClient};
 use running_process::maintenance::run_release_handles;
 use running_process::proto::daemon::{DaemonResponse, ServiceConfig, ServiceState, StatusCode};
+
+/// Polling interval used by `runpm logs --follow`. Documented in
+/// the CLI help text — this is best-effort, not real-time streaming.
+const LOGS_FOLLOW_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Cap the `--follow` poll request to a generous tail so we never miss
+/// lines written between polls. The daemon-side budget (~64 KiB) still
+/// applies, so this is a safe upper bound.
+const LOGS_FOLLOW_TAIL_LINES: u32 = 10_000;
 
 #[derive(Parser)]
 #[command(
@@ -88,7 +98,8 @@ enum Commands {
         /// Number of trailing lines
         #[arg(long, default_value_t = 100u32)]
         lines: u32,
-        /// Follow log output
+        /// Follow log output. Polls the daemon every 500ms; not real-time
+        /// streaming. Ctrl-C to exit.
         #[arg(long)]
         follow: bool,
     },
@@ -310,12 +321,74 @@ fn cmd_logs(target: &str, lines: u32, follow: bool) -> Result<()> {
     let resp = client
         .service_logs(target, lines, follow)
         .map_err(client_err)?;
-    if let Some(payload) = &resp.service_logs {
-        if !payload.log_text.is_empty() {
-            println!("{}", payload.log_text);
+    ensure_ok("logs", &resp)?;
+    let mut last_text = resp.service_logs.map(|p| p.log_text).unwrap_or_default();
+    if !last_text.is_empty() {
+        print!("{last_text}");
+        if !last_text.ends_with('\n') {
+            println!();
         }
     }
-    print_status("logs", &resp)
+
+    if !follow {
+        return Ok(());
+    }
+
+    // Ctrl-C is handled by the process default (SIGINT terminates) so
+    // the loop simply polls until it's killed. This is intentionally
+    // simple — see the polling-latency caveat documented on `--follow`.
+    loop {
+        std::thread::sleep(LOGS_FOLLOW_POLL_INTERVAL);
+        let resp = match client.service_logs(target, LOGS_FOLLOW_TAIL_LINES, false) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error polling logs: {e}");
+                break;
+            }
+        };
+        if resp.code != StatusCode::Ok as i32 {
+            eprintln!(
+                "error polling logs: {}",
+                if resp.message.is_empty() {
+                    format!("daemon returned code {}", resp.code)
+                } else {
+                    resp.message
+                }
+            );
+            break;
+        }
+        let current = resp.service_logs.map(|p| p.log_text).unwrap_or_default();
+        if let Some(delta) = compute_log_delta(&last_text, &current) {
+            print!("{delta}");
+            if !delta.ends_with('\n') {
+                println!();
+            }
+        }
+        last_text = current;
+    }
+    Ok(())
+}
+
+/// Given the previous full log tail and the current full log tail, return
+/// only the new content. Falls back to printing the whole `current` text
+/// when there's no overlap (e.g. operator ran `runpm flush` between polls,
+/// which legitimately resets the tail).
+fn compute_log_delta(previous: &str, current: &str) -> Option<String> {
+    if current.is_empty() {
+        return None;
+    }
+    if previous.is_empty() {
+        return Some(current.to_string());
+    }
+    if let Some(rest) = current.strip_prefix(previous) {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.to_string());
+    }
+    // No prefix match — the tail rotated (flush or log truncation). Show
+    // the whole thing and let the operator see the discontinuity.
+    Some(current.to_string())
 }
 
 fn cmd_simple_target<F>(label: &str, target: &str, call: F) -> Result<()>
@@ -429,9 +502,24 @@ fn print_services_table(services: &[ServiceState]) {
             .unwrap_or_default();
         println!(
             "{:<4} {:<20} {:<10} {:<8} {:<8} {}",
-            s.id, s.name, s.status, s.pid, s.restart_count, command
+            s.id,
+            s.name,
+            render_status(&s.status),
+            s.pid,
+            s.restart_count,
+            command
         );
     }
+}
+
+/// Render a status string for the `runpm list` table. `errored` (the
+/// supervisor gave up after `max_restarts`) is surfaced distinctly so an
+/// operator can spot it at a glance — plain text for now (no ANSI), since
+/// the rest of the CLI is also plain text.
+fn render_status(status: &str) -> String {
+    // Today this is a passthrough; the function exists so a future ANSI
+    // coloring pass has a single edit point.
+    status.to_string()
 }
 
 fn print_service_detail(s: &ServiceState) {
@@ -441,6 +529,12 @@ fn print_service_detail(s: &ServiceState) {
     println!("pid:           {}", s.pid);
     println!("restart_count: {}", s.restart_count);
     println!("last_exit:     {}", s.last_exit_code);
+    if s.last_exited_at != 0.0 {
+        println!("last_exited_at: {} (epoch_seconds)", s.last_exited_at);
+    }
+    if s.last_started_at != 0.0 {
+        println!("last_started_at: {} (epoch_seconds)", s.last_started_at);
+    }
     if let Some(c) = &s.config {
         println!("command:       {}", c.cmd.join(" "));
         if !c.cwd.is_empty() {

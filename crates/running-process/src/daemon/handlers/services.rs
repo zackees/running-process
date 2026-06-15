@@ -1,9 +1,9 @@
-//! Service supervision (runpm) request handlers — Phase 2 (#222).
+//! Service supervision (runpm) request handlers — Phase 2 + Phase 3 (#222, #426).
 //!
-//! `start`, `stop`, `restart`, `delete`, `list`, and `describe` (show) are
-//! implemented end-to-end against the SQLite-backed
-//! [`crate::daemon::services::ServiceRegistry`]. `logs`/`flush` (Phase 3) and
-//! `save`/`resurrect` (Phase 4) remain stubs that acknowledge the RPC.
+//! `start`, `stop`, `restart`, `delete`, `list`, `describe` (show), `logs`,
+//! and `flush` are implemented end-to-end against the SQLite-backed
+//! [`crate::daemon::services::ServiceRegistry`]. Only `save`/`resurrect`
+//! (Phase 4) remain stubs that acknowledge the RPC.
 
 use std::collections::HashMap;
 
@@ -211,28 +211,66 @@ pub fn handle_service_describe(request: &DaemonRequest, state: &DaemonState) -> 
 }
 
 // ---------------------------------------------------------------------------
-// Handlers — stubs (Phase 3 / Phase 4)
+// Handlers — Phase 3
 // ---------------------------------------------------------------------------
 
-/// Phase 3 stub for `ServiceLogs` — log tailing/follow ships in Phase 3 (#222).
-pub fn handle_service_logs(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
-    DaemonResponse {
-        request_id: request.id,
-        code: StatusCode::Ok as i32,
-        message: String::new(),
-        service_logs: Some(ServiceLogsResponse::default()),
-        ..Default::default()
+/// Hard cap on the bytes we'll return in a single `service_logs` response so
+/// one noisy service can't blow the IPC budget. ~64 KiB is comfortably below
+/// the daemon's protobuf message ceiling and easily fits one screenful for an
+/// operator scrolling logs.
+const LOGS_RESPONSE_BYTE_BUDGET: usize = 64 * 1024;
+
+/// Default tail length when the client requests `lines: 0`.
+const LOGS_DEFAULT_LINES: u32 = 100;
+
+/// `ServiceLogs`: tail the per-service `-out.log` and `-err.log` files on
+/// disk. Each line is prefixed with `[stdout]` / `[stderr]` so the operator
+/// can tell streams apart in a single transcript. `--follow` is implemented
+/// client-side by polling this handler — there is no streaming RPC.
+pub fn handle_service_logs(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let Some(req) = request.service_logs.as_ref() else {
+        return err_response(
+            request,
+            ServiceError::InvalidConfig("missing service_logs payload".into()),
+        );
+    };
+    match state.services.read_logs(
+        &req.target,
+        req.lines,
+        LOGS_DEFAULT_LINES,
+        LOGS_RESPONSE_BYTE_BUDGET,
+    ) {
+        Ok(log_text) => DaemonResponse {
+            request_id: request.id,
+            code: StatusCode::Ok as i32,
+            message: String::new(),
+            service_logs: Some(ServiceLogsResponse { log_text }),
+            ..Default::default()
+        },
+        Err(e) => err_response(request, e),
     }
 }
 
-/// Phase 3 stub for `ServiceFlush` — log flush ships in Phase 3 (#222).
-pub fn handle_service_flush(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
-    DaemonResponse {
-        request_id: request.id,
-        code: StatusCode::Ok as i32,
-        message: String::new(),
-        service_flush: Some(ServiceFlushResponse::default()),
-        ..Default::default()
+/// `ServiceFlush`: truncate the on-disk `-out.log` and `-err.log` files for
+/// the targeted service(s) to zero bytes. `target == "all"` (or empty)
+/// flushes every registered service; a single-target miss returns
+/// `NOT_FOUND`. The append-mode writer threads keep going across the
+/// truncate — the next line they emit lands at offset 0.
+pub fn handle_service_flush(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
+    let target = request
+        .service_flush
+        .as_ref()
+        .map(|r| r.target.clone())
+        .unwrap_or_default();
+    match state.services.flush_logs(&target) {
+        Ok(flushed_count) => DaemonResponse {
+            request_id: request.id,
+            code: StatusCode::Ok as i32,
+            message: String::new(),
+            service_flush: Some(ServiceFlushResponse { flushed_count }),
+            ..Default::default()
+        },
+        Err(e) => err_response(request, e),
     }
 }
 

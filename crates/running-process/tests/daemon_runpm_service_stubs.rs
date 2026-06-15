@@ -1,12 +1,13 @@
 #![cfg(feature = "daemon")]
-//! Phase 2 integration tests for the runpm `SERVICE_*` daemon RPCs (#222).
+//! Phase 2 + Phase 3 integration tests for the runpm `SERVICE_*` daemon
+//! RPCs (#222, #426).
 //!
-//! Phase 1 only exercised the stub round-trip; Phase 2 makes `start`, `stop`,
-//! `restart`, `delete`, `list`, and `describe` real lifecycle operations. This
-//! test drives a real (cross-platform) supervised service through that
-//! lifecycle against a live `DaemonServer`, asserting on populated payloads.
-//! `logs`/`flush` (Phase 3) and `save`/`resurrect` (Phase 4) remain stubs and
-//! are still exercised for round-trip coverage.
+//! Phase 1 only exercised the stub round-trip; Phase 2 made `start`, `stop`,
+//! `restart`, `delete`, `list`, and `describe` real lifecycle operations.
+//! Phase 3 (this file's current assertions) makes `logs` and `flush` real:
+//! `logs` tails the on-disk `-out.log`/`-err.log` for the service, and
+//! `flush` truncates those files to zero bytes. `save`/`resurrect`
+//! (Phase 4) remain stubs and are still exercised for round-trip coverage.
 //!
 //! Uses `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` because
 //! `DaemonClient` performs blocking synchronous I/O — a single-threaded
@@ -159,6 +160,48 @@ async fn test_service_lifecycle_and_remaining_stubs() {
             "one service should be restarted"
         );
 
+        // --- ServiceLogs (Phase 3 — real impl) -------------------------
+        // The service exists (it's been restarted but not deleted); the
+        // log files may or may not have content depending on whether the
+        // child wrote anything. The handler must return OK with a
+        // populated payload even when the body is empty.
+        let resp = client
+            .service_logs("test-svc", 100, false)
+            .expect("service_logs failed");
+        assert_eq!(
+            resp.code,
+            StatusCode::Ok as i32,
+            "service_logs should return OK for an existing service"
+        );
+        assert!(
+            resp.service_logs.is_some(),
+            "service_logs response should carry a service_logs payload"
+        );
+
+        // --- ServiceFlush (Phase 3 — real impl) ------------------------
+        let resp = client
+            .service_flush("test-svc")
+            .expect("service_flush failed");
+        assert_eq!(
+            resp.code,
+            StatusCode::Ok as i32,
+            "service_flush should return OK"
+        );
+        let flushed = resp.service_flush.expect("flush payload").flushed_count;
+        assert_eq!(flushed, 1, "exactly one service should be flushed");
+
+        // --- ServiceFlush "all" ----------------------------------------
+        let resp = client
+            .service_flush("all")
+            .expect("service_flush all failed");
+        assert_eq!(resp.code, StatusCode::Ok as i32);
+        // One service is registered so "all" flushes exactly one.
+        assert_eq!(
+            resp.service_flush.expect("flush payload").flushed_count,
+            1,
+            "flush all should hit the one registered service"
+        );
+
         // --- ServiceDelete ---------------------------------------------
         let resp = client
             .service_delete("test-svc")
@@ -177,32 +220,14 @@ async fn test_service_lifecycle_and_remaining_stubs() {
             "service list should be empty after delete"
         );
 
-        // --- ServiceLogs (Phase 3 stub) --------------------------------
+        // --- ServiceLogs for missing service -> NOT_FOUND --------------
         let resp = client
             .service_logs("test-svc", 100, false)
             .expect("service_logs failed");
         assert_eq!(
             resp.code,
-            StatusCode::Ok as i32,
-            "service_logs should return OK"
-        );
-        assert!(
-            resp.service_logs.is_some(),
-            "service_logs response should carry a service_logs payload"
-        );
-
-        // --- ServiceFlush ----------------------------------------------
-        let resp = client
-            .service_flush("test-svc")
-            .expect("service_flush failed");
-        assert_eq!(
-            resp.code,
-            StatusCode::Ok as i32,
-            "service_flush should return OK"
-        );
-        assert!(
-            resp.service_flush.is_some(),
-            "service_flush response should carry a service_flush payload"
+            StatusCode::NotFound as i32,
+            "logs for a deleted service should return NOT_FOUND"
         );
 
         // --- ServiceSave -----------------------------------------------

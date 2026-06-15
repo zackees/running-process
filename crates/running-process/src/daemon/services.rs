@@ -465,12 +465,101 @@ impl ServiceRegistry {
 
     // -- Spawn / lifecycle ---------------------------------------------------
 
-    fn log_paths(&self, name: &str) -> (PathBuf, PathBuf) {
+    /// Return the `(stdout_path, stderr_path)` for a service. The name is
+    /// sanitized through [`sanitize_name`] before being joined with the log
+    /// directory — this is the defense against path-traversal for any handler
+    /// that takes the service name from an RPC payload.
+    pub fn log_paths(&self, name: &str) -> (PathBuf, PathBuf) {
         let safe = sanitize_name(name);
         (
             self.log_dir.join(format!("{safe}-out.log")),
             self.log_dir.join(format!("{safe}-err.log")),
         )
+    }
+
+    /// Read the tail of a service's `stdout` + `stderr` log files and return
+    /// a single string with each line prefixed by `[stdout]` / `[stderr]`.
+    ///
+    /// - `lines` caps the per-stream tail; `0` falls back to `default_lines`.
+    /// - The combined response body is hard-capped at `byte_budget` (very
+    ///   long lines are truncated mid-line with a `…(truncated)` marker)
+    ///   so a single noisy service can't blow the IPC response budget.
+    /// - Missing log files (service never started) yield empty output, not
+    ///   an error — the service definition may legitimately exist with no
+    ///   incarnation yet.
+    /// - Returns `NotFound` only when the target name doesn't resolve to a
+    ///   registered service.
+    pub fn read_logs(
+        &self,
+        target: &str,
+        lines: u32,
+        default_lines: u32,
+        byte_budget: usize,
+    ) -> Result<String, ServiceError> {
+        let name = self
+            .resolve_target(target)?
+            .ok_or_else(|| ServiceError::NotFound(target.to_string()))?;
+        let (out_path, err_path) = self.log_paths(&name);
+        let effective_lines = if lines == 0 { default_lines } else { lines };
+
+        let mut output = String::new();
+        let mut remaining = byte_budget;
+        append_tail(
+            &out_path,
+            "[stdout]",
+            effective_lines,
+            &mut output,
+            &mut remaining,
+        );
+        append_tail(
+            &err_path,
+            "[stderr]",
+            effective_lines,
+            &mut output,
+            &mut remaining,
+        );
+        Ok(output)
+    }
+
+    /// Truncate the `stdout` + `stderr` log files for `target` to zero bytes.
+    /// The writer threads in [`spawn_log_writer`] hold the files in append
+    /// mode, so opening a fresh handle with `truncate(true)` re-zeros the
+    /// file without disturbing the appender (the next append resumes at
+    /// offset 0 on both Windows and POSIX).
+    ///
+    /// Returns `Ok(true)` if a service matched and at least one log file was
+    /// touched (truncated or already absent). `target == "all"` flushes every
+    /// service and returns `Ok(count_of_services_flushed)` via the wrapper
+    /// in [`Self::flush`]. A missing single-target resolves to `NotFound`.
+    pub fn flush_logs(&self, target: &str) -> Result<u32, ServiceError> {
+        if target == "all" || target.is_empty() {
+            let names: Vec<String> = self.list()?.into_iter().map(|r| r.def.name).collect();
+            let mut count = 0u32;
+            for name in names {
+                if self.truncate_log_pair(&name) {
+                    count += 1;
+                }
+            }
+            return Ok(count);
+        }
+        let name = self
+            .resolve_target(target)?
+            .ok_or_else(|| ServiceError::NotFound(target.to_string()))?;
+        if self.truncate_log_pair(&name) {
+            Ok(1)
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Truncate both log files for `name`. Missing files are treated as
+    /// "already empty" and still count as success — the operator's
+    /// intent (`make these empty`) is satisfied either way.
+    fn truncate_log_pair(&self, name: &str) -> bool {
+        let (out_path, err_path) = self.log_paths(name);
+        let out_ok = truncate_if_exists(&out_path);
+        let err_ok = truncate_if_exists(&err_path);
+        out_ok || err_ok
     }
 
     /// Spawn (or respawn) the child for `def` and register the live handle.
@@ -836,6 +925,86 @@ fn spawn_log_writer(
     })
 }
 
+/// Per-line cap when reading a log tail — anything longer is truncated with a
+/// trailing marker so one runaway line can't blow the IPC budget.
+const MAX_LOG_LINE_BYTES: usize = 4096;
+
+/// Read the last `lines` lines from `path` and append them to `output`,
+/// each tagged with `prefix`. Respects a remaining-byte budget so the
+/// combined response can't exceed the caller's cap. Missing files are a
+/// silent no-op — `service_logs` returns empty rather than erroring out
+/// when a service has never started.
+fn append_tail(path: &Path, prefix: &str, lines: u32, output: &mut String, remaining: &mut usize) {
+    if *remaining == 0 {
+        return;
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_) => return,
+    };
+
+    // Split on '\n' while tolerating a trailing empty line from a
+    // newline-terminated file.
+    let text = String::from_utf8_lossy(&bytes);
+    let mut all: Vec<&str> = text.split('\n').collect();
+    if all.last().map(|s| s.is_empty()).unwrap_or(false) {
+        all.pop();
+    }
+    let start = all.len().saturating_sub(lines as usize);
+    // Marker appended to over-long lines.
+    const TRUNC_MARK: &str = "...(truncated)";
+    for line in &all[start..] {
+        if *remaining == 0 {
+            break;
+        }
+        // Frame = "<prefix> <body>\n". Need at least one body byte to be
+        // worth emitting.
+        let frame_overhead = prefix.len() + 2;
+        if *remaining <= frame_overhead {
+            break;
+        }
+        let body_room = (*remaining - frame_overhead).min(MAX_LOG_LINE_BYTES);
+        let pre_len = output.len();
+        output.push_str(prefix);
+        output.push(' ');
+        if line.len() > body_room {
+            let avail = body_room.saturating_sub(TRUNC_MARK.len());
+            // Snap to a char boundary so the resulting slice is valid UTF-8.
+            let mut cut = avail.min(line.len());
+            while cut > 0 && !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            output.push_str(&line[..cut]);
+            output.push_str(TRUNC_MARK);
+        } else {
+            output.push_str(line);
+        }
+        output.push('\n');
+        let wrote = output.len() - pre_len;
+        *remaining = remaining.saturating_sub(wrote);
+    }
+}
+
+/// Open `path` with `truncate(true)`, which on POSIX and Windows alike
+/// shrinks the file to zero bytes from a fresh handle without disturbing
+/// the long-lived append-mode writer thread. Missing files are treated as
+/// "already zero" — a successful no-op.
+fn truncate_if_exists(path: &Path) -> bool {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+    {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "failed to truncate service log file");
+            false
+        }
+    }
+}
+
 /// Make a service name safe for use as a log filename component.
 fn sanitize_name(name: &str) -> String {
     name.chars()
@@ -1020,5 +1189,159 @@ mod tests {
         assert_eq!(policy.backoff_for(1), Duration::from_millis(200));
         assert_eq!(policy.backoff_for(2), Duration::from_millis(400));
         assert_eq!(policy.backoff_for(100), RestartPolicy::MAX_BACKOFF);
+    }
+
+    // -- Phase 3: logs + flush ---------------------------------------------
+
+    /// Write `content` to the file at `path`, creating it if needed.
+    fn write_log(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(path, content).expect("write log file");
+    }
+
+    /// Register a service definition without spawning a child. We only need
+    /// the row to exist so `read_logs`/`flush_logs` can resolve the target.
+    fn register_only(reg: &ServiceRegistry, name: &str, id: u32) {
+        let d = def(name, short_lived_cmd());
+        reg.upsert_def(&d, id).unwrap();
+    }
+
+    #[test]
+    fn service_logs_returns_recent_lines_with_stream_prefix() {
+        let (reg, _tmp) = registry();
+        register_only(&reg, "logsvc", 1);
+        let (out, err) = reg.log_paths("logsvc");
+        // 5 stdout lines + 5 stderr lines.
+        let out_body = (1..=5)
+            .map(|i| format!("out-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err_body = (1..=5)
+            .map(|i| format!("err-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write_log(&out, &format!("{out_body}\n"));
+        write_log(&err, &format!("{err_body}\n"));
+
+        let txt = reg.read_logs("logsvc", 10, 100, 64 * 1024).unwrap();
+
+        for i in 1..=5 {
+            assert!(
+                txt.contains(&format!("[stdout] out-{i}")),
+                "missing [stdout] out-{i} in {txt}"
+            );
+            assert!(
+                txt.contains(&format!("[stderr] err-{i}")),
+                "missing [stderr] err-{i} in {txt}"
+            );
+        }
+    }
+
+    #[test]
+    fn service_logs_empty_when_files_missing() {
+        let (reg, _tmp) = registry();
+        register_only(&reg, "neverran", 2);
+        let txt = reg.read_logs("neverran", 100, 100, 64 * 1024).unwrap();
+        assert!(txt.is_empty(), "expected empty body, got {txt:?}");
+    }
+
+    #[test]
+    fn service_logs_unknown_service_is_not_found() {
+        let (reg, _tmp) = registry();
+        let res = reg.read_logs("nope", 10, 100, 64 * 1024);
+        assert!(matches!(res, Err(ServiceError::NotFound(_))));
+    }
+
+    #[test]
+    fn service_logs_caps_response_size() {
+        let (reg, _tmp) = registry();
+        register_only(&reg, "bigsvc", 3);
+        let (out, _err) = reg.log_paths("bigsvc");
+        // ~200 KB of body in a single huge line — well above the 64 KiB cap.
+        let huge = "x".repeat(200 * 1024);
+        write_log(&out, &format!("{huge}\n"));
+
+        let txt = reg.read_logs("bigsvc", 10, 100, 64 * 1024).unwrap();
+
+        // Response is bounded near the cap.
+        assert!(
+            txt.len() <= 64 * 1024,
+            "response exceeded budget: {} bytes",
+            txt.len()
+        );
+        // Truncation marker must appear on the over-long line.
+        assert!(
+            txt.contains("...(truncated)"),
+            "expected truncation marker in {}",
+            &txt[..200.min(txt.len())]
+        );
+    }
+
+    #[test]
+    fn service_flush_zeros_log_files() {
+        let (reg, _tmp) = registry();
+        register_only(&reg, "tobeflushed", 4);
+        let (out, err) = reg.log_paths("tobeflushed");
+        write_log(&out, "hello-out\n");
+        write_log(&err, "hello-err\n");
+
+        let count = reg.flush_logs("tobeflushed").unwrap();
+        assert_eq!(count, 1, "exactly one service should be flushed");
+
+        let out_len = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(u64::MAX);
+        let err_len = std::fs::metadata(&err).map(|m| m.len()).unwrap_or(u64::MAX);
+        assert_eq!(out_len, 0, "{} should be 0 bytes", out.display());
+        assert_eq!(err_len, 0, "{} should be 0 bytes", err.display());
+    }
+
+    #[test]
+    fn service_flush_all_targets_every_service() {
+        let (reg, _tmp) = registry();
+        for (i, name) in ["a", "b", "c"].iter().enumerate() {
+            register_only(&reg, name, (i + 1) as u32);
+            let (out, err) = reg.log_paths(name);
+            write_log(&out, "x\n");
+            write_log(&err, "y\n");
+        }
+        let count = reg.flush_logs("all").unwrap();
+        assert_eq!(count, 3, "all three services should be flushed");
+    }
+
+    #[test]
+    fn service_flush_unknown_single_target_is_not_found() {
+        let (reg, _tmp) = registry();
+        let res = reg.flush_logs("nope");
+        assert!(matches!(res, Err(ServiceError::NotFound(_))));
+    }
+
+    #[test]
+    fn service_log_paths_resist_traversal() {
+        // The sanitizer replaces directory separators (`/`, `\\`) with
+        // underscores so the resulting filename can never escape log_dir.
+        // A leading `..` is allowed as filename characters but the lack of
+        // separators means the result is a single filename component
+        // joined under `log_dir` — not a parent-relative path.
+        let (reg, tmp) = registry();
+        let (out, err) = reg.log_paths("../../../etc/passwd");
+        let log_dir = tmp.path().join("services");
+        assert_eq!(
+            out.parent().unwrap(),
+            log_dir,
+            "out log must live directly under the log dir, got {}",
+            out.display()
+        );
+        assert_eq!(
+            err.parent().unwrap(),
+            log_dir,
+            "err log must live directly under the log dir, got {}",
+            err.display()
+        );
+        // And the filename must contain no path separators.
+        let out_name = out.file_name().unwrap().to_string_lossy();
+        let err_name = err.file_name().unwrap().to_string_lossy();
+        assert!(!out_name.contains('/') && !out_name.contains('\\'));
+        assert!(!err_name.contains('/') && !err_name.contains('\\'));
     }
 }
