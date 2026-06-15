@@ -615,6 +615,15 @@ fn dispatch_request(
         Ok(RequestType::GetSessionTeeStatus) => {
             handlers::handle_get_session_tee_status(request, state)
         }
+        Ok(RequestType::RegisterSessionObserver) => {
+            handlers::handle_register_session_observer(request, state)
+        }
+        Ok(RequestType::UnregisterSessionObserver) => {
+            handlers::handle_unregister_session_observer(request, state)
+        }
+        Ok(RequestType::GetSessionObserverStatus) => {
+            handlers::handle_get_session_observer_status(request, state)
+        }
         Err(_) => error_response(
             request_id,
             StatusCode::UnknownRequest,
@@ -736,6 +745,9 @@ mod tests {
             RequestType::RegisterSessionTee,
             RequestType::UnregisterSessionTee,
             RequestType::GetSessionTeeStatus,
+            RequestType::RegisterSessionObserver,
+            RequestType::UnregisterSessionObserver,
+            RequestType::GetSessionObserverStatus,
         ];
         for (i, rt) in payload_required.iter().enumerate() {
             let request = DaemonRequest {

@@ -8,6 +8,7 @@ pub mod config;
 pub mod emergency_reserve;
 pub mod handlers;
 pub mod idle;
+pub mod observer_registry;
 pub mod pipe_attach_stream;
 pub mod pipe_sessions;
 pub mod platform;

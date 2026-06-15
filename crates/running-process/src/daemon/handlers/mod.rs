@@ -23,6 +23,7 @@ use crate::proto::daemon::{DaemonRequest, ProcessState, StatusCode};
 mod core;
 mod kill;
 mod maintenance;
+mod observer;
 mod pipe_sessions_handlers;
 mod process_tree;
 mod pty_sessions_handlers;
@@ -36,6 +37,10 @@ pub use self::core::{handle_ping, handle_shutdown, handle_status};
 pub use self::kill::{handle_kill_tree, handle_kill_zombies};
 pub use self::maintenance::{
     handle_bulk_terminate_sessions, handle_get_session_backlog, handle_purge_exited_sessions,
+};
+pub use self::observer::{
+    handle_get_session_observer_status, handle_register_session_observer,
+    handle_unregister_session_observer,
 };
 pub use self::pipe_sessions_handlers::{
     handle_attach_pipe_stream, handle_detach_pipe_stream, handle_list_pipe_sessions,
