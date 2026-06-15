@@ -64,6 +64,61 @@ fn negotiate_reports_syscall_categories_unavailable_with_reason() {
 }
 
 #[test]
+fn syscall_categories_advertise_per_os_backend_name() {
+    // #430: replace the catch-all `backend: "none"` / "(seccomp/eBPF/ETW)"
+    // reason with per-OS detection helpers. The matrix still reports
+    // Unavailable until Phase 3 backends actually land, but the backend
+    // name now matches what's planned for the current target OS. This
+    // makes Phase 4 downstream UX (the clud capability matrix) honest
+    // about WHAT will land WHERE rather than implying coverage by
+    // listing all three backends in the reason string.
+    let caps = ObserverCapabilities::negotiate();
+    let file = caps.category(EventCategory::File);
+    let network = caps.category(EventCategory::Network);
+    let process = caps.category(EventCategory::Process);
+
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(file.backend, "seccomp-user-notify");
+        assert_eq!(network.backend, "ebpf");
+        assert_eq!(process.backend, "seccomp-user-notify");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        assert_eq!(file.backend, "etw");
+        assert_eq!(network.backend, "etw");
+        assert_eq!(process.backend, "etw");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(file.backend, "kqueue");
+        assert_eq!(network.backend, "endpoint-security");
+        assert_eq!(process.backend, "endpoint-security");
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        assert_eq!(file.backend, "none");
+        assert_eq!(network.backend, "none");
+        assert_eq!(process.backend, "none");
+    }
+
+    // The reason field no longer hardcodes the multi-backend "(seccomp/eBPF/ETW)"
+    // literal — it points at the one backend planned for THIS OS.
+    for entry in [file, network, process] {
+        assert!(
+            !entry.reason.contains("seccomp/eBPF/ETW"),
+            "stale multi-backend reason: {:?}",
+            entry.reason
+        );
+        assert!(
+            entry.reason.contains("Phase 3"),
+            "reason must keep the Phase 3 anchor: {:?}",
+            entry.reason
+        );
+    }
+}
+
+#[test]
 fn negotiate_covers_every_category_exactly_once() {
     let caps = ObserverCapabilities::negotiate();
     assert_eq!(caps.categories().len(), EventCategory::ALL.len());
