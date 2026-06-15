@@ -169,7 +169,7 @@ pub fn render_unit(daemon_binary: &Path) -> String {
 /// with the standard `'\''` dance. Safe for paths-with-spaces injected
 /// into the systemd unit's `ExecStart` line or the macOS plist's
 /// `ProgramArguments` array.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn shell_quote_single(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
