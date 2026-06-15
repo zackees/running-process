@@ -123,6 +123,24 @@ fn windows_build_number() -> Option<u32> {
     None
 }
 
+/// On Windows, asks the running-process ConPTY dispatcher whether the
+/// process resolved to a sidecar `conpty.dll` (vs. system kernel32).
+/// Returning `true` means byte-exact passthrough assertions can hold
+/// even on Win10 < 22000 — the modern ConPTY from the sidecar honors
+/// `PSEUDOCONSOLE_PASSTHROUGH_MODE` regardless of the host build.
+#[cfg(windows)]
+fn sidecar_active_on_windows() -> bool {
+    running_process::pty::current_backend_kind() == running_process::pty::ConPtyBackendKind::Sidecar
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn sidecar_active_on_windows() -> bool {
+    // Non-Windows hosts never enter the Win10 skip path — but the
+    // function lives behind a non-cfg call site, so provide a stub.
+    false
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn raw_ansi_bytes_flow_through_pty_to_ring_buffer() {
     // #150 W8: PSEUDOCONSOLE_PASSTHROUGH_MODE is only honored on
@@ -130,23 +148,31 @@ async fn raw_ansi_bytes_flow_through_pty_to_ring_buffer() {
     // ConPTY silently ignores the flag and the master pipe sees only
     // synthesized DSR queries instead of the child's raw bytes.
     //
-    // #443 added a sidecar path: a Win10 host can drop the
-    // Microsoft.Windows.Console.ConPTY redistributable's `conpty.dll`
-    // next to the test binary and the bundled OpenConsole will honor
-    // PASSTHROUGH_MODE. We don't ship that binary in CI, so the Win10
-    // branch still skips — but un-skip is now a packaging change, not
-    // a code change. Re-enable by placing `conpty.dll` from the pinned
-    // NuGet version (see `WINDOWS_CONPTY_VERSION.txt`) next to the
-    // test binary; the skip block below will fall through.
+    // #443 added a sidecar path: a Win10 host that has a Microsoft-
+    // signed `conpty.dll` (from the `Microsoft.Windows.Console.ConPTY`
+    // NuGet — see `WINDOWS_CONPTY_VERSION.txt`) loaded gets a modern
+    // ConPTY that honors PASSTHROUGH_MODE. The resolver picks the
+    // sidecar transparently on first use; the public diagnostic
+    // `running_process::pty::current_backend_kind()` reports which
+    // backend the process landed on.
     //
-    // POSIX PTYs (Linux/macOS) are passthrough by design, so this
-    // test runs there.
+    // Decision matrix:
+    //   - Win11 (build >= 22000), any backend → run.
+    //   - Win10 + sidecar resolved (or the kernel32 path through
+    //     `RUNNING_PROCESS_USE_SYSTEM_CONPTY=1` was deliberately taken
+    //     but build is high enough — shouldn't happen on Win10) → run.
+    //   - Win10 + kernel32 → skip with an actionable message.
+    //   - POSIX (Linux/macOS) → run; PTYs are passthrough by design.
     if let Some(build) = windows_build_number() {
-        if build < 22000 {
+        if build < 22000 && !sidecar_active_on_windows() {
             eprintln!(
                 "SKIPPED: PSEUDOCONSOLE_PASSTHROUGH_MODE requires Windows 11+ \
-                 (current build {build}) or a sidecar conpty.dll next to the \
-                 test binary — see WINDOWS_CONPTY_VERSION.txt and #443."
+                 (current build {build}) OR a sidecar conpty.dll loaded by \
+                 the running-process backend. The transparent self-acquire \
+                 path (#445) writes the sidecar to the platform cache on \
+                 first use when GitHub release assets are available; for \
+                 manual staging place `conpty.dll` next to the test exe — \
+                 see WINDOWS_CONPTY_VERSION.txt and #443."
             );
             return;
         }
