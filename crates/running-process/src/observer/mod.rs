@@ -447,6 +447,16 @@ impl ObserverEvent {
             timestamp_ms,
         }
     }
+
+    /// Construct an event stamped with the current wall-clock time.
+    ///
+    /// Crate-public sibling of the private `now` constructor for the daemon's
+    /// per-session observer registry (#221 Phase 2 / #429), which emits
+    /// lifecycle events directly without going through the crate-private
+    /// `ObserverEmitter`.
+    pub fn new_now(category: EventCategory, kind: ObserverEventKind, pid: u32) -> Self {
+        Self::now(category, kind, pid)
+    }
 }
 
 /// Opt-in configuration that turns process observation on for a single
@@ -505,6 +515,13 @@ pub struct ObserverSubscriber {
 }
 
 impl ObserverSubscriber {
+    /// Wrap an existing channel receiver. Used by the daemon client helpers
+    /// in `client::observer` to hand the caller a subscriber whose channel
+    /// is later fed by an IPC streaming pump.
+    pub(crate) fn from_receiver(rx: Receiver<ObserverEvent>) -> Self {
+        Self { rx }
+    }
+
     /// Receive the next event, blocking until one arrives or the emitter is
     /// dropped. Returns `None` once no more events can arrive.
     pub fn recv(&self) -> Option<ObserverEvent> {

@@ -7,6 +7,7 @@
 
 #[allow(clippy::module_inception)]
 pub mod client;
+pub mod observer;
 pub mod paths;
 pub mod pipe_session;
 pub mod pty_session;
@@ -15,6 +16,10 @@ pub mod telemetry;
 pub use client::{
     connect_or_start, daemonize_command, launch_detached, ClientError, DaemonClient,
     SpawnCommandRequest, SpawnedDaemon,
+};
+pub use observer::{
+    RemoteObserverSubscription, SessionObserverBackpressure, SessionObserverKind,
+    SessionObserverRequest, SessionObserverStatus,
 };
 pub use pipe_session::{PipeSpawnRequest, PipeStreamAttachment, SpawnedPipeSession};
 pub use pty_session::{AttachError, PtyAttachment, PtySpawnRequest, SpawnedPtySession};

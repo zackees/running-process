@@ -30,6 +30,7 @@ use crate::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
+use crate::daemon::observer_registry::ObserverRegistry;
 use crate::daemon::pty_sessions::{
     AttachmentEnded, ExitState, OutboundFrame, PendingTermination, RingBuffer, TerminationOutcome,
 };
@@ -37,6 +38,7 @@ use crate::daemon::telemetry::{
     TeeEvent, TeeFileOptions, TeeHandle, TeeOptions, TeeRawOptions, TeeRegistry, TeeSnapshot,
     TeeStatus, TeeStream,
 };
+use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
 
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
 pub const STREAM_CHUNK_BYTES: usize = 64 * 1024;
@@ -115,6 +117,9 @@ pub struct OwnedPipeSession {
     stdout: PipeStreamState,
     stderr: PipeStreamState,
     tees: TeeRegistry,
+    /// Per-session registry of observer event sinks (#221 Phase 2 / #429).
+    /// Empty by default; populated via `RegisterSessionObserver` IPC.
+    pub(crate) observers: ObserverRegistry,
     stdin_closed: AtomicBool,
     exit_state: Mutex<Option<ExitState>>,
     pub(crate) pending_termination: Mutex<Option<PendingTermination>>,
@@ -570,6 +575,7 @@ impl PipeSessionRegistry {
             stdout: PipeStreamState::new(),
             stderr: PipeStreamState::new(),
             tees: TeeRegistry::new(),
+            observers: ObserverRegistry::new(),
             stdin_closed: AtomicBool::new(false),
             exit_state: Mutex::new(None),
             pending_termination: Mutex::new(None),
@@ -596,6 +602,15 @@ impl PipeSessionRegistry {
             move || exit_waiter_loop(session)
         }));
         *session.reader_threads.lock().unwrap() = handles;
+
+        // Phase 2 lifecycle hook: emit Started to any observer sink that
+        // registers on this session. Same caveat as PTY sessions —
+        // observers added later do not see pre-registration events.
+        session.observers.emit(ObserverEvent::new_now(
+            EventCategory::Lifecycle,
+            ObserverEventKind::Started,
+            session.pid,
+        ));
 
         self.sessions
             .lock()
@@ -703,6 +718,14 @@ fn exit_waiter_loop(session: Arc<OwnedPipeSession>) {
         outcome,
     };
     *session.exit_state.lock().unwrap() = Some(state.clone());
+    // Phase 2 lifecycle hook: emit Exited to any registered observer sinks.
+    session.observers.emit(ObserverEvent::new_now(
+        EventCategory::Lifecycle,
+        ObserverEventKind::Exited {
+            exit_code: state.exit_code,
+        },
+        session.pid,
+    ));
     // Notify any attached stream clients.
     for stream in [PipeStreamSelect::Stdout, PipeStreamSelect::Stderr] {
         if let Some(client) = session.stream_state(stream).attached.lock().unwrap().take() {

@@ -29,10 +29,12 @@ use crate::terminal_graphics::TerminalGraphicsCapabilities;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::daemon::observer_registry::ObserverRegistry;
 use crate::daemon::telemetry::{
     TeeEvent, TeeFileOptions, TeeHandle, TeeOptions, TeeRawOptions, TeeRegistry, TeeSnapshot,
     TeeStatus, TeeStream,
 };
+use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
 
 /// Default ring-buffer capacity for the output backlog (1 MiB per session).
 pub const DEFAULT_BACKLOG_BYTES: usize = 1_048_576;
@@ -202,6 +204,9 @@ pub struct OwnedPtySession {
     pub cols: AtomicU16,
     backlog: Mutex<RingBuffer>,
     tees: TeeRegistry,
+    /// Per-session registry of observer event sinks (#221 Phase 2 / #429).
+    /// Empty by default; populated via `RegisterSessionObserver` IPC.
+    pub(crate) observers: ObserverRegistry,
     attached: Mutex<Option<AttachedClient>>,
     exit_state: Mutex<Option<ExitState>>,
     pub(crate) pending_termination: Mutex<Option<PendingTermination>>,
@@ -642,6 +647,7 @@ impl PtySessionRegistry {
             cols: AtomicU16::new(cols),
             backlog: Mutex::new(RingBuffer::new(DEFAULT_BACKLOG_BYTES)),
             tees: TeeRegistry::new(),
+            observers: ObserverRegistry::new(),
             attached: Mutex::new(None),
             exit_state: Mutex::new(None),
             pending_termination: Mutex::new(None),
@@ -654,6 +660,16 @@ impl PtySessionRegistry {
         let reader_session = Arc::clone(&session);
         let handle = thread::spawn(move || reader_loop(reader_session));
         *session.reader_thread.lock().unwrap() = Some(handle);
+
+        // Phase 2 lifecycle hook: emit Started to any observer sink that
+        // registers on this session. Observers added later still receive
+        // future events; events that arrive before the first registration
+        // are NOT replayed (per the proto-level documentation).
+        session.observers.emit(ObserverEvent::new_now(
+            EventCategory::Lifecycle,
+            ObserverEventKind::Started,
+            session.pid,
+        ));
 
         self.sessions
             .lock()
@@ -781,6 +797,15 @@ fn reader_loop(session: Arc<OwnedPtySession>) {
                 outcome,
             };
             *session.exit_state.lock().unwrap() = Some(state.clone());
+            // Phase 2 lifecycle hook: emit Exited to any registered
+            // observer sinks.
+            session.observers.emit(ObserverEvent::new_now(
+                EventCategory::Lifecycle,
+                ObserverEventKind::Exited {
+                    exit_code: state.exit_code,
+                },
+                session.pid,
+            ));
             if let Some(client) = session.attached.lock().unwrap().take() {
                 let _ = client.sender.send(OutboundFrame::Exit(state.exit_code));
                 let _ = client

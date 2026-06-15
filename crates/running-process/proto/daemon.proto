@@ -67,6 +67,10 @@ enum RequestType {
   REQUEST_TYPE_REGISTER_SESSION_TEE   = 75;
   REQUEST_TYPE_UNREGISTER_SESSION_TEE = 76;
   REQUEST_TYPE_GET_SESSION_TEE_STATUS = 77;
+  // Optional daemon-owned observer subscriptions (#221 Phase 2 / #429).
+  REQUEST_TYPE_REGISTER_SESSION_OBSERVER   = 78;
+  REQUEST_TYPE_UNREGISTER_SESSION_OBSERVER = 79;
+  REQUEST_TYPE_GET_SESSION_OBSERVER_STATUS = 80;
 }
 
 enum StatusCode {
@@ -164,6 +168,9 @@ message DaemonRequest {
   RegisterSessionTeeRequest   register_session_tee   = 75;
   UnregisterSessionTeeRequest unregister_session_tee = 76;
   GetSessionTeeStatusRequest  get_session_tee_status = 77;
+  RegisterSessionObserverRequest   register_session_observer   = 78;
+  UnregisterSessionObserverRequest unregister_session_observer = 79;
+  GetSessionObserverStatusRequest  get_session_observer_status = 80;
 }
 
 message DaemonResponse {
@@ -211,6 +218,9 @@ message DaemonResponse {
   RegisterSessionTeeResponse   register_session_tee   = 75;
   UnregisterSessionTeeResponse unregister_session_tee = 76;
   GetSessionTeeStatusResponse  get_session_tee_status = 77;
+  RegisterSessionObserverResponse   register_session_observer   = 78;
+  UnregisterSessionObserverResponse unregister_session_observer = 79;
+  GetSessionObserverStatusResponse  get_session_observer_status = 80;
 }
 
 // ---------------------------------------------------------------------------
@@ -890,6 +900,83 @@ message GetSessionTeeStatusResponse {
   TeeStreamKind stream       = 1;
   uint64 missed_bytes        = 2;
   bool   disconnected        = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Optional session observer subscriptions (#221 Phase 2 / #429).
+//
+// Observer registrations live on the per-session struct, not on a per-client
+// IPC connection. They survive the client's IPC connection going away. When a
+// new client reconnects and re-registers it gets a fresh subscription — but
+// events that arrived while no client was attached are NOT replayed. This is
+// different from the PTY/pipe backlog (which is byte-stream-style); observer
+// events are event-stream-style and are dropped (and counted) once the bounded
+// sink fills, per the configured backpressure policy.
+// ---------------------------------------------------------------------------
+
+enum ObserverSessionKind {
+  OBSERVER_SESSION_KIND_UNSPECIFIED = 0;
+  OBSERVER_SESSION_KIND_PTY         = 1;
+  OBSERVER_SESSION_KIND_PIPE        = 2;
+}
+
+// EventCategory values match `observer::EventCategory` integer ordering:
+// 0=Lifecycle, 1=File, 2=Network, 3=Process. Phase 1 only honors Lifecycle;
+// the others are accepted (so the client can request them ahead of Phase 3
+// platform backends) but currently produce no events.
+enum ObserverEventCategory {
+  OBSERVER_EVENT_CATEGORY_LIFECYCLE = 0;
+  OBSERVER_EVENT_CATEGORY_FILE      = 1;
+  OBSERVER_EVENT_CATEGORY_NETWORK   = 2;
+  OBSERVER_EVENT_CATEGORY_PROCESS   = 3;
+}
+
+// Backpressure for the bounded observer sink. Mirrors TeeBackpressure
+// semantics: DropOldest never blocks the emitter, Block waits.
+enum ObserverBackpressure {
+  OBSERVER_BACKPRESSURE_DROP_OLDEST = 0;
+  OBSERVER_BACKPRESSURE_BLOCK       = 1;
+}
+
+message RegisterSessionObserverRequest {
+  string session_id                       = 1;
+  ObserverSessionKind session_kind        = 2;
+  // Requested categories. Each value is an ObserverEventCategory integer
+  // (stored as repeated uint32 to match the Phase 1 in-process config which
+  // accepts an arbitrary set). Empty = lifecycle only.
+  repeated uint32 categories              = 3;
+  // 0 means use the daemon default (1024).
+  uint32 ring_capacity_events             = 4;
+  ObserverBackpressure backpressure       = 5;
+}
+
+message RegisterSessionObserverResponse {
+  // Server-assigned UUID for this subscription. Used by Unregister and
+  // GetStatus. Not reused after Unregister.
+  string subscriber_id = 1;
+}
+
+message UnregisterSessionObserverRequest {
+  string session_id                = 1;
+  ObserverSessionKind session_kind = 2;
+  string subscriber_id             = 3;
+}
+message UnregisterSessionObserverResponse {}
+
+message GetSessionObserverStatusRequest {
+  string session_id                = 1;
+  ObserverSessionKind session_kind = 2;
+  string subscriber_id             = 3;
+}
+
+message GetSessionObserverStatusResponse {
+  // Cumulative number of events that arrived while the bounded sink was
+  // full. Increments only under DropOldest; Block backpressure never drops.
+  uint64 missed_events = 1;
+  // True if the downstream receiver has disconnected.
+  bool   disconnected  = 2;
+  // Cumulative number of events successfully delivered to this sink.
+  uint64 delivered_events = 3;
 }
 
 // Daemon -> client stream frame for an attached stdout/stderr.
