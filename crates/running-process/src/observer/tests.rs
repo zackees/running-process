@@ -170,6 +170,56 @@ fn unobserved_category_produces_no_events() {
     );
 }
 
+// ── Phase 4 (#431): render_summary / to_table_rows for downstream UX ──
+
+#[test]
+fn to_table_rows_one_row_per_category_in_stable_order() {
+    let caps = ObserverCapabilities::negotiate();
+    let rows = caps.to_table_rows();
+    assert_eq!(rows.len(), EventCategory::ALL.len());
+    let expected_cats: Vec<&str> = EventCategory::ALL.iter().map(|c| c.as_str()).collect();
+    let actual_cats: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
+    assert_eq!(actual_cats, expected_cats);
+}
+
+#[test]
+fn to_table_rows_carries_support_backend_and_reason() {
+    let caps = ObserverCapabilities::negotiate();
+    let rows = caps.to_table_rows();
+    let lifecycle = rows
+        .iter()
+        .find(|r| r[0] == "lifecycle")
+        .expect("lifecycle row");
+    assert_eq!(lifecycle[1], "supported");
+    assert_eq!(lifecycle[2], "portable-lifecycle");
+    assert!(!lifecycle[3].is_empty());
+}
+
+#[test]
+fn render_summary_lists_every_category_and_aligns_columns() {
+    let summary = ObserverCapabilities::negotiate().render_summary();
+    assert!(summary.starts_with("observer capabilities:\n"));
+    // Every category name shows up in the rendered output.
+    for category in EventCategory::ALL {
+        assert!(
+            summary.contains(category.as_str()),
+            "{} should appear in summary:\n{}",
+            category.as_str(),
+            summary
+        );
+    }
+    // Every line after the header has the leading "  " indent (alignment
+    // contract; a snapshot consumer can rely on this).
+    let body: Vec<&str> = summary.lines().skip(1).filter(|l| !l.is_empty()).collect();
+    assert_eq!(body.len(), EventCategory::ALL.len());
+    for line in &body {
+        assert!(
+            line.starts_with("  "),
+            "row missing two-space indent: {line:?}"
+        );
+    }
+}
+
 // ── Stable string forms ──
 
 #[test]
