@@ -34,28 +34,40 @@ pub fn mitm_byte_exact_supported() -> bool {
     }
     #[cfg(windows)]
     {
-        // Empirically: on Windows Server 2025 (build 26100, the
-        // current GitHub `windows-latest` runner), even though
-        // `PSEUDOCONSOLE_PASSTHROUGH_MODE` should be honored by
-        // build number, the testbin's startup ACK byte (`\x06`)
-        // never reaches the master pipe — the only bytes that
-        // arrive are ConPTY's own DSR queries. The same testbin
-        // works on POSIX. Until the Windows ConPTY substrate's
-        // Server 2025 behavior is understood (follow-up issue #452),
-        // skip all byte-exact MITM tests on Windows. The
-        // substrate guarantee remains validated by Linux/macOS CI.
+        // #452: the original Server-2025-wide skip (build 26100) was
+        // a stop-gap because the testbin's `\x06` ACK never reached
+        // the master pipe. Investigation traced that to ConPTY (in
+        // virtual-screen mode when PASSTHROUGH_MODE didn't take
+        // effect) silently filtering ASCII C0 control bytes from
+        // the rendered output. The handshake now uses a printable
+        // marker byte (see `STARTUP_HANDSHAKE_BYTE` below) so the
+        // sync fence survives ConPTY's renderer. We can therefore
+        // honor the build-number gate again.
         //
-        // Investigators can flip the skip with
-        // `RUNNING_PROCESS_FORCE_MITM_WINDOWS=1` to drive the
-        // diagnostic path and capture the rich panic message added
-        // alongside this hatch (#452).
+        // Investigators can still flip behavior with
+        // `RUNNING_PROCESS_FORCE_MITM_WINDOWS=1` to bypass the gate
+        // and exercise the diagnostic path.
         if std::env::var_os("RUNNING_PROCESS_FORCE_MITM_WINDOWS").is_some() {
             return true;
         }
-        let _ = windows_build_number();
-        false
+        let build = windows_build_number().unwrap_or(0);
+        if build >= 22000 {
+            return true;
+        }
+        sidecar_conpty_dll_present()
     }
 }
+
+/// Byte the testbin emits at startup as a synchronization fence,
+/// and the byte the helper drains until.
+///
+/// We use a printable ASCII byte (`'R'` = 0x52, picked because it
+/// does not appear in any of the test payloads) rather than the
+/// previous `\x06` (ACK) marker. On Windows Server 2025 (#452) ConPTY
+/// in virtual-screen mode silently dropped the ASCII C0 control
+/// byte from the master pipe — a printable byte survives the
+/// renderer round-trip.
+pub const STARTUP_HANDSHAKE_BYTE: u8 = b'R';
 
 /// Diagnostic message rendered when `EchoerSession::spawn`'s startup
 /// handshake fails. Captures everything an investigator needs to
@@ -243,15 +255,17 @@ pub struct EchoerSession {
 
 impl EchoerSession {
     /// Spawn `testbin-stdin-echoer` with the given argv tail and
-    /// wait for its startup ACK byte (`\x06`).
+    /// wait for its startup handshake byte
+    /// (`STARTUP_HANDSHAKE_BYTE`, currently `'R'`).
     ///
     /// The handshake fences against the POSIX line-discipline race:
     /// without it, the host's first `write_stdin` could race the
     /// testbin's `cfmakeraw` and trigger cooked-mode echo
-    /// (`\x1b` → `^[`). Bytes the testbin wrote *after* the ACK
-    /// (e.g. the bracketed-paste enable sequence when
-    /// `--advertise-paste` is set) are retained in the session's
-    /// `prefetched` buffer and consumed by subsequent reads.
+    /// (`\x1b` → `^[`). Bytes the testbin wrote *after* the
+    /// handshake byte (e.g. the bracketed-paste enable sequence
+    /// when `--advertise-paste` is set) are retained in the
+    /// session's `prefetched` buffer and consumed by subsequent
+    /// reads.
     ///
     /// `args` are appended to the testbin invocation (e.g.
     /// `["--advertise-paste"]` or `["--exit-on", "0x04"]`).
@@ -273,13 +287,16 @@ impl EchoerSession {
         // sometimes show ConPTY startup chatter for several seconds
         // before the testbin's first stdout byte arrives.
         let handshake = Duration::from_secs(20);
-        let drained = session.drain_raw_until_byte(0x06, handshake);
-        let ack_pos = drained.iter().position(|&b| b == 0x06).unwrap_or_else(|| {
-            panic!(
-                "{}",
-                spawn_handshake_failure_diagnostic(&drained, handshake)
-            )
-        });
+        let drained = session.drain_raw_until_byte(STARTUP_HANDSHAKE_BYTE, handshake);
+        let ack_pos = drained
+            .iter()
+            .position(|&b| b == STARTUP_HANDSHAKE_BYTE)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}",
+                    spawn_handshake_failure_diagnostic(&drained, handshake)
+                )
+            });
         // Retain everything *after* the ACK for the next test-visible
         // read. The ACK itself is the handshake marker and is dropped.
         if ack_pos + 1 < drained.len() {

@@ -223,19 +223,22 @@ fn four_megabyte_paste_survives_slow_consumer() {
     process.start_impl().expect("start slow reader");
 
     // Startup handshake (mirrors EchoerSession::spawn): drain stdout
-    // until the testbin's ASCII ACK byte arrives, fencing against
-    // the POSIX line-discipline race that would otherwise cook
-    // host writes before `cfmakeraw` lands.
+    // until the testbin's printable handshake byte arrives, fencing
+    // against the POSIX line-discipline race that would otherwise
+    // cook host writes before `cfmakeraw` lands.
     let handshake_deadline = Instant::now() + Duration::from_secs(20);
-    let mut saw_ack = false;
-    while !saw_ack && Instant::now() < handshake_deadline {
+    let mut saw_handshake = false;
+    while !saw_handshake && Instant::now() < handshake_deadline {
         if let Ok(Some(chunk)) = process.read_chunk_impl(Some(0.1)) {
-            if chunk.contains(&0x06) {
-                saw_ack = true;
+            if chunk.contains(&common::mitm_stdin::STARTUP_HANDSHAKE_BYTE) {
+                saw_handshake = true;
             }
         }
     }
-    assert!(saw_ack, "testbin-slow-stdin-reader never emitted ACK");
+    assert!(
+        saw_handshake,
+        "testbin-slow-stdin-reader never emitted handshake byte"
+    );
 
     let payload = vec![0xCDu8; 4 * 1024 * 1024];
     let wrapped = Arc::new(wrap_paste(&payload));
