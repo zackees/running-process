@@ -213,8 +213,10 @@ fn four_megabyte_paste_survives_slow_consumer() {
         "--buf-size".into(),
         "4096".into(),
     ];
-    let process = running_process::pty::NativePtyProcess::new(argv, None, None, 24, 80, None)
-        .expect("construct slow reader");
+    let process = Arc::new(
+        running_process::pty::NativePtyProcess::new(argv, None, None, 24, 80, None)
+            .expect("construct slow reader"),
+    );
     process.start_impl().expect("start slow reader");
 
     // Startup handshake (mirrors EchoerSession::spawn): drain stdout
@@ -233,29 +235,44 @@ fn four_megabyte_paste_survives_slow_consumer() {
     assert!(saw_ack, "testbin-slow-stdin-reader never emitted ACK");
 
     let payload = vec![0xCDu8; 4 * 1024 * 1024];
-    let wrapped = wrap_paste(&payload);
-    process
-        .write_impl(&wrapped, false)
-        .expect("write large paste");
+    let wrapped = Arc::new(wrap_paste(&payload));
+    let target_len = wrapped.len();
+
+    // Write the 4 MB payload on a separate thread. The PTY's master-
+    // in pipe is much smaller than 4 MB, so the host's write_all
+    // blocks repeatedly while the testbin drains; meanwhile the
+    // testbin's stdout fills the master-out pipe, which also blocks
+    // until this thread reads from it. Doing both on the same
+    // thread deadlocks (write_all parks before any read can run).
+    let writer = {
+        let process = Arc::clone(&process);
+        let wrapped = Arc::clone(&wrapped);
+        std::thread::spawn(move || {
+            process
+                .write_impl(&wrapped, false)
+                .expect("write large paste");
+        })
+    };
 
     let deadline = Instant::now() + Duration::from_secs(60);
-    let mut got = Vec::with_capacity(wrapped.len());
-    while got.len() < wrapped.len() && Instant::now() < deadline {
+    let mut got = Vec::with_capacity(target_len);
+    while got.len() < target_len && Instant::now() < deadline {
         let chunk = process
             .read_chunk_impl(Some(1.0))
             .expect("read_chunk_impl")
             .unwrap_or_default();
         got.extend_from_slice(&chunk);
     }
+    writer.join().expect("writer join");
     let _ = process.kill_impl();
     assert_eq!(
         got.len(),
-        wrapped.len(),
+        target_len,
         "slow reader truncated paste: expected {} bytes, got {} (after 60s)",
-        wrapped.len(),
+        target_len,
         got.len()
     );
-    assert!(got == wrapped, "byte-mismatch under backpressure");
+    assert!(*got == **wrapped, "byte-mismatch under backpressure");
 }
 
 // ── 10. EOF mid-paste: child sees partial then EOF ────────────────
