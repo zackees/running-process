@@ -196,7 +196,7 @@ impl EchoerSession {
         let handshake = Duration::from_secs(5);
         let drained = session.drain_until_contains(b"\x06", handshake);
         assert!(
-            drained.iter().any(|&b| b == 0x06),
+            drained.contains(&0x06),
             "testbin-stdin-echoer never emitted startup ACK in {handshake:?}; \
              drained {} bytes: {:02x?}",
             drained.len(),
