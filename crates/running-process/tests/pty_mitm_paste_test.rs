@@ -225,7 +225,7 @@ fn four_megabyte_paste_survives_slow_consumer() {
     let mut saw_ack = false;
     while !saw_ack && Instant::now() < handshake_deadline {
         if let Ok(Some(chunk)) = process.read_chunk_impl(Some(0.1)) {
-            if chunk.iter().any(|&b| b == 0x06) {
+            if chunk.contains(&0x06) {
                 saw_ack = true;
             }
         }

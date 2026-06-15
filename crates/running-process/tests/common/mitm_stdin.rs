@@ -241,7 +241,7 @@ impl EchoerSession {
             match self.process.read_chunk_impl(Some(slice.as_secs_f64())) {
                 Ok(Some(bytes)) => {
                     out.extend_from_slice(&bytes);
-                    if out.iter().any(|&b| b == target) {
+                    if out.contains(&target) {
                         return out;
                     }
                 }
