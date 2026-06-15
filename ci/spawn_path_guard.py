@@ -49,6 +49,15 @@ ALLOWED_RUST_COMMAND_NEW = {
     # startup, before any child is spawned, with no user input. See
     # `crates/running-process/src/systemd_killmode.rs` module docs.
     Path("crates/running-process/src/systemd_killmode.rs"),
+    # runpm boot autostart (#427): fixed-argument init-system installers
+    # invoked only by `runpm startup`/`unstartup`. The arguments are
+    # crate-controlled constants (UNIT_FILENAME, TASK_NAME) joined with
+    # a single path to the daemon binary discovered from
+    # `std::env::current_exe()` — no user input flows into the argv.
+    # See module docs in each file.
+    Path("crates/running-process/src/boot_autostart/linux.rs"),
+    Path("crates/running-process/src/boot_autostart/macos.rs"),
+    Path("crates/running-process/src/boot_autostart/windows.rs"),
     # Broker backend launcher: constructs a reviewed Command only to
     # hand it to the sanitized `spawn_daemon` surface. The module owns
     # service-definition validation, canonical endpoint allocation, and
