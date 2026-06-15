@@ -45,6 +45,13 @@ path = "src/bin/stubborn.rs"
 name = "testbin-tui-counter"
 path = "src/bin/tui_counter.rs"
 
+[[bin]]
+# #448 / #449: stdin echoer for MITM substrate tests. Reads stdin in
+# 4 KB chunks, writes each chunk back to stdout immediately (or
+# suppresses with `--no-echo`).
+name = "testbin-stdin-echoer"
+path = "src/bin/stdin_echoer.rs"
+
 # Unconditional because `dies_after_spawn` uses `running_process::{spawn, SpawnStdio}`
 # on every platform. `spawner` also uses it but only inside `#[cfg(windows)]` blocks.
 [dependencies]

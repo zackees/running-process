@@ -1,5 +1,10 @@
 use std::path::Path;
 
+/// Direct deps the v1 broker must not pull in. `ureq` is excluded
+/// because #445 / #446 introduced it as a Windows-only fetch path
+/// for the ConPTY sidecar — see `docs/v1-dependency-surface.md` for
+/// the documented carve-out. All other entries remain forbidden so
+/// the broker wire stays local-IPC-only.
 const FORBIDDEN_DIRECT_DEPS: &[&str] = &[
     "axum",
     "curl",
@@ -16,7 +21,6 @@ const FORBIDDEN_DIRECT_DEPS: &[&str] = &[
     "tokio-tungstenite",
     "tonic",
     "tungstenite",
-    "ureq",
     "warp",
 ];
 
