@@ -70,13 +70,10 @@ pub fn install(daemon_binary: &Path) -> Result<UnitPath, BootAutostartError> {
     {
         Ok(s) if s.success() => {}
         Ok(s) => {
-            tracing::warn!(
-                exit_status = ?s,
-                "systemctl --user enable {UNIT_FILENAME} returned non-zero"
-            );
+            eprintln!("warning: systemctl --user enable {UNIT_FILENAME} returned non-zero ({s:?})");
         }
         Err(e) => {
-            tracing::warn!(error = %e, "systemctl --user enable {UNIT_FILENAME} failed to spawn");
+            eprintln!("warning: systemctl --user enable {UNIT_FILENAME} failed to spawn: {e}");
         }
     }
 

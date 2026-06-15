@@ -70,10 +70,7 @@ pub fn uninstall() -> Result<(), BootAutostartError> {
     if !status.success() {
         // Missing task is fine — the operator's intent was "make sure
         // it's not installed", which is already satisfied.
-        tracing::warn!(
-            ?status,
-            "schtasks /Delete returned non-zero (already removed?)"
-        );
+        eprintln!("warning: schtasks /Delete returned non-zero ({status:?}) (already removed?)");
     }
     Ok(())
 }
