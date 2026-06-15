@@ -179,6 +179,18 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_System_Diagnostics_Debug",
 ] }
+# #445: transparent Win10 ConPTY sidecar self-acquisition. The runtime
+# fetches a per-arch zstd-19 compressed tarball from this crate's
+# matching GitHub release on first ConPTY use, caches it, and loads
+# `conpty.dll` from there. ureq uses rustls so we don't drag in a C
+# OpenSSL build on Windows.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+zstd = { version = "0.13", default-features = false }
+tar = { version = "0.4", default-features = false }
+# `dirs` was previously optional under the `client` feature; bring it
+# in unconditionally on Windows so the sidecar cache path resolves
+# regardless of features.
+dirs = "6"
 
 # Wave 5 of #165: extra dev-deps absorbed from `running-process-daemon`
 # for its windows-only and unix-only integration tests.

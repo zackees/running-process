@@ -56,6 +56,7 @@ use windows_sys::Win32::System::Threading::{
 pub(super) const PSEUDOCONSOLE_PASSTHROUGH_MODE: u32 = 0x8;
 
 pub(in crate::pty) mod child;
+pub(super) mod conpty_acquire;
 pub(super) mod conpty_api;
 pub(super) mod pipes;
 pub(super) mod proc_thread_attr;

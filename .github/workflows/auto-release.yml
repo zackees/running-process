@@ -571,6 +571,39 @@ jobs:
           cp install.ps1 release-assets/install.ps1
           chmod 755 release-assets/install.sh
 
+      - name: Build Windows ConPTY sidecar release assets (#445)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The runtime fetches conpty-sidecar-<arch>.tar.zst from this
+          # release on first Win10 ConPTY use. We build the asset from
+          # the pinned Microsoft.Windows.Console.ConPTY NuGet package
+          # so the asset is content-deterministic per release tag.
+          VERSION=$(grep -E '^Microsoft\.Windows\.Console\.ConPTY' WINDOWS_CONPTY_VERSION.txt | awk '{print $NF}')
+          if [ -z "$VERSION" ]; then
+            echo "could not parse pinned NuGet version from WINDOWS_CONPTY_VERSION.txt" >&2
+            exit 1
+          fi
+          echo "Pinned NuGet version: $VERSION"
+          curl -fsSL "https://www.nuget.org/api/v2/package/Microsoft.Windows.Console.ConPTY/${VERSION}" \
+            -o /tmp/conpty.nupkg
+          mkdir -p /tmp/conpty-extracted
+          unzip -q /tmp/conpty.nupkg -d /tmp/conpty-extracted
+          for arch in win-x64 win-x86 win-arm64 win-arm; do
+            out_name="conpty-sidecar-${arch#win-}.tar.zst"
+            src="/tmp/conpty-extracted/runtimes/${arch}/native"
+            if [ ! -d "$src" ]; then
+              echo "missing $src — skipping $arch"
+              continue
+            fi
+            printf 'Microsoft.Windows.Console.ConPTY %s\nrunning-process %s\n' \
+              "$VERSION" "${{ needs.preflight.outputs.version }}" > "$src/VERSION.txt"
+            tar -C "$src" -cf - conpty.dll OpenConsole.exe VERSION.txt \
+              | zstd -19 -o "release-assets/$out_name"
+          done
+          echo "ConPTY sidecar assets:"
+          ls -la release-assets/conpty-sidecar-*.tar.zst
+
       - name: Generate checksums
         shell: bash
         run: |
