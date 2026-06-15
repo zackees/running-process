@@ -137,12 +137,15 @@ fn two_back_to_back_pastes_arrive_in_order() {
 fn paste_interleaves_with_concurrent_typed_input() {
     skip_if_unsupported!();
     let session = Arc::new(EchoerSession::spawn(&[]));
-    // Typist thread: 100 'x' bytes at 1ms intervals.
+    // Typist thread: 100 'q' bytes at 1ms intervals. We deliberately
+    // pick 'q' so the paste payload below (which contains 'x' inside
+    // `/tmp/x.png`) doesn't contaminate the count assertion that
+    // proves every typed byte survived the interleave.
     let typist = {
         let s = Arc::clone(&session);
         std::thread::spawn(move || {
             for _ in 0..100 {
-                s.write_stdin(b"x");
+                s.write_stdin(b"q");
                 std::thread::sleep(Duration::from_millis(1));
             }
         })
@@ -163,8 +166,8 @@ fn paste_interleaves_with_concurrent_typed_input() {
         expected_total,
         got.len()
     );
-    let x_count = got.iter().filter(|b| **b == b'x').count();
-    assert_eq!(x_count, 100, "expected 100 'x' bytes, got {x_count}");
+    let q_count = got.iter().filter(|b| **b == b'q').count();
+    assert_eq!(q_count, 100, "expected 100 'q' bytes, got {q_count}");
 
     // The paste sequence should appear contiguously — find the open
     // marker; the close marker is at exactly +paste_len-CLOSE_LEN.
