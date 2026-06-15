@@ -74,6 +74,14 @@ client = [
     # `[target.'cfg(windows)'.dependencies]` so enabling the feature on
     # non-Windows targets is a cargo-level no-op for them.
     "dep:ureq", "dep:zstd", "dep:tar",
+    # Phase 5 of #222 (#428): the `runpm` CLI parses `runpm.toml` batch
+    # config files (`[[app]]` entries). The TOML parsing helpers live
+    # in `src/runpm_config.rs` and are exercised by both the binary
+    # and the integration tests, so `toml` is gated on `client` rather
+    # than `daemon`. The `daemon` feature still composes `client`, so
+    # the daemon-side `src/daemon/config.rs` autostart loader picks up
+    # the same dep transitively.
+    "dep:toml",
 ]
 # Opt-in async client surface for tokio daemons (#414). Adds async
 # variants of `BackendHandle::probe_with_service` and `FrameClient`
@@ -94,7 +102,7 @@ daemon = [
     "dep:tokio", "dep:tokio-util", "dep:bytes", "dep:futures-util",
     "tokio/full",
     "dep:tracing", "dep:tracing-subscriber",
-    "dep:rusqlite", "dep:toml",
+    "dep:rusqlite",
 ]
 originator-scan = []               # used by running-process-py for cwd-tagging
 # #433 R4: opt-in test seam. Gates the `RUNNING_PROCESS_FAKE_BACKEND` backdoor

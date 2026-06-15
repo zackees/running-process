@@ -61,6 +61,13 @@ pub mod maintenance;
 #[cfg(feature = "client")]
 pub mod cleanup;
 
+// Phase 5 of #222 (#428): `runpm.toml` parser used by the `runpm` CLI
+// to batch-start `[[app]]` entries. Lives in the library (not under
+// `src/bin/`) so the integration test in `tests/runpm_toml_config.rs`
+// can drive the same code path the binary uses.
+#[cfg(feature = "client")]
+pub mod runpm_config;
+
 // #415: consumer-consumable conformance test kit. Gated behind the
 // off-by-default `test-support` cargo feature (which implies `client`)
 // so the helpers ship in the published crate but only compile when a
