@@ -33,6 +33,16 @@ pub mod terminal_input;
 #[cfg(windows)]
 pub(super) mod conpty_passthrough;
 
+/// Reports whether the process-wide ConPTY API table resolved to the
+/// system `kernel32.dll` or to a sidecar `conpty.dll`. See #443.
+///
+/// Integration tests gate Win10-with-sidecar coverage on this — the
+/// byte-exact passthrough assertions can only hold when a sidecar is
+/// loaded on Win10, since the system `kernel32!CreatePseudoConsole`
+/// on Win10 < build 22000 silently ignores `PSEUDOCONSOLE_PASSTHROUGH_MODE`.
+#[cfg(windows)]
+pub use conpty_passthrough::conpty_api::{current_backend_kind, ConPtyBackendKind};
+
 // #150: backend abstraction so native_pty_process.rs calls a single
 // Backend::openpty() regardless of platform. Made `pub` in 4.0.1 so
 // downstream consumers (e.g. clud's SIGWINCH relay) can call

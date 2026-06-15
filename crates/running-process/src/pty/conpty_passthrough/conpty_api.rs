@@ -87,6 +87,33 @@ pub(super) enum ConPtySource {
     Sidecar(PathBuf),
 }
 
+/// Public diagnostic enum mirroring `ConPtySource` without exposing the
+/// resolved sidecar path. Stable surface for integration tests that need
+/// to decide whether the Win10 byte-exact passthrough assertions can run
+/// (sidecar) or must be skipped (kernel32 on Win10 < 22000).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConPtyBackendKind {
+    /// API resolved from the system `kernel32.dll`.
+    Kernel32,
+    /// API resolved from a sidecar `conpty.dll` next to the executable.
+    Sidecar,
+}
+
+/// Returns which backend the process-wide ConPTY API table resolved to.
+///
+/// Initializes the table on first call. Idempotent and cheap on
+/// subsequent calls (a single `OnceLock` read).
+///
+/// Integration tests that need to gate Win10-with-sidecar coverage
+/// without touching internal types check this; production callers
+/// generally have no reason to (the dispatch is transparent).
+pub fn current_backend_kind() -> ConPtyBackendKind {
+    match get().1 {
+        ConPtySource::Kernel32 => ConPtyBackendKind::Kernel32,
+        ConPtySource::Sidecar(_) => ConPtyBackendKind::Sidecar,
+    }
+}
+
 static API: OnceLock<(ConPtyApi, ConPtySource)> = OnceLock::new();
 
 /// Returns the cached ConPTY API table, initializing on first call.
@@ -369,5 +396,29 @@ mod tests {
         let (_api, source) =
             for_test_resolution(None, false).expect("kernel32 must resolve on Win11");
         assert!(matches!(source, ConPtySource::Kernel32));
+    }
+
+    /// Public `current_backend_kind()` returns a stable enum that
+    /// downstream integration tests (e.g. `daemon_tui_repaint_test`)
+    /// can use to decide whether to run byte-exact passthrough
+    /// assertions on Win10 without reaching into crate-private types.
+    ///
+    /// The function initializes the OnceLock-cached production table
+    /// on first call; this test runs in the same process as the
+    /// internal-resolver tests above, so the table is in whatever
+    /// state the test-runner left it. Either Kernel32 or Sidecar is
+    /// a valid answer for an arbitrary host; we just need the call
+    /// to return a value (not panic / loop).
+    #[test]
+    fn current_backend_kind_returns_a_value() {
+        let kind = current_backend_kind();
+        // Both enum variants are valid outcomes depending on the host
+        // build and whether a sidecar is staged. The assertion is
+        // structural: the function returned at all and the value is
+        // one of the two known variants.
+        assert!(matches!(
+            kind,
+            ConPtyBackendKind::Kernel32 | ConPtyBackendKind::Sidecar
+        ));
     }
 }
