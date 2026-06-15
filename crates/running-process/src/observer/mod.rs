@@ -132,12 +132,136 @@ pub struct ObserverCapabilities {
     categories: Vec<CategoryCapability>,
 }
 
+/// Detect the backend that would serve [`EventCategory::File`] on this
+/// platform (#430 prep for Phase 3).
+///
+/// Returns `(support, backend, reason)`. Today every branch returns
+/// `Unavailable` because no Phase 3 backend has shipped yet — but the
+/// backend name and reason are now per-OS, so downstream UX (Phase 4)
+/// shows the right deferred-backend name instead of the catch-all
+/// `seccomp/eBPF/ETW` literal. As individual backends land, flip the
+/// matching branch to `Supported`/`Partial` with no shape change.
+fn detect_file_backend() -> (CapabilitySupport, &'static str, &'static str) {
+    #[cfg(target_os = "linux")]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "seccomp-user-notify",
+            "Phase 3: Linux seccomp user-notify file backend not yet implemented",
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "etw",
+            "Phase 3: Windows ETW file backend not yet implemented",
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "kqueue",
+            "Phase 3: macOS kqueue/EndpointSecurity file backend not yet implemented (entitlement-gated)",
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "none",
+            "Phase 3: no file backend planned for this OS",
+        )
+    }
+}
+
+/// Detect the backend that would serve [`EventCategory::Network`] on this
+/// platform (#430 prep for Phase 3). Mirrors [`detect_file_backend`].
+fn detect_network_backend() -> (CapabilitySupport, &'static str, &'static str) {
+    #[cfg(target_os = "linux")]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "ebpf",
+            "Phase 3: Linux eBPF network backend not yet implemented",
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "etw",
+            "Phase 3: Windows ETW network backend not yet implemented",
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "endpoint-security",
+            "Phase 3: macOS EndpointSecurity network backend not yet implemented (entitlement-gated)",
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "none",
+            "Phase 3: no network backend planned for this OS",
+        )
+    }
+}
+
+/// Detect the backend that would serve [`EventCategory::Process`] (descendant
+/// process creation outside the crate's own spawn path) on this platform
+/// (#430 prep for Phase 3). Mirrors [`detect_file_backend`].
+fn detect_process_backend() -> (CapabilitySupport, &'static str, &'static str) {
+    #[cfg(target_os = "linux")]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "seccomp-user-notify",
+            "Phase 3: Linux seccomp user-notify process backend not yet implemented",
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "etw",
+            "Phase 3: Windows ETW process backend not yet implemented",
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "endpoint-security",
+            "Phase 3: macOS EndpointSecurity process backend not yet implemented (entitlement-gated)",
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        (
+            CapabilitySupport::Unavailable,
+            "none",
+            "Phase 3: no process backend planned for this OS",
+        )
+    }
+}
+
 impl ObserverCapabilities {
     /// Negotiate the capability matrix for the current platform.
     ///
-    /// Phase 1 is platform-agnostic: the portable lifecycle baseline is
-    /// `Supported` on Windows, macOS, and Linux, and all syscall-level
-    /// categories are honestly `Unavailable` pending Phase 3 backends.
+    /// Phase 1 reports `Lifecycle` as `Supported` (portable, OS-agnostic).
+    /// Phase 3 categories (`File`, `Network`, `Process`) currently report
+    /// `Unavailable`, but the *backend name* and *reason* are now per-OS via
+    /// `#[cfg]`-gated detection helpers (#430). This keeps the
+    /// `ObserverCapabilities::negotiate()` contract stable for Phase 4
+    /// downstream UX while letting Phase 3 light each backend up
+    /// independently — flipping `Unavailable` → `Supported` per backend lands
+    /// without touching this function's shape.
     pub fn negotiate() -> Self {
         let categories = EventCategory::ALL
             .iter()
@@ -148,24 +272,33 @@ impl ObserverCapabilities {
                     backend: "portable-lifecycle",
                     reason: "started/exited emitted from the crate spawn and reap path",
                 },
-                EventCategory::File => CategoryCapability {
-                    category,
-                    support: CapabilitySupport::Unavailable,
-                    backend: "none",
-                    reason: "requires Phase 3 platform backend (seccomp/eBPF/ETW)",
-                },
-                EventCategory::Network => CategoryCapability {
-                    category,
-                    support: CapabilitySupport::Unavailable,
-                    backend: "none",
-                    reason: "requires Phase 3 platform backend (seccomp/eBPF/ETW)",
-                },
-                EventCategory::Process => CategoryCapability {
-                    category,
-                    support: CapabilitySupport::Unavailable,
-                    backend: "none",
-                    reason: "requires Phase 3 platform backend (seccomp/eBPF/ETW)",
-                },
+                EventCategory::File => {
+                    let (support, backend, reason) = detect_file_backend();
+                    CategoryCapability {
+                        category,
+                        support,
+                        backend,
+                        reason,
+                    }
+                }
+                EventCategory::Network => {
+                    let (support, backend, reason) = detect_network_backend();
+                    CategoryCapability {
+                        category,
+                        support,
+                        backend,
+                        reason,
+                    }
+                }
+                EventCategory::Process => {
+                    let (support, backend, reason) = detect_process_backend();
+                    CategoryCapability {
+                        category,
+                        support,
+                        backend,
+                        reason,
+                    }
+                }
             })
             .collect();
         Self { categories }
