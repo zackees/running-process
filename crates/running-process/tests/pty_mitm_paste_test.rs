@@ -217,6 +217,21 @@ fn four_megabyte_paste_survives_slow_consumer() {
         .expect("construct slow reader");
     process.start_impl().expect("start slow reader");
 
+    // Startup handshake (mirrors EchoerSession::spawn): drain stdout
+    // until the testbin's ASCII ACK byte arrives, fencing against
+    // the POSIX line-discipline race that would otherwise cook
+    // host writes before `cfmakeraw` lands.
+    let handshake_deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_ack = false;
+    while !saw_ack && Instant::now() < handshake_deadline {
+        if let Ok(Some(chunk)) = process.read_chunk_impl(Some(0.1)) {
+            if chunk.iter().any(|&b| b == 0x06) {
+                saw_ack = true;
+            }
+        }
+    }
+    assert!(saw_ack, "testbin-slow-stdin-reader never emitted ACK");
+
     let payload = vec![0xCDu8; 4 * 1024 * 1024];
     let wrapped = wrap_paste(&payload);
     process
