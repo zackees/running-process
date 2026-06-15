@@ -40,6 +40,8 @@ use windows_sys::Win32::Foundation::{HANDLE, HMODULE};
 use windows_sys::Win32::System::Console::{COORD, HPCON};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryExW};
 
+#[cfg(feature = "client")]
+use super::conpty_acquire;
 use super::win_version;
 
 /// `LOAD_LIBRARY_SEARCH_APPLICATION_DIR`. Restricts the DLL search to
@@ -103,24 +105,7 @@ pub(super) fn get() -> &'static (ConPtyApi, ConPtySource) {
         let force_system = std::env::var_os("RUNNING_PROCESS_USE_SYSTEM_CONPTY").is_some();
         let diagnostics = std::env::var_os("RUNNING_PROCESS_CONPTY_DIAGNOSTICS").is_some();
 
-        let sidecar_dir = if force_system || win_version::is_win11_or_newer() {
-            None
-        } else {
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(Path::to_path_buf))
-        };
-
-        let resolved = match resolve(sidecar_dir.as_deref(), force_system) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("running-process: ConPTY API resolution failed catastrophically: {e}");
-                // Catastrophic kernel32 failure — re-raise as a panic
-                // so callers fail fast instead of carrying garbage
-                // function pointers.
-                panic!("ConPTY API unavailable: {e}");
-            }
-        };
+        let resolved = resolve_production(force_system);
 
         if diagnostics {
             let build = win_version::build_number();
@@ -137,6 +122,69 @@ pub(super) fn get() -> &'static (ConPtyApi, ConPtySource) {
 
         resolved
     })
+}
+
+/// Production sidecar resolver. On Win11 or with the env-var
+/// override, returns kernel32 immediately. On Win10, tries:
+///
+/// 1. A manual pre-stage at `current_exe()/conpty.dll` — admin /
+///    air-gapped consumer override.
+/// 2. The self-acquired cache via `conpty_acquire::ensure_cached_sidecar`,
+///    which fetches the matching GitHub release asset on first miss.
+/// 3. kernel32, with a one-line warning.
+///
+/// Any catastrophic kernel32 failure escalates to panic — the crate
+/// has never supported a system that broken.
+fn resolve_production(force_system: bool) -> (ConPtyApi, ConPtySource) {
+    if force_system || win_version::is_win11_or_newer() {
+        return (
+            load_kernel32().unwrap_or_else(|e| catastrophe(e)),
+            ConPtySource::Kernel32,
+        );
+    }
+
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        let dll = exe_dir.join("conpty.dll");
+        if dll.is_file() {
+            match try_load_sidecar(&dll) {
+                Ok(api) => return (api, ConPtySource::Sidecar(dll)),
+                Err(e) => eprintln!(
+                    "running-process: pre-staged conpty.dll at {} unloadable ({e}); trying cache",
+                    dll.display()
+                ),
+            }
+        }
+    }
+
+    #[cfg(feature = "client")]
+    match conpty_acquire::ensure_cached_sidecar() {
+        Ok(cache_dir) => {
+            let dll = cache_dir.join("conpty.dll");
+            match try_load_sidecar(&dll) {
+                Ok(api) => return (api, ConPtySource::Sidecar(dll)),
+                Err(e) => eprintln!(
+                    "running-process: cached conpty.dll at {} unloadable ({e}); using kernel32",
+                    dll.display()
+                ),
+            }
+        }
+        Err(e) => eprintln!(
+            "running-process: ConPTY sidecar auto-acquire unavailable ({e}); using kernel32"
+        ),
+    }
+
+    (
+        load_kernel32().unwrap_or_else(|e| catastrophe(e)),
+        ConPtySource::Kernel32,
+    )
+}
+
+fn catastrophe(e: io::Error) -> ! {
+    eprintln!("running-process: ConPTY API resolution failed catastrophically: {e}");
+    panic!("ConPTY API unavailable: {e}");
 }
 
 /// Test/diagnostic resolver that bypasses the process-wide cache and
@@ -158,6 +206,7 @@ pub(super) fn for_test_resolution(
     resolve(force_sidecar_from, force_system)
 }
 
+#[cfg(test)]
 fn resolve(
     sidecar_dir: Option<&Path>,
     force_system: bool,

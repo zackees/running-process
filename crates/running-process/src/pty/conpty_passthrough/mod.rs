@@ -56,6 +56,11 @@ use windows_sys::Win32::System::Threading::{
 pub(super) const PSEUDOCONSOLE_PASSTHROUGH_MODE: u32 = 0x8;
 
 pub(in crate::pty) mod child;
+// The sidecar self-acquisition module pulls in `dirs`, `ureq`, `zstd`,
+// and `tar` — all gated by the `client` feature. Non-client builds
+// fall back to manual pre-stage + kernel32 on Win10.
+#[cfg(feature = "client")]
+pub(super) mod conpty_acquire;
 pub(super) mod conpty_api;
 pub(super) mod pipes;
 pub(super) mod proc_thread_attr;

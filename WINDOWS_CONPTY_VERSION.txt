@@ -1,18 +1,14 @@
-# Pinned Microsoft ConPTY Redistributable
+# Pinned Microsoft.Windows.Console.ConPTY NuGet version.
 #
-# Consumers of `running-process` on Windows 10 need to ship the
-# bundled `conpty.dll` + `OpenConsole.exe` from Microsoft's NuGet
-# package next to the host executable in order to get working
-# `PSEUDOCONSOLE_PASSTHROUGH_MODE` (see issue #443). The crate
-# itself does not vendor the binaries — the library declares the
-# contract, packaging owns the fetch.
+# At release time, the CI workflow fetches this version of the NuGet
+# package, extracts the per-arch conpty.dll + OpenConsole.exe, and
+# publishes per-arch zstd-19-compressed tarballs as GitHub release
+# assets named `conpty-sidecar-<arch>.tar.zst`. The runtime fetches
+# the matching asset for its CARGO_PKG_VERSION on first ConPTY use on
+# Windows 10, caches it under the platform cache directory, and uses
+# it transparently. Consumers do nothing.
 #
-# Fetch from: https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/
-# Unpack `runtimes/win-<arch>/native/{conpty.dll,OpenConsole.exe}` and
-# place both files in the same directory as the executable that will
-# call into `running-process`.
-#
-# Refresh this pin on a cadence; pick versions that the WezTerm bundle
-# (see https://github.com/wezterm/wezterm/issues/7774) has validated.
+# Refresh this pin on a cadence matching the WezTerm/upstream bundle
+# (https://github.com/wezterm/wezterm/issues/7774).
 
 Microsoft.Windows.Console.ConPTY 1.24.260402001

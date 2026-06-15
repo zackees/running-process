@@ -55,33 +55,44 @@ Server 2022 (build 22000+). On Windows 10, Microsoft's official answer is the
 paired `conpty.dll` + `OpenConsole.exe` that intercepts `CreatePseudoConsole`
 and runs a modern OpenConsole instance instead of the system conhost.
 
-At first ConPTY use, `running-process` picks the backend dynamically:
+**This is transparent. Consumers do nothing.** On first ConPTY use:
 
-- **Windows 11+** → calls `kernel32!CreatePseudoConsole` directly (no extra
-  files needed).
-- **Windows 10** → loads `conpty.dll` from the directory containing the host
-  executable via `LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_APPLICATION_DIR`,
-  then dispatches through it. If the sidecar is absent the loader falls back
-  to `kernel32` (legacy virtual-screen renderer) with a one-line warning;
-  nothing crashes.
+- **Windows 11+** → `kernel32!CreatePseudoConsole` directly. No extra files,
+  no network, no behavior change.
+- **Windows 10, cache hit** → load `conpty.dll` from the platform cache
+  (`%LOCALAPPDATA%\running-process\conpty\<rp-version>\<arch>\` by default).
+  Silent.
+- **Windows 10, cache miss** → one-time HTTPS fetch of
+  `conpty-sidecar-<arch>.tar.zst` (a few MB, zstd-19) from this crate's
+  matching GitHub release, decompressed atomically into the cache, then
+  loaded. Subsequent runs are silent cache hits.
+- **Windows 10, fetch failure** (no network, firewall, offline) → fall back
+  to `kernel32` (legacy virtual-screen renderer) with a one-line warning. No
+  crash.
 
-The library does **not** vendor the redistributable. Consumers that need
-Windows 10 byte-exact passthrough are expected to fetch the NuGet package
-pinned in [`WINDOWS_CONPTY_VERSION.txt`](WINDOWS_CONPTY_VERSION.txt) and ship
-`conpty.dll` + `OpenConsole.exe` next to their executable at packaging time.
-This mirrors the WezTerm / Windows Terminal pattern.
+Trust model: HTTPS to github.com plus GitHub's content-locked release assets
+mean an attacker who could substitute the sidecar could also substitute the
+crate itself. No additional integrity surface is added.
 
-Security: only the executable's directory is searched — never `PATH`, never
-the current working directory. A planted `conpty.dll` elsewhere on disk
-cannot be picked up.
+Pre-staging for air-gapped hosts: drop `conpty.dll` + `OpenConsole.exe` next
+to the host executable. That path is checked before the cache and before any
+network access, so air-gapped deployments never need network.
 
 Env vars:
 
-- `RUNNING_PROCESS_USE_SYSTEM_CONPTY=1` — force the kernel32 backend even on
-  Windows 10. Escape hatch for the rare case where a bundled `conpty.dll`
-  misbehaves.
-- `RUNNING_PROCESS_CONPTY_DIAGNOSTICS=1` — log the selected backend and the
-  detected Windows build to stderr on first ConPTY use.
+- `RUNNING_PROCESS_USE_SYSTEM_CONPTY=1` — force `kernel32` even on Windows 10.
+  Skip the sidecar and the fetch entirely. Escape hatch.
+- `RUNNING_PROCESS_CONPTY_OFFLINE=1` — never attempt the network fetch. The
+  library still uses a pre-staged sidecar (next to the exe) or the existing
+  cache; otherwise it falls back to `kernel32`. Use this in build sandboxes
+  and air-gapped runners.
+- `RUNNING_PROCESS_CONPTY_CACHE=<dir>` — override the sidecar cache root.
+- `RUNNING_PROCESS_CONPTY_DIAGNOSTICS=1` — log the selected backend, the
+  cache decision, and the detected Windows build on first ConPTY use.
+
+Release assets only exist for `running-process` versions published after the
+self-acquisition feature shipped. On an older version, Win10 hosts always
+fall back to `kernel32` unless a pre-staged sidecar is present.
 
 [nuget-conpty]: https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/
 

@@ -32,9 +32,9 @@ fn dependency_surface_doc_matches_runtime_manifest() {
 fn dependency_surface_doc_records_review_commitments() {
     assert!(
         DEPENDENCY_SURFACE_DOC.contains(
-            "No current direct runtime dependency is reviewed as an HTTP, TLS, WebSocket,"
+            "No other current direct runtime dependency is reviewed as an HTTP, TLS,"
         ),
-        "dependency surface doc must record the no-network direct-dependency review"
+        "dependency surface doc must record the no-network direct-dependency review (with #445 ureq carve-out)"
     );
     assert!(
         DEPENDENCY_SURFACE_DOC.contains(

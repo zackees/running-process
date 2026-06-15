@@ -38,11 +38,18 @@ here in the same change.
 | `serde` | `[dependencies]` | Always compiled | Data model derives and local JSON sidecar support. Not broker wire authority. |
 | `serde_json` | `[dependencies]` | Always compiled | Local JSON sidecar/admin-output support. The broker wire format remains prost-only. |
 | `windows-sys` | `[target.'cfg(windows)'.dependencies]` | Windows only | ConPTY and Windows platform APIs. Platform boundary is security-sensitive. |
+| `ureq` | `[target.'cfg(windows)'.dependencies]` | Windows only, `client` feature | Blocking HTTPS client for Win10 ConPTY sidecar self-acquisition (#445). Only used to GET `conpty-sidecar-<arch>.tar.zst` from this crate's GitHub release. rustls TLS, no native-tls. The library has no general-purpose HTTP path; ureq is reachable only through the one-time sidecar fetch on Windows 10 and is gated by `RUNNING_PROCESS_USE_SYSTEM_CONPTY` / `RUNNING_PROCESS_CONPTY_OFFLINE`. |
+| `zstd` | `[target.'cfg(windows)'.dependencies]` | Windows only, `client` feature | Decompresses the zstd-19 sidecar tarball fetched by ureq. Decode-only of an asset that is content-locked to a GitHub release tag. |
+| `tar` | `[target.'cfg(windows)'.dependencies]` | Windows only, `client` feature | Extracts `conpty.dll` + `OpenConsole.exe` from the decompressed sidecar archive. Path-traversal-defended at the call site (see `conpty_acquire::extract_tar_zst`). |
 
 ## Current Review Summary
 
-- No current direct runtime dependency is reviewed as an HTTP, TLS, WebSocket,
-  browser-facing transport, or network-RPC dependency.
+- The only direct runtime dependency reviewed as an HTTP/TLS dependency is
+  `ureq` (Windows-only, gated to a single one-shot GET to this crate's own
+  GitHub release for the Win10 ConPTY sidecar — see #445). It is reachable
+  only from `pty::conpty_passthrough::conpty_acquire`, never from broker code.
+  No other current direct runtime dependency is reviewed as an HTTP, TLS,
+  WebSocket, browser-facing transport, or network-RPC dependency.
 - `tokio` is the only direct runtime dependency with broadly available async
   network APIs through its enabled feature set. The v1 no-network commitment is
   enforced at the broker code and syscall-behavior level, not by pretending
