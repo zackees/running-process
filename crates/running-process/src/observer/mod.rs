@@ -238,10 +238,10 @@ impl ObserverEvent {
 
     /// Construct an event stamped with the current wall-clock time.
     ///
-    /// Crate-public sibling of [`Self::now`] for the daemon's per-session
-    /// observer registry (#221 Phase 2 / #429), which emits lifecycle
-    /// events directly without going through an
-    /// [`crate::observer::ObserverEmitter`].
+    /// Crate-public sibling of the private `now` constructor for the daemon's
+    /// per-session observer registry (#221 Phase 2 / #429), which emits
+    /// lifecycle events directly without going through the crate-private
+    /// `ObserverEmitter`.
     pub fn new_now(category: EventCategory, kind: ObserverEventKind, pid: u32) -> Self {
         Self::now(category, kind, pid)
     }
