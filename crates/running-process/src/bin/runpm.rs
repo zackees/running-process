@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand};
 use running_process::client::{connect_or_start, ClientError, DaemonClient};
 use running_process::maintenance::run_release_handles;
 use running_process::proto::daemon::{DaemonResponse, ServiceConfig, ServiceState, StatusCode};
+use running_process::runpm_config::{AppConfig, RunpmConfig};
 
 /// Polling interval used by `runpm logs --follow`. Documented in
 /// the CLI help text — this is best-effort, not real-time streaming.
@@ -44,8 +45,9 @@ struct Cli {
 enum Commands {
     /// Start a supervised service
     Start {
-        /// Command to run (executable plus arguments)
-        #[arg(required = true, num_args = 1..)]
+        /// Command to run (executable plus arguments). Optional when
+        /// `--config` is passed or a `runpm.toml` is auto-discovered.
+        #[arg(num_args = 0..)]
         cmd: Vec<String>,
         /// Service name (defaults to basename of `cmd[0]`)
         #[arg(long)]
@@ -62,6 +64,10 @@ enum Commands {
         /// Maximum restart attempts (0 = unlimited)
         #[arg(long, default_value_t = 0u32)]
         max_restarts: u32,
+        /// Batch-start every `[[app]]` entry from a `runpm.toml` file.
+        /// When set, all other start flags are ignored. See #428.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
     /// Stop a supervised service
     Stop {
@@ -167,7 +173,8 @@ fn main() -> ExitCode {
             env,
             no_autorestart,
             max_restarts,
-        } => cmd_start(cmd, name, cwd, env, !no_autorestart, max_restarts),
+            config,
+        } => cmd_start(cmd, name, cwd, env, !no_autorestart, max_restarts, config),
         Commands::Stop { target } => cmd_simple_target("stop", &target, |c, t| c.service_stop(t)),
         Commands::Restart { target } => {
             cmd_simple_target("restart", &target, |c, t| c.service_restart(t))
@@ -261,14 +268,31 @@ fn cmd_start(
     env_args: Vec<String>,
     autorestart: bool,
     max_restarts: u32,
+    config: Option<PathBuf>,
 ) -> Result<()> {
+    // Explicit `--config <path>`: batch-start every `[[app]]` and ignore
+    // the other start flags entirely (#428).
+    if let Some(path) = config {
+        return cmd_start_from_config(&path);
+    }
+
+    // No explicit cmd? Try the auto-discovery fallback before erroring.
+    if cmd.is_empty() {
+        if let Some(discovered) = discover_runpm_toml() {
+            return cmd_start_from_config(&discovered);
+        }
+        return Err(anyhow!(
+            "missing cmd: pass a command, --config <path>, or place a runpm.toml in the current directory"
+        ));
+    }
+
     let env = parse_env(&env_args)?;
     let resolved_name = match name {
         Some(n) => n,
         None => default_name_from(&cmd[0])?,
     };
 
-    let config = ServiceConfig {
+    let svc_config = ServiceConfig {
         name: resolved_name,
         cmd,
         cwd: cwd.unwrap_or_default(),
@@ -281,7 +305,7 @@ fn cmd_start(
     };
 
     let mut client = connect()?;
-    let resp = client.service_start(config).map_err(client_err)?;
+    let resp = client.service_start(svc_config).map_err(client_err)?;
     ensure_ok("start", &resp)?;
     if let Some(svc) = resp.service_start.and_then(|r| r.service) {
         println!(
@@ -290,6 +314,104 @@ fn cmd_start(
         );
     }
     Ok(())
+}
+
+/// Load a `runpm.toml`, register every `[[app]]` with the daemon, and
+/// return an error if any of them failed (so the CLI exits 1). One
+/// failed entry never strands the rest of the batch.
+fn cmd_start_from_config(path: &Path) -> Result<()> {
+    let parsed = RunpmConfig::load(path)
+        .with_context(|| format!("failed to load runpm config {}", path.display()))?;
+    let total = parsed.app.len();
+    if total == 0 {
+        println!("no apps to start in {}", path.display());
+        return Ok(());
+    }
+
+    let mut client = connect()?;
+    let mut started = 0usize;
+    let mut failed = 0usize;
+    for app in &parsed.app {
+        match start_single_app_from_config(&mut client, path, app) {
+            Ok(()) => started += 1,
+            Err(e) => {
+                eprintln!("error starting '{}': {e:#}", app.name);
+                failed += 1;
+            }
+        }
+    }
+    println!("started {started} of {total} apps from {}", path.display());
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "{failed} of {total} apps failed to start from {}",
+            path.display()
+        ))
+    }
+}
+
+/// Dispatch a single `[[app]]` entry to the daemon. Each failure is the
+/// caller's problem to report so the batch can continue past it.
+fn start_single_app_from_config(
+    client: &mut DaemonClient,
+    config_path: &Path,
+    app: &AppConfig,
+) -> Result<()> {
+    let cwd = RunpmConfig::resolve_cwd(config_path, &app.cwd).unwrap_or_default();
+    let svc_config = ServiceConfig {
+        name: app.name.clone(),
+        cmd: app.cmd.clone(),
+        cwd,
+        env: app.env.clone(),
+        autorestart: app.autorestart,
+        max_restarts: app.max_restarts.unwrap_or(0),
+        restart_delay_ms: app.restart_delay_ms.unwrap_or(0),
+        kill_timeout_ms: app.kill_timeout_ms.unwrap_or(0),
+        min_uptime_ms: app.min_uptime_ms.unwrap_or(0),
+    };
+    let resp = client.service_start(svc_config).map_err(client_err)?;
+    ensure_ok("start", &resp)?;
+    if let Some(svc) = resp.service_start.and_then(|r| r.service) {
+        println!("started '{}' (id={})", svc.name, svc.id);
+    } else {
+        // Daemon returned OK without a populated payload — surface the
+        // ack so the operator sees forward progress.
+        println!("started '{}'", app.name);
+    }
+    Ok(())
+}
+
+/// Look for a `runpm.toml` in the current directory or the per-user
+/// config directory, returning the first match. If both exist, prefer
+/// the in-repo one and note the override on stderr.
+fn discover_runpm_toml() -> Option<PathBuf> {
+    let cwd_path = std::env::current_dir().ok().map(|p| p.join("runpm.toml"));
+    let cwd_hit = cwd_path.as_ref().filter(|p| p.is_file()).cloned();
+    let user_hit = user_config_runpm_toml().filter(|p| p.is_file());
+
+    match (cwd_hit, user_hit) {
+        (Some(cwd), Some(user)) => {
+            eprintln!(
+                "note: using {} (also found {})",
+                cwd.display(),
+                user.display()
+            );
+            Some(cwd)
+        }
+        (Some(cwd), None) => Some(cwd),
+        (None, Some(user)) => Some(user),
+        (None, None) => None,
+    }
+}
+
+/// Resolve the per-user runpm config location:
+/// - Linux/macOS: `$XDG_CONFIG_HOME/runpm/config.toml` (falls back to
+///   `~/.config/runpm/config.toml`).
+/// - Windows: `%APPDATA%\runpm\config.toml`.
+fn user_config_runpm_toml() -> Option<PathBuf> {
+    let base = dirs::config_dir()?;
+    Some(base.join("runpm").join("config.toml"))
 }
 
 fn cmd_list(json: bool) -> Result<()> {
