@@ -94,17 +94,17 @@ fn main() {
     // cooked mode at host-write time) would echo control characters
     // back as `^X` form, breaking byte-exact MITM assertions.
     //
-    // Diagnostic (#452): also write a one-line marker to stderr
-    // before and after the ACK so a future Windows-substrate
-    // investigation can confirm the testbin actually executed even
-    // when ConPTY swallows the stdout ACK on the master pipe.
-    eprintln!("testbin-stdin-echoer: about to write ACK 0x06 to stdout");
+    // We deliberately do NOT emit any extra debug bytes here: under a
+    // PTY both stdout and stderr route through the same slave, so an
+    // eprintln would interleave with the master pipe and pollute the
+    // byte-exact assertions. The investigation hooks for #452 live in
+    // the helper's panic-message renderer instead, where they only
+    // fire when the handshake actually fails.
     {
         let mut guard = stdout.lock().expect("stdout mutex poisoned");
         guard.write_all(b"\x06").expect("ack write");
         guard.flush().expect("ack flush");
     }
-    eprintln!("testbin-stdin-echoer: ACK written and flushed; entering read loop");
 
     if advertise_paste {
         // Bracketed-paste enable sequence per xterm DEC mode 2004.
