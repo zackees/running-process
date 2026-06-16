@@ -27,3 +27,7 @@ logs/
 .extern-repos/
 src/running_process/assets/daemon-trampoline
 src/running_process/assets/daemon-trampoline.exe
+
+# clud project settings
+!.clud/
+!.clud/settings.json
