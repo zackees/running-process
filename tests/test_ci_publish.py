@@ -193,6 +193,10 @@ def test_publish_crates_runs_in_dependency_order(monkeypatch) -> None:
         seen.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
+    # Force the raw-cargo path so this assertion is deterministic
+    # regardless of whether soldr is installed on the host running the test.
+    # The soldr-prefix path is covered by test_publish_crates_routes_through_soldr_when_available.
+    monkeypatch.setattr("shutil.which", lambda _name: None)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
     monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
 
@@ -201,5 +205,31 @@ def test_publish_crates_runs_in_dependency_order(monkeypatch) -> None:
     assert seen == [
         ["cargo", "publish", "-p", "running-process", "--no-verify"],
         ["cargo", "publish", "-p", "running-process-py", "--no-verify"],
+    ]
+    assert sleeps == [30]
+
+
+def test_publish_crates_routes_through_soldr_when_available(monkeypatch) -> None:
+    module = _load_publish_module()
+    seen: list[list[str]] = []
+    sleeps: list[int] = []
+
+    def fake_run(cmd, capture_output=True, text=True, errors="replace"):
+        del capture_output, text, errors
+        seen.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/local/bin/soldr" if name == "soldr" else None,
+    )
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    module.publish_crates(dry_run=False)
+
+    assert seen == [
+        ["soldr", "cargo", "publish", "-p", "running-process", "--no-verify"],
+        ["soldr", "cargo", "publish", "-p", "running-process-py", "--no-verify"],
     ]
     assert sleeps == [30]

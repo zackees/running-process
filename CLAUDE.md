@@ -63,7 +63,7 @@ uv run black src tests
 uv run pyright src tests
 ```
 
-**Wrong toolchain?** Use `./_cargo`, `./_rustc`, `./_rustfmt` — these route through the globally installed [soldr](https://github.com/zackees/soldr) binary, which resolves the rustup-managed toolchain via `rustup which`. Handy on Windows where chocolatey cargo or other stale shims can take precedence on PATH. `soldr cargo ...` works directly too. Install soldr globally (it is no longer pulled in as a uv dev dep) — e.g. `pipx install soldr` or `cargo install soldr`.
+**Wrong toolchain?** Invoke build commands as `soldr cargo …`, `soldr rustc …`, `soldr rustfmt …`. The globally installed [soldr](https://github.com/zackees/soldr) binary resolves the rustup-managed toolchain via `rustup which` — handy on Windows where chocolatey cargo or other stale shims can take precedence on PATH. Install soldr globally (it is no longer pulled in as a uv dev dep) — e.g. `pipx install soldr` or `cargo install soldr`. CI Python (`ci/soldr.py:cargo_command`) detects soldr on PATH and routes through it automatically, falling back to raw `cargo` on CI runners where soldr isn't installed.
 
 **Environment:**
 ```bash

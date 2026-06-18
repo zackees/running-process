@@ -212,7 +212,7 @@ def _ensure_nextest_installed() -> bool:
         flush=True,
     )
     install = subprocess.run(
-        ["cargo", "install", "cargo-nextest", "--locked"],
+        cargo_command("install", "cargo-nextest", "--locked"),
         cwd=ROOT,
     )
     if install.returncode != 0:
