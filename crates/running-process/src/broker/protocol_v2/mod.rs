@@ -83,4 +83,46 @@ mod tests {
         assert!(cap.health_path.is_empty());
         assert!(cap.display_name.is_empty());
     }
+
+    /// `BackendHttpReady` carries the daemon's OS-allocated port back to
+    /// the broker; encodes/decodes without loss.
+    #[test]
+    fn backend_http_ready_round_trips() {
+        let original = BackendHttpReady { port: 49_152 };
+
+        let bytes = original.encode_to_vec();
+        let decoded =
+            BackendHttpReady::decode(bytes.as_slice()).expect("BackendHttpReady decodes");
+
+        assert_eq!(decoded.port, 49_152);
+    }
+
+    /// `GetBrokerHttpEndpointRequest` is an empty marker; encoding +
+    /// decoding it produces the same default-constructed message.
+    #[test]
+    fn get_broker_http_endpoint_request_round_trips_empty() {
+        let original = GetBrokerHttpEndpointRequest::default();
+
+        let bytes = original.encode_to_vec();
+        let decoded = GetBrokerHttpEndpointRequest::decode(bytes.as_slice())
+            .expect("GetBrokerHttpEndpointRequest decodes");
+
+        assert_eq!(decoded, GetBrokerHttpEndpointRequest::default());
+    }
+
+    /// `GetBrokerHttpEndpointResponse` round-trips both fields (port + pid).
+    #[test]
+    fn get_broker_http_endpoint_response_round_trips() {
+        let original = GetBrokerHttpEndpointResponse {
+            port: 8765,
+            pid: 12_345,
+        };
+
+        let bytes = original.encode_to_vec();
+        let decoded = GetBrokerHttpEndpointResponse::decode(bytes.as_slice())
+            .expect("GetBrokerHttpEndpointResponse decodes");
+
+        assert_eq!(decoded.port, 8765);
+        assert_eq!(decoded.pid, 12_345);
+    }
 }
