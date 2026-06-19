@@ -19,6 +19,17 @@ from typing import Any
 import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _cargo_command(*args: str) -> list[str]:
+    """Local copy of ci.soldr.cargo_command — this script runs via
+    `uv run --script` (PEP 723), which doesn't put `ci/` on sys.path
+    as a package, so a `from ci.soldr import ...` would fail at import.
+    Kept in sync with ci/soldr.py:cargo_command.
+    """
+    if shutil.which("soldr"):
+        return ["soldr", "cargo", *args]
+    return ["cargo", *args]
 DIST_DIR = ROOT / "dist"
 WORKFLOWS = {
     "linux-x86-build.yml": "wheels-linux-x86",
@@ -346,7 +357,7 @@ def publish_crates(*, dry_run: bool) -> None:
     """Publish Rust crates to crates.io in dependency order."""
     for crate in PUBLISHABLE_CRATES:
         log(f"Publishing {crate} to crates.io")
-        cmd = ["cargo", "publish", "-p", crate, "--no-verify"]
+        cmd = _cargo_command("publish", "-p", crate, "--no-verify")
         if dry_run:
             cmd.append("--dry-run")
         result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
