@@ -10,6 +10,7 @@
 pub mod adopt;
 pub mod backend_handle;
 pub mod broker_http_port;
+pub mod broker_http_server;
 pub mod backend_lib;
 pub mod backend_lifecycle;
 pub mod backend_sdk;
