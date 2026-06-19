@@ -13,6 +13,7 @@
 
 pub mod crash_dump;
 pub mod names;
+pub mod names_v2;
 pub mod privilege;
 pub mod process_tree;
 pub mod sid;
