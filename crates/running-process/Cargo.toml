@@ -46,6 +46,15 @@ name = "running-process-broker-v1"
 path = "src/bin/running-process-broker-v1.rs"
 required-features = ["daemon"]
 
+# v2 broker binary scaffold (slice 3a of #483). Pure print-and-exit
+# scaffold today; subsequent slices add the pipe acceptor and Hello
+# handler. Gated on `client` (not `daemon`) — v2 is a per-program proxy
+# that doesn't need the full daemon runtime.
+[[bin]]
+name = "running-process-broker-v2"
+path = "src/bin/running-process-broker-v2.rs"
+required-features = ["client"]
+
 [[example]]
 # Dev-only evidence harness for #387: deploys the real broker binary plus
 # a separate backend process and measures the opt-in handle-passing
