@@ -144,16 +144,24 @@ fn handle_one(mut stream: TcpStream, registry: &HttpEndpointRegistry) -> std::io
         .unwrap_or("/")
         .to_string();
 
-    let (status_line, body) = if request_line.starts_with("GET ")
+    let (status_line, content_type, body) = if request_line.starts_with("GET ")
         && (path == "/" || path.is_empty())
     {
-        ("HTTP/1.1 200 OK", render_placeholder(registry))
+        (
+            "HTTP/1.1 200 OK",
+            "text/html; charset=utf-8",
+            render_aggregator_page(registry),
+        )
     } else {
-        ("HTTP/1.1 404 Not Found", "not found\n".to_string())
+        (
+            "HTTP/1.1 404 Not Found",
+            "text/plain; charset=utf-8",
+            "not found\n".to_string(),
+        )
     };
 
     let response = format!(
-        "{status_line}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body,
     );
@@ -162,19 +170,88 @@ fn handle_one(mut stream: TcpStream, registry: &HttpEndpointRegistry) -> std::io
     Ok(())
 }
 
-fn render_placeholder(registry: &HttpEndpointRegistry) -> String {
-    let mut out = String::from("running-process-broker-v2 (slice 7 scaffold)\n\n");
+/// Render the aggregator page (slice 8 of #488): top-bar selector +
+/// full-bleed iframe. The selector emits one button per registered
+/// backend; clicking flips the iframe's `src` to that backend's HTTP
+/// root. Backends whose registry slot is `None` render as disabled
+/// buttons with `(starting…)` text — they don't accidentally try to
+/// load a URL the broker doesn't have yet.
+///
+/// The page is a single self-contained document: no external CSS,
+/// no external JS, no fonts. Keeps it loadable on locked-down
+/// operator boxes and trivially auditable.
+fn render_aggregator_page(registry: &HttpEndpointRegistry) -> String {
     let mut snap = registry.snapshot();
     snap.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut buttons = String::new();
+    let mut initial_src = String::new();
     if snap.is_empty() {
-        out.push_str("no backends registered yet\n");
+        buttons.push_str(
+            r#"<span class="empty">no backends registered yet</span>"#,
+        );
     } else {
-        out.push_str("registered backends:\n");
-        for (id, port) in snap {
+        for (id, port) in &snap {
             match port {
-                Some(p) => out.push_str(&format!("  {id} -> port {p}\n")),
-                None => out.push_str(&format!("  {id} -> (starting...)\n")),
+                Some(p) => {
+                    let url = format!("http://127.0.0.1:{p}/");
+                    if initial_src.is_empty() {
+                        initial_src.clone_from(&url);
+                    }
+                    buttons.push_str(&format!(
+                        r#"<button onclick="document.getElementById('agg').src={url:?}">{}</button>"#,
+                        html_escape(id),
+                    ));
+                }
+                None => {
+                    buttons.push_str(&format!(
+                        r#"<button disabled title="backend has not reported a port yet">{} (starting…)</button>"#,
+                        html_escape(id),
+                    ));
+                }
             }
+        }
+    }
+
+    let initial_src_attr = if initial_src.is_empty() {
+        "about:blank".to_string()
+    } else {
+        initial_src
+    };
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>running-process broker-v2 aggregator</title>
+<style>
+  html, body {{ margin: 0; padding: 0; height: 100%; font-family: system-ui, sans-serif; }}
+  #bar {{ display: flex; gap: 0.4rem; padding: 0.4rem; border-bottom: 1px solid #ccc; background: #f5f5f5; }}
+  #bar button {{ padding: 0.3rem 0.8rem; }}
+  #agg {{ width: 100%; height: calc(100% - 3rem); border: 0; }}
+  .empty {{ color: #888; font-style: italic; }}
+</style>
+</head>
+<body>
+<nav id="bar">{buttons}</nav>
+<iframe id="agg" src="{initial_src_attr}"></iframe>
+</body>
+</html>
+"#
+    )
+}
+
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
         }
     }
     out
@@ -225,14 +302,53 @@ mod tests {
             "expected 200 OK in response, got:\n{buf}"
         );
         assert!(
-            buf.contains("fbuild -> port 8002"),
-            "expected fbuild row, got:\n{buf}"
+            buf.contains("text/html"),
+            "expected HTML content-type, got:\n{buf}"
         );
         assert!(
-            buf.contains("zccache -> (starting"),
-            "expected zccache starting row, got:\n{buf}"
+            buf.contains("<iframe id=\"agg\""),
+            "expected aggregator iframe element, got:\n{buf}"
+        );
+        assert!(
+            buf.contains("http://127.0.0.1:8002/"),
+            "expected fbuild URL wired into selector, got:\n{buf}"
+        );
+        assert!(
+            buf.contains("zccache (starting"),
+            "expected zccache pending-state button, got:\n{buf}"
+        );
+        assert!(
+            buf.contains("src=\"http://127.0.0.1:8002/\""),
+            "expected fbuild URL as initial iframe src, got:\n{buf}"
         );
 
+        handle.join().expect("server thread joins");
+    }
+
+    #[test]
+    fn aggregator_page_with_no_backends_shows_empty_state() {
+        let reg = Arc::new(HttpEndpointRegistry::new());
+        let s = BrokerHttpServer::bind(BrokerHttpPort::Dynamic, reg)
+            .expect("dynamic bind succeeds");
+        let local = s.local_addr();
+        let handle = thread::spawn(move || {
+            s.serve_once().expect("serve_once succeeds");
+        });
+        let mut client = TcpStream::connect(local).expect("connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .expect("write request");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set_read_timeout");
+        let mut buf = String::new();
+        client.read_to_string(&mut buf).expect("read response");
+
+        assert!(buf.contains("no backends registered yet"), "got:\n{buf}");
+        assert!(
+            buf.contains("src=\"about:blank\""),
+            "empty selector should default the iframe to about:blank, got:\n{buf}"
+        );
         handle.join().expect("server thread joins");
     }
 
