@@ -18,8 +18,12 @@ use std::process::ExitCode;
 
 use interprocess::local_socket::traits::Listener as _;
 use interprocess::local_socket::ListenerOptions;
+use prost::Message;
 use running_process::broker::lifecycle::names_v2::v2_program_pipe;
 use running_process::broker::lifecycle::sid::user_sid_hash;
+use running_process::broker::protocol::{
+    hello_reply, read_frame, write_frame, Hello, HelloReply, Negotiated, ENVELOPE_VERSION,
+};
 
 /// Placeholder program name used by the slice 3c scaffold. Replaced by
 /// a real CLI argument in a later slice once the v2 broker is invoked
@@ -105,9 +109,20 @@ fn main() -> ExitCode {
     }
 
     let exit_code = match listener.accept() {
-        Ok(_stream) => {
-            println!("running-process-broker-v2 peer connected; exiting");
-            ExitCode::SUCCESS
+        Ok(mut stream) => {
+            println!("running-process-broker-v2 peer connected");
+            match handle_hello(&mut stream) {
+                Ok(svc) => {
+                    println!(
+                        "running-process-broker-v2 Hello for service {svc:?} negotiated; exiting"
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("running-process-broker-v2: Hello handler failed: {err}");
+                    ExitCode::from(1)
+                }
+            }
         }
         Err(err) => {
             eprintln!("running-process-broker-v2: accept failed: {err}");
@@ -174,6 +189,42 @@ fn unix_socket_dir() -> std::path::PathBuf {
             PathBuf::from(format!("/tmp/running-process-{uid}/broker-v2"))
         }
     }
+}
+
+/// Read a `Hello` frame from the peer, send back a stub `Negotiated`
+/// reply, return the requested service name as evidence.
+///
+/// Stub semantics for slice 3d: the broker has no real service registry
+/// yet, so it accepts any well-formed Hello and replies with a fixed
+/// `Negotiated` carrying the v2 envelope version + the binary's package
+/// version as `daemon_version`. Future slices replace this with actual
+/// servicedef lookup + backend launch.
+fn handle_hello<S: std::io::Read + std::io::Write>(
+    stream: &mut S,
+) -> Result<String, String> {
+    let bytes = read_frame(stream).map_err(|e| format!("read Hello frame: {e}"))?;
+    let hello = Hello::decode(bytes.as_slice()).map_err(|e| format!("decode Hello: {e}"))?;
+
+    let reply = HelloReply {
+        result: Some(hello_reply::Result::Negotiated(Negotiated {
+            negotiated_protocol: ENVELOPE_VERSION as u32,
+            daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+            backend_pipe: String::new(),
+            warnings: Vec::new(),
+            server_capabilities: 0,
+            keepalive_interval_secs: 0,
+            handle_passed_token: Vec::new(),
+            connection_id: hello.connection_id,
+        })),
+    };
+
+    let mut body = Vec::with_capacity(reply.encoded_len());
+    reply
+        .encode(&mut body)
+        .map_err(|e| format!("encode HelloReply: {e}"))?;
+    write_frame(stream, &body).map_err(|e| format!("write HelloReply frame: {e}"))?;
+
+    Ok(hello.service_name)
 }
 
 fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
