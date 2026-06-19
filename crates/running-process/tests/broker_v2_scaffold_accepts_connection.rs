@@ -95,12 +95,52 @@ fn binary_binds_pipe_accepts_connection_and_exits() {
         }
     };
 
-    // Dial the same pipe the binary just bound, which unblocks its
-    // `accept` call. The peer connection itself is short-lived — we
-    // drop the stream immediately and let the binary close on its
-    // side after observing the connect.
+    // Dial the same pipe, run the full Hello / Negotiated round-trip,
+    // and assert the binary echoes our connection_id back in its reply.
     let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
-    let _stream = Stream::connect(name).expect("connect to v2 broker pipe");
+    let mut stream = Stream::connect(name).expect("connect to v2 broker pipe");
+
+    use prost::Message;
+    use running_process::broker::protocol::{
+        hello_reply, read_frame, write_frame, Hello, HelloReply, ENVELOPE_VERSION,
+    };
+
+    let hello = Hello {
+        client_min_protocol: ENVELOPE_VERSION as u32,
+        client_max_protocol: ENVELOPE_VERSION as u32,
+        service_name: "broker-v2-scaffold".to_string(),
+        wanted_version: "0.0.0".to_string(),
+        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_capabilities: 0,
+        auth_token: Vec::new(),
+        request_id: "slice-3d-integration-test".to_string(),
+        connection_id: 0xdead_beef,
+        peer_pid: std::process::id(),
+        client_lib_name: "slice-3d-test".to_string(),
+        client_lib_version: env!("CARGO_PKG_VERSION").to_string(),
+        peer_attestation_nonce: Vec::new(),
+        capability_token: Vec::new(),
+        client_keepalive_secs: 0,
+    };
+    let mut body = Vec::with_capacity(hello.encoded_len());
+    hello.encode(&mut body).expect("encode Hello");
+    write_frame(&mut stream, &body).expect("write Hello frame");
+
+    let reply_bytes = read_frame(&mut stream).expect("read HelloReply frame");
+    let reply = HelloReply::decode(reply_bytes.as_slice()).expect("decode HelloReply");
+    let negotiated = match reply.result {
+        Some(hello_reply::Result::Negotiated(n)) => n,
+        Some(hello_reply::Result::Refused(r)) => panic!("expected Negotiated, got Refused: {r:?}"),
+        None => panic!("HelloReply.result missing"),
+    };
+    assert_eq!(negotiated.negotiated_protocol, ENVELOPE_VERSION as u32);
+    assert_eq!(negotiated.connection_id, 0xdead_beef);
+    assert!(
+        !negotiated.daemon_version.is_empty(),
+        "daemon_version should be populated"
+    );
+
+    drop(stream);
 
     // Drain any remaining stdout so the binary can flush cleanly.
     let mut tail = String::new();
@@ -118,6 +158,10 @@ fn binary_binds_pipe_accepts_connection_and_exits() {
     assert!(
         all_stdout.contains("peer connected"),
         "expected 'peer connected' in stdout, got:\n{all_stdout}"
+    );
+    assert!(
+        all_stdout.contains("Hello for service"),
+        "expected Hello-handler log line in stdout, got:\n{all_stdout}"
     );
 }
 
