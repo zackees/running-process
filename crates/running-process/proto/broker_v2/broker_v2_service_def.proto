@@ -1,0 +1,62 @@
+// running-process v2 broker — service definition schema.
+//
+// v2 supersedes the v1 service definition (`broker_v1_service_def.proto`,
+// FROZEN FOREVER per #228). The v2 schema lives in its own package so the
+// two coexist during rollout; consumers opt in to v2 individually.
+//
+// Service-definition files live in the same per-OS directories the v1
+// loader uses; the v2 broker resolves them via a v2-specific extension
+// (e.g. `.servicedef.v2`) so a v1 broker never reads a v2 file by mistake.
+//
+// This file currently introduces the `HttpServerCapability` optional
+// sub-message defined in #483 plus the minimum `ServiceDefinition`
+// envelope required to attach it. Additional v2 fields (version mode,
+// update backend, broker port mode wiring) land in their own slices.
+
+syntax = "proto3";
+package running_process.broker.v2;
+
+// Optional per-backend HTTP server capability.
+//
+// A backend declares HTTP support by setting this field on its
+// `ServiceDefinition`. Absence of the field means the backend serves no
+// HTTP surface; presence is the capability advertisement. v2 uses
+// structured fields for capabilities rather than the v1 `u64` Hello
+// bitmap (`broker/capabilities.rs`, frozen forever per #228) so new
+// capabilities never collide with frozen v1 bit assignments.
+//
+// Port assignment is NOT carried here. The daemon binds `127.0.0.1:0`
+// at startup and reports its OS-assigned port to the broker via the
+// existing broker↔daemon control channel (see #483 §2). The fields
+// below describe what the backend exposes once it has bound a port.
+message HttpServerCapability {
+  // Loopback IP the backend will bind. Default `127.0.0.1` when empty.
+  // The broker enforces deploy-time bind policy (env-overridden in
+  // container deployments) so backends that try to bind elsewhere
+  // without authorization are still constrained by the surrounding
+  // environment.
+  string bind_addr = 1;
+
+  // Health-check path served by the backend. Default `/health` when
+  // empty. The aggregator polls this to gate the iframe `src` swap.
+  string health_path = 2;
+
+  // Human-readable label shown in the aggregator selector. Default to
+  // the service name when empty.
+  string display_name = 3;
+}
+
+// v2 service definition envelope.
+//
+// Carries the service identity plus the new v2-only capability fields.
+// Fields shared with v1 (binary_path, isolation, etc.) will be ported
+// in subsequent slices; this slice only adds the HTTP capability so
+// the proto compiles and round-trips end-to-end without depending on
+// the rest of the v2 broker work landing first.
+message ServiceDefinition {
+  // [a-z0-9-]{1,64}; same validation rules as v1.
+  string service_name = 1;
+
+  // Optional HTTP server capability. Absent => backend serves no HTTP.
+  optional HttpServerCapability http_server = 10;
+}
