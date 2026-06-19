@@ -15,6 +15,7 @@ pub mod backend_sdk;
 pub mod builders;
 pub mod capabilities;
 pub mod client;
+pub mod client_v2;
 pub mod doctor;
 pub mod fs_health;
 pub mod host_identity;
