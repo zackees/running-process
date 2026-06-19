@@ -18,6 +18,7 @@ pub mod client;
 pub mod client_v2;
 pub mod doctor;
 pub mod fs_health;
+pub mod http_endpoint_registry;
 pub mod host_identity;
 pub mod lifecycle;
 pub mod manifest;
