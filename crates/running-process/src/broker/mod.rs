@@ -21,6 +21,7 @@ pub mod host_identity;
 pub mod lifecycle;
 pub mod manifest;
 pub mod protocol;
+pub mod protocol_v2;
 pub(crate) mod secure_dir;
 pub mod server;
 
