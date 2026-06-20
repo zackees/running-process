@@ -38,10 +38,12 @@ message CacheRoot {
   string path = 2;
 }
 
-// Logical role classification for cache roots. v1: `BrokerIsolation`-style
-// enum at the same wire values; new kinds land at the bottom (proto3 unknown
-// enum values are silently dropped per the spec, so older consumers stay
-// readable).
+// Logical role classification for cache roots. Wire values mirror v1's
+// `broker_v1.CacheRootKind` EXACTLY (see `broker_v1_manifest.proto`).
+// Keeping the integer values aligned avoids subtle bugs when consumers
+// mix the two generations (e.g. via `as i32` casts in test fixtures or
+// in code that bridges between v1 and v2). New kinds land in the
+// reserved range; v1's enum is FROZEN so anything past 9 is v2-only.
 enum CacheRootKind {
   // Unknown / unset (proto3 zero value). Consumers MUST treat this as
   // "ignore" rather than a real cache role.
@@ -50,15 +52,33 @@ enum CacheRootKind {
   // Primary cache data (the largest root; sccache-style content store).
   CACHE_DATA = 1;
 
-  // Index / metadata sidecar (e.g. compile journal, dep graph, redb
-  // index files).
-  CACHE_INDEX = 2;
-
   // Log directory (daemon stderr / structured event log).
-  CACHE_LOGS = 3;
+  CACHE_LOGS = 2;
 
-  // Temporary working tree (artifact build scratch, depfile staging).
-  CACHE_TMP = 4;
+  // PID files, lock files, sockets, manifests, identity JSON.
+  CACHE_LOCKS = 3;
+
+  // Copied daemon binaries (relocated install destination).
+  CACHE_RUNTIME = 4;
+
+  // Temporary / ephemeral working tree (artifact build scratch,
+  // depfile staging, repeatedly emptied).
+  CACHE_TMP = 5;
+
+  // User config (do NOT prune).
+  CACHE_CONFIG = 6;
+
+  // Separately bounded index (redb, depgraph snapshot, compile journal).
+  CACHE_INDEX = 7;
+
+  // WAL files needing separate fsync semantics.
+  CACHE_JOURNAL = 8;
+
+  // API keys / tokens. mode 0600. NEVER LOGGED.
+  CACHE_SECRETS = 9;
+
+  // v2-only future kinds live here.
+  reserved 10 to 20;
 }
 
 // v2 cache manifest envelope.
