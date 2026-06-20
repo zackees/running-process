@@ -8,6 +8,13 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
         unsafe_count: 19,
     },
     UnsafeInventoryEntry {
+        // Slice 4 of #488 (PR #491): `unsafe { libc::getuid() }` in
+        // `resolve_socket_path` for the unix bind dir. Same pattern v1
+        // uses in `lifecycle/names.rs::unix_broker_socket_dir`.
+        path: "src/broker/client_v2.rs",
+        unsafe_count: 2,
+    },
+    UnsafeInventoryEntry {
         path: "src/broker/fs_health.rs",
         unsafe_count: 2,
     },
