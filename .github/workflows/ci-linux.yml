@@ -1,0 +1,36 @@
+name: CI Preflight (Linux)
+
+# Thin dispatcher — calls ci-preflight.yml twice, once per Linux arch.
+# rustdoc is enabled only on linux-x86 (matches the historical sprawl
+# where only linux-x86-rustdoc.yml existed).
+#
+# See zackees/running-process#513 for the consolidation plan.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-linux-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  x86:
+    uses: ./.github/workflows/ci-preflight.yml
+    with:
+      os: ubuntu-24.04
+      label: linux-x86
+      rustdoc: true
+      integration-test: true
+
+  arm:
+    uses: ./.github/workflows/ci-preflight.yml
+    with:
+      os: ubuntu-24.04-arm
+      label: linux-arm
+      rustdoc: false
+      integration-test: true
