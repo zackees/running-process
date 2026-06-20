@@ -186,6 +186,10 @@ dirs = "6"
 serde_json = "1"
 tempfile = "3"
 test-watchdog = { path = "../test-watchdog" }
+# Slice 33 of #500: trybuild UI harness assertions on the
+# `BrokeredBackend` trait (#497) — every documented misuse pattern
+# gets its own compile-fail case under `tests/ui/`.
+trybuild = "1"
 
 # #150: ConPTY passthrough rewrite uses windows-sys directly for the
 # new conpty_passthrough module. Kept alongside (not replacing) the
