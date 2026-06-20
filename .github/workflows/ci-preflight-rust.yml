@@ -1,0 +1,106 @@
+name: CI Preflight Rust-only (Reusable)
+
+# Rust-only variant of ci-preflight.yml for cross-compile targets
+# (currently the musl variants of linux). The Python wheel + pytest
+# path is skipped because:
+#
+#   1. The Python interpreter on the runner is glibc-linked. A musl
+#      maturin extension would not load.
+#   2. The purpose of these matrix entries is to PROVE the workspace
+#      compiles + lints + Rust-tests against the musl target. The
+#      Python ABI surface is exercised by the native ci-preflight.yml
+#      jobs.
+#
+# Shape mirrors ci-preflight.yml:
+#
+#   warm  → cargo build for the cross target. setup-soldr@v0 with
+#           `cross-targets: <triple>` provisions `rust-std` and (for
+#           musl/non-MSVC) sets up `cargo-zigbuild` automatically.
+#           `cache: true` populates the GHA Actions Cache layer.
+#
+#   sub-workers → lint + unit-test each `needs: warm`, each re-runs
+#                 setup-soldr@v0 with the same cache key (same SHA +
+#                 same OS = hot restore).
+#
+# See zackees/running-process#513 and zackees/setup-soldr README
+# (Cross-compile auto-bootstrap section) for the cross flow.
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: Runner label (e.g. ubuntu-24.04, ubuntu-24.04-arm).
+        type: string
+        required: true
+      label:
+        description: Human-readable platform label (e.g. linux-x86-musl) used in job names + artifact suffixes.
+        type: string
+        required: true
+      target:
+        description: Rust target triple to cross-compile for (e.g. x86_64-unknown-linux-musl).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    name: warm-build (${{ inputs.label }})
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: "full"
+      CARGO_TERM_COLOR: "always"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: zackees/setup-soldr@v0
+        with:
+          cache: true
+          cross-targets: ${{ inputs.target }}
+
+      - name: soldr cargo zigbuild --target ${{ inputs.target }}
+        run: soldr cargo zigbuild --workspace --all-targets --features client --target ${{ inputs.target }}
+
+  lint:
+    name: lint (${{ inputs.label }})
+    needs: warm
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
+    env:
+      RUST_BACKTRACE: "full"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: zackees/setup-soldr@v0
+        with:
+          cache: true
+          cross-targets: ${{ inputs.target }}
+      - name: soldr cargo clippy --target ${{ inputs.target }}
+        run: soldr cargo clippy --workspace --all-targets --features client --target ${{ inputs.target }} -- -D warnings
+
+  unit-test:
+    name: unit-test (${{ inputs.label }})
+    needs: warm
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: "full"
+      RUNNING_PROCESS_TEST_NOCAPTURE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: zackees/setup-soldr@v0
+        with:
+          cache: true
+          cross-targets: ${{ inputs.target }}
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      # musl binaries are statically linked and run on the host-arch
+      # glibc runner without QEMU. If a downstream lane introduces a
+      # non-host musl triple (e.g. aarch64-musl on x86 runner), this
+      # step needs `qemu-user-static` and `cross` instead — flag in
+      # PR review.
+      - name: soldr cargo nextest run --target ${{ inputs.target }}
+        run: soldr cargo nextest run --workspace --features client --target ${{ inputs.target }}

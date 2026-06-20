@@ -1,6 +1,11 @@
 name: CI Preflight (Linux)
 
-# Thin dispatcher — calls ci-preflight.yml twice, once per Linux arch.
+# Thin dispatcher — calls ci-preflight.yml twice for native glibc
+# (linux-x86 + linux-arm) and ci-preflight-rust.yml twice for musl
+# cross targets (linux-x86-musl + linux-arm-musl). musl variants are
+# Rust-only because the runner's Python is glibc-linked (see header
+# of ci-preflight-rust.yml).
+#
 # rustdoc is enabled only on linux-x86 (matches the historical sprawl
 # where only linux-x86-rustdoc.yml existed).
 #
@@ -34,3 +39,17 @@ jobs:
       label: linux-arm
       rustdoc: false
       integration-test: true
+
+  x86-musl:
+    uses: ./.github/workflows/ci-preflight-rust.yml
+    with:
+      os: ubuntu-24.04
+      label: linux-x86-musl
+      target: x86_64-unknown-linux-musl
+
+  arm-musl:
+    uses: ./.github/workflows/ci-preflight-rust.yml
+    with:
+      os: ubuntu-24.04-arm
+      label: linux-arm-musl
+      target: aarch64-unknown-linux-musl
