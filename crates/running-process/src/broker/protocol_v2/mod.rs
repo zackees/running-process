@@ -15,6 +15,12 @@ mod prost_generated {
 
 pub use prost_generated::*;
 
+mod io;
+pub use io::{
+    service_definition_dir_v2, service_definition_path_v2, write_service_definition_v2,
+    ServiceDefinitionBuilder, SERVICE_DEF_V2_EXTENSION,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
