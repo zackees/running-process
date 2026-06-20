@@ -532,18 +532,21 @@ fn unix_socket_dir() -> std::path::PathBuf {
 /// Classify a [`ListenerOptions::create_sync`] error as
 /// "another broker is already bound" vs any other bind failure.
 ///
-/// Single-instance enforcement is delegated to the OS: a `WouldBlock`
-/// or `AddrInUse` from the kernel's pipe namespace is the canonical
-/// "another listener already owns this name" signal. The slice 1
-/// scaffold treated every bind failure equivalently; this slice
-/// separates the user-actionable case (another broker running)
-/// from environment failures (permission denied, parent dir
-/// missing, etc.) so supervisors can react appropriately
-/// (retry-after-exit vs hard-fail).
+/// `AddrInUse` / `WouldBlock` are the canonical "another listener
+/// already owns this name" signals on Unix-style transports.
+/// **Windows named-pipe bind reports the same condition as
+/// `PermissionDenied`** (ERROR_ACCESS_DENIED, raw os error 5)
+/// because the existing pipe instance's ACL blocks the second bind.
+/// Treat that case as already-bound too — a "true" permission
+/// problem on the v2 broker socket path is extremely rare in
+/// production (the path lives under XDG_RUNTIME_DIR / TMPDIR which
+/// is always writable by the current user).
 fn is_already_bound_error(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
-        std::io::ErrorKind::AddrInUse | std::io::ErrorKind::WouldBlock,
+        std::io::ErrorKind::AddrInUse
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::PermissionDenied,
     )
 }
 

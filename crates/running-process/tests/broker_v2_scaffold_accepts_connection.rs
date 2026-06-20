@@ -44,10 +44,55 @@ fn binary_exits_clean_with_no_bind_flag() {
 
 /// Full bind/accept round-trip: spawn the binary, parse the bound path
 /// from stdout, dial it, and assert the binary exits 0.
+///
+/// PR #533 added ServiceDefinitionLoader integration; the scaffold
+/// service name has to be registered or the Hello returns
+/// ErrorServiceUnknown. This test installs a stub servicedef in a
+/// tempdir + points the broker at it via `RUNNING_PROCESS_SERVICE_DEF_DIR`.
 #[test]
 fn binary_binds_pipe_accepts_connection_and_exits() {
+    // Install a stub servicedef so the broker's loader accepts the
+    // test Hello. Per-test tempdir keeps concurrent runs isolated.
+    let svc_dir = tempfile::tempdir().expect("tempdir for servicedef");
+    let stub_binary = if cfg!(windows) {
+        svc_dir.path().join("scaffold-stub.exe")
+    } else {
+        svc_dir.path().join("scaffold-stub")
+    };
+    std::fs::write(&stub_binary, b"#!/bin/sh\necho stub\n").expect("write stub binary");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&stub_binary).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&stub_binary, perms).unwrap();
+    }
+    // Use a unique --program per test invocation so concurrent / repeated
+    // runs don't collide on the global per-user pipe namespace
+    // (Windows ERROR_ACCESS_DENIED when an old broker on the same pipe
+    // hasn't released yet).
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Keep total program length under v2_program_pipe's 64-char max
+    // (the pipe name is `rpb-v2-<program>-<sid>-0` — sid is 16 hex,
+    // and the final pipe name fits in Linux's UDS sun_path budget
+    // after the per-OS prefix). 12-char nonce stays safely under.
+    let program = format!("scaffold-{:012x}", nonce & 0xFFFF_FFFF_FFFF);
+    running_process::broker::protocol_v2::ServiceDefinitionBuilder::shared_broker(
+        &program,
+        stub_binary.display().to_string(),
+    )
+    .install_in(svc_dir.path())
+    .expect("install stub servicedef");
+
     let path = env!("CARGO_BIN_EXE_running-process-broker-v2");
     let mut child = Command::new(path)
+        .arg("--once")
+        .arg("--program")
+        .arg(&program)
+        .env("RUNNING_PROCESS_SERVICE_DEF_DIR", svc_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -108,7 +153,7 @@ fn binary_binds_pipe_accepts_connection_and_exits() {
     let hello = Hello {
         client_min_protocol: ENVELOPE_VERSION as u32,
         client_max_protocol: ENVELOPE_VERSION as u32,
-        service_name: "broker-v2-scaffold".to_string(),
+        service_name: program.clone(),
         wanted_version: "0.0.0".to_string(),
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         client_capabilities: 0,
