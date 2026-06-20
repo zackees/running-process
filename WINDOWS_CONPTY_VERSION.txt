@@ -11,4 +11,4 @@
 # Refresh this pin on a cadence matching the WezTerm/upstream bundle
 # (https://github.com/wezterm/wezterm/issues/7774).
 
-Microsoft.Windows.Console.ConPTY 1.24.260402001
+Microsoft.Windows.Console.ConPTY 1.24.260512001
