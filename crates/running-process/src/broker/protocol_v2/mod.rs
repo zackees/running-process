@@ -30,6 +30,8 @@ pub use manifest_io::{
 
 pub mod backend_handle;
 
+pub mod client_compat;
+
 #[cfg(test)]
 mod tests {
     use super::*;
