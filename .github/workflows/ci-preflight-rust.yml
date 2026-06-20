@@ -11,19 +11,25 @@ name: CI Preflight Rust-only (Reusable)
 #      Python ABI surface is exercised by the native ci-preflight.yml
 #      jobs.
 #
-# Shape mirrors ci-preflight.yml:
+# Cross-compile path:
+#   - apt installs `musl-tools` so `musl-gcc` is on PATH for the
+#     C-build-script crates (rusqlite/bundled, blake3 asm, etc.).
+#   - `rustup target add <triple>` provisions the rust-std for the
+#     musl target.
+#   - `soldr cargo build --target <triple>` does the actual build.
 #
-#   warm  → cargo build for the cross target. setup-soldr@v0 with
-#           `cross-targets: <triple>` provisions `rust-std` and (for
-#           musl/non-MSVC) sets up `cargo-zigbuild` automatically.
-#           `cache: true` populates the GHA Actions Cache layer.
+# We deliberately DO NOT use setup-soldr's `cross-targets:` input
+# here: as of 2026-06-20 it installs a `cargo-zigbuild` shim at
+# /home/runner/work/_temp/setup-soldr-soldr/bin/cargo-zigbuild-<ver>/
+# that fails to execute with "Syntax error: ) unexpected" on the
+# binary file (looks like a wrapper-script issue upstream). The
+# musl-tools + cargo build --target path is well-trodden and doesn't
+# need zig.
 #
-#   sub-workers → lint + unit-test each `needs: warm`, each re-runs
-#                 setup-soldr@v0 with the same cache key (same SHA +
-#                 same OS = hot restore).
-#
-# See zackees/running-process#513 and zackees/setup-soldr README
-# (Cross-compile auto-bootstrap section) for the cross flow.
+# `cargo build/clippy/nextest --target <triple>` work natively
+# without zigbuild for host-arch musl because musl binaries are
+# statically linked and the test binaries run on the host runner
+# without QEMU.
 
 on:
   workflow_call:
@@ -58,10 +64,15 @@ jobs:
       - uses: zackees/setup-soldr@v0
         with:
           cache: true
-          cross-targets: ${{ inputs.target }}
 
-      - name: soldr cargo zigbuild --target ${{ inputs.target }}
-        run: soldr cargo zigbuild --workspace --all-targets --features client --target ${{ inputs.target }}
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Add rust target
+        run: rustup target add ${{ inputs.target }}
+
+      - name: soldr cargo build --target ${{ inputs.target }}
+        run: soldr cargo build --workspace --all-targets --features client --target ${{ inputs.target }}
 
   lint:
     name: lint (${{ inputs.label }})
@@ -75,7 +86,10 @@ jobs:
       - uses: zackees/setup-soldr@v0
         with:
           cache: true
-          cross-targets: ${{ inputs.target }}
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Add rust target
+        run: rustup target add ${{ inputs.target }}
       - name: soldr cargo clippy --target ${{ inputs.target }}
         run: soldr cargo clippy --workspace --all-targets --features client --target ${{ inputs.target }} -- -D warnings
 
@@ -92,7 +106,10 @@ jobs:
       - uses: zackees/setup-soldr@v0
         with:
           cache: true
-          cross-targets: ${{ inputs.target }}
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Add rust target
+        run: rustup target add ${{ inputs.target }}
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
