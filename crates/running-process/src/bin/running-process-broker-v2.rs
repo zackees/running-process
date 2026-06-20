@@ -49,6 +49,7 @@ use interprocess::local_socket::traits::Listener as _;
 use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use running_process::broker::lifecycle::names_v2::v2_program_pipe;
+use running_process::broker::lifecycle::privilege::refuse_privileged_run;
 use running_process::broker::lifecycle::sid::user_sid_hash;
 use running_process::broker::protocol::{
     hello_reply, read_frame, write_frame, ErrorCode, Hello, HelloReply, Negotiated, Refused,
@@ -125,6 +126,23 @@ fn main() -> ExitCode {
     if opts.no_bind {
         println!("running-process-broker-v2 --no-bind: skipping listener bind");
         return ExitCode::SUCCESS;
+    }
+
+    // Slice 3 of #532: refuse to start as a privileged user. The
+    // broker is a per-user daemon — running as root / LocalSystem
+    // would bind the v2 pipe in a namespace other users can't reach
+    // AND would create privileged sockets that downstream daemons
+    // get adopted into. Mirrors v1's `running-process-broker-v1`
+    // startup check exactly. The `RUNNING_PROCESS_ALLOW_PRIVILEGED`
+    // env var is honored for isolated test environments that
+    // intentionally exercise privileged startup behavior.
+    if let Err(err) = refuse_privileged_run() {
+        eprintln!(
+            "running-process-broker-v2: refusing privileged startup: {err}. \
+             Run as an unprivileged user, or set \
+             RUNNING_PROCESS_ALLOW_PRIVILEGED=1 for isolated test environments only."
+        );
+        return ExitCode::from(77); // EX_NOPERM
     }
 
     let sid = match user_sid_hash() {
