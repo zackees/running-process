@@ -161,21 +161,32 @@ pub trait BrokeredBackend {
 
 /// Run the broker-side fast-bind orchestration for a `BrokeredBackend`.
 ///
-/// 1. Call `B::bind(endpoint)`. Failure → return the error.
-/// 2. Hand the listener to `B::serve`.
+/// 1. Call `B::bind(endpoint)`. Failure → propagate the [`BindError`].
+/// 2. Hand the listener to `B::serve`, which never returns.
+///
+/// The function's signature is `Result<(), BindError>` rather than
+/// `Result<Never, …>` so callers don't have to spell `Never` in their
+/// return type just to call `bootstrap`. The body still proves
+/// divergence: `B::serve(listener)` returns the uninhabited [`Never`],
+/// which coerces to `()` via Rust's never-type coercion — control
+/// flow that reaches the end of the body would require constructing
+/// a `Never` value, which the type system forbids.
 ///
 /// In the full v2 baseline, the broker calls this from inside the
 /// spawned daemon's `main()`. Slice 3c–4 of #488 has the v2 broker
 /// scaffold but does not yet exercise this trait; this function is the
 /// integration seam future slices will use.
-pub fn bootstrap<B: BrokeredBackend>(endpoint: &Endpoint) -> Result<Never, BindError> {
+// `match B::serve(listener) {}` is the documented pattern for proving
+// divergence via an uninhabited type, but rustc's `unreachable_code`
+// lint still flags the match itself because flow analysis types
+// `B::serve` as `Never`. The lint help text recommends precisely this
+// `#[allow]` for the case.
+#[allow(unreachable_code)]
+pub fn bootstrap<B: BrokeredBackend>(endpoint: &Endpoint) -> Result<(), BindError> {
     let listener = B::bind(endpoint)?;
     // Lockfile write lands in the v2 broker baseline; once it does,
     // it goes here, between `bind` and `serve`.
-    let never = B::serve(listener);
-    // `serve` returns `Never` (uninhabited) so this `Ok` is never
-    // constructed. Match makes the unreachability explicit.
-    match never {}
+    match B::serve(listener) {}
 }
 
 #[cfg(test)]

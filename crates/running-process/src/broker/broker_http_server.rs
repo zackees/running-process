@@ -260,7 +260,6 @@ fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read as _;
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
