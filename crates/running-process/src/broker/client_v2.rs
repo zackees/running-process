@@ -587,11 +587,9 @@ mod tests {
             elapsed < Duration::from_secs(5),
             "concurrent connect took {elapsed:?}; expected < 5s"
         );
-        for r in &results {
-            if let Ok(session) = r {
-                assert_eq!(session.negotiated().connection_id, 0x0FFF_F1EE);
-                assert_eq!(session.negotiated().daemon_version, "stub-multi-1");
-            }
+        for session in results.iter().flatten() {
+            assert_eq!(session.negotiated().connection_id, 0x0FFF_F1EE);
+            assert_eq!(session.negotiated().daemon_version, "stub-multi-1");
         }
     }
 
