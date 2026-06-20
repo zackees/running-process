@@ -32,6 +32,9 @@ pub mod backend_handle;
 
 pub mod client_compat;
 
+mod loader;
+pub use loader::{ServiceDefinitionLoader, ServiceDefinitionScanEntry};
+
 #[cfg(test)]
 mod tests {
     use super::*;
