@@ -46,17 +46,73 @@ message HttpServerCapability {
   string display_name = 3;
 }
 
+// Broker isolation mode for a service.
+//
+// Mirrors v1's `BrokerIsolation` enum (`broker_v1_service_def.proto`)
+// so v2 service definitions can carry the same trust-grouping semantics
+// the v1 broker has used since #228. New isolation modes (if any) land
+// here; v1's enum is FROZEN FOREVER.
+enum BrokerIsolation {
+  // DEFAULT - safe; private broker per service. Third-party consumers
+  // get isolation automatically with zero ceremony.
+  PRIVATE_BROKER = 0;
+
+  // Opt-in to per-user shared broker. Recommended for first-party tools
+  // that benefit from shared infrastructure + cross-service ops.
+  SHARED_BROKER = 1;
+
+  // Named broker instance, e.g. "ci-trusted" / "ci-untrusted" for
+  // explicit trust grouping.
+  EXPLICIT_INSTANCE = 2;
+}
+
 // v2 service definition envelope.
 //
-// Carries the service identity plus the new v2-only capability fields.
-// Fields shared with v1 (binary_path, isolation, etc.) will be ported
-// in subsequent slices; this slice only adds the HTTP capability so
-// the proto compiles and round-trips end-to-end without depending on
-// the rest of the v2 broker work landing first.
+// Carries the service identity, the launcher / isolation policy shared
+// with v1, and the new v2-only capability fields. The fields shared
+// with v1 (binary_path, isolation, etc.) intentionally use the same
+// field numbers as `broker_v1.ServiceDefinition` (2–8) to keep the
+// human-readable diff between the two messages obvious and to make
+// the v1 → v2 migration a literal field-by-field move on the consumer
+// side. New v2-only fields start at 10 (http_server) and grow upward.
 message ServiceDefinition {
   // [a-z0-9-]{1,64}; same validation rules as v1.
   string service_name = 1;
 
+  // Canonical path to the backend binary. v1: `binary_path` (field 2).
+  // Pre-#522 v2 brokers ignored this; consumers populating the field on
+  // a pre-#522 broker get the v2 envelope round-trip but the broker
+  // can't launch from the path until upgraded.
+  string binary_path = 2;
+
+  // Broker isolation mode. v1: `BrokerIsolation` (field 3). Defaults
+  // to `PRIVATE_BROKER` (proto3 zero value) when absent.
+  BrokerIsolation isolation = 3;
+
+  // Used only when `isolation == EXPLICIT_INSTANCE`. v1: `explicit_instance`
+  // (field 4). Ignored for other isolation modes.
+  string explicit_instance = 4;
+
+  // Canonicalized allow-list root for backends. v1: `per_version_binary_dir`
+  // (field 5). The broker refuses any `binary_path` that does not resolve
+  // under this directory.
+  string per_version_binary_dir = 5;
+
+  // Semver floor — broker refuses any Hello whose `wanted_version` is
+  // below this. v1: `min_version` (field 6). Empty => no floor.
+  string min_version = 6;
+
+  // Optional strict pin list. v1: `version_allow_list` (field 7). When
+  // non-empty, the broker refuses any Hello whose `wanted_version` is
+  // not in this list. Use sparingly — `min_version` is the common case.
+  repeated string version_allow_list = 7;
+
+  // Arbitrary key/value labels (deployment hints, A/B routing tags, …).
+  // v1: `labels` (field 8). Broker does not interpret these; they are
+  // surfaced verbatim to consumers via the existing reflection APIs.
+  map<string, string> labels = 8;
+
   // Optional HTTP server capability. Absent => backend serves no HTTP.
+  // v2-only field; v1 has no HTTP-server concept.
   optional HttpServerCapability http_server = 10;
 }
