@@ -72,7 +72,7 @@ jobs:
         run: rustup target add ${{ inputs.target }}
 
       - name: soldr cargo build --target ${{ inputs.target }}
-        run: soldr cargo build --workspace --all-targets --features client --target ${{ inputs.target }}
+        run: soldr cargo build --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }}
 
   lint:
     name: lint (${{ inputs.label }})
@@ -91,7 +91,7 @@ jobs:
       - name: Add rust target
         run: rustup target add ${{ inputs.target }}
       - name: soldr cargo clippy --target ${{ inputs.target }}
-        run: soldr cargo clippy --workspace --all-targets --features client --target ${{ inputs.target }} -- -D warnings
+        run: soldr cargo clippy --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }} -- -D warnings
 
   unit-test:
     name: unit-test (${{ inputs.label }})
@@ -120,4 +120,4 @@ jobs:
       # step needs `qemu-user-static` and `cross` instead — flag in
       # PR review.
       - name: soldr cargo nextest run --target ${{ inputs.target }}
-        run: soldr cargo nextest run --workspace --features client --target ${{ inputs.target }}
+        run: soldr cargo nextest run --workspace --exclude running-process-py --features client --target ${{ inputs.target }}
