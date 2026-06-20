@@ -504,6 +504,194 @@ mod tests {
         rx
     }
 
+    /// Adversarial stub: accepts, reads Hello, replies with a HelloReply
+    /// whose `result` oneof is `None` (proto3 default — easy bug if a
+    /// future broker forgets to set the variant). Must surface as
+    /// `BrokerV2Error::MissingResult`, not be mis-routed as success.
+    fn spawn_missing_result_broker(socket_path: String) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            #[cfg(unix)]
+            let _cleanup = {
+                let _ = std::fs::create_dir_all(
+                    std::path::Path::new(&socket_path).parent().unwrap(),
+                );
+                let _ = std::fs::remove_file(&socket_path);
+                SocketCleanup(std::path::PathBuf::from(&socket_path))
+            };
+            let listener = ListenerOptions::new()
+                .name(name)
+                .create_sync()
+                .expect("ListenerOptions create_sync");
+            tx.send(()).expect("send listener-ready signal");
+            let mut stream = listener.accept().expect("accept");
+            let _ = read_frame(&mut stream).expect("read Hello frame");
+            let reply = HelloReply { result: None };
+            let mut body = Vec::with_capacity(reply.encoded_len());
+            reply.encode(&mut body).expect("encode HelloReply");
+            write_frame(&mut stream, &body).expect("write HelloReply frame");
+        });
+        rx
+    }
+
+    #[test]
+    fn connect_rejects_hello_reply_with_missing_result_oneof() {
+        let program = "client-v2-missing-result";
+        let sid = user_sid_hash().expect("user_sid_hash");
+        let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
+        let socket_path = resolve_socket_path(&pipe_name);
+        let ready = spawn_missing_result_broker(socket_path);
+        ready
+            .recv_timeout(Duration::from_secs(2))
+            .expect("missing-result broker listening");
+        let start = Instant::now();
+        let err = loop {
+            match connect(program, "0.0.0") {
+                Err(e) => break e,
+                Ok(_) if start.elapsed() < Duration::from_secs(2) => {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Ok(_) => panic!("expected MissingResult, got Ok"),
+            }
+        };
+        assert!(
+            matches!(err, BrokerV2Error::MissingResult),
+            "expected MissingResult, got: {err:?}"
+        );
+    }
+
+    /// Adversarial: broker accepts then immediately drops the stream
+    /// without reading the Hello or writing a reply. Must surface as
+    /// a typed transport error (Framing/Io), never as a successful
+    /// session, never hang past the deadline.
+    fn spawn_drop_on_accept_broker(socket_path: String) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            #[cfg(unix)]
+            let _cleanup = {
+                let _ = std::fs::create_dir_all(
+                    std::path::Path::new(&socket_path).parent().unwrap(),
+                );
+                let _ = std::fs::remove_file(&socket_path);
+                SocketCleanup(std::path::PathBuf::from(&socket_path))
+            };
+            let listener = ListenerOptions::new()
+                .name(name)
+                .create_sync()
+                .expect("ListenerOptions create_sync");
+            tx.send(()).expect("send listener-ready signal");
+            let stream = listener.accept().expect("accept");
+            drop(stream); // immediate close
+        });
+        rx
+    }
+
+    #[test]
+    fn connect_returns_err_on_premature_disconnect() {
+        let program = "client-v2-prem-disconnect";
+        let sid = user_sid_hash().expect("user_sid_hash");
+        let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
+        let socket_path = resolve_socket_path(&pipe_name);
+        let ready = spawn_drop_on_accept_broker(socket_path);
+        ready
+            .recv_timeout(Duration::from_secs(2))
+            .expect("drop-on-accept broker listening");
+        let start = Instant::now();
+        let err = loop {
+            match connect_with_deadline(program, "0.0.0", Duration::from_millis(500)) {
+                Err(e) => break e,
+                Ok(_) if start.elapsed() < Duration::from_secs(2) => {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Ok(_) => panic!("expected transport error, got Ok"),
+            }
+        };
+        // The exact variant depends on whether the write or read hits the
+        // disconnect first: Framing(UnexpectedEof), Io(BrokenPipe), or
+        // Dial (rare race). All are transport-class — none is a session.
+        match err {
+            BrokerV2Error::Framing(_)
+            | BrokerV2Error::Io(_)
+            | BrokerV2Error::Dial { .. } => {}
+            other => panic!("expected transport variant, got: {other:?}"),
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "must not hang past deadline; took {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// Adversarial: every malformed program name must be rejected BEFORE
+    /// `Stream::connect` runs — proves `v2_program_pipe`'s validation is
+    /// the front gate. Catches NUL injection, path traversal, uppercase,
+    /// over-long names, and empties. The expected error variant is
+    /// `BrokerV2Error::PipeName(_)` because `v2_program_pipe`'s
+    /// `validate_service_name` fires before any IO.
+    #[test]
+    fn connect_rejects_invalid_program_names_before_dial() {
+        let too_long = "a".repeat(65);
+        for bad in [
+            "zccache\0evil",
+            "../etc/passwd",
+            r"a\b",
+            "Zccache",
+            "a b",
+            too_long.as_str(),
+            "",
+        ] {
+            let err = connect(bad, "0.0.0")
+                .expect_err(&format!("invalid program name {bad:?} must be rejected"));
+            assert!(
+                matches!(err, BrokerV2Error::PipeName(_)),
+                "expected PipeName for {bad:?}, got: {err:?}"
+            );
+        }
+    }
+
+    /// Pin u64::MAX round-trips through `retry_after_ms` without overflow.
+    /// `Duration::from_millis(u64::MAX)` is valid (~584M years); locks
+    /// the contract for any caller doing `Duration::from_millis(retry_after_ms)`.
+    #[test]
+    fn refused_with_u64_max_retry_after_ms_round_trips() {
+        let program = "client-v2-refused-u64-max";
+        let sid = user_sid_hash().expect("user_sid_hash");
+        let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
+        let socket_path = resolve_socket_path(&pipe_name);
+        let ready = spawn_refusing_broker(socket_path, u64::MAX);
+        ready
+            .recv_timeout(Duration::from_secs(2))
+            .expect("refusing broker listening");
+        let start = Instant::now();
+        let err = loop {
+            match connect(program, "0.0.0") {
+                Err(e) => break e,
+                Ok(_) if start.elapsed() < Duration::from_secs(2) => {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Ok(_) => panic!("expected Refused, got Ok"),
+            }
+        };
+        match err {
+            BrokerV2Error::Refused {
+                retry_after_ms,
+                details,
+                ..
+            } => {
+                assert_eq!(retry_after_ms, u64::MAX);
+                assert_eq!(details.retry_after_ms, u64::MAX);
+                // Caller-side contract: this Duration construction must not panic.
+                let _safe_duration = Duration::from_millis(retry_after_ms);
+            }
+            other => panic!("expected Refused, got: {other:?}"),
+        }
+    }
+
     #[test]
     fn refused_exposes_retry_after_ms_top_level() {
         let program = "client-v2-refused-retry";
