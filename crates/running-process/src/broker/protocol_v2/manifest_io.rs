@@ -267,12 +267,33 @@ mod tests {
             .root(CacheRootKind::CacheData, "/var/cache/svc")
             .root(CacheRootKind::CacheIndex, "/var/cache/svc/index")
             .root(CacheRootKind::CacheLogs, "/var/log/svc")
+            .root(CacheRootKind::CacheLocks, "/var/cache/svc/locks")
             .build();
-        assert_eq!(manifest.roots.len(), 3);
+        assert_eq!(manifest.roots.len(), 4);
         assert_eq!(manifest.roots[0].kind, CacheRootKind::CacheData as i32);
         assert_eq!(manifest.roots[0].path, "/var/cache/svc");
         assert_eq!(manifest.roots[1].kind, CacheRootKind::CacheIndex as i32);
         assert_eq!(manifest.roots[2].kind, CacheRootKind::CacheLogs as i32);
+        assert_eq!(manifest.roots[3].kind, CacheRootKind::CacheLocks as i32);
+    }
+
+    /// v2 wire values mirror v1's exactly so consumers that bridge the
+    /// two generations (zccache, fbuild) can `as i32`-cast across
+    /// without translation. Pins every variant so a future renumber
+    /// forces an explicit migration of every consumer instead of
+    /// silently misclassifying.
+    #[test]
+    fn cache_root_kind_wire_values_mirror_v1() {
+        assert_eq!(CacheRootKind::Unspecified as i32, 0);
+        assert_eq!(CacheRootKind::CacheData as i32, 1);
+        assert_eq!(CacheRootKind::CacheLogs as i32, 2);
+        assert_eq!(CacheRootKind::CacheLocks as i32, 3);
+        assert_eq!(CacheRootKind::CacheRuntime as i32, 4);
+        assert_eq!(CacheRootKind::CacheTmp as i32, 5);
+        assert_eq!(CacheRootKind::CacheConfig as i32, 6);
+        assert_eq!(CacheRootKind::CacheIndex as i32, 7);
+        assert_eq!(CacheRootKind::CacheJournal as i32, 8);
+        assert_eq!(CacheRootKind::CacheSecrets as i32, 9);
     }
 
     #[test]
