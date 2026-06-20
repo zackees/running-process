@@ -306,17 +306,35 @@ jobs:
             echo
           } > sidecar-out/conpty-sidecar.sha256.toml
 
-          for arch in win-x64 win-x86 win-arm64 win-arm; do
+          # The NuGet package layout changed between 1.24.260402001 and
+          # 1.24.260512001 (#500 slice 30c). `conpty.dll` is still at
+          # `runtimes/win-<arch>/native/`, but `OpenConsole.exe` moved
+          # to `build/native/runtimes/<arch>/` (note: no `win-` prefix
+          # on the arch segment). The 32-bit ARM (`win-arm`) variant
+          # was dropped from the package entirely. The loop locates
+          # each file independently from its canonical sub-path and
+          # stages them into a per-arch scratch dir before tarring,
+          # so the same script handles both the historical and the
+          # current NuGet layouts. Drop `arm` from the arch list to
+          # match what NuGet ships.
+          for arch in win-x64 win-x86 win-arm64; do
             short="${arch#win-}"
             out_name="conpty-sidecar-${short}.tar.zst"
-            src="/tmp/conpty-extracted/runtimes/${arch}/native"
-            if [ ! -d "$src" ]; then
-              echo "missing $src — skipping $arch"
+            dll_src="/tmp/conpty-extracted/runtimes/${arch}/native/conpty.dll"
+            exe_src="/tmp/conpty-extracted/build/native/runtimes/${short}/OpenConsole.exe"
+            if [ ! -f "$dll_src" ] || [ ! -f "$exe_src" ]; then
+              echo "missing per-arch ConPTY assets for $arch — skipping" >&2
+              echo "  conpty.dll: $dll_src ($( [ -f "$dll_src" ] && echo present || echo MISSING))" >&2
+              echo "  OpenConsole.exe: $exe_src ($( [ -f "$exe_src" ] && echo present || echo MISSING))" >&2
               continue
             fi
+            stage="/tmp/conpty-stage/${short}"
+            mkdir -p "$stage"
+            cp "$dll_src" "$stage/conpty.dll"
+            cp "$exe_src" "$stage/OpenConsole.exe"
             printf 'Microsoft.Windows.Console.ConPTY %s\nrunning-process %s\n' \
-              "$VERSION" "$RP_VERSION" > "$src/VERSION.txt"
-            tar -C "$src" -cf - conpty.dll OpenConsole.exe VERSION.txt \
+              "$VERSION" "$RP_VERSION" > "$stage/VERSION.txt"
+            tar -C "$stage" -cf - conpty.dll OpenConsole.exe VERSION.txt \
               | zstd -19 -o "sidecar-out/$out_name"
             sha=$(sha256sum "sidecar-out/$out_name" | awk '{print $1}')
             size=$(stat -c%s "sidecar-out/$out_name")
