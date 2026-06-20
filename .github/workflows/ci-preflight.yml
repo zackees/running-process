@@ -4,27 +4,38 @@ name: CI Preflight (Reusable)
 # per-task wrappers + 4 shared `_<task>.yml` templates once the soak
 # period passes (see #513 acceptance criteria).
 #
-# Shape: warm-then-fan-out via setup-soldr + zccache, modeled on
-# zackees/zccache's ci.yml + ci-check.yml.
+# Shape: warm-then-fan-out via dtolnay/rust-toolchain + Swatinem/rust-cache.
 #
 #   warm  → one cargo build of the workspace + all-targets in DEBUG
-#           profile. setup-soldr@v0 with `cache: true` populates the
-#           GHA Actions Cache layer (zccache build cache, NOT a
-#           target/ tarball — see soldr#805 §1 and setup-soldr README
-#           for the cache-preset: foundation bounded shape).
+#           profile. Populates Swatinem's target/ cache (keyed on OS +
+#           Cargo.lock hash + a "shared" suffix so sub-workers using
+#           the same key restore the warm state).
 #
 #   sub-workers → lint / unit-test / integration-test / rustdoc each
-#                 `needs: warm`, each re-runs setup-soldr@v0 with
-#                 the same cache key (same SHA, same OS = hot
-#                 restore). Cargo invocations inside each sub-worker
-#                 replay from the cached compile outputs instead of
-#                 recompiling cold.
+#                 `needs: warm`, each runs `Swatinem/rust-cache@v2`
+#                 with the same key. They restore the warm job's
+#                 `target/` directly instead of recompiling cold.
+#
+# Why NOT setup-soldr / soldr / zccache here:
+#
+#   running-process is UPSTREAM of zccache (which depends on the
+#   running-process broker for IPC) and of soldr (which uses zccache
+#   as its cache backend). Pulling `setup-soldr@v0` into running-
+#   process CI introduces a circular CI-tooling dependency where
+#   release-asset-discovery bugs in soldr (see soldr#806, #809)
+#   block the very repo soldr depends on.
+#
+#   Vanilla `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2`
+#   is the same shape every Rust crate in the ecosystem uses, has
+#   no dependency on any of the zccache/soldr/setup-soldr chain, and
+#   gives us identical caching characteristics (Swatinem caches
+#   `target/` keyed on Cargo.lock hash, same as zccache's
+#   content-addressed build cache for our purposes).
 #
 # Why debug profile, not release: this workflow is for the dev-loop
 # (every branch push + PR). Debug compiles are ~5x faster than
 # release; the slight runtime cost is irrelevant for tests. Release
-# wheel builds stay in auto-release.yml. See zackees/soldr#805 §4
-# for the debug-for-test / release-for-pip-install contract.
+# wheel builds stay in auto-release.yml.
 
 on:
   workflow_call:
@@ -49,6 +60,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: "always"
+
 jobs:
   warm:
     name: warm-build (${{ inputs.label }})
@@ -56,7 +70,6 @@ jobs:
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "full"
-      CARGO_TERM_COLOR: "always"
     steps:
       - uses: actions/checkout@v4
 
@@ -77,19 +90,30 @@ jobs:
           restore-keys: |
             venv-${{ inputs.os }}-py3.11-
 
-      - uses: zackees/setup-soldr@v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          cache: true
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
+
+      - name: Rust build cache (shared across warm + sub-workers)
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Same key across warm + sub-workers → sub-workers restore
+          # the warm job's `target/`. The key automatically includes
+          # OS + Cargo.lock hash via Swatinem's defaults.
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
 
       - name: Sync venv (frozen, no project install)
         run: uv sync --frozen --group dev --no-install-project --python 3.11
 
       # Single cold build of the workspace + tests + downstream features.
-      # zccache stores the compiled outputs against an input-content
-      # hash; sub-workers picking up the same setup-soldr cache key
-      # replay these objects instead of compiling cold.
-      - name: soldr cargo build (workspace + all-targets, debug, --features client)
-        run: soldr cargo build --workspace --all-targets --features client
+      # `Swatinem/rust-cache@v2`'s post step saves `target/` against the
+      # `<label>-shared` key. Sub-workers using the same key restore
+      # these objects instead of compiling cold.
+      - name: cargo build (workspace + all-targets, debug, --features client)
+        run: cargo build --workspace --all-targets --features client
 
   lint:
     name: lint (${{ inputs.label }})
@@ -116,14 +140,21 @@ jobs:
           key: venv-${{ inputs.os }}-py3.11-${{ hashFiles('uv.lock') }}
           restore-keys: |
             venv-${{ inputs.os }}-py3.11-
-      - uses: zackees/setup-soldr@v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          cache: true
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
+      - name: Rust build cache (restore warm)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
       - name: Sync venv (frozen, no project install)
         run: uv sync --frozen --group dev --no-install-project --python 3.11
       # ci.lint imports `running_process.cli` at runtime, so the dev
       # wheel must be installed in the venv. Cargo compile replays from
-      # the warm zccache so this is mostly maturin packaging cost.
+      # the warm Swatinem cache so this is mostly maturin packaging cost.
       - name: Dev wheel build
         run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
       - name: Lint
@@ -171,17 +202,22 @@ jobs:
           key: venv-${{ inputs.os }}-py3.11-${{ hashFiles('uv.lock') }}
           restore-keys: |
             venv-${{ inputs.os }}-py3.11-
-      - uses: zackees/setup-soldr@v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          cache: true
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
+      - name: Rust build cache (restore warm)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
       - name: Sync venv (frozen, no project install)
         run: uv sync --frozen --group dev --no-install-project --python 3.11
-      # Dev wheel build — cargo compile replays from the warm zccache,
-      # so this is mostly maturin packaging cost, not a cold compile.
       - name: Dev wheel build
         run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
       - name: Terminal graphics capability matrix
@@ -189,7 +225,7 @@ jobs:
         env:
           RUNNING_PROCESS_TERMINAL_CAPABILITY_EXPORT_DIR: ${{ github.workspace }}/logs/terminal-capabilities/${{ inputs.label }}
         run: |
-          soldr cargo test -p running-process --test terminal_graphics_capabilities_test --features client -- --nocapture
+          cargo test -p running-process --test terminal_graphics_capabilities_test --features client -- --nocapture
       - name: Report terminal graphics capability matrix
         if: ${{ always() }}
         run: uv run --no-sync --module ci.terminal_capability_report ${{ github.workspace }}/logs/terminal-capabilities/${{ inputs.label }}
@@ -200,7 +236,7 @@ jobs:
         env:
           RUNNING_PROCESS_BROKER_HELLO_PERF_GUARD: "1"
         run: |
-          soldr cargo test -p running-process --test broker --features client real_socket_hello_roundtrip_perf_gate -- --nocapture
+          cargo test -p running-process --test broker --features client real_socket_hello_roundtrip_perf_gate -- --nocapture
       - name: Display failure diagnostics
         if: ${{ failure() || cancelled() }}
         shell: bash
@@ -254,9 +290,16 @@ jobs:
           key: venv-${{ inputs.os }}-py3.11-${{ hashFiles('uv.lock') }}
           restore-keys: |
             venv-${{ inputs.os }}-py3.11-
-      - uses: zackees/setup-soldr@v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          cache: true
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
+      - name: Rust build cache (restore warm)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
       - name: Sync venv (frozen, no project install)
         run: uv sync --frozen --group dev --no-install-project --python 3.11
       - name: Dev wheel build
@@ -264,7 +307,7 @@ jobs:
       - name: Integration Tests
         run: uv run --no-sync --module ci.run_logged logs/integration-test.log -- uv run --no-sync --module ci.test --live-only -ra --strict-markers
       - name: Build broker CLI for servicedef proof
-        run: soldr cargo build -p running-process --features daemon --bin running-process-broker-v1
+        run: cargo build -p running-process --features daemon --bin running-process-broker-v1
       # ci.servicedef_proof refuses to run if the platform-default
       # service-definition directory already exists. The Integration
       # Tests step above may leave that directory behind on a clean
@@ -309,8 +352,14 @@ jobs:
       RUSTDOCFLAGS: "-Dwarnings"
     steps:
       - uses: actions/checkout@v4
-      - uses: zackees/setup-soldr@v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          cache: true
+          toolchain: "1.94.1"
+      - name: Rust build cache (restore warm)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
       - name: Check Rust API docs
-        run: soldr cargo doc -p running-process --features daemon --no-deps
+        run: cargo doc -p running-process --features daemon --no-deps

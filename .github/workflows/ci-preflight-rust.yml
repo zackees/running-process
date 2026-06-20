@@ -14,22 +14,16 @@ name: CI Preflight Rust-only (Reusable)
 # Cross-compile path:
 #   - apt installs `musl-tools` so `musl-gcc` is on PATH for the
 #     C-build-script crates (rusqlite/bundled, blake3 asm, etc.).
-#   - `rustup target add <triple>` provisions the rust-std for the
-#     musl target.
-#   - `soldr cargo build --target <triple>` does the actual build.
+#   - `dtolnay/rust-toolchain@stable` with `targets:` provisions the
+#     rust-std for the musl target alongside the host toolchain.
+#   - `cargo build/clippy/nextest --target <triple>` builds against
+#     the musl target.
 #
-# We deliberately DO NOT use setup-soldr's `cross-targets:` input
-# here: as of 2026-06-20 it installs a `cargo-zigbuild` shim at
-# /home/runner/work/_temp/setup-soldr-soldr/bin/cargo-zigbuild-<ver>/
-# that fails to execute with "Syntax error: ) unexpected" on the
-# binary file (looks like a wrapper-script issue upstream). The
-# musl-tools + cargo build --target path is well-trodden and doesn't
-# need zig.
-#
-# `cargo build/clippy/nextest --target <triple>` work natively
-# without zigbuild for host-arch musl because musl binaries are
-# statically linked and the test binaries run on the host runner
-# without QEMU.
+# Why NOT setup-soldr / soldr / zccache — see ci-preflight.yml header.
+# In short: running-process is upstream of soldr (which depends on
+# zccache, which depends on running-process's broker), so consuming
+# `setup-soldr@v0` in this CI introduces a circular tooling
+# dependency that has been blocking us via soldr#806 / #809.
 
 on:
   workflow_call:
@@ -50,6 +44,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: "always"
+
 jobs:
   warm:
     name: warm-build (${{ inputs.label }})
@@ -57,24 +54,27 @@ jobs:
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "full"
-      CARGO_TERM_COLOR: "always"
     steps:
       - uses: actions/checkout@v4
-
-      - uses: zackees/setup-soldr@v0
-        with:
-          cache: true
 
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Add rust target (to soldr-managed rustup home)
-        env:
-          RUSTUP_HOME: ${{ runner.temp }}/setup-soldr/rustup-home
-        run: rustup target add ${{ inputs.target }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
+          targets: ${{ inputs.target }}
 
-      - name: soldr cargo build --target ${{ inputs.target }}
-        run: soldr cargo build --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }}
+      - name: Rust build cache (shared across warm + sub-workers)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
+
+      - name: cargo build --target ${{ inputs.target }}
+        run: cargo build --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }}
 
   lint:
     name: lint (${{ inputs.label }})
@@ -85,17 +85,21 @@ jobs:
       RUST_BACKTRACE: "full"
     steps:
       - uses: actions/checkout@v4
-      - uses: zackees/setup-soldr@v0
-        with:
-          cache: true
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Add rust target (to soldr-managed rustup home)
-        env:
-          RUSTUP_HOME: ${{ runner.temp }}/setup-soldr/rustup-home
-        run: rustup target add ${{ inputs.target }}
-      - name: soldr cargo clippy --target ${{ inputs.target }}
-        run: soldr cargo clippy --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }} -- -D warnings
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
+          targets: ${{ inputs.target }}
+      - name: Rust build cache (restore warm)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
+      - name: cargo clippy --target ${{ inputs.target }}
+        run: cargo clippy --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }} -- -D warnings
 
   unit-test:
     name: unit-test (${{ inputs.label }})
@@ -107,23 +111,27 @@ jobs:
       RUNNING_PROCESS_TEST_NOCAPTURE: "1"
     steps:
       - uses: actions/checkout@v4
-      - uses: zackees/setup-soldr@v0
-        with:
-          cache: true
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Add rust target (to soldr-managed rustup home)
-        env:
-          RUSTUP_HOME: ${{ runner.temp }}/setup-soldr/rustup-home
-        run: rustup target add ${{ inputs.target }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
+          targets: ${{ inputs.target }}
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
+      - name: Rust build cache (restore warm)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
       # musl binaries are statically linked and run on the host-arch
       # glibc runner without QEMU. If a downstream lane introduces a
       # non-host musl triple (e.g. aarch64-musl on x86 runner), this
       # step needs `qemu-user-static` and `cross` instead — flag in
       # PR review.
-      - name: soldr cargo nextest run --target ${{ inputs.target }}
-        run: soldr cargo nextest run --workspace --exclude running-process-py --features client --target ${{ inputs.target }}
+      - name: cargo nextest run --target ${{ inputs.target }}
+        run: cargo nextest run --workspace --exclude running-process-py --features client --target ${{ inputs.target }}
