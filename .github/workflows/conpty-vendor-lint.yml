@@ -1,0 +1,107 @@
+name: ConPTY vendor lint
+
+# Verifies the vendored Windows binaries under `vendor/win32/conpty/`
+# are actually loadable on a real Windows runner. Runs on every push
+# or PR that touches `vendor/win32/**` so a bad refresh PR cannot land
+# without the binaries proving they're at least platform-valid.
+#
+# Checks per arch:
+#   1. File present + non-zero size (catches LFS-not-pulled errors).
+#   2. PE magic 'MZ' at offset 0 (catches corrupted bytes).
+#   3. PE `IMAGE_FILE_HEADER.Machine` matches the expected architecture
+#      (catches a binary that was mis-filed in the wrong arch
+#      directory — e.g. an arm64 OpenConsole.exe committed under x64/).
+#
+# A LoadLibraryEx test was considered and rejected: ConPTY's
+# `conpty.dll` has static dependencies on UCRT / VCRuntime DLLs that
+# the GitHub-hosted `windows-latest` image doesn't guarantee at the
+# specific versions the NuGet binary was built against. The PE shape
+# checks are what we can verify portably without false negatives.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vendor/win32/**'
+      - '.github/workflows/conpty-vendor-lint.yml'
+  pull_request:
+    paths:
+      - 'vendor/win32/**'
+      - '.github/workflows/conpty-vendor-lint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-vendor-shape:
+    name: Lint vendored PE shape (all arches)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify vendored binaries are PE-valid for the expected arch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # IMAGE_FILE_HEADER.Machine values for the PE archs we ship.
+          # Source: <winnt.h>. The architecture byte sits at the byte
+          # offset stored in the IMAGE_DOS_HEADER.e_lfanew field
+          # (offset 0x3c, 4-byte LE), then +4 bytes past the 'PE\0\0'
+          # signature.
+          declare -A expected_machine
+          expected_machine[x64]="8664"     # IMAGE_FILE_MACHINE_AMD64
+          expected_machine[x86]="014c"     # IMAGE_FILE_MACHINE_I386
+          expected_machine[arm64]="aa64"   # IMAGE_FILE_MACHINE_ARM64
+
+          for arch in x64 x86 arm64; do
+            for file in conpty.dll OpenConsole.exe; do
+              path="vendor/win32/conpty/${arch}/${file}"
+              if [ ! -f "$path" ]; then
+                echo "MISSING: $path" >&2
+                exit 1
+              fi
+              if [ ! -s "$path" ]; then
+                echo "EMPTY: $path" >&2
+                exit 1
+              fi
+
+              # PE magic check — first two bytes must be 'MZ' (0x4d 0x5a).
+              magic=$(head -c 2 "$path" | xxd -p | tr '[:upper:]' '[:lower:]')
+              if [ "$magic" != "4d5a" ]; then
+                echo "NOT PE: $path (magic=$magic, expected 4d5a 'MZ')" >&2
+                exit 1
+              fi
+
+              # IMAGE_DOS_HEADER.e_lfanew → offset of PE signature, LE u32.
+              e_lfanew=$(xxd -s 0x3c -l 4 -p "$path" \
+                | sed -E 's/(..)(..)(..)(..)/0x\4\3\2\1/')
+              e_lfanew_dec=$((e_lfanew))
+
+              # 'PE\0\0' signature must sit at e_lfanew.
+              pe_sig=$(xxd -s $e_lfanew_dec -l 4 -p "$path")
+              if [ "$pe_sig" != "50450000" ]; then
+                echo "NOT PE: $path (sig at $e_lfanew_dec = $pe_sig, expected 50450000)" >&2
+                exit 1
+              fi
+
+              # IMAGE_FILE_HEADER.Machine = 2 bytes immediately after
+              # the 'PE\0\0' signature, little-endian.
+              machine_off=$((e_lfanew_dec + 4))
+              machine_le=$(xxd -s $machine_off -l 2 -p "$path")
+              # Byte-swap LE → human-readable hex (e.g. 6486 → 8664).
+              machine="${machine_le:2:2}${machine_le:0:2}"
+
+              if [ "$machine" != "${expected_machine[$arch]}" ]; then
+                echo "ARCH MISMATCH: $path (machine=$machine, expected ${expected_machine[$arch]} for $arch)" >&2
+                exit 1
+              fi
+
+              size=$(stat -c%s "$path")
+              echo "  ok: $path ($size bytes, machine=$machine, $arch)"
+            done
+          done
+          echo "PASS: all vendored binaries are PE-valid for their expected arch"

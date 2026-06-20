@@ -280,20 +280,26 @@ jobs:
           RP_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
-          # Pinned NuGet version drives content-determinism of the
-          # per-arch tarballs; running-process version is embedded in
-          # the VERSION.txt entry so each release's tarball SHA is
-          # unique.
+          # Hermetic + reproducible: the release no longer fetches
+          # ConPTY assets from NuGet at build time. Per-arch
+          # `conpty.dll` + `OpenConsole.exe` bytes are vendored under
+          # `vendor/win32/conpty/<arch>/` so release builds have no NuGet
+          # network dependency and produce byte-identical tarballs
+          # from any git SHA. NuGet drift is observed by the
+          # `conpty-drift-check.yml` cron workflow which opens an
+          # issue on drift but never auto-updates the vendored bytes.
+          # See `vendor/win32/conpty/README.md` for the refresh procedure.
+          #
+          # WINDOWS_CONPTY_VERSION.txt records the NuGet revision the
+          # vendored bytes came from and travels alongside the
+          # binaries in the tarballs as `VERSION.txt`.
           VERSION=$(grep -E '^Microsoft\.Windows\.Console\.ConPTY' WINDOWS_CONPTY_VERSION.txt | awk '{print $NF}')
           if [ -z "$VERSION" ]; then
             echo "could not parse pinned NuGet version from WINDOWS_CONPTY_VERSION.txt" >&2
             exit 1
           fi
-          echo "Pinned NuGet version: $VERSION"
-          curl -fsSL "https://www.nuget.org/api/v2/package/Microsoft.Windows.Console.ConPTY/${VERSION}" \
-            -o /tmp/conpty.nupkg
-          mkdir -p /tmp/conpty-extracted sidecar-out
-          unzip -q /tmp/conpty.nupkg -d /tmp/conpty-extracted
+          echo "Vendored ConPTY source: NuGet Microsoft.Windows.Console.ConPTY $VERSION"
+          mkdir -p sidecar-out
 
           # Header is regenerated on every release; the dev-checkout
           # copy in the repo root is treated as a placeholder.
@@ -306,24 +312,18 @@ jobs:
             echo
           } > sidecar-out/conpty-sidecar.sha256.toml
 
-          # The NuGet package layout changed between 1.24.260402001 and
-          # 1.24.260512001 (#500 slice 30c). `conpty.dll` is still at
-          # `runtimes/win-<arch>/native/`, but `OpenConsole.exe` moved
-          # to `build/native/runtimes/<arch>/` (note: no `win-` prefix
-          # on the arch segment). The 32-bit ARM (`win-arm`) variant
-          # was dropped from the package entirely. The loop locates
-          # each file independently from its canonical sub-path and
-          # stages them into a per-arch scratch dir before tarring,
-          # so the same script handles both the historical and the
-          # current NuGet layouts. Drop `arm` from the arch list to
-          # match what NuGet ships.
-          for arch in win-x64 win-x86 win-arm64; do
-            short="${arch#win-}"
+          # Read the vendored per-arch bytes straight from the repo
+          # checkout. No /tmp staging needed — `tar -C vendor/win32/conpty/${short}`
+          # tars conpty.dll + OpenConsole.exe in place, and VERSION.txt
+          # is generated next to them in a per-arch scratch dir so
+          # vendored files stay untouched.
+          for arch in x64 x86 arm64; do
+            short="$arch"
             out_name="conpty-sidecar-${short}.tar.zst"
-            dll_src="/tmp/conpty-extracted/runtimes/${arch}/native/conpty.dll"
-            exe_src="/tmp/conpty-extracted/build/native/runtimes/${short}/OpenConsole.exe"
+            dll_src="vendor/win32/conpty/${short}/conpty.dll"
+            exe_src="vendor/win32/conpty/${short}/OpenConsole.exe"
             if [ ! -f "$dll_src" ] || [ ! -f "$exe_src" ]; then
-              echo "missing per-arch ConPTY assets for $arch — skipping" >&2
+              echo "missing vendored ConPTY assets for $arch — skipping" >&2
               echo "  conpty.dll: $dll_src ($( [ -f "$dll_src" ] && echo present || echo MISSING))" >&2
               echo "  OpenConsole.exe: $exe_src ($( [ -f "$exe_src" ] && echo present || echo MISSING))" >&2
               continue
