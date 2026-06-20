@@ -14,10 +14,21 @@
 //! a stable v2 client API while the broker side grows under them.
 
 use std::io::{Read, Write};
+use std::time::Duration;
 
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::Stream;
 use prost::Message;
+
+/// Default deadline for the Hello round-trip in [`connect`].
+///
+/// Mirrors v1's `AsyncBrokerSession::adopt` budget (~3s). A v2 broker
+/// that accepts the dial but stalls (deadlock, GC pause, hung backend
+/// resolver, ENOSPC log write) would otherwise hang the caller
+/// indefinitely — local-socket streams have no portable read deadline,
+/// so the only bound is via a helper thread + `recv_timeout`. Fixes
+/// #517.
+pub const DEFAULT_HELLO_DEADLINE: Duration = Duration::from_secs(3);
 
 use crate::broker::lifecycle::names::PipePathError;
 use crate::broker::lifecycle::names_v2::v2_program_pipe;
@@ -66,10 +77,20 @@ pub enum BrokerV2Error {
     MissingResult,
 
     /// Broker explicitly refused the Hello (returned a `Refused` reply).
+    ///
+    /// `retry_after_ms` is promoted from `details.retry_after_ms` to a
+    /// top-level field so RateLimited callers don't have to thread the
+    /// boxed prost payload back out to honor broker-supplied backoff.
+    /// Matches the shape of v1's `BrokerClientError::Refused`. Fixes
+    /// #518. `details` is kept so any future scalar / nested field in
+    /// the prost message stays accessible without another API break.
     #[error("broker refused Hello: {reason}")]
     Refused {
         /// Human-readable refusal text.
         reason: String,
+        /// Suggested back-off before retrying (0 = no hint). Mirrors the
+        /// proto wire type (`Refused.retry_after_ms` is `uint64`).
+        retry_after_ms: u64,
         /// Decoded refused payload for further inspection by callers.
         details: Box<Refused>,
     },
@@ -116,7 +137,44 @@ impl ClientSession {
 ///
 /// `connection_id` on the outbound Hello is left at 0 — the broker
 /// assigns one and echoes it in the Negotiated reply.
+///
+/// Bounded by [`DEFAULT_HELLO_DEADLINE`]; for a custom deadline use
+/// [`connect_with_deadline`].
 pub fn connect(program: &str, version_hint: &str) -> Result<ClientSession, BrokerV2Error> {
+    connect_with_deadline(program, version_hint, DEFAULT_HELLO_DEADLINE)
+}
+
+/// Same as [`connect`] but with a caller-supplied deadline for the
+/// Hello round-trip. On deadline returns
+/// `BrokerV2Error::Io(ErrorKind::TimedOut)` and the helper thread
+/// continues to drain (there is no portable way to cancel a sync
+/// `Stream::connect` / framed read mid-call).
+///
+/// Fixes #517 — without this bound, a v2 broker that accepts the dial
+/// then stalls hangs the caller indefinitely.
+pub fn connect_with_deadline(
+    program: &str,
+    version_hint: &str,
+    deadline: Duration,
+) -> Result<ClientSession, BrokerV2Error> {
+    let program = program.to_owned();
+    let version_hint = version_hint.to_owned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(connect_unbounded(&program, &version_hint));
+    });
+    match rx.recv_timeout(deadline) {
+        Ok(result) => result,
+        Err(_) => Err(BrokerV2Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("v2 broker Hello did not complete within {deadline:?}"),
+        ))),
+    }
+}
+
+/// Inner connect without a deadline. Called from inside the helper
+/// thread spawned by [`connect_with_deadline`].
+fn connect_unbounded(program: &str, version_hint: &str) -> Result<ClientSession, BrokerV2Error> {
     let sid = user_sid_hash()?;
     let pipe_name = v2_program_pipe(program, &sid, 0)?;
     let socket_path = resolve_socket_path(&pipe_name);
@@ -164,6 +222,7 @@ fn hello_round_trip<S: Read + Write>(
         Some(hello_reply::Result::Negotiated(n)) => Ok(n),
         Some(hello_reply::Result::Refused(r)) => Err(BrokerV2Error::Refused {
             reason: r.reason.clone(),
+            retry_after_ms: r.retry_after_ms,
             details: Box::new(r),
         }),
         None => Err(BrokerV2Error::MissingResult),
@@ -243,6 +302,25 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    /// RAII guard: on `Drop`, removes the socket file at `path`. Used by
+    /// [`spawn_stub_broker`] so a panic between bind and the final
+    /// explicit `remove_file` doesn't leak a stale `.sock` that would
+    /// poison the next test run.
+    ///
+    /// Fixes #519: previously, any panic between `tx.send` and the
+    /// explicit `remove_file` left a stale socket. The next test run
+    /// either got `EADDRINUSE` on bind or `ECONNREFUSED` on connect to
+    /// the dead socket — both masking the real failure.
+    #[cfg(unix)]
+    struct SocketCleanup(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for SocketCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     /// In-process stub broker: listens on the given path, accepts ONE
     /// connection, reads a Hello, sends back a `Negotiated` with
     /// `connection_id = 0xC0FFEE`. Returns nothing — the test asserts
@@ -252,12 +330,13 @@ mod tests {
         thread::spawn(move || {
             let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
             #[cfg(unix)]
-            {
+            let _cleanup = {
                 let _ = std::fs::create_dir_all(
                     std::path::Path::new(&socket_path).parent().unwrap(),
                 );
                 let _ = std::fs::remove_file(&socket_path);
-            }
+                SocketCleanup(std::path::PathBuf::from(&socket_path))
+            };
             let listener = ListenerOptions::new()
                 .name(name)
                 .create_sync()
@@ -281,10 +360,8 @@ mod tests {
             let mut body = Vec::with_capacity(reply.encoded_len());
             reply.encode(&mut body).expect("encode HelloReply");
             write_frame(&mut stream, &body).expect("write HelloReply frame");
-            #[cfg(unix)]
-            {
-                let _ = std::fs::remove_file(&socket_path);
-            }
+            // RAII guard removes the socket on scope exit; the explicit
+            // remove that lived here previously was a no-op leftover.
             let _ = hello.service_name;
         });
         rx
@@ -332,6 +409,139 @@ mod tests {
         match err {
             BrokerV2Error::Dial { .. } => {}
             other => panic!("expected Dial, got: {other:?}"),
+        }
+    }
+
+    /// In-process stub that accepts the dial then sleeps forever — the
+    /// pathological case that motivated #517. Without the helper-thread
+    /// deadline, the client hangs indefinitely.
+    fn spawn_stall_broker(socket_path: String) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            #[cfg(unix)]
+            let _cleanup = {
+                let _ = std::fs::create_dir_all(
+                    std::path::Path::new(&socket_path).parent().unwrap(),
+                );
+                let _ = std::fs::remove_file(&socket_path);
+                SocketCleanup(std::path::PathBuf::from(&socket_path))
+            };
+            let listener = ListenerOptions::new()
+                .name(name)
+                .create_sync()
+                .expect("ListenerOptions create_sync");
+            tx.send(()).expect("send listener-ready signal");
+            let _stream = listener.accept().expect("accept");
+            // Stall — never reads the Hello, never replies. The deadline
+            // bound on the client side is what releases it.
+            thread::sleep(Duration::from_secs(60));
+        });
+        rx
+    }
+
+    /// `connect_with_deadline` returns `TimedOut` when the broker
+    /// accepts then stalls. Fixes #517.
+    #[test]
+    fn connect_with_deadline_fires_on_stalling_broker() {
+        let program = "client-v2-stall-deadline";
+        let sid = user_sid_hash().expect("user_sid_hash");
+        let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
+        let socket_path = resolve_socket_path(&pipe_name);
+        let ready = spawn_stall_broker(socket_path);
+        ready
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stall broker listening");
+        let start = Instant::now();
+        let err = connect_with_deadline(program, "0.0.0", Duration::from_millis(200))
+            .expect_err("stall broker => deadline TimedOut");
+        let elapsed = start.elapsed();
+        match err {
+            BrokerV2Error::Io(io) => assert_eq!(io.kind(), std::io::ErrorKind::TimedOut),
+            other => panic!("expected Io(TimedOut), got: {other:?}"),
+        }
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "deadline should fire within budget; took {elapsed:?}"
+        );
+    }
+
+    /// `BrokerV2Error::Refused` exposes `retry_after_ms` as a top-level
+    /// field, mirroring v1's `BrokerClientError::Refused`. Fixes #518.
+    /// Constructs a stub broker that replies with Refused, asserts the
+    /// retry hint surfaces top-level (not buried in `details`).
+    fn spawn_refusing_broker(socket_path: String, retry_after_ms: u64) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            #[cfg(unix)]
+            let _cleanup = {
+                let _ = std::fs::create_dir_all(
+                    std::path::Path::new(&socket_path).parent().unwrap(),
+                );
+                let _ = std::fs::remove_file(&socket_path);
+                SocketCleanup(std::path::PathBuf::from(&socket_path))
+            };
+            let listener = ListenerOptions::new()
+                .name(name)
+                .create_sync()
+                .expect("ListenerOptions create_sync");
+            tx.send(()).expect("send listener-ready signal");
+            let mut stream = listener.accept().expect("accept");
+            let _bytes = read_frame(&mut stream).expect("read Hello frame");
+            let reply = HelloReply {
+                result: Some(hello_reply::Result::Refused(Refused {
+                    code: 0,
+                    reason: "stub refusal".to_string(),
+                    retry_after_ms,
+                    ..Refused::default()
+                })),
+            };
+            let mut body = Vec::with_capacity(reply.encoded_len());
+            reply.encode(&mut body).expect("encode HelloReply");
+            write_frame(&mut stream, &body).expect("write HelloReply frame");
+        });
+        rx
+    }
+
+    #[test]
+    fn refused_exposes_retry_after_ms_top_level() {
+        let program = "client-v2-refused-retry";
+        let sid = user_sid_hash().expect("user_sid_hash");
+        let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
+        let socket_path = resolve_socket_path(&pipe_name);
+        let ready = spawn_refusing_broker(socket_path, 1234);
+        ready
+            .recv_timeout(Duration::from_secs(2))
+            .expect("refusing broker listening");
+        let start = Instant::now();
+        let err = loop {
+            match connect(program, "0.0.0") {
+                Err(e) => break e,
+                Ok(_) if start.elapsed() < Duration::from_secs(2) => {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Ok(_) => panic!("expected Refused"),
+            }
+        };
+        match err {
+            BrokerV2Error::Refused {
+                retry_after_ms,
+                reason,
+                details,
+            } => {
+                assert_eq!(
+                    retry_after_ms, 1234,
+                    "retry hint must surface top-level (was: {retry_after_ms})"
+                );
+                assert_eq!(reason, "stub refusal");
+                assert_eq!(
+                    details.retry_after_ms, 1234,
+                    "details payload still carries the field for full diagnostics"
+                );
+            }
+            other => panic!("expected Refused, got: {other:?}"),
         }
     }
 }
