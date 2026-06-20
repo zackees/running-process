@@ -180,6 +180,22 @@ fn main() -> ExitCode {
     let listener = match ListenerOptions::new().name(name).create_sync() {
         Ok(l) => l,
         Err(err) => {
+            // Single-instance enforcement: a `WouldBlock` / `AddrInUse`
+            // bind failure means another `running-process-broker-v2
+            // --program {program}` is already running on this user's
+            // socket. Surface a directly-actionable message instead of
+            // a raw OS error string.
+            if is_already_bound_error(&err) {
+                eprintln!(
+                    "running-process-broker-v2: another broker is already \
+                     bound at {socket_path} (program={}). Refusing to \
+                     start to avoid double-bind. Stop the other broker \
+                     first, or pass `--program <other-name>` to bind a \
+                     distinct namespace.",
+                    opts.program,
+                );
+                return ExitCode::from(75); // EX_TEMPFAIL — supervisor can retry after the other broker exits
+            }
             eprintln!("running-process-broker-v2: bind failed at {socket_path}: {err}");
             return ExitCode::from(1);
         }
@@ -495,6 +511,24 @@ fn unix_socket_dir() -> std::path::PathBuf {
     }
 }
 
+/// Classify a [`ListenerOptions::create_sync`] error as
+/// "another broker is already bound" vs any other bind failure.
+///
+/// Single-instance enforcement is delegated to the OS: a `WouldBlock`
+/// or `AddrInUse` from the kernel's pipe namespace is the canonical
+/// "another listener already owns this name" signal. The slice 1
+/// scaffold treated every bind failure equivalently; this slice
+/// separates the user-actionable case (another broker running)
+/// from environment failures (permission denied, parent dir
+/// missing, etc.) so supervisors can react appropriately
+/// (retry-after-exit vs hard-fail).
+fn is_already_bound_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::AddrInUse | std::io::ErrorKind::WouldBlock,
+    )
+}
+
 fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
     use interprocess::local_socket::prelude::*;
     #[cfg(windows)]
@@ -648,6 +682,30 @@ mod tests {
             }
             other => panic!("expected Refused, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn is_already_bound_error_classifies_addr_in_use() {
+        let err = std::io::Error::new(std::io::ErrorKind::AddrInUse, "in use");
+        assert!(is_already_bound_error(&err));
+    }
+
+    #[test]
+    fn is_already_bound_error_classifies_would_block() {
+        let err = std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block");
+        assert!(is_already_bound_error(&err));
+    }
+
+    #[test]
+    fn is_already_bound_error_does_not_misclassify_permission_denied() {
+        let err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        assert!(!is_already_bound_error(&err));
+    }
+
+    #[test]
+    fn is_already_bound_error_does_not_misclassify_not_found() {
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        assert!(!is_already_bound_error(&err));
     }
 
     #[test]
