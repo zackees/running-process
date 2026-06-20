@@ -28,6 +28,8 @@ pub use manifest_io::{
     CENTRAL_MANIFEST_EXTENSION_V2, ROOT_MANIFEST_FILE_V2,
 };
 
+pub mod backend_handle;
+
 #[cfg(test)]
 mod tests {
     use super::*;
