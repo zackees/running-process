@@ -21,7 +21,7 @@ use std::sync::Arc;
 use crate::broker::broker_http_port::{BrokerHttpPort, ResolvedHttpBind};
 use crate::broker::http_endpoint_registry::HttpEndpointRegistry;
 
-/// Errors raised by [`bind_broker_http_server`].
+/// Errors raised by `BrokerHttpServer::bind`.
 #[derive(Debug, thiserror::Error)]
 pub enum BrokerHttpServerError {
     /// `bind(addr:port)` failed and we have no fallback to fall back to.
@@ -38,7 +38,7 @@ pub enum BrokerHttpServerError {
 }
 
 /// A bound but not-yet-serving HTTP listener. Caller decides whether to
-/// drive [`serve_once`] in a blocking thread, behind tokio, etc.
+/// drive `serve_once` in a blocking thread, behind tokio, etc.
 pub struct BrokerHttpServer {
     listener: TcpListener,
     local: SocketAddr,
