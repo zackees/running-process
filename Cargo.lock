@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.5.4"
+version = "4.5.5"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "4.5.4"
+version = "4.5.5"
 dependencies = [
  "interprocess",
  "libc",
