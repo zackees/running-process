@@ -296,6 +296,15 @@ fn manifest_matches_host(manifest: &CacheManifest, current_host: &HostIdentity) 
         && (host.boot_id.is_empty() || host.boot_id == current_host.boot_id)
 }
 
+/// Atomically replace the contents of `path` with `bytes`.
+///
+/// `pub(super)` so [`super::protocol_v2::manifest_io`] can reuse the
+/// exact same write semantics (tempfile + sync + rename + parent
+/// fsync) for v2 manifest files.
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ManifestError> {
+    atomic_write(path, bytes)
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ManifestError> {
     let parent = path
         .parent()

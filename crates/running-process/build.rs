@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto/broker_v1/broker_v1_service_def.proto");
     println!("cargo:rerun-if-changed=proto/broker_v2/broker_v2_service_def.proto");
     println!("cargo:rerun-if-changed=proto/broker_v2/broker_v2_control.proto");
+    println!("cargo:rerun-if-changed=proto/broker_v2/broker_v2_manifest.proto");
     println!("cargo:rerun-if-changed=build.rs");
     let file_descriptors = protox::compile(
         [
@@ -20,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/broker_v1/broker_v1_service_def.proto",
             "proto/broker_v2/broker_v2_service_def.proto",
             "proto/broker_v2/broker_v2_control.proto",
+            "proto/broker_v2/broker_v2_manifest.proto",
         ],
         ["proto/"],
     )?;

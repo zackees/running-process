@@ -21,6 +21,13 @@ pub use io::{
     ServiceDefinitionBuilder, SERVICE_DEF_V2_EXTENSION,
 };
 
+mod manifest_io;
+pub use manifest_io::{
+    central_manifest_path_v2, central_registry_dir_v2, write_to_central_in_dir_v2,
+    write_to_central_v2, write_to_root_v2, CacheManifestBuilder, BROKER_ENVELOPE_VERSION_V2,
+    CENTRAL_MANIFEST_EXTENSION_V2, ROOT_MANIFEST_FILE_V2,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
