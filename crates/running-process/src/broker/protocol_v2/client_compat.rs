@@ -52,7 +52,9 @@
 pub use super::super::adopt::AdoptError;
 
 #[cfg(feature = "client-async")]
-pub use super::super::adopt::{AsyncBrokerSession, OwnedConnectRequest};
+pub use super::super::adopt::{
+    AsyncBrokerSession, IntoBackendIoError, OwnedBackendIo, OwnedConnectRequest,
+};
 
 // Re-export every v1 client symbol zccache consumes.
 pub use super::super::client::{BackendConnectionRoute, BrokerClientError, RefusalKind};
