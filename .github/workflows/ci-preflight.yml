@@ -121,6 +121,11 @@ jobs:
           cache: true
       - name: Sync venv (frozen, no project install)
         run: uv sync --frozen --group dev --no-install-project --python 3.11
+      # ci.lint imports `running_process.cli` at runtime, so the dev
+      # wheel must be installed in the venv. Cargo compile replays from
+      # the warm zccache so this is mostly maturin packaging cost.
+      - name: Dev wheel build
+        run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
       - name: Lint
         run: uv run --no-sync --module ci.run_logged logs/lint.log -- uv run --no-sync --module ci.lint
       - name: Display failure diagnostics
@@ -260,6 +265,13 @@ jobs:
         run: uv run --no-sync --module ci.run_logged logs/integration-test.log -- uv run --no-sync --module ci.test --live-only -ra --strict-markers
       - name: Build broker CLI for servicedef proof
         run: soldr cargo build -p running-process --features daemon --bin running-process-broker-v1
+      # ci.servicedef_proof refuses to run if the platform-default
+      # service-definition directory already exists. The Integration
+      # Tests step above may leave that directory behind on a clean
+      # runner; clear it before the proof so the test starts cold.
+      - name: Clear stale servicedef state
+        shell: bash
+        run: rm -rf "$HOME/.config/running-process/services" || true
       - name: Servicedef install-path proof
         run: uv run --no-sync --module ci.run_logged logs/servicedef-proof.log -- uv run --no-sync --module ci.servicedef_proof
       - name: Upload servicedef proof evidence

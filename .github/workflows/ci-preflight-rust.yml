@@ -68,7 +68,9 @@ jobs:
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Add rust target
+      - name: Add rust target (to soldr-managed rustup home)
+        env:
+          RUSTUP_HOME: ${{ runner.temp }}/setup-soldr/rustup-home
         run: rustup target add ${{ inputs.target }}
 
       - name: soldr cargo build --target ${{ inputs.target }}
@@ -88,7 +90,9 @@ jobs:
           cache: true
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Add rust target
+      - name: Add rust target (to soldr-managed rustup home)
+        env:
+          RUSTUP_HOME: ${{ runner.temp }}/setup-soldr/rustup-home
         run: rustup target add ${{ inputs.target }}
       - name: soldr cargo clippy --target ${{ inputs.target }}
         run: soldr cargo clippy --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }} -- -D warnings
@@ -108,7 +112,9 @@ jobs:
           cache: true
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Add rust target
+      - name: Add rust target (to soldr-managed rustup home)
+        env:
+          RUSTUP_HOME: ${{ runner.temp }}/setup-soldr/rustup-home
         run: rustup target add ${{ inputs.target }}
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
