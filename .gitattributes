@@ -1,0 +1,9 @@
+# Git LFS rules for vendored Windows binaries.
+#
+# `vendor/win32/conpty/<arch>/{conpty.dll,OpenConsole.exe}` are vendored
+# from Microsoft.Windows.Console.ConPTY NuGet so release builds are
+# hermetic + reproducible (see `vendor/win32/conpty/README.md`). Keep
+# them out of the regular git pack — LFS gives us small clones and
+# `--filter=blob:none` partial-clone support.
+vendor/win32/**/*.dll  filter=lfs diff=lfs merge=lfs -text
+vendor/win32/**/*.exe  filter=lfs diff=lfs merge=lfs -text

@@ -7,6 +7,11 @@ linux/.incoming-*/
 *.so
 *.dll
 *.dylib
+# Negate the *.dll and *.exe globs above for vendored Windows binaries —
+# these are committed via Git LFS so release builds stay hermetic
+# (see `vendor/win32/conpty/README.md`).
+!vendor/win32/**/*.dll
+!vendor/win32/**/*.exe
 __pycache__/
 .pytest_cache/
 .ruff_cache/

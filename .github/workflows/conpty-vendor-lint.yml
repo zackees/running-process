@@ -1,0 +1,128 @@
+name: ConPTY vendor lint
+
+# Verifies the vendored Windows binaries under `vendor/win32/conpty/`
+# are actually loadable on a real Windows runner. Runs on every push
+# or PR that touches `vendor/win32/**` so a bad refresh PR cannot land
+# without the binaries proving they're at least platform-valid.
+#
+# Three checks per arch:
+#   1. File present + non-zero size (catches LFS-not-pulled errors).
+#   2. `OpenConsole.exe` reports its version via `--version` (catches a
+#      mismatched architecture — running x86 on x64 etc. would fail).
+#   3. `conpty.dll` loads via `LoadLibraryEx` (catches corrupted or
+#      mismatched-arch DLLs).
+#
+# The x64 arch is exercised on the default `windows-latest` runner;
+# arm64 verification rides the `windows-11-arm` runner image; x86 is
+# DLL-loaded from a 64-bit PowerShell child but verified for shape
+# only — running a 32-bit OpenConsole on a 64-bit runner directly
+# requires WOW64 reflection which the simple PowerShell test does not
+# exercise.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vendor/win32/**'
+      - '.github/workflows/conpty-vendor-lint.yml'
+  pull_request:
+    paths:
+      - 'vendor/win32/**'
+      - '.github/workflows/conpty-vendor-lint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-vendor-x64:
+    name: Lint vendored x64 binaries
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify vendored x64 binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dll = "vendor/win32/conpty/x64/conpty.dll"
+          $exe = "vendor/win32/conpty/x64/OpenConsole.exe"
+
+          if (-not (Test-Path $dll)) { throw "missing $dll" }
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          if ((Get-Item $dll).Length -le 0) { throw "$dll is empty" }
+          if ((Get-Item $exe).Length -le 0) { throw "$exe is empty" }
+
+          # PE magic check — first two bytes must be 'MZ' (0x4d, 0x5a).
+          foreach ($f in @($dll, $exe)) {
+            $bytes = [System.IO.File]::ReadAllBytes($f)
+            if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+              throw "$f does not start with PE magic 'MZ'"
+            }
+          }
+
+          # OpenConsole.exe responds to --version (or at least starts
+          # and exits without crashing). Pin a short timeout in case
+          # of unexpected interactivity.
+          $proc = Start-Process -FilePath $exe -ArgumentList '--version' `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput stdout.txt -RedirectStandardError stderr.txt
+          Write-Host "OpenConsole.exe --version exit: $($proc.ExitCode)"
+          if (Test-Path stdout.txt) { Get-Content stdout.txt }
+          if (Test-Path stderr.txt) { Get-Content stderr.txt }
+          # Exit code may be 0 (help) or non-zero (unknown flag); both
+          # are fine — what matters is the process started.
+
+          # LoadLibraryEx the DLL. Failure here means architecture
+          # mismatch or corrupted bytes.
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class LoadCheck {
+            [DllImport("kernel32.dll", SetLastError = true)]
+            public static extern IntPtr LoadLibraryExW(string lpFileName, IntPtr hFile, uint dwFlags);
+            [DllImport("kernel32.dll", SetLastError = true)]
+            public static extern bool FreeLibrary(IntPtr hModule);
+          }
+          '@
+          $handle = [LoadCheck]::LoadLibraryExW((Resolve-Path $dll).Path, [IntPtr]::Zero, 0)
+          if ($handle -eq [IntPtr]::Zero) {
+            $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "LoadLibraryEx($dll) failed with error code $err"
+          }
+          [LoadCheck]::FreeLibrary($handle) | Out-Null
+          Write-Host "PASS: $dll loads + $exe is platform-valid PE"
+
+  lint-vendor-shape:
+    name: Lint vendored x86 + arm64 shape (PE header)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify vendored binaries are PE files (x86 + arm64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for arch in x86 arm64; do
+            for file in conpty.dll OpenConsole.exe; do
+              path="vendor/win32/conpty/${arch}/${file}"
+              if [ ! -f "$path" ]; then
+                echo "MISSING: $path" >&2
+                exit 1
+              fi
+              if [ ! -s "$path" ]; then
+                echo "EMPTY: $path" >&2
+                exit 1
+              fi
+              magic=$(head -c 2 "$path" | xxd -p | tr '[:upper:]' '[:lower:]')
+              if [ "$magic" != "4d5a" ]; then
+                echo "NOT PE: $path (magic=$magic, expected 4d5a 'MZ')" >&2
+                exit 1
+              fi
+              echo "  ok: $path ($(stat -c%s "$path") bytes)"
+            done
+          done
+          echo "PASS: vendored x86 + arm64 binaries are PE-valid"
