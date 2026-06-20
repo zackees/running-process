@@ -51,6 +51,13 @@ pub use super::super::backend_lifecycle::identity::{DaemonProcess, IdentityError
 
 pub use super::super::protocol::Endpoint;
 
+/// Magic frame payload-protocol marker the `try_serve_backend_handle_probe`
+/// reader uses to detect a broker probe vs a zccache message. Identical
+/// to v1's `broker::backend_lifecycle::probe::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL`
+/// — the constant is part of the cross-version-stable probe wire shape.
+pub const BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL: u32 =
+    super::super::backend_lifecycle::probe::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
+
 #[cfg(test)]
 mod tests {
     use super::*;
