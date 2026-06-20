@@ -504,6 +504,97 @@ mod tests {
         rx
     }
 
+    /// Stress stub: accepts `count` connections in a loop, replying
+    /// Negotiated to each. Used by the concurrent-connect stress test
+    /// to prove the client side doesn't deadlock or leak handles when
+    /// many threads dial simultaneously.
+    fn spawn_multi_accept_stub_broker(socket_path: String, count: usize) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            #[cfg(unix)]
+            let _cleanup = {
+                let _ = std::fs::create_dir_all(
+                    std::path::Path::new(&socket_path).parent().unwrap(),
+                );
+                let _ = std::fs::remove_file(&socket_path);
+                SocketCleanup(std::path::PathBuf::from(&socket_path))
+            };
+            let listener = ListenerOptions::new()
+                .name(name)
+                .create_sync()
+                .expect("ListenerOptions create_sync");
+            tx.send(()).expect("send listener-ready signal");
+            for _ in 0..count {
+                let mut stream = match listener.accept() {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let _ = read_frame(&mut stream).expect("read Hello frame");
+                let reply = HelloReply {
+                    result: Some(hello_reply::Result::Negotiated(Negotiated {
+                        negotiated_protocol: ENVELOPE_VERSION as u32,
+                        daemon_version: "stub-multi-1".to_string(),
+                        backend_pipe: String::new(),
+                        warnings: Vec::new(),
+                        server_capabilities: 0,
+                        keepalive_interval_secs: 0,
+                        handle_passed_token: Vec::new(),
+                        connection_id: 0x0FFF_F1EE,
+                    })),
+                };
+                let mut body = Vec::with_capacity(reply.encoded_len());
+                reply.encode(&mut body).expect("encode HelloReply");
+                write_frame(&mut stream, &body).expect("write HelloReply frame");
+            }
+        });
+        rx
+    }
+
+    /// Stress test: 8 concurrent `connect_with_deadline` calls against a
+    /// multi-accept stub broker. All must succeed within wall-clock
+    /// budget — the helper-thread + `recv_timeout` pattern must scale
+    /// to concurrent callers without serializing on a global mutex or
+    /// deadlocking on the channel.
+    #[test]
+    fn concurrent_connects_against_multi_accept_broker() {
+        let program = "client-v2-concurrent-multi";
+        let sid = user_sid_hash().expect("user_sid_hash");
+        let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
+        let socket_path = resolve_socket_path(&pipe_name);
+        const N: usize = 8;
+        let ready = spawn_multi_accept_stub_broker(socket_path, N);
+        ready
+            .recv_timeout(Duration::from_secs(2))
+            .expect("multi-accept broker listening");
+
+        let start = Instant::now();
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let p = program.to_string();
+                thread::spawn(move || connect_with_deadline(&p, "0.0.0", Duration::from_secs(2)))
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let elapsed = start.elapsed();
+
+        let ok = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(
+            ok, N,
+            "all {N} concurrent connects must succeed; got {ok} ok, full results: {results:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "concurrent connect took {elapsed:?}; expected < 5s"
+        );
+        for r in &results {
+            if let Ok(session) = r {
+                assert_eq!(session.negotiated().connection_id, 0x0FFF_F1EE);
+                assert_eq!(session.negotiated().daemon_version, "stub-multi-1");
+            }
+        }
+    }
+
     /// Adversarial stub: accepts, reads Hello, replies with a HelloReply
     /// whose `result` oneof is `None` (proto3 default — easy bug if a
     /// future broker forgets to set the variant). Must surface as
