@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 
 [[package]]
@@ -277,7 +277,7 @@ wheels = [
 
 [[package]]
 name = "running-process"
-version = "4.4.0"
+version = "4.5.1"
 source = { editable = "." }
 
 [package.dev-dependencies]
