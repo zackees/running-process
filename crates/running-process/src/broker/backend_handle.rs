@@ -92,7 +92,7 @@ impl BackendHandle {
     /// **BLOCKING.** Performs synchronous IPC up to
     /// [`probe::DEFAULT_ENDPOINT_PROBE_TIMEOUT`]
     /// (500 ms). From a tokio task, call from `spawn_blocking` or
-    /// switch to [`Self::probe_async`] (requires the `client-async`
+    /// switch to `Self::probe_async` (requires the `client-async`
     /// feature).
     ///
     /// ```no_run
@@ -132,7 +132,7 @@ impl BackendHandle {
     /// **BLOCKING.** Performs synchronous IPC up to
     /// [`probe::DEFAULT_ENDPOINT_PROBE_TIMEOUT`]
     /// (500 ms). From a tokio task, call from `spawn_blocking` or use
-    /// [`Self::probe_with_service_async`] (requires the
+    /// `Self::probe_with_service_async` (requires the
     /// `client-async` feature) instead — calling this directly from
     /// an async context will block the runtime worker thread.
     ///

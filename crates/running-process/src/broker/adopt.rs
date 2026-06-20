@@ -203,7 +203,7 @@ pub enum IntoBackendIoError {
     WindowsUnsupported,
 }
 
-/// Errors from [`BrokerSession::adopt`] / [`AsyncBrokerSession::adopt`].
+/// Errors from [`BrokerSession::adopt`] / `AsyncBrokerSession::adopt`.
 #[derive(Debug, thiserror::Error)]
 pub enum AdoptError {
     /// `RUNNING_PROCESS_DISABLE=1` is set — the caller should use its direct

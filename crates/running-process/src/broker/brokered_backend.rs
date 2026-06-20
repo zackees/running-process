@@ -134,8 +134,8 @@ pub type Endpoint = str;
 pub trait BrokeredBackend {
     /// Daemon-specific state that survives between requests.
     ///
-    /// Allocated and consumed inside [`serve`] — never visible to
-    /// [`bind`]. The trait's structural guarantee is precisely that
+    /// Allocated and consumed inside `serve` — never visible to
+    /// `bind`. The trait's structural guarantee is precisely that
     /// state initialization cannot run before the endpoint is bound.
     type State: Send + 'static;
 

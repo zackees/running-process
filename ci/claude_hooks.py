@@ -29,6 +29,18 @@ MANDATE_REASON = (
     "(the globally installed binary), or use the higher-level repo entrypoints "
     "(`uv run build.py`, `./install`, `./lint`, `./test`)."
 )
+UV_RUN_SAFE_FLAGS = ("--no-project", "--no-sync", "--frozen")
+UV_RUN_REASON = (
+    "`uv run` without --no-project / --no-sync / --frozen triggers the project "
+    "auto-sync, which on this maturin-backed repo reinstalls running-process "
+    "into the venv and forces a full Rust+PyO3 native rebuild (~10s+). Either "
+    "pass one of the safe flags (`--no-project` for pure-Python scripts that "
+    "don't need the native module, `--no-sync` to use the existing venv, "
+    "`--frozen` to lock to the existing lockfile), OR run the canonical "
+    "entrypoint (`./test`, `./lint`, `./install`, `uv run build.py`) — those "
+    "are pre-approved as the legitimate full-rebuild paths. See "
+    "zackees/soldr#805."
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +75,28 @@ def _contains_raw_build_tool(command: str) -> bool:
     return False
 
 
+def _uv_run_missing_safe_flag(command: str) -> bool:
+    """True iff any shell segment is `uv run ...` without one of the safe flags.
+
+    Walks the command split on &&/||/|/;/newline to catch chained variants
+    like `cd somewhere && uv run pytest`. A segment whose first two tokens
+    are `uv run` AND which lacks any of UV_RUN_SAFE_FLAGS in the rest of
+    its tokens fires the ban.
+    """
+    normalized = command
+    for sep in ("&&", "||", "\n", ";", "|"):
+        normalized = normalized.replace(sep, "\x00")
+    for segment in normalized.split("\x00"):
+        tokens = segment.split()
+        if len(tokens) < 2 or tokens[0] != "uv" or tokens[1] != "run":
+            continue
+        rest = tokens[2:]
+        if any(t == f or t.startswith(f + "=") for f in UV_RUN_SAFE_FLAGS for t in rest):
+            continue
+        return True
+    return False
+
+
 def evaluate_bash_command(command: str) -> HookDecision | None:
     if not command.strip():
         return None
@@ -72,6 +106,11 @@ def evaluate_bash_command(command: str) -> HookDecision | None:
         return HookDecision(
             permission_decision="deny",
             reason=MANDATE_REASON,
+        )
+    if _uv_run_missing_safe_flag(command):
+        return HookDecision(
+            permission_decision="deny",
+            reason=UV_RUN_REASON,
         )
     return None
 

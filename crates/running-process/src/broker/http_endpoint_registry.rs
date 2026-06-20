@@ -3,8 +3,8 @@
 //! Stores `BackendId → Option<u16>` so the v2 broker knows which port
 //! each registered backend's HTTP server (if any) is listening on.
 //! Plumbed by the broker↔daemon control plane: when a daemon emits a
-//! [`protocol_v2::BackendHttpReady`] frame, the broker decodes it via
-//! [`decode_and_register`] and stores the port against the backend id
+//! `BackendHttpReady` frame, the broker decodes it via
+//! `decode_and_register` and stores the port against the backend id
 //! it tracks.
 //!
 //! No HTTP server lives here. That arrives in slice 7. This slice is
