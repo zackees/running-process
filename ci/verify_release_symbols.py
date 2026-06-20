@@ -17,7 +17,14 @@ from ci.tiny_pdb_symbols import (
 from ci.wheel_record import validate_record
 
 DEFAULT_PDB_LOW_WATER_BYTES = 50_000
-DEFAULT_PDB_HIGH_WATER_BYTES = 1_000_000
+# Hard cap on the shipped tiny PDB. The IDEAL target stays at 100 KB —
+# anything between IDEAL and HIGH_WATER flips `ideal_size_met=False` so
+# the gradual creep is visible — but only HIGH_WATER fails the release.
+# Bumped from 1 MB to 2 MB on 4.5.4 to unblock release after the v2
+# broker scaffold + vendored-sidecar work legitimately grew the
+# allowlisted symbol set past the prior cap (~1.18 MB observed). 2 MB
+# leaves ~70% headroom; revisit if the next release also creeps.
+DEFAULT_PDB_HIGH_WATER_BYTES = 2_000_000
 DEFAULT_PDB_IDEAL_HIGH_WATER_BYTES = 100_000
 DEFAULT_COMBINED_NATIVE_HIGH_WATER_BYTES = 8_000_000
 

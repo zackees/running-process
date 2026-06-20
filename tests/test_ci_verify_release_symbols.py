@@ -104,7 +104,10 @@ def test_verify_release_artifact_fails_low_water(tmp_path: Path, monkeypatch) ->
 def test_verify_release_artifact_fails_high_water_before_pdbutil(
     tmp_path: Path, monkeypatch
 ) -> None:
-    wheel = _write_release_wheel(tmp_path, pdb_bytes=b"x" * 1_000_001)
+    wheel = _write_release_wheel(
+        tmp_path,
+        pdb_bytes=b"x" * (verify_release_symbols.DEFAULT_PDB_HIGH_WATER_BYTES + 1),
+    )
     calls = 0
 
     def fake_resolve(explicit=None):
