@@ -1,6 +1,6 @@
 # running-process
 
-[![PyPI](https://img.shields.io/pypi/v/running-process)](https://pypi.org/project/running-process/) [![Crates.io](https://img.shields.io/crates/v/running-process)](https://crates.io/crates/running-process) [![codecov](https://codecov.io/gh/zackees/running-process/graph/badge.svg)](https://codecov.io/gh/zackees/running-process)
+[![PyPI](https://img.shields.io/pypi/v/running-process)](https://pypi.org/project/running-process/) [![Crates.io](https://img.shields.io/crates/v/running-process)](https://crates.io/crates/running-process) [![codecov](https://codecov.io/gh/zackees/running-process/graph/badge.svg)](https://codecov.io/gh/zackees/running-process) [![Dependency Check](https://github.com/zackees/running-process/actions/workflows/dependency-check.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/dependency-check.yml)
 
 `running-process` is what you wished python's subprocess was. Blazing fast, highly concurrent, huge feature list, dead process tracking, pty support. Built in Rust with a thin python api.
 
