@@ -286,7 +286,7 @@ jobs:
           # `vendor/win32/conpty/<arch>/` so release builds have no NuGet
           # network dependency and produce byte-identical tarballs
           # from any git SHA. NuGet drift is observed by the
-          # `conpty-drift-check.yml` cron workflow which opens an
+          # `dependency-check.yml` cron workflow which opens an
           # issue on drift but never auto-updates the vendored bytes.
           # See `vendor/win32/conpty/README.md` for the refresh procedure.
           #

@@ -51,7 +51,7 @@ LFS support enabled.
 
 ## Refreshing
 
-`.github/workflows/conpty-drift-check.yml` runs weekly. When NuGet's
+`.github/workflows/dependency-check.yml` runs weekly. When NuGet's
 current bytes for the pinned version no longer match the vendored
 files, it opens a sub-issue with the SHA-256 deltas. **The drift-check
 never auto-commits** — refreshing is always an operator-reviewed PR:
@@ -63,7 +63,7 @@ never auto-commits** — refreshing is always an operator-reviewed PR:
 4. Update `WINDOWS_CONPTY_VERSION.txt` to the new version.
 5. Diff the binaries (`git diff vendor/win32/conpty/`); compare
    SHA-256s against any release-notes Microsoft published.
-6. Open a PR; `conpty-vendor-lint.yml` re-verifies each binary on a
+6. Open a PR; `dependency-check.yml` re-verifies each binary on a
    Windows runner before merge.
 
 ## License
