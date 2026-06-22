@@ -40,6 +40,13 @@ use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+// libc 0.2 exposes the `proc_listpids` / `proc_pidinfo` functions and
+// the `proc_bsdinfo` struct on macOS targets but does NOT export the
+// integer constants below, so we declare them inline. The values are
+// from Apple's `<sys/proc_info.h>` and have been ABI-stable for years.
+const PROC_ALL_PIDS: u32 = 1;
+const PROC_PIDTBSDINFO: libc::c_int = 3;
+
 /// Spawn the descendant-tracking pump thread for `root_pid`. Returns
 /// silently after spawning — the thread terminates when `root_pid`
 /// disappears from the global process table.
@@ -85,7 +92,7 @@ fn list_all_processes() -> Vec<(u32, u32)> {
     // required size in bytes.
     let size = unsafe {
         libc::proc_listpids(
-            libc::PROC_ALL_PIDS,
+            PROC_ALL_PIDS,
             0,
             std::ptr::null_mut(),
             0,
@@ -101,7 +108,7 @@ fn list_all_processes() -> Vec<(u32, u32)> {
     let mut pids: Vec<libc::pid_t> = vec![0; pid_count];
     let written_bytes = unsafe {
         libc::proc_listpids(
-            libc::PROC_ALL_PIDS,
+            PROC_ALL_PIDS,
             0,
             pids.as_mut_ptr() as *mut libc::c_void,
             (pid_count * std::mem::size_of::<libc::pid_t>()) as libc::c_int,
@@ -122,7 +129,7 @@ fn list_all_processes() -> Vec<(u32, u32)> {
         let n = unsafe {
             libc::proc_pidinfo(
                 pid,
-                libc::PROC_PIDTBSDINFO,
+                PROC_PIDTBSDINFO,
                 0,
                 &mut info as *mut libc::proc_bsdinfo as *mut libc::c_void,
                 std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
