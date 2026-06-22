@@ -354,7 +354,7 @@ fn launched_process_tree_scope_advertises_no_admin_backends() {
     #[cfg(target_os = "macos")]
     {
         assert_eq!(file.backend, "proc-pidinfo");
-        assert_eq!(process.backend, "kqueue-evfilt-proc");
+        assert_eq!(process.backend, "sysctl-proc-poll");
     }
 
     // Network is uniformly deferred for this scope — no admin-free
