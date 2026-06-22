@@ -149,6 +149,11 @@ ALLOWED_RUST_SPAWN = {
     # and forward descendant-lifecycle observer events. Same rationale
     # as the IOCP pump entry above.
     Path("crates/running-process/src/observer/descendants_linux.rs"),
+    # #539 slice 7: macOS descendant pump uses `thread::Builder::spawn`
+    # (a thread, not a process) to drain kqueue/EVFILT_PROC events and
+    # forward descendant-lifecycle observer events. Same rationale as
+    # the IOCP/proc-poll pump entries above.
+    Path("crates/running-process/src/observer/descendants_macos.rs"),
     # Testbins: bare std::Command::spawn on Unix only (see comment in
     # testbins/src/bin/spawner.rs — sanitized spawn isn't usable there
     # because of the setpgid-vs-killpg interaction the containment test

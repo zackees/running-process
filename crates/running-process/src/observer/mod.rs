@@ -51,6 +51,9 @@ pub use cmdline::read_process_cmdline;
 #[cfg(target_os = "linux")]
 pub(crate) mod descendants_linux;
 
+#[cfg(target_os = "macos")]
+pub(crate) mod descendants_macos;
+
 /// Scope at which observation is negotiated.
 ///
 /// `running-process` exposes two distinct observation tiers because the
@@ -399,9 +402,9 @@ fn detect_process_backend(scope: TraceScope) -> (CapabilitySupport, &'static str
             #[cfg(target_os = "macos")]
             {
                 (
-                    CapabilitySupport::Unavailable,
+                    CapabilitySupport::Supported,
                     "kqueue-evfilt-proc",
-                    "#539 slice 7: macOS kqueue EVFILT_PROC descendant backend not yet implemented",
+                    "macOS kqueue EVFILT_PROC + NOTE_TRACK descendant lifecycle (#539 slice 7)",
                 )
             }
             #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]

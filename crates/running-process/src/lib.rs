@@ -355,6 +355,17 @@ impl NativeProcess {
                 }
             }
         }
+        // #539 slice 7: macOS descendant lifecycle via kqueue + EVFILT_PROC
+        // + NOTE_TRACK. Fully event-driven (no polling) — see
+        // observer::descendants_macos module docs for tradeoffs.
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(emitter) = self.shared.observer.as_ref() {
+                if let Some(sink) = emitter.descendant_sink() {
+                    crate::observer::descendants_macos::spawn_pump(child.id(), sink);
+                }
+            }
+        }
         if self.config.capture {
             let stdout = child.stdout.take().expect("stdout pipe missing");
             let stderr = child.stderr.take().expect("stderr pipe missing");
