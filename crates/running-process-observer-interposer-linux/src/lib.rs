@@ -17,19 +17,22 @@
 //! via the `RP_OBSERVER_EVENT_PIPE` env var (set by the parent before
 //! `execve()`).
 //!
-//! ## Slice 4a/4b/4c scope
+//! ## Slice 4 scope (4a-4d)
 //!
 //! Slice 4a: `open(2)`. Slice 4b: `openat(2)` with dirfd resolution.
-//! Slice 4c (this commit): `close(2)` and `write(2)` plus the
-//! process-global fd→path table that lets them resolve which file
-//! the syscall is touching.
+//! Slice 4c: `close(2)` and `write(2)` plus the process-global
+//! fd→path table that lets them resolve which file the syscall is
+//! touching. Slice 4d (this commit): `unlink(2)`, `unlinkat(2)`,
+//! `rename(2)`, `renameat(2)` — reuse the dirfd-join pattern from
+//! slice 4b but emit `file-unlink` / `file-rename` events instead of
+//! `file-open`.
 //!
-//! `unlink`, `unlinkat`, `rename`, `renameat` land in slice 4d. They
-//! reuse the dirfd-join pattern from 4b but emit different event
-//! kinds (`file-unlink` / `file-rename`). `creat`, `open64`,
-//! `__open_2` (libc internal variants) are intentionally NOT shadowed
-//! yet — they follow once we have a test fixture that exercises one
-//! variant.
+//! After slice 4d the Linux interposer covers the standard file
+//! mutation surface. `pwrite`/`writev`/`pwritev`/`sendfile`/`splice`
+//! are still gaps; they land alongside the macOS interposer (slice 5
+//! of #551). `creat`, `open64`, `__open_2` (libc internal variants)
+//! are intentionally NOT shadowed yet — they follow once we have a
+//! test fixture that exercises one variant.
 //!
 //! ## Caveats
 //!
@@ -78,6 +81,18 @@ type CloseFn = unsafe extern "C" fn(c_int) -> c_int;
 /// libc::ssize_t is the portable name.
 type WriteFn = unsafe extern "C" fn(c_int, *const libc::c_void, libc::size_t) -> libc::ssize_t;
 
+/// Type of libc `unlink(2)`.
+type UnlinkFn = unsafe extern "C" fn(*const c_char) -> c_int;
+
+/// Type of libc `unlinkat(2)`.
+type UnlinkatFn = unsafe extern "C" fn(c_int, *const c_char, c_int) -> c_int;
+
+/// Type of libc `rename(2)`.
+type RenameFn = unsafe extern "C" fn(*const c_char, *const c_char) -> c_int;
+
+/// Type of libc `renameat(2)`.
+type RenameatFn = unsafe extern "C" fn(c_int, *const c_char, c_int, *const c_char) -> c_int;
+
 /// Cache of the real libc `open` looked up via `dlsym(RTLD_NEXT, ...)`.
 /// `OnceLock` makes this thread-safe across the first-call race
 /// without pulling in `lazy_static!`.
@@ -91,6 +106,18 @@ static REAL_CLOSE: OnceLock<CloseFn> = OnceLock::new();
 
 /// Cache of the real libc `write`.
 static REAL_WRITE: OnceLock<WriteFn> = OnceLock::new();
+
+/// Cache of the real libc `unlink`.
+static REAL_UNLINK: OnceLock<UnlinkFn> = OnceLock::new();
+
+/// Cache of the real libc `unlinkat`.
+static REAL_UNLINKAT: OnceLock<UnlinkatFn> = OnceLock::new();
+
+/// Cache of the real libc `rename`.
+static REAL_RENAME: OnceLock<RenameFn> = OnceLock::new();
+
+/// Cache of the real libc `renameat`.
+static REAL_RENAMEAT: OnceLock<RenameatFn> = OnceLock::new();
 
 /// Process-global fd→path map. Populated on each successful
 /// `open`/`openat`, queried on `close`/`write` so the emitted event
@@ -162,6 +189,50 @@ fn real_write() -> WriteFn {
             libc::abort();
         }
         std::mem::transmute::<*mut libc::c_void, WriteFn>(raw)
+    })
+}
+
+fn real_unlink() -> UnlinkFn {
+    *REAL_UNLINK.get_or_init(|| unsafe {
+        let name = c"unlink";
+        let raw = libc::dlsym(libc::RTLD_NEXT, name.as_ptr());
+        if raw.is_null() {
+            libc::abort();
+        }
+        std::mem::transmute::<*mut libc::c_void, UnlinkFn>(raw)
+    })
+}
+
+fn real_unlinkat() -> UnlinkatFn {
+    *REAL_UNLINKAT.get_or_init(|| unsafe {
+        let name = c"unlinkat";
+        let raw = libc::dlsym(libc::RTLD_NEXT, name.as_ptr());
+        if raw.is_null() {
+            libc::abort();
+        }
+        std::mem::transmute::<*mut libc::c_void, UnlinkatFn>(raw)
+    })
+}
+
+fn real_rename() -> RenameFn {
+    *REAL_RENAME.get_or_init(|| unsafe {
+        let name = c"rename";
+        let raw = libc::dlsym(libc::RTLD_NEXT, name.as_ptr());
+        if raw.is_null() {
+            libc::abort();
+        }
+        std::mem::transmute::<*mut libc::c_void, RenameFn>(raw)
+    })
+}
+
+fn real_renameat() -> RenameatFn {
+    *REAL_RENAMEAT.get_or_init(|| unsafe {
+        let name = c"renameat";
+        let raw = libc::dlsym(libc::RTLD_NEXT, name.as_ptr());
+        if raw.is_null() {
+            libc::abort();
+        }
+        std::mem::transmute::<*mut libc::c_void, RenameatFn>(raw)
     })
 }
 
@@ -239,6 +310,16 @@ fn emit_close(path: &str, fd: c_int) {
 
 fn emit_write(path: &str, fd: c_int, byte_count: i64) {
     let line = format!("RPO_HOOK file-write path={path:?} fd={fd} byte_count={byte_count}\n");
+    emit_line(&line);
+}
+
+fn emit_unlink(path: &str) {
+    let line = format!("RPO_HOOK file-unlink path={path:?}\n");
+    emit_line(&line);
+}
+
+fn emit_rename(from: &str, to: &str) {
+    let line = format!("RPO_HOOK file-rename from={from:?} to={to:?}\n");
     emit_line(&line);
 }
 
@@ -401,4 +482,105 @@ pub unsafe extern "C" fn write(
 
     IN_HOOK.with(|c| c.set(false));
     n
+}
+
+/// LD_PRELOAD shadow for `unlink(2)`. Emits `file-unlink` on success.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. The C runtime invokes it with arguments
+/// matching POSIX `unlink(2)` (a single null-terminated path); we
+/// trust those.
+#[no_mangle]
+pub unsafe extern "C" fn unlink(path: *const c_char) -> c_int {
+    let real = real_unlink();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(path);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let r = real(path);
+    if r == 0 && !path.is_null() {
+        if let Ok(p) = CStr::from_ptr(path).to_str() {
+            emit_unlink(p);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    r
+}
+
+/// LD_PRELOAD shadow for `unlinkat(2)`. Resolves `(dirfd, path)`
+/// via [`resolve_at`] and emits `file-unlink` on success.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `unlinkat(2)`.
+#[no_mangle]
+pub unsafe extern "C" fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int {
+    let real = real_unlinkat();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(dirfd, path, flags);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let r = real(dirfd, path, flags);
+    if r == 0 && !path.is_null() {
+        if let Some(resolved) = resolve_at(dirfd, CStr::from_ptr(path)) {
+            emit_unlink(&resolved);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    r
+}
+
+/// LD_PRELOAD shadow for `rename(2)`. Emits `file-rename` on success.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `rename(2)` —
+/// two null-terminated paths.
+#[no_mangle]
+pub unsafe extern "C" fn rename(old: *const c_char, new: *const c_char) -> c_int {
+    let real = real_rename();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(old, new);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let r = real(old, new);
+    if r == 0 && !old.is_null() && !new.is_null() {
+        if let (Ok(o), Ok(n)) = (CStr::from_ptr(old).to_str(), CStr::from_ptr(new).to_str()) {
+            emit_rename(o, n);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    r
+}
+
+/// LD_PRELOAD shadow for `renameat(2)`. Resolves both source +
+/// destination via [`resolve_at`] and emits `file-rename` on success.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `renameat(2)`.
+#[no_mangle]
+pub unsafe extern "C" fn renameat(
+    olddirfd: c_int,
+    old: *const c_char,
+    newdirfd: c_int,
+    new: *const c_char,
+) -> c_int {
+    let real = real_renameat();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(olddirfd, old, newdirfd, new);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let r = real(olddirfd, old, newdirfd, new);
+    if r == 0 && !old.is_null() && !new.is_null() {
+        if let (Some(o), Some(n)) = (
+            resolve_at(olddirfd, CStr::from_ptr(old)),
+            resolve_at(newdirfd, CStr::from_ptr(new)),
+        ) {
+            emit_rename(&o, &n);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    r
 }
