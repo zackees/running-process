@@ -34,34 +34,43 @@ use std::sync::mpsc::Sender;
 
 use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
 
-/// Enable observation for descendants of `root_pid`. Spawns a
-/// background pump thread that drains kqueue events and forwards them
-/// as `DescendantStarted` / `DescendantExited` on the consumer's
-/// `Sender`. Returns silently after the thread is launched; the
-/// thread terminates when the root process exits.
+/// Enable observation for descendants of `root_pid`. **Registers
+/// kqueue + `NOTE_TRACK` synchronously** on the caller's thread —
+/// critical because `NOTE_TRACK` only fires `NOTE_CHILD` for
+/// *future* `fork(2)` calls. If we deferred registration to the
+/// pump thread, a fast-forking root (e.g. shell scripts that
+/// immediately spawn background jobs) could win the race and we'd
+/// miss every descendant. The drain loop runs on the pump thread.
+///
+/// On registration failure (root already gone, kernel rejected the
+/// kevent) this is a no-op — the consumer just receives no events.
 pub(crate) fn spawn_pump(root_pid: u32, sink: Sender<ObserverEvent>) {
-    let _ = std::thread::Builder::new()
-        .name("rp-macos-descpump".to_string())
-        .spawn(move || pump_loop(root_pid, sink));
-}
-
-fn pump_loop(root_pid: u32, sink: Sender<ObserverEvent>) {
     // SAFETY: `kqueue()` is a leaf syscall with no pointer arguments.
     let kq = unsafe { libc::kqueue() };
     if kq < 0 {
         return;
     }
+    if register_for_tracking(kq, root_pid).is_err() {
+        unsafe { libc::close(kq) };
+        return;
+    }
+    let kq_usize = kq as usize;
+    let spawn_result = std::thread::Builder::new()
+        .name("rp-macos-descpump".to_string())
+        .spawn(move || drain_loop(kq_usize as i32, root_pid, sink));
+    if spawn_result.is_err() {
+        // Failed to launch the thread — close the kq we already
+        // opened so we don't leak the descriptor.
+        unsafe { libc::close(kq) };
+    }
+}
+
+fn drain_loop(kq: i32, root_pid: u32, sink: Sender<ObserverEvent>) {
     // Defer kqueue cleanup so an early-return below still closes the
     // fd. `Drop` impl would be heavier; an inline guard is simpler.
     let _kq_guard = scopeguard(|| unsafe {
         libc::close(kq);
     });
-
-    if register_for_tracking(kq, root_pid).is_err() {
-        // Either the root is already gone or the kernel rejected the
-        // registration. Either way, no events to forward.
-        return;
-    }
 
     let mut events: [libc::kevent; 32] = unsafe { std::mem::zeroed() };
     loop {
@@ -214,14 +223,17 @@ mod tests {
         use crate::{CommandSpec, NativeProcess, ProcessConfig, StderrMode, StdinMode};
         use std::time::Duration;
 
-        // Same fixture shape as the Linux test: bash spawns three
-        // background sleepers then waits. The kqueue pump should
-        // see NOTE_CHILD for each fork and NOTE_EXIT for each.
+        // Leading `sleep 0.2` gives the kqueue pump's NOTE_TRACK
+        // registration time to land before bash starts forking the
+        // background sleepers — `NOTE_TRACK` only fires `NOTE_CHILD`
+        // for *future* fork() calls, so a fast-forking root would
+        // race the pump and we'd see zero descendants. Real-world
+        // long-lived parents (clud, daemons) hit this naturally.
         let cfg = ProcessConfig {
             command: CommandSpec::Argv(vec![
                 "bash".into(),
                 "-c".into(),
-                "sleep 0.5 & sleep 0.5 & sleep 0.5 & wait".into(),
+                "sleep 0.2; sleep 0.5 & sleep 0.5 & sleep 0.5 & wait".into(),
             ]),
             cwd: None,
             env: None,
