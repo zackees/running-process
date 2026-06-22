@@ -59,6 +59,14 @@ path = "src/bin/stdin_echoer.rs"
 name = "testbin-slow-stdin-reader"
 path = "src/bin/slow_stdin_reader.rs"
 
+[[bin]]
+# #551 slice 7c: deterministic CreateFileW caller used by the
+# Windows interposer integration test. Sleeps, then opens a
+# caller-supplied path via kernel32!CreateFileW — guaranteed to
+# hit the slice 6b detour (which patches that exact entry).
+name = "testbin-createfilew-probe"
+path = "src/bin/createfilew_probe.rs"
+
 # Unconditional because `dies_after_spawn` uses `running_process::{spawn, SpawnStdio}`
 # on every platform. `spawner` also uses it but only inside `#[cfg(windows)]` blocks.
 [dependencies]
