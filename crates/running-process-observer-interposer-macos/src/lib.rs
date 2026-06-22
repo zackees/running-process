@@ -7,68 +7,111 @@
 //! the dynamic linker loads this library before the C runtime and any
 //! symbols we export shadow libc's. Each shadow resolves the real
 //! function via `dlsym(RTLD_NEXT, "…")`, invokes it, then emits an
-//! `RPO_HOOK …` line on stderr.
+//! `RPO_HOOK …` line on stderr matching the Linux interposer's
+//! format (#551 slice 4).
 //!
 //! ## Differences from the Linux interposer
 //!
-//! The Linux interposer (#551 slice 4) and this one share most of the
-//! shape — dlsym-cached real fns in `OnceLock`s, thread-local
-//! reentrancy guard, emit on success. Per-OS differences:
-//!
-//! - **Loader env var**: `DYLD_INSERT_LIBRARIES` (macOS) vs.
-//!   `LD_PRELOAD` (Linux). Same idea, different name.
+//! - **Loader env var**: `DYLD_INSERT_LIBRARIES` vs. `LD_PRELOAD`.
 //! - **SIP / hardened-runtime**: macOS refuses to inject into binaries
 //!   signed with the hardened runtime + library validation flag
-//!   unless they also have `com.apple.security.cs.allow-dyld-environment-variables`
-//!   entitlement. System binaries (most of `/usr/bin/*`, `/bin/*`) fall
-//!   in this bucket. Same boundary as the rest of the
-//!   LaunchedProcessTree tier — works against processes the user owns,
-//!   doesn't work against SIP-protected targets.
-//! - **Path resolution from fd**: no `/proc/self/fd/<n>` on macOS;
-//!   use `fcntl(fd, F_GETPATH, buf)` instead. Lands in slice 5b
-//!   alongside `close`/`write`.
+//!   unless they also have
+//!   `com.apple.security.cs.allow-dyld-environment-variables`. System
+//!   binaries fall in this bucket. Same boundary as the rest of the
+//!   LaunchedProcessTree tier — works against processes the user owns.
+//! - **Path-from-fd resolution**: no `/proc/self/fd/<n>` on macOS.
+//!   We use `fcntl(fd, F_GETPATH, buf)` instead (`F_GETPATH` is a
+//!   macOS-specific extension that writes a path of up to
+//!   `MAXPATHLEN` bytes into `buf`).
+//! - **AT_FDCWD value**: `-2` on Darwin (vs. Linux's `-100`).
+//! - **Variadic `open`/`openat`**: same caveat as Linux — Rust stable
+//!   doesn't support `c_variadic`, so the mode argument on
+//!   `O_CREAT` opens is ignored. Tests should use existing files.
 //!
-//! ## Slice 5a scope (this commit)
+//! ## Slice 5 scope (this commit covers 5a–5d in one bundle)
 //!
-//! Scaffold + `open(2)` shadow. Same shape as Linux slice 4a so the
-//! emitted line format is identical (`RPO_HOOK file-open path=…
-//! flags=… fd=…`). Slices 5b/5c/5d follow the Linux slice 4 cadence:
-//! `openat` + fcntl path resolver → `close`/`write` + fd table →
-//! `unlink`/`rename` family.
+//! `open`, `openat`, `close`, `write`, `unlink`, `unlinkat`,
+//! `rename`, `renameat` — full port of the Linux file-mutation
+//! surface. Same line shapes and behavior as the Linux interposer
+//! so the downstream consumer parses a single format.
 
 #![cfg(target_os = "macos")]
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+// ── Function-pointer types ──
 
 type OpenFn = unsafe extern "C" fn(*const c_char, c_int) -> c_int;
+type OpenatFn = unsafe extern "C" fn(c_int, *const c_char, c_int) -> c_int;
+type CloseFn = unsafe extern "C" fn(c_int) -> c_int;
+type WriteFn = unsafe extern "C" fn(c_int, *const libc::c_void, libc::size_t) -> libc::ssize_t;
+type UnlinkFn = unsafe extern "C" fn(*const c_char) -> c_int;
+type UnlinkatFn = unsafe extern "C" fn(c_int, *const c_char, c_int) -> c_int;
+type RenameFn = unsafe extern "C" fn(*const c_char, *const c_char) -> c_int;
+type RenameatFn = unsafe extern "C" fn(c_int, *const c_char, c_int, *const c_char) -> c_int;
+
+// ── dlsym caches ──
 
 static REAL_OPEN: OnceLock<OpenFn> = OnceLock::new();
+static REAL_OPENAT: OnceLock<OpenatFn> = OnceLock::new();
+static REAL_CLOSE: OnceLock<CloseFn> = OnceLock::new();
+static REAL_WRITE: OnceLock<WriteFn> = OnceLock::new();
+static REAL_UNLINK: OnceLock<UnlinkFn> = OnceLock::new();
+static REAL_UNLINKAT: OnceLock<UnlinkatFn> = OnceLock::new();
+static REAL_RENAME: OnceLock<RenameFn> = OnceLock::new();
+static REAL_RENAMEAT: OnceLock<RenameatFn> = OnceLock::new();
+
+/// Process-global fd→path map. Same purpose as the Linux interposer's
+/// table: populated on successful open/openat, queried on
+/// close/write, removed on close. See module-level docs.
+static FD_TABLE: OnceLock<Mutex<HashMap<c_int, String>>> = OnceLock::new();
+
+fn fd_table() -> &'static Mutex<HashMap<c_int, String>> {
+    FD_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 thread_local! {
+    /// Reentrancy guard — falls through to the real fn without
+    /// emitting if called from within our own shadow.
     static IN_HOOK: Cell<bool> = const { Cell::new(false) };
 }
 
-fn real_open() -> OpenFn {
-    *REAL_OPEN.get_or_init(|| unsafe {
-        let name = c"open";
-        let raw = libc::dlsym(libc::RTLD_NEXT, name.as_ptr());
-        if raw.is_null() {
-            libc::abort();
-        }
-        std::mem::transmute::<*mut libc::c_void, OpenFn>(raw)
-    })
+// ── dlsym helpers ──
+
+macro_rules! resolve_real {
+    ($lock:ident, $name:literal, $fn_ty:ty) => {{
+        *$lock.get_or_init(|| unsafe {
+            let n = std::ffi::CStr::from_bytes_with_nul_unchecked(concat!($name, "\0").as_bytes());
+            let raw = libc::dlsym(libc::RTLD_NEXT, n.as_ptr());
+            if raw.is_null() {
+                libc::abort();
+            }
+            std::mem::transmute::<*mut libc::c_void, $fn_ty>(raw)
+        })
+    }};
 }
 
+fn real_open() -> OpenFn { resolve_real!(REAL_OPEN, "open", OpenFn) }
+fn real_openat() -> OpenatFn { resolve_real!(REAL_OPENAT, "openat", OpenatFn) }
+fn real_close() -> CloseFn { resolve_real!(REAL_CLOSE, "close", CloseFn) }
+fn real_write() -> WriteFn { resolve_real!(REAL_WRITE, "write", WriteFn) }
+fn real_unlink() -> UnlinkFn { resolve_real!(REAL_UNLINK, "unlink", UnlinkFn) }
+fn real_unlinkat() -> UnlinkatFn { resolve_real!(REAL_UNLINKAT, "unlinkat", UnlinkatFn) }
+fn real_rename() -> RenameFn { resolve_real!(REAL_RENAME, "rename", RenameFn) }
+fn real_renameat() -> RenameatFn { resolve_real!(REAL_RENAMEAT, "renameat", RenameatFn) }
+
+// ── Event emission ──
+
+/// Emit a hook event line to stderr via the cached real `write` so
+/// our own `write` shadow doesn't recurse on it.
 fn emit_line(line: &str) {
-    // Direct libc::write to stderr; doesn't recurse through our own
-    // shadow (which doesn't exist for `write` yet at slice 5a anyway,
-    // but match the Linux pattern so slice 5c doesn't have to
-    // refactor).
+    let real = real_write();
     unsafe {
-        libc::write(
+        real(
             libc::STDERR_FILENO,
             line.as_ptr() as *const libc::c_void,
             line.len(),
@@ -77,40 +120,284 @@ fn emit_line(line: &str) {
 }
 
 fn emit_open(path: &str, flags: c_int, fd: c_int) {
-    let line = format!("RPO_HOOK file-open path={path:?} flags={flags} fd={fd}\n");
-    emit_line(&line);
+    emit_line(&format!(
+        "RPO_HOOK file-open path={path:?} flags={flags} fd={fd}\n"
+    ));
 }
 
-/// DYLD_INSERT_LIBRARIES shadow for `open(2)` on macOS. Resolves the
-/// real implementation lazily via `dlsym(RTLD_NEXT, ...)`, calls it,
-/// then emits a `file-open` event on stderr.
+fn emit_close(path: &str, fd: c_int) {
+    emit_line(&format!("RPO_HOOK file-close path={path:?} fd={fd}\n"));
+}
+
+fn emit_write(path: &str, fd: c_int, byte_count: i64) {
+    emit_line(&format!(
+        "RPO_HOOK file-write path={path:?} fd={fd} byte_count={byte_count}\n"
+    ));
+}
+
+fn emit_unlink(path: &str) {
+    emit_line(&format!("RPO_HOOK file-unlink path={path:?}\n"));
+}
+
+fn emit_rename(from: &str, to: &str) {
+    emit_line(&format!("RPO_HOOK file-rename from={from:?} to={to:?}\n"));
+}
+
+// ── fd-table helpers ──
+
+fn fd_table_insert(fd: c_int, path: String) {
+    if let Ok(mut tbl) = fd_table().lock() {
+        tbl.insert(fd, path);
+    }
+}
+
+fn fd_table_get(fd: c_int) -> Option<String> {
+    fd_table().lock().ok()?.get(&fd).cloned()
+}
+
+fn fd_table_remove(fd: c_int) -> Option<String> {
+    fd_table().lock().ok()?.remove(&fd)
+}
+
+// ── Path resolution ──
+
+/// `AT_FDCWD` on Darwin is -2 (vs. Linux's -100). Worth a constant
+/// rather than a magic number in [`resolve_at`].
+const DARWIN_AT_FDCWD: c_int = -2;
+
+/// `F_GETPATH` (macOS-specific fcntl command) writes the path of an
+/// open file descriptor into the supplied buffer. The buffer must
+/// be at least `MAXPATHLEN` (1024) bytes — `PATH_MAX` on Darwin.
+const F_GETPATH: c_int = 50;
+
+/// Resolve a `(dirfd, pathname)` pair to a single absolute path.
+/// Same shape as the Linux interposer's helper but uses
+/// `fcntl(dirfd, F_GETPATH, buf)` instead of `/proc/self/fd/<n>`.
+fn resolve_at(dirfd: c_int, pathname: &CStr) -> Option<String> {
+    let path_str = pathname.to_str().ok()?;
+    if path_str.starts_with('/') {
+        return Some(path_str.to_string());
+    }
+    if dirfd == DARWIN_AT_FDCWD || dirfd < 0 {
+        return Some(path_str.to_string());
+    }
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    let r = unsafe { libc::fcntl(dirfd, F_GETPATH, buf.as_mut_ptr() as *mut c_char) };
+    if r < 0 {
+        return None;
+    }
+    let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let dir = std::str::from_utf8(&buf[..nul]).ok()?;
+    Some(format!("{dir}/{path_str}"))
+}
+
+/// Resolve a path from a known-open fd via `fcntl(fd, F_GETPATH, buf)`.
+/// Used as the fallback path when the fd table doesn't have an
+/// entry — e.g. an fd opened before our interposer loaded.
+fn fd_to_path(fd: c_int) -> Option<String> {
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    let r = unsafe { libc::fcntl(fd, F_GETPATH, buf.as_mut_ptr() as *mut c_char) };
+    if r < 0 {
+        return None;
+    }
+    let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    std::str::from_utf8(&buf[..nul]).ok().map(str::to_string)
+}
+
+// ── Shadows ──
+
+/// DYLD_INSERT_LIBRARIES shadow for `open(2)`.
 ///
 /// # Safety
 ///
-/// libc-ABI extern "C" fn. The dyld loader invokes it with arguments
-/// matching the standard POSIX `open(2)` signature; we trust those.
-///
-/// `open(2)` is variadic when `O_CREAT` is in flags (mode argument).
-/// Rust stable doesn't support `c_variadic`. The mode parameter is
-/// ignored — same caveat as the Linux slice 4a interposer. Slice 5d
-/// will use the macOS `__syscall` direct route to forward mode
-/// correctly.
+/// libc-ABI extern "C" fn. Arguments match POSIX `open(2)`. See the
+/// module header for the variadic-mode caveat.
 #[no_mangle]
 pub unsafe extern "C" fn open(path: *const c_char, flags: c_int) -> c_int {
     let real = real_open();
-
     if IN_HOOK.with(|c| c.get()) {
         return real(path, flags);
     }
     IN_HOOK.with(|c| c.set(true));
     let fd = real(path, flags);
-
     if fd >= 0 && !path.is_null() {
         if let Ok(p) = CStr::from_ptr(path).to_str() {
             emit_open(p, flags, fd);
+            fd_table_insert(fd, p.to_string());
         }
     }
-
     IN_HOOK.with(|c| c.set(false));
     fd
+}
+
+/// DYLD_INSERT_LIBRARIES shadow for `openat(2)`.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `openat(2)`.
+#[no_mangle]
+pub unsafe extern "C" fn openat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int {
+    let real = real_openat();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(dirfd, path, flags);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let fd = real(dirfd, path, flags);
+    if fd >= 0 && !path.is_null() {
+        if let Some(resolved) = resolve_at(dirfd, CStr::from_ptr(path)) {
+            emit_open(&resolved, flags, fd);
+            fd_table_insert(fd, resolved);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    fd
+}
+
+/// DYLD_INSERT_LIBRARIES shadow for `close(2)`.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `close(2)`.
+#[no_mangle]
+pub unsafe extern "C" fn close(fd: c_int) -> c_int {
+    let real = real_close();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(fd);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    // Use fd_table first; fall back to fcntl(F_GETPATH) for fds
+    // opened before our interposer loaded.
+    if let Some(path) = fd_table_get(fd).or_else(|| fd_to_path(fd)) {
+        emit_close(&path, fd);
+    }
+    let r = real(fd);
+    if r == 0 {
+        let _ = fd_table_remove(fd);
+    }
+    IN_HOOK.with(|c| c.set(false));
+    r
+}
+
+/// DYLD_INSERT_LIBRARIES shadow for `write(2)`.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `write(2)`. The
+/// buf+count region must be valid for `count` bytes of read; we
+/// don't dereference it ourselves.
+#[no_mangle]
+pub unsafe extern "C" fn write(
+    fd: c_int,
+    buf: *const libc::c_void,
+    count: libc::size_t,
+) -> libc::ssize_t {
+    let real = real_write();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(fd, buf, count);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let n = real(fd, buf, count);
+    if n > 0 {
+        if let Some(path) = fd_table_get(fd).or_else(|| fd_to_path(fd)) {
+            emit_write(&path, fd, n as i64);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    n
+}
+
+/// DYLD_INSERT_LIBRARIES shadow for `unlink(2)`.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `unlink(2)`.
+#[no_mangle]
+pub unsafe extern "C" fn unlink(path: *const c_char) -> c_int {
+    let real = real_unlink();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(path);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let r = real(path);
+    if r == 0 && !path.is_null() {
+        if let Ok(p) = CStr::from_ptr(path).to_str() {
+            emit_unlink(p);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    r
+}
+
+/// DYLD_INSERT_LIBRARIES shadow for `unlinkat(2)`.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `unlinkat(2)`.
+#[no_mangle]
+pub unsafe extern "C" fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int {
+    let real = real_unlinkat();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(dirfd, path, flags);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let r = real(dirfd, path, flags);
+    if r == 0 && !path.is_null() {
+        if let Some(resolved) = resolve_at(dirfd, CStr::from_ptr(path)) {
+            emit_unlink(&resolved);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    r
+}
+
+/// DYLD_INSERT_LIBRARIES shadow for `rename(2)`.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `rename(2)`.
+#[no_mangle]
+pub unsafe extern "C" fn rename(old: *const c_char, new: *const c_char) -> c_int {
+    let real = real_rename();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(old, new);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let r = real(old, new);
+    if r == 0 && !old.is_null() && !new.is_null() {
+        if let (Ok(o), Ok(n)) = (CStr::from_ptr(old).to_str(), CStr::from_ptr(new).to_str()) {
+            emit_rename(o, n);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    r
+}
+
+/// DYLD_INSERT_LIBRARIES shadow for `renameat(2)`.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. Arguments match POSIX `renameat(2)`.
+#[no_mangle]
+pub unsafe extern "C" fn renameat(
+    olddirfd: c_int,
+    old: *const c_char,
+    newdirfd: c_int,
+    new: *const c_char,
+) -> c_int {
+    let real = real_renameat();
+    if IN_HOOK.with(|c| c.get()) {
+        return real(olddirfd, old, newdirfd, new);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let r = real(olddirfd, old, newdirfd, new);
+    if r == 0 && !old.is_null() && !new.is_null() {
+        if let (Some(o), Some(n)) = (
+            resolve_at(olddirfd, CStr::from_ptr(old)),
+            resolve_at(newdirfd, CStr::from_ptr(new)),
+        ) {
+            emit_rename(&o, &n);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+    r
 }
