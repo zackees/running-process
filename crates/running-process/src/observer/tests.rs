@@ -344,7 +344,7 @@ fn launched_process_tree_scope_advertises_no_admin_backends() {
     #[cfg(target_os = "linux")]
     {
         assert_eq!(file.backend, "proc-fd-snapshot");
-        assert_eq!(process.backend, "subreaper-pidfd");
+        assert_eq!(process.backend, "subreaper-proc-poll");
     }
     #[cfg(target_os = "windows")]
     {

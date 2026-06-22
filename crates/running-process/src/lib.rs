@@ -343,6 +343,18 @@ impl NativeProcess {
             )
             .map_err(ProcessError::Spawn)?
         };
+        // #539 slice 5: Linux descendant lifecycle via PR_SET_CHILD_SUBREAPER
+        // + /proc polling pump. No-admin, polling-based — see
+        // observer::descendants_linux module docs for tradeoffs.
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(emitter) = self.shared.observer.as_ref() {
+                if let Some(sink) = emitter.descendant_sink() {
+                    crate::observer::descendants_linux::enable_subreaper();
+                    crate::observer::descendants_linux::spawn_pump(child.id(), sink);
+                }
+            }
+        }
         if self.config.capture {
             let stdout = child.stdout.take().expect("stdout pipe missing");
             let stderr = child.stderr.take().expect("stderr pipe missing");
