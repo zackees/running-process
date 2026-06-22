@@ -386,6 +386,107 @@ fn descendant_event_kind_string_forms_are_stable() {
     );
 }
 
+// ── #551 slice 3: file-hook tier event variants ──
+
+#[test]
+fn file_hook_event_kind_string_forms_are_stable() {
+    // These are the hook-tier event names the running-process-observer
+    // sidecar (#551) will emit. Locking the lowercase forms now keeps
+    // serialization stable across the interposer payloads landing in
+    // slices 4–6 of #551.
+    let pb = std::path::PathBuf::from("/tmp/x");
+    assert_eq!(
+        ObserverEventKind::FileOpen {
+            path: pb.clone(),
+            flags: 0
+        }
+        .as_str(),
+        "file-open"
+    );
+    assert_eq!(
+        ObserverEventKind::FileWrite {
+            path: pb.clone(),
+            byte_count: 0
+        }
+        .as_str(),
+        "file-write"
+    );
+    assert_eq!(
+        ObserverEventKind::FileClose { path: pb.clone() }.as_str(),
+        "file-close"
+    );
+    assert_eq!(
+        ObserverEventKind::FileUnlink { path: pb.clone() }.as_str(),
+        "file-unlink"
+    );
+    assert_eq!(
+        ObserverEventKind::FileRename {
+            from: pb.clone(),
+            to: pb.clone(),
+        }
+        .as_str(),
+        "file-rename"
+    );
+}
+
+#[test]
+fn file_hook_event_kinds_carry_path_and_count_payloads() {
+    // Sanity check that the variants round-trip their payloads
+    // through pattern matching — locks the schema before slices 4–6
+    // of #551 start writing emit sites.
+    let path = std::path::PathBuf::from("/tmp/some-file.txt");
+    let ev = ObserverEventKind::FileOpen {
+        path: path.clone(),
+        flags: 0o644,
+    };
+    if let ObserverEventKind::FileOpen { path: p, flags } = ev {
+        assert_eq!(p, path);
+        assert_eq!(flags, 0o644);
+    } else {
+        panic!("variant did not match")
+    }
+
+    let ev = ObserverEventKind::FileWrite {
+        path: path.clone(),
+        byte_count: 1024,
+    };
+    if let ObserverEventKind::FileWrite { byte_count, .. } = ev {
+        assert_eq!(byte_count, 1024);
+    } else {
+        panic!("variant did not match")
+    }
+
+    let from = std::path::PathBuf::from("/tmp/a");
+    let to = std::path::PathBuf::from("/tmp/b");
+    let ev = ObserverEventKind::FileRename {
+        from: from.clone(),
+        to: to.clone(),
+    };
+    if let ObserverEventKind::FileRename { from: f, to: t } = ev {
+        assert_eq!(f, from);
+        assert_eq!(t, to);
+    } else {
+        panic!("variant did not match")
+    }
+}
+
+#[test]
+fn observer_event_can_carry_file_hook_variants() {
+    // ObserverEvent's struct must accept the new ObserverEventKind
+    // variants without further changes — pid + timestamp are
+    // category-agnostic. File events use EventCategory::File.
+    let ev = ObserverEvent::new_now(
+        EventCategory::File,
+        ObserverEventKind::FileOpen {
+            path: "/tmp/lock-file".into(),
+            flags: 0,
+        },
+        std::process::id(),
+    );
+    assert_eq!(ev.category, EventCategory::File);
+    assert_eq!(ev.kind.as_str(), "file-open");
+}
+
 #[cfg(target_os = "windows")]
 #[test]
 fn windows_process_backend_supported_on_launched_process_tree_scope() {

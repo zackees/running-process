@@ -611,6 +611,55 @@ pub enum ObserverEventKind {
     /// [`ObserverEvent::pid`]; the exit code is not surfaced — see
     /// [`DescendantStarted`](Self::DescendantStarted) for rationale.
     DescendantExited,
+    /// A file was opened by the observed process. Emitted on the
+    /// [`EventCategory::File`] category by the **hook tier** of the
+    /// observer (the sidecar interposer in `running-process-observer`,
+    /// tracked by #551). The pid in [`ObserverEvent::pid`] is the
+    /// process that performed the call. `flags` is the platform-native
+    /// open flags (POSIX `O_*` on Unix; Windows `dwDesiredAccess` |
+    /// `(dwShareMode << 16)` encoded best-effort).
+    FileOpen {
+        /// Filesystem path the consumer opened. On Linux/macOS this is
+        /// the POSIX path passed to `open(2)` / `openat(2)`; on Windows
+        /// it's the resolved Win32 path (DOS-form when available, NT
+        /// path otherwise — matches the slice-4 #550 convention).
+        path: std::path::PathBuf,
+        /// Platform-native open flags. Best-effort encoded.
+        flags: u32,
+    },
+    /// A file was written to by the observed process. `byte_count` is
+    /// the byte count returned by the syscall on success (may be
+    /// shorter than the request on short writes). Emitted on the
+    /// [`EventCategory::File`] category by the hook tier (#551).
+    FileWrite {
+        /// Resolved path of the file the write targeted.
+        path: std::path::PathBuf,
+        /// Number of bytes the syscall reported it actually wrote.
+        byte_count: u64,
+    },
+    /// A file descriptor / handle was closed. Emitted on the
+    /// [`EventCategory::File`] category by the hook tier (#551). The
+    /// path is resolved at hook-fire time from the fd / handle, so it
+    /// matches the path the corresponding [`FileOpen`](Self::FileOpen)
+    /// event reported.
+    FileClose {
+        /// Resolved path of the file that was closed.
+        path: std::path::PathBuf,
+    },
+    /// A file was unlinked / deleted. Emitted on the
+    /// [`EventCategory::File`] category by the hook tier (#551).
+    FileUnlink {
+        /// Path of the file that was unlinked.
+        path: std::path::PathBuf,
+    },
+    /// A file was renamed. Emitted on the [`EventCategory::File`]
+    /// category by the hook tier (#551).
+    FileRename {
+        /// Path the file was renamed from.
+        from: std::path::PathBuf,
+        /// Path the file was renamed to.
+        to: std::path::PathBuf,
+    },
 }
 
 impl ObserverEventKind {
@@ -621,6 +670,11 @@ impl ObserverEventKind {
             ObserverEventKind::Exited { .. } => "exited",
             ObserverEventKind::DescendantStarted => "descendant-started",
             ObserverEventKind::DescendantExited => "descendant-exited",
+            ObserverEventKind::FileOpen { .. } => "file-open",
+            ObserverEventKind::FileWrite { .. } => "file-write",
+            ObserverEventKind::FileClose { .. } => "file-close",
+            ObserverEventKind::FileUnlink { .. } => "file-unlink",
+            ObserverEventKind::FileRename { .. } => "file-rename",
         }
     }
 }
