@@ -1395,6 +1395,7 @@ dependencies = [
  "blake3",
  "dirs",
  "tempfile",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
