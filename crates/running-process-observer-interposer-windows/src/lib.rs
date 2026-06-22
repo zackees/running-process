@@ -480,36 +480,56 @@ unsafe fn install_detours() {
         return;
     }
 
+    // Slice 7c diagnostic: emit a sentinel line *before* and *after*
+    // each install_one call. If only one of the pair shows up in
+    // stderr, we know exactly which install hung or panicked. Goal
+    // is to narrow down which retour call (CreateFileW? WriteFile?
+    // CloseHandle?) is misbehaving inside cmd.exe / our testbin
+    // probe.
+    emit_line("RPO_HOOK install begin=CreateFileW\n");
     install_one(
         module,
         c"CreateFileW",
         create_file_w_detour as *const (),
         &REAL_CREATE_FILE_W,
     );
+    emit_line("RPO_HOOK install end=CreateFileW\n");
+
+    emit_line("RPO_HOOK install begin=WriteFile\n");
     install_one(
         module,
         c"WriteFile",
         write_file_detour as *const (),
         &REAL_WRITE_FILE,
     );
+    emit_line("RPO_HOOK install end=WriteFile\n");
+
+    emit_line("RPO_HOOK install begin=CloseHandle\n");
     install_one(
         module,
         c"CloseHandle",
         close_handle_detour as *const (),
         &REAL_CLOSE_HANDLE,
     );
+    emit_line("RPO_HOOK install end=CloseHandle\n");
+
+    emit_line("RPO_HOOK install begin=DeleteFileW\n");
     install_one(
         module,
         c"DeleteFileW",
         delete_file_w_detour as *const (),
         &REAL_DELETE_FILE_W,
     );
+    emit_line("RPO_HOOK install end=DeleteFileW\n");
+
+    emit_line("RPO_HOOK install begin=MoveFileExW\n");
     install_one(
         module,
         c"MoveFileExW",
         move_file_ex_w_detour as *const (),
         &REAL_MOVE_FILE_EX_W,
     );
+    emit_line("RPO_HOOK install end=MoveFileExW\n");
 }
 
 /// `CreateThread`-compatible worker entrypoint that drives
