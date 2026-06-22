@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-A Rust-backed Python library (v3.0.15) for subprocess and PTY process management across Windows, macOS, and Linux.
+A Rust-backed Python library (v4.5.7) for subprocess and PTY process management across Windows, macOS, and Linux.
 
 ### Layered Design
 
@@ -15,22 +15,20 @@ A Rust-backed Python library (v3.0.15) for subprocess and PTY process management
 - **`ProcessOutputReader`**: Threaded reader draining stdout/stderr to prevent blocking
 - **`RunningProcessManager`**: Thread-safe singleton registry for tracking active processes
 
-**Rust layer** (`crates/`) — mono-crate after the consolidation in #165:
+**Rust workspace** (`crates/`):
 - **`running-process`** (`crates/running-process/`): the only published Rust crate. Feature-gated subsystems:
   - **`core`** (always on) — OS-level subprocess abstraction (`NativeProcess` — pipe I/O, signaling, Job Objects/process groups, PTY via `portable-pty`).
   - **`client`** (default) — proto types (`src/proto/`) + sync IPC client (`src/client/`). Adds prost, interprocess, dirs.
   - **`daemon`** — full daemon runtime (`src/daemon/`). Adds tokio, rusqlite, tracing, etc.
-  - Three binaries in `src/bin/`: `runpm` (requires `client`), `running-process-daemon` (requires `daemon`), `daemon-trampoline` (no required-features).
+  - Binaries in `src/bin/`: `runpm` (requires `client`), `daemon` (requires `daemon`), `trampoline` (no required-features), `running-process-broker-v1` / `running-process-broker-v2` (broker scaffold for #483/#488/#532), `running-process-cleanup`.
   - `proto/daemon.proto` compiled by `build.rs` (prost-build + protox).
 - **`running-process-py`**: PyO3 bindings. Contains `NativePtyProcess` alongside the pipe backend. Exposes a unified `PyNativeProcess` with `NativeProcessBackend` enum dispatching to either `NativeRunningProcess` or `NativePtyProcess`. Depends on `running-process` with `features = ["client", "originator-scan"]`.
-- `crates/test-watchdog/` (publish=false): cross-platform hang-dump helper used as dev-dep by `running-process` tests (procdump minidump on Windows, gdb/lldb all-thread backtraces on Unix).
-- `testbins/`: 8 test-fixture binaries.
+- **`running-process-observer`** (`crates/running-process-observer/`, publish=false): sidecar / file-hook tier for #539 follow-up #551. Behind the off-by-default `embed-helper` feature flag (`dep:dirs`, `dep:blake3`, and on Windows `dep:windows-sys`). Exposes `HookConfig`, `negotiate_hook_support()`, embed-and-extract cache (`helper_cache_dir`, `extract_helper_blob_to`), and the per-OS injection vehicles `inject_into_pid` (Windows) / `inject_via_env` (Linux + macOS). **Sidecar contract**: this is the ONLY place injection symbols may live — main `running-process` crate stays free of `CreateRemoteThread` / `dlopen` of interposers (enforced for AV / EDR static analysis).
+- **`running-process-observer-interposer-{linux,macos,windows}`** (publish=false): per-OS cdylib + rlib interposers that ship the actual file-API detours (`open`/`openat`/`close`/`write`/`unlink`/`rename` and Windows equivalents — `CreateFileW`/`WriteFile`/`CloseHandle`/`DeleteFileW`/`MoveFileExW`). Linux uses `LD_PRELOAD` + `dlsym(RTLD_NEXT, …)`; macOS uses `DYLD_INSERT_LIBRARIES` (SIP / hardened-runtime carve-outs apply); Windows uses `retour::RawDetour` inline trampolines, gated on `x86_64` only (`retour 0.4.0-alpha.4` uses iced-x86 which doesn't support ARM64). Each emits `RPO_HOOK …` lines on stderr in a shared format. Non-target hosts compile to an inert rlib stub so the workspace builds end-to-end.
+- **`test-watchdog`** (`crates/test-watchdog/`, publish=false): cross-platform hang-dump helper used as dev-dep by `running-process` tests (procdump minidump on Windows, gdb/lldb all-thread backtraces on Unix).
+- **`testbins`**: test-fixture binaries (`cwd-reporter`, `dies-after-spawn`, `emitter`, `env-dump`, `env-reporter`, `sleeper`, `slow-stdin-reader`, `spawner`, `stdin-echoer`, `stubborn`, `tui-counter`, `createfilew-probe`).
 
 **Python-Rust bridge**: `running_process._native` module compiled via maturin. Python's `PseudoTerminalProcess.start()` calls `NativeProcess.for_pty()` which creates a `NativePtyProcess` on the Rust side.
-
-### Test Binaries
-
-`testbins/` contains Rust binaries used as test fixtures: `env-reporter`, `sleeper`, `spawner`.
 
 ## Development Commands
 
@@ -59,11 +57,13 @@ Override per-invocation when needed: `cargo nextest run -- --slow-timeout 30s --
 
 **Linting:**
 ```bash
-./lint                           # Full suite: ruff + black + isort + pyright + KBI checker
+./lint                           # Full suite: ruff + black + isort + pyright + KBI checker + spawn-path-guard
 uv run ruff check --fix src tests
 uv run black src tests
 uv run pyright src tests
 ```
+
+The lint pass also runs `ci/spawn_path_guard.py`, which forbids raw `Command::new` / `.spawn()` / `portable_pty` / `CreatePipe` / `ChildStd*::from` outside the sanitized spawn layer. New call sites need an explicit allowlist entry with a justification comment — see existing entries for the shape.
 
 **Wrong toolchain?** Invoke build commands as `soldr cargo …`, `soldr rustc …`, `soldr rustfmt …`. The globally installed [soldr](https://github.com/zackees/soldr) binary resolves the rustup-managed toolchain via `rustup which` — handy on Windows where chocolatey cargo or other stale shims can take precedence on PATH. Install soldr globally (it is no longer pulled in as a uv dev dep) — e.g. `pipx install soldr` or `cargo install soldr`. CI Python (`ci/soldr.py:cargo_command`) detects soldr on PATH and routes through it automatically, falling back to raw `cargo` on CI runners where soldr isn't installed.
 
@@ -86,6 +86,20 @@ running-process-daemon start|stop|status|list|kill-zombies
 - `RUNNING_PROCESS_DAEMON_SCOPE=dev` — CWD-scoped daemon for test isolation
 - `RUST_LOG=debug` — daemon log level
 - `RUNNING_PROCESS_FAKE_BACKEND=<path>` — TEST-ONLY broker seam: `connect_to_backend` dials `<path>` directly, skipping broker negotiation entirely (never set in production; `RUNNING_PROCESS_DISABLE=1` takes precedence)
+- `RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED=1` — opt out of the broker-v2 "refuse privileged startup" guard (test-only; defaults to refusing root)
+
+## Broker
+
+`running-process-broker-v2` is the v2 transport (see #483 / #488 / #532). Bind path derivation lives in `src/broker/lifecycle/names_v2.rs` (`rpb-v2-{program}-{sid_hash}-{pipe_idx}`); the resolved socket path goes under `$XDG_RUNTIME_DIR/running-process/broker-v2/` on Linux, `$TMPDIR/.rp-<uid>-broker-v2/` on macOS (hashed leaf to fit `sun_path`), or `\\.\pipe\…` on Windows. `is_already_bound_error` classifies `AddrInUse | WouldBlock | PermissionDenied` as already-bound — `PermissionDenied` is included because Windows double-bind surfaces as `ERROR_ACCESS_DENIED` (raw os error 5) via the existing pipe instance's ACL.
+
+## File-Hook Tier (#551)
+
+Off-by-default opt-in via the `running-process-observer` crate's `embed-helper` feature. When enabled, `negotiate_hook_support()` returns `HookSupport::Available` on Windows + Linux + macOS. The injection vehicle is per-OS:
+
+- **Windows**: `inject_into_pid(pid, dll_path)` drives `OpenProcess` → `VirtualAllocEx` → `WriteProcessMemory` → `CreateRemoteThread(LoadLibraryW, dll_path)` → `WaitForSingleObject` + `GetExitCodeThread`. The injected DLL's `DllMain` defers `retour::RawDetour` install to a `CreateThread` worker (retour's iced-x86 prologue analysis + `VirtualProtect` re-enter the loader lock; inline install hangs `LoadLibraryW`).
+- **Linux + macOS**: `inject_via_env(command, interposer_path)` sets the platform's loader env var (`LD_PRELOAD` / `DYLD_INSERT_LIBRARIES`) on a caller-supplied `Command`. The dynamic linker handles the rest at child startup.
+
+The interposers emit `RPO_HOOK …` lines on the target's stderr (e.g. `RPO_HOOK file-open path="…" access=0x… disposition=… handle=…`). All injection symbols live in the observer crate; the main `running-process` crate compiles with **zero** new injection-related symbols (verified end-to-end).
 
 ## CLIs
 
@@ -134,6 +148,8 @@ Active pending work lives in [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md). Root-le
 
 **Keyboard interrupts**: Use `handle_keyboard_interrupt(exception)` from `running_process.interrupt_handler` instead of directly calling `_thread.interrupt_main()`. The KBI linter (`ci/lint_python/keyboard_interrupt_checker.py`) enforces this.
 
+**Bincode forbidden**: `disallowed_methods = "deny"` is wired through `clippy.toml` at the workspace root — every member crate refuses bincode serialization (broker wire stays prost-only). Phase 0 of #228.
+
 ## Code Quality Notes
 
 - **Complex Functions** (refactor if modifying): `ProcessOutputReader.run()` (C12), `RunningProcess.get_next_line()` (C16), `RunningProcess.wait()` (C20)
@@ -143,6 +159,6 @@ Active pending work lives in [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md). Root-le
 
 ## Workspace Config
 
-- Rust edition 2021, version 1.85+, shared workspace dependencies: `pyo3 0.23`, `rusqlite 0.32` (bundled), `thiserror 2`
+- Rust edition 2021, version 1.85+, shared workspace dependencies: `pyo3 0.29`, `rusqlite 0.32` (bundled), `thiserror 2`
 - Python requires >= 3.10, uses ABI3 stable API (`abi3-py310`)
 - Release profile: line-tables-only debug info, packed split-debuginfo, no stripping
