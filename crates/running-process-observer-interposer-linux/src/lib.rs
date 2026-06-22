@@ -337,6 +337,11 @@ pub unsafe extern "C" fn openat(dirfd: c_int, path: *const c_char, flags: c_int)
 /// vanishingly small; if the real close returns an error the
 /// downstream consumer just sees a phantom close event, which is a
 /// debugging signal in itself.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. The C runtime invokes it with arguments
+/// matching POSIX `close(2)` (a single integer fd); we trust those.
 #[no_mangle]
 pub unsafe extern "C" fn close(fd: c_int) -> c_int {
     let real = real_close();
@@ -367,6 +372,13 @@ pub unsafe extern "C" fn close(fd: c_int) -> c_int {
 /// **Caveat**: this only covers `write`, not `pwrite`/`writev`/
 /// `pwritev`/`sendfile`. Those land in slice 4d alongside the
 /// unlink/rename family.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. The C runtime invokes it with arguments
+/// matching POSIX `write(2)` — `(int fd, const void *buf, size_t
+/// count)`. The buf+count region must be valid for `count` bytes
+/// of read; we don't dereference it ourselves, just forward.
 #[no_mangle]
 pub unsafe extern "C" fn write(
     fd: c_int,
