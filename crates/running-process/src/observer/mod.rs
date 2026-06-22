@@ -48,6 +48,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod cmdline;
 pub use cmdline::read_process_cmdline;
 
+mod file_handles;
+pub use file_handles::read_process_file_handles;
+
 #[cfg(target_os = "linux")]
 pub(crate) mod descendants_linux;
 
@@ -258,9 +261,9 @@ fn detect_file_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &
             #[cfg(target_os = "linux")]
             {
                 (
-                    CapabilitySupport::Unavailable,
+                    CapabilitySupport::Partial,
                     "proc-fd-snapshot",
-                    "#539 slice 6: Linux /proc/<pid>/fd/* snapshot backend not yet implemented",
+                    "Linux /proc/<pid>/fd/* snapshot via read_process_file_handles (#539 slice 6 follow-up; no streaming file events)",
                 )
             }
             #[cfg(target_os = "windows")]
@@ -274,9 +277,9 @@ fn detect_file_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &
             #[cfg(target_os = "macos")]
             {
                 (
-                    CapabilitySupport::Unavailable,
+                    CapabilitySupport::Partial,
                     "proc-pidinfo",
-                    "#539 slice 8: macOS proc_pidinfo handle snapshot backend not yet implemented",
+                    "macOS proc_pidinfo(PROC_PIDLISTFDS) snapshot via read_process_file_handles (#539 slice 8 follow-up; no streaming file events)",
                 )
             }
             #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
