@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/running-process",
     "crates/running-process-observer",
+    "crates/running-process-observer-interposer-linux",
     "crates/running-process-py",
     "crates/test-watchdog",
     "testbins",
