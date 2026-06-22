@@ -58,7 +58,15 @@
 //! `CreateRemoteThread(LoadLibraryW, dll_path)` into freshly
 //! spawned children of the running-process daemon.
 
-#![cfg(target_os = "windows")]
+// Gated on Windows x86_64 only: `retour` 0.4.0-alpha.4 uses
+// `iced-x86` for prologue disassembly, which doesn't support
+// ARM64. On Windows ARM64 the crate falls through to an empty
+// stub so the workspace still builds end-to-end — matching the
+// per-target dep gate in Cargo.toml. Slice 6b's CreateFileW
+// detour and friends literally cannot be implemented on ARM64
+// with the current retour, so reporting "feature unavailable"
+// honestly is the right answer.
+#![cfg(all(target_os = "windows", target_arch = "x86_64"))]
 
 use std::cell::Cell;
 use std::collections::HashMap;
