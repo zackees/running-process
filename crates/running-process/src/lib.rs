@@ -324,9 +324,25 @@ impl NativeProcess {
         if let Some(emitter) = self.shared.observer.as_ref() {
             emitter.emit_started(child.id());
         }
+        // #539 slice 2: when the observer requests EventCategory::Process,
+        // associate an IOCP with the per-spawn Job Object so a pump thread
+        // can forward descendant lifecycle events. The Lifecycle category
+        // is still served by emit_started / emit_exited above and below.
         #[cfg(windows)]
-        let job = public_symbols::rp_assign_child_to_windows_kill_on_close_job_public(&child)
-            .map_err(ProcessError::Spawn)?;
+        let job = {
+            let descendant_sink = self
+                .shared
+                .observer
+                .as_ref()
+                .and_then(|e| e.descendant_sink());
+            let direct_pid = child.id();
+            public_symbols::rp_assign_child_to_windows_kill_on_close_job_with_observer_public(
+                &child,
+                descendant_sink,
+                direct_pid,
+            )
+            .map_err(ProcessError::Spawn)?
+        };
         if self.config.capture {
             let stdout = child.stdout.take().expect("stdout pipe missing");
             let stderr = child.stderr.take().expect("stderr pipe missing");

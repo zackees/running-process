@@ -69,3 +69,22 @@ pub extern "C" fn rp_assign_child_to_windows_kill_on_close_job_public(
 ) -> Result<WindowsJobHandle, std::io::Error> {
     assign_child_to_windows_kill_on_close_job_impl(child)
 }
+
+#[cfg(windows)]
+#[inline(never)]
+/// #539 slice 2 — observer-aware Job Object setup. When
+/// `descendant_sink` is `Some`, the returned handle also owns an IOCP and
+/// pump thread that emits descendant-lifecycle events. This is `extern
+/// "Rust"` (not "C") because the `Sender<ObserverEvent>` parameter is not
+/// ABI-stable; the older `_public` symbol is the C-ABI export.
+pub fn rp_assign_child_to_windows_kill_on_close_job_with_observer_public(
+    child: &Child,
+    descendant_sink: Option<std::sync::mpsc::Sender<crate::observer::ObserverEvent>>,
+    direct_pid: u32,
+) -> Result<WindowsJobHandle, std::io::Error> {
+    crate::windows::assign_child_to_windows_kill_on_close_job_with_observer_impl(
+        child,
+        descendant_sink,
+        direct_pid,
+    )
+}

@@ -138,6 +138,12 @@ ALLOWED_RUST_SPAWN = {
     # already-accepted local socket — no process spawn happens. Allowlisted
     # for the same reason as backend_lifecycle/probe.rs above.
     Path("crates/running-process/src/bin/running-process-broker-v2.rs"),
+    # #539 slice 2: Windows Job Object IOCP pump uses
+    # `thread::Builder::spawn` (a thread, not a process) to drain
+    # JOB_OBJECT_MSG_* notifications and forward descendant-lifecycle
+    # observer events. No process spawn happens here — same rationale as
+    # the broker thread-spawn allowlist entries above.
+    Path("crates/running-process/src/windows.rs"),
     # Testbins: bare std::Command::spawn on Unix only (see comment in
     # testbins/src/bin/spawner.rs — sanitized spawn isn't usable there
     # because of the setpgid-vs-killpg interaction the containment test
