@@ -17,19 +17,19 @@
 //! via the `RP_OBSERVER_EVENT_PIPE` env var (set by the parent before
 //! `execve()`).
 //!
-//! ## Slice 4a/4b scope
+//! ## Slice 4a/4b/4c scope
 //!
-//! Slice 4a: `open(2)`. Slice 4b (this commit): `openat(2)`. Both
-//! emit the same `RPO_HOOK file-open` line shape on stderr — `openat`
-//! resolves the dirfd to a path via `/proc/self/fd/<dirfd>` when the
-//! caller passes a relative `pathname` and `dirfd != AT_FDCWD`, then
-//! joins; absolute paths pass through unchanged.
+//! Slice 4a: `open(2)`. Slice 4b: `openat(2)` with dirfd resolution.
+//! Slice 4c (this commit): `close(2)` and `write(2)` plus the
+//! process-global fd→path table that lets them resolve which file
+//! the syscall is touching.
 //!
-//! `close`, `write`, `unlink`, `rename` land in slice 4c. They each
-//! need fd→path tracking (for `close`/`write`) or the same dirfd-join
-//! pattern (for `unlinkat`/`renameat`). `creat`, `open64`, `__open_2`
-//! (libc internal variants) are intentionally NOT shadowed yet — they
-//! follow once we have a test fixture that exercises one variant.
+//! `unlink`, `unlinkat`, `rename`, `renameat` land in slice 4d. They
+//! reuse the dirfd-join pattern from 4b but emit different event
+//! kinds (`file-unlink` / `file-rename`). `creat`, `open64`,
+//! `__open_2` (libc internal variants) are intentionally NOT shadowed
+//! yet — they follow once we have a test fixture that exercises one
+//! variant.
 //!
 //! ## Caveats
 //!
@@ -58,9 +58,10 @@
 #![cfg(target_os = "linux")]
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// Type of libc `open(2)`. Declared non-variadic — see the module
 /// doc's caveats section.
@@ -70,6 +71,13 @@ type OpenFn = unsafe extern "C" fn(*const c_char, c_int) -> c_int;
 /// [`OpenFn`].
 type OpenatFn = unsafe extern "C" fn(c_int, *const c_char, c_int) -> c_int;
 
+/// Type of libc `close(2)`.
+type CloseFn = unsafe extern "C" fn(c_int) -> c_int;
+
+/// Type of libc `write(2)`. Return is `ssize_t` (signed pointer-sized);
+/// libc::ssize_t is the portable name.
+type WriteFn = unsafe extern "C" fn(c_int, *const libc::c_void, libc::size_t) -> libc::ssize_t;
+
 /// Cache of the real libc `open` looked up via `dlsym(RTLD_NEXT, ...)`.
 /// `OnceLock` makes this thread-safe across the first-call race
 /// without pulling in `lazy_static!`.
@@ -77,6 +85,30 @@ static REAL_OPEN: OnceLock<OpenFn> = OnceLock::new();
 
 /// Cache of the real libc `openat`.
 static REAL_OPENAT: OnceLock<OpenatFn> = OnceLock::new();
+
+/// Cache of the real libc `close`.
+static REAL_CLOSE: OnceLock<CloseFn> = OnceLock::new();
+
+/// Cache of the real libc `write`.
+static REAL_WRITE: OnceLock<WriteFn> = OnceLock::new();
+
+/// Process-global fd→path map. Populated on each successful
+/// `open`/`openat`, queried on `close`/`write` so the emitted event
+/// carries a meaningful path. Removed on `close`. Heavy contention
+/// is unlikely in practice — file I/O is much slower than a brief
+/// mutex acquisition — but if it becomes a problem we can swap for
+/// a sharded `RwLock<HashMap<...>>` per fd-modulo-N bucket.
+///
+/// **Not shared across processes**: each LD_PRELOAD'd target has its
+/// own copy. `execve()` clears the static because the new process
+/// image starts fresh (this is the desired behavior — fds across
+/// exec are explicit via CLOEXEC handling, which the kernel does
+/// for us).
+static FD_TABLE: OnceLock<Mutex<HashMap<c_int, String>>> = OnceLock::new();
+
+fn fd_table() -> &'static Mutex<HashMap<c_int, String>> {
+    FD_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 thread_local! {
     /// Reentrancy guard. If we somehow re-enter `open` from within
@@ -108,6 +140,28 @@ fn real_openat() -> OpenatFn {
             libc::abort();
         }
         std::mem::transmute::<*mut libc::c_void, OpenatFn>(raw)
+    })
+}
+
+fn real_close() -> CloseFn {
+    *REAL_CLOSE.get_or_init(|| unsafe {
+        let name = c"close";
+        let raw = libc::dlsym(libc::RTLD_NEXT, name.as_ptr());
+        if raw.is_null() {
+            libc::abort();
+        }
+        std::mem::transmute::<*mut libc::c_void, CloseFn>(raw)
+    })
+}
+
+fn real_write() -> WriteFn {
+    *REAL_WRITE.get_or_init(|| unsafe {
+        let name = c"write";
+        let raw = libc::dlsym(libc::RTLD_NEXT, name.as_ptr());
+        if raw.is_null() {
+            libc::abort();
+        }
+        std::mem::transmute::<*mut libc::c_void, WriteFn>(raw)
     })
 }
 
@@ -158,19 +212,56 @@ fn resolve_at(dirfd: c_int, pathname: &CStr) -> Option<String> {
 }
 
 /// Emit a hook event line to stderr. Best-effort: ignore errors so a
-/// stderr-closed target process doesn't crash.
-fn emit_open(path: &str, flags: c_int, fd: c_int) {
-    // Format manually with a single write(2) on stderr to keep
-    // contention low and avoid Rust's lazy stderr lock interleaving
-    // with the target process's own output.
-    let line = format!("RPO_HOOK file-open path={path:?} flags={flags} fd={fd}\n");
+/// stderr-closed target process doesn't crash. We bypass our own
+/// `write` shadow by going straight through the cached real `write`
+/// — if we routed through libc's `write` symbol we'd emit a
+/// `file-write` event for our own diagnostic line and infinite-loop.
+fn emit_line(line: &str) {
+    let real = real_write();
     unsafe {
-        libc::write(
+        real(
             libc::STDERR_FILENO,
             line.as_ptr() as *const libc::c_void,
             line.len(),
         );
     }
+}
+
+fn emit_open(path: &str, flags: c_int, fd: c_int) {
+    let line = format!("RPO_HOOK file-open path={path:?} flags={flags} fd={fd}\n");
+    emit_line(&line);
+}
+
+fn emit_close(path: &str, fd: c_int) {
+    let line = format!("RPO_HOOK file-close path={path:?} fd={fd}\n");
+    emit_line(&line);
+}
+
+fn emit_write(path: &str, fd: c_int, byte_count: i64) {
+    let line = format!("RPO_HOOK file-write path={path:?} fd={fd} byte_count={byte_count}\n");
+    emit_line(&line);
+}
+
+/// Insert a fd → path mapping after a successful open/openat. Replaces
+/// any prior entry for the same fd (which would only happen if a
+/// close was missed).
+fn fd_table_insert(fd: c_int, path: String) {
+    if let Ok(mut tbl) = fd_table().lock() {
+        tbl.insert(fd, path);
+    }
+}
+
+/// Look up the path associated with `fd` without removing it. Returns
+/// `None` if the fd isn't tracked (e.g. the open was done before our
+/// interposer loaded, or via a syscall we don't shadow).
+fn fd_table_get(fd: c_int) -> Option<String> {
+    fd_table().lock().ok()?.get(&fd).cloned()
+}
+
+/// Look up + remove the path associated with `fd`. Called on `close`
+/// after emitting the event.
+fn fd_table_remove(fd: c_int) -> Option<String> {
+    fd_table().lock().ok()?.remove(&fd)
 }
 
 /// LD_PRELOAD shadow for `open(2)`. Resolves the real implementation
@@ -196,6 +287,7 @@ pub unsafe extern "C" fn open(path: *const c_char, flags: c_int) -> c_int {
     if fd >= 0 && !path.is_null() {
         if let Ok(p) = CStr::from_ptr(path).to_str() {
             emit_open(p, flags, fd);
+            fd_table_insert(fd, p.to_string());
         }
     }
 
@@ -226,9 +318,87 @@ pub unsafe extern "C" fn openat(dirfd: c_int, path: *const c_char, flags: c_int)
     if fd >= 0 && !path.is_null() {
         if let Some(resolved) = resolve_at(dirfd, CStr::from_ptr(path)) {
             emit_open(&resolved, flags, fd);
+            fd_table_insert(fd, resolved);
         }
     }
 
     IN_HOOK.with(|c| c.set(false));
     fd
+}
+
+/// LD_PRELOAD shadow for `close(2)`. Looks up the fd in the table,
+/// emits a `file-close` event if tracked, removes the entry, then
+/// calls the real `close`.
+///
+/// We emit BEFORE the real close so the path lookup is still valid;
+/// emitting after would risk the path being recycled if the kernel
+/// reuses the fd quickly. The window during which a successful close
+/// emits an event for an fd we tracked but didn't actually close is
+/// vanishingly small; if the real close returns an error the
+/// downstream consumer just sees a phantom close event, which is a
+/// debugging signal in itself.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. The C runtime invokes it with arguments
+/// matching POSIX `close(2)` (a single integer fd); we trust those.
+#[no_mangle]
+pub unsafe extern "C" fn close(fd: c_int) -> c_int {
+    let real = real_close();
+
+    if IN_HOOK.with(|c| c.get()) {
+        return real(fd);
+    }
+    IN_HOOK.with(|c| c.set(true));
+
+    if let Some(path) = fd_table_get(fd) {
+        emit_close(&path, fd);
+    }
+    let r = real(fd);
+    if r == 0 {
+        // Only forget the path on a successful close; if it failed
+        // the consumer may legitimately retry with the same fd.
+        let _ = fd_table_remove(fd);
+    }
+
+    IN_HOOK.with(|c| c.set(false));
+    r
+}
+
+/// LD_PRELOAD shadow for `write(2)`. Looks up the fd in the table
+/// and emits a `file-write` event with the returned byte count when
+/// the call succeeds.
+///
+/// **Caveat**: this only covers `write`, not `pwrite`/`writev`/
+/// `pwritev`/`sendfile`. Those land in slice 4d alongside the
+/// unlink/rename family.
+///
+/// # Safety
+///
+/// libc-ABI extern "C" fn. The C runtime invokes it with arguments
+/// matching POSIX `write(2)` — `(int fd, const void *buf, size_t
+/// count)`. The buf+count region must be valid for `count` bytes
+/// of read; we don't dereference it ourselves, just forward.
+#[no_mangle]
+pub unsafe extern "C" fn write(
+    fd: c_int,
+    buf: *const libc::c_void,
+    count: libc::size_t,
+) -> libc::ssize_t {
+    let real = real_write();
+
+    if IN_HOOK.with(|c| c.get()) {
+        return real(fd, buf, count);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    let n = real(fd, buf, count);
+
+    if n > 0 {
+        if let Some(path) = fd_table_get(fd) {
+            emit_write(&path, fd, n as i64);
+        }
+    }
+
+    IN_HOOK.with(|c| c.set(false));
+    n
 }
