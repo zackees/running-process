@@ -8,15 +8,27 @@
 //! [`exited`](ObserverEventKind::Exited) events for child processes spawned
 //! by this crate.
 //!
-//! ## Scope (Phase 1 only)
+//! ## TraceScope dimension (#539)
 //!
-//! Only the [`EventCategory::Lifecycle`] category is
-//! [`supported`](CapabilitySupport::Supported). Every other category
-//! ([`File`](EventCategory::File), [`Network`](EventCategory::Network),
-//! [`Process`](EventCategory::Process)) reports
-//! [`unavailable`](CapabilitySupport::Unavailable) with an honest reason,
-//! because syscall-level backends (seccomp/eBPF/ETW) are Phase 3 work and
-//! are deliberately not wired here.
+//! The capability matrix is negotiated for a [`TraceScope`]:
+//!
+//! - [`TraceScope::SystemWide`] — the historical default, names admin-gated
+//!   system tracers (ETW kernel providers, eBPF, EndpointSecurity). All
+//!   syscall categories report [`Unavailable`](CapabilitySupport::Unavailable)
+//!   until the Phase 3 backends from #469 land.
+//! - [`TraceScope::LaunchedProcessTree`] — the no-admin tier added by #539.
+//!   Names per-OS primitives that operate purely on the spawn boundary this
+//!   crate already owns (Windows Job Object IOCP, Linux subreaper+pidfd,
+//!   macOS kqueue EVFILT_PROC). Currently every syscall category reports
+//!   `Unavailable`; each #539 slice flips one cell to `Supported`/`Partial`
+//!   with no shape change.
+//!
+//! Lifecycle is `Supported` in every scope because owning the spawn boundary
+//! is sufficient for `started`/`exited` on all three platforms.
+//!
+//! `ObserverCapabilities::negotiate()` preserves the pre-#539 contract and
+//! returns the `SystemWide` matrix; new callers should use
+//! [`negotiate_for_scope`](ObserverCapabilities::negotiate_for_scope).
 //!
 //! ## Off by default
 //!
@@ -32,6 +44,49 @@
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Scope at which observation is negotiated.
+///
+/// `running-process` exposes two distinct observation tiers because the
+/// underlying OS primitives diverge sharply by privilege:
+///
+/// - [`LaunchedProcessTree`](Self::LaunchedProcessTree) — observe the process
+///   tree that this crate spawned and any descendants reparented under it.
+///   No admin / no entitlements / no kernel driver required. The crate owns
+///   the spawn boundary on every platform (Job Object on Windows, subreaper
+///   on Linux, kqueue child registration on macOS), so per-platform
+///   no-admin primitives are sufficient. This is the scope #539 wires up.
+/// - [`SystemWide`](Self::SystemWide) — observe every process on the host.
+///   Requires ETW kernel providers on Windows, eBPF/CAP_BPF on Linux,
+///   Endpoint Security entitlement on macOS. All of these need admin or
+///   signed entitlements and a separate operational story (#469).
+///
+/// The two scopes can coexist; backends for each are detected and reported
+/// independently. Marked `#[non_exhaustive]` per #431 so future scopes
+/// (e.g. cgroup-scoped, container-scoped) can land without a major bump.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TraceScope {
+    /// Observation limited to the process tree this crate spawned.
+    /// Backends for this scope must operate without admin privileges.
+    LaunchedProcessTree,
+    /// Observation of every process on the host. Backends typically
+    /// require admin / entitlements / kernel drivers.
+    SystemWide,
+}
+
+impl TraceScope {
+    /// All scopes in stable order.
+    pub const ALL: [TraceScope; 2] = [TraceScope::LaunchedProcessTree, TraceScope::SystemWide];
+
+    /// Stable lowercase name for serialization / matrix rendering.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TraceScope::LaunchedProcessTree => "launched-process-tree",
+            TraceScope::SystemWide => "system-wide",
+        }
+    }
+}
 
 /// Category of observable process activity.
 ///
@@ -121,148 +176,263 @@ pub struct CategoryCapability {
     pub reason: &'static str,
 }
 
-/// The full capability matrix produced by [`ObserverCapabilities::negotiate`].
+/// The full capability matrix produced by [`ObserverCapabilities::negotiate`]
+/// or [`ObserverCapabilities::negotiate_for_scope`].
 ///
-/// Each [`EventCategory`] appears exactly once. Phase 1 reports
-/// [`Lifecycle`](EventCategory::Lifecycle) as
-/// [`Supported`](CapabilitySupport::Supported) and the rest as
-/// [`Unavailable`](CapabilitySupport::Unavailable).
+/// Each [`EventCategory`] appears exactly once for the negotiated
+/// [`TraceScope`]. Phase 1 reports [`Lifecycle`](EventCategory::Lifecycle) as
+/// [`Supported`](CapabilitySupport::Supported) in every scope (the spawn/reap
+/// path is scope-independent); the rest start out as
+/// [`Unavailable`](CapabilitySupport::Unavailable) and flip to
+/// `Supported`/`Partial` as per-OS backends land (#539 for
+/// [`LaunchedProcessTree`](TraceScope::LaunchedProcessTree), #469 for
+/// [`SystemWide`](TraceScope::SystemWide)).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObserverCapabilities {
+    scope: TraceScope,
     categories: Vec<CategoryCapability>,
 }
 
 /// Detect the backend that would serve [`EventCategory::File`] on this
-/// platform (#430 prep for Phase 3).
+/// platform for the requested [`TraceScope`].
 ///
 /// Returns `(support, backend, reason)`. Today every branch returns
-/// `Unavailable` because no Phase 3 backend has shipped yet — but the
-/// backend name and reason are now per-OS, so downstream UX (Phase 4)
-/// shows the right deferred-backend name instead of the catch-all
-/// `seccomp/eBPF/ETW` literal. As individual backends land, flip the
-/// matching branch to `Supported`/`Partial` with no shape change.
-fn detect_file_backend() -> (CapabilitySupport, &'static str, &'static str) {
-    #[cfg(target_os = "linux")]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "seccomp-user-notify",
-            "Phase 3: Linux seccomp user-notify file backend not yet implemented",
-        )
-    }
-    #[cfg(target_os = "windows")]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "etw",
-            "Phase 3: Windows ETW file backend not yet implemented",
-        )
-    }
-    #[cfg(target_os = "macos")]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "kqueue",
-            "Phase 3: macOS kqueue/EndpointSecurity file backend not yet implemented (entitlement-gated)",
-        )
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "none",
-            "Phase 3: no file backend planned for this OS",
-        )
+/// `Unavailable`. As individual backends land, flip the matching branch to
+/// `Supported`/`Partial` with no shape change.
+///
+/// Scope split:
+///
+/// - [`TraceScope::SystemWide`] — names the admin-gated system tracer that
+///   would have to land (ETW kernel provider, eBPF, EndpointSecurity).
+///   Tracked by #469.
+/// - [`TraceScope::LaunchedProcessTree`] — names the no-admin per-OS
+///   primitive that observes only this crate's spawned tree
+///   (NT handle snapshot, `/proc/<pid>/fd/*`, `proc_pidinfo`). Tracked by
+///   #539. Lands incrementally per slice.
+fn detect_file_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &'static str) {
+    match scope {
+        TraceScope::SystemWide => {
+            #[cfg(target_os = "linux")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "seccomp-user-notify",
+                    "Phase 3: Linux seccomp user-notify file backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "windows")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "etw",
+                    "Phase 3: Windows ETW file backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "kqueue",
+                    "Phase 3: macOS kqueue/EndpointSecurity file backend not yet implemented (entitlement-gated)",
+                )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "none",
+                    "Phase 3: no file backend planned for this OS",
+                )
+            }
+        }
+        TraceScope::LaunchedProcessTree => {
+            #[cfg(target_os = "linux")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "proc-fd-snapshot",
+                    "#539 slice 6: Linux /proc/<pid>/fd/* snapshot backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "windows")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "nt-handle-snapshot",
+                    "#539 slice 4: Windows NtQuerySystemInformation handle snapshot backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "proc-pidinfo",
+                    "#539 slice 8: macOS proc_pidinfo handle snapshot backend not yet implemented",
+                )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "none",
+                    "#539: no launched-process-tree file backend planned for this OS",
+                )
+            }
+        }
     }
 }
 
 /// Detect the backend that would serve [`EventCategory::Network`] on this
-/// platform (#430 prep for Phase 3). Mirrors [`detect_file_backend`].
-fn detect_network_backend() -> (CapabilitySupport, &'static str, &'static str) {
-    #[cfg(target_os = "linux")]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "ebpf",
-            "Phase 3: Linux eBPF network backend not yet implemented",
-        )
-    }
-    #[cfg(target_os = "windows")]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "etw",
-            "Phase 3: Windows ETW network backend not yet implemented",
-        )
-    }
-    #[cfg(target_os = "macos")]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "endpoint-security",
-            "Phase 3: macOS EndpointSecurity network backend not yet implemented (entitlement-gated)",
-        )
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        (
+/// platform for the requested [`TraceScope`]. Mirrors [`detect_file_backend`].
+///
+/// Network observation is deferred to a future issue for the
+/// [`TraceScope::LaunchedProcessTree`] scope — there is no portable
+/// no-admin primitive for per-child connect/accept events comparable to the
+/// file/process primitives, so the backend is currently `none` everywhere
+/// for that scope.
+fn detect_network_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &'static str) {
+    match scope {
+        TraceScope::SystemWide => {
+            #[cfg(target_os = "linux")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "ebpf",
+                    "Phase 3: Linux eBPF network backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "windows")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "etw",
+                    "Phase 3: Windows ETW network backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "endpoint-security",
+                    "Phase 3: macOS EndpointSecurity network backend not yet implemented (entitlement-gated)",
+                )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "none",
+                    "Phase 3: no network backend planned for this OS",
+                )
+            }
+        }
+        TraceScope::LaunchedProcessTree => (
             CapabilitySupport::Unavailable,
             "none",
-            "Phase 3: no network backend planned for this OS",
-        )
+            "#539: no-admin per-child network backend deferred to a follow-up issue",
+        ),
     }
 }
 
 /// Detect the backend that would serve [`EventCategory::Process`] (descendant
 /// process creation outside the crate's own spawn path) on this platform
-/// (#430 prep for Phase 3). Mirrors [`detect_file_backend`].
-fn detect_process_backend() -> (CapabilitySupport, &'static str, &'static str) {
-    #[cfg(target_os = "linux")]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "seccomp-user-notify",
-            "Phase 3: Linux seccomp user-notify process backend not yet implemented",
-        )
-    }
-    #[cfg(target_os = "windows")]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "etw",
-            "Phase 3: Windows ETW process backend not yet implemented",
-        )
-    }
-    #[cfg(target_os = "macos")]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "endpoint-security",
-            "Phase 3: macOS EndpointSecurity process backend not yet implemented (entitlement-gated)",
-        )
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        (
-            CapabilitySupport::Unavailable,
-            "none",
-            "Phase 3: no process backend planned for this OS",
-        )
+/// for the requested [`TraceScope`]. Mirrors [`detect_file_backend`].
+fn detect_process_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &'static str) {
+    match scope {
+        TraceScope::SystemWide => {
+            #[cfg(target_os = "linux")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "seccomp-user-notify",
+                    "Phase 3: Linux seccomp user-notify process backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "windows")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "etw",
+                    "Phase 3: Windows ETW process backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "endpoint-security",
+                    "Phase 3: macOS EndpointSecurity process backend not yet implemented (entitlement-gated)",
+                )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "none",
+                    "Phase 3: no process backend planned for this OS",
+                )
+            }
+        }
+        TraceScope::LaunchedProcessTree => {
+            #[cfg(target_os = "linux")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "subreaper-pidfd",
+                    "#539 slice 5: Linux PR_SET_CHILD_SUBREAPER + pidfd descendant backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "windows")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "job-object-iocp",
+                    "#539 slice 2: Windows Job Object IOCP descendant backend not yet implemented",
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "kqueue-evfilt-proc",
+                    "#539 slice 7: macOS kqueue EVFILT_PROC descendant backend not yet implemented",
+                )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+            {
+                (
+                    CapabilitySupport::Unavailable,
+                    "none",
+                    "#539: no launched-process-tree process backend planned for this OS",
+                )
+            }
+        }
     }
 }
 
 impl ObserverCapabilities {
-    /// Negotiate the capability matrix for the current platform.
+    /// Negotiate the capability matrix for the current platform under the
+    /// historical default scope ([`TraceScope::SystemWide`]).
     ///
-    /// Phase 1 reports `Lifecycle` as `Supported` (portable, OS-agnostic).
-    /// Phase 3 categories (`File`, `Network`, `Process`) currently report
-    /// `Unavailable`, but the *backend name* and *reason* are now per-OS via
-    /// `#[cfg]`-gated detection helpers (#430). This keeps the
-    /// `ObserverCapabilities::negotiate()` contract stable for Phase 4
-    /// downstream UX while letting Phase 3 light each backend up
-    /// independently — flipping `Unavailable` → `Supported` per backend lands
-    /// without touching this function's shape.
+    /// Preserved for backwards compatibility with pre-#539 callers. New
+    /// callers that know which tier they want should use
+    /// [`negotiate_for_scope`](Self::negotiate_for_scope) — the
+    /// `LaunchedProcessTree` scope advertises different per-OS backends
+    /// (no-admin: NT handle snapshot, `/proc/<pid>/fd/*`, `proc_pidinfo`)
+    /// than the `SystemWide` scope (admin-gated: ETW, eBPF, EndpointSecurity).
     pub fn negotiate() -> Self {
+        Self::negotiate_for_scope(TraceScope::SystemWide)
+    }
+
+    /// Negotiate the capability matrix for the current platform at the
+    /// requested [`TraceScope`].
+    ///
+    /// Lifecycle is `Supported` in every scope (the spawn/reap path is
+    /// scope-independent and runs in-process with no admin requirement).
+    /// File/Network/Process start out `Unavailable` and flip to
+    /// `Supported`/`Partial` as per-OS backends land — the scope × OS
+    /// dispatch lives in the crate-private `detect_*_backend` helpers.
+    pub fn negotiate_for_scope(scope: TraceScope) -> Self {
         let categories = EventCategory::ALL
             .iter()
             .map(|&category| match category {
@@ -273,7 +443,7 @@ impl ObserverCapabilities {
                     reason: "started/exited emitted from the crate spawn and reap path",
                 },
                 EventCategory::File => {
-                    let (support, backend, reason) = detect_file_backend();
+                    let (support, backend, reason) = detect_file_backend(scope);
                     CategoryCapability {
                         category,
                         support,
@@ -282,7 +452,7 @@ impl ObserverCapabilities {
                     }
                 }
                 EventCategory::Network => {
-                    let (support, backend, reason) = detect_network_backend();
+                    let (support, backend, reason) = detect_network_backend(scope);
                     CategoryCapability {
                         category,
                         support,
@@ -291,7 +461,7 @@ impl ObserverCapabilities {
                     }
                 }
                 EventCategory::Process => {
-                    let (support, backend, reason) = detect_process_backend();
+                    let (support, backend, reason) = detect_process_backend(scope);
                     CategoryCapability {
                         category,
                         support,
@@ -301,7 +471,12 @@ impl ObserverCapabilities {
                 }
             })
             .collect();
-        Self { categories }
+        Self { scope, categories }
+    }
+
+    /// The [`TraceScope`] this matrix was negotiated for.
+    pub fn scope(&self) -> TraceScope {
+        self.scope
     }
 
     /// Return the capability entries in stable [`EventCategory::ALL`] order.
@@ -350,15 +525,16 @@ impl ObserverCapabilities {
 
     /// Render the capability matrix as a single human-readable string.
     ///
-    /// The output is deterministic per category set so a UI can snapshot or
-    /// diff it. Layout:
+    /// The output is deterministic per scope+category set so a UI can
+    /// snapshot or diff it. The first line names the negotiated
+    /// [`TraceScope`] so a diff between scopes is obvious. Layout:
     ///
     /// ```text
-    /// observer capabilities:
+    /// observer capabilities (scope=system-wide):
     ///   lifecycle    supported    portable-lifecycle  started/exited emitted from the crate spawn and reap path
-    ///   file         unavailable  none                requires Phase 3 platform backend (seccomp/eBPF/ETW)
-    ///   network      unavailable  none                requires Phase 3 platform backend (seccomp/eBPF/ETW)
-    ///   process      unavailable  none                requires Phase 3 platform backend (seccomp/eBPF/ETW)
+    ///   file         unavailable  etw                 Phase 3: Windows ETW file backend not yet implemented
+    ///   network      unavailable  etw                 Phase 3: Windows ETW network backend not yet implemented
+    ///   process      unavailable  etw                 Phase 3: Windows ETW process backend not yet implemented
     /// ```
     ///
     /// Phase 4 (#431) consumers like the clud CLI use this to show the
@@ -374,7 +550,7 @@ impl ObserverCapabilities {
                 widths[i] = widths[i].max(cell.len());
             }
         }
-        let mut out = String::from("observer capabilities:\n");
+        let mut out = format!("observer capabilities (scope={}):\n", self.scope.as_str());
         for row in &rows {
             out.push_str(&format!(
                 "  {cat:<cw$}  {sup:<sw$}  {bk:<bw$}  {reason}\n",

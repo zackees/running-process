@@ -253,7 +253,10 @@ fn to_table_rows_carries_support_backend_and_reason() {
 #[test]
 fn render_summary_lists_every_category_and_aligns_columns() {
     let summary = ObserverCapabilities::negotiate().render_summary();
-    assert!(summary.starts_with("observer capabilities:\n"));
+    assert!(
+        summary.starts_with("observer capabilities (scope=system-wide):\n"),
+        "summary must lead with the scope header: {summary:?}"
+    );
     // Every category name shows up in the rendered output.
     for category in EventCategory::ALL {
         assert!(
@@ -286,4 +289,120 @@ fn category_and_support_string_forms_are_stable() {
     assert_eq!(CapabilitySupport::Supported.as_str(), "supported");
     assert_eq!(CapabilitySupport::Partial.as_str(), "partial");
     assert_eq!(CapabilitySupport::Unavailable.as_str(), "unavailable");
+}
+
+// ── #539: TraceScope dimension ──
+
+#[test]
+fn trace_scope_string_forms_are_stable() {
+    assert_eq!(
+        TraceScope::LaunchedProcessTree.as_str(),
+        "launched-process-tree"
+    );
+    assert_eq!(TraceScope::SystemWide.as_str(), "system-wide");
+    assert_eq!(TraceScope::ALL.len(), 2);
+}
+
+#[test]
+fn negotiate_defaults_to_system_wide_scope() {
+    // Pre-#539 callers used `negotiate()` and got the SystemWide matrix.
+    // Preserve that behavior so existing UX (e.g. clud capability table)
+    // does not silently flip to the new scope.
+    let caps = ObserverCapabilities::negotiate();
+    assert_eq!(caps.scope(), TraceScope::SystemWide);
+}
+
+#[test]
+fn negotiate_for_each_scope_yields_lifecycle_supported() {
+    // The portable started/exited baseline is scope-independent — owning
+    // the spawn boundary is sufficient on every platform.
+    for scope in TraceScope::ALL {
+        let caps = ObserverCapabilities::negotiate_for_scope(scope);
+        assert_eq!(caps.scope(), scope);
+        assert_eq!(
+            caps.support(EventCategory::Lifecycle),
+            CapabilitySupport::Supported,
+            "lifecycle must be supported under scope={}",
+            scope.as_str()
+        );
+        let entry = caps.category(EventCategory::Lifecycle);
+        assert_eq!(entry.backend, "portable-lifecycle");
+    }
+}
+
+#[test]
+fn launched_process_tree_scope_advertises_no_admin_backends() {
+    // The whole point of the LaunchedProcessTree scope is that its backend
+    // names are no-admin per-OS primitives, distinct from the admin-gated
+    // SystemWide backends. PRs 2–8 of #539 flip these from Unavailable to
+    // Supported one cell at a time; the names are the stable contract.
+    let caps = ObserverCapabilities::negotiate_for_scope(TraceScope::LaunchedProcessTree);
+    let file = caps.category(EventCategory::File);
+    let process = caps.category(EventCategory::Process);
+    let network = caps.category(EventCategory::Network);
+
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(file.backend, "proc-fd-snapshot");
+        assert_eq!(process.backend, "subreaper-pidfd");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        assert_eq!(file.backend, "nt-handle-snapshot");
+        assert_eq!(process.backend, "job-object-iocp");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(file.backend, "proc-pidinfo");
+        assert_eq!(process.backend, "kqueue-evfilt-proc");
+    }
+
+    // Network is uniformly deferred for this scope — no admin-free
+    // per-child primitive exists across all three platforms.
+    assert_eq!(network.backend, "none");
+
+    // Every File/Network/Process reason in this scope must point at #539
+    // so a reader knows which ledger to consult.
+    for entry in [file, process, network] {
+        assert!(
+            entry.reason.contains("#539"),
+            "LaunchedProcessTree reason must reference #539: {:?}",
+            entry.reason
+        );
+    }
+}
+
+#[test]
+fn system_wide_scope_preserves_phase3_reason_contract() {
+    // The SystemWide matrix must keep matching the pre-#539 behavior so
+    // downstream tests and clud UX don't regress.
+    let caps = ObserverCapabilities::negotiate_for_scope(TraceScope::SystemWide);
+    for category in [
+        EventCategory::File,
+        EventCategory::Network,
+        EventCategory::Process,
+    ] {
+        let entry = caps.category(category);
+        assert_eq!(entry.support, CapabilitySupport::Unavailable);
+        assert!(
+            entry.reason.contains("Phase 3"),
+            "SystemWide reason must keep the Phase 3 anchor: {:?}",
+            entry.reason
+        );
+    }
+}
+
+#[test]
+fn render_summary_names_the_negotiated_scope() {
+    let lpt =
+        ObserverCapabilities::negotiate_for_scope(TraceScope::LaunchedProcessTree).render_summary();
+    assert!(
+        lpt.starts_with("observer capabilities (scope=launched-process-tree):\n"),
+        "LaunchedProcessTree summary must lead with its scope: {lpt:?}"
+    );
+    let sw = ObserverCapabilities::negotiate_for_scope(TraceScope::SystemWide).render_summary();
+    assert!(
+        sw.starts_with("observer capabilities (scope=system-wide):\n"),
+        "SystemWide summary must lead with its scope: {sw:?}"
+    );
 }
