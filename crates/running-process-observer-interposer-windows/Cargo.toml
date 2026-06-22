@@ -41,11 +41,19 @@ retour = { version = "0.4.0-alpha.4", default-features = false }
 # pair used to look up `CreateFileW` etc. in kernel32.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_IO",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemServices",
+    # `Win32_System_Threading` for `CreateThread`: slice 7b defers
+    # the retour::RawDetour install to a worker thread so DllMain
+    # can return immediately. Calling retour from DllMain itself
+    # hangs because retour's prologue analysis (iced-x86) and
+    # VirtualProtect re-enter the loader lock that LoadLibraryW
+    # holds while invoking us.
+    "Win32_System_Threading",
 ] }
 
 [lints]
