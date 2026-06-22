@@ -727,9 +727,18 @@ mod tests {
     }
 
     #[test]
-    fn is_already_bound_error_does_not_misclassify_permission_denied() {
+    fn is_already_bound_error_classifies_permission_denied() {
+        // PR #536 deliberately added `PermissionDenied` to the
+        // is_already_bound_error matcher: on Windows, a double-bind
+        // surfaces as `ERROR_ACCESS_DENIED` (raw os error 5) because
+        // the existing pipe instance's ACL blocks the second bind —
+        // not as `AddrInUse`. This test was added in PR #534 before
+        // that classification was widened, expecting the negation;
+        // PR #536 updated the impl but forgot the test, which then
+        // cascade-failed every CI run until this fix. Rename +
+        // invert to match the now-current contract.
         let err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
-        assert!(!is_already_bound_error(&err));
+        assert!(is_already_bound_error(&err));
     }
 
     #[test]
