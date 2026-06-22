@@ -1349,6 +1349,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "running-process-observer-interposer-macos"
+version = "4.5.7"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "running-process-py"
 version = "4.5.7"
 dependencies = [
