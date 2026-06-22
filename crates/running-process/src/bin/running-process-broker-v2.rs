@@ -432,10 +432,19 @@ fn build_hello_reply(hello: &Hello, loader: &ServiceDefinitionLoader) -> HelloRe
     // 3. Happy path. Empty backend_pipe; real adopt-forwarding is a
     //    follow-up slice. The peer can still observe the Negotiated
     //    reply + the registered binary_path via subsequent control RPCs.
+    //
+    // `daemon_version` reports the **broker binary's own version**, not
+    // `definition.min_version`. Min-version is a per-service floor
+    // expressed *by* the service definition; daemon_version is the
+    // running broker's actual version — they are unrelated. Using
+    // min_version here regressed the original behavior (see PR #533's
+    // diff) and yields an empty string for any servicedef that
+    // doesn't explicitly opt in to a floor, which violates the test's
+    // and the proto's "non-empty" expectation.
     HelloReply {
         result: Some(hello_reply::Result::Negotiated(Negotiated {
             negotiated_protocol: ENVELOPE_VERSION as u32,
-            daemon_version: definition.min_version.clone(),
+            daemon_version: env!("CARGO_PKG_VERSION").into(),
             backend_pipe: String::new(),
             warnings: Vec::new(),
             server_capabilities: 0,
