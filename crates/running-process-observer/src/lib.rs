@@ -142,6 +142,123 @@ pub fn negotiate_hook_support() -> HookSupport {
     }
 }
 
+/// Cache + extract machinery for the embedded helper binary
+/// ([#551 slice 2](https://github.com/zackees/running-process/issues/551)).
+///
+/// Only compiled when the `embed-helper` feature is enabled — the
+/// off-by-default path keeps consumers' binaries free of the
+/// `dirs` + `blake3` transitive deps and the helper-extraction code
+/// path entirely.
+///
+/// API summary:
+///
+/// - [`helper_cache_dir`] — per-OS cache directory the helper lives in
+///   (XDG cache on Linux, `~/Library/Caches` on macOS,
+///   `%LOCALAPPDATA%` on Windows, via the `dirs` crate).
+/// - [`helper_filename`] — stable per-build filename
+///   (`running-process-observer-helper-<version>-<target>.[exe]`).
+/// - [`extract_helper_blob`] — idempotent: writes `blob` to
+///   `<cache>/<filename>` if the existing file's blake3 hash doesn't
+///   match, sets the executable bit on Unix. Returns the path.
+///
+/// The helper binary's bytes come from the consumer of this crate
+/// today — typically a future `include_bytes!` site that slice 2b
+/// will introduce once the bin-as-build-dep chain is wired. Keeping
+/// the function generic over the blob lets slice 2 ship the cache
+/// half independently.
+#[cfg(feature = "embed-helper")]
+pub mod embed {
+    use std::io;
+    use std::path::PathBuf;
+
+    /// Top-level subdirectory under the OS cache root that holds the
+    /// extracted helper. Versioned via the crate's package version so
+    /// stale helpers from older installs don't get reused.
+    const CACHE_SUBDIR: &str = "running-process-observer";
+
+    /// Return the OS-specific cache directory the helper lives in,
+    /// creating it on disk if it doesn't already exist.
+    ///
+    /// Paths:
+    /// - **Linux**: `$XDG_CACHE_HOME/running-process-observer` or
+    ///   `~/.cache/running-process-observer`
+    /// - **macOS**: `~/Library/Caches/running-process-observer`
+    /// - **Windows**: `%LOCALAPPDATA%\running-process-observer`
+    pub fn helper_cache_dir() -> io::Result<PathBuf> {
+        let base = dirs::cache_dir().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "could not determine OS cache directory via dirs::cache_dir()",
+            )
+        })?;
+        let dir = base.join(CACHE_SUBDIR);
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    /// Stable filename for the helper binary, derived from the crate's
+    /// package version and the build target triple. Different versions
+    /// or targets get separate filenames so multiple installs can
+    /// coexist on the same machine.
+    pub fn helper_filename() -> String {
+        let version = env!("CARGO_PKG_VERSION");
+        let target = std::env::consts::ARCH;
+        let os = std::env::consts::OS;
+        let ext = if cfg!(windows) { ".exe" } else { "" };
+        format!("running-process-observer-helper-{version}-{target}-{os}{ext}")
+    }
+
+    /// The fully-resolved path the extracted helper will live at.
+    /// Combines [`helper_cache_dir`] + [`helper_filename`].
+    pub fn helper_cache_path() -> io::Result<PathBuf> {
+        Ok(helper_cache_dir()?.join(helper_filename()))
+    }
+
+    /// Extract `blob` (the helper binary's raw bytes — typically
+    /// sourced from an `include_bytes!` site at the consumer) to the
+    /// crate's standard cache path ([`helper_cache_path`]).
+    ///
+    /// Thin wrapper around [`extract_helper_blob_to`]. Tests should
+    /// prefer the explicit-path variant to avoid racing the shared
+    /// cache.
+    pub fn extract_helper_blob(blob: &[u8]) -> io::Result<PathBuf> {
+        let path = helper_cache_path()?;
+        extract_helper_blob_to(&path, blob)
+    }
+
+    /// Extract `blob` to a caller-supplied destination path.
+    /// Idempotent: if the existing file's blake3 hash matches, no
+    /// write happens. On Unix the resulting file gets `0o755`
+    /// permissions; on Windows extensions are sufficient.
+    ///
+    /// Returns the path on success (== `path`).
+    pub fn extract_helper_blob_to(path: &std::path::Path, blob: &[u8]) -> io::Result<PathBuf> {
+        let expected_hash = blake3::hash(blob);
+        if path.exists() {
+            if let Ok(existing) = std::fs::read(path) {
+                if blake3::hash(&existing) == expected_hash {
+                    return Ok(path.to_path_buf());
+                }
+            }
+            // Mismatch (or read error). Fall through and re-write.
+        }
+        // Atomic-ish write: write to a sibling temp file then rename.
+        // Use a per-process suffix so two extractions in flight at
+        // the same time don't clobber each other's partial.
+        let tmp = path.with_extension(format!("partial.{}", std::process::id()));
+        std::fs::write(&tmp, blob)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&tmp)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&tmp, perms)?;
+        }
+        std::fs::rename(&tmp, path)?;
+        Ok(path.to_path_buf())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +297,94 @@ mod tests {
     #[test]
     fn standard_hook_config_constructs() {
         let _ = HookConfig::standard();
+    }
+
+    #[cfg(feature = "embed-helper")]
+    mod embed_tests {
+        use super::super::embed::*;
+
+        #[test]
+        fn helper_cache_dir_creates_and_returns_a_path() {
+            let p = helper_cache_dir().expect("cache dir");
+            assert!(
+                p.exists() && p.is_dir(),
+                "expected cache dir to exist, got {p:?}"
+            );
+            // The trailing component must be our versioned subdir.
+            assert!(
+                p.ends_with("running-process-observer"),
+                "expected cache path to end in running-process-observer, got {p:?}"
+            );
+        }
+
+        #[test]
+        fn helper_filename_carries_version_and_arch() {
+            let name = helper_filename();
+            assert!(name.starts_with("running-process-observer-helper-"));
+            assert!(
+                name.contains(env!("CARGO_PKG_VERSION")),
+                "filename must carry the crate version: {name}"
+            );
+            #[cfg(windows)]
+            assert!(name.ends_with(".exe"), "Windows filename needs .exe: {name}");
+            #[cfg(not(windows))]
+            assert!(!name.contains(".exe"), "Unix filename must not have .exe: {name}");
+        }
+
+        #[test]
+        fn extract_helper_blob_writes_and_is_idempotent() {
+            // Use a per-test tempdir so parallel tests don't race on
+            // the shared `helper_cache_dir()`. The high-level
+            // `extract_helper_blob()` wrapper is exercised separately
+            // by the smoke test below.
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let path = tmp.path().join("helper-bin");
+            let blob: &[u8] = b"#!/bin/sh\necho stub helper bytes\n";
+            let p1 = extract_helper_blob_to(&path, blob).expect("first extract");
+            assert!(p1.exists(), "extracted file should exist at {p1:?}");
+            let read1 = std::fs::read(&p1).expect("read back");
+            assert_eq!(read1, blob, "extracted bytes must match input");
+
+            // Second extract with identical bytes is a no-op (hash
+            // matches), returns the same path.
+            let p2 = extract_helper_blob_to(&path, blob).expect("second extract");
+            assert_eq!(p1, p2, "idempotent re-extract should return same path");
+
+            // Third extract with DIFFERENT bytes should rewrite.
+            let blob2: &[u8] = b"#!/bin/sh\necho different stub\n";
+            let p3 = extract_helper_blob_to(&path, blob2).expect("third extract");
+            assert_eq!(p1, p3);
+            let read3 = std::fs::read(&p3).expect("read back v2");
+            assert_eq!(read3, blob2, "rewrite must replace contents");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn extract_helper_blob_sets_executable_bit_on_unix() {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let path = tmp.path().join("helper-bin");
+            let blob: &[u8] = b"#!/bin/sh\nexit 0\n";
+            let p = extract_helper_blob_to(&path, blob).expect("extract");
+            let mode = std::fs::metadata(&p).expect("stat").permissions().mode();
+            // Owner exec bit must be set.
+            assert_ne!(mode & 0o100, 0, "owner exec bit missing: mode=0o{:o}", mode);
+        }
+
+        #[test]
+        fn extract_helper_blob_smoke_test_against_real_cache_dir() {
+            // Exercise the wrapper that targets the actual cache
+            // directory once, to keep the cache-path resolution path
+            // in test coverage. Uses a distinctive blob so a
+            // concurrent test sharing the same path (shouldn't
+            // happen — only one test calls this) would be diagnosable.
+            let blob: &[u8] = b"smoke-test-distinctive-blob-marker\n";
+            let p = extract_helper_blob(blob).expect("smoke extract");
+            assert!(p.exists());
+            let read_back = std::fs::read(&p).expect("read");
+            assert_eq!(read_back, blob);
+            // Cleanup so we don't pollute the user's cache dir long-term.
+            let _ = std::fs::remove_file(&p);
+        }
     }
 }

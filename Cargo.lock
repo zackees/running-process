@@ -1335,6 +1335,11 @@ dependencies = [
 [[package]]
 name = "running-process-observer"
 version = "4.5.7"
+dependencies = [
+ "blake3",
+ "dirs",
+ "tempfile",
+]
 
 [[package]]
 name = "running-process-py"
