@@ -28,15 +28,26 @@ default = []
 # Opt-in feature flag for the embed-and-extract machinery (slice 2 of
 # #551). When `off`, the crate compiles to an empty stub — consumers
 # don't pay the binary-size cost or expose any sidecar symbols.
-# When `on`, the helper binary is `include_bytes!`-embedded into the
-# library so it can be extracted at runtime.
-embed-helper = []
+# When `on`, the cache + extract functions (`helper_cache_dir`,
+# `extract_helper_blob`) are exposed and the dependencies on `dirs`
+# + `blake3` come along. Slice 2b will wire `include_bytes!` of the
+# actually-built helper binary; today the function is generic over
+# the blob bytes so the build-dep chain can be deferred without
+# changing the API.
+embed-helper = ["dep:dirs", "dep:blake3"]
 
 [dependencies]
-# Slice 1 holds dependencies to the bare minimum so the scaffold lands
-# without dragging in transitive deps. Slice 2 adds `dirs` for cache
-# path discovery, slice 6 adds `retour` for Windows function detours,
-# etc. — each slice gates its own deps.
+# Slice 2 adds the cache + extract machinery dependencies, both gated
+# behind the off-by-default `embed-helper` feature so consumers that
+# don't opt in pay zero binary-size + zero static-AV-surface cost.
+dirs = { version = "6", optional = true }
+blake3 = { version = "1", optional = true }
+
+[dev-dependencies]
+# `tempfile` for tests that exercise the cache-extract machinery
+# against per-test directories instead of the shared
+# `helper_cache_dir()` (which would race across parallel tests).
+tempfile = "3"
 
 [lints]
 workspace = true
