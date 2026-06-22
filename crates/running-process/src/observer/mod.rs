@@ -48,6 +48,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod cmdline;
 pub use cmdline::read_process_cmdline;
 
+#[cfg(target_os = "linux")]
+pub(crate) mod descendants_linux;
+
 /// Scope at which observation is negotiated.
 ///
 /// `running-process` exposes two distinct observation tiers because the
@@ -380,9 +383,9 @@ fn detect_process_backend(scope: TraceScope) -> (CapabilitySupport, &'static str
             #[cfg(target_os = "linux")]
             {
                 (
-                    CapabilitySupport::Unavailable,
-                    "subreaper-pidfd",
-                    "#539 slice 5: Linux PR_SET_CHILD_SUBREAPER + pidfd descendant backend not yet implemented",
+                    CapabilitySupport::Supported,
+                    "subreaper-proc-poll",
+                    "Linux PR_SET_CHILD_SUBREAPER + /proc descendant polling (#539 slice 5)",
                 )
             }
             #[cfg(target_os = "windows")]
