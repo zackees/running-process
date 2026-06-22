@@ -99,28 +99,16 @@ fn which(name: &str) -> Option<PathBuf> {
     None
 }
 
-// Slice 7c work-in-progress: the test asserts that the slice 6b
-// detour fires on a real `kernel32!CreateFileW` call (made by the
-// `testbin-createfilew-probe` fixture). Initial run hangs — the
-// install-thread-start sentinel arrives (slice 7b's deferred-
-// install worker thread is running), but the
-// `RPO_HOOK file-open path=…<probe>` line never appears within the
-// 10-second deadline.
-//
-// Hypothesis: retour's iced-x86 prologue disassembler or
-// VirtualProtect step takes longer than expected inside the
-// worker thread, or the install completes but our emission's
-// WriteFile from the detour body is itself being intercepted in
-// a way that loses the line. Needs targeted diagnostics
-// (per-detour install timing, install-thread-done sentinel
-// arrival check, raw byte verification of the patched kernel32
-// prologue) — out of scope for the umbrella loop.
-//
-// The fixture binary and the test scaffolding ship anyway so the
-// debug surface is ready for a follow-up. Removing the
-// `#[ignore]` is the final step of that follow-up.
+// Slice 7c (resolved): the slice 6b detour fires correctly on
+// `kernel32!CreateFileW`. The earlier hang was a self-inflicted
+// assertion bug — the interposer formats paths via `{:?}` which
+// debug-escapes backslashes, so `contains(probe_path)` against
+// the raw path never matched and the 10-second deadline ran to
+// completion. Fix: assert on the unambiguous tail substring
+// `probe.txt` instead, and use the same substring as the
+// deadline-poll exit condition so the test exits early on
+// success.
 #[test]
-#[ignore = "FIXME(#551): slice 7c — retour install completes but probe-path RPO_HOOK never arrives; needs per-detour diagnostics"]
 fn interposer_dll_fires_rpo_hook_after_inject() {
     let dll = build_and_locate_interposer_dll();
 
@@ -195,16 +183,18 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
         }
     });
 
-    // Wait until we observe the probe path in an `RPO_HOOK` line
-    // (slice 7c assertion) OR the deadline hits. Polling Mutex is
-    // fine — the contention window is sub-microsecond and we
-    // sleep 50 ms between polls.
-    let probe_marker_for_wait = probe_path.display().to_string();
+    // Wait until we observe a `RPO_HOOK file-open` line for our
+    // probe file OR the deadline hits. The interposer formats paths
+    // via `{:?}` which doubles backslashes, so we can't match on
+    // the raw probe path. Match on the unambiguous tail substring
+    // `file-open path=` + `probe.txt` instead.
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if stderr_text
             .lock()
-            .map(|s| s.contains("RPO_HOOK") && s.contains(&probe_marker_for_wait))
+            .map(|s| {
+                s.contains("RPO_HOOK file-open") && s.contains("probe.txt")
+            })
             .unwrap_or(false)
         {
             break;
@@ -235,13 +225,18 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
     // The testbin-createfilew-probe fixture calls
     // kernel32!CreateFileW directly with our probe path, so the
     // slice 6b detour fires and produces an `RPO_HOOK file-open
-    // path=<probe_path> ...` line. We assert the probe path
-    // appears verbatim — proves the detour intercepts real file
+    // path=...probe.txt... ...` line. We assert both the
+    // `file-open` event kind and the unambiguous `probe.txt`
+    // basename appear — proves the detour intercepts real file
     // APIs (not just the install-thread diagnostic sentinels).
-    let probe_marker = probe_path.display().to_string();
+    //
+    // We don't match on the full probe path because the interposer
+    // formats via `{:?}` which doubles backslashes. The basename
+    // alone is unambiguous since the fixture only ever opens that
+    // file.
     assert!(
-        captured.contains(&probe_marker),
-        "expected `RPO_HOOK file-open path=...{probe_marker}` after \
+        captured.contains("RPO_HOOK file-open") && captured.contains("probe.txt"),
+        "expected `RPO_HOOK file-open path=...probe.txt...` after \
          the detoured CreateFileW call; got: {captured:?}"
     );
 }
