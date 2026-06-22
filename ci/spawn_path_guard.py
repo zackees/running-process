@@ -75,6 +75,15 @@ ALLOWED_RUST_COMMAND_NEW = {
     # would break the test's killpg-based containment on macOS).
     Path("testbins/src/bin/spawner.rs"),
     Path("testbins/src/bin/dies_after_spawn.rs"),
+    # #551 slice 6e: inject_via_env takes a `&mut Command` from the
+    # caller and sets the LD_PRELOAD/DYLD_INSERT_LIBRARIES env var
+    # on it before they spawn. The file itself never constructs a
+    # Command — the lint trips on a doc-comment example (`Command::
+    # new("my-target")` in the `///` rustdoc usage block) and on
+    # inline `#[cfg(test)] mod tests` fixtures that construct
+    # `/bin/true` for env-setting smoke tests. No production spawn
+    # path runs through this module.
+    Path("crates/running-process-observer/src/inject_unix.rs"),
 }
 
 ALLOWED_RUST_SPAWN = {
@@ -159,6 +168,9 @@ ALLOWED_RUST_SPAWN = {
     # because of the setpgid-vs-killpg interaction the containment test
     # relies on).
     Path("testbins/src/bin/spawner.rs"),
+    # #551 slice 6e: see comment in ALLOWED_RUST_COMMAND_NEW. The
+    # `.spawn()` hit is the rustdoc usage example, not production.
+    Path("crates/running-process-observer/src/inject_unix.rs"),
 }
 
 ALLOWED_PORTABLE_PTY = {
