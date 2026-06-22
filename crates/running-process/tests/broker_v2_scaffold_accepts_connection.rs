@@ -117,7 +117,20 @@ fn binary_binds_pipe_accepts_connection_and_exits() {
             Ok(_) => {
                 all_stdout.push_str(&line);
                 if let Some(rest) = line.strip_prefix("running-process-broker-v2 bound at ") {
-                    socket_path = Some(rest.trim_end().to_string());
+                    // The full line is
+                    //   `running-process-broker-v2 bound at <path> (program=<...>, mode=<...>)`
+                    // — strip the trailing ` (program=..., mode=...)` so the
+                    // captured value is just the socket path. Without this,
+                    // the full suffix gets concatenated onto the "path" and
+                    // pushes its length past Linux's `sun_path` 108-byte
+                    // limit, surfacing as a misleading "exceeds capacity of
+                    // sun_path" error from `Stream::connect` later.
+                    let rest = rest.trim_end();
+                    let path_only = rest
+                        .rsplit_once(" (")
+                        .map(|(p, _)| p)
+                        .unwrap_or(rest);
+                    socket_path = Some(path_only.to_string());
                     break;
                 }
             }
