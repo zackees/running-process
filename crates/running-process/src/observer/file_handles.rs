@@ -81,13 +81,37 @@ mod linux_impl {
 
 #[cfg(target_os = "macos")]
 mod macos_impl {
-    // libc 0.2 exposes `proc_pidinfo` / `proc_pidfdinfo` and the
-    // `proc_fdinfo` / `vnode_fdinfowithpath` structs on macOS but
-    // does NOT export the integer flavor constants — declare them
-    // inline from `<sys/proc_info.h>`. ABI-stable.
+    // libc 0.2 exposes `proc_pidinfo` / `proc_pidfdinfo` on macOS but
+    // does NOT export `vnode_fdinfowithpath` / `proc_fdinfo` /
+    // PROC_PIDLISTFDS / PROC_PIDFDVNODEPATHINFO. Declare them inline
+    // from `<sys/proc_info.h>` — layouts and values have been
+    // ABI-stable since OS X 10.5.
     const PROC_PIDLISTFDS: libc::c_int = 1;
     const PROC_PIDFDVNODEPATHINFO: libc::c_int = 2;
     const PROX_FDTYPE_VNODE: u32 = 1;
+    /// `MAXPATHLEN` from `<sys/syslimits.h>`.
+    const MAXPATHLEN: usize = 1024;
+
+    /// `struct proc_fdinfo { int32_t proc_fd; uint32_t proc_fdtype; }`.
+    /// 8 bytes; size of array entry returned by `proc_pidinfo(PROC_PIDLISTFDS)`.
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct ProcFdInfo {
+        proc_fd: i32,
+        proc_fdtype: u32,
+    }
+
+    /// Opaque buffer matching `vnode_fdinfowithpath` (24 byte
+    /// `proc_fileinfo` header + 152 byte `vnode_info` + 1024 byte
+    /// `vip_path` = 1200 bytes total). We only read `vip_path`,
+    /// which lives at offset 24 + 152 = 176.
+    const VNODE_FDINFOWITHPATH_SIZE: usize = 1200;
+    const VIP_PATH_OFFSET: usize = 176;
+
+    #[repr(C)]
+    struct VnodeFdInfoWithPath {
+        _opaque: [u8; VNODE_FDINFOWITHPATH_SIZE],
+    }
 
     pub(super) fn read_process_file_handles(pid: u32) -> std::io::Result<Vec<String>> {
         if pid == 0 {
@@ -110,9 +134,9 @@ mod macos_impl {
         if size <= 0 {
             return Err(std::io::Error::last_os_error());
         }
-        let entry_size = std::mem::size_of::<libc::proc_fdinfo>();
+        let entry_size = std::mem::size_of::<ProcFdInfo>();
         let count = (size as usize) / entry_size;
-        let mut fds: Vec<libc::proc_fdinfo> = vec![unsafe { std::mem::zeroed() }; count];
+        let mut fds: Vec<ProcFdInfo> = vec![ProcFdInfo { proc_fd: 0, proc_fdtype: 0 }; count];
         let written = unsafe {
             libc::proc_pidinfo(
                 pid as libc::c_int,
@@ -136,28 +160,21 @@ mod macos_impl {
             if fd.proc_fdtype != PROX_FDTYPE_VNODE {
                 continue;
             }
-            let mut info: libc::vnode_fdinfowithpath = unsafe { std::mem::zeroed() };
+            let mut info: VnodeFdInfoWithPath = unsafe { std::mem::zeroed() };
             let n = unsafe {
                 libc::proc_pidfdinfo(
                     pid as libc::c_int,
                     fd.proc_fd,
                     PROC_PIDFDVNODEPATHINFO,
-                    &mut info as *mut libc::vnode_fdinfowithpath as *mut libc::c_void,
-                    std::mem::size_of::<libc::vnode_fdinfowithpath>() as libc::c_int,
+                    &mut info as *mut VnodeFdInfoWithPath as *mut libc::c_void,
+                    std::mem::size_of::<VnodeFdInfoWithPath>() as libc::c_int,
                 )
             };
             if n <= 0 {
                 // fd closed between listfds and fdinfo — skip the race.
                 continue;
             }
-            // `pvip.vip_path` is `c_char[MAXPATHLEN]` (1024). Find the
-            // NUL terminator and decode lossy UTF-8.
-            let path_bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    info.pvip.vip_path.as_ptr() as *const u8,
-                    info.pvip.vip_path.len(),
-                )
-            };
+            let path_bytes = &info._opaque[VIP_PATH_OFFSET..VIP_PATH_OFFSET + MAXPATHLEN];
             let nul = path_bytes
                 .iter()
                 .position(|&b| b == 0)
