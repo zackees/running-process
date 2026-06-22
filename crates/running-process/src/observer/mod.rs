@@ -795,6 +795,11 @@ impl ObserverEmitter {
     /// [`DescendantExited`](ObserverEventKind::DescendantExited) on this
     /// channel. Returning `None` when Process isn't requested keeps the
     /// off-by-default path allocation-free.
+    //
+    // `dead_code`-allowed because only the Windows backend (slice 2)
+    // currently consumes this; the Linux subreaper-pidfd backend (slice 5)
+    // and macOS kqueue-evfilt-proc backend (slice 7) will plug in next.
+    #[allow(dead_code)]
     pub(crate) fn descendant_sink(&self) -> Option<Sender<ObserverEvent>> {
         if self.config.observes(EventCategory::Process) {
             Some(self.tx.clone())
