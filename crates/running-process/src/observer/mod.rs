@@ -45,6 +45,9 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod cmdline;
+pub use cmdline::read_process_cmdline;
+
 /// Scope at which observation is negotiated.
 ///
 /// `running-process` exposes two distinct observation tiers because the
