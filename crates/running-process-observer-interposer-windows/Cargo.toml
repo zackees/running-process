@@ -21,7 +21,15 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[target.'cfg(target_os = "windows")'.dependencies]
+# Both deps are gated on `target_os = "windows"` AND `target_arch =
+# "x86_64"`: retour's prologue disassembler (iced-x86) doesn't
+# support ARM64, so retour-rs is x86-only on Windows. On Windows
+# ARM64 the lib.rs body falls through to the inert stub (the
+# `#![cfg(...)]` gate at the top of lib.rs also includes the
+# x86_64 requirement). We still want the file to be a valid
+# workspace member on every Windows arch so `cargo check` /
+# `cargo build` succeed on ARM CI runners.
+[target.'cfg(all(target_os = "windows", target_arch = "x86_64"))'.dependencies]
 # `retour` (formerly `detour-rs`) implements inline trampoline-based
 # function detours: it overwrites the prologue of the target function
 # with a jump to our hook, and stashes the original prologue in an
