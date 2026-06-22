@@ -81,40 +81,13 @@ mod linux_impl {
 
 #[cfg(target_os = "macos")]
 mod macos_impl {
-    // libc 0.2 exposes `proc_pidinfo` and `proc_pidfdinfo` on macOS
-    // but does NOT export the integer flavor constants. Mirror the
-    // pattern in `descendants_macos`: declare them inline from
-    // `<sys/proc_info.h>`. ABI-stable.
+    // libc 0.2 exposes `proc_pidinfo` / `proc_pidfdinfo` and the
+    // `proc_fdinfo` / `vnode_fdinfowithpath` structs on macOS but
+    // does NOT export the integer flavor constants — declare them
+    // inline from `<sys/proc_info.h>`. ABI-stable.
     const PROC_PIDLISTFDS: libc::c_int = 1;
     const PROC_PIDFDVNODEPATHINFO: libc::c_int = 2;
     const PROX_FDTYPE_VNODE: u32 = 1;
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct ProcFdInfo {
-        proc_fd: i32,
-        proc_fdtype: u32,
-    }
-
-    #[repr(C)]
-    struct VnodeInfoPath {
-        // The kernel writes a large `vnode_info` struct followed by a
-        // `vnode_info_path` struct that contains a 1024-byte
-        // `vip_path` field. We don't care about most of it; the
-        // POSIX path is all we surface. To avoid binding the full
-        // pile of structs (with their fid_t / fsid_t members that
-        // shift between OS versions), allocate a generous opaque
-        // byte buffer and pull `vip_path` out at its documented
-        // offset.
-        _opaque: [u8; VNODE_INFO_PATH_SIZE],
-    }
-    const VNODE_INFO_PATH_SIZE: usize = 2352;
-    // From `proc_info.h`: `vnode_info` is 152 bytes (the leading part
-    // of vnode_info_path), then `vip_path[1024]` starts right after.
-    // The 152-byte figure has been stable since 10.5; keeping a small
-    // safety margin we sniff at offset 152..152+1024.
-    const VIP_PATH_OFFSET: usize = 152;
-    const VIP_PATH_LEN: usize = 1024;
 
     pub(super) fn read_process_file_handles(pid: u32) -> std::io::Result<Vec<String>> {
         if pid == 0 {
@@ -137,9 +110,9 @@ mod macos_impl {
         if size <= 0 {
             return Err(std::io::Error::last_os_error());
         }
-        let entry_size = std::mem::size_of::<ProcFdInfo>();
+        let entry_size = std::mem::size_of::<libc::proc_fdinfo>();
         let count = (size as usize) / entry_size;
-        let mut fds: Vec<ProcFdInfo> = vec![ProcFdInfo { proc_fd: 0, proc_fdtype: 0 }; count];
+        let mut fds: Vec<libc::proc_fdinfo> = vec![unsafe { std::mem::zeroed() }; count];
         let written = unsafe {
             libc::proc_pidinfo(
                 pid as libc::c_int,
@@ -163,22 +136,32 @@ mod macos_impl {
             if fd.proc_fdtype != PROX_FDTYPE_VNODE {
                 continue;
             }
-            let mut buf: VnodeInfoPath = unsafe { std::mem::zeroed() };
+            let mut info: libc::vnode_fdinfowithpath = unsafe { std::mem::zeroed() };
             let n = unsafe {
                 libc::proc_pidfdinfo(
                     pid as libc::c_int,
                     fd.proc_fd,
                     PROC_PIDFDVNODEPATHINFO,
-                    &mut buf as *mut VnodeInfoPath as *mut libc::c_void,
-                    std::mem::size_of::<VnodeInfoPath>() as libc::c_int,
+                    &mut info as *mut libc::vnode_fdinfowithpath as *mut libc::c_void,
+                    std::mem::size_of::<libc::vnode_fdinfowithpath>() as libc::c_int,
                 )
             };
             if n <= 0 {
                 // fd closed between listfds and fdinfo — skip the race.
                 continue;
             }
-            let path_bytes = &buf._opaque[VIP_PATH_OFFSET..VIP_PATH_OFFSET + VIP_PATH_LEN];
-            let nul = path_bytes.iter().position(|&b| b == 0).unwrap_or(path_bytes.len());
+            // `pvip.vip_path` is `c_char[MAXPATHLEN]` (1024). Find the
+            // NUL terminator and decode lossy UTF-8.
+            let path_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    info.pvip.vip_path.as_ptr() as *const u8,
+                    info.pvip.vip_path.len(),
+                )
+            };
+            let nul = path_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(path_bytes.len());
             if nul == 0 {
                 continue;
             }
