@@ -68,13 +68,16 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use retour::RawDetour;
-use windows_sys::Win32::Foundation::{BOOL, FALSE, HANDLE, INVALID_HANDLE_VALUE, TRUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, BOOL, FALSE, HANDLE, INVALID_HANDLE_VALUE, TRUE,
+};
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::SystemServices::{
     DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH,
 };
+use windows_sys::Win32::System::Threading::CreateThread;
 
 // ── Function-pointer types ──
 
@@ -509,6 +512,20 @@ unsafe fn install_detours() {
     );
 }
 
+/// `CreateThread`-compatible worker entrypoint that drives
+/// `install_detours()` off the loader lock. Returns 0 on completion
+/// (the return code is captured by `GetExitCodeThread` but we
+/// don't read it).
+unsafe extern "system" fn install_thread_main(_param: *mut core::ffi::c_void) -> u32 {
+    // Diagnostic line so the slice 7 integration test can confirm
+    // the worker thread actually ran. Written via the un-detoured
+    // WriteFile (the trampoline isn't stashed yet at this point).
+    emit_line("RPO_HOOK install-thread-start\n");
+    install_detours();
+    emit_line("RPO_HOOK install-thread-done\n");
+    0
+}
+
 /// DLL entry point. Windows calls this when the DLL is loaded into a
 /// process (via `LoadLibrary` from the sidecar injector) and when
 /// it's unloaded.
@@ -516,9 +533,19 @@ unsafe fn install_detours() {
 /// # Safety
 ///
 /// Called by the Windows loader with the documented `DllMain`
-/// signature. retour-rs writes raw bytes via `VirtualProtect` +
-/// memcpy against `GetCurrentProcess()` without acquiring any
-/// loader resources, so detour installation is loader-lock-safe.
+/// signature. **Critical**: DllMain runs under the Windows loader
+/// lock. retour-rs's `RawDetour::new` disassembles the target's
+/// prologue (iced-x86) and calls `VirtualProtect`; both can
+/// re-enter the loader lock if the target function lives in a
+/// module that's still being initialized. Empirically this hangs
+/// when injecting into `cmd.exe` (the slice 7a integration test
+/// surfaced it).
+///
+/// Mitigation: spawn a worker thread that does the install + return
+/// TRUE immediately. The worker runs *after* DllMain returns, so
+/// it's outside the loader lock. The injector side has its own
+/// post-inject grace period so detours have time to install before
+/// the test exercises them.
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
     _hinst: *mut core::ffi::c_void,
@@ -527,7 +554,25 @@ pub unsafe extern "system" fn DllMain(
 ) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
-            install_detours();
+            // Slice 7b: defer detour install to a worker thread.
+            // Failing to spawn the worker is a no-op — the host
+            // process keeps running, just without our hooks
+            // (same failure mode as a retour install error).
+            let handle = CreateThread(
+                core::ptr::null(),
+                0,
+                Some(install_thread_main),
+                core::ptr::null(),
+                0,
+                core::ptr::null_mut(),
+            );
+            if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                // We don't need to wait on it from DllMain (in
+                // fact, doing so would re-introduce the deadlock).
+                // The thread runs on its own; close the handle so
+                // it doesn't leak.
+                CloseHandle(handle);
+            }
         }
         DLL_PROCESS_DETACH => {
             // Detours are leaked in install_detours so they stay

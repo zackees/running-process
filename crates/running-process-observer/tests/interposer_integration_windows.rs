@@ -99,49 +99,38 @@ fn which(name: &str) -> Option<PathBuf> {
     None
 }
 
-// FIXME: This integration test surfaces a real bug. Injecting the
-// interposer DLL into `cmd.exe` hangs the remote `LoadLibraryW`
-// thread — `inject_into_pid` never returns. The injection vehicle
-// itself works (slice 6d's `inject_smoke_test` proved that against
-// the system `version.dll`), so the hang is inside our DllMain's
-// `install_detours()` call: most likely `retour::RawDetour::new`
-// re-entering the loader lock that `LoadLibraryW` holds while
-// calling DllMain. The standard mitigation is to defer detour
-// installation to a worker thread that DllMain spawns and returns
-// from. Filed as a sub-task of #551 — see ledger comment.
-//
-// The test stays in the source tree as #[ignore]'d so the fix
-// lands together with the un-ignore. The build-and-locate path
-// is exercised every time the file compiles, so the cargo-build
-// orchestration half is regression-proof even while the runtime
-// half waits on the DllMain rework.
+// Slice 7b: DllMain now defers the retour install to a worker
+// thread spawned via CreateThread. This unblocks the test that
+// previously hung when injecting into cmd.exe (the loader-lock
+// re-entrance issue is documented in the DLL's DllMain Safety
+// docs). The test gives the worker a short grace period after
+// inject_into_pid returns before exercising any detoured API.
 #[test]
-#[ignore = "FIXME(#551): DllMain detour install hangs inside cmd.exe; needs deferred-install worker thread"]
 fn interposer_dll_fires_rpo_hook_after_inject() {
     let dll = build_and_locate_interposer_dll();
 
-    // Probe file the child will `type`-open after the inject. Use
-    // CARGO_MANIFEST_DIR to anchor at a path that's stable across
-    // working-directory choices.
-    let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-    let probe_path = std::path::Path::new(&manifest_dir).join("Cargo.toml");
-    assert!(
-        probe_path.exists(),
-        "test fixture file missing: {probe_path:?}"
-    );
+    // Probe file the child will `type`-open after the inject.
+    // Write our own tempfile with a short bareword name and run
+    // cmd with cwd set to the tempdir. That sidesteps cmd's
+    // path-with-quotes parsing (and Rust's argv-to-cmdline
+    // escaping pass) entirely.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let probe_name = "probe.txt";
+    let probe_path = tmp.path().join(probe_name);
+    std::fs::write(&probe_path, b"hello from slice 7\n").expect("write probe");
 
-    // Single-string cmd /c argument so cmd parses the &-chain
-    // correctly. The ping gives the inject 2+ seconds to land
-    // before the `type` triggers CreateFileW under our detour.
+    // The ping gives the inject worker thread 2+ seconds to
+    // install detours before the `type` triggers CreateFileW
+    // under them.
     let cmd_line = format!(
-        "ping -n 3 127.0.0.1 > nul & type \"{}\"",
-        probe_path.display()
+        "ping -n 3 127.0.0.1 > nul & type {}",
+        probe_name
     );
 
     let mut child = Command::new("cmd")
         .arg("/c")
         .arg(&cmd_line)
+        .current_dir(tmp.path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -154,6 +143,14 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
     std::thread::sleep(Duration::from_millis(200));
 
     let inject_result = inject_into_pid(pid, &dll);
+
+    // Slice 7b: DllMain returns immediately, then a worker thread
+    // installs the retour detours off the loader lock. Give that
+    // thread time to finish before we expect any RPO_HOOK output.
+    // 200 ms is comfortably more than the empirical worst case
+    // (retour install measures ~30 ms per detour × 5 detours, with
+    // VirtualProtect overhead).
+    std::thread::sleep(Duration::from_millis(200));
 
     // Drain stderr on a background thread so the main thread can
     // enforce a wall-clock deadline. `Child::stderr.read()` is
