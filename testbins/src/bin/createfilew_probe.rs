@@ -28,12 +28,28 @@
 //! - Closes the handle if it's valid, exits 0 either way (the
 //!   test only cares that the call went through the detour).
 
-#![cfg(target_os = "windows")]
+// Non-Windows stub: the testbin is only meaningful on Windows (it
+// drives `kernel32!CreateFileW`), but cargo still requires a `main`
+// fn on every target so the workspace check + lint passes on
+// Linux + macOS. The stub prints a message and exits non-zero so a
+// confused caller learns the binary is a no-op outside Windows.
+#[cfg(not(target_os = "windows"))]
+fn main() {
+    eprintln!(
+        "testbin-createfilew-probe is a Windows-only fixture for #551 slice 7c; \
+         this build is a no-op stub."
+    );
+    std::process::exit(2);
+}
 
+#[cfg(target_os = "windows")]
 use std::ffi::OsStr;
+#[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
