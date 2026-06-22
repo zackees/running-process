@@ -1333,6 +1333,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "running-process-observer"
+version = "4.5.7"
+
+[[package]]
 name = "running-process-py"
 version = "4.5.7"
 dependencies = [

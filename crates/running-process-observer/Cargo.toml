@@ -1,0 +1,42 @@
+[package]
+name = "running-process-observer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Sidecar / file-hook tier for running-process (#539 follow-up #551)"
+publish = false
+
+# Slice 1 scaffold: the helper binary is an inert placeholder that prints
+# its version banner. Real injection vehicles (DLL/dylib + retour-rs /
+# LD_PRELOAD / DYLD_INSERT_LIBRARIES) land in slices 4–6 of #551.
+#
+# CRITICAL: this crate is the ONLY place injection symbols may live. The
+# main `running-process` crate must stay clean of `CreateRemoteThread`,
+# `dlopen` of interposer libraries, etc. — static AV exposure mitigation
+# per the original #539 design. Enforced via `objdump`/`dumpbin` assertion
+# in PR 2 (embed-and-extract machinery).
+[[bin]]
+name = "running-process-observer-helper"
+path = "src/bin/helper.rs"
+
+[features]
+default = []
+
+# Opt-in feature flag for the embed-and-extract machinery (slice 2 of
+# #551). When `off`, the crate compiles to an empty stub — consumers
+# don't pay the binary-size cost or expose any sidecar symbols.
+# When `on`, the helper binary is `include_bytes!`-embedded into the
+# library so it can be extracted at runtime.
+embed-helper = []
+
+[dependencies]
+# Slice 1 holds dependencies to the bare minimum so the scaffold lands
+# without dragging in transitive deps. Slice 2 adds `dirs` for cache
+# path discovery, slice 6 adds `retour` for Windows function detours,
+# etc. — each slice gates its own deps.
+
+[lints]
+workspace = true
