@@ -11,7 +11,7 @@ publish = false
 
 # cdylib so the resulting `running_process_observer_interposer_windows.dll`
 # can be `LoadLibrary`'d into target processes by the sidecar injector
-# (slice 6b's pattern: suspend → CreateRemoteThread(LoadLibraryW) →
+# (slice 6d's pattern: suspend → CreateRemoteThread(LoadLibraryW) →
 # resume; see #551 design body for the AV exposure mitigation
 # rationale).
 #
@@ -22,7 +22,31 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
-winapi = { version = "0.3", features = ["minwindef", "winnt"] }
+# `retour` (formerly `detour-rs`) implements inline trampoline-based
+# function detours: it overwrites the prologue of the target function
+# with a jump to our hook, and stashes the original prologue in an
+# allocated trampoline so the hook can call it. Alpha release is
+# the only published version — see https://crates.io/crates/retour.
+#
+# We use the default-features-only build (no `static-detour`):
+# `static-detour` pulls in the `nightly` feature, which uses
+# `feature(unboxed_closures, tuple_trait)` and only compiles on
+# nightly rust. The `RawDetour` API in the default build does the
+# same job — give it a target fn pointer + hook fn pointer, it
+# returns a trampoline you transmute back to the original signature
+# to call.
+retour = { version = "0.4.0-alpha.4", default-features = false }
+# `windows-sys` for FFI type definitions used by detoured signatures
+# (HANDLE, LPCWSTR, etc.) and the GetModuleHandleW/GetProcAddress
+# pair used to look up `CreateFileW` etc. in kernel32.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+] }
 
 [lints]
 workspace = true
