@@ -385,9 +385,9 @@ fn detect_process_backend(scope: TraceScope) -> (CapabilitySupport, &'static str
             #[cfg(target_os = "windows")]
             {
                 (
-                    CapabilitySupport::Unavailable,
+                    CapabilitySupport::Supported,
                     "job-object-iocp",
-                    "#539 slice 2: Windows Job Object IOCP descendant backend not yet implemented",
+                    "Windows Job Object IOCP descendant lifecycle (#539 slice 2)",
                 )
             }
             #[cfg(target_os = "macos")]
@@ -583,6 +583,22 @@ pub enum ObserverEventKind {
         /// Exit code of the child.
         exit_code: i32,
     },
+    /// A descendant of the spawned process (i.e. a child of a child) was
+    /// created. Emitted on the [`EventCategory::Process`] category by
+    /// per-OS LaunchedProcessTree backends (#539). The descendant PID is
+    /// carried by [`ObserverEvent::pid`].
+    ///
+    /// Unlike [`Started`](Self::Started), this carries no exit code on the
+    /// pair event because the no-admin descendant-lifecycle primitives
+    /// (Windows Job Object IOCP, Linux pidfd reap, macOS `EVFILT_PROC`)
+    /// surface PID-only notifications.
+    DescendantStarted,
+    /// A descendant process exited. Emitted on the
+    /// [`EventCategory::Process`] category by per-OS LaunchedProcessTree
+    /// backends (#539). The descendant PID is carried by
+    /// [`ObserverEvent::pid`]; the exit code is not surfaced — see
+    /// [`DescendantStarted`](Self::DescendantStarted) for rationale.
+    DescendantExited,
 }
 
 impl ObserverEventKind {
@@ -591,6 +607,8 @@ impl ObserverEventKind {
         match self {
             ObserverEventKind::Started => "started",
             ObserverEventKind::Exited { .. } => "exited",
+            ObserverEventKind::DescendantStarted => "descendant-started",
+            ObserverEventKind::DescendantExited => "descendant-exited",
         }
     }
 }
@@ -765,6 +783,29 @@ impl ObserverEmitter {
             ObserverEventKind::Exited { exit_code },
             pid,
         ));
+    }
+
+    /// Return a cloned sender for descendant lifecycle events if the config
+    /// observes [`EventCategory::Process`]; otherwise `None`.
+    ///
+    /// Per-OS LaunchedProcessTree backends (#539) take this `Sender` and run
+    /// a background pump (Windows Job Object IOCP, Linux pidfd reap, macOS
+    /// `EVFILT_PROC`) that fires
+    /// [`DescendantStarted`](ObserverEventKind::DescendantStarted) /
+    /// [`DescendantExited`](ObserverEventKind::DescendantExited) on this
+    /// channel. Returning `None` when Process isn't requested keeps the
+    /// off-by-default path allocation-free.
+    //
+    // `dead_code`-allowed because only the Windows backend (slice 2)
+    // currently consumes this; the Linux subreaper-pidfd backend (slice 5)
+    // and macOS kqueue-evfilt-proc backend (slice 7) will plug in next.
+    #[allow(dead_code)]
+    pub(crate) fn descendant_sink(&self) -> Option<Sender<ObserverEvent>> {
+        if self.config.observes(EventCategory::Process) {
+            Some(self.tx.clone())
+        } else {
+            None
+        }
     }
 }
 
