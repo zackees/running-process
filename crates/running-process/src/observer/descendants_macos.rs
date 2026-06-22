@@ -1,239 +1,270 @@
 //! #539 slice 7 — macOS descendant-lifecycle backend.
 //!
-//! No-admin macOS primitive: `kqueue` + `EVFILT_PROC` with
-//! `NOTE_TRACK`. The kernel automatically registers a paired kevent
-//! for each `fork(2)` of a tracked process; when the child appears,
-//! it surfaces as a kevent with `NOTE_CHILD` set and the child PID in
-//! `ident`. `NOTE_EXIT` events surface for each tracked descendant on
-//! exit. Unlike the Linux backend, this is fully event-driven — no
-//! polling.
+//! **History:** the first cut of this module used `kqueue` +
+//! `EVFILT_PROC` + `NOTE_TRACK`. Empirically on the macos-arm CI
+//! runner, NOTE_TRACK silently failed to emit `NOTE_CHILD` events
+//! for spawned descendants — a long-standing reliability issue with
+//! NOTE_TRACK on modern macOS that Apple has not addressed (the
+//! recommended replacement is Endpoint Security, which requires the
+//! `com.apple.developer.endpoint-security.client` entitlement and is
+//! out of scope for the no-admin LaunchedProcessTree tier). After
+//! the integration test failed twice with `got 0 (all: [])` despite
+//! synchronous registration before the spawn race window, we pivoted
+//! to the same polling shape Linux uses.
 //!
-//! Permission model: `NOTE_TRACK` uses the calling process's
-//! credentials; it works against any process the calling user owns
-//! (the LaunchedProcessTree scope by definition). No admin, no
-//! entitlements, no system extensions.
+//! **Current implementation:** snapshot every process on the system
+//! via `sysctl({CTL_KERN, KERN_PROC, KERN_PROC_ALL})` every 50 ms,
+//! build a parent → children map, BFS from the root PID, diff
+//! against the previous snapshot, and emit
+//! [`DescendantStarted`](crate::observer::ObserverEventKind::DescendantStarted)
+//! / [`DescendantExited`](crate::observer::ObserverEventKind::DescendantExited)
+//! on the consumer's [`ObserverSubscriber`].
 //!
-//! Failure modes:
+//! Tradeoffs vs. Endpoint Security:
 //!
-//! - **`NOTE_TRACKERR`**: the kernel ran out of bookkeeping space
-//!   when a tracked process forked. The auto-registration is dropped,
-//!   so descendants of that fork are not observed. We surface this as
-//!   a debug-level note (no panic, no error event) — the consumer
-//!   keeps receiving events for the surviving tracked subtree.
-//! - **Hardened-runtime targets**: a target compiled with
-//!   `com.apple.security.cs.disable-library-validation = false` and
-//!   no `com.apple.security.get-task-allow` entitlement may refuse
-//!   the implicit `task_for_pid` lookup `EVFILT_PROC` performs. Same
-//!   honesty caveat as `DYLD_INSERT_LIBRARIES` injection on macOS;
-//!   the consumer just sees zero descendant events for that subtree.
+//! - **No entitlement required.** Works against any process the
+//!   calling user owns.
+//! - **Polling-based**: short-lived descendants that spawn and exit
+//!   within the same 50 ms window may be missed. Same honesty caveat
+//!   as the Linux `/proc` poll.
+//! - **Per-snapshot cost**: one `sysctl()` walk of the full process
+//!   table. Typically a few hundred entries; cheap.
 
 #![cfg(target_os = "macos")]
 
-use std::ffi::c_void;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
 
-/// Enable observation for descendants of `root_pid`. **Registers
-/// kqueue + `NOTE_TRACK` synchronously** on the caller's thread —
-/// critical because `NOTE_TRACK` only fires `NOTE_CHILD` for
-/// *future* `fork(2)` calls. If we deferred registration to the
-/// pump thread, a fast-forking root (e.g. shell scripts that
-/// immediately spawn background jobs) could win the race and we'd
-/// miss every descendant. The drain loop runs on the pump thread.
-///
-/// On registration failure (root already gone, kernel rejected the
-/// kevent) this is a no-op — the consumer just receives no events.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Spawn the descendant-tracking pump thread for `root_pid`. Returns
+/// silently after spawning — the thread terminates when `root_pid`
+/// disappears from the global process table.
 pub(crate) fn spawn_pump(root_pid: u32, sink: Sender<ObserverEvent>) {
-    // SAFETY: `kqueue()` is a leaf syscall with no pointer arguments.
-    let kq = unsafe { libc::kqueue() };
-    if kq < 0 {
-        return;
-    }
-    if register_for_tracking(kq, root_pid).is_err() {
-        unsafe { libc::close(kq) };
-        return;
-    }
-    let kq_usize = kq as usize;
-    let spawn_result = std::thread::Builder::new()
+    let _ = std::thread::Builder::new()
         .name("rp-macos-descpump".to_string())
-        .spawn(move || drain_loop(kq_usize as i32, root_pid, sink));
-    if spawn_result.is_err() {
-        // Failed to launch the thread — close the kq we already
-        // opened so we don't leak the descriptor.
-        unsafe { libc::close(kq) };
-    }
+        .spawn(move || pump_loop(root_pid, sink));
 }
 
-fn drain_loop(kq: i32, root_pid: u32, sink: Sender<ObserverEvent>) {
-    // Defer kqueue cleanup so an early-return below still closes the
-    // fd. `Drop` impl would be heavier; an inline guard is simpler.
-    let _kq_guard = scopeguard(|| unsafe {
-        libc::close(kq);
-    });
-
-    let mut events: [libc::kevent; 32] = unsafe { std::mem::zeroed() };
+fn pump_loop(root_pid: u32, sink: Sender<ObserverEvent>) {
+    let mut known: HashSet<u32> = HashSet::new();
     loop {
-        // SAFETY: `kevent` with NULL changelist and a non-null,
-        // properly-sized eventlist is a documented no-op-on-add wait.
-        let n = unsafe {
-            libc::kevent(
-                kq,
-                std::ptr::null(),
-                0,
-                events.as_mut_ptr(),
-                events.len() as i32,
-                std::ptr::null(), // block indefinitely
-            )
-        };
-        if n < 0 {
-            // EINTR from a signal is benign; any other error we treat
-            // as terminal so the pump doesn't busy-loop.
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            break;
-        }
-        if n == 0 {
-            continue;
-        }
-        let mut root_exited = false;
-        for ev in &events[..n as usize] {
-            let pid = ev.ident as u32;
-            let fflags = ev.fflags;
-            // NOTE_CHILD: a tracked process forked, and `ev.ident`
-            // is the new child PID. The kernel has auto-registered
-            // the child for tracking with the same fflags.
-            if fflags & libc::NOTE_CHILD != 0 {
-                let _ = sink.send(ObserverEvent::new_now(
-                    EventCategory::Process,
-                    ObserverEventKind::DescendantStarted,
-                    pid,
-                ));
-                continue;
-            }
-            // NOTE_TRACKERR: kernel ran out of bookkeeping space.
-            // Drop on the floor — the consumer still receives events
-            // for the descendants we did successfully track.
-            if fflags & libc::NOTE_TRACKERR != 0 {
-                continue;
-            }
-            // NOTE_EXIT: a tracked descendant exited.
-            if fflags & libc::NOTE_EXIT != 0 {
-                if pid == root_pid {
-                    // Root exited: drain remaining events and exit
-                    // the loop. We do not synthesize exits for any
-                    // descendants the kernel didn't tell us about —
-                    // each descendant's own NOTE_EXIT will have
-                    // fired (or will fire) on its own kevent slot.
-                    root_exited = true;
-                    continue;
-                }
+        let all = list_all_processes();
+        if !all.iter().any(|&(pid, _)| pid == root_pid) {
+            // Root is gone — emit exits for any remaining tracked
+            // descendants and terminate. Mirrors the Linux pump's
+            // /proc-disappearance termination condition.
+            for &pid in &known {
                 let _ = sink.send(ObserverEvent::new_now(
                     EventCategory::Process,
                     ObserverEventKind::DescendantExited,
                     pid,
                 ));
             }
-        }
-        if root_exited {
             break;
         }
+        let current = descendants_of(root_pid, &all);
+        emit_diff(&known, &current, &sink);
+        known = current;
+        std::thread::sleep(POLL_INTERVAL);
     }
 }
 
-/// Register `pid` on the kqueue for fork+exec+exit tracking. Returns
-/// `Err` on registration failure (typically because the PID is
-/// already gone).
-fn register_for_tracking(kq: i32, pid: u32) -> std::io::Result<()> {
-    let mut change: libc::kevent = unsafe { std::mem::zeroed() };
-    change.ident = pid as libc::uintptr_t;
-    change.filter = libc::EVFILT_PROC;
-    change.flags = libc::EV_ADD | libc::EV_ENABLE;
-    change.fflags = libc::NOTE_EXIT | libc::NOTE_FORK | libc::NOTE_EXEC | libc::NOTE_TRACK;
-    change.data = 0;
-    change.udata = std::ptr::null_mut::<c_void>();
-    // SAFETY: changelist points to one well-initialized kevent;
-    // eventlist is NULL so the call only registers, doesn't fetch.
+/// Snapshot every process on the system, returning a `Vec<(pid, ppid)>`.
+fn list_all_processes() -> Vec<(u32, u32)> {
+    let mut mib: [libc::c_int; 3] = [
+        libc::CTL_KERN,
+        libc::KERN_PROC,
+        libc::KERN_PROC_ALL,
+    ];
+    // Size probe.
+    let mut size: libc::size_t = 0;
     let r = unsafe {
-        libc::kevent(
-            kq,
-            &change,
-            1,
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
             std::ptr::null_mut(),
             0,
-            std::ptr::null(),
         )
     };
-    if r < 0 {
-        return Err(std::io::Error::last_os_error());
+    if r != 0 || size == 0 {
+        return Vec::new();
     }
-    if change.flags & libc::EV_ERROR != 0 && change.data != 0 {
-        // kevent returns EV_ERROR in the changelist entry's `flags`
-        // with the errno in `data` for per-change failures (e.g.
-        // ESRCH for an already-dead PID).
-        return Err(std::io::Error::from_raw_os_error(change.data as i32));
+    let mut buf = vec![0u8; size];
+    let r = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if r != 0 {
+        return Vec::new();
     }
-    Ok(())
-}
+    buf.truncate(size);
 
-/// Minimal scope-guard to run a closure on drop. Inline instead of
-/// pulling in the `scopeguard` crate just for this one usage.
-fn scopeguard<F: FnOnce()>(f: F) -> ScopeGuard<F> {
-    ScopeGuard(Some(f))
-}
-
-struct ScopeGuard<F: FnOnce()>(Option<F>);
-
-impl<F: FnOnce()> Drop for ScopeGuard<F> {
-    fn drop(&mut self) {
-        if let Some(f) = self.0.take() {
-            f();
+    let entry_size = std::mem::size_of::<libc::kinfo_proc>();
+    if entry_size == 0 {
+        return Vec::new();
+    }
+    let mut result = Vec::with_capacity(buf.len() / entry_size);
+    for chunk in buf.chunks_exact(entry_size) {
+        // SAFETY: kinfo_proc is `#[repr(C)]` and packed identically
+        // to what the kernel wrote; reading a `kinfo_proc` out of an
+        // exactly-aligned chunk is well-defined.
+        let kp: libc::kinfo_proc = unsafe { std::ptr::read(chunk.as_ptr() as *const _) };
+        let pid = kp.kp_proc.p_pid as i64;
+        let ppid = kp.kp_eproc.e_ppid as i64;
+        if pid > 0 && ppid >= 0 {
+            result.push((pid as u32, ppid as u32));
         }
+    }
+    result
+}
+
+/// BFS the descendant subtree of `root_pid` given the full
+/// `(pid, ppid)` snapshot. Returns the set of every transitive
+/// descendant (the root itself is excluded).
+fn descendants_of(root_pid: u32, all: &[(u32, u32)]) -> HashSet<u32> {
+    let mut child_map: HashMap<u32, Vec<u32>> = HashMap::new();
+    for &(pid, ppid) in all {
+        child_map.entry(ppid).or_default().push(pid);
+    }
+    let mut result = HashSet::new();
+    let mut stack = vec![root_pid];
+    while let Some(pid) = stack.pop() {
+        if let Some(children) = child_map.get(&pid) {
+            for &c in children {
+                if result.insert(c) {
+                    stack.push(c);
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Emit DescendantStarted for `current \ prev` and DescendantExited
+/// for `prev \ current`. Send errors are ignored — a dropped
+/// subscriber must never crash the pump.
+fn emit_diff(
+    prev: &HashSet<u32>,
+    current: &HashSet<u32>,
+    sink: &Sender<ObserverEvent>,
+) {
+    for &new_pid in current.difference(prev) {
+        let _ = sink.send(ObserverEvent::new_now(
+            EventCategory::Process,
+            ObserverEventKind::DescendantStarted,
+            new_pid,
+        ));
+    }
+    for &gone_pid in prev.difference(current) {
+        let _ = sink.send(ObserverEvent::new_now(
+            EventCategory::Process,
+            ObserverEventKind::DescendantExited,
+            gone_pid,
+        ));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
 
     #[test]
-    fn register_for_tracking_nonexistent_pid_errors() {
-        // SAFETY: `kqueue()` returns a leaf fd.
-        let kq = unsafe { libc::kqueue() };
-        assert!(kq >= 0, "kqueue() must succeed");
-        let err = register_for_tracking(kq, 0x7FFF_FFFE)
-            .expect_err("nonexistent pid should fail registration");
-        // Either ESRCH (no such process) or EINVAL is acceptable —
-        // both signal the kernel rejected the registration.
-        assert!(
-            err.raw_os_error().is_some(),
-            "expected an OS-level errno, got: {err}"
+    fn emit_diff_fires_one_started_per_new_pid() {
+        let (tx, rx) = mpsc::channel();
+        let prev: HashSet<u32> = [10, 20].into_iter().collect();
+        let current: HashSet<u32> = [10, 20, 30, 40].into_iter().collect();
+        emit_diff(&prev, &current, &tx);
+        drop(tx);
+        let evs: Vec<_> = rx.iter().collect();
+        assert_eq!(evs.len(), 2);
+        let started_pids: HashSet<u32> = evs
+            .iter()
+            .filter(|e| matches!(e.kind, ObserverEventKind::DescendantStarted))
+            .map(|e| e.pid)
+            .collect();
+        assert_eq!(started_pids, [30, 40].into_iter().collect::<HashSet<_>>());
+    }
+
+    #[test]
+    fn emit_diff_fires_one_exited_per_gone_pid() {
+        let (tx, rx) = mpsc::channel();
+        let prev: HashSet<u32> = [10, 20, 30].into_iter().collect();
+        let current: HashSet<u32> = [10].into_iter().collect();
+        emit_diff(&prev, &current, &tx);
+        drop(tx);
+        let evs: Vec<_> = rx.iter().collect();
+        assert_eq!(evs.len(), 2);
+        let exited_pids: HashSet<u32> = evs
+            .iter()
+            .filter(|e| matches!(e.kind, ObserverEventKind::DescendantExited))
+            .map(|e| e.pid)
+            .collect();
+        assert_eq!(exited_pids, [20, 30].into_iter().collect::<HashSet<_>>());
+    }
+
+    #[test]
+    fn descendants_of_handles_branching_tree() {
+        // Tree: 100 -> {200, 300}; 200 -> {201}; 300 has no children.
+        let all = vec![(100, 0), (200, 100), (201, 200), (300, 100), (999, 1)];
+        let descendants = descendants_of(100, &all);
+        assert_eq!(
+            descendants,
+            [200, 201, 300].into_iter().collect::<HashSet<_>>()
         );
-        // SAFETY: close the kqueue we just opened.
-        unsafe {
-            libc::close(kq);
-        }
+    }
+
+    #[test]
+    fn descendants_of_for_unknown_root_returns_empty() {
+        let all = vec![(100, 0), (200, 100)];
+        let descendants = descendants_of(0x7FFF_FFFE, &all);
+        assert!(descendants.is_empty());
+    }
+
+    #[test]
+    fn list_all_processes_returns_non_empty_on_real_macos() {
+        // Sanity check the sysctl pipeline on the actual macos-arm
+        // CI runner — there's always at least `launchd`, the test
+        // process itself, plus dozens of system daemons.
+        let all = list_all_processes();
+        assert!(
+            all.len() > 5,
+            "expected the macOS process table to have plenty of entries, got {}",
+            all.len()
+        );
+        // The current process must be in there.
+        let self_pid = std::process::id();
+        assert!(
+            all.iter().any(|&(pid, _)| pid == self_pid),
+            "expected current pid {self_pid} in process table"
+        );
     }
 
     #[test]
     fn end_to_end_descendant_started_and_exited_for_spawned_chain() {
         use crate::observer::ObserverConfig;
         use crate::{CommandSpec, NativeProcess, ProcessConfig, StderrMode, StdinMode};
-        use std::time::Duration;
 
-        // Leading `sleep 0.2` gives the kqueue pump's NOTE_TRACK
-        // registration time to land before bash starts forking the
-        // background sleepers — `NOTE_TRACK` only fires `NOTE_CHILD`
-        // for *future* fork() calls, so a fast-forking root would
-        // race the pump and we'd see zero descendants. Real-world
-        // long-lived parents (clud, daemons) hit this naturally.
+        // Same fixture shape as the Linux integration test. With
+        // 50 ms polling and bash totalling ~700 ms, the snapshot
+        // diff catches the three background sleeps comfortably.
         let cfg = ProcessConfig {
             command: CommandSpec::Argv(vec![
                 "bash".into(),
                 "-c".into(),
-                "sleep 0.2; sleep 0.5 & sleep 0.5 & sleep 0.5 & wait".into(),
+                "sleep 0.5 & sleep 0.5 & sleep 0.5 & wait".into(),
             ]),
             cwd: None,
             env: None,
@@ -253,8 +284,8 @@ mod tests {
             .wait(Some(Duration::from_secs(30)))
             .expect("bash chain exits");
         process.close().ok();
-        // Give the kqueue pump a beat to flush queued events after
-        // root exit.
+        // Give the pump time to run the final diff + emit exits and
+        // hit its root-disappeared termination check.
         std::thread::sleep(Duration::from_millis(200));
 
         let events = subscriber.drain();

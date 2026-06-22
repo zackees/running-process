@@ -403,8 +403,8 @@ fn detect_process_backend(scope: TraceScope) -> (CapabilitySupport, &'static str
             {
                 (
                     CapabilitySupport::Supported,
-                    "kqueue-evfilt-proc",
-                    "macOS kqueue EVFILT_PROC + NOTE_TRACK descendant lifecycle (#539 slice 7)",
+                    "sysctl-proc-poll",
+                    "macOS sysctl(KERN_PROC_ALL) descendant polling (#539 slice 7)",
                 )
             }
             #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
