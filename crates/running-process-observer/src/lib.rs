@@ -44,7 +44,11 @@
 //! machinery; slice 3 adds the IPC event stream; slices 4–6 add the
 //! actual interposer payloads.
 
-#![forbid(unsafe_code)]
+// `deny(unsafe_code)` rather than `forbid` so the slice 6d Windows
+// injection vehicle in [`inject_windows`] can opt into unsafe via
+// `#[allow(unsafe_code)]` on the module. The rest of the crate
+// remains unsafe-free.
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 /// Opt-in configuration that turns the file-hook tier on for a single
@@ -131,13 +135,22 @@ pub fn negotiate_hook_support() -> HookSupport {
     }
     #[cfg(feature = "embed-helper")]
     {
-        // Slices 4 (Linux), 5 (macOS), 6 (Windows) of #551 flip the
-        // appropriate `cfg(target_os = "...")` branch here from
-        // FeatureDisabled to Available. Until each slice lands, the
-        // honest answer is the feature is on but no injector has been
-        // wired for this OS yet.
-        HookSupport::Unavailable {
-            reason: "#551: per-OS injector not yet wired (slices 4–6 pending)",
+        #[cfg(target_os = "windows")]
+        {
+            // Slice 6d landed: the `inject_into_pid` vehicle is wired.
+            // The interposer DLL itself (running-process-observer-
+            // interposer-windows) ships separately and the caller
+            // provides its on-disk path.
+            HookSupport::Available
+        }
+        // Linux + macOS injectors land alongside their slice 7
+        // integration tests; until then honestly report that the
+        // feature is on but no injector has been wired for this OS.
+        #[cfg(not(target_os = "windows"))]
+        {
+            HookSupport::Unavailable {
+                reason: "#551: per-OS injector not yet wired (slices 4–6 pending)",
+            }
         }
     }
 }
@@ -259,6 +272,21 @@ pub mod embed {
     }
 }
 
+/// Windows DLL-injection vehicle ([#551 slice 6d]). Drives
+/// `CreateRemoteThread(LoadLibraryW, dll_path)` against a target
+/// PID to load the interposer DLL into its address space.
+///
+/// Gated on `feature = "embed-helper"` + `target_os = "windows"` so
+/// non-Windows builds and feature-off builds pay zero static-AV
+/// exposure cost.
+///
+/// [#551 slice 6d]: https://github.com/zackees/running-process/issues/551
+#[cfg(all(feature = "embed-helper", target_os = "windows"))]
+pub mod inject_windows;
+
+#[cfg(all(feature = "embed-helper", target_os = "windows"))]
+pub use inject_windows::inject_into_pid;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,9 +315,14 @@ mod tests {
         }
         #[cfg(feature = "embed-helper")]
         {
-            // With the feature on, slice 1 reports Unavailable + a
-            // pointer at the pending slices.
             let s = negotiate_hook_support();
+            // Slice 6d landed the Windows injector — on Windows the
+            // honest answer is now Available. Linux + macOS keep
+            // reporting Unavailable with a slice pointer until their
+            // injectors land (separate follow-up slices).
+            #[cfg(target_os = "windows")]
+            assert_eq!(s, HookSupport::Available);
+            #[cfg(not(target_os = "windows"))]
             assert!(matches!(s, HookSupport::Unavailable { reason } if reason.contains("#551")));
         }
     }
