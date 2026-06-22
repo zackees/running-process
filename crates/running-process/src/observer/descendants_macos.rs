@@ -74,58 +74,67 @@ fn pump_loop(root_pid: u32, sink: Sender<ObserverEvent>) {
 }
 
 /// Snapshot every process on the system, returning a `Vec<(pid, ppid)>`.
+///
+/// Uses `proc_listpids(PROC_ALL_PIDS)` to enumerate PIDs, then
+/// `proc_pidinfo(pid, PROC_PIDTBSDINFO)` to look up each PPID. This
+/// avoids depending on `libc::kinfo_proc` (which our pinned libc
+/// 0.2 does not export on macOS targets) and is the documented
+/// Apple API for cross-process introspection.
 fn list_all_processes() -> Vec<(u32, u32)> {
-    let mut mib: [libc::c_int; 3] = [
-        libc::CTL_KERN,
-        libc::KERN_PROC,
-        libc::KERN_PROC_ALL,
-    ];
-    // Size probe.
-    let mut size: libc::size_t = 0;
-    let r = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            3,
-            std::ptr::null_mut(),
-            &mut size,
+    // proc_listpids size probe — pass null buffer to learn the
+    // required size in bytes.
+    let size = unsafe {
+        libc::proc_listpids(
+            libc::PROC_ALL_PIDS,
+            0,
             std::ptr::null_mut(),
             0,
         )
     };
-    if r != 0 || size == 0 {
+    if size <= 0 {
         return Vec::new();
     }
-    let mut buf = vec![0u8; size];
-    let r = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            3,
-            buf.as_mut_ptr() as *mut libc::c_void,
-            &mut size,
-            std::ptr::null_mut(),
+    let pid_count = (size as usize) / std::mem::size_of::<libc::pid_t>();
+    if pid_count == 0 {
+        return Vec::new();
+    }
+    let mut pids: Vec<libc::pid_t> = vec![0; pid_count];
+    let written_bytes = unsafe {
+        libc::proc_listpids(
+            libc::PROC_ALL_PIDS,
             0,
+            pids.as_mut_ptr() as *mut libc::c_void,
+            (pid_count * std::mem::size_of::<libc::pid_t>()) as libc::c_int,
         )
     };
-    if r != 0 {
+    if written_bytes <= 0 {
         return Vec::new();
     }
-    buf.truncate(size);
+    let written = (written_bytes as usize) / std::mem::size_of::<libc::pid_t>();
+    pids.truncate(written);
 
-    let entry_size = std::mem::size_of::<libc::kinfo_proc>();
-    if entry_size == 0 {
-        return Vec::new();
-    }
-    let mut result = Vec::with_capacity(buf.len() / entry_size);
-    for chunk in buf.chunks_exact(entry_size) {
-        // SAFETY: kinfo_proc is `#[repr(C)]` and packed identically
-        // to what the kernel wrote; reading a `kinfo_proc` out of an
-        // exactly-aligned chunk is well-defined.
-        let kp: libc::kinfo_proc = unsafe { std::ptr::read(chunk.as_ptr() as *const _) };
-        let pid = kp.kp_proc.p_pid as i64;
-        let ppid = kp.kp_eproc.e_ppid as i64;
-        if pid > 0 && ppid >= 0 {
-            result.push((pid as u32, ppid as u32));
+    let mut result = Vec::with_capacity(written);
+    for &pid in &pids {
+        if pid <= 0 {
+            continue;
         }
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let n = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                &mut info as *mut libc::proc_bsdinfo as *mut libc::c_void,
+                std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
+            )
+        };
+        // proc_pidinfo returns the number of bytes written; 0 means
+        // the process disappeared between listpids and the info
+        // query. Skip those races.
+        if n <= 0 {
+            continue;
+        }
+        result.push((info.pbi_pid, info.pbi_ppid));
     }
     result
 }
