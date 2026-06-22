@@ -34,24 +34,25 @@
 //! This DLL (the **payload**) doesn't itself call the injection
 //! primitives; only the sidecar does.
 //!
-//! ## Slice 6b scope (this commit)
+//! ## Slice 6c scope (this commit)
 //!
-//! Wire up `retour::RawDetour` + `windows-sys` and install the
-//! **first** inline detour — `CreateFileW`. This proves the
-//! detour-install path works end-to-end on the stable toolchain
-//! (resolve target via `GetModuleHandle` + `GetProcAddress`,
-//! register hook via `RawDetour::new`, enable on
-//! `DLL_PROCESS_ATTACH`, call original through trampoline). The
-//! other four file APIs (`WriteFile`, `CloseHandle`, `DeleteFileW`,
-//! `MoveFileExW`) land in slice 6c with the same shape — keeping
-//! the surface area small per PR lets us validate one detour at a
-//! time.
+//! Bundle the remaining four file-mutation detours
+//! (`WriteFile`, `CloseHandle`, `DeleteFileW`, `MoveFileExW`) on top
+//! of the `CreateFileW` detour landed in slice 6b. Adds a
+//! process-global HANDLE→path table so close/write events can
+//! resolve back to the original path the way the macOS interposer
+//! does via `fcntl(F_GETPATH)` and the Linux one via
+//! `/proc/self/fd/<n>`. Matches the surface area the macOS slice 5b
+//! bundle shipped.
 //!
-//! Slice 6c adds `WriteFile`, `CloseHandle`, `DeleteFileW`,
-//! `MoveFileExW` (matching the macOS slice 5b bundle), plus a
-//! HANDLE→path table so close/write events can resolve the path
-//! the way the macOS interposer does via `fcntl(F_GETPATH)` and
-//! the Linux one via `/proc/self/fd/<n>`.
+//! `CloseHandle` is polymorphic on Windows — it closes any HANDLE
+//! type (file, socket, mutex, thread, ...). We only emit
+//! `file-close` for handles that appear in our table, so non-file
+//! closes pass through silently.
+//!
+//! `MoveFileExW` is the rename/move primitive (`MoveFileW` is a
+//! thin wrapper that delegates to it on modern Windows). Detouring
+//! `MoveFileExW` catches both.
 //!
 //! Slice 6d adds the sidecar-side injection vehicle that drives
 //! `CreateRemoteThread(LoadLibraryW, dll_path)` into freshly
@@ -60,12 +61,14 @@
 #![cfg(target_os = "windows")]
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use retour::RawDetour;
-use windows_sys::Win32::Foundation::{BOOL, HANDLE, INVALID_HANDLE_VALUE, TRUE};
+use windows_sys::Win32::Foundation::{BOOL, FALSE, HANDLE, INVALID_HANDLE_VALUE, TRUE};
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
@@ -85,6 +88,21 @@ type CreateFileWFn = unsafe extern "system" fn(
     HANDLE,                    // hTemplateFile
 ) -> HANDLE;
 
+type WriteFileFn = unsafe extern "system" fn(
+    HANDLE,                   // hFile
+    *const u8,                // lpBuffer
+    u32,                      // nNumberOfBytesToWrite
+    *mut u32,                 // lpNumberOfBytesWritten
+    *mut core::ffi::c_void,   // lpOverlapped (OVERLAPPED*)
+) -> BOOL;
+
+type CloseHandleFn = unsafe extern "system" fn(HANDLE) -> BOOL;
+
+type DeleteFileWFn = unsafe extern "system" fn(*const u16) -> BOOL;
+
+type MoveFileExWFn =
+    unsafe extern "system" fn(*const u16, *const u16, u32) -> BOOL;
+
 // ── Trampolines ──
 
 /// Pointer to the trampoline that calls the original `CreateFileW`.
@@ -95,6 +113,10 @@ type CreateFileWFn = unsafe extern "system" fn(
 /// Rust's typesystem. Instead store the raw bytes and transmute
 /// at the call site.
 static REAL_CREATE_FILE_W: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static REAL_WRITE_FILE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static REAL_CLOSE_HANDLE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static REAL_DELETE_FILE_W: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static REAL_MOVE_FILE_EX_W: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 thread_local! {
     /// Reentrancy guard. We never want our hook body to re-enter
@@ -104,13 +126,45 @@ thread_local! {
     static IN_HOOK: Cell<bool> = const { Cell::new(false) };
 }
 
+// ── HANDLE → path table ──
+
+/// Process-global HANDLE→path map. Populated on successful
+/// `CreateFileW`, queried on `WriteFile` / `CloseHandle`, removed
+/// on `CloseHandle`. Same purpose as the Linux/macOS interposers'
+/// fd_table; the key here is the raw handle value cast to `isize`
+/// (HANDLE is `*mut c_void`, but we never dereference it — only
+/// use it as a token).
+static HANDLE_TABLE: OnceLock<Mutex<HashMap<isize, String>>> = OnceLock::new();
+
+fn handle_table() -> &'static Mutex<HashMap<isize, String>> {
+    HANDLE_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn handle_table_insert(handle: HANDLE, path: String) {
+    if let Ok(mut tbl) = handle_table().lock() {
+        tbl.insert(handle as isize, path);
+    }
+}
+
+fn handle_table_get(handle: HANDLE) -> Option<String> {
+    handle_table().lock().ok()?.get(&(handle as isize)).cloned()
+}
+
+fn handle_table_remove(handle: HANDLE) -> Option<String> {
+    handle_table().lock().ok()?.remove(&(handle as isize))
+}
+
 // ── Event emission ──
 
-/// Write `bytes` to stderr via `WriteFile`. For slice 6b only
-/// `CreateFileW` is detoured so calling the real `WriteFile`
-/// directly is fine. Slice 6c switches this to the original
-/// `WriteFile` trampoline once that detour exists, so we don't
-/// observe our own emissions.
+/// Write `bytes` to stderr.
+///
+/// Goes through the `WriteFile` trampoline once that detour is
+/// installed (so we don't observe our own emissions); falls back
+/// to the un-detoured `WriteFile` import while the trampoline
+/// isn't ready (i.e. before `install_detours()` finishes, or if
+/// installation failed). The `IN_HOOK` reentrancy guard handles
+/// the case where another hook called this and the `WriteFile`
+/// detour fires — it short-circuits the emit-recursion path.
 fn emit_bytes(bytes: &[u8]) {
     unsafe {
         let h = GetStdHandle(STD_ERROR_HANDLE);
@@ -118,13 +172,25 @@ fn emit_bytes(bytes: &[u8]) {
             return;
         }
         let mut written: u32 = 0;
-        let _ = WriteFile(
-            h,
-            bytes.as_ptr(),
-            bytes.len() as u32,
-            &mut written,
-            core::ptr::null_mut(),
-        );
+        let trampoline = REAL_WRITE_FILE.load(Ordering::Acquire);
+        if !trampoline.is_null() {
+            let original: WriteFileFn = std::mem::transmute(trampoline);
+            let _ = original(
+                h,
+                bytes.as_ptr(),
+                bytes.len() as u32,
+                &mut written,
+                core::ptr::null_mut(),
+            );
+        } else {
+            let _ = WriteFile(
+                h,
+                bytes.as_ptr(),
+                bytes.len() as u32,
+                &mut written,
+                core::ptr::null_mut(),
+            );
+        }
     }
 }
 
@@ -139,6 +205,26 @@ fn emit_open(path: &str, access: u32, disposition: u32, handle: HANDLE) {
     emit_line(&format!(
         "RPO_HOOK file-open path={path:?} access=0x{access:08x} disposition={disposition} handle={handle:p}\n",
     ));
+}
+
+fn emit_close(path: &str, handle: HANDLE) {
+    emit_line(&format!(
+        "RPO_HOOK file-close path={path:?} handle={handle:p}\n"
+    ));
+}
+
+fn emit_write(path: &str, handle: HANDLE, byte_count: u32) {
+    emit_line(&format!(
+        "RPO_HOOK file-write path={path:?} handle={handle:p} byte_count={byte_count}\n"
+    ));
+}
+
+fn emit_unlink(path: &str) {
+    emit_line(&format!("RPO_HOOK file-unlink path={path:?}\n"));
+}
+
+fn emit_rename(from: &str, to: &str) {
+    emit_line(&format!("RPO_HOOK file-rename from={from:?} to={to:?}\n"));
 }
 
 // ── Path helpers ──
@@ -166,12 +252,13 @@ fn wide_cstr_to_string(ptr: *const u16) -> Option<String> {
     OsString::from_wide(slice).into_string().ok()
 }
 
-// ── Detour body ──
+// ── Detour bodies ──
 
 /// Detour body for `CreateFileW`. Calls the original via the
 /// stashed trampoline, emits an `RPO_HOOK file-open` line on
-/// success, and returns the original handle. Failures
-/// (`INVALID_HANDLE_VALUE`) pass through without emitting.
+/// success, registers the handle in the HANDLE→path table, and
+/// returns the original handle. Failures (`INVALID_HANDLE_VALUE`)
+/// pass through without emitting or registering.
 unsafe extern "system" fn create_file_w_detour(
     lp_file_name: *const u16,
     dw_desired_access: u32,
@@ -182,10 +269,6 @@ unsafe extern "system" fn create_file_w_detour(
     h_template_file: HANDLE,
 ) -> HANDLE {
     let trampoline_ptr = REAL_CREATE_FILE_W.load(Ordering::Acquire);
-    // Should never be null after install_detours() runs, but if for
-    // any reason it is, fail closed (return INVALID_HANDLE_VALUE).
-    // Calling the original via GetProcAddress at this point would
-    // mean *not* going through the trampoline, defeating the detour.
     if trampoline_ptr.is_null() {
         return INVALID_HANDLE_VALUE;
     }
@@ -208,6 +291,7 @@ unsafe extern "system" fn create_file_w_detour(
     if handle != INVALID_HANDLE_VALUE {
         if let Some(path) = wide_cstr_to_string(lp_file_name) {
             emit_open(&path, dw_desired_access, dw_creation_disposition, handle);
+            handle_table_insert(handle, path);
         }
     }
     IN_HOOK.with(|c| c.set(false));
@@ -215,14 +299,170 @@ unsafe extern "system" fn create_file_w_detour(
     handle
 }
 
-// ── DllMain ──
+/// Detour body for `WriteFile`. Calls the original, emits a
+/// `file-write` line if the handle is in our table (so we only
+/// emit for file writes, not socket / pipe / etc.). Always passes
+/// through to the original first so I/O semantics are preserved.
+unsafe extern "system" fn write_file_detour(
+    h_file: HANDLE,
+    lp_buffer: *const u8,
+    n_number_of_bytes_to_write: u32,
+    lp_number_of_bytes_written: *mut u32,
+    lp_overlapped: *mut core::ffi::c_void,
+) -> BOOL {
+    let trampoline_ptr = REAL_WRITE_FILE.load(Ordering::Acquire);
+    if trampoline_ptr.is_null() {
+        return FALSE;
+    }
+    let original: WriteFileFn = std::mem::transmute(trampoline_ptr);
 
-/// Install all detours that are wired up for this slice. Called
-/// from `DllMain` under `DLL_PROCESS_ATTACH`.
-///
-/// Errors are deliberately swallowed: a hook-install failure should
-/// not prevent the host process from starting. Slice 6d will report
-/// install status via a separate IPC channel back to the daemon.
+    let ok = original(
+        h_file,
+        lp_buffer,
+        n_number_of_bytes_to_write,
+        lp_number_of_bytes_written,
+        lp_overlapped,
+    );
+
+    if IN_HOOK.with(|c| c.get()) {
+        return ok;
+    }
+    IN_HOOK.with(|c| c.set(true));
+    if ok != FALSE {
+        if let Some(path) = handle_table_get(h_file) {
+            // `lpNumberOfBytesWritten` may be null for OVERLAPPED I/O;
+            // fall back to the requested count in that case.
+            let written = if lp_number_of_bytes_written.is_null() {
+                n_number_of_bytes_to_write
+            } else {
+                *lp_number_of_bytes_written
+            };
+            emit_write(&path, h_file, written);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+
+    ok
+}
+
+/// Detour body for `CloseHandle`. Polymorphic — closes any HANDLE
+/// type. We only emit `file-close` for handles that appear in our
+/// table; non-file closes pass through silently.
+unsafe extern "system" fn close_handle_detour(h_object: HANDLE) -> BOOL {
+    let trampoline_ptr = REAL_CLOSE_HANDLE.load(Ordering::Acquire);
+    if trampoline_ptr.is_null() {
+        return FALSE;
+    }
+    let original: CloseHandleFn = std::mem::transmute(trampoline_ptr);
+
+    if IN_HOOK.with(|c| c.get()) {
+        return original(h_object);
+    }
+    IN_HOOK.with(|c| c.set(true));
+    // Look up the path before the close so we can emit a final
+    // event even if the table cleanup happens after the close.
+    let path_before = handle_table_get(h_object);
+    let ok = original(h_object);
+    if ok != FALSE {
+        if let Some(path) = path_before {
+            emit_close(&path, h_object);
+            let _ = handle_table_remove(h_object);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+
+    ok
+}
+
+/// Detour body for `DeleteFileW`. Emits `file-unlink` on success.
+unsafe extern "system" fn delete_file_w_detour(lp_file_name: *const u16) -> BOOL {
+    let trampoline_ptr = REAL_DELETE_FILE_W.load(Ordering::Acquire);
+    if trampoline_ptr.is_null() {
+        return FALSE;
+    }
+    let original: DeleteFileWFn = std::mem::transmute(trampoline_ptr);
+
+    let ok = original(lp_file_name);
+
+    if IN_HOOK.with(|c| c.get()) {
+        return ok;
+    }
+    IN_HOOK.with(|c| c.set(true));
+    if ok != FALSE {
+        if let Some(path) = wide_cstr_to_string(lp_file_name) {
+            emit_unlink(&path);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+
+    ok
+}
+
+/// Detour body for `MoveFileExW` — the underlying rename / move
+/// primitive (`MoveFileW` delegates to it on modern Windows). Emits
+/// `file-rename` on success.
+unsafe extern "system" fn move_file_ex_w_detour(
+    lp_existing_file_name: *const u16,
+    lp_new_file_name: *const u16,
+    dw_flags: u32,
+) -> BOOL {
+    let trampoline_ptr = REAL_MOVE_FILE_EX_W.load(Ordering::Acquire);
+    if trampoline_ptr.is_null() {
+        return FALSE;
+    }
+    let original: MoveFileExWFn = std::mem::transmute(trampoline_ptr);
+
+    let ok = original(lp_existing_file_name, lp_new_file_name, dw_flags);
+
+    if IN_HOOK.with(|c| c.get()) {
+        return ok;
+    }
+    IN_HOOK.with(|c| c.set(true));
+    if ok != FALSE {
+        if let (Some(from), Some(to)) = (
+            wide_cstr_to_string(lp_existing_file_name),
+            wide_cstr_to_string(lp_new_file_name),
+        ) {
+            emit_rename(&from, &to);
+        }
+    }
+    IN_HOOK.with(|c| c.set(false));
+
+    ok
+}
+
+// ── Install machinery ──
+
+/// Look up `name` in `module` and install a detour pointing at
+/// `hook`. On success, stashes the trampoline pointer in `slot`.
+/// Errors are swallowed: a hook-install failure should not prevent
+/// the host process from starting.
+unsafe fn install_one(
+    module: *mut core::ffi::c_void,
+    name: &core::ffi::CStr,
+    hook: *const (),
+    slot: &AtomicPtr<()>,
+) {
+    let Some(target) = GetProcAddress(module, name.as_ptr() as *const u8) else {
+        return;
+    };
+    let Ok(detour) = RawDetour::new(target as *const (), hook) else {
+        return;
+    };
+    if detour.enable().is_err() {
+        return;
+    }
+    // `&() -> *const () -> *mut ()` — see slice 6b commit message
+    // for the rationale on stripping the borrow.
+    slot.store(detour.trampoline() as *const () as *mut (), Ordering::Release);
+    // Leak the RawDetour so its Drop doesn't disable the hook when
+    // this scope exits. The detour lives for the rest of the
+    // process.
+    core::mem::forget(detour);
+}
+
+/// Install all wired-up detours. Called from `DllMain` under
+/// `DLL_PROCESS_ATTACH`.
 unsafe fn install_detours() {
     // Wide-encode "kernel32.dll\0" for GetModuleHandleW. Encoded
     // inline rather than via a UTF-16 literal to keep
@@ -236,35 +476,37 @@ unsafe fn install_detours() {
     if module.is_null() {
         return;
     }
-    let Some(target) =
-        GetProcAddress(module, c"CreateFileW".as_ptr() as *const u8)
-    else {
-        return;
-    };
 
-    let Ok(detour) =
-        RawDetour::new(target as *const (), create_file_w_detour as *const ())
-    else {
-        return;
-    };
-    if detour.enable().is_err() {
-        return;
-    }
-
-    // `RawDetour::trampoline()` returns `&()` (a borrow into the
-    // detour's owned trampoline allocation). We need a raw pointer
-    // we can `mem::transmute` to the original fn signature inside
-    // the hook body. The double cast `&() -> *const () -> *mut ()`
-    // strips the borrow without mutability checks (the trampoline
-    // is immutable code we only ever read-execute).
-    REAL_CREATE_FILE_W
-        .store(detour.trampoline() as *const () as *mut (), Ordering::Release);
-
-    // Leak the RawDetour so its Drop doesn't disable the hook when
-    // this scope exits. The detour lives for the rest of the
-    // process; on DLL_PROCESS_DETACH the OS is tearing the address
-    // space down anyway, so we don't need to recover the storage.
-    core::mem::forget(detour);
+    install_one(
+        module,
+        c"CreateFileW",
+        create_file_w_detour as *const (),
+        &REAL_CREATE_FILE_W,
+    );
+    install_one(
+        module,
+        c"WriteFile",
+        write_file_detour as *const (),
+        &REAL_WRITE_FILE,
+    );
+    install_one(
+        module,
+        c"CloseHandle",
+        close_handle_detour as *const (),
+        &REAL_CLOSE_HANDLE,
+    );
+    install_one(
+        module,
+        c"DeleteFileW",
+        delete_file_w_detour as *const (),
+        &REAL_DELETE_FILE_W,
+    );
+    install_one(
+        module,
+        c"MoveFileExW",
+        move_file_ex_w_detour as *const (),
+        &REAL_MOVE_FILE_EX_W,
+    );
 }
 
 /// DLL entry point. Windows calls this when the DLL is loaded into a
@@ -288,10 +530,9 @@ pub unsafe extern "system" fn DllMain(
             install_detours();
         }
         DLL_PROCESS_DETACH => {
-            // The detour was leaked in install_detours so it stays
+            // Detours are leaked in install_detours so they stay
             // installed for the life of the process. The OS is
-            // tearing the address space down — there's nothing
-            // useful to do here.
+            // tearing the address space down — nothing to do here.
         }
         _ => {
             // DLL_THREAD_ATTACH / DLL_THREAD_DETACH — no-op.
