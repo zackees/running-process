@@ -143,13 +143,26 @@ pub fn negotiate_hook_support() -> HookSupport {
             // provides its on-disk path.
             HookSupport::Available
         }
-        // Linux + macOS injectors land alongside their slice 7
-        // integration tests; until then honestly report that the
-        // feature is on but no injector has been wired for this OS.
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            // Slice 6e landed: the `inject_via_env` wrapper sets the
+            // platform-appropriate env var (LD_PRELOAD or
+            // DYLD_INSERT_LIBRARIES) on a caller-supplied Command,
+            // so the dynamic linker loads the interposer at child
+            // startup. SIP-protected binaries on macOS will silently
+            // ignore the env var — that caveat is documented at the
+            // call site, not flagged here, because we can't predict
+            // which binary the caller will spawn.
+            HookSupport::Available
+        }
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )))]
         {
             HookSupport::Unavailable {
-                reason: "#551: per-OS injector not yet wired (slices 4–6 pending)",
+                reason: "#551: no injector wired for this OS",
             }
         }
     }
@@ -287,6 +300,27 @@ pub mod inject_windows;
 #[cfg(all(feature = "embed-helper", target_os = "windows"))]
 pub use inject_windows::inject_into_pid;
 
+/// Linux + macOS env-var injection wrapper ([#551 slice 6e]).
+/// Configures a `Command` so the dynamic linker (`LD_PRELOAD` on
+/// Linux, `DYLD_INSERT_LIBRARIES` on macOS) loads an interposer
+/// library into the spawned process at startup.
+///
+/// Gated on `feature = "embed-helper"` + Linux/macOS — the
+/// corresponding Windows vehicle is [`inject_into_pid`].
+///
+/// [#551 slice 6e]: https://github.com/zackees/running-process/issues/551
+#[cfg(all(
+    feature = "embed-helper",
+    any(target_os = "linux", target_os = "macos")
+))]
+pub mod inject_unix;
+
+#[cfg(all(
+    feature = "embed-helper",
+    any(target_os = "linux", target_os = "macos")
+))]
+pub use inject_unix::{inject_env_name, inject_via_env};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,13 +350,22 @@ mod tests {
         #[cfg(feature = "embed-helper")]
         {
             let s = negotiate_hook_support();
-            // Slice 6d landed the Windows injector — on Windows the
-            // honest answer is now Available. Linux + macOS keep
-            // reporting Unavailable with a slice pointer until their
-            // injectors land (separate follow-up slices).
-            #[cfg(target_os = "windows")]
+            // Slice 6d landed the Windows injector; slice 6e landed
+            // the Linux + macOS env-var wrapper. All three of the
+            // tier-1 platforms now report Available with the
+            // embed-helper feature on. Other Unix targets (e.g.
+            // FreeBSD) still report Unavailable.
+            #[cfg(any(
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "macos"
+            ))]
             assert_eq!(s, HookSupport::Available);
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(not(any(
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "macos"
+            )))]
             assert!(matches!(s, HookSupport::Unavailable { reason } if reason.contains("#551")));
         }
     }
