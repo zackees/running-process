@@ -269,9 +269,9 @@ fn detect_file_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &
             #[cfg(target_os = "windows")]
             {
                 (
-                    CapabilitySupport::Unavailable,
+                    CapabilitySupport::Partial,
                     "nt-handle-snapshot",
-                    "#539 slice 4: Windows NtQuerySystemInformation handle snapshot backend not yet implemented",
+                    "Windows NtQuerySystemInformation + DuplicateHandle + NtQueryObject snapshot via read_process_file_handles (#539 slice 4; no streaming file events)",
                 )
             }
             #[cfg(target_os = "macos")]
