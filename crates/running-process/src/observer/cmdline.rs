@@ -35,11 +35,7 @@ pub fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = pid;
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Linux /proc/<pid>/cmdline cmdline backend not yet implemented (#539 slice 6)",
-        ))
+        linux_impl::read_process_cmdline(pid)
     }
     #[cfg(target_os = "macos")]
     {
@@ -56,6 +52,43 @@ pub fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
             std::io::ErrorKind::Unsupported,
             "#539: no LaunchedProcessTree cmdline backend planned for this OS",
         ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    //! Linux `/proc/<pid>/cmdline` implementation. The kernel writes
+    //! argv as NUL-separated UTF-8 (typically — argv is opaque bytes,
+    //! we lossy-decode), with a trailing NUL.
+
+    pub(super) fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
+        if pid == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "pid 0 is the kernel scheduler — not queryable",
+            ));
+        }
+        let path = format!("/proc/{pid}/cmdline");
+        let bytes = std::fs::read(&path)?;
+        // `/proc/<pid>/cmdline` is empty for kernel threads — return
+        // empty string rather than synthesizing fake separators.
+        if bytes.is_empty() {
+            return Ok(String::new());
+        }
+        // Drop the trailing NUL terminator if present, then turn
+        // remaining NUL separators into spaces so the result reads as
+        // a single shell-style command line (same convention as
+        // Windows NtQueryInformationProcess and macOS KERN_PROCARGS2,
+        // both of which return one logical command line per PID).
+        let mut trimmed = bytes.as_slice();
+        if trimmed.last() == Some(&0) {
+            trimmed = &trimmed[..trimmed.len() - 1];
+        }
+        let joined: Vec<u8> = trimmed
+            .iter()
+            .map(|b| if *b == 0 { b' ' } else { *b })
+            .collect();
+        Ok(String::from_utf8_lossy(&joined).into_owned())
     }
 }
 
@@ -199,17 +232,17 @@ mod tests {
     #[test]
     fn read_cmdline_for_pid_zero_returns_invalid_input() {
         // PID 0 is the system idle process on Windows / kernel
-        // scheduler on Linux — not openable from user-mode regardless
-        // of OS, so reject it up front before touching the FFI.
-        #[cfg(target_os = "windows")]
+        // scheduler on Linux — not openable from user-mode on either,
+        // so both backends reject it up front before touching FFI / FS.
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
             let err = read_process_cmdline(0).expect_err("pid 0 should be rejected");
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
         {
-            // Other platforms currently return Unsupported until their
-            // slice lands; check that contract.
+            // macOS backend lands in slice 8; until then the contract is
+            // an Unsupported error pointing at the future slice.
             let err = read_process_cmdline(0).expect_err("unsupported");
             assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
             assert!(
@@ -217,6 +250,53 @@ mod tests {
                 "unsupported reason should anchor to the future slice: {err}"
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_read_cmdline_round_trips_known_args_from_spawned_child() {
+        use crate::observer::ObserverConfig;
+        use crate::{CommandSpec, NativeProcess, ProcessConfig, StderrMode, StdinMode};
+        use std::time::Duration;
+
+        // Long-lived sleep with a distinctive argv: read it back from
+        // /proc/<pid>/cmdline while the child is alive.
+        let cfg = ProcessConfig {
+            command: CommandSpec::Argv(vec!["sleep".into(), "30".into()]),
+            cwd: None,
+            env: None,
+            capture: false,
+            stderr_mode: StderrMode::Stdout,
+            creationflags: None,
+            create_process_group: false,
+            stdin_mode: StdinMode::Inherit,
+            nice: None,
+        };
+        let (process, _sub) = NativeProcess::with_observer(cfg, ObserverConfig::lifecycle());
+        process.start().expect("spawn sleep");
+        let pid = process.pid().expect("pid");
+        std::thread::sleep(Duration::from_millis(50));
+
+        let cmdline = read_process_cmdline(pid).expect("read cmdline");
+        process.kill().ok();
+        process.close().ok();
+
+        assert!(
+            cmdline.contains("sleep"),
+            "expected 'sleep' in cmdline, got: {cmdline:?}"
+        );
+        assert!(
+            cmdline.contains("30"),
+            "expected '30' (the sleep duration) in cmdline, got: {cmdline:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_read_cmdline_for_nonexistent_pid_returns_not_found() {
+        let err = read_process_cmdline(0x7FFF_FFFE).expect_err("nonexistent pid");
+        // `/proc/<missing>/cmdline` open fails with ENOENT.
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[cfg(target_os = "windows")]
