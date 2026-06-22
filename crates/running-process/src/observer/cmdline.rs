@@ -39,11 +39,7 @@ pub fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = pid;
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "macOS KERN_PROCARGS2 cmdline backend not yet implemented (#539 slice 8)",
-        ))
+        macos_impl::read_process_cmdline(pid)
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
@@ -52,6 +48,163 @@ pub fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
             std::io::ErrorKind::Unsupported,
             "#539: no LaunchedProcessTree cmdline backend planned for this OS",
         ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos_impl {
+    //! macOS `sysctl(KERN_PROCARGS2)` implementation. Returns the
+    //! actual argv the kernel handed to `execve`, fully no-admin for
+    //! processes the calling user owns.
+    //!
+    //! Layout of the returned buffer (per `sys/sysctl.h` +
+    //! `bsd/kern/kern_sysctl.c` in xnu):
+    //!
+    //! ```text
+    //! [ argc (i32, host endianness) ]
+    //! [ exec_path (NUL-terminated UTF-8 string) ]
+    //! [ NUL padding to align to ptr-boundary ]
+    //! [ argv[0] (NUL-terminated) ]
+    //! [ argv[1] ... argv[argc-1] (each NUL-terminated) ]
+    //! [ envp[0] ... envp[N] (NUL-terminated; ignored here) ]
+    //! ```
+
+    const CTL_KERN: libc::c_int = 1;
+    const KERN_PROCARGS2: libc::c_int = 49;
+
+    pub(super) fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
+        if pid == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "pid 0 is the kernel scheduler — not queryable",
+            ));
+        }
+        let mut name: [libc::c_int; 3] =
+            [CTL_KERN, KERN_PROCARGS2, pid as libc::c_int];
+        // Size probe: pass null buf to learn the required length.
+        let mut len: libc::size_t = 0;
+        let r = unsafe {
+            libc::sysctl(
+                name.as_mut_ptr(),
+                3,
+                std::ptr::null_mut(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if r != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if len < std::mem::size_of::<i32>() {
+            return Err(std::io::Error::other(format!(
+                "KERN_PROCARGS2 returned size={len}, smaller than argc header",
+            )));
+        }
+
+        let mut buf = vec![0u8; len];
+        let r = unsafe {
+            libc::sysctl(
+                name.as_mut_ptr(),
+                3,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if r != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        buf.truncate(len);
+        parse_procargs2(&buf)
+    }
+
+    fn parse_procargs2(buf: &[u8]) -> std::io::Result<String> {
+        if buf.len() < std::mem::size_of::<i32>() {
+            return Ok(String::new());
+        }
+        let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        if argc <= 0 {
+            return Ok(String::new());
+        }
+        let mut cursor = std::mem::size_of::<i32>();
+        // Skip exec_path: bytes until first NUL.
+        while cursor < buf.len() && buf[cursor] != 0 {
+            cursor += 1;
+        }
+        // Skip the run of NUL padding the kernel inserts to align argv
+        // start to a pointer boundary.
+        while cursor < buf.len() && buf[cursor] == 0 {
+            cursor += 1;
+        }
+        // Read exactly argc argv strings, joining with spaces — mirrors
+        // the Windows NtQueryInformationProcess and Linux
+        // /proc/<pid>/cmdline conventions.
+        let mut argv: Vec<String> = Vec::with_capacity(argc as usize);
+        for _ in 0..argc {
+            if cursor >= buf.len() {
+                break;
+            }
+            let start = cursor;
+            while cursor < buf.len() && buf[cursor] != 0 {
+                cursor += 1;
+            }
+            argv.push(String::from_utf8_lossy(&buf[start..cursor]).into_owned());
+            // Skip the NUL terminator.
+            cursor = cursor.saturating_add(1);
+        }
+        Ok(argv.join(" "))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::parse_procargs2;
+
+        /// Build a KERN_PROCARGS2 buffer for argv = [exec, args...].
+        fn build_procargs2(exec_path: &str, argv: &[&str]) -> Vec<u8> {
+            let mut buf = Vec::new();
+            let argc = argv.len() as i32;
+            buf.extend_from_slice(&argc.to_ne_bytes());
+            buf.extend_from_slice(exec_path.as_bytes());
+            buf.push(0);
+            // Pad to a pointer boundary with extra NULs (kernel does
+            // this — exercise the skip-padding path in the parser).
+            while buf.len() % 8 != 0 {
+                buf.push(0);
+            }
+            for arg in argv {
+                buf.extend_from_slice(arg.as_bytes());
+                buf.push(0);
+            }
+            // Trailing envp would go here; we don't add any.
+            buf
+        }
+
+        #[test]
+        fn parses_argv_skipping_exec_path_and_padding() {
+            let buf = build_procargs2(
+                "/usr/bin/myprog",
+                &["myprog", "--flag", "value with space"],
+            );
+            let out = parse_procargs2(&buf).expect("parse");
+            assert_eq!(out, "myprog --flag value with space");
+        }
+
+        #[test]
+        fn empty_argv_yields_empty_string() {
+            let buf = build_procargs2("/usr/bin/noop", &[]);
+            let out = parse_procargs2(&buf).expect("parse");
+            assert_eq!(out, "");
+        }
+
+        #[test]
+        fn argc_zero_short_circuits() {
+            let mut buf = 0i32.to_ne_bytes().to_vec();
+            buf.extend_from_slice(b"/usr/bin/noop\0");
+            let out = parse_procargs2(&buf).expect("parse");
+            assert_eq!(out, "");
+        }
     }
 }
 
@@ -229,38 +382,28 @@ mod windows_impl {
 mod tests {
     use super::*;
 
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     #[test]
     fn read_cmdline_for_pid_zero_returns_invalid_input() {
-        // PID 0 is the system idle process on Windows / kernel
-        // scheduler on Linux — not openable from user-mode on either,
-        // so both backends reject it up front before touching FFI / FS.
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        {
-            let err = read_process_cmdline(0).expect_err("pid 0 should be rejected");
-            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            // macOS backend lands in slice 8; until then the contract is
-            // an Unsupported error pointing at the future slice.
-            let err = read_process_cmdline(0).expect_err("unsupported");
-            assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
-            assert!(
-                err.to_string().contains("#539"),
-                "unsupported reason should anchor to the future slice: {err}"
-            );
-        }
+        // PID 0 is the system idle process on Windows / kernel scheduler
+        // on Linux + macOS — not openable from user-mode on any of them,
+        // so all three backends reject it up front before touching FFI /
+        // FS.
+        let err = read_process_cmdline(0).expect_err("pid 0 should be rejected");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn linux_read_cmdline_round_trips_known_args_from_spawned_child() {
+    fn unix_read_cmdline_round_trips_known_args_from_spawned_child() {
         use crate::observer::ObserverConfig;
         use crate::{CommandSpec, NativeProcess, ProcessConfig, StderrMode, StdinMode};
         use std::time::Duration;
 
-        // Long-lived sleep with a distinctive argv: read it back from
-        // /proc/<pid>/cmdline while the child is alive.
+        // Long-lived `sleep 30` (available on both Linux and macOS as a
+        // POSIX standard utility) with a distinctive argv: read it
+        // back via the per-OS no-admin primitive while the child is
+        // still alive.
         let cfg = ProcessConfig {
             command: CommandSpec::Argv(vec!["sleep".into(), "30".into()]),
             cwd: None,
@@ -275,7 +418,7 @@ mod tests {
         let (process, _sub) = NativeProcess::with_observer(cfg, ObserverConfig::lifecycle());
         process.start().expect("spawn sleep");
         let pid = process.pid().expect("pid");
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(100));
 
         let cmdline = read_process_cmdline(pid).expect("read cmdline");
         process.kill().ok();
@@ -297,6 +440,20 @@ mod tests {
         let err = read_process_cmdline(0x7FFF_FFFE).expect_err("nonexistent pid");
         // `/proc/<missing>/cmdline` open fails with ENOENT.
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_read_cmdline_for_nonexistent_pid_returns_io_error() {
+        // sysctl with a missing pid returns ESRCH; we surface it
+        // verbatim as the os_error code. Don't pin the exact errno
+        // because newer xnu builds occasionally remap it to EINVAL
+        // for hardened tasks; just assert an os_error came through.
+        let err = read_process_cmdline(0x7FFF_FFFE).expect_err("nonexistent pid");
+        assert!(
+            err.raw_os_error().is_some(),
+            "expected an OS-level errno, got: {err}"
+        );
     }
 
     #[cfg(target_os = "windows")]
