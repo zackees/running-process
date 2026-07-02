@@ -49,6 +49,14 @@ jobs:
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
 
+      # ci.lint imports/invokes running_process, which is no longer
+      # implicitly installed now that every `uv run` passes --no-sync
+      # (the implicit sync used to build the project via the PEP 517
+      # backend). Install it the same way ci-preflight.yml's lint job
+      # does: an explicit maturin dev build.
+      - name: Dev build
+        run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
+
       - name: Lint
         env:
           RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS: "300"
