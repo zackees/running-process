@@ -68,6 +68,22 @@ jobs:
       - name: Build broker CLI for servicedef proof
         run: cargo build -p running-process --features daemon --bin running-process-broker-v1
 
+      # ci.servicedef_proof refuses to run if the platform-default
+      # service-definition directory already exists. The soldr PEP 517
+      # build backend spawns a soldr daemon during the editable build,
+      # and soldr registers a soldr-daemon.servicedef in that directory
+      # (zackees/soldr#718), so clear it before the proof starts cold.
+      # Mirrors the "Clear stale servicedef state" step in
+      # ci-preflight.yml, extended to every platform-default location.
+      - name: Clear stale servicedef state
+        shell: bash
+        run: |
+          rm -rf "$HOME/.config/running-process/services" \
+                 "$HOME/Library/Application Support/running-process/services" || true
+          if [ -n "${APPDATA:-}" ]; then
+            rm -rf "$(printf '%s' "$APPDATA" | tr '\\' '/')/running-process/services" || true
+          fi
+
       - name: Servicedef install-path proof
         run: uv run --module ci.run_logged logs/servicedef-proof.log -- uv run --module ci.servicedef_proof
 
