@@ -1435,6 +1435,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "running-process-win-gnu-bridge"
+version = "4.5.7"
+dependencies = [
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
