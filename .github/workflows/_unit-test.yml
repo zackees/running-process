@@ -66,7 +66,7 @@ jobs:
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
 
       - name: Dev build
-        run: uv run --module ci.run_logged logs/dev-build.log -- uv run --module ci.build_wheel --dev
+        run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
 
       - name: Terminal graphics capability matrix
         timeout-minutes: 10
@@ -77,10 +77,10 @@ jobs:
 
       - name: Report terminal graphics capability matrix
         if: ${{ always() }}
-        run: uv run --module ci.terminal_capability_report ${{ github.workspace }}/logs/terminal-capabilities/${{ inputs.runs-on }}
+        run: uv run --no-sync --module ci.terminal_capability_report ${{ github.workspace }}/logs/terminal-capabilities/${{ inputs.runs-on }}
 
       - name: Unit Tests
-        run: uv run --module ci.run_logged logs/test.log -- uv run --module ci.test
+        run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test
 
       - name: Broker Hello perf guard
         if: ${{ inputs.runs-on == 'ubuntu-24.04' }}

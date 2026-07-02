@@ -53,7 +53,7 @@ jobs:
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
 
       - name: Dev build
-        run: uv run --module ci.run_logged logs/dev-build.log -- uv run --module ci.build_wheel --dev
+        run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -66,7 +66,7 @@ jobs:
           tool: nextest
 
       - name: Run tests with coverage
-        run: uv run --module ci.run_logged logs/test.log -- uv run --module ci.test --coverage
+        run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test --coverage
 
       - name: Upload Python coverage artifact
         if: always()
