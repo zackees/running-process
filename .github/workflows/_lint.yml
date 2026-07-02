@@ -52,7 +52,7 @@ jobs:
       - name: Lint
         env:
           RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS: "300"
-        run: uv run --module ci.run_logged logs/lint.log -- uv run --module ci.lint
+        run: uv run --no-sync --module ci.run_logged logs/lint.log -- uv run --no-sync --module ci.lint
 
       - name: Display failure diagnostics
         if: ${{ failure() || cancelled() }}
