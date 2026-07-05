@@ -134,7 +134,7 @@ pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
 #[cfg(windows)]
 pub(crate) use windows::{
-    assign_child_to_windows_kill_on_close_job_impl, windows_priority_flags, CapturePipeHandles,
+    assign_child_to_windows_kill_on_close_job_impl, windows_creation_flags, CapturePipeHandles,
     WindowsJobHandle,
 };
 
@@ -1016,19 +1016,15 @@ impl NativeProcess {
         {
             use std::os::windows::process::CommandExt;
 
-            // CREATE_NEW_PROCESS_GROUP makes GenerateConsoleCtrlEvent
-            // with CTRL_BREAK_EVENT route to this child's group
-            // (rather than the daemon's group) — required for the
-            // pipe-session soft-signal path on Windows (#130 M4).
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-            let extra = if self.config.create_process_group {
-                CREATE_NEW_PROCESS_GROUP
-            } else {
-                0
-            };
-            let flags = self.config.creationflags.unwrap_or(0)
-                | extra
-                | windows_priority_flags(self.config.nice);
+            // #584: defaults to CREATE_NO_WINDOW so a console child spawned
+            // by the window-less daemon does not flash a console window,
+            // while preserving the caller's console opinion, priority, and
+            // CREATE_NEW_PROCESS_GROUP bits. See `windows_creation_flags`.
+            let flags = windows_creation_flags(
+                self.config.creationflags,
+                self.config.create_process_group,
+                self.config.nice,
+            );
             if flags != 0 {
                 command.creation_flags(flags);
             }

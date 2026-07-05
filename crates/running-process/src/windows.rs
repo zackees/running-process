@@ -295,3 +295,51 @@ pub(crate) fn windows_priority_flags(nice: Option<i32>) -> u32 {
         _ => 0,
     }
 }
+
+/// Compute the full Windows `creation_flags` for a daemon-spawned child.
+///
+/// # `CREATE_NO_WINDOW` default (#584)
+///
+/// A `running-process` daemon runs detached (no console). When such a
+/// window-less parent launches a console-subsystem child without
+/// `CREATE_NO_WINDOW`, Windows allocates a fresh console window for the
+/// child — a visible flash for the child's lifetime. Redirecting stdio to
+/// pipes does not suppress it; only the creation flag does. So we default
+/// daemon-spawned children to `CREATE_NO_WINDOW`.
+///
+/// The default is suppressed only when the caller has already expressed a
+/// console opinion through `creationflags` — passing any of
+/// `CREATE_NO_WINDOW`, `CREATE_NEW_CONSOLE`, or `DETACHED_PROCESS` opts out
+/// of the injected default (`CREATE_NEW_CONSOLE` is the way to *keep* a
+/// visible console). Priority (`nice`) and `CREATE_NEW_PROCESS_GROUP` bits
+/// are OR-ed in and never clobbered.
+pub(crate) fn windows_creation_flags(
+    creationflags: Option<u32>,
+    create_process_group: bool,
+    nice: Option<i32>,
+) -> u32 {
+    // CREATE_NEW_PROCESS_GROUP makes GenerateConsoleCtrlEvent with
+    // CTRL_BREAK_EVENT route to this child's group (rather than the
+    // daemon's group) — required for the pipe-session soft-signal path
+    // on Windows (#130 M4).
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    let caller = creationflags.unwrap_or(0);
+    let group = if create_process_group {
+        CREATE_NEW_PROCESS_GROUP
+    } else {
+        0
+    };
+    // #584: hide the console by default; respect a caller that already
+    // dictates console behaviour via any console-related creation flag.
+    let no_window = if caller & (CREATE_NO_WINDOW | CREATE_NEW_CONSOLE | DETACHED_PROCESS) != 0 {
+        0
+    } else {
+        CREATE_NO_WINDOW
+    };
+
+    caller | group | no_window | windows_priority_flags(nice)
+}
