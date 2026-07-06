@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-A Rust-backed Python library (v4.5.7) for subprocess and PTY process management across Windows, macOS, and Linux.
+A Rust-backed Python library (v4.5.8) for subprocess and PTY process management across Windows, macOS, and Linux.
 
 ### Layered Design
 
