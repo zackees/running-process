@@ -20,7 +20,7 @@
 #![cfg(all(feature = "embed-helper", target_os = "windows"))]
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,6 +39,46 @@ fn target_profile_dir() -> PathBuf {
         .to_path_buf()
 }
 
+fn target_triple_for_profile_dir(profile_dir: &Path) -> Option<String> {
+    let triple_dir = profile_dir.parent()?;
+    let triple = triple_dir.file_name()?.to_str()?;
+    if triple.contains("-pc-windows-") {
+        Some(triple.to_string())
+    } else {
+        None
+    }
+}
+
+fn add_current_test_target_flags(cmd: &mut Command, profile_dir: &Path) {
+    if profile_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s == "release")
+    {
+        cmd.arg("--release");
+    }
+    if let Some(triple) = target_triple_for_profile_dir(profile_dir) {
+        cmd.arg("--target").arg(triple);
+    }
+}
+
+fn cargo_command() -> Command {
+    if let Some(soldr) = which("soldr") {
+        if let Ok(output) = Command::new(soldr)
+            .args(["rustup", "which", "cargo"])
+            .output()
+        {
+            if output.status.success() {
+                let cargo = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !cargo.is_empty() {
+                    return Command::new(cargo);
+                }
+            }
+        }
+    }
+    Command::new("cargo")
+}
+
 /// Build the Windows interposer DLL on demand. Returns its path.
 ///
 /// Shells out to `cargo build -p running-process-observer-
@@ -47,36 +87,42 @@ fn target_profile_dir() -> PathBuf {
 /// Either way we end up with the DLL at
 /// `<target>/<profile>/running_process_observer_interposer_windows.dll`.
 fn build_and_locate_interposer_dll() -> PathBuf {
-    // Drive cargo through `soldr` if the rest of the workspace is
-    // — matches the project's build rule (see CLAUDE.md). If soldr
-    // isn't on PATH, fall back to bare `cargo`.
-    let mut cmd = if which("soldr").is_some() {
-        let mut c = Command::new("soldr");
-        c.arg("cargo");
-        c
-    } else {
-        Command::new("cargo")
-    };
-    let status = cmd
-        .args([
-            "build",
-            "-p",
-            "running-process-observer-interposer-windows",
-        ])
-        .status()
-        .expect("spawn cargo to build interposer dll");
+    let profile_dir = target_profile_dir();
+    let mut cmd = cargo_command();
+    cmd.args(["build", "-p", "running-process-observer-interposer-windows"]);
+    add_current_test_target_flags(&mut cmd, &profile_dir);
+    let status = cmd.status().expect("spawn cargo to build interposer dll");
     assert!(
         status.success(),
         "cargo build of interposer DLL failed: {status:?}"
     );
 
-    let dll = target_profile_dir()
-        .join("running_process_observer_interposer_windows.dll");
+    let dll = profile_dir.join("running_process_observer_interposer_windows.dll");
     assert!(
         dll.exists(),
         "expected interposer DLL at {dll:?} after cargo build"
     );
     dll
+}
+
+fn build_createfilew_probe() {
+    let profile_dir = target_profile_dir();
+    let mut cmd = cargo_command();
+    cmd.args([
+        "build",
+        "-p",
+        "testbins",
+        "--bin",
+        "testbin-createfilew-probe",
+    ]);
+    add_current_test_target_flags(&mut cmd, &profile_dir);
+    let status = cmd
+        .status()
+        .expect("spawn cargo to build testbin-createfilew-probe");
+    assert!(
+        status.success(),
+        "cargo build of testbin-createfilew-probe failed: {status:?}"
+    );
 }
 
 /// Lightweight `which` replacement for Windows. Returns the first
@@ -111,6 +157,7 @@ fn which(name: &str) -> Option<PathBuf> {
 #[test]
 fn interposer_dll_fires_rpo_hook_after_inject() {
     let dll = build_and_locate_interposer_dll();
+    build_createfilew_probe();
 
     // Probe file the slice 7c fixture (testbin-createfilew-probe)
     // will explicitly open via kernel32!CreateFileW — the exact
@@ -192,9 +239,7 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
     while Instant::now() < deadline {
         if stderr_text
             .lock()
-            .map(|s| {
-                s.contains("RPO_HOOK file-open") && s.contains("probe.txt")
-            })
+            .map(|s| s.contains("RPO_HOOK file-open") && s.contains("probe.txt"))
             .unwrap_or(false)
         {
             break;

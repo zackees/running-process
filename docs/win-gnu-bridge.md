@@ -26,7 +26,7 @@ necessary**:
 | Surface | Mechanism | Status |
 | --- | --- | --- |
 | ConPTY (`CreatePseudoConsole` / `ResizePseudoConsole` / `ClosePseudoConsole`) | **direct** (`windows-sys` bundled `-gnu` import lib) | in scope, done |
-| `retour` inline detours / DLL injection (`running-process-observer-interposer-windows`) | needs ABI / `iced-x86` validation | out of scope — follow-up |
+| `retour` inline detours / DLL injection (`running-process-observer-interposer-windows`) | **direct** (`retour` + `iced-x86` + `windows-sys` all link under `-gnu`) | in scope, done |
 | `libsqlite3-sys` bundled (daemon feature) | needs a C compiler (`gcc.exe`) under GNU | out of scope — follow-up |
 | `procdump` / DbgHelp minidump (`test-watchdog`) | dev-only, not on the shipped path | out of scope |
 
@@ -42,6 +42,15 @@ soldr cargo check -p running-process-win-gnu-bridge --target x86_64-pc-windows-g
 # The ConPTY consumer path (client feature, no daemon so no libsqlite3-sys).
 soldr cargo check -p running-process --no-default-features --features client \
     --target x86_64-pc-windows-gnu
+
+# The file-hook observer interposer path.
+soldr cargo build -p running-process-observer-interposer-windows \
+    --target x86_64-pc-windows-gnu
+soldr cargo build -p running-process-observer --features embed-helper \
+    --target x86_64-pc-windows-gnu
+soldr cargo test -p running-process-observer --features embed-helper \
+    --test interposer_integration_windows \
+    --target x86_64-pc-windows-gnu
 ```
 
 A full **build** (rather than `check`) of the GNU target additionally needs
@@ -51,9 +60,20 @@ crate's unit test `conpty_entry_points_are_bound` asserts the ConPTY entry
 points resolve to non-null addresses — a runtime linkability check on any
 Windows host (MSVC or GNU).
 
+The Windows interposer smoke test builds the DLL and
+`testbin-createfilew-probe` for the same active target triple as the test
+binary. Under `x86_64-pc-windows-gnu`, it injects the GNU-built DLL via
+`CreateRemoteThread(LoadLibraryW)` and waits for a real `RPO_HOOK file-open`
+line emitted by the `retour::RawDetour` `CreateFileW` hook. That validates
+the GNU ABI path for the inline trampoline, the `iced-x86` prologue decode,
+the `VirtualProtect`-backed patch install, and the deferred `DllMain` worker
+thread pattern.
+
 ## What remains MSVC-only
 
-`retour`-based detours / DLL injection and the bundled `libsqlite3-sys`
-build are **not** yet reachable under GNU. They are tracked as follow-ups
-gated on this spike; until they land, a GNU build is limited to the
-core + client surface (no `daemon` feature, no file-hook interposer).
+The bundled `libsqlite3-sys` build used by the `daemon` feature is the only
+remaining GNU follow-up from this bridge spike. It needs a MinGW-w64
+`gcc.exe` on `PATH` so the sqlite amalgamation can compile and link under
+`x86_64-pc-windows-gnu`. Until that lands, a GNU build is limited to the
+core, client, bridge, and file-hook interposer surfaces (no `daemon`
+feature).
