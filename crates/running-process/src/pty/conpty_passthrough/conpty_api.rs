@@ -40,7 +40,7 @@ use windows_sys::Win32::Foundation::{HANDLE, HMODULE};
 use windows_sys::Win32::System::Console::{COORD, HPCON};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryExW};
 
-#[cfg(feature = "client")]
+#[cfg(feature = "conpty-sidecar")]
 use super::conpty_acquire;
 use super::win_version;
 
@@ -156,8 +156,9 @@ pub(super) fn get() -> &'static (ConPtyApi, ConPtySource) {
 ///
 /// 1. A manual pre-stage at `current_exe()/conpty.dll` — admin /
 ///    air-gapped consumer override.
-/// 2. The self-acquired cache via `conpty_acquire::ensure_cached_sidecar`,
-///    which fetches the matching GitHub release asset on first miss.
+/// 2. With `conpty-sidecar`, the self-acquired cache via
+///    `conpty_acquire::ensure_cached_sidecar`, which fetches the
+///    matching GitHub release asset on first miss.
 /// 3. kernel32, with a one-line warning.
 ///
 /// Any catastrophic kernel32 failure escalates to panic — the crate
@@ -186,7 +187,7 @@ fn resolve_production(force_system: bool) -> (ConPtyApi, ConPtySource) {
         }
     }
 
-    #[cfg(feature = "client")]
+    #[cfg(feature = "conpty-sidecar")]
     match conpty_acquire::ensure_cached_sidecar() {
         Ok(cache_dir) => {
             let dll = cache_dir.join("conpty.dll");
@@ -202,6 +203,8 @@ fn resolve_production(force_system: bool) -> (ConPtyApi, ConPtySource) {
             "running-process: ConPTY sidecar auto-acquire unavailable ({e}); using kernel32"
         ),
     }
+    #[cfg(not(feature = "conpty-sidecar"))]
+    eprintln!("running-process: ConPTY sidecar auto-acquire disabled; using kernel32");
 
     (
         load_kernel32().unwrap_or_else(|e| catastrophe(e)),

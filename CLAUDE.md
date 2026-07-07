@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-A Rust-backed Python library (v4.5.8) for subprocess and PTY process management across Windows, macOS, and Linux.
+A Rust-backed Python library (v4.5.9) for subprocess and PTY process management across Windows, macOS, and Linux.
 
 ### Layered Design
 
@@ -17,7 +17,8 @@ A Rust-backed Python library (v4.5.8) for subprocess and PTY process management 
 
 **Rust workspace** (`crates/`):
 - **`running-process`** (`crates/running-process/`): the only published Rust crate. Feature-gated subsystems:
-  - **`core`** (always on) — OS-level subprocess abstraction (`NativeProcess` — pipe I/O, signaling, Job Objects/process groups, PTY via `portable-pty`).
+  - **`core`** (always on) — OS-level subprocess abstraction (`NativeProcess` — pipe I/O, signaling, Job Objects/process groups).
+  - **`pty`** — PTY-backed process APIs (`portable-pty` on Unix, ConPTY on Windows).
   - **`client`** (default) — proto types (`src/proto/`) + sync IPC client (`src/client/`). Adds prost, interprocess, dirs.
   - **`daemon`** — full daemon runtime (`src/daemon/`). Adds tokio, rusqlite, tracing, etc.
   - Binaries in `src/bin/`: `runpm` (requires `client`), `daemon` (requires `daemon`), `trampoline` (no required-features), `running-process-broker-v1` / `running-process-broker-v2` (broker scaffold for #483/#488/#532), `running-process-cleanup`.

@@ -65,7 +65,8 @@ required-features = ["client"]
 
 [features]
 # Final feature scheme per #165:
-# * `core`   — always-available API (spawn / pty / containment).
+# * `core`   — always-available API (spawn / containment).
+# * `pty`    — PTY-backed process APIs.
 # * `client` — adds proto types + IPC client (prost, interprocess, dirs).
 # * `telemetry` — tee sink primitives without the full daemon runtime.
 # * `daemon`    — superset of client; adds the full daemon runtime
@@ -73,16 +74,13 @@ required-features = ["client"]
 # Default ships `client` so `cargo install running-process` installs
 # the `runpm` binary out of the box (per Q1 resolution in #165:
 # `required-features` are not auto-activated by cargo install).
-default = ["client"]
+default = ["client", "pty", "conpty-sidecar"]
 core = []
 telemetry = []
+pty = ["dep:portable-pty"]
 client = [
     "dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs",
     "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2", "dep:getrandom",
-    # #445: Windows-only sidecar self-acquisition. These deps live under
-    # `[target.'cfg(windows)'.dependencies]` so enabling the feature on
-    # non-Windows targets is a cargo-level no-op for them.
-    "dep:ureq", "dep:zstd", "dep:tar",
     # Phase 5 of #222 (#428): the `runpm` CLI parses `runpm.toml` batch
     # config files (`[[app]]` entries). The TOML parsing helpers live
     # in `src/runpm_config.rs` and are exercised by both the binary
@@ -91,6 +89,15 @@ client = [
     # the daemon-side `src/daemon/config.rs` autostart loader picks up
     # the same dep transitively.
     "dep:toml",
+]
+# #445: Windows-only ConPTY sidecar self-acquisition. Kept in the default
+# feature set for compatibility, but split from `client` so broker-only
+# consumers can use `default-features = false, features = ["client"]`
+# without pulling a second HTTP/TLS stack.
+conpty-sidecar = [
+    "pty",
+    "dep:dirs", "dep:sha2",
+    "dep:ureq", "dep:zstd", "dep:tar",
 ]
 # Opt-in async client surface for tokio daemons (#414). Adds async
 # variants of `BackendHandle::probe_with_service` and `FrameClient`
@@ -107,6 +114,7 @@ client-async = [
 daemon = [
     "client",
     "client-async",
+    "pty",
     "interprocess/tokio",
     "dep:tokio", "dep:tokio-util", "dep:bytes", "dep:futures-util",
     "tokio/full",
@@ -126,7 +134,7 @@ test-support = ["client"]
 
 [dependencies]
 libc = "0.2"
-portable-pty = "0.9"
+portable-pty = { version = "0.9", optional = true }
 sysinfo = "0.30"
 thiserror = { workspace = true }
 winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi", "ioapiset", "jobapi2", "namedpipeapi", "processthreadsapi", "winnt", "minwindef", "windef", "winuser", "consoleapi", "processenv", "synchapi", "winbase", "wincon", "tlhelp32", "securitybaseapi", "winerror", "sysinfoapi"] }
@@ -215,9 +223,8 @@ windows-sys = { version = "0.59", features = [
 # #445: transparent Win10 ConPTY sidecar self-acquisition. The runtime
 # fetches a per-arch zstd-19 compressed tarball from this crate's
 # matching GitHub release on first ConPTY use, caches it, and loads
-# `conpty.dll` from there. Gated optional and pulled in by the `client`
-# feature (which also enables `dirs` for cache-path discovery). ureq
-# uses rustls so we don't drag in a C OpenSSL build on Windows.
+# `conpty.dll` from there. Gated optional behind `conpty-sidecar`.
+# ureq uses rustls so we don't drag in a C OpenSSL build on Windows.
 ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
 zstd = { version = "0.13", default-features = false, optional = true }
 tar = { version = "0.4", default-features = false, optional = true }
