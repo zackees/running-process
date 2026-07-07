@@ -92,6 +92,7 @@ pub mod telemetry;
 #[cfg(feature = "daemon")]
 /// Daemon runtime APIs and helpers enabled by the `daemon` feature.
 pub mod daemon;
+#[cfg(feature = "pty")]
 /// PTY-backed process APIs.
 pub mod pty;
 mod public_symbols;

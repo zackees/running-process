@@ -57,14 +57,14 @@ pub(super) const PSEUDOCONSOLE_PASSTHROUGH_MODE: u32 = 0x8;
 
 pub(in crate::pty) mod child;
 // The sidecar self-acquisition module pulls in `dirs`, `ureq`, `zstd`,
-// and `tar` — all gated by the `client` feature. Non-client builds
-// fall back to manual pre-stage + kernel32 on Win10.
-#[cfg(feature = "client")]
+// `tar`, and `sha2` — all gated by the `conpty-sidecar` feature.
+// Builds without it fall back to manual pre-stage + kernel32 on Win10.
+#[cfg(feature = "conpty-sidecar")]
 pub(super) mod conpty_acquire;
 pub(super) mod conpty_api;
 // #447: compile-time SHA-256 verification table for the Win10 sidecar.
-// Gated on `client` to match `conpty_acquire`.
-#[cfg(feature = "client")]
+// Gated to match `conpty_acquire`.
+#[cfg(feature = "conpty-sidecar")]
 pub(super) mod conpty_sidecar_hashes;
 pub(super) mod pipes;
 pub(super) mod proc_thread_attr;
