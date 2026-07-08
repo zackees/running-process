@@ -107,11 +107,22 @@ jobs:
           cat ./conpty-sidecar.sha256.toml
 
       - name: Build wheel (${{ inputs.build-mode || 'dev' }})
-        run: uv run --module ci.run_logged logs/build-wheel.log -- uv run --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
+        run: uv run --no-sync --module ci.run_logged logs/build-wheel.log -- uv run --no-sync --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
+
+      # Backend smoke: exercise the soldr PEP 517 backend end-to-end
+      # (isolated build env, soldr resolved from PyPI, RUSTC_WRAPPER
+      # compile through the soldr daemon). Linux-only for now: soldr's
+      # compile daemon does not start on hosted macOS/Windows runners
+      # (zackees/soldr#1300) and no intel-mac soldr wheel is published,
+      # so the other lanes run with `uv run --no-sync` and never invoke
+      # the backend.
+      - name: soldr PEP 517 backend smoke
+        if: ${{ runner.os == 'Linux' }}
+        run: uv build --wheel --out-dir dist-backend-smoke
 
       - name: Build sdist
         if: ${{ inputs.include-sdist }}
-        run: uv run maturin sdist --out dist
+        run: uv run --no-sync maturin sdist --out dist
 
       - name: Upload dist artifacts
         if: ${{ inputs.artifact-name != '' }}

@@ -56,10 +56,10 @@ jobs:
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
 
       - name: Dev build
-        run: uv run --module ci.run_logged logs/dev-build.log -- uv run --module ci.build_wheel --dev
+        run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
 
       - name: Integration Tests
-        run: uv run --module ci.run_logged logs/integration-test.log -- uv run --module ci.test --live-only -ra --strict-markers
+        run: uv run --no-sync --module ci.run_logged logs/integration-test.log -- uv run --no-sync --module ci.test --live-only -ra --strict-markers
 
       # Servicedef install-path proof (#386): exercises the *platform-default*
       # service-definition directory as a fresh package install — CLI install,
@@ -68,8 +68,25 @@ jobs:
       - name: Build broker CLI for servicedef proof
         run: cargo build -p running-process --features daemon --bin running-process-broker-v1
 
+      # ci.servicedef_proof refuses to run if the platform-default
+      # service-definition directory already exists. Earlier steps can
+      # leave it behind: any soldr-wrapped build registers a
+      # soldr-daemon.servicedef there (zackees/soldr#718), and the live
+      # Integration Tests step may also create it. Clear it so the
+      # proof starts cold. Mirrors the "Clear stale servicedef state"
+      # step in ci-preflight.yml, extended to every platform-default
+      # location.
+      - name: Clear stale servicedef state
+        shell: bash
+        run: |
+          rm -rf "$HOME/.config/running-process/services" \
+                 "$HOME/Library/Application Support/running-process/services" || true
+          if [ -n "${APPDATA:-}" ]; then
+            rm -rf "$(printf '%s' "$APPDATA" | tr '\\' '/')/running-process/services" || true
+          fi
+
       - name: Servicedef install-path proof
-        run: uv run --module ci.run_logged logs/servicedef-proof.log -- uv run --module ci.servicedef_proof
+        run: uv run --no-sync --module ci.run_logged logs/servicedef-proof.log -- uv run --no-sync --module ci.servicedef_proof
 
       - name: Upload servicedef proof evidence
         if: ${{ always() }}
