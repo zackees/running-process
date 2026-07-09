@@ -971,8 +971,8 @@ sys.exit(0)";
     // Use a generous drain grace so the behaviour under test (no eager
     // cancel of the reader on natural exit) is checked deterministically,
     // decoupled from grandchild-startup latency under CI load.
-    let prior = env::var_os("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS");
-    env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", "15000");
+    let prior = std::env::var_os("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS");
+    std::env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", "15000");
 
     let process = NativeProcess::new(config(
         CommandSpec::Argv(vec!["python".into(), "-c".into(), script.into()]),
@@ -1002,8 +1002,8 @@ sys.exit(0)";
     let _ = process.wait(Some(Duration::from_secs(5)));
 
     match prior {
-        Some(v) => env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", v),
-        None => env::remove_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS"),
+        Some(v) => std::env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", v),
+        None => std::env::remove_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS"),
     }
 
     assert!(
