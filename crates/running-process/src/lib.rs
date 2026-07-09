@@ -442,21 +442,29 @@ impl NativeProcess {
                     }
                 };
                 if exited {
-                    // The direct child has exited. Wake any reader thread
-                    // still blocked in a synchronous `read()` — on Windows a
-                    // grandchild that inherited the capture pipe keeps its
-                    // write end open, so the read never sees EOF on its own —
-                    // then bound the capture-completion wait so that
-                    // wait()/close()/read_* on the natural-exit path cannot
-                    // wedge forever (issue #590, cluster A). This mirrors the
-                    // cancel + bounded-drain already done in `kill_impl`. The
-                    // child lock is released before this potentially-blocking
-                    // finalize so poll()/kill() are never held off. `false`
-                    // (deadline forced the flags) is expected and fine here.
+                    // The direct child has exited. Bound the capture-completion
+                    // wait so wait()/close()/read_* on the natural-exit path
+                    // cannot wedge forever when a grandchild inherited the pipe
+                    // and outlives the child (issue #590, cluster A). Unlike
+                    // `kill_impl` we do NOT cancel the reader up front: a
+                    // short-lived grandchild may still emit output the caller
+                    // expects to capture, so the reader is left to drain
+                    // naturally within the grace window. Only if the window
+                    // elapses with the pipe still held open do we cancel, to
+                    // release the otherwise-leaked reader thread (Windows:
+                    // CancelIoEx). The child lock is released before this
+                    // potentially-blocking finalize so poll()/kill() are never
+                    // held off.
                     if capture {
+                        let drained = finalize_capture_completion(&shared, kill_drain_deadline());
                         #[cfg(windows)]
-                        cancel_capture_pipe_io(&capture_pipe_handles);
-                        finalize_capture_completion(&shared, kill_drain_deadline());
+                        if !drained {
+                            cancel_capture_pipe_io(&capture_pipe_handles);
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            let _ = drained;
+                        }
                     }
                     return;
                 }
@@ -524,17 +532,6 @@ impl NativeProcess {
             let code = exit_code(status);
             self.set_returncode(code);
             self.shared.emit_exited(pid, code);
-            // If poll() is the first to observe the exit (racing the
-            // background waiter), still wake any reader thread blocked on
-            // a grandchild-orphaned pipe so it can flip the closed flags.
-            // Non-blocking: no drain wait here, poll() must stay prompt.
-            // `cancel_capture_io` only locks the capture-handle mutex, for
-            // which there is no lock-ordering path back to the child lock,
-            // so holding `guard` across this fast syscall is safe.
-            #[cfg(windows)]
-            if self.config.capture {
-                self.cancel_capture_io();
-            }
             return Ok(Some(code));
         }
         Ok(None)
@@ -1170,20 +1167,25 @@ impl NativeProcess {
         self.shared.condvar.notify_all();
     }
 
-    /// Bounded, cancel-first capture drain for the natural-exit and
-    /// `close` paths (issue #590, cluster A). Wakes any reader thread
-    /// blocked on a grandchild-orphaned pipe, then waits at most
-    /// `kill_drain_deadline` for the closed flags, force-setting them on
-    /// timeout. Mirrors the drain `kill_impl` already performs, so
-    /// `wait()`/`close()` return in bounded time instead of wedging in the
-    /// previously-unbounded `wait_for_capture_completion`.
+    /// Bounded capture drain for the natural-exit and `close` paths
+    /// (issue #590, cluster A). Waits at most `kill_drain_deadline` for the
+    /// reader threads to flip the closed flags, force-setting them on
+    /// timeout so `wait()`/`close()` return in bounded time instead of
+    /// wedging in the previously-unbounded `wait_for_capture_completion`.
+    /// Unlike `kill_impl` the reader is not cancelled up front — a
+    /// short-lived grandchild's output is allowed to drain within the
+    /// grace window — but if the window elapses with the pipe still held
+    /// open the reader is cancelled to release the leaked thread (Windows).
     fn finish_capture_drain(&self) {
+        let drained = self.wait_for_capture_completion_with_deadline_impl(kill_drain_deadline());
         #[cfg(windows)]
-        self.cancel_capture_io();
-        public_symbols::rp_native_process_wait_for_capture_completion_with_deadline_public(
-            self,
-            kill_drain_deadline(),
-        );
+        if !drained {
+            self.cancel_capture_io();
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = drained;
+        }
     }
 
     fn wait_for_capture_completion_impl(&self) {

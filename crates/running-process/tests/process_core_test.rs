@@ -949,6 +949,70 @@ sys.stdout.flush()";
     );
 }
 
+/// Issue #590 (cluster A) — drain-preservation guard. The bounded
+/// natural-exit drain must NOT discard output a short-lived grandchild
+/// writes *after* the direct child exits: unlike kill(), a natural exit
+/// should let the reader drain within the grace window. This guards
+/// against over-eagerly cancelling the reader on exit (which would drop
+/// the late output, as the `stream_iter latches while stderr keeps
+/// draining` behaviour relies on).
+#[test]
+fn natural_exit_still_captures_late_grandchild_output() {
+    // Parent spawns a grandchild that, after a short delay, writes a
+    // marker line to the inherited stdout and exits; the parent itself
+    // exits immediately. The marker therefore lands on the pipe *after*
+    // the direct child has already exited.
+    let script = "\
+import subprocess, sys;\
+subprocess.Popen([sys.executable, '-c', \
+\"import time,sys; time.sleep(0.3); print('LATE_GRANDCHILD_OUTPUT', flush=True); sys.stdout.flush()\"]);\
+sys.exit(0)";
+
+    // Use a generous drain grace so the behaviour under test (no eager
+    // cancel of the reader on natural exit) is checked deterministically,
+    // decoupled from grandchild-startup latency under CI load.
+    let prior = env::var_os("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS");
+    env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", "15000");
+
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), script.into()]),
+        true,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+
+    // Read events until EOF (or a generous bound) and collect them.
+    let mut saw_late_output = false;
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while Instant::now() < deadline {
+        match process.read_combined(Some(Duration::from_millis(200))) {
+            ReadStatus::Line(event) => {
+                if String::from_utf8_lossy(&event.line).contains("LATE_GRANDCHILD_OUTPUT") {
+                    saw_late_output = true;
+                    break;
+                }
+            }
+            ReadStatus::Timeout => continue,
+            ReadStatus::Eof => break,
+        }
+    }
+
+    let _ = process.wait(Some(Duration::from_secs(5)));
+
+    match prior {
+        Some(v) => env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", v),
+        None => env::remove_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS"),
+    }
+
+    assert!(
+        saw_late_output,
+        "late grandchild output written after the direct child exited was \
+         dropped; the natural-exit drain cancelled the reader too eagerly",
+    );
+}
+
 // ── pid() ──
 
 #[test]
