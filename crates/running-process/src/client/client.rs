@@ -18,7 +18,6 @@ use crate::proto::daemon::{
 use interprocess::local_socket::Stream;
 use interprocess::TryClone;
 use prost::Message;
-use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -217,8 +216,11 @@ pub struct SpawnedDaemon {
 /// Messages are framed with a 4-byte big-endian length prefix followed by
 /// a protobuf-encoded payload.
 pub struct DaemonClient {
-    reader: BufReader<Stream>,
-    writer: BufWriter<Stream>,
+    // Raw nonblocking streams (not BufReader/BufWriter): `send_request`
+    // drives deadline-bounded reads/writes via `deadline_io` so a stalled
+    // or crashed-mid-reply daemon can't wedge the caller (issue #590, B1).
+    reader: Stream,
+    writer: Stream,
     next_id: AtomicU64,
 }
 
@@ -244,10 +246,19 @@ impl DaemonClient {
         let stream = crate::client::deadline_io::connect_with_timeout(socket_path)
             .map_err(ClientError::Connect)?;
         let stream_clone = stream.try_clone().map_err(ClientError::Connect)?;
+        // Nonblocking on both handles so `send_request`'s deadline-bounded
+        // reads/writes work. On Unix `try_clone` shares the file
+        // description (so O_NONBLOCK carries), but on Windows each handle's
+        // mode is independent — set both explicitly.
+        use interprocess::local_socket::traits::Stream as _;
+        stream.set_nonblocking(true).map_err(ClientError::Connect)?;
+        stream_clone
+            .set_nonblocking(true)
+            .map_err(ClientError::Connect)?;
 
         Ok(Self {
-            reader: BufReader::new(stream),
-            writer: BufWriter::new(stream_clone),
+            reader: stream,
+            writer: stream_clone,
             next_id: AtomicU64::new(1),
         })
     }
@@ -257,32 +268,24 @@ impl DaemonClient {
     /// The request is length-prefixed (4-byte big-endian u32) then protobuf-encoded.
     /// The response uses the same framing.
     pub fn send_request(&mut self, request: DaemonRequest) -> Result<DaemonResponse, ClientError> {
-        // Encode
+        use crate::client::deadline_io::{
+            read_frame_with_deadline, rpc_read_deadline, write_all_with_deadline,
+        };
+
+        // Frame: 4-byte big-endian length prefix + protobuf payload.
         let payload = request.encode_to_vec();
-        let len = payload.len() as u32;
+        let mut framed = Vec::with_capacity(4 + payload.len());
+        framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        framed.extend_from_slice(&payload);
 
-        // Write length prefix + payload
-        self.writer
-            .write_all(&len.to_be_bytes())
-            .map_err(ClientError::Io)?;
-        self.writer.write_all(&payload).map_err(ClientError::Io)?;
-        self.writer.flush().map_err(ClientError::Io)?;
-
-        // Read length prefix
-        let mut len_buf = [0u8; 4];
-        self.reader
-            .read_exact(&mut len_buf)
-            .map_err(ClientError::Io)?;
-        let resp_len = u32::from_be_bytes(len_buf) as usize;
-        // Cap before allocating so a corrupt/desynced daemon frame can't
-        // drive a multi-GiB allocation + unbounded read (issue #590).
-        crate::client::deadline_io::check_frame_len(resp_len).map_err(ClientError::Io)?;
-
-        // Read payload
-        let mut resp_buf = vec![0u8; resp_len];
-        self.reader
-            .read_exact(&mut resp_buf)
-            .map_err(ClientError::Io)?;
+        // Bound the whole round-trip (issue #590, cluster B1): a daemon that
+        // accepts then stalls or crashes mid-reply must not wedge the
+        // Python-facing caller. `read_frame_with_deadline` also applies the
+        // `MAX_FRAME_BYTES` cap before allocating the response buffer.
+        let deadline = rpc_read_deadline();
+        write_all_with_deadline(&mut self.writer, &framed, deadline).map_err(ClientError::Io)?;
+        let resp_buf =
+            read_frame_with_deadline(&mut self.reader, deadline).map_err(ClientError::Io)?;
 
         DaemonResponse::decode(&resp_buf[..]).map_err(ClientError::Decode)
     }
