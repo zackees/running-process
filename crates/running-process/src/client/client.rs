@@ -237,10 +237,12 @@ impl DaemonClient {
     /// Use this when you already know the socket path (e.g. in integration
     /// tests that start a server on a unique path).
     pub fn connect_to(socket_path: &str) -> Result<Self, ClientError> {
-        let name = paths::make_socket_name(socket_path).map_err(ClientError::Connect)?;
-
-        use interprocess::local_socket::traits::Stream as _;
-        let stream = Stream::connect(name).map_err(ClientError::Connect)?;
+        // Validate the name up front so a bad path keeps its own error,
+        // then connect with a bounded timeout (issue #590, cluster B) so a
+        // bound-but-never-accepting daemon socket can't wedge the caller.
+        paths::make_socket_name(socket_path).map_err(ClientError::Connect)?;
+        let stream = crate::client::deadline_io::connect_with_timeout(socket_path)
+            .map_err(ClientError::Connect)?;
         let stream_clone = stream.try_clone().map_err(ClientError::Connect)?;
 
         Ok(Self {
@@ -272,6 +274,9 @@ impl DaemonClient {
             .read_exact(&mut len_buf)
             .map_err(ClientError::Io)?;
         let resp_len = u32::from_be_bytes(len_buf) as usize;
+        // Cap before allocating so a corrupt/desynced daemon frame can't
+        // drive a multi-GiB allocation + unbounded read (issue #590).
+        crate::client::deadline_io::check_frame_len(resp_len).map_err(ClientError::Io)?;
 
         // Read payload
         let mut resp_buf = vec![0u8; resp_len];

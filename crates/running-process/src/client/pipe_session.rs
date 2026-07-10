@@ -342,9 +342,11 @@ impl PipeStreamAttachment {
         stream: PipeStreamKind,
         steal: bool,
     ) -> Result<Self, PipeAttachError> {
-        let name = paths::make_socket_name(socket_path).map_err(PipeAttachError::Connect)?;
-        use interprocess::local_socket::traits::Stream as _;
-        let s = Stream::connect(name).map_err(PipeAttachError::Connect)?;
+        // Bounded connect (issue #590, cluster B): a bound-but-never-
+        // accepting daemon socket must not wedge the attaching client.
+        paths::make_socket_name(socket_path).map_err(PipeAttachError::Connect)?;
+        let s = crate::client::deadline_io::connect_with_timeout(socket_path)
+            .map_err(PipeAttachError::Connect)?;
         let s_clone = s.try_clone().map_err(PipeAttachError::Connect)?;
         let mut reader = BufReader::new(s);
         let mut writer = BufWriter::new(s_clone);
@@ -406,6 +408,9 @@ fn read_length_prefixed<R: Read>(r: &mut R) -> Result<Vec<u8>, std::io::Error> {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
+    // Cap before allocating so a corrupt/desynced frame can't drive a
+    // multi-GiB allocation + unbounded read (issue #590, cluster B).
+    crate::client::deadline_io::check_frame_len(len)?;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(buf)
