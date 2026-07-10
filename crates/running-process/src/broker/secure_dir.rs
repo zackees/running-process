@@ -35,8 +35,34 @@ fn platform_private_dir_permissions_are_private(path: &Path) -> io::Result<bool>
     Ok(mode & 0o077 == 0)
 }
 
+/// Protected, owner-only DACL for private broker dirs.
+///
+/// The ACEs MUST carry `OICI` (container + object inherit). Applying a
+/// protected DACL through `SetNamedSecurityInfoW` re-propagates
+/// auto-inheritance to every existing descendant: each child's inherited
+/// ACEs are recomputed from this DACL. With the non-inheritable
+/// `D:P(A;;FA;;;OW)` this crate used before, that recomputation stripped
+/// children to an EMPTY DACL — deny-everyone, including the owner — and
+/// the damage escaped the tree through NTFS hardlinks, which share one
+/// security descriptor per file (a hardlinked binary inside the private
+/// dir bricked its sibling link in the caller's install dir; see
+/// zackees/soldr#1513). `OICI` makes propagation grant owner + SYSTEM
+/// full control down the tree instead, which also self-heals descendants
+/// bricked by the old shape when the DACL is re-applied.
+///
+/// SYSTEM is granted alongside OWNER RIGHTS so AV, search indexing, and
+/// backup agents keep working; it does not weaken the other-users
+/// exclusion this hardening exists for.
+#[cfg(windows)]
+const PRIVATE_DIR_SDDL: &str = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)";
+
 #[cfg(windows)]
 fn set_private_permissions(path: &Path) -> io::Result<()> {
+    apply_protected_dacl_sddl(path, PRIVATE_DIR_SDDL)
+}
+
+#[cfg(windows)]
+fn apply_protected_dacl_sddl(path: &Path, sddl: &str) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
@@ -45,7 +71,7 @@ fn set_private_permissions(path: &Path) -> io::Result<()> {
         GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
     };
 
-    let sd = LocalSecurityDescriptor::from_sddl("D:P(A;;FA;;;OW)")?;
+    let sd = LocalSecurityDescriptor::from_sddl(sddl)?;
     let mut present = 0;
     let mut defaulted = 0;
     let mut dacl = std::ptr::null_mut();
@@ -80,10 +106,13 @@ fn set_private_permissions(path: &Path) -> io::Result<()> {
 #[cfg(windows)]
 fn platform_private_dir_permissions_are_private(path: &Path) -> io::Result<bool> {
     let sddl = dir_dacl_sddl(path)?;
-    let ace_count = sddl.matches("(A;;").count();
-    Ok(sddl.starts_with("D:P")
-        && ace_count == 1
-        && (sddl.contains("(A;;FA;;;OW)") || sddl.contains("(A;;0x1f01ff;;;OW)")))
+    // Deliberately rejects the legacy non-inheritable `D:P(A;;FA;;;OW)`
+    // shape: callers that probe-and-repair must re-apply the inheritable
+    // DACL so descendants stripped by the old shape get healed.
+    let ace_count = sddl.matches("(A;").count();
+    let owner_full = sddl.contains("(A;OICI;FA;;;OW)") || sddl.contains("(A;OICI;0x1f01ff;;;OW)");
+    let system_full = sddl.contains("(A;OICI;FA;;;SY)") || sddl.contains("(A;OICI;0x1f01ff;;;SY)");
+    Ok(sddl.starts_with("D:P") && ace_count == 2 && owner_full && system_full)
 }
 
 #[cfg(windows)]
@@ -191,5 +220,89 @@ impl Drop for LocalWideString {
         unsafe {
             windows_sys::Win32::Foundation::LocalFree(self.0.cast());
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::fs::{self, File};
+
+    use super::*;
+
+    #[test]
+    fn ensure_private_dir_passes_private_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("private");
+        ensure_private_dir(&dir).unwrap();
+        assert!(private_dir_permissions_are_private(&dir).unwrap());
+    }
+
+    /// Regression for zackees/soldr#1513: applying the protected DACL to
+    /// a dir with existing contents must NOT strip the children's access.
+    /// The old non-inheritable shape left every descendant with an empty
+    /// DACL (deny-everyone).
+    #[test]
+    fn ensure_private_dir_keeps_existing_children_accessible() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("private");
+        let sub = dir.join("v1.0.0");
+        fs::create_dir_all(&sub).unwrap();
+        let file = sub.join("service.bin");
+        fs::write(&file, b"payload").unwrap();
+
+        ensure_private_dir(&dir).unwrap();
+
+        File::open(&file).expect("child file must stay readable by the owner");
+        fs::write(&file, b"payload2").expect("child file must stay writable by the owner");
+        fs::read_dir(&sub).expect("child dir must stay listable by the owner");
+    }
+
+    /// Regression for zackees/soldr#1513 (hardlink leak): NTFS hardlinks
+    /// share one security descriptor per file, so stripping a link inside
+    /// the private dir bricked the sibling link outside it (the
+    /// pip-installed soldr.exe). The inheritable owner DACL must leave the
+    /// outside link usable by the owner.
+    #[test]
+    fn ensure_private_dir_does_not_brick_hardlinked_files_outside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside.bin");
+        fs::write(&outside, b"binary").unwrap();
+        let dir = tmp.path().join("private");
+        fs::create_dir_all(&dir).unwrap();
+        fs::hard_link(&outside, dir.join("inside.bin")).unwrap();
+
+        ensure_private_dir(&dir).unwrap();
+
+        File::open(&outside).expect("hardlinked sibling must stay readable by the owner");
+        fs::write(&outside, b"binary2").expect("hardlinked sibling must stay writable");
+    }
+
+    /// The legacy non-inheritable shape is explicitly NOT considered
+    /// private any more, so probe-and-repair callers re-apply the fixed
+    /// DACL and heal descendants stripped by the old one.
+    #[test]
+    fn legacy_non_inheritable_dacl_is_rejected_and_healed_by_reapply() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("private");
+        let file = dir.join("service.bin");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&file, b"payload").unwrap();
+
+        apply_protected_dacl_sddl(&dir, "D:P(A;;FA;;;OW)").unwrap();
+        assert!(
+            !private_dir_permissions_are_private(&dir).unwrap(),
+            "legacy shape must be treated as not-private"
+        );
+        // The old shape stripped the child's inherited ACEs to an empty
+        // DACL — confirm the failure mode this fix exists for, then heal.
+        assert!(
+            File::open(&file).is_err(),
+            "legacy shape bricks children; if this starts passing, the \
+             propagation behavior changed and the fix should be revisited"
+        );
+
+        ensure_private_dir(&dir).unwrap();
+        assert!(private_dir_permissions_are_private(&dir).unwrap());
+        File::open(&file).expect("re-applying the inheritable DACL must heal the child");
     }
 }
