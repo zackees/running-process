@@ -498,16 +498,32 @@ pub fn spawn(
     })
 }
 
-fn drain_watcher(process_handle: OwnedHandle, timeout: Duration, _keep: Arc<()>) {
-    // Wait until the child exits.
-    unsafe {
-        WaitForSingleObject(process_handle.as_raw(), INFINITE);
+fn drain_watcher(process_handle: OwnedHandle, timeout: Duration, keep: Arc<()>) {
+    // `WAIT_TIMEOUT` (0x102): a single wait slice elapsed without the child
+    // exiting. Declared inline to avoid pinning an extra winapi import.
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+    // Wait for the child to exit, but in bounded 1-second slices instead of
+    // a single `INFINITE` wait (issue #590, cluster K): a child that never
+    // exits — e.g. a descendant that broke away from the Job Object via
+    // JOB_OBJECT_LIMIT_BREAKAWAY_OK — would otherwise park this detached
+    // watcher thread forever. Bail out promptly once the owning
+    // `SpawnedChild` has been dropped (our clone is then the only `Arc`
+    // left), since there is nothing left to drain for.
+    loop {
+        let r = unsafe { WaitForSingleObject(process_handle.as_raw(), 1000) };
+        if r != WAIT_TIMEOUT {
+            // WAIT_OBJECT_0 (child exited) or a wait failure — stop looping
+            // and fall through to the post-mortem drain below.
+            break;
+        }
+        if Arc::strong_count(&keep) == 1 {
+            return;
+        }
     }
     // Give the pipes a chance to drain post-mortem.
     //
     // #199: intentional — same post-mortem drain semantic as the
-    // Unix watcher. `WaitForSingleObject(INFINITE)` above gives us
-    // the exit; this sleep lets the reader threads pick up the
+    // Unix watcher; this sleep lets the reader threads pick up the
     // last bytes the kernel still has buffered.
     thread::sleep(timeout);
     // process_handle is closed here.  The Rust ChildStdin/Stdout/Stderr
