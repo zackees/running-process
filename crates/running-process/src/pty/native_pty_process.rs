@@ -354,9 +354,24 @@ impl NativePtyProcess {
                                     return Err(PtyError::Io(err));
                                 }
                             }
-                            let code = match child.wait() {
-                                Ok(status) => status as i32,
-                                Err(_) => -9,
+                            // Bounded wait after kill (issue #590, cluster I):
+                            // `ConPtyChild::wait` is a raw
+                            // `WaitForSingleObject(process, INFINITE)`, so an
+                            // uninterruptible child that survives
+                            // TerminateProcess would wedge close() forever.
+                            // Poll `try_wait` for a short grace instead; the
+                            // Job Object's KILL_ON_JOB_CLOSE (dropped earlier)
+                            // plus TerminateProcess normally make this resolve
+                            // in one iteration.
+                            let kill_deadline = Instant::now() + Duration::from_secs(2);
+                            let code = loop {
+                                match child.try_wait() {
+                                    Ok(Some(status)) => break status as i32,
+                                    Ok(None) if Instant::now() < kill_deadline => {
+                                        thread::sleep(Duration::from_millis(10));
+                                    }
+                                    _ => break -9,
+                                }
                             };
                             self.store_returncode(code);
                             break;
