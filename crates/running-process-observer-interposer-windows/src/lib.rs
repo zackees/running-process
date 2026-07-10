@@ -82,37 +82,34 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-use windows_sys::Win32::System::SystemServices::{
-    DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH,
-};
+use windows_sys::Win32::System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH};
 use windows_sys::Win32::System::Threading::CreateThread;
 
 // ── Function-pointer types ──
 
 type CreateFileWFn = unsafe extern "system" fn(
-    *const u16,                // lpFileName (LPCWSTR)
-    u32,                       // dwDesiredAccess
-    u32,                       // dwShareMode
-    *const core::ffi::c_void,  // lpSecurityAttributes
-    u32,                       // dwCreationDisposition
-    u32,                       // dwFlagsAndAttributes
-    HANDLE,                    // hTemplateFile
+    *const u16,               // lpFileName (LPCWSTR)
+    u32,                      // dwDesiredAccess
+    u32,                      // dwShareMode
+    *const core::ffi::c_void, // lpSecurityAttributes
+    u32,                      // dwCreationDisposition
+    u32,                      // dwFlagsAndAttributes
+    HANDLE,                   // hTemplateFile
 ) -> HANDLE;
 
 type WriteFileFn = unsafe extern "system" fn(
-    HANDLE,                   // hFile
-    *const u8,                // lpBuffer
-    u32,                      // nNumberOfBytesToWrite
-    *mut u32,                 // lpNumberOfBytesWritten
-    *mut core::ffi::c_void,   // lpOverlapped (OVERLAPPED*)
+    HANDLE,                 // hFile
+    *const u8,              // lpBuffer
+    u32,                    // nNumberOfBytesToWrite
+    *mut u32,               // lpNumberOfBytesWritten
+    *mut core::ffi::c_void, // lpOverlapped (OVERLAPPED*)
 ) -> BOOL;
 
 type CloseHandleFn = unsafe extern "system" fn(HANDLE) -> BOOL;
 
 type DeleteFileWFn = unsafe extern "system" fn(*const u16) -> BOOL;
 
-type MoveFileExWFn =
-    unsafe extern "system" fn(*const u16, *const u16, u32) -> BOOL;
+type MoveFileExWFn = unsafe extern "system" fn(*const u16, *const u16, u32) -> BOOL;
 
 // ── Trampolines ──
 
@@ -460,12 +457,27 @@ unsafe fn install_one(
     let Ok(detour) = RawDetour::new(target as *const (), hook) else {
         return;
     };
+    // Publish the trampoline BEFORE enabling the detour (issue #590,
+    // cluster L). `enable()` patches the target to jump to `hook`; if it
+    // ran before the `slot.store` below, a concurrent call in the
+    // enable→store window would enter the hook, read a null trampoline,
+    // and drop the caller's real I/O. The trampoline is valid as soon as
+    // `RawDetour::new` returns (it is the saved original prologue + jump),
+    // and it is only ever dereferenced from inside a live hook, so
+    // publishing it while the detour is not yet enabled is safe.
+    // `&() -> *const () -> *mut ()` — see slice 6b commit message for the
+    // rationale on stripping the borrow.
+    slot.store(
+        detour.trampoline() as *const () as *mut (),
+        Ordering::Release,
+    );
     if detour.enable().is_err() {
+        // Enable failed: the RawDetour is about to drop (freeing the
+        // trampoline), so unpublish first — otherwise another already-live
+        // hook could dereference a dangling trampoline pointer.
+        slot.store(core::ptr::null_mut(), Ordering::Release);
         return;
     }
-    // `&() -> *const () -> *mut ()` — see slice 6b commit message
-    // for the rationale on stripping the borrow.
-    slot.store(detour.trampoline() as *const () as *mut (), Ordering::Release);
     // Leak the RawDetour so its Drop doesn't disable the hook when
     // this scope exits. The detour lives for the rest of the
     // process.
@@ -479,9 +491,19 @@ unsafe fn install_detours() {
     // inline rather than via a UTF-16 literal to keep
     // `windows-sys` the only Win32 dep.
     let kernel32: [u16; 13] = [
-        b'k' as u16, b'e' as u16, b'r' as u16, b'n' as u16, b'e' as u16,
-        b'l' as u16, b'3' as u16, b'2' as u16, b'.' as u16, b'd' as u16,
-        b'l' as u16, b'l' as u16, 0,
+        b'k' as u16,
+        b'e' as u16,
+        b'r' as u16,
+        b'n' as u16,
+        b'e' as u16,
+        b'l' as u16,
+        b'3' as u16,
+        b'2' as u16,
+        b'.' as u16,
+        b'd' as u16,
+        b'l' as u16,
+        b'l' as u16,
+        0,
     ];
     let module = GetModuleHandleW(kernel32.as_ptr());
     if module.is_null() {
