@@ -244,9 +244,33 @@ fn asset_url() -> String {
     )
 }
 
+/// Default wall-clock bound on the ConPTY sidecar download. The fetch runs
+/// on the first Win10 PTY spawn while holding the `API` `OnceLock`, so every
+/// concurrent first-spawner stalls behind it until it completes or times out
+/// (issue #590, cluster J). Kept bounded — and made overridable via
+/// `RUNNING_PROCESS_CONPTY_SIDECAR_FETCH_TIMEOUT_MS` so operators can tighten
+/// the worst-case first-spawn stall — so a slow/hostile mirror can never
+/// wedge PTY creation.
+const DEFAULT_SIDECAR_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const SIDECAR_FETCH_TIMEOUT_ENV: &str = "RUNNING_PROCESS_CONPTY_SIDECAR_FETCH_TIMEOUT_MS";
+
+fn parse_sidecar_fetch_timeout(raw: Option<&str>) -> std::time::Duration {
+    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(DEFAULT_SIDECAR_FETCH_TIMEOUT)
+}
+
+fn sidecar_fetch_timeout() -> std::time::Duration {
+    parse_sidecar_fetch_timeout(std::env::var(SIDECAR_FETCH_TIMEOUT_ENV).ok().as_deref())
+}
+
 fn http_get(url: &str) -> Result<Vec<u8>, String> {
+    // `ureq`'s request-level `.timeout()` bounds the entire call including the
+    // body read below, so `into_reader().read_to_end()` cannot trickle past
+    // the deadline.
     let resp = ureq::get(url)
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(sidecar_fetch_timeout())
         .call()
         .map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(8 * 1024 * 1024);
@@ -337,6 +361,30 @@ pub(super) fn verify_asset(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn sidecar_fetch_timeout_defaults_when_unset_or_invalid() {
+        assert_eq!(
+            parse_sidecar_fetch_timeout(None),
+            DEFAULT_SIDECAR_FETCH_TIMEOUT
+        );
+        assert_eq!(
+            parse_sidecar_fetch_timeout(Some("bogus")),
+            DEFAULT_SIDECAR_FETCH_TIMEOUT
+        );
+        assert_eq!(
+            parse_sidecar_fetch_timeout(Some("0")),
+            DEFAULT_SIDECAR_FETCH_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn sidecar_fetch_timeout_honors_valid_override() {
+        assert_eq!(
+            parse_sidecar_fetch_timeout(Some("5000")),
+            std::time::Duration::from_millis(5000)
+        );
+    }
 
     fn stage_fake_sidecar(dir: &Path) {
         fs::create_dir_all(dir).expect("mkdir");
