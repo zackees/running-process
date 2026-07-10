@@ -387,8 +387,56 @@ fn read_handoff_ready(
     Ok(())
 }
 
+/// Default deadline for a broker client round-trip (Hello / admin
+/// request). Bounds the blocking connect + write + read so a broker that
+/// accepts the connection then stalls before replying can't wedge the
+/// caller forever (issue #590, cluster H). Override with
+/// `RUNNING_PROCESS_BROKER_CLIENT_TIMEOUT_MS` (milliseconds).
+const DEFAULT_BROKER_CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
+const BROKER_CLIENT_TIMEOUT_ENV: &str = "RUNNING_PROCESS_BROKER_CLIENT_TIMEOUT_MS";
+
+fn parse_broker_client_timeout(raw: Option<&str>) -> Duration {
+    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_BROKER_CLIENT_TIMEOUT)
+}
+
+fn broker_client_deadline() -> Duration {
+    parse_broker_client_timeout(std::env::var(BROKER_CLIENT_TIMEOUT_ENV).ok().as_deref())
+}
+
+fn broker_client_timeout_err() -> BrokerClientError {
+    BrokerClientError::BrokerConnect(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "broker client round-trip did not complete within the deadline",
+    ))
+}
+
 /// Send one typed admin request to a broker endpoint and return its reply.
+///
+/// The blocking connect + write + read round-trip runs on a helper thread
+/// bounded by `broker_client_deadline` (issue #590, cluster H); on
+/// timeout the helper thread owns and drops the abandoned stream so a
+/// stalled broker never wedges the caller.
 pub fn send_admin_request(
+    broker_endpoint: &str,
+    request: AdminRequest,
+) -> Result<AdminReply, BrokerClientError> {
+    let endpoint = broker_endpoint.to_string();
+    let (tx, rx) = mpsc::channel();
+    // Free-function `thread::spawn` (a thread, not a process spawn), so the
+    // spawn-path guard leaves it alone — same as `broker::client_v2`.
+    thread::spawn(move || {
+        let _ = tx.send(send_admin_request_unbounded(&endpoint, request));
+    });
+    match rx.recv_timeout(broker_client_deadline()) {
+        Ok(result) => result,
+        Err(_) => Err(broker_client_timeout_err()),
+    }
+}
+
+fn send_admin_request_unbounded(
     broker_endpoint: &str,
     request: AdminRequest,
 ) -> Result<AdminReply, BrokerClientError> {
@@ -428,14 +476,33 @@ pub fn connect_local_socket(endpoint: &str) -> io::Result<interprocess::local_so
 fn broker_hello(
     request: &ConnectBackendRequest<'_>,
 ) -> Result<(interprocess::local_socket::Stream, Negotiated), BrokerClientError> {
+    // Bound the Hello handshake round-trip on a helper thread (issue #590,
+    // cluster H). `request` is borrowed, so capture the owned endpoint +
+    // pre-encoded Hello payload before moving into the thread; the
+    // negotiated stream (Send) is handed back through the channel.
+    let endpoint = request.broker_endpoint.to_string();
+    let hello_bytes = request.hello().encode_to_vec();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(broker_hello_unbounded(&endpoint, hello_bytes));
+    });
+    match rx.recv_timeout(broker_client_deadline()) {
+        Ok(result) => result,
+        Err(_) => Err(broker_client_timeout_err()),
+    }
+}
+
+fn broker_hello_unbounded(
+    broker_endpoint: &str,
+    hello_bytes: Vec<u8>,
+) -> Result<(interprocess::local_socket::Stream, Negotiated), BrokerClientError> {
     let mut stream =
-        connect_local_socket(request.broker_endpoint).map_err(BrokerClientError::BrokerConnect)?;
-    let hello = request.hello();
+        connect_local_socket(broker_endpoint).map_err(BrokerClientError::BrokerConnect)?;
     let request_frame = Frame {
         envelope_version: PROTOCOL_VERSION,
         kind: FrameKind::Request as i32,
         payload_protocol: CONTROL_PAYLOAD_PROTOCOL,
-        payload: hello.encode_to_vec(),
+        payload: hello_bytes,
         request_id: 1,
         payload_encoding: PayloadEncoding::None as i32,
         deadline_unix_ms: 0,
@@ -588,5 +655,55 @@ impl RefusalKind {
             ErrorCode::ErrorShuttingDown => RefusalKind::ShuttingDown,
             other => RefusalKind::Other(other),
         }
+    }
+}
+
+#[cfg(test)]
+mod cluster_h_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn broker_client_timeout_defaults_when_unset_or_invalid() {
+        assert_eq!(
+            parse_broker_client_timeout(None),
+            DEFAULT_BROKER_CLIENT_TIMEOUT
+        );
+        assert_eq!(
+            parse_broker_client_timeout(Some("nope")),
+            DEFAULT_BROKER_CLIENT_TIMEOUT
+        );
+        assert_eq!(
+            parse_broker_client_timeout(Some("0")),
+            DEFAULT_BROKER_CLIENT_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn broker_client_timeout_honors_valid_override() {
+        assert_eq!(
+            parse_broker_client_timeout(Some("750")),
+            Duration::from_millis(750)
+        );
+    }
+
+    #[test]
+    fn send_admin_request_to_missing_broker_errors_promptly() {
+        // A broker endpoint that does not exist must fail fast (connection
+        // refused / not found), never hang, and return within the bounded
+        // helper-thread deadline.
+        let bogus = if cfg!(windows) {
+            r"\.\pipe\running-process-broker-nonexistent-cluster-h-test"
+        } else {
+            "/tmp/running-process-broker-nonexistent-cluster-h-test.sock"
+        };
+        let start = Instant::now();
+        let result = send_admin_request(bogus, AdminRequest::default());
+        assert!(result.is_err());
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "send_admin_request to a missing broker took {:?}; should fail fast",
+            start.elapsed()
+        );
     }
 }
