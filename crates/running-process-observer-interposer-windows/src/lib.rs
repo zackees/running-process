@@ -69,11 +69,11 @@
 #![cfg(all(target_os = "windows", target_arch = "x86_64"))]
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 
 use retour::RawDetour;
 use windows_sys::Win32::Foundation::{
@@ -173,7 +173,52 @@ fn handle_table_remove(handle: HANDLE) -> Option<String> {
 /// installation failed). The `IN_HOOK` reentrancy guard handles
 /// the case where another hook called this and the `WriteFile`
 /// detour fires — it short-circuits the emit-recursion path.
+/// Bounded queue of pending `RPO_HOOK …` lines plus a wakeup condvar.
+/// `emit_bytes` enqueues here (never blocks); a dedicated drain thread
+/// writes them to stderr with a blocking `WriteFile`. This decouples the
+/// host process's own file operations from stderr backpressure (issue
+/// #590, cluster E): previously a full/undrained stderr pipe blocked the
+/// blocking `WriteFile` *inside every hooked file op*, wedging the host
+/// thread. Now backpressure only slows the drain thread, and the queue
+/// drops its oldest lines once it fills.
+struct EmitQueue {
+    lines: Mutex<VecDeque<Vec<u8>>>,
+    wakeup: Condvar,
+}
+
+static EMIT_QUEUE: OnceLock<EmitQueue> = OnceLock::new();
+
+/// Cap on buffered lines. Oldest lines are dropped on overflow so a
+/// stalled stderr can never make `emit_bytes` block or grow memory without
+/// bound.
+const EMIT_QUEUE_MAX_LINES: usize = 4096;
+
+fn emit_queue() -> &'static EmitQueue {
+    EMIT_QUEUE.get_or_init(|| EmitQueue {
+        lines: Mutex::new(VecDeque::new()),
+        wakeup: Condvar::new(),
+    })
+}
+
+/// Enqueue an `RPO_HOOK` line for the drain thread. Non-blocking: takes a
+/// brief mutex, drops the oldest line on overflow, and returns — a hooked
+/// file op never blocks on stderr.
 fn emit_bytes(bytes: &[u8]) {
+    let queue = emit_queue();
+    if let Ok(mut lines) = queue.lines.lock() {
+        if lines.len() >= EMIT_QUEUE_MAX_LINES {
+            lines.pop_front();
+        }
+        lines.push_back(bytes.to_vec());
+        queue.wakeup.notify_one();
+    }
+}
+
+/// Blocking write of one line to stderr. Runs only on the drain thread, so
+/// blocking here never affects a host file op. Prefers the `WriteFile`
+/// trampoline (the un-detoured original) so the drain's own write does not
+/// re-enter the `WriteFile` detour.
+fn write_line_to_stderr(bytes: &[u8]) {
     unsafe {
         let h = GetStdHandle(STD_ERROR_HANDLE);
         if h.is_null() || h == INVALID_HANDLE_VALUE {
@@ -200,6 +245,40 @@ fn emit_bytes(bytes: &[u8]) {
             );
         }
     }
+}
+
+/// Drain loop: block on the condvar until lines are queued, then write them
+/// to stderr. A slow/full stderr blocks only this thread.
+fn emit_drain_loop() {
+    let queue = emit_queue();
+    loop {
+        let line = {
+            let mut lines = match queue.lines.lock() {
+                Ok(lines) => lines,
+                Err(_) => return,
+            };
+            loop {
+                if let Some(line) = lines.pop_front() {
+                    break line;
+                }
+                lines = match queue.wakeup.wait(lines) {
+                    Ok(lines) => lines,
+                    Err(_) => return,
+                };
+            }
+        };
+        write_line_to_stderr(&line);
+    }
+}
+
+/// Start the stderr drain thread exactly once. Called from the install
+/// worker (off the loader lock). Free-function `thread::spawn` (a thread,
+/// not a process) so the spawn-path guard leaves it alone.
+fn start_emit_drain_thread() {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    STARTED.get_or_init(|| {
+        let _ = std::thread::spawn(emit_drain_loop);
+    });
 }
 
 fn emit_line(line: &str) {
@@ -567,9 +646,12 @@ unsafe fn install_detours() {
 /// (the return code is captured by `GetExitCodeThread` but we
 /// don't read it).
 unsafe extern "system" fn install_thread_main(_param: *mut core::ffi::c_void) -> u32 {
+    // Start the stderr drain thread before emitting anything (issue #590,
+    // cluster E): from here on `emit_bytes` only enqueues, and this thread
+    // does the blocking writes so a full stderr can't wedge a host file op.
+    start_emit_drain_thread();
     // Diagnostic line so the slice 7 integration test can confirm
-    // the worker thread actually ran. Written via the un-detoured
-    // WriteFile (the trampoline isn't stashed yet at this point).
+    // the worker thread actually ran.
     emit_line("RPO_HOOK install-thread-start\n");
     install_detours();
     emit_line("RPO_HOOK install-thread-done\n");
