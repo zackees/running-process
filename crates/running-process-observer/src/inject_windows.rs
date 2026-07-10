@@ -47,7 +47,7 @@
 //! detours are already installed).
 
 #![allow(unsafe_code)] // explicit per-module allow; the crate-level
-                      // attr is `#![deny(unsafe_code)]`.
+                       // attr is `#![deny(unsafe_code)]`.
 
 use std::ffi::OsStr;
 use std::io;
@@ -60,13 +60,12 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Memory::{
-    VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
-    PAGE_READWRITE,
+    VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
 };
 use windows_sys::Win32::System::Threading::{
     CreateRemoteThread, GetExitCodeThread, OpenProcess, WaitForSingleObject,
-    INFINITE, LPTHREAD_START_ROUTINE, PROCESS_CREATE_THREAD,
-    PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_WRITE,
+    LPTHREAD_START_ROUTINE, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
+    PROCESS_VM_WRITE,
 };
 
 /// `WaitForSingleObject` success indicator. Same numeric value as
@@ -74,11 +73,36 @@ use windows_sys::Win32::System::Threading::{
 /// on `windows-sys`.
 const WAIT_OBJECT_0_LOCAL: u32 = 0;
 
+/// `WaitForSingleObject` timeout indicator (`WAIT_TIMEOUT`); declared
+/// inline for the same reason as [`WAIT_OBJECT_0_LOCAL`].
+const WAIT_TIMEOUT_LOCAL: u32 = 0x0000_0102;
+
+/// Hard cap on how long the injector blocks on the remote `LoadLibraryW`
+/// thread before giving up (issue #590, cluster F). Without it an
+/// `INFINITE` wait wedges the injector forever whenever the remote
+/// `LoadLibraryW` stalls on the loader lock (another target thread holds
+/// it, or the process hasn't finished loader init). Override with
+/// `RUNNING_PROCESS_INJECT_WAIT_TIMEOUT_MS` (milliseconds).
+const DEFAULT_INJECT_WAIT_TIMEOUT_MS: u32 = 30_000;
+const INJECT_WAIT_TIMEOUT_ENV: &str = "RUNNING_PROCESS_INJECT_WAIT_TIMEOUT_MS";
+
+fn parse_inject_wait_timeout_ms(raw: Option<&str>) -> u32 {
+    raw.and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|&ms| ms > 0)
+        .unwrap_or(DEFAULT_INJECT_WAIT_TIMEOUT_MS)
+}
+
+fn inject_wait_timeout_ms() -> u32 {
+    parse_inject_wait_timeout_ms(std::env::var(INJECT_WAIT_TIMEOUT_ENV).ok().as_deref())
+}
+
 /// Inject `dll_path` into the process identified by `pid`.
 ///
-/// Blocks until the remote `LoadLibraryW` call returns. Returns the
-/// remote `HMODULE` (the `LoadLibraryW` return value) cast to
-/// `usize` — nonzero on success.
+/// Blocks until the remote `LoadLibraryW` call returns or the bounded
+/// wait ([`DEFAULT_INJECT_WAIT_TIMEOUT_MS`], overridable) elapses; a
+/// timeout yields an [`io::ErrorKind::TimedOut`] error rather than
+/// wedging forever. Returns the remote `HMODULE` (the `LoadLibraryW`
+/// return value) cast to `usize` — nonzero on success.
 ///
 /// # Errors
 ///
@@ -188,17 +212,25 @@ pub fn inject_into_pid(pid: u32, dll_path: &Path) -> io::Result<usize> {
     // at boot, not per-process. This is a longstanding documented
     // behavior that injection vehicles rely on.)
     let kernel32_w: [u16; 13] = [
-        b'k' as u16, b'e' as u16, b'r' as u16, b'n' as u16, b'e' as u16,
-        b'l' as u16, b'3' as u16, b'2' as u16, b'.' as u16, b'd' as u16,
-        b'l' as u16, b'l' as u16, 0,
+        b'k' as u16,
+        b'e' as u16,
+        b'r' as u16,
+        b'n' as u16,
+        b'e' as u16,
+        b'l' as u16,
+        b'3' as u16,
+        b'2' as u16,
+        b'.' as u16,
+        b'd' as u16,
+        b'l' as u16,
+        b'l' as u16,
+        0,
     ];
     let kernel32 = unsafe { GetModuleHandleW(kernel32_w.as_ptr()) };
     if kernel32.is_null() {
         return Err(last_error("GetModuleHandleW(kernel32.dll)"));
     }
-    let load_library_w = unsafe {
-        GetProcAddress(kernel32, c"LoadLibraryW".as_ptr() as *const u8)
-    };
+    let load_library_w = unsafe { GetProcAddress(kernel32, c"LoadLibraryW".as_ptr() as *const u8) };
     let Some(load_library_w) = load_library_w else {
         return Err(last_error("GetProcAddress(LoadLibraryW)"));
     };
@@ -232,8 +264,29 @@ pub fn inject_into_pid(pid: u32, dll_path: &Path) -> io::Result<usize> {
     }
     resources.thread = thread;
 
-    // ── Step 6: Wait + capture exit code ──
-    let wait = unsafe { WaitForSingleObject(thread, INFINITE) };
+    // ── Step 6: Wait (bounded) + capture exit code ──
+    //
+    // A finite timeout instead of INFINITE (issue #590, cluster F): if the
+    // remote `LoadLibraryW` stalls on the loader lock, an INFINITE wait
+    // would wedge the injector forever. On timeout we leak the remote
+    // allocation on purpose — the remote thread may still be reading
+    // `dll_path` from it, so `VirtualFreeEx`-ing it here would be a
+    // use-after-free in the target — and return a TimedOut error.
+    let timeout_ms = inject_wait_timeout_ms();
+    let wait = unsafe { WaitForSingleObject(thread, timeout_ms) };
+    if wait == WAIT_TIMEOUT_LOCAL {
+        // Prevent Drop from freeing the allocation the still-running remote
+        // thread may still be reading.
+        resources.remote_alloc = core::ptr::null_mut();
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "remote LoadLibraryW({}) did not return within {timeout_ms} ms; \
+                 the target may be stalled on the loader lock",
+                dll_path.display()
+            ),
+        ));
+    }
     if wait != WAIT_OBJECT_0_LOCAL {
         return Err(last_error("WaitForSingleObject"));
     }
@@ -274,4 +327,39 @@ fn last_error(op: &'static str) -> io::Error {
     let code = unsafe { GetLastError() };
     let inner = io::Error::from_raw_os_error(code as i32);
     io::Error::new(inner.kind(), format!("{op} failed: {inner}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inject_wait_timeout_defaults_when_unset_or_invalid() {
+        assert_eq!(
+            parse_inject_wait_timeout_ms(None),
+            DEFAULT_INJECT_WAIT_TIMEOUT_MS
+        );
+        assert_eq!(
+            parse_inject_wait_timeout_ms(Some("not-a-number")),
+            DEFAULT_INJECT_WAIT_TIMEOUT_MS
+        );
+        // Zero would degrade to an unbounded-ish immediate return; reject it
+        // and fall back to the default.
+        assert_eq!(
+            parse_inject_wait_timeout_ms(Some("0")),
+            DEFAULT_INJECT_WAIT_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn inject_wait_timeout_honors_valid_override() {
+        assert_eq!(parse_inject_wait_timeout_ms(Some("500")), 500);
+        assert_eq!(parse_inject_wait_timeout_ms(Some("  1500  ")), 1500);
+    }
+
+    #[test]
+    fn wait_timeout_constant_matches_win32() {
+        // WAIT_TIMEOUT is 0x102 (258).
+        assert_eq!(WAIT_TIMEOUT_LOCAL, 258);
+    }
 }
