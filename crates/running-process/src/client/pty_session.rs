@@ -345,9 +345,11 @@ impl PtyAttachment {
         steal: bool,
         terminal_capabilities: TerminalCapabilities,
     ) -> Result<Self, AttachError> {
-        let name = paths::make_socket_name(socket_path).map_err(AttachError::Connect)?;
-        use interprocess::local_socket::traits::Stream as _;
-        let stream = Stream::connect(name).map_err(AttachError::Connect)?;
+        // Bounded connect (issue #590, cluster B): a bound-but-never-
+        // accepting daemon socket must not wedge the attaching client.
+        paths::make_socket_name(socket_path).map_err(AttachError::Connect)?;
+        let stream = crate::client::deadline_io::connect_with_timeout(socket_path)
+            .map_err(AttachError::Connect)?;
         let stream_clone = stream.try_clone().map_err(AttachError::Connect)?;
         let mut reader = BufReader::new(stream);
         let mut writer = BufWriter::new(stream_clone);
@@ -500,6 +502,9 @@ fn read_length_prefixed<R: Read>(r: &mut R) -> Result<Vec<u8>, std::io::Error> {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
+    // Cap before allocating so a corrupt/desynced frame can't drive a
+    // multi-GiB allocation + unbounded read (issue #590, cluster B).
+    crate::client::deadline_io::check_frame_len(len)?;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(buf)

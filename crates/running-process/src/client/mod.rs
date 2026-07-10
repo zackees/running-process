@@ -7,6 +7,7 @@
 
 #[allow(clippy::module_inception)]
 pub mod client;
+pub(crate) mod deadline_io;
 pub mod observer;
 pub mod paths;
 pub mod pipe_session;
