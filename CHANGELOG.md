@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.5.10 — Windows: private broker dirs no longer strip child / hardlinked-file ACLs
+
+Fixes a destructive Windows DACL in `secure_dir` (the broker's private-dir hardening), root-caused live on a wedged dev box — see [zackees/soldr#1513](https://github.com/zackees/soldr/issues/1513).
+
+The old owner-only DACL `D:P(A;;FA;;;OW)` carried a single **non-inheritable** ACE. Applying it with `SetNamedSecurityInfoW` re-propagates auto-inheritance to every existing descendant, which **stripped all children to an empty DACL** (deny-everyone, including the owner). Worse, NTFS hardlinks share one security descriptor per file, so a binary hardlinked inside a privatized dir bricked its sibling link *outside* the tree — e.g. a consumer's pip-installed `soldr.exe` became unreadable/unexecutable until manually repaired with `icacls /reset`.
+
+- The private-dir DACL is now `D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)`: still protected + private from other users, but the ACEs are inheritable, so propagation *grants* owner + SYSTEM access down the tree instead of stripping it. SYSTEM is included so AV / indexing / backup agents keep working.
+- `private_dir_permissions_are_private` now rejects the legacy non-inheritable shape, so probe-and-repair callers re-apply the fixed DACL — which also **self-heals** trees bricked by the old one.
+- Windows regression tests cover the child-strip, the hardlink leak, and the legacy-shape heal path.
+
+Unix (`chmod 700`) is unchanged.
+
 ## 4.4.0 — `into_backend_io()`: hand the live broker socket back to the consumer
 
 Adds [`BrokerSession::into_backend_io`](https://github.com/zackees/zccache/issues/720) (and its `AsyncBrokerSession` twin) so a consumer that has finished broker adoption can stop speaking the FrameV1 request/response wire and take ownership of the live negotiated socket to run its own protocol over it.
