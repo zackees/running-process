@@ -868,6 +868,151 @@ time.sleep(60)";
     }
 }
 
+/// Issue #590 (cluster A): when the direct child exits *on its own* (not
+/// via `kill()`) while a grandchild inherited the captured stdout pipe
+/// and outlives it, `wait()` must still return in bounded time. Before
+/// the fix, the natural-exit path called an unbounded
+/// `wait_for_capture_completion`, so `wait(Some(30s))` blocked forever —
+/// the caller's timeout was silently defeated. Mirrors `uv run python
+/// ...` where uv exits while a python grandchild keeps the pipe open.
+#[test]
+fn wait_returns_when_grandchild_orphans_pipe_on_natural_exit() {
+    // Parent prints both PIDs, spawns a grandchild that sleeps 60 s with
+    // the inherited stdout, then exits immediately. The grandchild keeps
+    // the stdout pipe's write end open for the duration of the test, so
+    // the reader thread never sees EOF on its own.
+    let script = "\
+import os, subprocess, sys;\
+print('PARENT_PID=' + str(os.getpid()), flush=True);\
+gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);\
+print('GRANDCHILD_PID=' + str(gc.pid), flush=True);\
+sys.stdout.flush()";
+
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), script.into()]),
+        true,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+
+    // Read until the parent announces the grandchild PID (it does so
+    // before exiting; the held-open pipe means no premature EOF).
+    let mut grandchild_pid: Option<u32> = None;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        match process.read_combined(Some(Duration::from_millis(200))) {
+            ReadStatus::Line(event) => {
+                let line = String::from_utf8_lossy(&event.line).into_owned();
+                if let Some(rest) = line.strip_prefix("GRANDCHILD_PID=") {
+                    grandchild_pid = rest.trim().parse::<u32>().ok();
+                    break;
+                }
+            }
+            ReadStatus::Timeout => continue,
+            ReadStatus::Eof => break,
+        }
+    }
+    let grandchild_pid = grandchild_pid.expect("did not observe GRANDCHILD_PID line");
+
+    // The parent has exited (or is about to); the grandchild holds the
+    // stdout pipe open. Without the bounded natural-exit drain this
+    // wait() blocks forever despite the requested 30 s timeout.
+    let wait_start = Instant::now();
+    let result = process.wait(Some(Duration::from_secs(30)));
+    let wait_elapsed = wait_start.elapsed();
+
+    // Reap the lingering grandchild first, so an assertion failure below
+    // still cleans up.
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &grandchild_pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    unsafe {
+        libc::kill(grandchild_pid as i32, libc::SIGKILL);
+    }
+
+    assert!(
+        result.is_ok(),
+        "wait() returned {result:?} instead of the child's exit code",
+    );
+    assert!(
+        wait_elapsed < Duration::from_secs(10),
+        "wait() blocked for {wait_elapsed:?}; the natural-exit capture drain \
+         is not bounded (grandchild-orphaned pipe wedge, issue #590)",
+    );
+}
+
+/// Issue #590 (cluster A) — drain-preservation guard. The bounded
+/// natural-exit drain must NOT discard output a short-lived grandchild
+/// writes *after* the direct child exits: unlike kill(), a natural exit
+/// should let the reader drain within the grace window. This guards
+/// against over-eagerly cancelling the reader on exit (which would drop
+/// the late output, as the `stream_iter latches while stderr keeps
+/// draining` behaviour relies on).
+#[test]
+fn natural_exit_still_captures_late_grandchild_output() {
+    // Parent spawns a grandchild that, after a short delay, writes a
+    // marker line to the inherited stdout and exits; the parent itself
+    // exits immediately. The marker therefore lands on the pipe *after*
+    // the direct child has already exited.
+    let script = "\
+import subprocess, sys;\
+subprocess.Popen([sys.executable, '-c', \
+\"import time,sys; time.sleep(0.3); print('LATE_GRANDCHILD_OUTPUT', flush=True); sys.stdout.flush()\"]);\
+sys.exit(0)";
+
+    // Use a generous drain grace so the behaviour under test (no eager
+    // cancel of the reader on natural exit) is checked deterministically,
+    // decoupled from grandchild-startup latency under CI load.
+    let prior = std::env::var_os("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS");
+    std::env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", "15000");
+
+    let process = NativeProcess::new(config(
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), script.into()]),
+        true,
+        StdinMode::Inherit,
+        None,
+    ));
+
+    process.start().unwrap();
+
+    // Read events until EOF (or a generous bound) and collect them.
+    let mut saw_late_output = false;
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while Instant::now() < deadline {
+        match process.read_combined(Some(Duration::from_millis(200))) {
+            ReadStatus::Line(event) => {
+                if String::from_utf8_lossy(&event.line).contains("LATE_GRANDCHILD_OUTPUT") {
+                    saw_late_output = true;
+                    break;
+                }
+            }
+            ReadStatus::Timeout => continue,
+            ReadStatus::Eof => break,
+        }
+    }
+
+    let _ = process.wait(Some(Duration::from_secs(5)));
+
+    match prior {
+        Some(v) => std::env::set_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS", v),
+        None => std::env::remove_var("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS"),
+    }
+
+    assert!(
+        saw_late_output,
+        "late grandchild output written after the direct child exited was \
+         dropped; the natural-exit drain cancelled the reader too eagerly",
+    );
+}
+
 // ── pid() ──
 
 #[test]
