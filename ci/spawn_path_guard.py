@@ -141,6 +141,11 @@ ALLOWED_RUST_SPAWN = {
     # deadline can bound it — interprocess::Stream::connect has no
     # portable timeout and can hang in connect(2) on macOS (#399).
     Path("crates/running-process/src/broker/backend_lifecycle/probe.rs"),
+    # Sync IPC client connect deadline (#590 cluster B): `thread::Builder
+    # ::spawn` (a thread, not a process) hosting the blocking local-socket
+    # connect so `connect_with_timeout` can bound it — same rationale as
+    # backend_lifecycle/probe.rs above. No process spawn happens here.
+    Path("crates/running-process/src/client/deadline_io.rs"),
     # Broker-v2 binary accept loop: per-connection `thread::Builder::spawn`
     # (a thread, not a process) to handle Hello negotiation under a
     # MAX_INFLIGHT_HANDLERS cap. The thread reads framed bytes from an
