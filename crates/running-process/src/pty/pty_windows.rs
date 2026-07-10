@@ -9,20 +9,26 @@ pub(super) fn input_payload(data: &[u8]) -> Vec<u8> {
 #[inline(never)]
 pub(super) fn respond_to_queries(process: &NativePtyProcess, data: &[u8]) -> Result<(), PtyError> {
     crate::rp_rust_debug_scope!("running_process::pty_windows::respond_to_queries");
-    let mut guard = process.handles.lock().expect("pty handles mutex poisoned");
-    let handles = guard.as_mut().ok_or(PtyError::NotRunning)?;
     let query = b"\x1b[6n";
     let count = data
         .windows(query.len())
         .filter(|window| *window == query)
         .count();
-    for _ in 0..count {
-        handles
-            .writer
-            .write_all(b"\x1b[1;1R")
-            .map_err(PtyError::Io)?;
+    if count == 0 {
+        return Ok(());
     }
-    handles.writer.flush().map_err(PtyError::Io)
+    // Clone the writer out from under the `handles` lock before writing
+    // (issue #590, cluster D) so a blocked write can't wedge teardown.
+    let writer = {
+        let guard = process.handles.lock().expect("pty handles mutex poisoned");
+        let handles = guard.as_ref().ok_or(PtyError::NotRunning)?;
+        std::sync::Arc::clone(&handles.writer)
+    };
+    let mut writer = writer.lock().expect("pty writer mutex poisoned");
+    for _ in 0..count {
+        writer.write_all(b"\x1b[1;1R").map_err(PtyError::Io)?;
+    }
+    writer.flush().map_err(PtyError::Io)
 }
 
 #[inline(never)]
