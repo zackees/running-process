@@ -296,18 +296,42 @@ pub(crate) fn windows_priority_flags(nice: Option<i32>) -> u32 {
     }
 }
 
-/// Compute the full Windows `creation_flags` for a daemon-spawned child.
+/// True when the running process is attached to a console.
 ///
-/// # `CREATE_NO_WINDOW` default (#584)
+/// Console-less parents (the detached daemon) are the #584 flash scenario;
+/// console-attached parents pass their console to children by inheritance,
+/// so no window is created for the child in the first place.
+///
+/// Probes ATTACHMENT (`GetConsoleCP() != 0`), not `GetConsoleWindow`: a
+/// process can be attached to a hidden, windowless console (CI runners,
+/// agent harnesses), where the window handle is null but CTRL_C delivery
+/// across the shared console works — exactly the case the #622 gate must
+/// treat as console-attached.
+pub(crate) fn parent_has_console() -> bool {
+    unsafe { windows_sys::Win32::System::Console::GetConsoleCP() != 0 }
+}
+
+/// Compute the full Windows `creation_flags` for a spawned child.
+///
+/// # `CREATE_NO_WINDOW` default (#584), gated on a console-less parent (#622)
 ///
 /// A `running-process` daemon runs detached (no console). When such a
 /// window-less parent launches a console-subsystem child without
 /// `CREATE_NO_WINDOW`, Windows allocates a fresh console window for the
 /// child — a visible flash for the child's lifetime. Redirecting stdio to
 /// pipes does not suppress it; only the creation flag does. So we default
-/// daemon-spawned children to `CREATE_NO_WINDOW`.
+/// children of console-LESS parents to `CREATE_NO_WINDOW`.
 ///
-/// The default is suppressed only when the caller has already expressed a
+/// The default MUST NOT apply when the parent has a console
+/// (`parent_has_console = true`): the child then inherits the existing
+/// console — no new window can flash — and forcing `CREATE_NO_WINDOW`
+/// would detach the child onto an invisible console of its own, which
+/// breaks `GenerateConsoleCtrlEvent` CTRL_C/CTRL_BREAK delivery between
+/// parent and child (issue #622 — six KeyboardInterrupt integration tests
+/// went red on every Windows CI run after #585 applied the default
+/// unconditionally).
+///
+/// The default is also suppressed when the caller has already expressed a
 /// console opinion through `creationflags` — passing any of
 /// `CREATE_NO_WINDOW`, `CREATE_NEW_CONSOLE`, or `DETACHED_PROCESS` opts out
 /// of the injected default (`CREATE_NEW_CONSOLE` is the way to *keep* a
@@ -317,6 +341,7 @@ pub(crate) fn windows_creation_flags(
     creationflags: Option<u32>,
     create_process_group: bool,
     nice: Option<i32>,
+    parent_has_console: bool,
 ) -> u32 {
     // CREATE_NEW_PROCESS_GROUP makes GenerateConsoleCtrlEvent with
     // CTRL_BREAK_EVENT route to this child's group (rather than the
@@ -333,9 +358,13 @@ pub(crate) fn windows_creation_flags(
     } else {
         0
     };
-    // #584: hide the console by default; respect a caller that already
-    // dictates console behaviour via any console-related creation flag.
-    let no_window = if caller & (CREATE_NO_WINDOW | CREATE_NEW_CONSOLE | DETACHED_PROCESS) != 0 {
+    // #584: hide the console by default for console-less parents; respect
+    // a caller that already dictates console behaviour via any
+    // console-related creation flag, and never detach a console-attached
+    // parent's child from the shared console (#622).
+    let caller_has_console_opinion =
+        caller & (CREATE_NO_WINDOW | CREATE_NEW_CONSOLE | DETACHED_PROCESS) != 0;
+    let no_window = if caller_has_console_opinion || parent_has_console {
         0
     } else {
         CREATE_NO_WINDOW

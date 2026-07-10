@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.5.11 — Windows: gate the CREATE_NO_WINDOW default on a console-less parent
+
+Fixes [#622](https://github.com/zackees/running-process/issues/622): the #584/#585 `CREATE_NO_WINDOW` default was applied to **every** spawned child, not just daemon-spawned ones. A child forced onto its own invisible console can't receive `GenerateConsoleCtrlEvent` CTRL_C/CTRL_BREAK from a console-attached parent — which broke six KeyboardInterrupt integration tests on every Windows CI run since the 4.5.8 release, and breaks CTRL_C interop for any console-attached consumer.
+
+- `windows_creation_flags` now takes `parent_has_console`; the `CREATE_NO_WINDOW` default applies only when the parent is console-LESS (the actual #584 flash scenario — a console-attached parent's child inherits the existing console, so no window can flash).
+- Console attachment is probed with `GetConsoleCP() != 0`, **not** `GetConsoleWindow()`: hidden/windowless consoles (CI runners, agent harnesses) are attached consoles with a null window handle, and CTRL_C works across them.
+- Explicit caller `creationflags` (`CREATE_NO_WINDOW` / `CREATE_NEW_CONSOLE` / `DETACHED_PROCESS`) still win in both directions.
+- Validated RED→GREEN on Windows: the six broken tests (`test_live_pipe_interrupt_*`, `test_allows_child_ctrl_c_false_*`, `test_wait_raises_keyboard_interrupt_*`) fail on 4.5.10 and pass with this change in the same environment.
+
 ## 4.5.10 — Windows: private broker dirs no longer strip child / hardlinked-file ACLs
 
 Fixes a destructive Windows DACL in `secure_dir` (the broker's private-dir hardening), root-caused live on a wedged dev box — see [zackees/soldr#1513](https://github.com/zackees/soldr/issues/1513).

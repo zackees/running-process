@@ -1050,11 +1050,15 @@ impl NativeProcess {
             // #584: defaults to CREATE_NO_WINDOW so a console child spawned
             // by the window-less daemon does not flash a console window,
             // while preserving the caller's console opinion, priority, and
-            // CREATE_NEW_PROCESS_GROUP bits. See `windows_creation_flags`.
+            // CREATE_NEW_PROCESS_GROUP bits. Gated on the parent being
+            // console-less (#622): a console-attached parent's child must
+            // share its console so CTRL_C delivery keeps working.
+            // See `windows_creation_flags`.
             let flags = windows_creation_flags(
                 self.config.creationflags,
                 self.config.create_process_group,
                 self.config.nice,
+                crate::windows::parent_has_console(),
             );
             if flags != 0 {
                 command.creation_flags(flags);
