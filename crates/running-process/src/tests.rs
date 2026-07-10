@@ -521,7 +521,7 @@ mod windows_tests {
         assert_eq!(windows_priority_flags(Some(-20)), HIGH_PRIORITY_CLASS);
     }
 
-    // ── windows_creation_flags (#584) ──
+    // ── windows_creation_flags (#584, console-gated by #622) ──
 
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -529,17 +529,41 @@ mod windows_tests {
     const DETACHED_PROCESS: u32 = 0x0000_0008;
 
     #[test]
-    fn creation_flags_default_hides_console() {
-        // A plain daemon-spawned child gets CREATE_NO_WINDOW by default.
-        let flags = windows_creation_flags(None, false, None);
+    fn creation_flags_default_hides_console_for_consoleless_parent() {
+        // A plain child of a console-less parent (the daemon) gets
+        // CREATE_NO_WINDOW by default — the #584 flash fix.
+        let flags = windows_creation_flags(None, false, None, false);
         assert_ne!(flags & CREATE_NO_WINDOW, 0, "default must hide the console");
+    }
+
+    #[test]
+    fn creation_flags_console_parent_keeps_shared_console() {
+        // #622 regression: a console-attached parent's child must inherit
+        // the shared console (no injected CREATE_NO_WINDOW), or CTRL_C
+        // delivery via GenerateConsoleCtrlEvent breaks.
+        let flags = windows_creation_flags(None, false, None, true);
+        assert_eq!(
+            flags & CREATE_NO_WINDOW,
+            0,
+            "console-attached parent must not detach its child"
+        );
+    }
+
+    #[test]
+    fn creation_flags_console_parent_keeps_group_and_priority() {
+        // The #622 gate must only drop the hide bit — group + priority
+        // still apply for console-attached parents.
+        let flags = windows_creation_flags(None, true, Some(15), true);
+        assert_eq!(flags & CREATE_NO_WINDOW, 0);
+        assert_ne!(flags & CREATE_NEW_PROCESS_GROUP, 0);
+        assert_ne!(flags & windows_priority_flags(Some(15)), 0);
     }
 
     #[test]
     fn creation_flags_new_console_opts_out() {
         // A caller asking for a visible console is respected — no injected
         // CREATE_NO_WINDOW.
-        let flags = windows_creation_flags(Some(CREATE_NEW_CONSOLE), false, None);
+        let flags = windows_creation_flags(Some(CREATE_NEW_CONSOLE), false, None, false);
         assert_eq!(flags & CREATE_NO_WINDOW, 0);
         assert_ne!(flags & CREATE_NEW_CONSOLE, 0);
     }
@@ -549,21 +573,29 @@ mod windows_tests {
         // DETACHED_PROCESS is the caller's own "no console" choice; don't
         // also OR in CREATE_NO_WINDOW (the two are mutually exclusive to
         // CreateProcessW).
-        let flags = windows_creation_flags(Some(DETACHED_PROCESS), false, None);
+        let flags = windows_creation_flags(Some(DETACHED_PROCESS), false, None, false);
         assert_eq!(flags & CREATE_NO_WINDOW, 0);
         assert_ne!(flags & DETACHED_PROCESS, 0);
     }
 
     #[test]
     fn creation_flags_explicit_no_window_not_doubled() {
-        let flags = windows_creation_flags(Some(CREATE_NO_WINDOW), false, None);
+        let flags = windows_creation_flags(Some(CREATE_NO_WINDOW), false, None, false);
+        assert_eq!(flags, CREATE_NO_WINDOW);
+    }
+
+    #[test]
+    fn creation_flags_explicit_no_window_wins_over_console_parent() {
+        // A caller explicitly asking to hide the console is honoured even
+        // when the parent has one.
+        let flags = windows_creation_flags(Some(CREATE_NO_WINDOW), false, None, true);
         assert_eq!(flags, CREATE_NO_WINDOW);
     }
 
     #[test]
     fn creation_flags_preserves_process_group_and_priority() {
         // Group + priority bits are OR-ed in alongside the default hide.
-        let flags = windows_creation_flags(None, true, Some(15));
+        let flags = windows_creation_flags(None, true, Some(15), false);
         assert_ne!(flags & CREATE_NO_WINDOW, 0);
         assert_ne!(flags & CREATE_NEW_PROCESS_GROUP, 0);
         assert_ne!(flags & windows_priority_flags(Some(15)), 0);
@@ -572,7 +604,7 @@ mod windows_tests {
     #[test]
     fn creation_flags_group_survives_console_opt_out() {
         // Opting out of the hidden default must not drop the process group.
-        let flags = windows_creation_flags(Some(CREATE_NEW_CONSOLE), true, None);
+        let flags = windows_creation_flags(Some(CREATE_NEW_CONSOLE), true, None, false);
         assert_eq!(flags & CREATE_NO_WINDOW, 0);
         assert_ne!(flags & CREATE_NEW_PROCESS_GROUP, 0);
         assert_ne!(flags & CREATE_NEW_CONSOLE, 0);
