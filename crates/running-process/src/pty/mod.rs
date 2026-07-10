@@ -126,6 +126,11 @@ pub struct PtyReadShared {
 }
 
 /// Platform-neutral handles for a running native PTY child.
+/// Independently-lockable PTY input writer (issue #590, cluster D). Kept
+/// separate from the `handles` mutex so a blocking write never holds that
+/// lock — see the field docs on [`NativePtyHandles::writer`].
+pub type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
 pub struct NativePtyHandles {
     // #150: master/child were `Box<dyn portable_pty::MasterPty>` etc.
     // Refactored to use the cross-platform PtyMaster / PtyChild
@@ -134,7 +139,13 @@ pub struct NativePtyHandles {
     /// Master side of the PTY, used for resize and size queries.
     pub master: Box<dyn crate::pty::backend::PtyMaster>,
     /// Writer connected to the PTY master input stream.
-    pub writer: Box<dyn Write + Send>,
+    ///
+    /// Held in its own `Arc<Mutex<…>>` (issue #590, cluster D) so a
+    /// blocking `write_all` on a full input pipe does NOT hold the outer
+    /// `handles` mutex. Otherwise `close()`/`kill()`/`poll()` — which all
+    /// lock `handles` — would deadlock behind an input write the child has
+    /// stopped consuming.
+    pub writer: SharedPtyWriter,
     /// Spawned child process attached to the PTY slave.
     pub child: Box<dyn crate::pty::backend::PtyChild>,
     /// Windows Job Object that cleans up the PTY child tree on close.
@@ -627,19 +638,28 @@ pub fn write_pty_input(
     handles: &Arc<Mutex<Option<NativePtyHandles>>>,
     data: &[u8],
 ) -> Result<(), std::io::Error> {
-    let mut guard = handles.lock().expect("pty handles mutex poisoned");
-    let handles = guard.as_mut().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotConnected,
-            "Pseudo-terminal process is not running",
-        )
-    })?;
+    // Clone the writer handle out from under the `handles` lock, then
+    // release `handles` BEFORE the blocking write (issue #590, cluster D).
+    // The PTY input pipe fills when the child stops reading stdin; a
+    // `write_all` that blocked while holding `handles` would deadlock every
+    // teardown/poll path that also locks `handles`.
+    let writer = {
+        let guard = handles.lock().expect("pty handles mutex poisoned");
+        let handles = guard.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Pseudo-terminal process is not running",
+            )
+        })?;
+        Arc::clone(&handles.writer)
+    };
     #[cfg(windows)]
     let payload = pty_windows::input_payload(data);
     #[cfg(unix)]
     let payload = pty_platform::input_payload(data);
-    handles.writer.write_all(&payload)?;
-    handles.writer.flush()
+    let mut writer = writer.lock().expect("pty writer mutex poisoned");
+    writer.write_all(&payload)?;
+    writer.flush()
 }
 
 #[cfg(windows)]

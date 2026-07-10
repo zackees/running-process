@@ -533,7 +533,9 @@ impl NativePtyProcess {
 
         *guard = Some(NativePtyHandles {
             master: Box::new(master) as Box<dyn PtyMaster>,
-            writer,
+            // #590 cluster D: writer lives behind its own mutex so a
+            // blocking input write never holds the `handles` lock.
+            writer: Arc::new(Mutex::new(writer)),
             child: Box::new(child) as Box<dyn PtyChild>,
             #[cfg(windows)]
             _job: job,
