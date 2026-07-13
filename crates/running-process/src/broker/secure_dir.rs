@@ -7,10 +7,46 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EnsurePrivateDirOutcome {
+    #[cfg(windows)]
+    AlreadyPrivate,
+    Hardened,
+}
+
 /// Create `path` and restrict it to the current user.
 pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    ensure_private_dir_with_outcome(path).map(|_| ())
+}
+
+fn ensure_private_dir_with_outcome(path: &Path) -> io::Result<EnsurePrivateDirOutcome> {
     fs::create_dir_all(path)?;
-    set_private_permissions(path)
+
+    // On Windows, applying a protected inheritable DACL re-propagates ACLs
+    // through every existing descendant. Large cache roots can contain tens
+    // of thousands of files, so repeating that operation on every manifest
+    // write turns a constant-size write into a many-second tree walk. The
+    // current DACL is already the complete policy: if it matches, there is
+    // nothing to repair. The Windows predicate deliberately rejects the old
+    // non-inheritable owner-only shape, so legacy roots still take the repair
+    // path and heal descendants affected by that historical bug.
+    #[cfg(windows)]
+    if private_dir_permissions_are_private(path).unwrap_or(false) {
+        return Ok(EnsurePrivateDirOutcome::AlreadyPrivate);
+    }
+
+    set_private_permissions(path)?;
+    if private_dir_permissions_are_private(path)? {
+        Ok(EnsurePrivateDirOutcome::Hardened)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "private-directory permissions were not applied to {}",
+                path.display()
+            ),
+        ))
+    }
 }
 
 /// Return true when `path` has current-user-only permissions.
@@ -63,13 +99,22 @@ fn set_private_permissions(path: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn apply_protected_dacl_sddl(path: &Path, sddl: &str) -> io::Result<()> {
+    use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
+
+    apply_dacl_sddl(path, sddl, PROTECTED_DACL_SECURITY_INFORMATION)
+}
+
+#[cfg(windows)]
+fn apply_dacl_sddl(
+    path: &Path,
+    sddl: &str,
+    inheritance_control: windows_sys::Win32::Security::OBJECT_SECURITY_INFORMATION,
+) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
-    use windows_sys::Win32::Security::{
-        GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-    };
+    use windows_sys::Win32::Security::{GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION};
 
     let sd = LocalSecurityDescriptor::from_sddl(sddl)?;
     let mut present = 0;
@@ -89,7 +134,7 @@ fn apply_protected_dacl_sddl(path: &Path, sddl: &str) -> io::Result<()> {
         SetNamedSecurityInfoW(
             wide.as_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION | inheritance_control,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             dacl,
@@ -105,25 +150,28 @@ fn apply_protected_dacl_sddl(path: &Path, sddl: &str) -> io::Result<()> {
 
 #[cfg(windows)]
 fn platform_private_dir_permissions_are_private(path: &Path) -> io::Result<bool> {
-    let sddl = dir_dacl_sddl(path)?;
-    // Deliberately rejects the legacy non-inheritable `D:P(A;;FA;;;OW)`
-    // shape: callers that probe-and-repair must re-apply the inheritable
-    // DACL so descendants stripped by the old shape get healed.
-    let ace_count = sddl.matches("(A;").count();
-    let owner_full = sddl.contains("(A;OICI;FA;;;OW)") || sddl.contains("(A;OICI;0x1f01ff;;;OW)");
-    let system_full = sddl.contains("(A;OICI;FA;;;SY)") || sddl.contains("(A;OICI;0x1f01ff;;;SY)");
-    Ok(sddl.starts_with("D:P") && ace_count == 2 && owner_full && system_full)
+    let actual = file_security_descriptor(path)?;
+    if !security_descriptor_dacl_is_protected(actual.0)? {
+        return Ok(false);
+    }
+    let actual_dacl = security_descriptor_dacl(actual.0)?;
+
+    // Compare binary ACLs, not SDDL text. SDDL callback/object ACE payloads
+    // can themselves contain strings that look like ordinary ACEs, so
+    // substring matching can be spoofed even when the total ACE count is
+    // correct. Binary equality validates the ACL revision plus every ACE's
+    // type, flags, mask, SID, order, count, and callback/object payload.
+    let expected = LocalSecurityDescriptor::from_sddl(PRIVATE_DIR_SDDL)?;
+    let expected_dacl = security_descriptor_dacl(expected.0)?;
+    Ok(acl_bytes(actual_dacl)? == acl_bytes(expected_dacl)?)
 }
 
 #[cfg(windows)]
-fn dir_dacl_sddl(path: &Path) -> io::Result<String> {
+fn file_security_descriptor(path: &Path) -> io::Result<LocalSecurityDescriptor> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
-        SDDL_REVISION_1, SE_FILE_OBJECT,
-    };
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
 
     let wide: Vec<u16> = path
@@ -147,31 +195,79 @@ fn dir_dacl_sddl(path: &Path) -> io::Result<String> {
     if status != ERROR_SUCCESS {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
-    let sd = LocalSecurityDescriptor(sd);
+    if sd.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "GetNamedSecurityInfoW returned a null security descriptor",
+        ));
+    }
+    Ok(LocalSecurityDescriptor(sd))
+}
 
-    let mut sddl = std::ptr::null_mut();
-    let ok = unsafe {
-        ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            sd.0,
-            SDDL_REVISION_1,
-            DACL_SECURITY_INFORMATION,
-            &mut sddl,
-            std::ptr::null_mut(),
-        )
+#[cfg(windows)]
+fn security_descriptor_dacl_is_protected(
+    sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+) -> io::Result<bool> {
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorControl, SECURITY_DESCRIPTOR_CONTROL, SE_DACL_PROTECTED,
     };
-    if ok == 0 || sddl.is_null() {
+
+    let mut control: SECURITY_DESCRIPTOR_CONTROL = 0;
+    let mut revision = 0;
+    let ok = unsafe { GetSecurityDescriptorControl(sd, &mut control, &mut revision) };
+    if ok == 0 {
         return Err(io::Error::last_os_error());
     }
-    let _sddl_guard = LocalWideString(sddl);
-    let mut len = 0;
-    unsafe {
-        while *sddl.add(len) != 0 {
-            len += 1;
-        }
+    Ok(control & SE_DACL_PROTECTED != 0)
+}
+
+#[cfg(windows)]
+fn security_descriptor_dacl(
+    sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+) -> io::Result<*mut windows_sys::Win32::Security::ACL> {
+    use windows_sys::Win32::Security::{GetSecurityDescriptorDacl, ACL};
+
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let ok = unsafe { GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
     }
-    Ok(String::from_utf16_lossy(unsafe {
-        std::slice::from_raw_parts(sddl, len)
-    }))
+    if dacl.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "directory has no DACL",
+        ));
+    }
+    Ok(dacl)
+}
+
+#[cfg(windows)]
+fn acl_bytes(dacl: *const windows_sys::Win32::Security::ACL) -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, GetAclInformation, ACL_SIZE_INFORMATION,
+    };
+
+    let mut acl_info = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    let ok = unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut acl_info as *mut ACL_SIZE_INFORMATION).cast(),
+            std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe {
+        std::slice::from_raw_parts(dacl.cast::<u8>(), acl_info.AclBytesInUse as usize).to_vec()
+    })
 }
 
 #[cfg(windows)]
@@ -211,18 +307,6 @@ impl Drop for LocalSecurityDescriptor {
     }
 }
 
-#[cfg(windows)]
-struct LocalWideString(windows_sys::core::PWSTR);
-
-#[cfg(windows)]
-impl Drop for LocalWideString {
-    fn drop(&mut self) {
-        unsafe {
-            windows_sys::Win32::Foundation::LocalFree(self.0.cast());
-        }
-    }
-}
-
 #[cfg(all(test, windows))]
 mod windows_tests {
     use std::fs::{self, File};
@@ -234,6 +318,96 @@ mod windows_tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("private");
         ensure_private_dir(&dir).unwrap();
+        assert!(private_dir_permissions_are_private(&dir).unwrap());
+    }
+
+    /// Regression for zackees/running-process#624: re-applying a protected
+    /// inheritable DACL asks Windows to propagate it through the full tree.
+    /// A warm manifest publication must recognize the already-current root
+    /// and skip that operation regardless of descendant count.
+    #[test]
+    fn ensure_private_dir_is_a_noop_for_an_already_private_populated_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("private");
+        ensure_private_dir(&dir).unwrap();
+
+        for index in 0..1_500 {
+            let shard = dir.join(format!("shard-{index:04}"));
+            fs::create_dir(&shard).unwrap();
+            fs::write(shard.join("artifact.bin"), b"payload").unwrap();
+        }
+
+        assert_eq!(
+            ensure_private_dir_with_outcome(&dir).unwrap(),
+            EnsurePrivateDirOutcome::AlreadyPrivate,
+            "a current root must not trigger recursive DACL propagation"
+        );
+        File::open(dir.join("shard-1499/artifact.bin"))
+            .expect("the no-op path must preserve descendant access");
+    }
+
+    /// A two-ACE DACL can still be insecure when one grant uses an object or
+    /// callback ACE instead of the expected ordinary owner grant. Binary ACL
+    /// comparison must reject a same-count, nonstandard ACE without relying
+    /// on text parsing.
+    #[test]
+    fn nonstandard_two_ace_policy_is_rejected_and_repaired() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("private");
+        fs::create_dir_all(&dir).unwrap();
+        apply_protected_dacl_sddl(&dir, "D:P(A;OICI;FA;;;SY)(OA;OICI;FA;;;OW)").unwrap();
+
+        assert!(
+            !private_dir_permissions_are_private(&dir).unwrap(),
+            "same-count but structurally different ACEs must be rejected"
+        );
+        assert_eq!(
+            ensure_private_dir_with_outcome(&dir).unwrap(),
+            EnsurePrivateDirOutcome::Hardened
+        );
+        assert!(private_dir_permissions_are_private(&dir).unwrap());
+    }
+
+    /// ACL bytes do not carry the security descriptor's inheritance-control
+    /// bits. An otherwise identical DACL must not take the no-op path when it
+    /// is unprotected, because the parent may grant new inherited access
+    /// later without changing this directory explicitly.
+    #[test]
+    fn unprotected_identical_acl_is_rejected_and_repaired() {
+        use windows_sys::Win32::Security::UNPROTECTED_DACL_SECURITY_INFORMATION;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("parent");
+        let dir = parent.join("private");
+        fs::create_dir_all(&dir).unwrap();
+
+        // Remove inheritable ACEs from the parent so clearing protection on
+        // the child does not also change its ACL bytes. This isolates the
+        // descriptor control bit as the only policy difference.
+        apply_protected_dacl_sddl(&parent, "D:P(A;;FA;;;OW)(A;;FA;;;SY)").unwrap();
+        apply_protected_dacl_sddl(&dir, PRIVATE_DIR_SDDL).unwrap();
+        let protected = file_security_descriptor(&dir).unwrap();
+        let protected_bytes = acl_bytes(security_descriptor_dacl(protected.0).unwrap()).unwrap();
+
+        apply_dacl_sddl(
+            &dir,
+            PRIVATE_DIR_SDDL,
+            UNPROTECTED_DACL_SECURITY_INFORMATION,
+        )
+        .unwrap();
+        let unprotected = file_security_descriptor(&dir).unwrap();
+        assert!(!security_descriptor_dacl_is_protected(unprotected.0).unwrap());
+        assert_eq!(
+            acl_bytes(security_descriptor_dacl(unprotected.0).unwrap()).unwrap(),
+            protected_bytes,
+            "the fixture must differ only in the descriptor protection bit"
+        );
+        assert!(!private_dir_permissions_are_private(&dir).unwrap());
+
+        assert_eq!(
+            ensure_private_dir_with_outcome(&dir).unwrap(),
+            EnsurePrivateDirOutcome::Hardened
+        );
         assert!(private_dir_permissions_are_private(&dir).unwrap());
     }
 
@@ -301,7 +475,11 @@ mod windows_tests {
              propagation behavior changed and the fix should be revisited"
         );
 
-        ensure_private_dir(&dir).unwrap();
+        assert_eq!(
+            ensure_private_dir_with_outcome(&dir).unwrap(),
+            EnsurePrivateDirOutcome::Hardened,
+            "the rejected legacy shape must still force DACL repair"
+        );
         assert!(private_dir_permissions_are_private(&dir).unwrap());
         File::open(&file).expect("re-applying the inheritable DACL must heal the child");
     }
