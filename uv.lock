@@ -277,7 +277,7 @@ wheels = [
 
 [[package]]
 name = "running-process"
-version = "4.5.4"
+version = "4.5.12"
 source = { editable = "." }
 
 [package.dev-dependencies]
