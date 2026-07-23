@@ -835,33 +835,9 @@ pub fn daemonize_command(command: &str) -> Result<SpawnedDaemon, ClientError> {
 /// Spawn the daemon binary as a detached background process.
 fn spawn_daemon() -> Result<(), ClientError> {
     let exe = daemon_exe_path();
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        const DETACHED: u32 = 0x0000_0008 | 0x0000_0200;
-        std::process::Command::new(&exe)
-            .arg("start")
-            .creation_flags(DETACHED)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(ClientError::Io)?;
-    }
-
-    #[cfg(unix)]
-    {
-        std::process::Command::new(&exe)
-            .arg("start")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(ClientError::Io)?;
-    }
-
+    let mut command = std::process::Command::new(&exe);
+    command.arg("start");
+    crate::spawn_daemon(&mut command).map_err(ClientError::Io)?;
     Ok(())
 }
 
