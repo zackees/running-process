@@ -3,7 +3,7 @@
 use crate::proto::daemon::{
     DaemonRequest, DaemonResponse, KillTreeResponse, KillZombiesResponse, StatusCode, ZombieReport,
 };
-use sysinfo::{Pid, System};
+use std::time::Duration;
 
 use crate::daemon::reaper;
 
@@ -25,7 +25,17 @@ pub fn handle_kill_tree(request: &DaemonRequest, state: &DaemonState) -> DaemonR
     } else {
         3.0
     };
-    let killed = kill_process_tree_impl(req.pid, timeout);
+    let timeout = Duration::from_secs_f64(timeout.min(30.0));
+    let killed = match crate::process_tree::kill_tree(req.pid, timeout) {
+        Ok(killed) => killed,
+        Err(error) => {
+            return error_response(
+                request.id,
+                StatusCode::Internal,
+                format!("failed to kill process tree: {error}"),
+            );
+        }
+    };
 
     // Unregister from registry (if tracked).
     state.registry.unregister(req.pid);
@@ -38,47 +48,6 @@ pub fn handle_kill_tree(request: &DaemonRequest, state: &DaemonState) -> DaemonR
             processes_killed: killed,
         }),
         ..Default::default()
-    }
-}
-
-/// Kill a process tree rooted at `pid`, returning the number of processes killed.
-///
-/// Collects all descendants via sysinfo, then kills them in reverse order
-/// (children before parent) so that parent processes do not respawn children.
-fn kill_process_tree_impl(pid: u32, _timeout_seconds: f64) -> u32 {
-    use sysinfo::Signal;
-
-    let mut sys = System::new();
-    sys.refresh_processes();
-
-    let target = Pid::from_u32(pid);
-
-    // Collect the root and all descendants.
-    let mut to_kill = Vec::new();
-    collect_descendants(&sys, target, &mut to_kill);
-    to_kill.push(target);
-
-    // Kill in reverse order (deepest children first, root last).
-    to_kill.reverse();
-
-    let mut killed_count = 0u32;
-    for &p in &to_kill {
-        if let Some(proc) = sys.process(p) {
-            if proc.kill_with(Signal::Kill).unwrap_or(false) {
-                killed_count += 1;
-            }
-        }
-    }
-    killed_count
-}
-
-/// Recursively collect all descendant PIDs of `parent_pid`.
-fn collect_descendants(sys: &System, parent_pid: Pid, result: &mut Vec<Pid>) {
-    for (child_pid, child_proc) in sys.processes() {
-        if child_proc.parent() == Some(parent_pid) {
-            result.push(*child_pid);
-            collect_descendants(sys, *child_pid, result);
-        }
     }
 }
 

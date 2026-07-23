@@ -34,6 +34,43 @@ use std::os::windows::io::BorrowedHandle;
 use std::process::Command;
 use std::time::Duration;
 
+/// Selects the base environment used for a newly spawned process.
+///
+/// Explicit values added through [`Command::env`] or [`Command::envs`]
+/// are applied after the selected base and therefore win on duplicate keys.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EnvironmentPolicy {
+    /// Choose from the process lifetime: contained subprocesses inherit,
+    /// while detached daemons start from the logged-in user's baseline.
+    #[default]
+    Auto,
+    /// Inherit the spawning process's environment.
+    Inherit,
+    /// Start from the logged-in user's machine + user environment.
+    ///
+    /// Windows implements this with `CreateEnvironmentBlock`. Unix has no
+    /// equivalent stable OS API, so it currently falls back to inheritance.
+    UserBaseline,
+    /// Start from an empty environment.
+    Clear,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SpawnLifetime {
+    Contained,
+    Daemon,
+}
+
+impl EnvironmentPolicy {
+    pub(crate) fn resolve(self, lifetime: SpawnLifetime) -> Self {
+        match (self, lifetime) {
+            (Self::Auto, SpawnLifetime::Contained) => Self::Inherit,
+            (Self::Auto, SpawnLifetime::Daemon) => Self::UserBaseline,
+            (explicit, _) => explicit,
+        }
+    }
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /// Caller-supplied stdio bindings for [`spawn`].
@@ -257,15 +294,14 @@ impl Drop for SpawnedChild {
 /// avoid crashing on later `println!`/`eprintln!` after the parent
 /// closes its handles.
 pub fn spawn_daemon(command: &mut Command) -> std::io::Result<DaemonChild> {
-    spawn_daemon_with_clear_env(command, false)
+    spawn_daemon_with_env_policy(command, EnvironmentPolicy::Auto)
 }
 
 /// Like [`spawn_daemon`] but with explicit control over whether the
 /// daemon's inherited env is passed through to the child.
 ///
-/// `clear_env = false` (default for [`spawn_daemon`]): child inherits the
-/// current process's env, layered with anything set via
-/// `command.env(...)`.
+/// `clear_env = false` uses [`EnvironmentPolicy::Auto`], matching
+/// [`spawn_daemon`].
 ///
 /// `clear_env = true`: child sees ONLY the explicit `command.env(...)`
 /// entries. Mirrors `command.env_clear()` semantics for callers using
@@ -276,13 +312,27 @@ pub fn spawn_daemon_with_clear_env(
     command: &mut Command,
     clear_env: bool,
 ) -> std::io::Result<DaemonChild> {
+    let policy = if clear_env {
+        EnvironmentPolicy::Clear
+    } else {
+        EnvironmentPolicy::Auto
+    };
+    spawn_daemon_with_env_policy(command, policy)
+}
+
+/// Spawn a detached daemon using an explicit environment policy.
+pub fn spawn_daemon_with_env_policy(
+    command: &mut Command,
+    policy: EnvironmentPolicy,
+) -> std::io::Result<DaemonChild> {
+    let policy = policy.resolve(SpawnLifetime::Daemon);
     #[cfg(windows)]
     {
-        imp::spawn_daemon(command, clear_env)
+        imp::spawn_daemon(command, policy)
     }
     #[cfg(unix)]
     {
-        unix_impl::spawn_daemon(command, clear_env)
+        unix_impl::spawn_daemon(command, policy)
     }
 }
 
@@ -290,13 +340,23 @@ pub fn spawn_daemon_with_clear_env(
 /// Sanitized handles, CREATE_NO_WINDOW. Child dies when the returned
 /// [`SpawnedChild`] is dropped.
 pub fn spawn(command: &mut Command, stdio: SpawnStdio<'_>) -> std::io::Result<SpawnedChild> {
+    spawn_with_env_policy(command, stdio, EnvironmentPolicy::Auto)
+}
+
+/// Spawn a contained child using an explicit environment policy.
+pub fn spawn_with_env_policy(
+    command: &mut Command,
+    stdio: SpawnStdio<'_>,
+    policy: EnvironmentPolicy,
+) -> std::io::Result<SpawnedChild> {
+    let policy = policy.resolve(SpawnLifetime::Contained);
     #[cfg(windows)]
     {
-        imp::spawn(command, stdio)
+        imp::spawn(command, stdio, policy)
     }
     #[cfg(unix)]
     {
-        unix_impl::spawn(command, stdio)
+        unix_impl::spawn(command, stdio, policy)
     }
 }
 
@@ -330,5 +390,29 @@ mod tests {
         assert_eq!(s.drain_timeout, Some(Duration::from_secs(2)));
         // No console window by default — opt-in only.
         assert!(!s.show_console);
+    }
+
+    #[test]
+    fn auto_environment_policy_depends_on_lifetime() {
+        assert_eq!(
+            EnvironmentPolicy::Auto.resolve(SpawnLifetime::Contained),
+            EnvironmentPolicy::Inherit
+        );
+        assert_eq!(
+            EnvironmentPolicy::Auto.resolve(SpawnLifetime::Daemon),
+            EnvironmentPolicy::UserBaseline
+        );
+    }
+
+    #[test]
+    fn explicit_environment_policy_is_not_rewritten() {
+        for policy in [
+            EnvironmentPolicy::Inherit,
+            EnvironmentPolicy::UserBaseline,
+            EnvironmentPolicy::Clear,
+        ] {
+            assert_eq!(policy.resolve(SpawnLifetime::Contained), policy);
+            assert_eq!(policy.resolve(SpawnLifetime::Daemon), policy);
+        }
     }
 }

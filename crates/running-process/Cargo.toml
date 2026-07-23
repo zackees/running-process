@@ -219,6 +219,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Environment",
 ] }
 # #445: transparent Win10 ConPTY sidecar self-acquisition. The runtime
 # fetches a per-arch zstd-19 compressed tarball from this crate's

@@ -135,17 +135,10 @@ fn reexec_from_shadow(exe: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(windows)]
 fn reexec_from_shadow(exe: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::windows::process::CommandExt;
-
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    std::process::Command::new(exe)
-        .args(&args)
-        .env(SHADOW_MARKER_ENV, "1")
-        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-        .spawn()?;
+    let mut command = std::process::Command::new(exe);
+    command.args(&args).env(SHADOW_MARKER_ENV, "1");
+    crate::spawn_daemon(&mut command)?;
     std::process::exit(0);
 }
 

@@ -65,21 +65,13 @@ fn slot_to_stdio(slot: &super::StdioSource<'_>) -> io::Result<Stdio> {
     }
 }
 
-pub fn spawn_daemon(command: &mut Command, _clear_env: bool) -> io::Result<super::DaemonChild> {
+pub fn spawn_daemon(
+    command: &mut Command,
+    policy: super::EnvironmentPolicy,
+) -> io::Result<super::DaemonChild> {
     use std::os::unix::process::CommandExt;
 
-    // `_clear_env` is intentionally ignored on Unix. The reason: on
-    // Unix we hand the Command to `command.spawn()` which natively
-    // honours `Command::env_clear()` — so the caller is expected to
-    // have called `env_clear()` BEFORE adding their env overrides via
-    // `command.envs(...)`. Calling `env_clear()` HERE would wipe the
-    // overrides too (`CommandEnv::clear()` resets the vars vec along
-    // with the clear flag), which silently broke the daemon's
-    // env-replace path on Linux until this was found.
-    //
-    // On Windows the equivalent signal is needed because our manual
-    // `build_env_block` doesn't see Rust stdlib's clear flag through
-    // `Command::get_envs()`; that path consumes the bool explicitly.
+    apply_environment_policy(command, policy);
 
     command
         .stdin(Stdio::null())
@@ -104,9 +96,11 @@ pub fn spawn_daemon(command: &mut Command, _clear_env: bool) -> io::Result<super
 pub fn spawn(
     command: &mut Command,
     stdio: super::SpawnStdio<'_>,
+    policy: super::EnvironmentPolicy,
 ) -> io::Result<super::SpawnedChild> {
     use std::os::unix::process::CommandExt;
 
+    apply_environment_policy(command, policy);
     command.stdin(slot_to_stdio(&stdio.stdin)?);
     command.stdout(slot_to_stdio(&stdio.stdout)?);
     command.stderr(slot_to_stdio(&stdio.stderr)?);
@@ -183,6 +177,31 @@ pub fn spawn(
         pid,
         inner: SpawnedInner { child, pgid },
     })
+}
+
+fn apply_environment_policy(command: &mut Command, policy: super::EnvironmentPolicy) {
+    match policy {
+        super::EnvironmentPolicy::Clear => {
+            // Preserve explicit Command::env overrides while changing the
+            // base to empty. Command::env_clear() also clears the override
+            // map, so snapshot and restore it.
+            let explicit: Vec<_> = command
+                .get_envs()
+                .filter_map(|(key, value)| {
+                    value.map(|value| (key.to_os_string(), value.to_os_string()))
+                })
+                .collect();
+            command.env_clear();
+            command.envs(explicit);
+        }
+        super::EnvironmentPolicy::Inherit
+        | super::EnvironmentPolicy::UserBaseline
+        | super::EnvironmentPolicy::Auto => {
+            // There is no stable Unix API equivalent to Windows
+            // CreateEnvironmentBlock. UserBaseline conservatively falls
+            // back to inheritance on Unix.
+        }
+    }
 }
 
 /// Async-signal-safe fd sweep used in pre_exec. See sanitized.rs (now

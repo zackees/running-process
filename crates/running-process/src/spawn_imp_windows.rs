@@ -388,7 +388,10 @@ impl SpawnedInner {
     }
 }
 
-pub fn spawn_daemon(command: &mut Command, clear_env: bool) -> io::Result<super::DaemonChild> {
+pub fn spawn_daemon(
+    command: &mut Command,
+    policy: super::EnvironmentPolicy,
+) -> io::Result<super::DaemonChild> {
     let stdin = open_nul(false)?;
     let stdout = open_nul(true)?;
     let stderr = open_nul(true)?;
@@ -398,7 +401,7 @@ pub fn spawn_daemon(command: &mut Command, clear_env: bool) -> io::Result<super:
         &stdout,
         &stderr,
         CreateMode::Daemon,
-        clear_env,
+        policy,
     )?;
     Ok(super::DaemonChild {
         pid,
@@ -409,6 +412,7 @@ pub fn spawn_daemon(command: &mut Command, clear_env: bool) -> io::Result<super:
 pub fn spawn(
     command: &mut Command,
     stdio: super::SpawnStdio<'_>,
+    policy: super::EnvironmentPolicy,
 ) -> io::Result<super::SpawnedChild> {
     let stdin_slot = resolve_slot(&stdio.stdin, SlotDir::Stdin)?;
     let stdout_slot = resolve_slot(&stdio.stdout, SlotDir::Stdout)?;
@@ -422,11 +426,7 @@ pub fn spawn(
         CreateMode::Contained {
             show_console: stdio.show_console,
         },
-        // Contained-mode spawn doesn't currently support env_clear via
-        // an extra arg — callers using `spawn` set env via the regular
-        // Command::env(...) API and inheritance follows the standard
-        // CRT contract.
-        false,
+        policy,
     )?;
 
     // Build the per-spawn Job Object and assign BEFORE ResumeThread so
@@ -550,7 +550,7 @@ fn create_process_inner(
     stdout: &OwnedHandle,
     stderr: &OwnedHandle,
     mode: CreateMode,
-    clear_env: bool,
+    policy: super::EnvironmentPolicy,
 ) -> io::Result<(HANDLE, HANDLE, u32)> {
     let mut cmdline = build_command_line(command.get_program(), command.get_args());
 
@@ -558,15 +558,14 @@ fn create_process_inner(
         .get_envs()
         .map(|(k, v)| (k.to_os_string(), v.map(|v| v.to_os_string())))
         .collect();
-    let env_block = if envs.is_empty() && !clear_env {
+    let env_block = if envs.is_empty() && policy == super::EnvironmentPolicy::Inherit {
         // No overrides AND no clear → let the kernel inherit the
         // parent's env block (lpEnvironment=NULL).
         None
     } else {
-        // Either we have overrides, or the caller asked to clear
-        // inherited env. In both cases we must build the block
-        // ourselves and pass it explicitly.
-        Some(build_env_block(envs, clear_env))
+        // Either we have overrides, or the caller selected a non-inherited
+        // base. In both cases build and pass an explicit Unicode block.
+        Some(build_env_block(envs, policy)?)
     };
 
     let cwd_w: Option<Vec<u16>> = command.get_current_dir().map(|p| {
@@ -862,7 +861,10 @@ fn quote(arg: &str) -> String {
     out
 }
 
-fn build_env_block(overrides: Vec<(OsString, Option<OsString>)>, clear_env: bool) -> Vec<u16> {
+fn build_env_block(
+    overrides: Vec<(OsString, Option<OsString>)>,
+    policy: super::EnvironmentPolicy,
+) -> io::Result<Vec<u16>> {
     use std::collections::BTreeMap;
     // Windows env var names are case-INSENSITIVE at the kernel level
     // (CreateProcessW + the env block accept any case but
@@ -891,16 +893,23 @@ fn build_env_block(overrides: Vec<(OsString, Option<OsString>)>, clear_env: bool
             .collect()
     };
 
-    let mut env: BTreeMap<Vec<u16>, (OsString, OsString)> = BTreeMap::new();
-    if !clear_env {
-        // Default: start from the daemon's inherited env, then layer
-        // overrides on top.
-        for (k, v) in std::env::vars_os() {
-            env.insert(upper_key(&k), (k, v));
+    let base = match policy {
+        super::EnvironmentPolicy::Inherit => std::env::vars_os().collect(),
+        super::EnvironmentPolicy::UserBaseline => crate::environment::user_baseline_environment()?,
+        super::EnvironmentPolicy::Clear => Vec::new(),
+        super::EnvironmentPolicy::Auto => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Auto environment policy must be resolved before platform spawn",
+            ));
         }
+    };
+
+    let mut env: BTreeMap<Vec<u16>, (OsString, OsString)> = BTreeMap::new();
+    for (k, v) in base {
+        env.insert(upper_key(&k), (k, v));
     }
-    // When clear_env=true we start from an empty map; the env block
-    // we hand `CreateProcessW` contains ONLY the overrides.
+
     for (k, v) in overrides {
         let ck = upper_key(&k);
         match v {
@@ -919,6 +928,20 @@ fn build_env_block(overrides: Vec<(OsString, Option<OsString>)>, clear_env: bool
         block.extend(v.encode_wide());
         block.push(0);
     }
+    if block.is_empty() {
+        block.push(0);
+    }
     block.push(0);
-    block
+    Ok(block)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_environment_block_has_double_nul_terminator() {
+        let block = build_env_block(Vec::new(), super::super::EnvironmentPolicy::Clear).unwrap();
+        assert_eq!(block, vec![0, 0]);
+    }
 }

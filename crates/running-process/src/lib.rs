@@ -18,6 +18,7 @@ use crate::observer::ObserverEmitter;
 
 pub mod console_detect;
 pub mod containment;
+pub mod environment;
 mod helpers;
 // Phase 1 of #221: process-observation capability model + portable
 // lifecycle baseline. Core-feature-clean (std-only: mpsc + SystemTime),
@@ -92,6 +93,7 @@ pub mod telemetry;
 #[cfg(feature = "daemon")]
 /// Daemon runtime APIs and helpers enabled by the `daemon` feature.
 pub mod daemon;
+pub mod process_tree;
 #[cfg(feature = "pty")]
 /// PTY-backed process APIs.
 pub mod pty;
@@ -116,8 +118,8 @@ pub use observer::{
 pub use originator::{find_processes_by_originator, OriginatorProcessInfo};
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
-    spawn, spawn_daemon, spawn_daemon_with_clear_env, DaemonChild, SpawnStdio, SpawnedChild,
-    StdioSource,
+    spawn, spawn_daemon, spawn_daemon_with_clear_env, spawn_daemon_with_env_policy,
+    spawn_with_env_policy, DaemonChild, EnvironmentPolicy, SpawnStdio, SpawnedChild, StdioSource,
 };
 pub use terminal_graphics::{
     current_terminal_capabilities, current_terminal_capabilities_with_timeout,

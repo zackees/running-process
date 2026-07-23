@@ -274,6 +274,109 @@ fn test_contained_group_kills_grandchildren() {
 }
 
 #[test]
+fn test_local_kill_tree_kills_root_and_grandchildren() {
+    let sleeper = testbin_path("testbin-sleeper");
+    let spawner = testbin_path("testbin-spawner");
+
+    let mut child = Command::new(&spawner)
+        .arg("2")
+        .arg(&sleeper)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn raw process-tree fixture");
+    let stdout = child.stdout.take().expect("spawner stdout");
+    let reader = BufReader::new(stdout);
+
+    let mut root_pid = None;
+    let mut descendant_pids = Vec::new();
+    for line in reader.lines() {
+        let line = line.expect("read spawner output");
+        if let Some(pid) = parse_pid_line(&line, "SPAWNER_PID=") {
+            root_pid = Some(pid);
+        } else if let Some(pid) = parse_pid_line(&line, "CHILD_PID=") {
+            descendant_pids.push(pid);
+        } else if line.trim() == "READY" {
+            break;
+        }
+    }
+
+    let root_pid = root_pid.expect("spawner PID");
+    assert_eq!(descendant_pids.len(), 2);
+    let killed = running_process::process_tree::kill_tree(root_pid, Duration::from_secs(5))
+        .expect("kill local process tree");
+    assert!(killed >= 3, "expected root + 2 descendants, got {killed}");
+
+    let _ = child.wait();
+    wait_until_dead(root_pid, Duration::from_secs(5));
+    for pid in descendant_pids {
+        wait_until_dead(pid, Duration::from_secs(5));
+    }
+}
+
+#[test]
+fn test_auto_contained_spawn_inherits_parent_environment() {
+    let env_dump = testbin_path("testbin-env-dump");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = temp.path().join("contained-env.txt");
+    let key = format!("RUNNING_PROCESS_TEST_PARENT_ONLY_{}", std::process::id());
+
+    std::env::set_var(&key, "inherited");
+    let mut command = Command::new(env_dump);
+    command.arg(&output);
+    let mut child =
+        running_process::spawn(&mut command, SpawnStdio::default()).expect("spawn contained");
+    let exit = child.wait().expect("wait contained");
+    std::env::remove_var(&key);
+
+    assert_eq!(exit, 0);
+    let env = std::fs::read_to_string(output).expect("read child environment");
+    assert!(
+        env.lines().any(|line| line == format!("{key}=inherited")),
+        "Auto contained spawn should inherit the parent environment"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn test_auto_daemon_spawn_uses_user_baseline_environment() {
+    let env_dump = testbin_path("testbin-env-dump");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = temp.path().join("daemon-env.txt");
+    let key = format!("RUNNING_PROCESS_TEST_PARENT_ONLY_{}", std::process::id());
+
+    std::env::set_var(&key, "must-not-leak");
+    let mut command = Command::new(env_dump);
+    command
+        .arg(&output)
+        .env("EXPLICIT_DAEMON_VALUE", "preserved");
+    let mut child = running_process::spawn_daemon(&mut command).expect("spawn daemon");
+    let exit = child.wait().expect("wait daemon");
+    std::env::remove_var(&key);
+
+    assert_eq!(exit, 0);
+    let env = std::fs::read_to_string(output).expect("read daemon environment");
+    assert!(
+        !env.lines().any(|line| line.starts_with(&format!("{key}="))),
+        "daemon inherited a parent-only environment variable"
+    );
+    assert!(
+        env.lines()
+            .any(|line| line == "EXPLICIT_DAEMON_VALUE=preserved"),
+        "explicit Command::env override was lost"
+    );
+    assert!(
+        env.lines()
+            .any(|line| line.to_ascii_uppercase().starts_with("SYSTEMROOT=")),
+        "user baseline should contain SystemRoot"
+    );
+    assert!(
+        env.lines()
+            .any(|line| line.to_ascii_uppercase().starts_with("USERPROFILE=")),
+        "user baseline should contain USERPROFILE"
+    );
+}
+
+#[test]
 fn test_daemon_survives_group_drop() {
     let sleeper = testbin_path("testbin-sleeper");
     let group = ContainedProcessGroup::new().expect("create group");
