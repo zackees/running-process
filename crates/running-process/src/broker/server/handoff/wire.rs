@@ -185,6 +185,25 @@ impl<S> WireHandoffDelivery<S> {
         }
     }
 
+    /// Legacy constructor for arbitrary framed transports.
+    ///
+    /// This preserves the original API but cannot arrange nonblocking I/O for
+    /// an unknown stream type. New generic callers should use
+    /// [`Self::new_preconfigured_nonblocking`].
+    #[deprecated(
+        note = "use new_preconfigured_nonblocking, or new_local_socket for production sockets"
+    )]
+    pub fn new(stream: S, service_name: impl Into<String>, correlation_id: u64) -> Self {
+        Self {
+            stream,
+            service_name: service_name.into(),
+            correlation_id,
+            configure_ack_bounded_io: None,
+            ack_setup_error: None,
+            io_deadline: Instant::now() + std::time::Duration::from_secs(30),
+        }
+    }
+
     /// Return the correlation id stamped on the offer and required on the ACK.
     pub fn correlation_id(&self) -> u64 {
         self.correlation_id
@@ -206,7 +225,7 @@ impl<S> WireHandoffDelivery<S> {
 impl WireHandoffDelivery<interprocess::local_socket::Stream> {
     /// Wrap a production local socket and enforce ACK deadlines with the
     /// platform's bounded-read mechanism.
-    pub fn new(
+    pub fn new_local_socket(
         stream: interprocess::local_socket::Stream,
         service_name: impl Into<String>,
         correlation_id: u64,

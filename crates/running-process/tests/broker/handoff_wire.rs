@@ -90,7 +90,7 @@ fn connected_pair(label: &str) -> (Stream, Stream) {
 }
 
 fn wire_delivery(stream: Stream) -> WireHandoffDelivery<Stream> {
-    WireHandoffDelivery::new(
+    WireHandoffDelivery::new_local_socket(
         stream,
         SERVICE,
         CORRELATION_ID,

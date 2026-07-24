@@ -133,7 +133,7 @@ pub fn complete_negotiated_handoff(
     let io_deadline = Instant::now()
         .checked_add(acks.ack_deadline())
         .unwrap_or_else(Instant::now);
-    let mut delivery = WireHandoffDelivery::new(
+    let mut delivery = WireHandoffDelivery::new_local_socket(
         backend_stream,
         ctx.service_name,
         negotiated.connection_id,
