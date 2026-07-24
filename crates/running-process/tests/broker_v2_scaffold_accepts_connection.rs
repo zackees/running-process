@@ -306,6 +306,7 @@ fn silent_peers_release_all_handler_slots_after_deadline() {
             "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
             TEST_HELLO_TIMEOUT_MS,
         )
+        .env("RUNNING_PROCESS_BROKER_MAX_INFLIGHT_HANDLERS", "4")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -320,8 +321,8 @@ fn silent_peers_release_all_handler_slots_after_deadline() {
         }
     });
 
-    let mut silent = Vec::with_capacity(257);
-    for _ in 0..=256 {
+    let mut silent = Vec::with_capacity(5);
+    for _ in 0..=4 {
         let name = wrap_socket_name(&socket_path).expect("wrap socket name");
         silent.push(Stream::connect(name).expect("connect silent peer"));
     }

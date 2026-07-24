@@ -67,6 +67,23 @@ const SCAFFOLD_PIPE_IDX: u32 = 0;
 /// Maximum in-flight Hello handlers. Conservative cap; the OS thread
 /// cap is the hard upper bound but we want backpressure before that.
 const MAX_INFLIGHT_HANDLERS: usize = 256;
+const MAX_INFLIGHT_HANDLERS_ENV: &str = "RUNNING_PROCESS_BROKER_MAX_INFLIGHT_HANDLERS";
+
+fn max_inflight_handlers() -> usize {
+    std::env::var(MAX_INFLIGHT_HANDLERS_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|&limit| limit > 0)
+        .unwrap_or(MAX_INFLIGHT_HANDLERS)
+}
+
+struct InflightGuard(Arc<AtomicUsize>);
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 #[derive(Debug, Clone)]
 struct CliOptions {
@@ -255,6 +272,7 @@ fn accept_loop(
     loader: Arc<ServiceDefinitionLoader>,
     inflight: Arc<AtomicUsize>,
 ) -> ExitCode {
+    let max_inflight = max_inflight_handlers();
     loop {
         match listener.accept() {
             Ok(stream) => {
@@ -262,10 +280,10 @@ fn accept_loop(
                 // The peer's blocking read on the Hello-reply socket will
                 // see EOF when this branch closes the stream.
                 let n = inflight.fetch_add(1, Ordering::SeqCst);
-                if n >= MAX_INFLIGHT_HANDLERS {
+                if n >= max_inflight {
                     inflight.fetch_sub(1, Ordering::SeqCst);
                     eprintln!(
-                        "running-process-broker-v2: at MAX_INFLIGHT_HANDLERS ({MAX_INFLIGHT_HANDLERS}); dropping connection",
+                        "running-process-broker-v2: at MAX_INFLIGHT_HANDLERS ({max_inflight}); dropping connection",
                     );
                     drop(stream);
                     continue;
@@ -275,6 +293,7 @@ fn accept_loop(
                 let spawn_result = thread::Builder::new()
                     .name("rpb-v2-handler".to_string())
                     .spawn(move || {
+                        let _inflight_guard = InflightGuard(inflight_handler);
                         let mut s = stream;
                         let result = handle_hello_with_deadline(&mut s, &loader);
                         match result {
@@ -285,7 +304,6 @@ fn accept_loop(
                                 "running-process-broker-v2 Hello handler failed: {err}"
                             ),
                         }
-                        inflight_handler.fetch_sub(1, Ordering::SeqCst);
                     });
                 if let Err(err) = spawn_result {
                     eprintln!(
@@ -342,8 +360,16 @@ fn handle_hello_with_deadline(
     stream
         .set_nonblocking(true)
         .map_err(|error| format!("set Hello stream nonblocking: {error}"))?;
-    let mut stream = DeadlineStream::new(stream, hello_read_deadline());
-    handle_hello(&mut stream, loader)
+    let read_result = {
+        let mut deadline_stream = DeadlineStream::new(stream, hello_read_deadline());
+        read_frame(&mut deadline_stream).map_err(|error| format!("read Hello frame: {error}"))
+    };
+    let restore_result = stream
+        .set_nonblocking(false)
+        .map_err(|error| format!("restore Hello stream blocking mode: {error}"));
+    let bytes = read_result?;
+    restore_result?;
+    handle_hello_bytes(stream, loader, bytes)
 }
 
 /// Read a `Hello` frame, look up the registered service, and send
@@ -352,11 +378,11 @@ fn handle_hello_with_deadline(
 ///
 /// Returns the service name on Negotiated, or the human-readable
 /// refusal reason on Refused. Wire errors propagate as `Err`.
-fn handle_hello<S: std::io::Read + std::io::Write>(
+fn handle_hello_bytes<S: std::io::Write>(
     stream: &mut S,
     loader: &ServiceDefinitionLoader,
+    bytes: Vec<u8>,
 ) -> Result<String, String> {
-    let bytes = read_frame(stream).map_err(|e| format!("read Hello frame: {e}"))?;
     let hello = Hello::decode(bytes.as_slice()).map_err(|e| format!("decode Hello: {e}"))?;
 
     let reply = build_hello_reply(&hello, loader);
