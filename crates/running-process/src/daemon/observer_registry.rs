@@ -271,6 +271,7 @@ fn splitmix64(mut x: u64) -> u64 {
 mod tests {
     use super::*;
     use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
+    use std::sync::Arc;
     use std::time::Duration;
 
     fn lifecycle_started(pid: u32) -> ObserverEvent {
@@ -346,6 +347,60 @@ mod tests {
         assert_eq!(status.missed_events, 3, "expected 3 missed events");
         assert_eq!(status.delivered_events, 2, "expected 2 delivered events");
         assert!(!status.disconnected);
+    }
+
+    #[test]
+    fn block_backpressure_does_not_hold_registry_lock() {
+        let reg = Arc::new(ObserverRegistry::new());
+        let (id, rx) = reg.add_channel(
+            vec![EventCategory::Lifecycle],
+            1,
+            ObserverBackpressure::Block,
+        );
+
+        // Fill the bounded channel, then start another emit that must honor
+        // Block backpressure until the receiver makes room.
+        reg.emit(lifecycle_started(1));
+        let blocked_reg = Arc::clone(&reg);
+        let (emit_started_tx, emit_started_rx) = mpsc::channel();
+        let (emit_done_tx, emit_done_rx) = mpsc::channel();
+        let emit_worker = std::thread::spawn(move || {
+            emit_started_tx.send(()).unwrap();
+            blocked_reg.emit(lifecycle_started(2));
+            emit_done_tx.send(()).unwrap();
+        });
+        emit_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("emit worker should start");
+        assert!(
+            emit_done_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "second emit should block while the channel is full"
+        );
+
+        // Registry coordination must remain available while delivery waits.
+        let status_reg = Arc::clone(&reg);
+        let (status_tx, status_rx) = mpsc::channel();
+        let status_worker = std::thread::spawn(move || {
+            status_tx.send(status_reg.status(&id)).unwrap();
+        });
+        let status = status_rx.recv_timeout(Duration::from_millis(250));
+
+        // Drain both events before asserting so the RED case cannot leak
+        // blocked test workers.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().pid, 1);
+        emit_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocked emit should finish after the receiver drains");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().pid, 2);
+        emit_worker.join().unwrap();
+        status_worker.join().unwrap();
+
+        assert!(
+            status.is_ok(),
+            "Block delivery held the sinks mutex and stalled status()"
+        );
     }
 
     #[test]
