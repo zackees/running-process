@@ -251,7 +251,8 @@ fn assert_once_stall_times_out(initial_bytes: &[u8]) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn binary"));
-    let socket_path = read_bound_path_bounded(child.stdout.take().expect("piped stdout"));
+    let (socket_path, stdout_thread) =
+        read_bound_path_bounded(child.stdout.take().expect("piped stdout"));
     let name = wrap_socket_name(&socket_path).expect("wrap socket name");
     let mut stalled = Stream::connect(name).expect("connect stalled peer");
     if !initial_bytes.is_empty() {
@@ -276,6 +277,7 @@ fn assert_once_stall_times_out(initial_bytes: &[u8]) {
         stderr.contains("timed out"),
         "timeout must remain distinct from malformed/EOF; stderr:\n{stderr}"
     );
+    stdout_thread.join().expect("stdout reader joins");
 }
 
 #[test]
@@ -308,7 +310,8 @@ fn silent_peers_release_all_handler_slots_after_deadline() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn binary"));
-    let socket_path = read_bound_path_bounded(child.stdout.take().expect("piped stdout"));
+    let (socket_path, stdout_thread) =
+        read_bound_path_bounded(child.stdout.take().expect("piped stdout"));
     let (stderr_tx, stderr_rx) = mpsc::channel();
     let stderr = child.stderr.take().expect("piped stderr");
     let stderr_thread = std::thread::spawn(move || {
@@ -350,6 +353,7 @@ fn silent_peers_release_all_handler_slots_after_deadline() {
     let _ = child.kill();
     let _ = child.wait();
     stderr_thread.join().expect("stderr reader joins");
+    stdout_thread.join().expect("stdout reader joins");
     assert_eq!(reply.connection_id, 0x609);
 }
 
@@ -361,11 +365,16 @@ fn unique_program(prefix: &str) -> String {
     format!("{prefix}-{:010x}", nonce & 0xFF_FFFF_FFFF)
 }
 
-fn read_bound_path_bounded(stdout: std::process::ChildStdout) -> String {
+fn read_bound_path_bounded(
+    stdout: std::process::ChildStdout,
+) -> (String, std::thread::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
+        let mut sent = false;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(rest) = line.strip_prefix("running-process-broker-v2 bound at ") {
+            if !sent
+                && let Some(rest) = line.strip_prefix("running-process-broker-v2 bound at ")
+            {
                 let path = rest
                     .trim_end()
                     .rsplit_once(" (")
@@ -373,12 +382,14 @@ fn read_bound_path_bounded(stdout: std::process::ChildStdout) -> String {
                     .unwrap_or(rest.trim_end())
                     .to_string();
                 let _ = tx.send(path);
-                return;
+                sent = true;
             }
         }
     });
-    rx.recv_timeout(DEADLINE)
-        .expect("broker must print bound path within deadline")
+    let path = rx
+        .recv_timeout(DEADLINE)
+        .expect("broker must print bound path within deadline");
+    (path, thread)
 }
 
 fn write_test_hello(stream: &mut Stream, program: &str) {
