@@ -144,6 +144,53 @@ def run(cmd: list[str]) -> int:
     return subprocess.run(cmd, cwd=ROOT, env=clean_env()).returncode
 
 
+def _find_llvm_profdata() -> Path | None:
+    """Locate the rustup toolchain's llvm-profdata (llvm-tools component)."""
+    try:
+        sysroot = subprocess.run(
+            ["rustc", "--print", "sysroot"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    exe = "llvm-profdata.exe" if sys.platform == "win32" else "llvm-profdata"
+    for candidate in Path(sysroot).glob(f"lib/rustlib/*/bin/{exe}"):
+        return candidate
+    return None
+
+
+def _prune_invalid_profraw(profile_dir: Path) -> None:
+    """Delete .profraw files llvm-profdata cannot read on its own.
+
+    Instrumented daemons this suite kills at teardown (SIGTERM/SIGKILL —
+    e.g. the broker-v2 accept loop) never run the atexit profile flush,
+    so a file caught mid-write is truncated. llvm-profdata crashes with
+    SIGILL when such a file is in the merge set; validating each file
+    individually and dropping the bad ones loses only the killed
+    processes' counters while keeping the merge alive.
+    """
+    profdata = _find_llvm_profdata()
+    if profdata is None or not profile_dir.is_dir():
+        return
+    pruned = 0
+    for profraw in profile_dir.rglob("*.profraw"):
+        probe = subprocess.run(
+            [str(profdata), "show", str(profraw)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if probe.returncode != 0:
+            print(
+                f"coverage: pruning invalid profraw ({probe.returncode}): {profraw}",
+                flush=True,
+            )
+            profraw.unlink(missing_ok=True)
+            pruned += 1
+    print(f"coverage: pruned {pruned} invalid .profraw file(s)", flush=True)
+
+
 def run_live(cmd: list[str]) -> int:
     _, clean_env = load_env_helpers()
     env = clean_env()
@@ -287,19 +334,32 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         if coverage:
+            # Split run/report so corrupt .profraw files can be pruned in
+            # between. This suite spawns instrumented daemons (the broker-v2
+            # accept loop from #533 exits via SIGTERM in production) and
+            # kills them at teardown; a process killed mid-profile-write
+            # leaves a truncated .profraw and rustup's llvm-profdata
+            # SIGILLs on it during the merge — coverage was red on every
+            # run from the #533 merge (2026-06-21) onward. Dropping the
+            # invalid files loses only the killed processes' counters.
             cargo_cmd = supervised_command(
                 python,
-                *cargo_command(
-                    "llvm-cov",
-                    "nextest",
-                    "--workspace",
-                    "--lcov",
-                    "--output-path",
-                    "coverage-rust.lcov",
-                ),
+                *cargo_command("llvm-cov", "nextest", "--workspace", "--no-report"),
                 timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
             )
             if run(cargo_cmd) != 0:
+                return 1
+
+            _prune_invalid_profraw(ROOT / "target" / "llvm-cov-target")
+
+            report_cmd = cargo_command(
+                "llvm-cov",
+                "report",
+                "--lcov",
+                "--output-path",
+                "coverage-rust.lcov",
+            )
+            if run(report_cmd) != 0:
                 return 1
         else:
             # Step 1: compile all test binaries (no supervisor, no timeout)
