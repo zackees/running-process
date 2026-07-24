@@ -65,8 +65,74 @@ jobs:
         with:
           tool: nextest
 
+      # llvm-profdata has been crashing with SIGILL during the post-test
+      # merge since 2026-06-21 (first red run; the LD_PRELOAD interposer
+      # landed the same day — instrumented processes exiting through
+      # hooked file APIs are the prime suspect for truncated/corrupt
+      # .profraw files). Enable core dumps so the triage step below can
+      # produce a real backtrace.
+      - name: Enable core dumps
+        run: |
+          sudo sysctl -w kernel.core_pattern="$PWD/logs/core.%e.%p"
+          mkdir -p logs
+          ulimit -c unlimited
+          echo "core pattern: $(cat /proc/sys/kernel/core_pattern)"
+
       - name: Run tests with coverage
-        run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test --coverage
+        shell: bash
+        run: |
+          ulimit -c unlimited
+          uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test --coverage
+
+      - name: Coverage crash triage (backtrace + profraw bisect)
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          PROFDATA="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata"
+          echo "::group::llvm-profdata identity"
+          "$PROFDATA" --version || true
+          file "$PROFDATA" || true
+          echo "::endgroup::"
+
+          echo "::group::gdb backtrace of core dump (if any)"
+          sudo apt-get install -y -q gdb >/dev/null 2>&1 || true
+          for core in logs/core.*; do
+            [ -f "$core" ] || continue
+            echo "--- $core ---"
+            gdb -batch -ex "bt full" -ex "info registers" "$PROFDATA" "$core" 2>&1 | head -80
+          done
+          echo "::endgroup::"
+
+          echo "::group::per-profraw validation bisect"
+          mkdir -p logs/bad-profraw
+          found_bad=0
+          while IFS= read -r -d '' f; do
+            if ! "$PROFDATA" show "$f" >/dev/null 2>&1; then
+              rc=$?
+              echo "BAD (rc=$rc): $f ($(stat -c%s "$f") bytes)"
+              cp "$f" logs/bad-profraw/ || true
+              found_bad=1
+            fi
+          done < <(find target/llvm-cov-target -name '*.profraw' -print0 2>/dev/null)
+          [ "$found_bad" -eq 0 ] && echo "no individually-invalid profraw found; crash may need the full merge set"
+          echo "::endgroup::"
+
+          echo "::group::merge retry excluding bad files"
+          find target/llvm-cov-target -name '*.profraw' 2>/dev/null | while read -r f; do
+            "$PROFDATA" show "$f" >/dev/null 2>&1 && echo "$f"
+          done > logs/good-profraw-list
+          wc -l logs/good-profraw-list
+          "$PROFDATA" merge -sparse -f logs/good-profraw-list -o logs/retry.profdata && echo "MERGE OF VALID FILES SUCCEEDED — poison file(s) confirmed as root cause"
+          echo "::endgroup::"
+
+      - name: Upload poison profraw files
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-bad-profraw
+          path: logs/bad-profraw/*
+          if-no-files-found: warn
 
       - name: Upload Python coverage artifact
         if: always()
