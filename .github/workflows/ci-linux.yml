@@ -13,6 +13,7 @@ name: CI Preflight (Linux)
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -53,3 +54,34 @@ jobs:
       os: ubuntu-24.04-arm
       label: linux-arm-musl
       target: aarch64-unknown-linux-musl
+
+  # Spot-check for the RUNNING_PROCESS_REPRODUCIBLE=1 seam (#392):
+  # build the debug `runpm` binary twice (cleaning only the workspace
+  # crate in between) and require byte-identical SHA256 digests.
+  # Moved here from linux-x86-build.yml when that workflow became
+  # dispatch-only. See docs/reproducible-builds.md for the recipe.
+  reproducible-spot-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-24.04-reproducible
+          cache-on-failure: true
+
+      - name: Double-build runpm and compare SHA256
+        run: uv run --no-project --module ci.reproducible --verify

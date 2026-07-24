@@ -48,8 +48,11 @@ pub enum EnvironmentPolicy {
     Inherit,
     /// Start from the logged-in user's machine + user environment.
     ///
-    /// Windows implements this with `CreateEnvironmentBlock`. Unix has no
-    /// equivalent stable OS API, so it currently falls back to inheritance.
+    /// Windows implements this with `CreateEnvironmentBlock`. Unix
+    /// reconstructs a clean login environment from the user's identity
+    /// (`getpwuid_r` → `USER`/`LOGNAME`/`HOME`/`SHELL`, platform default
+    /// `PATH`, carried-over locale/`TZ`/`TMPDIR`), falling back to
+    /// inheritance only when the passwd entry cannot be resolved.
     UserBaseline,
     /// Start from an empty environment.
     Clear,
