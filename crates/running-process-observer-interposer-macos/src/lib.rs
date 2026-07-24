@@ -78,6 +78,28 @@ fn fd_table() -> &'static Mutex<HashMap<c_int, String>> {
     FD_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(feature = "test-seams")]
+unsafe fn test_signal_and_wait(ready_fd: c_int, release_fd: c_int) {
+    // Darwin's libc crate does not expose SYS_read/SYS_write. These stable
+    // BSD syscall numbers keep the seam from re-entering our write hook while
+    // it deliberately holds FD_TABLE.
+    const SYS_READ: libc::c_int = 3;
+    const SYS_WRITE: libc::c_int = 4;
+    let byte = [1u8; 1];
+    libc::syscall(SYS_WRITE, ready_fd, byte.as_ptr(), byte.len());
+    let mut release = [0u8; 1];
+    libc::syscall(SYS_READ, release_fd, release.as_mut_ptr(), release.len());
+}
+
+/// Test seam: hold the real fd-table lock across a fork.
+#[doc(hidden)]
+#[cfg(feature = "test-seams")]
+#[no_mangle]
+pub unsafe extern "C" fn rpo_test_hold_fd_table(ready_fd: c_int, release_fd: c_int) {
+    let _guard = fd_table().lock().expect("fd table lock");
+    test_signal_and_wait(ready_fd, release_fd);
+}
+
 thread_local! {
     /// Reentrancy guard — falls through to the real fn without
     /// emitting if called from within our own shadow.

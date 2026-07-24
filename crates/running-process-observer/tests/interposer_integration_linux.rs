@@ -296,6 +296,10 @@ fn interposer_post_fork_child_progress_entrypoint() {
         progressed,
         "post-fork child blocked in {mode:?} interposer state"
     );
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "post-fork child terminated abnormally in {mode:?}: status={status:#x}"
+    );
 }
 
 #[test]
