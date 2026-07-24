@@ -89,6 +89,15 @@ fn connected_pair(label: &str) -> (Stream, Stream) {
     (broker_side, backend_side)
 }
 
+fn wire_delivery(stream: Stream) -> WireHandoffDelivery<Stream> {
+    WireHandoffDelivery::new(
+        stream,
+        SERVICE,
+        CORRELATION_ID,
+        Instant::now() + Duration::from_secs(5),
+    )
+}
+
 #[test]
 fn await_backend_ack_honors_deadline_for_silent_peer() {
     assert_ack_read_honors_deadline("hw-ack-silent-deadline", false);
@@ -104,6 +113,7 @@ fn assert_ack_read_honors_deadline(label: &str, trickle: bool) {
     use std::sync::mpsc;
 
     let (broker_side, backend_side) = connected_pair(label);
+    let delivery = wire_delivery(broker_side);
     let mut backend_side = Some(backend_side);
     let writer = if trickle {
         let mut writer_stream = backend_side.take().expect("backend stream available");
@@ -125,7 +135,7 @@ fn assert_ack_read_honors_deadline(label: &str, trickle: bool) {
     let expected = token(0x61);
     let (result_tx, result_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
-        let mut delivery = WireHandoffDelivery::new(broker_side, SERVICE, CORRELATION_ID);
+        let mut delivery = delivery;
         let deadline = Instant::now() + Duration::from_millis(100);
         let started = Instant::now();
         let result = delivery.await_backend_ack(&expected, deadline);
@@ -283,7 +293,7 @@ fn wire_delivery_completes_orchestration_and_consumes_token_once() {
         (acceptance, backend_tokens.pending_len())
     });
 
-    let mut delivery = WireHandoffDelivery::new(broker_side, SERVICE, CORRELATION_ID);
+    let mut delivery = wire_delivery(broker_side);
     let outcome = execute_windows_handoff_with_transport(
         &mut tokens,
         &mut acks,
@@ -332,7 +342,7 @@ fn refused_ack_falls_back_and_revokes_token() {
             .expect("serve handoff offer")
     });
 
-    let mut delivery = WireHandoffDelivery::new(broker_side, SERVICE, CORRELATION_ID);
+    let mut delivery = wire_delivery(broker_side);
     let outcome = execute_windows_handoff_with_transport(
         &mut tokens,
         &mut acks,
@@ -375,7 +385,7 @@ fn wrong_token_echo_in_ack_falls_back() {
         write_handoff_ack(&mut stream, &forged).expect("write forged ack");
     });
 
-    let mut delivery = WireHandoffDelivery::new(broker_side, SERVICE, CORRELATION_ID);
+    let mut delivery = wire_delivery(broker_side);
     let outcome = execute_windows_handoff_with_transport(
         &mut tokens,
         &mut acks,
@@ -415,7 +425,7 @@ fn wrong_correlation_id_in_ack_falls_back() {
         write_frame(&mut stream, &bytes).expect("write forged ack frame");
     });
 
-    let mut delivery = WireHandoffDelivery::new(broker_side, SERVICE, CORRELATION_ID);
+    let mut delivery = wire_delivery(broker_side);
     let outcome = execute_windows_handoff_with_transport(
         &mut tokens,
         &mut acks,
@@ -456,7 +466,7 @@ fn malformed_ack_frame_falls_back() {
         write_frame(&mut stream, &bytes).expect("write malformed frame");
     });
 
-    let mut delivery = WireHandoffDelivery::new(broker_side, SERVICE, CORRELATION_ID);
+    let mut delivery = wire_delivery(broker_side);
     let outcome = execute_windows_handoff_with_transport(
         &mut tokens,
         &mut acks,
@@ -483,7 +493,7 @@ fn backend_disconnect_before_ack_falls_back() {
         // Drop the stream without acking: the broker observes EOF.
     });
 
-    let mut delivery = WireHandoffDelivery::new(broker_side, SERVICE, CORRELATION_ID);
+    let mut delivery = wire_delivery(broker_side);
     let outcome = execute_windows_handoff_with_transport(
         &mut tokens,
         &mut acks,
@@ -522,7 +532,7 @@ fn ack_after_deadline_falls_back_and_revokes_token() {
         .expect("respond to offer");
     });
 
-    let mut delivery = WireHandoffDelivery::new(broker_side, SERVICE, CORRELATION_ID);
+    let mut delivery = wire_delivery(broker_side);
     let outcome = execute_windows_handoff_with_transport(
         &mut tokens,
         &mut acks,

@@ -54,6 +54,7 @@ impl<S: Read> Read for DeadlineStream<'_, S> {
                 Ok(0) => return Ok(0),
                 Ok(n) => return Ok(n),
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => self.wait()?,
+                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => self.wait()?,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
             }
