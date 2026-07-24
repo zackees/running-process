@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SendError, SyncSender, TrySendError};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::observer::{EventCategory, ObserverEvent};
 
@@ -143,7 +143,7 @@ impl ObserverSink {
 /// and reap paths; events fan out to every matching registered sink.
 pub struct ObserverRegistry {
     active_sinks: AtomicUsize,
-    sinks: Mutex<HashMap<ObserverSubscriberId, ObserverSink>>,
+    sinks: Mutex<HashMap<ObserverSubscriberId, Arc<ObserverSink>>>,
 }
 
 impl ObserverRegistry {
@@ -172,7 +172,10 @@ impl ObserverRegistry {
             delivered_events: AtomicU64::new(0),
             disconnected: AtomicUsize::new(0),
         };
-        self.sinks.lock().unwrap().insert(id.clone(), sink);
+        self.sinks
+            .lock()
+            .unwrap()
+            .insert(id.clone(), Arc::new(sink));
         self.active_sinks.fetch_add(1, Ordering::Release);
         (id, rx)
     }
@@ -188,7 +191,7 @@ impl ObserverRegistry {
 
     /// Fetch the current status for a registered sink.
     pub fn status(&self, id: &ObserverSubscriberId) -> Option<ObserverSinkStatus> {
-        self.sinks.lock().unwrap().get(id).map(ObserverSink::status)
+        self.sinks.lock().unwrap().get(id).map(|sink| sink.status())
     }
 
     /// Emit one event to every registered sink whose category filter matches.
@@ -198,8 +201,15 @@ impl ObserverRegistry {
         if self.active_sinks.load(Ordering::Acquire) == 0 {
             return;
         }
-        let sinks = self.sinks.lock().unwrap();
-        for sink in sinks.values() {
+        let sinks: Vec<_> = self
+            .sinks
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|sink| sink.matches(event.category))
+            .cloned()
+            .collect();
+        for sink in sinks {
             sink.push(event.clone());
         }
     }
