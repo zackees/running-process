@@ -1,9 +1,10 @@
 name: Linux x86 Build
 
+# Manual wheel-collection entry point only (ci/publish.py fallback).
+# Push/PR builds are covered by the consolidated CI Preflight
+# workflows (ci-linux/ci-macos/ci-windows -> ci-preflight.yml),
+# and release wheels by auto-release.yml.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
     inputs:
       build-mode:
