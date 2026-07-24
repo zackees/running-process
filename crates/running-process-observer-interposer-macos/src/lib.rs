@@ -38,10 +38,12 @@
 #![cfg(target_os = "macos")]
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock, TryLockError};
+use std::time::Duration;
 
 // ── Function-pointer types ──
 
@@ -95,28 +97,137 @@ macro_rules! resolve_real {
     }};
 }
 
-fn real_open() -> OpenFn { resolve_real!(REAL_OPEN, "open", OpenFn) }
-fn real_openat() -> OpenatFn { resolve_real!(REAL_OPENAT, "openat", OpenatFn) }
-fn real_close() -> CloseFn { resolve_real!(REAL_CLOSE, "close", CloseFn) }
-fn real_write() -> WriteFn { resolve_real!(REAL_WRITE, "write", WriteFn) }
-fn real_unlink() -> UnlinkFn { resolve_real!(REAL_UNLINK, "unlink", UnlinkFn) }
-fn real_unlinkat() -> UnlinkatFn { resolve_real!(REAL_UNLINKAT, "unlinkat", UnlinkatFn) }
-fn real_rename() -> RenameFn { resolve_real!(REAL_RENAME, "rename", RenameFn) }
-fn real_renameat() -> RenameatFn { resolve_real!(REAL_RENAMEAT, "renameat", RenameatFn) }
+fn real_open() -> OpenFn {
+    resolve_real!(REAL_OPEN, "open", OpenFn)
+}
+fn real_openat() -> OpenatFn {
+    resolve_real!(REAL_OPENAT, "openat", OpenatFn)
+}
+fn real_close() -> CloseFn {
+    resolve_real!(REAL_CLOSE, "close", CloseFn)
+}
+fn real_write() -> WriteFn {
+    resolve_real!(REAL_WRITE, "write", WriteFn)
+}
+fn real_unlink() -> UnlinkFn {
+    resolve_real!(REAL_UNLINK, "unlink", UnlinkFn)
+}
+fn real_unlinkat() -> UnlinkatFn {
+    resolve_real!(REAL_UNLINKAT, "unlinkat", UnlinkatFn)
+}
+fn real_rename() -> RenameFn {
+    resolve_real!(REAL_RENAME, "rename", RenameFn)
+}
+fn real_renameat() -> RenameatFn {
+    resolve_real!(REAL_RENAMEAT, "renameat", RenameatFn)
+}
 
 // ── Event emission ──
 
-/// Emit a hook event line to stderr via the cached real `write` so
-/// our own `write` shadow doesn't recurse on it.
-fn emit_line(line: &str) {
+struct EmitQueue {
+    lines: Mutex<VecDeque<Vec<u8>>>,
+    wakeup: Condvar,
+}
+
+static EMIT_QUEUE: OnceLock<EmitQueue> = OnceLock::new();
+static EMIT_PENDING: AtomicUsize = AtomicUsize::new(0);
+
+/// Cap memory use when stderr is slow or permanently undrained.
+const EMIT_QUEUE_MAX_LINES: usize = 4096;
+
+fn emit_queue() -> &'static EmitQueue {
+    EMIT_QUEUE.get_or_init(|| EmitQueue {
+        lines: Mutex::new(VecDeque::new()),
+        wakeup: Condvar::new(),
+    })
+}
+
+/// Put an event on the bounded drain queue without ever waiting.
+///
+/// Contention, poisoning, and a full queue all degrade to event loss: hook
+/// telemetry must never delay the host file operation that produced it.
+fn emit_bytes(bytes: &[u8]) {
+    let queue = emit_queue();
+    let mut lines = match queue.lines.try_lock() {
+        Ok(lines) => lines,
+        Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => return,
+    };
+    if lines.len() >= EMIT_QUEUE_MAX_LINES {
+        lines.pop_front();
+        EMIT_PENDING.fetch_sub(1, Ordering::Release);
+    }
+    lines.push_back(bytes.to_vec());
+    EMIT_PENDING.fetch_add(1, Ordering::Release);
+    queue.wakeup.notify_one();
+}
+
+/// Blocking writes are isolated to the dedicated drain thread.
+fn write_line_to_stderr(bytes: &[u8]) {
     let real = real_write();
     unsafe {
-        real(
+        let _ = real(
             libc::STDERR_FILENO,
-            line.as_ptr() as *const libc::c_void,
-            line.len(),
+            bytes.as_ptr() as *const libc::c_void,
+            bytes.len(),
         );
     }
+}
+
+fn emit_drain_loop() {
+    let queue = emit_queue();
+    loop {
+        let line = {
+            let mut lines = match queue.lines.lock() {
+                Ok(lines) => lines,
+                Err(_) => return,
+            };
+            loop {
+                if let Some(line) = lines.pop_front() {
+                    break line;
+                }
+                lines = match queue.wakeup.wait(lines) {
+                    Ok(lines) => lines,
+                    Err(_) => return,
+                };
+            }
+        };
+        write_line_to_stderr(&line);
+        EMIT_PENDING.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Give short-lived processes a bounded opportunity to emit their final line.
+///
+/// A full stderr can keep the drain blocked, so this must remain a small,
+/// fixed budget. Process exit proceeds after the budget regardless.
+extern "C" fn flush_pending_at_exit() {
+    for _ in 0..25 {
+        if EMIT_PENDING.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn start_emit_drain_thread() {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    STARTED.get_or_init(|| {
+        // Resolve on the hook thread while its reentrancy guard is active.
+        // Resolving from the new thread could itself call an interposed file
+        // API and recursively wait on this `OnceLock` initialization.
+        let _ = real_write();
+        // SAFETY: the callback has C ABI, takes no arguments, and remains
+        // valid for the lifetime of the loaded interposer.
+        unsafe {
+            libc::atexit(flush_pending_at_exit);
+        }
+        let _ = std::thread::spawn(emit_drain_loop);
+    });
+}
+
+fn emit_line(line: &str) {
+    start_emit_drain_thread();
+    emit_bytes(line.as_bytes());
 }
 
 fn emit_open(path: &str, flags: c_int, fd: c_int) {
