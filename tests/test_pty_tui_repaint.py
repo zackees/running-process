@@ -113,10 +113,14 @@ class TestPtyTuiRepaint(unittest.TestCase):
             "clear-screen escape `\\x1b[2J` missing from PTY output; "
             "ConPTY may not be in PASSTHROUGH_MODE",
         )
-        self.assertIn(
-            b"\x1b[1;1H",
-            captured,
-            "cursor-home escape `\\x1b[1;1H` missing from PTY output",
+        # The testbin emits `\x1b[1;1H`, but ConPTY on current Windows
+        # runner images canonicalizes CUP(1,1) to the equivalent short
+        # form `\x1b[H` even in passthrough mode. Either form proves the
+        # cursor-home escape survived the PTY instead of being eaten.
+        self.assertTrue(
+            b"\x1b[1;1H" in captured or b"\x1b[H" in captured,
+            "cursor-home escape (`\\x1b[1;1H` or `\\x1b[H`) missing "
+            "from PTY output",
         )
 
         # Plaintext bookend assertions: first and last counter values
