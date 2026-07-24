@@ -12,6 +12,8 @@ pub mod backend_registry;
 pub mod broadcast;
 pub mod connection;
 pub mod control_socket;
+#[doc(hidden)]
+pub mod deadline_stream;
 pub mod fd_pressure;
 pub mod handoff;
 pub mod handoff_serve;
