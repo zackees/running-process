@@ -83,6 +83,77 @@ pub(super) fn resolved_spawn_cwd(cwd: Option<&str>) -> Option<String> {
 }
 
 impl NativePtyProcess {
+    /// Terminate and reap a Unix PTY process without allowing child or reader
+    /// cleanup to block the caller indefinitely.
+    #[cfg(unix)]
+    pub(super) fn finish_unix_teardown(&self, handles: NativePtyHandles) -> Result<(), PtyError> {
+        const CHILD_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+        const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+        const READER_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+        let NativePtyHandles {
+            master,
+            writer,
+            mut child,
+        } = handles;
+        let process_group = master.process_group_leader();
+
+        let mut control_error = None;
+        if let Some(pid) = process_group {
+            if let Err(err) = crate::unix_signal_process_group(pid, crate::UnixSignal::Kill) {
+                if !is_ignorable_process_control_error(&err) {
+                    control_error = Some(err);
+                }
+            }
+        }
+        if let Err(err) = child.kill() {
+            if !is_ignorable_process_control_error(&err) && control_error.is_none() {
+                control_error = Some(err);
+            }
+        }
+        drop(writer);
+
+        let deadline = Instant::now() + CHILD_REAP_TIMEOUT;
+        let code = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status as i32,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(CHILD_POLL_INTERVAL);
+                }
+                Ok(None) => break -9,
+                Err(err) => {
+                    if control_error.is_none() {
+                        control_error = Some(err);
+                    }
+                    break -9;
+                }
+            }
+        };
+        self.store_returncode(code);
+
+        let reader_worker = self
+            .reader_worker
+            .lock()
+            .expect("pty reader worker mutex poisoned")
+            .take();
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(master);
+            drop(child);
+            if let Some(worker) = reader_worker {
+                let _ = worker.join();
+            }
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(READER_TEARDOWN_TIMEOUT);
+        self.mark_reader_closed();
+
+        match control_error {
+            Some(err) => Err(PtyError::Io(err)),
+            None => Ok(()),
+        }
+    }
+
     /// Create a pseudo-terminal process configuration.
     ///
     /// The child is not spawned until [`Self::start_impl`] is called.
@@ -140,21 +211,6 @@ impl NativePtyProcess {
     /// Store the process return code if it has been observed.
     pub fn store_returncode(&self, code: i32) {
         store_pty_returncode(&self.returncode, code);
-    }
-
-    // Windows takes + joins the reader worker inside the bounded teardown
-    // thread in `close_impl` (issue #590, cluster C); only the Unix paths
-    // call this helper directly.
-    #[cfg(not(windows))]
-    pub(super) fn join_reader_worker(&self) {
-        if let Some(worker) = self
-            .reader_worker
-            .lock()
-            .expect("pty reader worker mutex poisoned")
-            .take()
-        {
-            let _ = worker.join();
-        }
     }
 
     /// Record PTY input byte, newline, and submit counters.
@@ -319,7 +375,7 @@ impl NativePtyProcess {
         let NativePtyHandles {
             master,
             writer,
-            mut child,
+            child,
         } = handles;
 
         #[cfg(windows)]
@@ -428,29 +484,11 @@ impl NativePtyProcess {
 
         #[cfg(not(windows))]
         {
-            drop(writer);
-            drop(master);
-
-            let code = {
-                crate::rp_rust_debug_scope!(
-                    "running_process::NativePtyProcess::close_impl.wait_child"
-                );
-                match child.wait() {
-                    Ok(status) => status as i32,
-                    Err(_) => -9,
-                }
-            };
-            drop(child);
-
-            self.store_returncode(code);
-            {
-                crate::rp_rust_debug_scope!(
-                    "running_process::NativePtyProcess::close_impl.join_reader"
-                );
-                self.join_reader_worker();
-            }
-            self.mark_reader_closed();
-            Ok(())
+            self.finish_unix_teardown(NativePtyHandles {
+                master,
+                writer,
+                child,
+            })
         }
     }
 

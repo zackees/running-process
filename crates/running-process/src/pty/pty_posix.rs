@@ -86,26 +86,7 @@ pub(super) fn kill(process: &NativePtyProcess) -> Result<(), PtyError> {
     let mut guard = process.handles.lock().expect("pty handles mutex poisoned");
     let handles = guard.take().ok_or(PtyError::NotRunning)?;
     drop(guard);
-
-    let NativePtyHandles {
-        master,
-        writer,
-        mut child,
-    } = handles;
-
-    if let Err(err) = child.kill() {
-        if !is_ignorable_process_control_error(&err) {
-            return Err(PtyError::Io(err));
-        }
-    }
-    drop(writer);
-    drop(master);
-    let status = child.wait().map_err(PtyError::Io)?;
-    drop(child);
-    process.store_returncode(status as i32);
-    process.join_reader_worker();
-    process.mark_reader_closed();
-    Ok(())
+    process.finish_unix_teardown(handles)
 }
 
 pub(super) fn terminate_tree(process: &NativePtyProcess) -> Result<(), PtyError> {
