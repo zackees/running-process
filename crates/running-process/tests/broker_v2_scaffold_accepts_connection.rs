@@ -9,12 +9,15 @@
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::ops::{Deref, DerefMut};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::Stream;
 
 const DEADLINE: Duration = Duration::from_secs(10);
+const TEST_HELLO_TIMEOUT_MS: &str = "3000";
 
 /// `--no-bind` short-circuit: the binary should print its banner and
 /// exit 0 without touching the kernel namespace. Useful as a
@@ -221,6 +224,225 @@ fn binary_binds_pipe_accepts_connection_and_exits() {
         all_stdout.contains("Hello for service"),
         "expected Hello-handler log line in stdout, got:\n{all_stdout}"
     );
+}
+
+#[test]
+fn silent_peer_does_not_hang_once_mode() {
+    assert_once_stall_times_out(&[]);
+}
+
+#[test]
+fn partial_frame_does_not_hang_once_mode() {
+    assert_once_stall_times_out(&[running_process::broker::protocol::ENVELOPE_VERSION, 8, 0]);
+}
+
+fn assert_once_stall_times_out(initial_bytes: &[u8]) {
+    let program = unique_program("once-timeout");
+    let path = env!("CARGO_BIN_EXE_running-process-broker-v2");
+    let mut child = ChildGuard(Command::new(path)
+        .arg("--once")
+        .arg("--program")
+        .arg(&program)
+        .env(
+            "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
+            TEST_HELLO_TIMEOUT_MS,
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn binary"));
+    let socket_path = read_bound_path_bounded(child.stdout.take().expect("piped stdout"));
+    let name = wrap_socket_name(&socket_path).expect("wrap socket name");
+    let mut stalled = Stream::connect(name).expect("connect stalled peer");
+    if !initial_bytes.is_empty() {
+        use std::io::Write as _;
+        stalled.write_all(initial_bytes).expect("write partial frame");
+    }
+
+    let exit = wait_with_deadline(&mut child, Duration::from_secs(6))
+        .expect("--once must exit after the Hello deadline");
+    assert!(!exit.success(), "a timed-out Hello must be an error");
+    let stderr = {
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .expect("piped stderr")
+            .read_to_string(&mut stderr)
+            .expect("read stderr");
+        stderr
+    };
+    assert!(
+        stderr.contains("timed out"),
+        "timeout must remain distinct from malformed/EOF; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn silent_peers_release_all_handler_slots_after_deadline() {
+    let program = unique_program("pool-timeout");
+    let svc_dir = tempfile::tempdir().expect("service definition tempdir");
+    let stub = svc_dir.path().join(if cfg!(windows) {
+        "pool-stub.exe"
+    } else {
+        "pool-stub"
+    });
+    std::fs::write(&stub, b"stub").expect("write stub");
+    running_process::broker::protocol_v2::ServiceDefinitionBuilder::shared_broker(
+        &program,
+        stub.display().to_string(),
+    )
+    .install_in(svc_dir.path())
+    .expect("install service definition");
+
+    let path = env!("CARGO_BIN_EXE_running-process-broker-v2");
+    let mut child = ChildGuard(Command::new(path)
+        .arg("--program")
+        .arg(&program)
+        .env("RUNNING_PROCESS_SERVICE_DEF_DIR", svc_dir.path())
+        .env(
+            "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
+            TEST_HELLO_TIMEOUT_MS,
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn binary"));
+    let socket_path = read_bound_path_bounded(child.stdout.take().expect("piped stdout"));
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stderr_thread = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = stderr_tx.send(line);
+        }
+    });
+
+    let mut silent = Vec::with_capacity(257);
+    for _ in 0..=256 {
+        let name = wrap_socket_name(&socket_path).expect("wrap socket name");
+        silent.push(Stream::connect(name).expect("connect silent peer"));
+    }
+    let cap_deadline = Instant::now() + Duration::from_secs(3);
+    let mut observed_cap = false;
+    while Instant::now() < cap_deadline {
+        if let Ok(line) = stderr_rx.recv_timeout(Duration::from_millis(50)) {
+            if line.contains("MAX_INFLIGHT_HANDLERS") {
+                observed_cap = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        observed_cap,
+        "test setup must deterministically exhaust all handler slots"
+    );
+
+    std::thread::sleep(Duration::from_millis(
+        TEST_HELLO_TIMEOUT_MS.parse::<u64>().unwrap() + 500,
+    ));
+    let name = wrap_socket_name(&socket_path).expect("wrap socket name");
+    let mut stream = Stream::connect(name).expect("connect recovery peer");
+    write_test_hello(&mut stream, &program);
+    let reply_reader = std::thread::spawn(move || read_test_reply(&mut stream));
+    let reply = wait_thread_with_deadline(reply_reader, Duration::from_secs(3));
+
+    drop(silent);
+    let _ = child.kill();
+    let _ = child.wait();
+    stderr_thread.join().expect("stderr reader joins");
+    assert_eq!(reply.connection_id, 0x609);
+}
+
+fn unique_program(prefix: &str) -> String {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{prefix}-{:010x}", nonce & 0xFF_FFFF_FFFF)
+}
+
+fn read_bound_path_bounded(stdout: std::process::ChildStdout) -> String {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(rest) = line.strip_prefix("running-process-broker-v2 bound at ") {
+                let path = rest
+                    .trim_end()
+                    .rsplit_once(" (")
+                    .map(|(path, _)| path)
+                    .unwrap_or(rest.trim_end())
+                    .to_string();
+                let _ = tx.send(path);
+                return;
+            }
+        }
+    });
+    rx.recv_timeout(DEADLINE)
+        .expect("broker must print bound path within deadline")
+}
+
+fn write_test_hello(stream: &mut Stream, program: &str) {
+    use prost::Message;
+    use running_process::broker::protocol::{write_frame, Hello, ENVELOPE_VERSION};
+    let hello = Hello {
+        client_min_protocol: ENVELOPE_VERSION as u32,
+        client_max_protocol: ENVELOPE_VERSION as u32,
+        service_name: program.to_string(),
+        wanted_version: "0.0.0".to_string(),
+        client_version: "test".to_string(),
+        connection_id: 0x609,
+        ..Hello::default()
+    };
+    write_frame(stream, &hello.encode_to_vec()).expect("write Hello");
+}
+
+fn read_test_reply(stream: &mut Stream) -> running_process::broker::protocol::Negotiated {
+    use prost::Message;
+    use running_process::broker::protocol::{hello_reply, read_frame, HelloReply};
+    let bytes = read_frame(stream).expect("read HelloReply");
+    let reply = HelloReply::decode(bytes.as_slice()).expect("decode HelloReply");
+    match reply.result {
+        Some(hello_reply::Result::Negotiated(value)) => value,
+        other => panic!("expected Negotiated, got {other:?}"),
+    }
+}
+
+fn wait_thread_with_deadline<T: Send + 'static>(
+    thread: std::thread::JoinHandle<T>,
+    deadline: Duration,
+) -> T {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(thread.join());
+    });
+    rx.recv_timeout(deadline)
+        .expect("operation completed within deadline")
+        .expect("worker did not panic")
+}
+
+struct ChildGuard(std::process::Child);
+
+impl Deref for ChildGuard {
+    type Target = std::process::Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
 }
 
 fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
