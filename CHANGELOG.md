@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.6.1 — user baseline env: restore USERNAME on Windows, real login env on Unix
+
+Root-caused live on a dev box where soldr's daemon became permanently unreachable: `user_baseline_environment_block()` opened the process token with `TOKEN_QUERY` only, so `CreateEnvironmentBlock` **silently omitted the per-user dynamic variables** (`USERNAME`, `USERDOMAIN`). Consumers that key behavior on `USERNAME` (soldr derives its daemon pipe name from it) diverged from processes holding the real login environment — the daemon bound `soldr-daemon-soldr-<hash>` while every client dialed `soldr-daemon-<user>-<hash>`, forcing a permanent uncached-fallback loop.
+
+- Windows: the token is now opened with `TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE` (the documented requirement for `CreateEnvironmentBlock`); regression test asserts `USERNAME` is present and matches the live login value.
+- Unix: `EnvironmentPolicy::UserBaseline` no longer falls back to plain inheritance. It reconstructs a clean login environment from the user's identity via `getpwuid_r` — `USER`, `LOGNAME`, `HOME`, `SHELL`, the platform's default login `PATH` — carrying over `LANG`/`LC_*`/`TZ`/`TMPDIR` from the current process. Falls back to inheritance only when the passwd entry cannot be resolved. Process-local variables no longer leak into daemon baselines (regression test included).
+
 ## 4.5.11 — Windows: gate the CREATE_NO_WINDOW default on a console-less parent
 
 Fixes [#622](https://github.com/zackees/running-process/issues/622): the #584/#585 `CREATE_NO_WINDOW` default was applied to **every** spawned child, not just daemon-spawned ones. A child forced onto its own invisible console can't receive `GenerateConsoleCtrlEvent` CTRL_C/CTRL_BREAK from a console-attached parent — which broke six KeyboardInterrupt integration tests on every Windows CI run since the 4.5.8 release, and breaks CTRL_C interop for any console-attached consumer.
