@@ -24,6 +24,10 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+test-seams = []
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 

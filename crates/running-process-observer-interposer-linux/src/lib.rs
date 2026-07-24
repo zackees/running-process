@@ -139,6 +139,55 @@ fn fd_table() -> &'static Mutex<HashMap<c_int, String>> {
     FD_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(feature = "test-seams")]
+unsafe fn test_signal_and_wait(ready_fd: c_int, release_fd: c_int) {
+    let byte = [1u8; 1];
+    libc::syscall(
+        libc::SYS_write,
+        ready_fd,
+        byte.as_ptr(),
+        byte.len(),
+    );
+    let mut release = [0u8; 1];
+    libc::syscall(
+        libc::SYS_read,
+        release_fd,
+        release.as_mut_ptr(),
+        release.len(),
+    );
+}
+
+/// Test seam: hold the real fd-table lock across a fork.
+#[doc(hidden)]
+#[cfg(feature = "test-seams")]
+#[no_mangle]
+pub unsafe extern "C" fn rpo_test_hold_fd_table(ready_fd: c_int, release_fd: c_int) {
+    let _guard = fd_table().lock().expect("fd table lock");
+    test_signal_and_wait(ready_fd, release_fd);
+}
+
+/// Test seam: hold the real renameat resolver OnceLock initializer.
+#[doc(hidden)]
+#[cfg(feature = "test-seams")]
+#[no_mangle]
+pub unsafe extern "C" fn rpo_test_hold_renameat_resolver_init(
+    ready_fd: c_int,
+    release_fd: c_int,
+) {
+    if REAL_RENAMEAT.get().is_some() {
+        test_signal_and_wait(ready_fd, release_fd);
+        return;
+    }
+    let _ = REAL_RENAMEAT.get_or_init(|| {
+        test_signal_and_wait(ready_fd, release_fd);
+        let raw = libc::dlsym(libc::RTLD_NEXT, c"renameat".as_ptr());
+        if raw.is_null() {
+            libc::abort();
+        }
+        std::mem::transmute::<*mut libc::c_void, RenameatFn>(raw)
+    });
+}
+
 thread_local! {
     /// Reentrancy guard. If we somehow re-enter `open` from within
     /// our own shadow (e.g. an event-emit path that does I/O the
