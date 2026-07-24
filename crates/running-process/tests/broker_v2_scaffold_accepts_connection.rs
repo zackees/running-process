@@ -372,17 +372,17 @@ fn read_bound_path_bounded(
     let thread = std::thread::spawn(move || {
         let mut sent = false;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if !sent
-                && let Some(rest) = line.strip_prefix("running-process-broker-v2 bound at ")
-            {
-                let path = rest
-                    .trim_end()
-                    .rsplit_once(" (")
-                    .map(|(path, _)| path)
-                    .unwrap_or(rest.trim_end())
-                    .to_string();
-                let _ = tx.send(path);
-                sent = true;
+            if !sent {
+                if let Some(rest) = line.strip_prefix("running-process-broker-v2 bound at ") {
+                    let path = rest
+                        .trim_end()
+                        .rsplit_once(" (")
+                        .map(|(path, _)| path)
+                        .unwrap_or(rest.trim_end())
+                        .to_string();
+                    let _ = tx.send(path);
+                    sent = true;
+                }
             }
         }
     });
