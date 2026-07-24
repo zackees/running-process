@@ -247,7 +247,10 @@ fn interposer_post_fork_child_progress_entrypoint() {
     assert_eq!(unsafe { libc::pipe(release.as_mut_ptr()) }, 0);
     let holder = std::thread::spawn(move || unsafe { hold(ready[1], release[0]) });
     let mut byte = [0u8; 1];
-    assert_eq!(unsafe { libc::read(ready[0], byte.as_mut_ptr().cast(), 1) }, 1);
+    assert_eq!(
+        unsafe { libc::read(ready[0], byte.as_mut_ptr().cast(), 1) },
+        1
+    );
 
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork failed");
@@ -284,9 +287,15 @@ fn interposer_post_fork_child_progress_entrypoint() {
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    assert_eq!(unsafe { libc::write(release[1], byte.as_ptr().cast(), 1) }, 1);
+    assert_eq!(
+        unsafe { libc::write(release[1], byte.as_ptr().cast(), 1) },
+        1
+    );
     holder.join().expect("holder joins");
-    assert!(progressed, "post-fork child blocked in {mode:?} interposer state");
+    assert!(
+        progressed,
+        "post-fork child blocked in {mode:?} interposer state"
+    );
 }
 
 #[test]
