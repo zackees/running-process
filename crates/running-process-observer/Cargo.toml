@@ -62,6 +62,7 @@ windows-sys = { version = "0.59", features = [
 # against per-test directories instead of the shared
 # `helper_cache_dir()` (which would race across parallel tests).
 tempfile = "3"
+libc = "0.2"
 
 [lints]
 workspace = true
