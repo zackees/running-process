@@ -28,6 +28,7 @@
 
 #![cfg(all(feature = "embed-helper", target_os = "linux"))]
 
+use std::ffi::CString;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -35,6 +36,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use running_process_observer::inject_via_env;
+
+unsafe extern "C" {
+    fn open(path: *const std::os::raw::c_char, flags: std::os::raw::c_int) -> std::os::raw::c_int;
+    fn close(fd: std::os::raw::c_int) -> std::os::raw::c_int;
+}
 
 /// Locate the workspace `target/<triple>/<profile>/` directory the
 /// current test binary was built into. The test binary lives at
@@ -51,12 +57,14 @@ fn target_profile_dir() -> PathBuf {
 /// Build the Linux interposer cdylib on demand. Returns the path
 /// to the resulting `.so` artifact.
 fn build_and_locate_interposer_so() -> PathBuf {
+    if let Some(path) = std::env::var_os("RPO_TEST_INTERPOSER_SO") {
+        let so = PathBuf::from(path);
+        assert!(so.exists(), "RPO_TEST_INTERPOSER_SO does not exist: {so:?}");
+        return so;
+    }
+
     let status = Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "running-process-observer-interposer-linux",
-        ])
+        .args(["build", "-p", "running-process-observer-interposer-linux"])
         .status()
         .expect("spawn cargo to build interposer so");
     assert!(
@@ -64,8 +72,7 @@ fn build_and_locate_interposer_so() -> PathBuf {
         "cargo build of interposer .so failed: {status:?}"
     );
 
-    let so = target_profile_dir()
-        .join("librunning_process_observer_interposer_linux.so");
+    let so = target_profile_dir().join("librunning_process_observer_interposer_linux.so");
     assert!(
         so.exists(),
         "expected interposer .so at {so:?} after cargo build"
@@ -151,4 +158,65 @@ fn interposer_so_fires_rpo_hook_via_ld_preload() {
         captured.contains(&probe_marker),
         "expected RPO_HOOK line for our probe path {probe_marker:?}; got: {captured:?}"
     );
+}
+
+/// Child entrypoint for [`interposer_hook_does_not_block_when_stderr_is_full`].
+///
+/// Calling libc directly guarantees that every iteration reaches the
+/// interposer's `open` and `close` shadows. The parent deliberately leaves
+/// this process's stderr pipe undrained.
+#[test]
+fn interposer_stderr_saturation_child() {
+    if std::env::var_os("RPO_STDERR_SATURATION_CHILD").is_none() {
+        return;
+    }
+
+    let path = CString::new("/dev/null").expect("static path has no NUL");
+    for _ in 0..10_000 {
+        // SAFETY: `path` is a valid NUL-terminated string and every successful
+        // descriptor is closed exactly once.
+        let fd = unsafe { open(path.as_ptr(), 0) };
+        assert!(fd >= 0, "open /dev/null failed");
+        // SAFETY: `fd` was returned by the successful open immediately above.
+        assert_eq!(unsafe { close(fd) }, 0, "close /dev/null failed");
+    }
+}
+
+#[test]
+fn interposer_hook_does_not_block_when_stderr_is_full() {
+    // Regression for #605: hook telemetry must be lossy under backpressure.
+    let so = build_and_locate_interposer_so();
+    let current_test = std::env::current_exe().expect("current test executable");
+    let mut cmd = Command::new(current_test);
+    cmd.args([
+        "--exact",
+        "interposer_stderr_saturation_child",
+        "--nocapture",
+    ])
+    .env("RPO_STDERR_SATURATION_CHILD", "1")
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped());
+    inject_via_env(&mut cmd, &so).expect("inject_via_env");
+
+    let mut child = cmd.spawn().expect("spawn saturation child");
+    // Keep the pipe handle alive but intentionally never read it. The emitted
+    // events exceed normal pipe capacity by more than an order of magnitude.
+    let _undrained_stderr = child.stderr.take().expect("stderr piped");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait().expect("poll saturation child") {
+            Some(status) => {
+                assert!(status.success(), "saturation child failed: {status}");
+                break;
+            }
+            None if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("interposer blocked a hooked file operation after its stderr pipe filled");
+            }
+        }
+    }
 }
