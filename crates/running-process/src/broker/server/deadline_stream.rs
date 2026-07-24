@@ -85,3 +85,16 @@ impl<S: Write> Write for DeadlineStream<'_, S> {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eof_remains_distinct_from_timeout() {
+        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
+        let mut stream = DeadlineStream::new(&mut empty, Instant::now() + Duration::from_secs(1));
+        let mut byte = [0u8; 1];
+        assert_eq!(stream.read(&mut byte).expect("EOF is not an error"), 0);
+    }
+}
