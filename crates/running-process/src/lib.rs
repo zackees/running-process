@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 use std::io::Read;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -237,7 +237,10 @@ impl SharedState {
 pub struct NativeProcess {
     config: ProcessConfig,
     child: Arc<Mutex<Option<ChildState>>>,
+    stdin: Mutex<Option<ChildStdin>>,
     shared: Arc<SharedState>,
+    #[cfg(test)]
+    stdin_write_active: AtomicBool,
     #[cfg(windows)]
     capture_pipe_handles: Arc<Mutex<CapturePipeHandles>>,
 }
@@ -282,6 +285,9 @@ impl NativeProcess {
         Self {
             shared: Arc::new(shared),
             child: Arc::new(Mutex::new(None)),
+            stdin: Mutex::new(None),
+            #[cfg(test)]
+            stdin_write_active: AtomicBool::new(false),
             config,
             #[cfg(windows)]
             capture_pipe_handles: Arc::new(Mutex::new(CapturePipeHandles::default())),
@@ -398,6 +404,7 @@ impl NativeProcess {
                 self.pipe_done_callback(StreamKind::Stderr),
             );
         }
+        *self.stdin.lock().expect("stdin mutex poisoned") = child.stdin.take();
         *guard = Some(ChildState {
             child,
             #[cfg(windows)]
@@ -482,13 +489,20 @@ impl NativeProcess {
 
     /// Write bytes to the child's stdin and then close stdin.
     pub fn write_stdin(&self, data: &[u8]) -> Result<(), ProcessError> {
-        let mut guard = self.child.lock().expect("child mutex poisoned");
-        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
-        let stdin = child.stdin.as_mut().ok_or(ProcessError::StdinUnavailable)?;
+        if self.child.lock().expect("child mutex poisoned").is_none() {
+            return Err(ProcessError::NotRunning);
+        }
+        let mut guard = self.stdin.lock().expect("stdin mutex poisoned");
+        let stdin = guard.as_mut().ok_or(ProcessError::StdinUnavailable)?;
         use std::io::Write;
-        stdin.write_all(data).map_err(ProcessError::Io)?;
+        #[cfg(test)]
+        self.stdin_write_active.store(true, Ordering::Release);
+        let write_result = stdin.write_all(data);
+        #[cfg(test)]
+        self.stdin_write_active.store(false, Ordering::Release);
+        write_result.map_err(ProcessError::Io)?;
         stdin.flush().map_err(ProcessError::Io)?;
-        drop(child.stdin.take());
+        drop(guard.take());
         Ok(())
     }
 
@@ -497,11 +511,18 @@ impl NativeProcess {
     /// pipe-backed sessions (#130 milestone 3) where the daemon keeps
     /// stdin open across multiple client input frames.
     pub fn write_stdin_streaming(&self, data: &[u8]) -> Result<(), ProcessError> {
-        let mut guard = self.child.lock().expect("child mutex poisoned");
-        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
-        let stdin = child.stdin.as_mut().ok_or(ProcessError::StdinUnavailable)?;
+        if self.child.lock().expect("child mutex poisoned").is_none() {
+            return Err(ProcessError::NotRunning);
+        }
+        let mut guard = self.stdin.lock().expect("stdin mutex poisoned");
+        let stdin = guard.as_mut().ok_or(ProcessError::StdinUnavailable)?;
         use std::io::Write;
-        stdin.write_all(data).map_err(ProcessError::Io)?;
+        #[cfg(test)]
+        self.stdin_write_active.store(true, Ordering::Release);
+        let write_result = stdin.write_all(data);
+        #[cfg(test)]
+        self.stdin_write_active.store(false, Ordering::Release);
+        write_result.map_err(ProcessError::Io)?;
         stdin.flush().map_err(ProcessError::Io)?;
         Ok(())
     }
@@ -509,9 +530,10 @@ impl NativeProcess {
     /// Explicitly close the child's stdin (signals EOF to the child).
     /// Idempotent: returns Ok if stdin was already closed.
     pub fn close_stdin(&self) -> Result<(), ProcessError> {
-        let mut guard = self.child.lock().expect("child mutex poisoned");
-        let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
-        drop(child.stdin.take());
+        if self.child.lock().expect("child mutex poisoned").is_none() {
+            return Err(ProcessError::NotRunning);
+        }
+        drop(self.stdin.lock().expect("stdin mutex poisoned").take());
         Ok(())
     }
 
