@@ -17,8 +17,8 @@
 //! event-stream surface (the PTY/pipe backlog is the byte-stream analog).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, SendError, SyncSender, TrySendError};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
 use crate::observer::{EventCategory, ObserverEvent};
@@ -87,6 +87,9 @@ struct ObserverSink {
     missed_events: AtomicU64,
     delivered_events: AtomicU64,
     disconnected: AtomicUsize, // 0 = false, 1 = true
+    removed: AtomicBool,
+    #[cfg(test)]
+    block_waiters: AtomicUsize,
 }
 
 impl ObserverSink {
@@ -123,15 +126,33 @@ impl ObserverSink {
                     self.missed_events.fetch_add(1, Ordering::Relaxed);
                 }
             },
-            ObserverBackpressure::Block => match self.sender.send(event) {
-                Ok(()) => {
-                    self.delivered_events.fetch_add(1, Ordering::Relaxed);
+            ObserverBackpressure::Block => {
+                let mut pending = event;
+                loop {
+                    if self.removed.load(Ordering::Acquire) {
+                        return;
+                    }
+                    match self.sender.try_send(pending) {
+                        Ok(()) => {
+                            self.delivered_events.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+                        Err(TrySendError::Full(event)) => {
+                            pending = event;
+                            #[cfg(test)]
+                            self.block_waiters.fetch_add(1, Ordering::Release);
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                            #[cfg(test)]
+                            self.block_waiters.fetch_sub(1, Ordering::Release);
+                        }
+                        Err(TrySendError::Disconnected(_)) => {
+                            self.disconnected.store(1, Ordering::Release);
+                            self.missed_events.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+                    }
                 }
-                Err(SendError(_)) => {
-                    self.disconnected.store(1, Ordering::Release);
-                    self.missed_events.fetch_add(1, Ordering::Relaxed);
-                }
-            },
+            }
         }
     }
 }
@@ -171,6 +192,9 @@ impl ObserverRegistry {
             missed_events: AtomicU64::new(0),
             delivered_events: AtomicU64::new(0),
             disconnected: AtomicUsize::new(0),
+            removed: AtomicBool::new(false),
+            #[cfg(test)]
+            block_waiters: AtomicUsize::new(0),
         };
         self.sinks
             .lock()
@@ -182,11 +206,16 @@ impl ObserverRegistry {
 
     /// Remove a registered sink. Returns `true` if a sink was removed.
     pub fn remove(&self, id: &ObserverSubscriberId) -> bool {
-        let removed = self.sinks.lock().unwrap().remove(id).is_some();
-        if removed {
+        let mut sinks = self.sinks.lock().unwrap();
+        let removed = sinks.remove(id);
+        if let Some(sink) = removed {
+            sink.removed.store(true, Ordering::Release);
+            drop(sinks);
             self.active_sinks.fetch_sub(1, Ordering::Release);
+            true
+        } else {
+            false
         }
-        removed
     }
 
     /// Fetch the current status for a registered sink.
@@ -367,45 +396,70 @@ mod tests {
             1,
             ObserverBackpressure::Block,
         );
+        let sink = Arc::clone(reg.sinks.lock().unwrap().get(&id).unwrap());
 
         // Fill the bounded channel, then start another emit that must honor
         // Block backpressure until the receiver makes room.
         reg.emit(lifecycle_started(1));
         let blocked_reg = Arc::clone(&reg);
-        let (emit_started_tx, emit_started_rx) = mpsc::channel();
         let (emit_done_tx, emit_done_rx) = mpsc::channel();
         let emit_worker = std::thread::spawn(move || {
-            emit_started_tx.send(()).unwrap();
             blocked_reg.emit(lifecycle_started(2));
             emit_done_tx.send(()).unwrap();
         });
-        emit_started_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("emit worker should start");
-        assert!(
-            emit_done_rx
-                .recv_timeout(Duration::from_millis(100))
-                .is_err(),
-            "second emit should block while the channel is full"
-        );
+        let wait_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while sink.block_waiters.load(Ordering::Acquire) == 0 {
+            assert!(
+                std::time::Instant::now() < wait_deadline,
+                "second emit never reached full-channel Block delivery"
+            );
+            std::thread::yield_now();
+        }
 
         // Registry coordination must remain available while delivery waits.
         let status_reg = Arc::clone(&reg);
+        let status_id = id.clone();
         let (status_tx, status_rx) = mpsc::channel();
         let status_worker = std::thread::spawn(move || {
-            status_tx.send(status_reg.status(&id)).unwrap();
+            status_tx.send(status_reg.status(&status_id)).unwrap();
         });
         let status = status_rx.recv_timeout(Duration::from_millis(250));
 
-        // Drain both events before asserting so the RED case cannot leak
-        // blocked test workers.
-        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().pid, 1);
+        // Removing the sink must cancel its in-flight delivery without
+        // requiring the live receiver to drain or disconnect.
+        let remove_reg = Arc::clone(&reg);
+        let (remove_tx, remove_rx) = mpsc::channel();
+        let remove_worker =
+            std::thread::spawn(move || remove_tx.send(remove_reg.remove(&id)).unwrap());
+        let removed = remove_rx.recv_timeout(Duration::from_millis(250));
+        if status.is_err() || removed.is_err() {
+            // Cleanup for the RED implementation: draining makes the blocked
+            // send complete, which releases the registry mutex for status
+            // and remove before this test reports the bounded failure.
+            let _ = rx.recv_timeout(Duration::from_secs(1));
+            let _ = emit_done_rx.recv_timeout(Duration::from_secs(1));
+            let _ = rx.try_recv();
+            let _ = status_rx.recv_timeout(Duration::from_secs(1));
+            let _ = remove_rx.recv_timeout(Duration::from_secs(1));
+            emit_worker.join().unwrap();
+            status_worker.join().unwrap();
+            remove_worker.join().unwrap();
+            panic!(
+                "Block delivery stalled registry coordination: status={status:?}, remove={removed:?}"
+            );
+        }
+        assert!(removed.unwrap());
         emit_done_rx
             .recv_timeout(Duration::from_secs(1))
-            .expect("blocked emit should finish after the receiver drains");
-        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().pid, 2);
+            .expect("removal should release the blocked emit");
         emit_worker.join().unwrap();
         status_worker.join().unwrap();
+        remove_worker.join().unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().pid, 1);
+        assert!(
+            rx.try_recv().is_err(),
+            "removed sink should not receive the pending event"
+        );
 
         assert!(
             status.is_ok(),
