@@ -5,8 +5,9 @@
 //! At load time (when a target process is launched with
 //! `DYLD_INSERT_LIBRARIES=…/librunning_process_observer_interposer_macos.dylib`),
 //! the dynamic linker loads this library before the C runtime and any
-//! symbols we export shadow libc's. Each shadow resolves the real
-//! function via `dlsym(RTLD_NEXT, "…")`, invokes it, then emits an
+//! symbols we export shadow libc's. A load-time constructor eagerly
+//! resolves the real functions via `dlsym(RTLD_NEXT, "…")`; each shadow
+//! invokes its resolved function, then emits an
 //! `RPO_HOOK …` line on stderr matching the Linux interposer's
 //! format (#551 slice 4).
 //!
@@ -41,7 +42,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock, TryLockError};
 use std::time::Duration;
 
@@ -56,16 +57,17 @@ type UnlinkatFn = unsafe extern "C" fn(c_int, *const c_char, c_int) -> c_int;
 type RenameFn = unsafe extern "C" fn(*const c_char, *const c_char) -> c_int;
 type RenameatFn = unsafe extern "C" fn(c_int, *const c_char, c_int, *const c_char) -> c_int;
 
-// ── dlsym caches ──
+// ── Eagerly resolved function pointers ──
 
-static REAL_OPEN: OnceLock<OpenFn> = OnceLock::new();
-static REAL_OPENAT: OnceLock<OpenatFn> = OnceLock::new();
-static REAL_CLOSE: OnceLock<CloseFn> = OnceLock::new();
-static REAL_WRITE: OnceLock<WriteFn> = OnceLock::new();
-static REAL_UNLINK: OnceLock<UnlinkFn> = OnceLock::new();
-static REAL_UNLINKAT: OnceLock<UnlinkatFn> = OnceLock::new();
-static REAL_RENAME: OnceLock<RenameFn> = OnceLock::new();
-static REAL_RENAMEAT: OnceLock<RenameatFn> = OnceLock::new();
+static REAL_OPEN: AtomicPtr<libc::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_OPENAT: AtomicPtr<libc::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_CLOSE: AtomicPtr<libc::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_WRITE: AtomicPtr<libc::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_UNLINK: AtomicPtr<libc::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_UNLINKAT: AtomicPtr<libc::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_RENAME: AtomicPtr<libc::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_RENAMEAT: AtomicPtr<libc::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static POST_FORK_CHILD: AtomicBool = AtomicBool::new(false);
 
 /// Process-global fd→path map. Same purpose as the Linux interposer's
 /// table: populated on successful open/openat, queried on
@@ -74,6 +76,28 @@ static FD_TABLE: OnceLock<Mutex<HashMap<c_int, String>>> = OnceLock::new();
 
 fn fd_table() -> &'static Mutex<HashMap<c_int, String>> {
     FD_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "test-seams")]
+unsafe fn test_signal_and_wait(ready_fd: c_int, release_fd: c_int) {
+    // Darwin's libc crate does not expose SYS_read/SYS_write. These stable
+    // BSD syscall numbers keep the seam from re-entering our write hook while
+    // it deliberately holds FD_TABLE.
+    const SYS_READ: libc::c_int = 3;
+    const SYS_WRITE: libc::c_int = 4;
+    let byte = [1u8; 1];
+    libc::syscall(SYS_WRITE, ready_fd, byte.as_ptr(), byte.len());
+    let mut release = [0u8; 1];
+    libc::syscall(SYS_READ, release_fd, release.as_mut_ptr(), release.len());
+}
+
+/// Test seam: hold the real fd-table lock across a fork.
+#[doc(hidden)]
+#[cfg(feature = "test-seams")]
+#[no_mangle]
+pub unsafe extern "C" fn rpo_test_hold_fd_table(ready_fd: c_int, release_fd: c_int) {
+    let _guard = fd_table().lock().expect("fd table lock");
+    test_signal_and_wait(ready_fd, release_fd);
 }
 
 thread_local! {
@@ -86,14 +110,11 @@ thread_local! {
 
 macro_rules! resolve_real {
     ($lock:ident, $name:literal, $fn_ty:ty) => {{
-        *$lock.get_or_init(|| unsafe {
-            let n = std::ffi::CStr::from_bytes_with_nul_unchecked(concat!($name, "\0").as_bytes());
-            let raw = libc::dlsym(libc::RTLD_NEXT, n.as_ptr());
-            if raw.is_null() {
-                libc::abort();
-            }
-            std::mem::transmute::<*mut libc::c_void, $fn_ty>(raw)
-        })
+        let raw = $lock.load(Ordering::Acquire);
+        if raw.is_null() {
+            unsafe { libc::abort() }
+        }
+        unsafe { std::mem::transmute::<*mut libc::c_void, $fn_ty>(raw) }
     }};
 }
 
@@ -121,6 +142,41 @@ fn real_rename() -> RenameFn {
 fn real_renameat() -> RenameatFn {
     resolve_real!(REAL_RENAMEAT, "renameat", RenameatFn)
 }
+
+extern "C" fn post_fork_child() {
+    POST_FORK_CHILD.store(true, Ordering::Release);
+}
+
+extern "C" fn interposer_init() {
+    unsafe fn resolve(name: &CStr) -> *mut libc::c_void {
+        let raw = libc::dlsym(libc::RTLD_NEXT, name.as_ptr());
+        if raw.is_null() {
+            libc::abort();
+        }
+        raw
+    }
+    unsafe {
+        REAL_OPEN.store(resolve(c"open"), Ordering::Release);
+        REAL_OPENAT.store(resolve(c"openat"), Ordering::Release);
+        REAL_CLOSE.store(resolve(c"close"), Ordering::Release);
+        REAL_WRITE.store(resolve(c"write"), Ordering::Release);
+        REAL_UNLINK.store(resolve(c"unlink"), Ordering::Release);
+        REAL_UNLINKAT.store(resolve(c"unlinkat"), Ordering::Release);
+        REAL_RENAME.store(resolve(c"rename"), Ordering::Release);
+        REAL_RENAMEAT.store(resolve(c"renameat"), Ordering::Release);
+    }
+    let _ = fd_table();
+    let _ = emit_queue();
+    unsafe {
+        if libc::pthread_atfork(None, None, Some(post_fork_child)) != 0 {
+            libc::abort();
+        }
+    }
+}
+
+#[used]
+#[link_section = "__DATA,__mod_init_func"]
+static INTERPOSER_INIT: extern "C" fn() = interposer_init;
 
 // ── Event emission ──
 
@@ -326,6 +382,9 @@ fn fd_to_path(fd: c_int) -> Option<String> {
 #[no_mangle]
 pub unsafe extern "C" fn open(path: *const c_char, flags: c_int) -> c_int {
     let real = real_open();
+    if POST_FORK_CHILD.load(Ordering::Acquire) {
+        return real(path, flags);
+    }
     if IN_HOOK.with(|c| c.get()) {
         return real(path, flags);
     }
@@ -349,6 +408,9 @@ pub unsafe extern "C" fn open(path: *const c_char, flags: c_int) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn openat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int {
     let real = real_openat();
+    if POST_FORK_CHILD.load(Ordering::Acquire) {
+        return real(dirfd, path, flags);
+    }
     if IN_HOOK.with(|c| c.get()) {
         return real(dirfd, path, flags);
     }
@@ -372,6 +434,9 @@ pub unsafe extern "C" fn openat(dirfd: c_int, path: *const c_char, flags: c_int)
 #[no_mangle]
 pub unsafe extern "C" fn close(fd: c_int) -> c_int {
     let real = real_close();
+    if POST_FORK_CHILD.load(Ordering::Acquire) {
+        return real(fd);
+    }
     if IN_HOOK.with(|c| c.get()) {
         return real(fd);
     }
@@ -403,6 +468,9 @@ pub unsafe extern "C" fn write(
     count: libc::size_t,
 ) -> libc::ssize_t {
     let real = real_write();
+    if POST_FORK_CHILD.load(Ordering::Acquire) {
+        return real(fd, buf, count);
+    }
     if IN_HOOK.with(|c| c.get()) {
         return real(fd, buf, count);
     }
@@ -425,6 +493,9 @@ pub unsafe extern "C" fn write(
 #[no_mangle]
 pub unsafe extern "C" fn unlink(path: *const c_char) -> c_int {
     let real = real_unlink();
+    if POST_FORK_CHILD.load(Ordering::Acquire) {
+        return real(path);
+    }
     if IN_HOOK.with(|c| c.get()) {
         return real(path);
     }
@@ -447,6 +518,9 @@ pub unsafe extern "C" fn unlink(path: *const c_char) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int {
     let real = real_unlinkat();
+    if POST_FORK_CHILD.load(Ordering::Acquire) {
+        return real(dirfd, path, flags);
+    }
     if IN_HOOK.with(|c| c.get()) {
         return real(dirfd, path, flags);
     }
@@ -469,6 +543,9 @@ pub unsafe extern "C" fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_in
 #[no_mangle]
 pub unsafe extern "C" fn rename(old: *const c_char, new: *const c_char) -> c_int {
     let real = real_rename();
+    if POST_FORK_CHILD.load(Ordering::Acquire) {
+        return real(old, new);
+    }
     if IN_HOOK.with(|c| c.get()) {
         return real(old, new);
     }
@@ -496,6 +573,9 @@ pub unsafe extern "C" fn renameat(
     new: *const c_char,
 ) -> c_int {
     let real = real_renameat();
+    if POST_FORK_CHILD.load(Ordering::Acquire) {
+        return real(olddirfd, old, newdirfd, new);
+    }
     if IN_HOOK.with(|c| c.get()) {
         return real(olddirfd, old, newdirfd, new);
     }
