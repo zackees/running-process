@@ -690,6 +690,80 @@ fn wait_for_capture_completion_noop_without_capture() {
 
 // ── build_command tests ──
 
+fn assert_blocked_stdin_write_does_not_starve_child(streaming: bool) {
+    let process = Arc::new(NativeProcess::new(ProcessConfig {
+        command: CommandSpec::Argv(vec![
+            "python".into(),
+            "-c".into(),
+            "import time; time.sleep(2)".into(),
+        ]),
+        cwd: None,
+        env: None,
+        capture: false,
+        stderr_mode: StderrMode::Stdout,
+        creationflags: None,
+        create_process_group: false,
+        stdin_mode: StdinMode::Piped,
+        nice: None,
+    }));
+    process.start().expect("start non-reading child");
+    let expected_pid = process.pid().expect("child pid");
+
+    let writer_process = Arc::clone(&process);
+    let writer = std::thread::spawn(move || {
+        let payload = vec![b'x'; 8 * 1024 * 1024];
+        if streaming {
+            writer_process.write_stdin_streaming(&payload)
+        } else {
+            writer_process.write_stdin(&payload)
+        }
+    });
+
+    let write_deadline = Instant::now() + Duration::from_secs(1);
+    while !process.stdin_write_active.load(Ordering::Acquire) {
+        assert!(
+            Instant::now() < write_deadline,
+            "writer never entered write_all"
+        );
+        std::thread::yield_now();
+    }
+
+    let pid_process = Arc::clone(&process);
+    let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+    let pid_worker = std::thread::spawn(move || {
+        pid_tx.send(pid_process.pid()).unwrap();
+    });
+    let coordinated = pid_rx.recv_timeout(Duration::from_millis(250));
+
+    if coordinated.is_ok() {
+        process.kill().expect("kill should unblock the pipe writer");
+    }
+    let _ = writer.join().expect("writer thread panicked");
+    let eventual_pid = match coordinated {
+        Ok(pid) => pid,
+        Err(_) => pid_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("pid coordination should recover after child exit"),
+    };
+    pid_worker.join().unwrap();
+
+    assert_eq!(eventual_pid, Some(expected_pid));
+    assert!(
+        coordinated.is_ok(),
+        "blocked stdin write held the child mutex and starved pid coordination"
+    );
+}
+
+#[test]
+fn write_stdin_does_not_hold_child_mutex_while_blocked() {
+    assert_blocked_stdin_write_does_not_starve_child(false);
+}
+
+#[test]
+fn write_stdin_streaming_does_not_hold_child_mutex_while_blocked() {
+    assert_blocked_stdin_write_does_not_starve_child(true);
+}
+
 #[test]
 fn build_command_from_argv() {
     let process = NativeProcess::new(ProcessConfig {

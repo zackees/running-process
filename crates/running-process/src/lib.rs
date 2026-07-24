@@ -238,6 +238,8 @@ pub struct NativeProcess {
     config: ProcessConfig,
     child: Arc<Mutex<Option<ChildState>>>,
     shared: Arc<SharedState>,
+    #[cfg(test)]
+    stdin_write_active: AtomicBool,
     #[cfg(windows)]
     capture_pipe_handles: Arc<Mutex<CapturePipeHandles>>,
 }
@@ -282,6 +284,8 @@ impl NativeProcess {
         Self {
             shared: Arc::new(shared),
             child: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            stdin_write_active: AtomicBool::new(false),
             config,
             #[cfg(windows)]
             capture_pipe_handles: Arc::new(Mutex::new(CapturePipeHandles::default())),
@@ -486,7 +490,12 @@ impl NativeProcess {
         let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
         let stdin = child.stdin.as_mut().ok_or(ProcessError::StdinUnavailable)?;
         use std::io::Write;
-        stdin.write_all(data).map_err(ProcessError::Io)?;
+        #[cfg(test)]
+        self.stdin_write_active.store(true, Ordering::Release);
+        let write_result = stdin.write_all(data);
+        #[cfg(test)]
+        self.stdin_write_active.store(false, Ordering::Release);
+        write_result.map_err(ProcessError::Io)?;
         stdin.flush().map_err(ProcessError::Io)?;
         drop(child.stdin.take());
         Ok(())
@@ -501,7 +510,12 @@ impl NativeProcess {
         let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
         let stdin = child.stdin.as_mut().ok_or(ProcessError::StdinUnavailable)?;
         use std::io::Write;
-        stdin.write_all(data).map_err(ProcessError::Io)?;
+        #[cfg(test)]
+        self.stdin_write_active.store(true, Ordering::Release);
+        let write_result = stdin.write_all(data);
+        #[cfg(test)]
+        self.stdin_write_active.store(false, Ordering::Release);
+        write_result.map_err(ProcessError::Io)?;
         stdin.flush().map_err(ProcessError::Io)?;
         Ok(())
     }
