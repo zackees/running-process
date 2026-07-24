@@ -45,7 +45,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use interprocess::local_socket::traits::Listener as _;
+use interprocess::local_socket::traits::{Listener as _, Stream as _};
 use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use running_process::broker::lifecycle::names_v2::v2_program_pipe;
@@ -57,6 +57,7 @@ use running_process::broker::protocol::{
 };
 use running_process::broker::protocol_v2::ServiceDefinitionLoader;
 use running_process::broker::server::service_def_loader::ServiceDefinitionError;
+use running_process::broker::server::deadline_stream::{hello_read_deadline, DeadlineStream};
 
 /// Default program name when `--program` is not passed. Matches the
 /// slice-3c scaffold so existing integration tests keep working.
@@ -275,7 +276,7 @@ fn accept_loop(
                     .name("rpb-v2-handler".to_string())
                     .spawn(move || {
                         let mut s = stream;
-                        let result = handle_hello(&mut s, &loader);
+                        let result = handle_hello_with_deadline(&mut s, &loader);
                         match result {
                             Ok(svc) => println!(
                                 "running-process-broker-v2 Hello service={svc:?} negotiated",
@@ -314,7 +315,7 @@ fn accept_one(
     match listener.accept() {
         Ok(mut stream) => {
             println!("running-process-broker-v2 peer connected (--once)");
-            match handle_hello(&mut stream, &loader) {
+            match handle_hello_with_deadline(&mut stream, &loader) {
                 Ok(svc) => {
                     println!(
                         "running-process-broker-v2 Hello for service {svc:?} negotiated; exiting"
@@ -332,6 +333,17 @@ fn accept_one(
             ExitCode::from(1)
         }
     }
+}
+
+fn handle_hello_with_deadline(
+    stream: &mut interprocess::local_socket::Stream,
+    loader: &ServiceDefinitionLoader,
+) -> Result<String, String> {
+    stream
+        .set_nonblocking(true)
+        .map_err(|error| format!("set Hello stream nonblocking: {error}"))?;
+    let mut stream = DeadlineStream::new(stream, hello_read_deadline());
+    handle_hello(&mut stream, loader)
 }
 
 /// Read a `Hello` frame, look up the registered service, and send

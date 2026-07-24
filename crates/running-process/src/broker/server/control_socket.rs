@@ -21,96 +21,9 @@ use super::connection::{
     write_response_frame, BrokerConnectionError, HelloResponder, LocalSocketCleanup,
     PeerCredentialPolicy,
 };
+use super::deadline_stream::{hello_read_deadline, DeadlineStream};
 use super::fd_pressure::{FdPressureDecision, FdPressureGuard};
 use super::hello_handler::PeerIdentity;
-
-/// Poll interval for the deadline-bounded control-socket read/write.
-const CONTROL_IO_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
-
-/// Default deadline for reading a peer's initial Hello/admin frame off an
-/// accepted control-socket connection (issue #590, cluster G). The accept
-/// loop serves each connection inline on one thread, so a peer that
-/// connects but never sends a complete frame would otherwise stall every
-/// other client. Override with `RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS`.
-const DEFAULT_HELLO_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const HELLO_READ_TIMEOUT_ENV: &str = "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS";
-
-fn hello_read_deadline() -> std::time::Instant {
-    let timeout = std::env::var(HELLO_READ_TIMEOUT_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|&ms| ms > 0)
-        .map(std::time::Duration::from_millis)
-        .unwrap_or(DEFAULT_HELLO_READ_TIMEOUT);
-    std::time::Instant::now() + timeout
-}
-
-/// Wraps an accepted (nonblocking) control-socket stream and bounds every
-/// read/write against a deadline, so a silent or trickle peer cannot wedge
-/// the single-threaded accept loop (issue #590, cluster G). `Ok(0)` is
-/// treated as "no data yet" (Windows `PIPE_NOWAIT` returns that instead of
-/// `WouldBlock`), matching the broker probe idiom.
-struct DeadlineStream<'a, S> {
-    inner: &'a mut S,
-    deadline: std::time::Instant,
-}
-
-impl<'a, S> DeadlineStream<'a, S> {
-    fn new(inner: &'a mut S, deadline: std::time::Instant) -> Self {
-        Self { inner, deadline }
-    }
-
-    fn wait(&self) -> std::io::Result<()> {
-        let now = std::time::Instant::now();
-        if now >= self.deadline {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "broker control-socket peer did not send a complete frame in time",
-            ));
-        }
-        std::thread::sleep((self.deadline - now).min(CONTROL_IO_POLL_INTERVAL));
-        Ok(())
-    }
-}
-
-impl<S: Read> Read for DeadlineStream<'_, S> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        loop {
-            match self.inner.read(buf) {
-                Ok(0) => self.wait()?,
-                Ok(n) => return Ok(n),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => self.wait()?,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
-
-impl<S: Write> Write for DeadlineStream<'_, S> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        loop {
-            match self.inner.write(buf) {
-                Ok(0) => self.wait()?,
-                Ok(n) => return Ok(n),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => self.wait()?,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        loop {
-            match self.inner.flush() {
-                Ok(()) => return Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => self.wait()?,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
 
 /// Result of handling one control socket connection.
 #[derive(Clone, Debug, PartialEq)]
