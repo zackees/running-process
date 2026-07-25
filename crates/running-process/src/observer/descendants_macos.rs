@@ -36,6 +36,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use crate::observer::pid_identity;
 use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -49,18 +50,46 @@ const PROC_PIDTBSDINFO: libc::c_int = 3;
 
 /// Spawn the descendant-tracking pump thread for `root_pid`. Returns
 /// silently after spawning — the thread terminates when `root_pid`
-/// disappears from the global process table.
+/// disappears from the global process table or its creation-time identity
+/// changes.
 pub(crate) fn spawn_pump(root_pid: u32, sink: Sender<ObserverEvent>) {
+    let Some(root_identity) = process_info(root_pid).map(|info| info.identity) else {
+        return;
+    };
     let _ = std::thread::Builder::new()
         .name("rp-macos-descpump".to_string())
-        .spawn(move || pump_loop(root_pid, sink));
+        .spawn(move || pump_loop(root_pid, root_identity, sink));
 }
 
-fn pump_loop(root_pid: u32, sink: Sender<ObserverEvent>) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcessIdentity {
+    start_sec: u64,
+    start_usec: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcessInfo {
+    pid: u32,
+    ppid: u32,
+    identity: ProcessIdentity,
+}
+
+fn pump_loop(root_pid: u32, root_identity: ProcessIdentity, sink: Sender<ObserverEvent>) {
+    pump_loop_with(
+        sink,
+        || descendant_snapshot(root_pid, root_identity),
+        || std::thread::sleep(POLL_INTERVAL),
+    );
+}
+
+fn pump_loop_with(
+    sink: Sender<ObserverEvent>,
+    mut snapshot: impl FnMut() -> Option<HashSet<u32>>,
+    mut wait: impl FnMut(),
+) {
     let mut known: HashSet<u32> = HashSet::new();
     loop {
-        let all = list_all_processes();
-        if !all.iter().any(|&(pid, _)| pid == root_pid) {
+        let Some(current) = snapshot() else {
             // Root is gone — emit exits for any remaining tracked
             // descendants and terminate. Mirrors the Linux pump's
             // /proc-disappearance termination condition.
@@ -72,11 +101,10 @@ fn pump_loop(root_pid: u32, sink: Sender<ObserverEvent>) {
                 ));
             }
             break;
-        }
-        let current = descendants_of(root_pid, &all);
+        };
         emit_diff(&known, &current, &sink);
         known = current;
-        std::thread::sleep(POLL_INTERVAL);
+        wait();
     }
 }
 
@@ -87,17 +115,10 @@ fn pump_loop(root_pid: u32, sink: Sender<ObserverEvent>) {
 /// avoids depending on `libc::kinfo_proc` (which our pinned libc
 /// 0.2 does not export on macOS targets) and is the documented
 /// Apple API for cross-process introspection.
-fn list_all_processes() -> Vec<(u32, u32)> {
+fn list_all_processes() -> Vec<ProcessInfo> {
     // proc_listpids size probe — pass null buffer to learn the
     // required size in bytes.
-    let size = unsafe {
-        libc::proc_listpids(
-            PROC_ALL_PIDS,
-            0,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
+    let size = unsafe { libc::proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0) };
     if size <= 0 {
         return Vec::new();
     }
@@ -125,34 +146,81 @@ fn list_all_processes() -> Vec<(u32, u32)> {
         if pid <= 0 {
             continue;
         }
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let n = unsafe {
-            libc::proc_pidinfo(
-                pid,
-                PROC_PIDTBSDINFO,
-                0,
-                &mut info as *mut libc::proc_bsdinfo as *mut libc::c_void,
-                std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
-            )
-        };
-        // proc_pidinfo returns the number of bytes written; 0 means
-        // the process disappeared between listpids and the info
-        // query. Skip those races.
-        if n <= 0 {
-            continue;
+        if let Some(info) = process_info(pid as u32) {
+            result.push(info);
         }
-        result.push((info.pbi_pid, info.pbi_ppid));
     }
     result
+}
+
+fn process_info(pid: u32) -> Option<ProcessInfo> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut libc::proc_bsdinfo as *mut libc::c_void,
+            std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
+        )
+    };
+    (n as usize == std::mem::size_of::<libc::proc_bsdinfo>()).then_some(ProcessInfo {
+        pid: info.pbi_pid,
+        ppid: info.pbi_ppid,
+        identity: ProcessIdentity {
+            // Use the complete timeval: seconds alone can alias when a busy
+            // host recycles a PID within the same second.
+            start_sec: info.pbi_start_tvsec,
+            start_usec: info.pbi_start_tvusec,
+        },
+    })
+}
+
+#[cfg(test)]
+fn descendants_if_root_matches(
+    root_pid: u32,
+    expected_identity: ProcessIdentity,
+    all: &[ProcessInfo],
+) -> Option<HashSet<u32>> {
+    all.iter()
+        .any(|info| {
+            info.pid == root_pid && pid_identity::matches(&expected_identity, Some(&info.identity))
+        })
+        .then(|| descendants_of(root_pid, all))
+}
+
+fn descendant_snapshot(root_pid: u32, expected_identity: ProcessIdentity) -> Option<HashSet<u32>> {
+    let identity_before = process_info(root_pid).map(|info| info.identity);
+    if !pid_identity::matches(&expected_identity, identity_before.as_ref()) {
+        return None;
+    }
+    let descendants = descendants_of(root_pid, &list_all_processes());
+    verified_snapshot(
+        expected_identity,
+        identity_before,
+        descendants,
+        process_info(root_pid).map(|info| info.identity),
+    )
+}
+
+fn verified_snapshot(
+    expected_identity: ProcessIdentity,
+    identity_before: Option<ProcessIdentity>,
+    descendants: HashSet<u32>,
+    identity_after: Option<ProcessIdentity>,
+) -> Option<HashSet<u32>> {
+    (pid_identity::matches(&expected_identity, identity_before.as_ref())
+        && pid_identity::matches(&expected_identity, identity_after.as_ref()))
+    .then_some(descendants)
 }
 
 /// BFS the descendant subtree of `root_pid` given the full
 /// `(pid, ppid)` snapshot. Returns the set of every transitive
 /// descendant (the root itself is excluded).
-fn descendants_of(root_pid: u32, all: &[(u32, u32)]) -> HashSet<u32> {
+fn descendants_of(root_pid: u32, all: &[ProcessInfo]) -> HashSet<u32> {
     let mut child_map: HashMap<u32, Vec<u32>> = HashMap::new();
-    for &(pid, ppid) in all {
-        child_map.entry(ppid).or_default().push(pid);
+    for info in all {
+        child_map.entry(info.ppid).or_default().push(info.pid);
     }
     let mut result = HashSet::new();
     let mut stack = vec![root_pid];
@@ -171,11 +239,7 @@ fn descendants_of(root_pid: u32, all: &[(u32, u32)]) -> HashSet<u32> {
 /// Emit DescendantStarted for `current \ prev` and DescendantExited
 /// for `prev \ current`. Send errors are ignored — a dropped
 /// subscriber must never crash the pump.
-fn emit_diff(
-    prev: &HashSet<u32>,
-    current: &HashSet<u32>,
-    sink: &Sender<ObserverEvent>,
-) {
+fn emit_diff(prev: &HashSet<u32>, current: &HashSet<u32>, sink: &Sender<ObserverEvent>) {
     for &new_pid in current.difference(prev) {
         let _ = sink.send(ObserverEvent::new_now(
             EventCategory::Process,
@@ -196,6 +260,17 @@ fn emit_diff(
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    fn process(pid: u32, ppid: u32, start_usec: u64) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid,
+            identity: ProcessIdentity {
+                start_sec: 100,
+                start_usec,
+            },
+        }
+    }
 
     #[test]
     fn emit_diff_fires_one_started_per_new_pid() {
@@ -234,7 +309,13 @@ mod tests {
     #[test]
     fn descendants_of_handles_branching_tree() {
         // Tree: 100 -> {200, 300}; 200 -> {201}; 300 has no children.
-        let all = vec![(100, 0), (200, 100), (201, 200), (300, 100), (999, 1)];
+        let all = vec![
+            process(100, 0, 1),
+            process(200, 100, 2),
+            process(201, 200, 3),
+            process(300, 100, 4),
+            process(999, 1, 5),
+        ];
         let descendants = descendants_of(100, &all);
         assert_eq!(
             descendants,
@@ -244,7 +325,7 @@ mod tests {
 
     #[test]
     fn descendants_of_for_unknown_root_returns_empty() {
-        let all = vec![(100, 0), (200, 100)];
+        let all = vec![process(100, 0, 1), process(200, 100, 2)];
         let descendants = descendants_of(0x7FFF_FFFE, &all);
         assert!(descendants.is_empty());
     }
@@ -263,9 +344,59 @@ mod tests {
         // The current process must be in there.
         let self_pid = std::process::id();
         assert!(
-            all.iter().any(|&(pid, _)| pid == self_pid),
+            all.iter().any(|info| info.pid == self_pid),
             "expected current pid {self_pid} in process table"
         );
+    }
+
+    #[test]
+    fn reused_root_pid_identity_mismatch_terminates_snapshot() {
+        let expected = ProcessIdentity {
+            start_sec: 100,
+            start_usec: 1,
+        };
+        let reused = vec![process(100, 0, 99), process(200, 100, 2)];
+        assert_eq!(descendants_if_root_matches(100, expected, &reused), None);
+    }
+
+    #[test]
+    fn root_identity_change_after_walk_rejects_mixed_snapshot() {
+        let expected = ProcessIdentity {
+            start_sec: 100,
+            start_usec: 1,
+        };
+        let recycled = ProcessIdentity {
+            start_sec: 100,
+            start_usec: 99,
+        };
+        assert_eq!(
+            verified_snapshot(
+                expected,
+                Some(expected),
+                [42].into_iter().collect(),
+                Some(recycled),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn scripted_normal_pump_emits_descendant_start_and_exit() {
+        let (tx, rx) = mpsc::channel();
+        let mut snapshots =
+            [Some([42].into_iter().collect()), Some(HashSet::new()), None].into_iter();
+        pump_loop_with(tx, || snapshots.next().flatten(), || {});
+        let events: Vec<_> = rx.iter().collect();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[0].kind,
+            ObserverEventKind::DescendantStarted
+        ));
+        assert!(matches!(
+            events[1].kind,
+            ObserverEventKind::DescendantExited
+        ));
+        assert!(events.iter().all(|event| event.pid == 42));
     }
 
     #[test]
