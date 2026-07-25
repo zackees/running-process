@@ -24,7 +24,9 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::traits::Listener as _;
 use prost::Message;
 use running_process::broker::backend_handle::DaemonProcess;
-use running_process::broker::backend_lib::wire::{read_handoff_offer, respond_to_handoff_offer};
+use running_process::broker::backend_lib::wire::{
+    read_handoff_offer_with_deadline, respond_to_handoff_offer,
+};
 use running_process::broker::client::{
     connect_local_socket, connect_to_backend, BackendConnection, BackendConnectionRoute,
     ConnectBackendRequest,
@@ -226,17 +228,26 @@ pub(crate) fn serve_one_handoff(
     stream: &mut interprocess::local_socket::Stream,
     behavior: &BackendBehavior,
 ) -> io::Result<()> {
+    serve_one_handoff_with_deadline(stream, behavior, Instant::now() + Duration::from_secs(5))
+}
+
+#[cfg(windows)]
+fn serve_one_handoff_with_deadline(
+    stream: &mut interprocess::local_socket::Stream,
+    behavior: &BackendBehavior,
+    deadline: Instant,
+) -> io::Result<()> {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 
-    let offer = read_handoff_offer(stream).map_err(io::Error::other)?;
+    let offer = read_handoff_offer_with_deadline(stream, deadline).map_err(io::Error::other)?;
     let handle_value = offer.handle_value;
+    let adopted = unsafe { OwnedHandle::from_raw_handle(handle_value as RawHandle) };
     respond(stream, behavior, offer)?;
     if matches!(behavior, BackendBehavior::Accept) {
         // Adopt the handle the broker duplicated into this (backend)
         // process and prove it serves the client's connection. The pipe
         // was created overlapped by the broker's listener, so the byte
         // exchange uses explicit OVERLAPPED I/O on the raw handle.
-        let adopted = unsafe { OwnedHandle::from_raw_handle(handle_value as RawHandle) };
         let mut probe = [0_u8; 1];
         overlapped_transfer(adopted.as_raw_handle(), &mut probe, false)?;
         if probe != [CLIENT_PROBE] {
@@ -247,6 +258,63 @@ pub(crate) fn serve_one_handoff(
         overlapped_transfer(adopted.as_raw_handle(), &mut [BACKEND_REPLY], true)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn timed_out_offer_read_closes_received_scm_rights_fd() {
+    use std::os::fd::{AsFd, AsRawFd};
+    use std::os::unix::net::UnixStream;
+
+    use interprocess::local_socket::traits::Stream as _;
+    use running_process::broker::server::handoff::{
+        try_send_scm_rights_over, ScmRightsAttempt, UnixFileDescriptor, UnixHandoffSocket,
+    };
+
+    let socket_name = unique_socket_name("handoff-offer-fd-timeout");
+    let listener = bind_test_socket(&socket_name).expect("bind handoff socket");
+    let server = thread::spawn(move || {
+        let mut stream = listener.accept().expect("accept handoff peer");
+        serve_one_handoff_with_deadline(
+            &mut stream,
+            &BackendBehavior::Reject,
+            Instant::now() + Duration::from_millis(50),
+        )
+    });
+
+    let name = running_process::broker::server::local_socket_name(&socket_name)
+        .expect("handoff socket name");
+    let broker = interprocess::local_socket::Stream::connect(name).expect("connect handoff peer");
+    let broker_fd = match &broker {
+        interprocess::local_socket::Stream::UdSocket(socket) => socket.as_fd().as_raw_fd(),
+    };
+    let (passed, mut observer) = UnixStream::pair().expect("descriptor pair");
+    let attempt = ScmRightsAttempt::new(
+        UnixFileDescriptor::new(passed.as_raw_fd()),
+        UnixHandoffSocket::new(&socket_name),
+        HandoffToken::from_bytes([0x61; HANDOFF_TOKEN_BYTES]),
+    );
+    try_send_scm_rights_over(broker_fd, &attempt).expect("send SCM_RIGHTS descriptor");
+    drop(passed);
+
+    server
+        .join()
+        .expect("handoff server")
+        .expect_err("silent offer must time out");
+    drop(broker);
+    cleanup_test_socket(&socket_name);
+
+    observer
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("set observer timeout");
+    let mut byte = [0_u8; 1];
+    assert_eq!(
+        observer
+            .read(&mut byte)
+            .expect("observe descriptor closure"),
+        0,
+        "received SCM_RIGHTS descriptor leaked after offer timeout"
+    );
 }
 
 /// One blocking overlapped read (`write == false`) or write (`write ==
@@ -315,7 +383,16 @@ pub(crate) fn serve_one_handoff(
     stream: &mut interprocess::local_socket::Stream,
     behavior: &BackendBehavior,
 ) -> io::Result<()> {
-    use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+    serve_one_handoff_with_deadline(stream, behavior, Instant::now() + Duration::from_secs(5))
+}
+
+#[cfg(unix)]
+fn serve_one_handoff_with_deadline(
+    stream: &mut interprocess::local_socket::Stream,
+    behavior: &BackendBehavior,
+    deadline: Instant,
+) -> io::Result<()> {
+    use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::net::UnixStream;
 
     // The fd plus token ride SCM_RIGHTS on the same handoff connection
@@ -324,16 +401,15 @@ pub(crate) fn serve_one_handoff(
         interprocess::local_socket::Stream::UdSocket(socket) => socket.as_fd().as_raw_fd(),
     };
     let (received_fd, _token) = recv_fd_and_token(socket_fd)?;
-    let offer = read_handoff_offer(stream).map_err(io::Error::other)?;
+    let received_fd = unsafe { OwnedFd::from_raw_fd(received_fd) };
+    let offer = read_handoff_offer_with_deadline(stream, deadline).map_err(io::Error::other)?;
     respond(stream, behavior, offer)?;
     match behavior {
         BackendBehavior::Accept => {
-            let mut adopted = unsafe { UnixStream::from_raw_fd(received_fd) };
+            let mut adopted = UnixStream::from(received_fd);
             serve_probe_reply(&mut adopted)?;
         }
-        BackendBehavior::Reject => unsafe {
-            libc::close(received_fd);
-        },
+        BackendBehavior::Reject => drop(received_fd),
     }
     Ok(())
 }

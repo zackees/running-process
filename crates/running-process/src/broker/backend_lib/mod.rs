@@ -17,7 +17,9 @@ pub use accept_handed_off::{
     accept_handed_off, parse_handoff_token, AcceptedHandoff, HandedOffPayload, HandoffAcceptance,
     HandoffRejectionReason, RejectedHandoff,
 };
+#[allow(deprecated)]
 pub use wire::{
-    read_handoff_offer, respond_to_handoff_offer, serve_handoff_offer, write_handoff_ack,
+    read_handoff_offer, read_handoff_offer_with_deadline, respond_to_handoff_offer,
+    serve_handoff_offer, serve_handoff_offer_with_deadline, write_handoff_ack,
     BackendHandoffWireError,
 };
