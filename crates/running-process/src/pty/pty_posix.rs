@@ -100,3 +100,149 @@ pub(super) fn kill_tree(process: &NativePtyProcess) -> Result<(), PtyError> {
     signal_tree(pid, UnixSignal::Kill)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pty::backend::{PtyChild, PtyMaster, PtySize};
+    use crate::pty::NativePtyHandles;
+    use std::fs::File;
+    use std::io::{self, Read, Write};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    struct NoGroupMaster {
+        fd: OwnedFd,
+    }
+
+    impl PtyMaster for NoGroupMaster {
+        fn try_clone_reader(&mut self) -> io::Result<Box<dyn Read + Send>> {
+            Err(io::Error::new(io::ErrorKind::Unsupported, "unused by test"))
+        }
+
+        fn take_writer(&mut self) -> io::Result<Box<dyn Write + Send>> {
+            Err(io::Error::new(io::ErrorKind::Unsupported, "unused by test"))
+        }
+
+        fn resize(&self, _size: PtySize) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn get_size(&self) -> io::Result<PtySize> {
+            Ok(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+        }
+
+        fn process_group_leader(&self) -> Option<i32> {
+            None
+        }
+    }
+
+    struct RunningChild;
+
+    impl PtyChild for RunningChild {
+        fn pid(&self) -> u32 {
+            1
+        }
+
+        fn try_wait(&mut self) -> io::Result<Option<u32>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> io::Result<u32> {
+            Ok(0)
+        }
+
+        fn kill(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn open_full_pty_input_queue() -> (OwnedFd, OwnedFd) {
+        let mut master = -1;
+        let mut slave = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0,
+            "openpty failed: {}",
+            io::Error::last_os_error()
+        );
+        let master = unsafe { OwnedFd::from_raw_fd(master) };
+        let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+
+        let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+        assert_ne!(flags, -1);
+        assert_ne!(
+            unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK,) },
+            -1
+        );
+        let chunk = [b'x'; 1024];
+        loop {
+            let written =
+                unsafe { libc::write(master.as_raw_fd(), chunk.as_ptr().cast(), chunk.len()) };
+            if written >= 0 {
+                continue;
+            }
+            let error = io::Error::last_os_error();
+            assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            break;
+        }
+        assert_ne!(
+            unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags) },
+            -1
+        );
+        (master, slave)
+    }
+
+    #[test]
+    fn interrupt_fallback_does_not_block_on_full_pty_input_queue() {
+        const DEADLINE: Duration = Duration::from_millis(150);
+
+        let (master, slave) = open_full_pty_input_queue();
+        let writer_fd = unsafe { libc::dup(master.as_raw_fd()) };
+        assert_ne!(writer_fd, -1);
+        let writer = unsafe { File::from_raw_fd(writer_fd) };
+
+        let process = NativePtyProcess::new(vec!["unused".into()], None, None, 24, 80, None)
+            .expect("test process");
+        *process.handles.lock().expect("handles mutex") = Some(NativePtyHandles {
+            master: Box::new(NoGroupMaster { fd: master }),
+            writer: Arc::new(Mutex::new(Box::new(writer))),
+            child: Box::new(RunningChild),
+        });
+
+        let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
+        let worker = std::thread::spawn(move || {
+            let result = send_interrupt(&process);
+            let _ = tx.send((result, started.elapsed()));
+            let _ = process.handles.lock().expect("handles mutex").take();
+        });
+
+        let timely = rx.recv_timeout(DEADLINE);
+        drop(slave);
+        let (result, elapsed) = timely
+            .or_else(|_| rx.recv_timeout(Duration::from_secs(1)))
+            .expect("interrupt fallback did not unblock after closing PTY slave");
+        worker.join().expect("interrupt worker panicked");
+
+        assert!(
+            elapsed < DEADLINE,
+            "interrupt fallback blocked for {elapsed:?} on a full PTY input queue"
+        );
+        assert!(result.is_ok(), "best-effort fallback failed: {result:?}");
+    }
+}
