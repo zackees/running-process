@@ -416,6 +416,34 @@ PTY mode is intentionally more conservative:
 
 `./test` runs the Rust tests, rebuilds the native extension with the unoptimized `dev` profile, runs the non-live Python tests, and then runs the `@pytest.mark.live` coverage that exercises real OS process and signal behavior.
 
+### Repository Dylint
+
+The native Linux x86 consolidated preflight runs the repository-owned
+`running_process_env_literal` lint. It rejects direct string literals for
+`RUNNING_PROCESS_*` environment controls in `std::env` calls, keeping broker
+escape hatches and test seams tied to their canonical constants. The lint
+library, `cargo-dylint`, and `dylint-link` are pinned to Dylint `6.0.1`; the
+library and CI both use `nightly-2026-04-16`.
+
+To run the same gate locally:
+
+```bash
+soldr rustup toolchain install nightly-2026-04-16 --profile minimal \
+  --component rustc-dev --component llvm-tools-preview
+uvx soldr cargo install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked
+CARGO_TARGET_DIR=target/dylint RUSTUP_TOOLCHAIN=nightly-2026-04-16 \
+  uvx soldr cargo test \
+  --manifest-path lints/running-process-env-literal/Cargo.toml --locked
+CARGO_TARGET_DIR=target/dylint RUSTUP_TOOLCHAIN=nightly-2026-04-16 \
+  uvx soldr cargo dylint --all --workspace
+```
+
+The first check exercises the negative UI fixture and proves the lint rejects
+a literal control name. The second checks the workspace. CI gives the exact
+tool binaries and nightly target directory dedicated persistent caches and
+runs the gate once, rather than adding a cold Dylint build to every platform
+job.
+
 On local developer machines, `./test` also runs the Linux Docker preflight so Windows and macOS development catches Linux wheel, lint, and non-live pytest regressions before push. GitHub-hosted Actions skip that Docker-only preflight and run the native platform suite directly.
 
 For a live-only test run with the timeout crash watchdog and automatic thread

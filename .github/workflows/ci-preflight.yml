@@ -46,6 +46,10 @@ on:
         description: Run the integration-test steps.
         type: boolean
         default: true
+      dylint:
+        description: Run the repository Dylint gate. Enabled only for the native Linux x86 lane.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -120,6 +124,53 @@ jobs:
         env:
           RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS: "300"
         run: uv run --no-sync --module ci.run_logged logs/lint.log -- uv run --no-sync --module ci.lint
+
+      # Dylint is intentionally a single Linux-x86 step. Its nightly artifacts
+      # use a dedicated persistent cache so they cannot mix with the stable
+      # workspace build or impose a cold rebuild on every platform lane.
+      - name: Install Dylint nightly
+        if: ${{ inputs.dylint }}
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: "nightly-2026-04-16"
+          components: llvm-tools-preview, rustc-dev
+
+      - name: Cache Dylint 6.0.1 tools
+        if: ${{ inputs.dylint }}
+        id: dylint-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-dylint
+            ~/.cargo/bin/dylint-link
+          key: dylint-tools-${{ runner.os }}-${{ runner.arch }}-6.0.1
+
+      - name: Install Dylint 6.0.1 tools
+        if: ${{ inputs.dylint && steps.dylint-tools.outputs.cache-hit != 'true' }}
+        env:
+          CARGO_BIN: cargo
+        run: rustup run 1.94.1 "$CARGO_BIN" install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked
+
+      - name: Cache Dylint target
+        if: ${{ inputs.dylint }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/running-process-dylint-target
+          key: dylint-target-v1-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'Cargo.lock') }}
+
+      - name: Dylint negative fixture
+        if: ${{ inputs.dylint }}
+        env:
+          CARGO_BIN: cargo
+          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
+        run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --manifest-path lints/running-process-env-literal/Cargo.toml --locked
+
+      - name: Dylint workspace gate
+        if: ${{ inputs.dylint }}
+        env:
+          CARGO_BIN: cargo
+          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
+        run: rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --all --workspace
 
       - name: Terminal graphics capability matrix
         timeout-minutes: 10
