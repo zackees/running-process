@@ -57,6 +57,8 @@ pub(crate) mod descendants_linux;
 #[cfg(target_os = "macos")]
 pub(crate) mod descendants_macos;
 
+mod pid_identity;
+
 /// Scope at which observation is negotiated.
 ///
 /// `running-process` exposes two distinct observation tiers because the

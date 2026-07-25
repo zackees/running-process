@@ -26,6 +26,7 @@ use std::collections::HashSet;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use crate::observer::pid_identity;
 use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
 
 /// Poll interval for the /proc descendant snapshot. 50 ms is the same
@@ -52,9 +53,34 @@ pub(crate) fn enable_subreaper() {
 /// silently after spawning — the thread terminates when `root_pid`
 /// exits.
 pub(crate) fn spawn_pump(root_pid: u32, sink: Sender<ObserverEvent>) {
+    let Some(root_identity) = process_identity(root_pid) else {
+        return;
+    };
     let _ = std::thread::Builder::new()
         .name("rp-linux-descpump".to_string())
-        .spawn(move || pump_loop(root_pid, sink));
+        .spawn(move || pump_loop(root_pid, root_identity, sink));
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcessIdentity {
+    start_ticks: u64,
+}
+
+fn parse_start_ticks(stat: &str) -> Option<u64> {
+    // `comm` is parenthesized but may itself contain spaces and `)`, so split
+    // after the final close paren. The suffix begins at field 3 (`state`).
+    let suffix = stat.get(stat.rfind(')')? + 1..)?;
+    suffix
+        .split_ascii_whitespace()
+        .nth(19) // field 22 (`starttime`)
+        .and_then(|field| field.parse().ok())
+}
+
+fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    Some(ProcessIdentity {
+        start_ticks: parse_start_ticks(&stat)?,
+    })
 }
 
 /// Walk `/proc/<pid>/task/<pid>/children` recursively, returning every
@@ -83,20 +109,57 @@ fn descendant_pids(root_pid: u32) -> Vec<u32> {
 /// PIDs and `DescendantExited` for missing PIDs. Terminates when the
 /// root process is gone, emitting `DescendantExited` for any
 /// still-tracked descendants on the way out.
-fn pump_loop(root_pid: u32, sink: Sender<ObserverEvent>) {
+fn descendant_snapshot(root_pid: u32, expected_identity: ProcessIdentity) -> Option<HashSet<u32>> {
+    let identity_before = process_identity(root_pid);
+    if !pid_identity::matches(&expected_identity, identity_before.as_ref()) {
+        return None;
+    }
+    let descendants = descendant_pids(root_pid).into_iter().collect();
+    // Re-read after the recursive walk so a root exit/reuse during the walk
+    // cannot publish descendants belonging to the recycled process.
+    verified_snapshot(
+        expected_identity,
+        identity_before,
+        descendants,
+        process_identity(root_pid),
+    )
+}
+
+fn verified_snapshot(
+    expected_identity: ProcessIdentity,
+    identity_before: Option<ProcessIdentity>,
+    descendants: HashSet<u32>,
+    identity_after: Option<ProcessIdentity>,
+) -> Option<HashSet<u32>> {
+    (pid_identity::matches(&expected_identity, identity_before.as_ref())
+        && pid_identity::matches(&expected_identity, identity_after.as_ref()))
+    .then_some(descendants)
+}
+
+fn pump_loop(root_pid: u32, root_identity: ProcessIdentity, sink: Sender<ObserverEvent>) {
+    pump_loop_with(
+        sink,
+        || descendant_snapshot(root_pid, root_identity),
+        || std::thread::sleep(POLL_INTERVAL),
+    );
+}
+
+fn pump_loop_with(
+    sink: Sender<ObserverEvent>,
+    mut snapshot: impl FnMut() -> Option<HashSet<u32>>,
+    mut wait: impl FnMut(),
+) {
     let mut known: HashSet<u32> = HashSet::new();
-    let root_path = format!("/proc/{root_pid}");
     loop {
         // Exit when the root is gone — the pump's contract is bounded
         // by the spawned tree's lifetime, mirroring the Windows IOCP
         // pump's ACTIVE_PROCESS_ZERO termination semantics.
-        if !std::path::Path::new(&root_path).exists() {
+        let Some(current) = snapshot() else {
             break;
-        }
-        let current: HashSet<u32> = descendant_pids(root_pid).into_iter().collect();
+        };
         emit_diff(&known, &current, &sink);
         known = current;
-        std::thread::sleep(POLL_INTERVAL);
+        wait();
     }
     // Root exited: surface any still-tracked descendants as exited so
     // the consumer's started/exited counts stay balanced.
@@ -196,6 +259,65 @@ mod tests {
         for pid in pids {
             assert!(pid > 1, "pid {pid} is suspiciously small");
         }
+    }
+
+    #[test]
+    fn parse_start_ticks_handles_spaces_and_parentheses_in_comm() {
+        let mut fields = vec!["S".to_string()];
+        fields.extend((4..=21).map(|n| n.to_string()));
+        fields.push("424242".to_string());
+        let stat = format!("123 (odd ) process name) {}", fields.join(" "));
+        assert_eq!(parse_start_ticks(&stat), Some(424242));
+    }
+
+    #[test]
+    fn identity_mismatch_terminates_pump_without_tracking_reused_pid() {
+        let (tx, rx) = mpsc::channel();
+        let mut polls = 0;
+        pump_loop_with(
+            tx,
+            || {
+                polls += 1;
+                None
+            },
+            || panic!("terminated pump must not wait"),
+        );
+        assert_eq!(polls, 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn reused_pid_with_different_start_ticks_rejects_descendant_snapshot() {
+        let expected = ProcessIdentity { start_ticks: 100 };
+        let recycled = ProcessIdentity { start_ticks: 200 };
+        assert_eq!(
+            verified_snapshot(
+                expected,
+                Some(recycled),
+                [42].into_iter().collect(),
+                Some(recycled),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn scripted_normal_pump_emits_descendant_start_and_exit() {
+        let (tx, rx) = mpsc::channel();
+        let mut snapshots =
+            [Some([42].into_iter().collect()), Some(HashSet::new()), None].into_iter();
+        pump_loop_with(tx, || snapshots.next().flatten(), || {});
+        let events: Vec<_> = rx.iter().collect();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[0].kind,
+            ObserverEventKind::DescendantStarted
+        ));
+        assert!(matches!(
+            events[1].kind,
+            ObserverEventKind::DescendantExited
+        ));
+        assert!(events.iter().all(|event| event.pid == 42));
     }
 
     #[test]
