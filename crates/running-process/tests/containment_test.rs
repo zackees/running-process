@@ -336,7 +336,6 @@ fn test_auto_contained_spawn_inherits_parent_environment() {
     );
 }
 
-#[cfg(windows)]
 #[test]
 fn test_auto_daemon_spawn_uses_user_baseline_environment() {
     let env_dump = testbin_path("testbin-env-dump");
@@ -364,15 +363,153 @@ fn test_auto_daemon_spawn_uses_user_baseline_environment() {
             .any(|line| line == "EXPLICIT_DAEMON_VALUE=preserved"),
         "explicit Command::env override was lost"
     );
+    #[cfg(windows)]
+    {
+        assert!(
+            env.lines()
+                .any(|line| line.to_ascii_uppercase().starts_with("SYSTEMROOT=")),
+            "user baseline should contain SystemRoot"
+        );
+        assert!(
+            env.lines()
+                .any(|line| line.to_ascii_uppercase().starts_with("USERPROFILE=")),
+            "user baseline should contain USERPROFILE"
+        );
+    }
+    #[cfg(unix)]
+    {
+        let child_env: std::collections::HashMap<_, _> = env
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .collect();
+        let expected: std::collections::HashMap<_, _> =
+            running_process::environment::user_baseline_environment()
+                .expect("build expected user baseline")
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    Some((key.into_string().ok()?, value.into_string().ok()?))
+                })
+                .collect();
+
+        for key in ["USER", "LOGNAME", "HOME", "PATH"] {
+            let actual = child_env
+                .get(key)
+                .unwrap_or_else(|| panic!("spawned daemon baseline should contain {key}"));
+            assert!(!actual.is_empty(), "{key} should be non-empty");
+            assert_eq!(
+                Some(*actual),
+                expected.get(key).map(String::as_str),
+                "spawned daemon {key} should match the Unix login baseline"
+            );
+        }
+        assert_eq!(
+            child_env.get("USER"),
+            child_env.get("LOGNAME"),
+            "Unix baseline USER and LOGNAME should identify the same login"
+        );
+    }
+}
+
+#[test]
+fn test_user_baseline_explicit_overrides_and_removals_win() {
+    let env_dump = testbin_path("testbin-env-dump");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = temp.path().join("baseline-overrides-env.txt");
+    #[cfg(unix)]
+    let removed_key = "HOME";
+    #[cfg(windows)]
+    let removed_key = "USERPROFILE";
+
+    let mut command = Command::new(env_dump);
+    command
+        .arg(&output)
+        .env("PATH", "explicit-path-wins")
+        .env_remove(removed_key);
+    let mut child = running_process::spawn_daemon_with_env_policy(
+        &mut command,
+        running_process::EnvironmentPolicy::UserBaseline,
+    )
+    .expect("spawn daemon with explicit UserBaseline");
+    let exit = child.wait().expect("wait daemon");
+
+    assert_eq!(exit, 0);
+    let env = std::fs::read_to_string(output).expect("read daemon environment");
     assert!(
-        env.lines()
-            .any(|line| line.to_ascii_uppercase().starts_with("SYSTEMROOT=")),
-        "user baseline should contain SystemRoot"
+        env.lines().any(|line| {
+            line.split_once('=').is_some_and(|(key, value)| {
+                key.eq_ignore_ascii_case("PATH") && value == "explicit-path-wins"
+            })
+        }),
+        "explicit PATH should replace the user baseline PATH"
+    );
+    assert!(
+        !env.lines().any(|line| {
+            line.split_once('=')
+                .is_some_and(|(key, _)| key.eq_ignore_ascii_case(removed_key))
+        }),
+        "explicit env_remove({removed_key}) should remove the baseline value"
+    );
+}
+
+#[test]
+fn test_explicit_inherit_daemon_preserves_parent_environment() {
+    let env_dump = testbin_path("testbin-env-dump");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = temp.path().join("inherit-env.txt");
+    let key = format!(
+        "RUNNING_PROCESS_TEST_EXPLICIT_INHERIT_{}",
+        std::process::id()
+    );
+
+    std::env::set_var(&key, "inherited");
+    let mut command = Command::new(env_dump);
+    command.arg(&output);
+    let mut child = running_process::spawn_daemon_with_env_policy(
+        &mut command,
+        running_process::EnvironmentPolicy::Inherit,
+    )
+    .expect("spawn daemon with explicit Inherit");
+    let exit = child.wait().expect("wait daemon");
+    std::env::remove_var(&key);
+
+    assert_eq!(exit, 0);
+    let env = std::fs::read_to_string(output).expect("read daemon environment");
+    assert!(
+        env.lines().any(|line| line == format!("{key}=inherited")),
+        "explicit Inherit should preserve the parent environment"
+    );
+}
+
+#[test]
+fn test_clear_daemon_keeps_explicit_environment_only() {
+    let env_dump = testbin_path("testbin-env-dump");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = temp.path().join("clear-env.txt");
+    let key = format!("RUNNING_PROCESS_TEST_CLEAR_PARENT_{}", std::process::id());
+
+    std::env::set_var(&key, "must-not-leak");
+    let mut command = Command::new(env_dump);
+    command
+        .arg(&output)
+        .env("EXPLICIT_CLEAR_VALUE", "preserved");
+    let mut child = running_process::spawn_daemon_with_env_policy(
+        &mut command,
+        running_process::EnvironmentPolicy::Clear,
+    )
+    .expect("spawn daemon with Clear");
+    let exit = child.wait().expect("wait daemon");
+    std::env::remove_var(&key);
+
+    assert_eq!(exit, 0);
+    let env = std::fs::read_to_string(output).expect("read daemon environment");
+    assert!(
+        !env.lines().any(|line| line.starts_with(&format!("{key}="))),
+        "Clear should discard the parent environment"
     );
     assert!(
         env.lines()
-            .any(|line| line.to_ascii_uppercase().starts_with("USERPROFILE=")),
-        "user baseline should contain USERPROFILE"
+            .any(|line| line == "EXPLICIT_CLEAR_VALUE=preserved"),
+        "Clear should preserve explicit Command::env additions"
     );
 }
 
