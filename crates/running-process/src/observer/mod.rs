@@ -42,8 +42,12 @@
 //! baseline stays free of the daemon runtime (tokio/IPC). Phase 2 layers the
 //! daemon-owned subscriber model on top of these same event types.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod cmdline;
 pub use cmdline::read_process_cmdline;
@@ -775,6 +779,7 @@ impl ObserverConfig {
 /// channel and never blocks on a slow or absent consumer.
 pub struct ObserverSubscriber {
     rx: Receiver<ObserverEvent>,
+    descendant_stop: Arc<DescendantPumpStop>,
 }
 
 impl ObserverSubscriber {
@@ -782,13 +787,28 @@ impl ObserverSubscriber {
     /// in `client::observer` to hand the caller a subscriber whose channel
     /// is later fed by an IPC streaming pump.
     pub(crate) fn from_receiver(rx: Receiver<ObserverEvent>) -> Self {
-        Self { rx }
+        Self {
+            rx,
+            descendant_stop: Arc::new(DescendantPumpStop::new()),
+        }
     }
 
     /// Receive the next event, blocking until one arrives or the emitter is
     /// dropped. Returns `None` once no more events can arrive.
     pub fn recv(&self) -> Option<ObserverEvent> {
         self.rx.recv().ok()
+    }
+
+    /// Receive the next event, waiting for at most `timeout`.
+    ///
+    /// Returns [`std::sync::mpsc::RecvTimeoutError::Timeout`] when the bound
+    /// expires and [`std::sync::mpsc::RecvTimeoutError::Disconnected`] once no
+    /// more events can arrive.
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<ObserverEvent, std::sync::mpsc::RecvTimeoutError> {
+        self.rx.recv_timeout(timeout)
     }
 
     /// Try to receive an event without blocking.
@@ -809,6 +829,75 @@ impl ObserverSubscriber {
     pub fn receiver(&self) -> &Receiver<ObserverEvent> {
         &self.rx
     }
+
+    /// Stop any Linux/macOS descendant pump associated with this subscriber.
+    ///
+    /// This is idempotent and wakes a sleeping pump immediately. Lifecycle
+    /// events already queued on the subscriber remain available.
+    pub fn stop(&self) {
+        self.descendant_stop.stop();
+    }
+}
+
+impl Drop for ObserverSubscriber {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+pub(crate) struct DescendantPumpStop {
+    stopped: AtomicBool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    mutex: Mutex<()>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    wake: Condvar,
+}
+
+impl DescendantPumpStop {
+    fn new() -> Self {
+        Self {
+            stopped: AtomicBool::new(false),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            mutex: Mutex::new(()),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            wake: Condvar::new(),
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn stop(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let _guard = self.mutex.lock().unwrap_or_else(|error| error.into_inner());
+            if !self.stopped.swap(true, Ordering::AcqRel) {
+                self.wake.notify_all();
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            self.stopped.store(true, Ordering::Release);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn wait_timeout(&self, timeout: Duration) -> bool {
+        if self.is_stopped() {
+            return true;
+        }
+        let guard = self.mutex.lock().unwrap_or_else(|error| error.into_inner());
+        if self.is_stopped() {
+            return true;
+        }
+        let (_guard, _wait_result) = self
+            .wake
+            .wait_timeout(guard, timeout)
+            .unwrap_or_else(|error| error.into_inner());
+        self.is_stopped()
+    }
 }
 
 /// Internal emitter held by a [`NativeProcess`](crate::NativeProcess) when an
@@ -819,13 +908,27 @@ impl ObserverSubscriber {
 pub(crate) struct ObserverEmitter {
     config: ObserverConfig,
     tx: Sender<ObserverEvent>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    descendant_stop: Arc<DescendantPumpStop>,
 }
 
 impl ObserverEmitter {
     /// Build an emitter from a config and hand back the paired subscriber.
     pub(crate) fn new(config: ObserverConfig) -> (Self, ObserverSubscriber) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { config, tx }, ObserverSubscriber { rx })
+        let descendant_stop = Arc::new(DescendantPumpStop::new());
+        (
+            Self {
+                config,
+                tx,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                descendant_stop: Arc::clone(&descendant_stop),
+            },
+            ObserverSubscriber {
+                rx,
+                descendant_stop,
+            },
+        )
     }
 
     /// Emit a `started` event for `pid` if the config observes lifecycle.
@@ -875,6 +978,14 @@ impl ObserverEmitter {
         } else {
             None
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn descendant_pump(
+        &self,
+    ) -> Option<(Sender<ObserverEvent>, Arc<DescendantPumpStop>)> {
+        self.descendant_sink()
+            .map(|sink| (sink, Arc::clone(&self.descendant_stop)))
     }
 }
 

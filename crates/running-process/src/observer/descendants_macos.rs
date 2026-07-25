@@ -34,10 +34,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::observer::pid_identity;
-use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
+use crate::observer::{DescendantPumpStop, EventCategory, ObserverEvent, ObserverEventKind};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -52,13 +53,17 @@ const PROC_PIDTBSDINFO: libc::c_int = 3;
 /// silently after spawning — the thread terminates when `root_pid`
 /// disappears from the global process table or its creation-time identity
 /// changes.
-pub(crate) fn spawn_pump(root_pid: u32, sink: Sender<ObserverEvent>) {
+pub(crate) fn spawn_pump(
+    root_pid: u32,
+    sink: Sender<ObserverEvent>,
+    stop: Arc<DescendantPumpStop>,
+) {
     let Some(root_identity) = process_info(root_pid).map(|info| info.identity) else {
         return;
     };
     let _ = std::thread::Builder::new()
         .name("rp-macos-descpump".to_string())
-        .spawn(move || pump_loop(root_pid, root_identity, sink));
+        .spawn(move || pump_loop(root_pid, root_identity, sink, stop));
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,21 +79,31 @@ struct ProcessInfo {
     identity: ProcessIdentity,
 }
 
-fn pump_loop(root_pid: u32, root_identity: ProcessIdentity, sink: Sender<ObserverEvent>) {
+fn pump_loop(
+    root_pid: u32,
+    root_identity: ProcessIdentity,
+    sink: Sender<ObserverEvent>,
+    stop: Arc<DescendantPumpStop>,
+) {
     pump_loop_with(
+        &stop,
         sink,
         || descendant_snapshot(root_pid, root_identity),
-        || std::thread::sleep(POLL_INTERVAL),
+        || stop.wait_timeout(POLL_INTERVAL),
     );
 }
 
 fn pump_loop_with(
+    stop: &DescendantPumpStop,
     sink: Sender<ObserverEvent>,
     mut snapshot: impl FnMut() -> Option<HashSet<u32>>,
-    mut wait: impl FnMut(),
+    mut wait: impl FnMut() -> bool,
 ) {
     let mut known: HashSet<u32> = HashSet::new();
     loop {
+        if stop.is_stopped() {
+            return;
+        }
         let Some(current) = snapshot() else {
             // Root is gone — emit exits for any remaining tracked
             // descendants and terminate. Mirrors the Linux pump's
@@ -104,7 +119,9 @@ fn pump_loop_with(
         };
         emit_diff(&known, &current, &sink);
         known = current;
-        wait();
+        if wait() {
+            return;
+        }
     }
 }
 
@@ -383,9 +400,10 @@ mod tests {
     #[test]
     fn scripted_normal_pump_emits_descendant_start_and_exit() {
         let (tx, rx) = mpsc::channel();
+        let stop = DescendantPumpStop::new();
         let mut snapshots =
             [Some([42].into_iter().collect()), Some(HashSet::new()), None].into_iter();
-        pump_loop_with(tx, || snapshots.next().flatten(), || {});
+        pump_loop_with(&stop, tx, || snapshots.next().flatten(), || false);
         let events: Vec<_> = rx.iter().collect();
         assert_eq!(events.len(), 2);
         assert!(matches!(
@@ -397,6 +415,36 @@ mod tests {
             ObserverEventKind::DescendantExited
         ));
         assert!(events.iter().all(|event| event.pid == 42));
+    }
+
+    #[test]
+    fn stop_wakes_waiting_pump_without_polling() {
+        let stop = Arc::new(DescendantPumpStop::new());
+        let pump_stop = Arc::clone(&stop);
+        let (tx, _rx) = mpsc::channel();
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let pump = std::thread::spawn(move || {
+            let mut announced = false;
+            pump_loop_with(
+                &pump_stop,
+                tx,
+                || {
+                    if !announced {
+                        announced = true;
+                        waiting_tx.send(()).unwrap();
+                    }
+                    Some(HashSet::new())
+                },
+                || pump_stop.wait_timeout(Duration::from_secs(30)),
+            );
+            done_tx.send(()).unwrap();
+        });
+
+        waiting_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        stop.stop();
+        done_rx.recv_timeout(Duration::from_millis(250)).unwrap();
+        pump.join().unwrap();
     }
 
     #[test]

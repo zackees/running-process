@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{CommandSpec, NativeProcess, ProcessConfig, StderrMode, StdinMode};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A `ProcessConfig` that runs a child which exits immediately on every
 /// platform (Unix: `sh -lc "exit 0"`; Windows: `cmd /C "exit 0"`).
@@ -660,6 +660,62 @@ fn descendant_sink_is_some_only_when_process_category_observed() {
         emitter.descendant_sink().is_some(),
         "config including Process must hand back a sink even alongside Lifecycle"
     );
+}
+
+#[test]
+fn subscriber_recv_timeout_is_bounded_and_normal_events_still_arrive() {
+    let (emitter, subscriber) = ObserverEmitter::new(ObserverConfig::lifecycle());
+    let started = Instant::now();
+    assert_eq!(
+        subscriber.recv_timeout(Duration::from_millis(20)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(10),
+        "subscriber timeout returned without waiting"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "subscriber timeout exceeded its bound"
+    );
+
+    emitter.emit_started(42);
+    let event = subscriber
+        .recv_timeout(Duration::from_secs(1))
+        .expect("normal lifecycle event");
+    assert_eq!(event.pid, 42);
+    assert!(matches!(event.kind, ObserverEventKind::Started));
+
+    drop(emitter);
+    assert_eq!(
+        subscriber.recv_timeout(Duration::from_secs(1)),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+    );
+}
+
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn subscriber_stop_is_idempotent_and_signals_descendant_pump() {
+    let (emitter, subscriber) =
+        ObserverEmitter::new(ObserverConfig::with_categories([EventCategory::Process]));
+    let (_, stop) = emitter.descendant_pump().expect("descendant pump token");
+    assert!(!stop.is_stopped());
+
+    subscriber.stop();
+    subscriber.stop();
+    assert!(stop.is_stopped());
+}
+
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn dropping_subscriber_signals_descendant_pump() {
+    let (emitter, subscriber) =
+        ObserverEmitter::new(ObserverConfig::with_categories([EventCategory::Process]));
+    let (_, stop) = emitter.descendant_pump().expect("descendant pump token");
+    assert!(!stop.is_stopped());
+
+    drop(subscriber);
+    assert!(stop.is_stopped());
 }
 
 #[test]

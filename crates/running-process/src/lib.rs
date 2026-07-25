@@ -464,9 +464,9 @@ impl NativeProcess {
         #[cfg(target_os = "linux")]
         {
             if let Some(emitter) = self.shared.observer.as_ref() {
-                if let Some(sink) = emitter.descendant_sink() {
+                if let Some((sink, stop)) = emitter.descendant_pump() {
                     crate::observer::descendants_linux::enable_subreaper();
-                    crate::observer::descendants_linux::spawn_pump(child.id(), sink);
+                    crate::observer::descendants_linux::spawn_pump(child.id(), sink, stop);
                 }
             }
         }
@@ -476,8 +476,8 @@ impl NativeProcess {
         #[cfg(target_os = "macos")]
         {
             if let Some(emitter) = self.shared.observer.as_ref() {
-                if let Some(sink) = emitter.descendant_sink() {
-                    crate::observer::descendants_macos::spawn_pump(child.id(), sink);
+                if let Some((sink, stop)) = emitter.descendant_pump() {
+                    crate::observer::descendants_macos::spawn_pump(child.id(), sink, stop);
                 }
             }
         }
