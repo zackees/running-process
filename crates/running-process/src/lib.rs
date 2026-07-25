@@ -139,8 +139,8 @@ pub use types::{
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 #[cfg(unix)]
 pub(crate) use helpers::{
-    child_try_wait_error_is_retryable, completed_reap_after_signal, poll_mutex_until,
-    with_child_lock_for_signal,
+    child_signal_disposition, child_try_wait_error_is_retryable, completed_reap_after_signal,
+    poll_mutex_until, with_child_lock_for_signal, ChildSignalDisposition,
 };
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
@@ -788,29 +788,37 @@ impl NativeProcess {
         #[cfg(unix)]
         {
             let deadline = kill_drain_deadline();
-            let pid = with_child_lock_for_signal(&self.child, |state| {
+            let (pid, already_reaped) = with_child_lock_for_signal(&self.child, |state| {
                 let child = &mut state.as_mut().ok_or(ProcessError::NotRunning)?.child;
                 let pid = child.id();
-                let group_signaled = self.config.create_process_group
-                    && unix_signal_process_group(pid as i32, UnixSignal::Kill).is_ok();
-                if !group_signaled {
-                    child.kill().map_err(ProcessError::Io)?;
+                match child_signal_disposition(child.try_wait()).map_err(ProcessError::Io)? {
+                    ChildSignalDisposition::AlreadyExited(status) => Ok((pid, Some(status))),
+                    ChildSignalDisposition::Signal => {
+                        let group_signaled = self.config.create_process_group
+                            && unix_signal_process_group(pid as i32, UnixSignal::Kill).is_ok();
+                        if !group_signaled {
+                            child.kill().map_err(ProcessError::Io)?;
+                        }
+                        Ok((pid, None))
+                    }
                 }
-                Ok(pid)
             })?;
 
             // Wake capture readers immediately after signal delivery. In
             // particular, this prevents a surviving pipe-owning descendant
             // from extending the bounded reap window.
             self.cancel_capture_io();
-            let reap_result =
-                poll_mutex_until(&self.child, deadline, Duration::from_millis(10), |state| {
-                    match state.as_mut() {
-                        Some(child) => child.child.try_wait(),
-                        None => Ok(None),
-                    }
-                });
-            if let Some(status) = completed_reap_after_signal(reap_result) {
+            let reaped = already_reaped.or_else(|| {
+                let reap_result =
+                    poll_mutex_until(&self.child, deadline, Duration::from_millis(10), |state| {
+                        match state.as_mut() {
+                            Some(child) => child.child.try_wait(),
+                            None => Ok(None),
+                        }
+                    });
+                completed_reap_after_signal(reap_result)
+            });
+            if let Some(status) = reaped {
                 let code = exit_code(status);
                 self.set_returncode(code);
                 self.shared.emit_exited(pid, code);

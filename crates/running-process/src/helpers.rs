@@ -80,6 +80,23 @@ pub(crate) fn with_child_lock_for_signal<S, T>(
     signal(&mut guard)
 }
 
+#[cfg(any(test, unix))]
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ChildSignalDisposition<T> {
+    AlreadyExited(T),
+    Signal,
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn child_signal_disposition<T>(
+    status: std::io::Result<Option<T>>,
+) -> std::io::Result<ChildSignalDisposition<T>> {
+    status.map(|status| match status {
+        Some(status) => ChildSignalDisposition::AlreadyExited(status),
+        None => ChildSignalDisposition::Signal,
+    })
+}
+
 pub(crate) fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
     let Some(path) = std::env::var_os(CHILD_PID_LOG_PATH_ENV) else {
         return Ok(());
@@ -233,5 +250,11 @@ mod tests {
         release.1.notify_all();
         worker.join().expect("signal worker panicked");
         assert!(state.try_lock().is_ok());
+    }
+
+    #[test]
+    fn already_reaped_child_never_reaches_signal_delivery() {
+        let status = child_signal_disposition(Ok(Some(23))).unwrap();
+        assert_eq!(status, ChildSignalDisposition::AlreadyExited(23));
     }
 }
