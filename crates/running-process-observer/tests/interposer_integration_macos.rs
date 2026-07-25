@@ -55,6 +55,8 @@ fn build_and_locate_interposer_dylib() -> PathBuf {
             "build",
             "-p",
             "running-process-observer-interposer-macos",
+            "--features",
+            "test-seams",
         ])
         .status()
         .expect("spawn cargo to build interposer dylib");
@@ -63,13 +65,90 @@ fn build_and_locate_interposer_dylib() -> PathBuf {
         "cargo build of interposer .dylib failed: {status:?}"
     );
 
-    let dylib = target_profile_dir()
-        .join("librunning_process_observer_interposer_macos.dylib");
+    let dylib = target_profile_dir().join("librunning_process_observer_interposer_macos.dylib");
     assert!(
         dylib.exists(),
         "expected interposer .dylib at {dylib:?} after cargo build"
     );
     dylib
+}
+
+#[test]
+fn interposer_post_fork_child_progress_entrypoint() {
+    let Some(_) = std::env::var_os("RPO_POST_FORK_CHILD_TEST") else {
+        return;
+    };
+    type HoldFn = unsafe extern "C" fn(std::os::raw::c_int, std::os::raw::c_int);
+    let raw = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"rpo_test_hold_fd_table".as_ptr()) };
+    assert!(!raw.is_null(), "missing interposer test seam");
+    let hold = unsafe { std::mem::transmute::<*mut libc::c_void, HoldFn>(raw) };
+    let mut ready = [0; 2];
+    let mut release = [0; 2];
+    assert_eq!(unsafe { libc::pipe(ready.as_mut_ptr()) }, 0);
+    assert_eq!(unsafe { libc::pipe(release.as_mut_ptr()) }, 0);
+    let holder = std::thread::spawn(move || unsafe { hold(ready[1], release[0]) });
+    let mut byte = [0u8; 1];
+    assert_eq!(
+        unsafe { libc::read(ready[0], byte.as_mut_ptr().cast(), 1) },
+        1
+    );
+
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed");
+    if pid == 0 {
+        unsafe {
+            libc::close(-1);
+            libc::_exit(0);
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut status = 0;
+    let progressed = loop {
+        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if waited == pid {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, &mut status, 0);
+            }
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(
+        unsafe { libc::write(release[1], byte.as_ptr().cast(), 1) },
+        1
+    );
+    holder.join().expect("holder joins");
+    assert!(
+        progressed,
+        "post-fork child blocked on inherited fd-table lock"
+    );
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "post-fork child terminated abnormally: status={status:#x}"
+    );
+}
+
+#[test]
+fn interposer_post_fork_child_progresses_with_inherited_locked_state() {
+    let dylib = build_and_locate_interposer_dylib();
+    let current_test = std::env::current_exe().expect("current test executable");
+    let mut cmd = Command::new(&current_test);
+    cmd.args([
+        "--exact",
+        "interposer_post_fork_child_progress_entrypoint",
+        "--nocapture",
+    ])
+    .env("RPO_POST_FORK_CHILD_TEST", "1")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    inject_via_env(&mut cmd, &dylib).expect("inject_via_env");
+    let status = cmd.status().expect("run post-fork child regression");
+    assert!(status.success(), "inherited-state regression failed");
 }
 
 #[test]

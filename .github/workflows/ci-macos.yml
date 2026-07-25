@@ -22,7 +22,7 @@ jobs:
   x86:
     uses: ./.github/workflows/ci-preflight.yml
     with:
-      os: macos-13
+      os: macos-15-intel
       label: macos-x86
       rustdoc: false
       integration-test: true
