@@ -431,9 +431,11 @@ To run the same gate locally:
 soldr rustup toolchain install nightly-2026-04-16 --profile minimal \
   --component rustc-dev --component llvm-tools-preview
 uvx soldr cargo install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked
-CARGO_TARGET_DIR=target/dylint RUSTUP_TOOLCHAIN=nightly-2026-04-16 \
-  uvx soldr cargo test \
-  --manifest-path lints/running-process-env-literal/Cargo.toml --locked
+(
+  cd lints/running-process-env-literal
+  CARGO_TARGET_DIR=../../target/dylint RUSTUP_TOOLCHAIN=nightly-2026-04-16 \
+    uvx soldr cargo test --locked
+)
 CARGO_TARGET_DIR=target/dylint RUSTUP_TOOLCHAIN=nightly-2026-04-16 \
   uvx soldr cargo dylint --all --workspace
 ```
