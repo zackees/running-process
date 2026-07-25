@@ -323,6 +323,18 @@ fn socket_connect_error(socket: &Path, error: std::io::Error) -> ScmRightsError 
 
 #[cfg(unix)]
 fn sendmsg_error(fd: std::os::fd::RawFd, socket: &Path, error: std::io::Error) -> ScmRightsError {
+    // Unix may report ENOBUFS rather than EAGAIN when a send queue is
+    // saturated. macOS also reports EMSGSIZE for this fixed-size ancillary
+    // message after the Unix stream is pre-saturated. Both are transient
+    // backpressure here: sendmsg returned -1 and accepted no descriptor.
+    let raw_os_error = error.raw_os_error();
+    let transient_backpressure = raw_os_error == Some(libc::ENOBUFS)
+        || cfg!(target_os = "macos") && raw_os_error == Some(libc::EMSGSIZE);
+    if transient_backpressure {
+        return ScmRightsError::WouldBlock {
+            socket: socket.to_path_buf(),
+        };
+    }
     match error.kind() {
         std::io::ErrorKind::PermissionDenied => ScmRightsError::PermissionDenied {
             fd,
@@ -490,6 +502,41 @@ mod tests {
     }
 
     #[test]
+    fn ancillary_queue_enobufs_maps_to_silent_would_block() {
+        let socket = Path::new("saturated-handoff");
+        let error = sendmsg_error(
+            7,
+            socket,
+            std::io::Error::from_raw_os_error(libc::ENOBUFS),
+        );
+
+        assert!(matches!(
+            error,
+            ScmRightsError::WouldBlock { socket: ref path } if path == socket
+        ));
+        assert!(error.is_fallback_safe());
+        assert!(!error.fallback_decision().sends_client_error());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn saturated_ancillary_queue_emsgsize_maps_to_silent_would_block() {
+        let socket = Path::new("saturated-handoff");
+        let error = sendmsg_error(
+            7,
+            socket,
+            std::io::Error::from_raw_os_error(libc::EMSGSIZE),
+        );
+
+        assert!(matches!(
+            error,
+            ScmRightsError::WouldBlock { socket: ref path } if path == socket
+        ));
+        assert!(error.is_fallback_safe());
+        assert!(!error.fallback_decision().sends_client_error());
+    }
+
+    #[test]
     fn send_scm_rights_over_connected_socket_transfers_fd_and_token() {
         let (sender, receiver) = UnixStream::pair().unwrap();
         let file = File::open("/dev/null").unwrap();
@@ -553,7 +600,7 @@ mod tests {
         assert!(matches!(
             error,
             ScmRightsError::WouldBlock { socket: ref path } if path == &socket.path
-        ));
+        ), "unexpected saturated send result: {error:?}");
         assert!(error.is_fallback_safe());
         assert!(!error.fallback_decision().sends_client_error());
     }
