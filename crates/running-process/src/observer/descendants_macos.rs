@@ -77,10 +77,7 @@ struct ProcessInfo {
 fn pump_loop(root_pid: u32, root_identity: ProcessIdentity, sink: Sender<ObserverEvent>) {
     pump_loop_with(
         sink,
-        || {
-            let all = list_all_processes();
-            descendants_if_root_matches(root_pid, root_identity, &all)
-        },
+        || descendant_snapshot(root_pid, root_identity),
         || std::thread::sleep(POLL_INTERVAL),
     );
 }
@@ -179,6 +176,7 @@ fn process_info(pid: u32) -> Option<ProcessInfo> {
     })
 }
 
+#[cfg(test)]
 fn descendants_if_root_matches(
     root_pid: u32,
     expected_identity: ProcessIdentity,
@@ -189,6 +187,31 @@ fn descendants_if_root_matches(
             info.pid == root_pid && pid_identity::matches(&expected_identity, Some(&info.identity))
         })
         .then(|| descendants_of(root_pid, all))
+}
+
+fn descendant_snapshot(root_pid: u32, expected_identity: ProcessIdentity) -> Option<HashSet<u32>> {
+    let identity_before = process_info(root_pid).map(|info| info.identity);
+    if !pid_identity::matches(&expected_identity, identity_before.as_ref()) {
+        return None;
+    }
+    let descendants = descendants_of(root_pid, &list_all_processes());
+    verified_snapshot(
+        expected_identity,
+        identity_before,
+        descendants,
+        process_info(root_pid).map(|info| info.identity),
+    )
+}
+
+fn verified_snapshot(
+    expected_identity: ProcessIdentity,
+    identity_before: Option<ProcessIdentity>,
+    descendants: HashSet<u32>,
+    identity_after: Option<ProcessIdentity>,
+) -> Option<HashSet<u32>> {
+    (pid_identity::matches(&expected_identity, identity_before.as_ref())
+        && pid_identity::matches(&expected_identity, identity_after.as_ref()))
+    .then_some(descendants)
 }
 
 /// BFS the descendant subtree of `root_pid` given the full
@@ -334,6 +357,27 @@ mod tests {
         };
         let reused = vec![process(100, 0, 99), process(200, 100, 2)];
         assert_eq!(descendants_if_root_matches(100, expected, &reused), None);
+    }
+
+    #[test]
+    fn root_identity_change_after_walk_rejects_mixed_snapshot() {
+        let expected = ProcessIdentity {
+            start_sec: 100,
+            start_usec: 1,
+        };
+        let recycled = ProcessIdentity {
+            start_sec: 100,
+            start_usec: 99,
+        };
+        assert_eq!(
+            verified_snapshot(
+                expected,
+                Some(expected),
+                [42].into_iter().collect(),
+                Some(recycled),
+            ),
+            None
+        );
     }
 
     #[test]
