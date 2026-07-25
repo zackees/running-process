@@ -1427,7 +1427,11 @@ impl NativeProcess {
     /// grace window — but if the window elapses with the pipe still held
     /// open the reader is cancelled to release the leaked thread.
     fn finish_capture_drain(&self) {
-        let drained = self.wait_for_capture_completion_with_deadline_impl(kill_drain_deadline());
+        self.finish_capture_drain_with_deadline(kill_drain_deadline());
+    }
+
+    fn finish_capture_drain_with_deadline(&self, deadline: Instant) {
+        let drained = self.wait_for_capture_completion_with_deadline_impl(deadline);
         #[cfg(any(windows, unix))]
         if !drained {
             self.cancel_capture_io();
@@ -1436,29 +1440,8 @@ impl NativeProcess {
         let _ = drained;
     }
 
-    fn wait_for_capture_completion_impl(&self) {
-        crate::rp_rust_debug_scope!("running_process::NativeProcess::wait_for_capture_completion");
-        if !self.config.capture {
-            return;
-        }
-
-        let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
-        while !(guard.stdout_closed && guard.stderr_closed) {
-            guard = self
-                .shared
-                .condvar
-                .wait(guard)
-                .expect("queue mutex poisoned");
-        }
-    }
-
-    /// Like `wait_for_capture_completion_impl` but bounded by `deadline`.
-    /// Returns `true` if the reader threads flipped both closed flags on
-    /// their own, `false` if the deadline elapsed first. On timeout the
-    /// closed flags are force-set (and waiters notified) so downstream
-    /// pollers stop seeing `Timeout` and start seeing `Eof`. A reader
-    /// thread that eventually unblocks after the OS releases the pipe
-    /// will assign `closed = true` again, which is a harmless no-op.
+    /// Returns `true` if the reader threads flipped both closed flags on their
+    /// own before `deadline`, `false` if the deadline forced completion.
     fn wait_for_capture_completion_with_deadline_impl(&self, deadline: Instant) -> bool {
         crate::rp_rust_debug_scope!(
             "running_process::NativeProcess::wait_for_capture_completion_with_deadline"

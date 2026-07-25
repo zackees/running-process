@@ -685,7 +685,9 @@ fn wait_for_capture_completion_noop_without_capture() {
         stdin_mode: StdinMode::Inherit,
         nice: None,
     });
-    process.wait_for_capture_completion_impl();
+    unsafe {
+        crate::public_symbols::rp_native_process_wait_for_capture_completion_public(&process);
+    }
 }
 
 // ── build_command tests ──
