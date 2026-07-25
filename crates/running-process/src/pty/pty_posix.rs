@@ -420,15 +420,20 @@ mod tests {
         });
 
         let writer_guard = writer.lock().expect("writer mutex");
+        let (ready_tx, ready_rx) = mpsc::channel();
         let (tx, rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
+            let _ = ready_tx.send(());
             let result = send_interrupt(&process);
             let _ = tx.send(result);
             let _ = process.handles.lock().expect("handles mutex").take();
         });
 
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("interrupt worker did not start");
         let result = rx
-            .recv_timeout(Duration::from_millis(150))
+            .recv_timeout(Duration::from_secs(1))
             .expect("interrupt fallback waited for the busy writer mutex");
         assert!(result.is_ok(), "best-effort fallback failed: {result:?}");
         drop(writer_guard);
