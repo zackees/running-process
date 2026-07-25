@@ -16,6 +16,7 @@ use crate::broker::protocol::{
 
 use super::backend_registry::BackendRegistry;
 use super::connection::{bind_local_socket, BrokerConnectionError, LocalSocketCleanup};
+use super::deadline_stream::{hello_read_deadline, with_nonblocking_deadline};
 use super::service_def_loader::{service_definition_dir, SERVICE_DEF_DIR_ENV};
 use super::spawn_coordinator::{
     SpawnBudgetSnapshot, DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, DEFAULT_SPAWN_BUDGET_WINDOW,
@@ -559,7 +560,9 @@ pub fn serve_one_admin_socket(
     let cleanup = LocalSocketCleanup(socket_path);
     let result = (|| {
         let mut stream = listener.accept()?;
-        handle_admin_connection(&mut stream, snapshot)
+        with_nonblocking_deadline(&mut stream, hello_read_deadline(), |stream| {
+            handle_admin_connection(stream, snapshot)
+        })
     })();
     drop(listener);
     drop(cleanup);

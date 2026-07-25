@@ -6,6 +6,31 @@
 
 #![cfg(feature = "client")]
 
+use std::sync::Mutex;
+
+static HELLO_TIMEOUT_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct HelloTimeoutOverride(Option<std::ffi::OsString>);
+
+impl HelloTimeoutOverride {
+    fn new(timeout_ms: &str) -> Self {
+        let previous = std::env::var_os("RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS");
+        std::env::set_var("RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS", timeout_ms);
+        Self(previous)
+    }
+}
+
+impl Drop for HelloTimeoutOverride {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(previous) => {
+                std::env::set_var("RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS", previous)
+            }
+            None => std::env::remove_var("RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS"),
+        }
+    }
+}
+
 mod admin;
 mod backend_endpoint_allocator;
 mod backend_handle_boot_id;
