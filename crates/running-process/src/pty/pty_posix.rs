@@ -356,14 +356,20 @@ mod tests {
             .expect("interrupt worker did not start");
         let started = Instant::now();
         let timely = rx.recv_timeout(DEADLINE);
-        let mut drain = [0u8; 1024];
-        assert!(
-            unsafe { libc::read(slave.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len(),) } > 0,
-            "failed to drain the full PTY queue"
-        );
-        let result = timely
-            .or_else(|_| rx.recv_timeout(Duration::from_secs(1)))
-            .expect("interrupt fallback did not unblock after draining the PTY queue");
+        let result = match timely {
+            Ok(result) => result,
+            Err(_) => {
+                let mut drain = [0u8; 1024];
+                assert!(
+                    unsafe {
+                        libc::read(slave.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len())
+                    } > 0,
+                    "failed to drain the full PTY queue"
+                );
+                rx.recv_timeout(Duration::from_secs(1))
+                    .expect("interrupt fallback did not unblock after draining the PTY queue")
+            }
+        };
         let elapsed = started.elapsed();
         worker.join().expect("interrupt worker panicked");
 
