@@ -46,9 +46,23 @@ pub extern "C" fn rp_native_process_read_combined_public(
     process.read_combined_impl(timeout)
 }
 
+/// Wait for capture finalization through the stable exported symbol.
+///
+/// A null pointer is accepted as a no-op. For a non-null pointer, the caller
+/// must keep the borrowed [`NativeProcess`] alive for the duration of the call;
+/// this function never takes ownership of or frees it.
+///
+/// # Safety
+///
+/// `process` must be null or point to a valid, initialized `NativeProcess`.
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn rp_native_process_wait_for_capture_completion_public(process: &NativeProcess) {
+pub unsafe extern "C" fn rp_native_process_wait_for_capture_completion_public(
+    process: *const NativeProcess,
+) {
+    let Some(process) = (unsafe { process.as_ref() }) else {
+        return;
+    };
     process.wait_for_capture_completion_impl();
 }
 
@@ -59,6 +73,94 @@ pub extern "C" fn rp_native_process_wait_for_capture_completion_with_deadline_pu
     deadline: Instant,
 ) -> bool {
     process.wait_for_capture_completion_with_deadline_impl(deadline)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+
+    fn capture_process() -> Arc<NativeProcess> {
+        Arc::new(NativeProcess::new(ProcessConfig {
+            command: CommandSpec::Argv(vec!["unused".into()]),
+            cwd: None,
+            env: None,
+            capture: true,
+            stderr_mode: StderrMode::Stdout,
+            creationflags: None,
+            create_process_group: false,
+            stdin_mode: StdinMode::Inherit,
+            nice: None,
+        }))
+    }
+
+    fn close_fake_capture(process: &NativeProcess) {
+        let mut queues = process.shared.queues.lock().expect("queue mutex poisoned");
+        queues.stdout_closed = true;
+        queues.stderr_closed = true;
+        process.shared.condvar.notify_all();
+    }
+
+    #[test]
+    fn exported_capture_wait_is_bounded_when_capture_never_closes() {
+        // Regression for #620: call the shipped symbol itself while its
+        // production capture state remains open forever.
+        let process = capture_process();
+        let process_address = Arc::as_ptr(&process) as usize;
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let started = Instant::now();
+            started_tx.send(()).expect("start receiver dropped");
+            unsafe {
+                rp_native_process_wait_for_capture_completion_public(
+                    process_address as *const NativeProcess,
+                );
+            }
+            done_tx
+                .send(started.elapsed())
+                .expect("completion receiver dropped");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("exported call never started");
+
+        let timely = done_rx.recv_timeout(Duration::from_millis(500));
+        close_fake_capture(&process);
+        let elapsed = timely
+            .or_else(|_| done_rx.recv_timeout(Duration::from_secs(1)))
+            .expect("exported call did not unblock after capture closed");
+        worker.join().expect("exported wait worker panicked");
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "exported capture wait remained unbounded for {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn exported_capture_wait_returns_for_normal_completion() {
+        let process = capture_process();
+        close_fake_capture(&process);
+        let started = Instant::now();
+        unsafe {
+            rp_native_process_wait_for_capture_completion_public(Arc::as_ptr(&process));
+        }
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn exported_capture_wait_accepts_null_without_taking_ownership() {
+        unsafe {
+            rp_native_process_wait_for_capture_completion_public(std::ptr::null());
+        }
+        let process = capture_process();
+        let retained = Arc::clone(&process);
+        close_fake_capture(&process);
+        unsafe {
+            rp_native_process_wait_for_capture_completion_public(Arc::as_ptr(&process));
+        }
+        assert_eq!(Arc::strong_count(&retained), 2);
+    }
 }
 
 #[cfg(windows)]

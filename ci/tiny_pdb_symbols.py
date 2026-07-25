@@ -48,7 +48,7 @@ TINY_PDB_SYMBOLS: tuple[TinyPdbSymbolSpec, ...] = (
     TinyPdbSymbolSpec(
         "rp_native_process_wait_for_capture_completion_public",
         "crates/running-process/src/public_symbols.rs",
-        "pub extern \"C\" fn rp_native_process_wait_for_capture_completion_public(",
+        "pub unsafe extern \"C\" fn rp_native_process_wait_for_capture_completion_public(",
         "core",
     ),
     TinyPdbSymbolSpec(
