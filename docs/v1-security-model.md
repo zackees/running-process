@@ -173,6 +173,12 @@ The `fs_health.rs` inventory covers the Unix inode-pressure probe (#390): two
 broker-owned constant (never peer-supplied), the struct is stack-local, and
 only the inode counters are read out.
 
+The `server/handoff/unix.rs` inventory covers the Unix `SCM_RIGHTS` boundary:
+constructing and inspecting `msghdr` control messages, calling `sendmsg` and
+`recvmsg`, and closing the duplicated descriptor received by the compatibility
+test. The additional reviewed site for #614 closes only the descriptor returned
+by that test's successful `recvmsg`; production ownership remains unchanged.
+
 ## Fuzz Campaign And Reviewer Signoff
 
 The v1 release gate requires one-hour fuzz campaign evidence for every

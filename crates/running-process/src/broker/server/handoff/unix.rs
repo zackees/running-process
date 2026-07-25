@@ -173,6 +173,20 @@ pub enum ScmRightsError {
         /// Raw OS error code returned by the platform, when available.
         raw_os_error: Option<i32>,
     },
+    /// Some token bytes were sent, so the descriptor may have reached the backend.
+    #[error(
+        "SCM_RIGHTS send was partial ({sent_bytes}/{expected_bytes} bytes) for fd {fd} to backend handoff socket {socket}"
+    )]
+    PartialSend {
+        /// File descriptor targeted by the handoff.
+        fd: i32,
+        /// Backend handoff socket path.
+        socket: PathBuf,
+        /// Token bytes accepted by the socket.
+        sent_bytes: usize,
+        /// Complete token length required by the protocol.
+        expected_bytes: usize,
+    },
     /// The backend did not acknowledge the passed file descriptor before the deadline.
     #[error("backend handoff socket {socket} did not acknowledge passed fd")]
     BackendAckTimeout {
@@ -255,10 +269,11 @@ fn send_fd_with_token(
         ));
     }
     if sent as usize != token_payload.len() {
-        return Err(ScmRightsError::SendFailed {
+        return Err(ScmRightsError::PartialSend {
             fd: sent_fd,
             socket: socket_path.to_path_buf(),
-            raw_os_error: None,
+            sent_bytes: sent as usize,
+            expected_bytes: token_payload.len(),
         });
     }
 
@@ -277,12 +292,17 @@ fn cmsg_len<T>() -> usize {
 
 #[cfg(all(unix, any(target_os = "android", target_os = "linux")))]
 fn sendmsg_flags() -> libc::c_int {
-    libc::MSG_NOSIGNAL
+    combine_sendmsg_flags(libc::MSG_DONTWAIT, Some(libc::MSG_NOSIGNAL))
 }
 
 #[cfg(all(unix, not(any(target_os = "android", target_os = "linux"))))]
 fn sendmsg_flags() -> libc::c_int {
-    0
+    combine_sendmsg_flags(libc::MSG_DONTWAIT, None)
+}
+
+#[cfg(any(test, unix))]
+fn combine_sendmsg_flags(dontwait: libc::c_int, nosignal: Option<libc::c_int>) -> libc::c_int {
+    dontwait | nosignal.unwrap_or(0)
 }
 
 #[cfg(unix)]
@@ -334,6 +354,7 @@ impl ScmRightsError {
             Self::BackendSocketUnavailable { .. }
             | Self::WouldBlock { .. }
             | Self::SendFailed { .. }
+            | Self::PartialSend { .. }
             | Self::BackendAckTimeout { .. } => Some(HandoffAttemptFailure::BackendAckTimeout),
         }
     }
@@ -361,14 +382,59 @@ impl ScmRightsError {
         let fallback = self.fallback_decision();
         fallback.uses_backend_reconnect() && !fallback.sends_client_error()
     }
+
+    /// Return true when the backend may already own the duplicated descriptor.
+    ///
+    /// Stream sockets attach `SCM_RIGHTS` to the first delivered byte, so a
+    /// positive short send is indeterminate even though the complete token was
+    /// not delivered. The orchestrator revokes that token before fallback.
+    pub fn fd_may_have_reached_backend(&self) -> bool {
+        matches!(self, Self::PartialSend { sent_bytes, .. } if *sent_bytes > 0)
+    }
+}
+
+#[cfg(test)]
+mod platform_neutral_tests {
+    use super::{combine_sendmsg_flags, ScmRightsError};
+
+    #[test]
+    fn sendmsg_flags_always_include_per_call_nonblocking() {
+        const MOCK_DONTWAIT: i32 = 0b0010;
+        const MOCK_NOSIGNAL: i32 = 0b1000;
+
+        assert_ne!(
+            combine_sendmsg_flags(MOCK_DONTWAIT, Some(MOCK_NOSIGNAL)) & MOCK_DONTWAIT,
+            0
+        );
+        assert_ne!(
+            combine_sendmsg_flags(MOCK_DONTWAIT, None) & MOCK_DONTWAIT,
+            0
+        );
+    }
+
+    #[test]
+    fn positive_partial_send_tracks_indeterminate_fd_delivery() {
+        let error = ScmRightsError::PartialSend {
+            fd: 7,
+            socket: "handoff".into(),
+            sent_bytes: 1,
+            expected_bytes: 16,
+        };
+
+        assert!(error.fd_may_have_reached_backend());
+        assert!(error.is_fallback_safe());
+    }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use std::fs::File;
+    use std::io::Write;
     use std::os::fd::{AsRawFd, RawFd};
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
 
     use super::*;
 
@@ -421,6 +487,75 @@ mod tests {
                 if path == &socket.path
         ));
         assert!(err.is_fallback_safe());
+    }
+
+    #[test]
+    fn send_scm_rights_over_connected_socket_transfers_fd_and_token() {
+        let (sender, receiver) = UnixStream::pair().unwrap();
+        let file = File::open("/dev/null").unwrap();
+        let token = HandoffToken::from_bytes([0x43; 16]);
+        let socket = UnixHandoffSocket::new("connected-handoff");
+        let attempt = ScmRightsAttempt::new(
+            UnixFileDescriptor::new(file.as_raw_fd()),
+            socket,
+            token,
+        );
+
+        let success = try_send_scm_rights_over(sender.as_raw_fd(), &attempt).unwrap();
+        let (received_fd, received_token) = recv_fd_and_token(receiver);
+
+        assert_eq!(success.sent_fd, attempt.fd);
+        assert_eq!(received_token, token);
+        unsafe {
+            libc::close(received_fd);
+        }
+    }
+
+    #[test]
+    fn saturated_blocking_handoff_socket_returns_silent_would_block_promptly() {
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        sender.set_nonblocking(true).unwrap();
+        let fill = [0_u8; 64 * 1024];
+        loop {
+            match sender.write(&fill) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("fill handoff socket: {error}"),
+            }
+        }
+        sender.set_nonblocking(false).unwrap();
+
+        let file = File::open("/dev/null").unwrap();
+        let socket = UnixHandoffSocket::new("saturated-handoff");
+        let attempt = ScmRightsAttempt::new(
+            UnixFileDescriptor::new(file.as_raw_fd()),
+            socket.clone(),
+            HandoffToken::from_bytes([0x44; 16]),
+        );
+        let (done_tx, done_rx) = mpsc::channel();
+        let send_thread = thread::spawn(move || {
+            let result = try_send_scm_rights_over(sender.as_raw_fd(), &attempt);
+            done_tx.send(result).unwrap();
+        });
+
+        let result = match done_rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(result) => result,
+            Err(error) => {
+                drop(receiver);
+                send_thread.join().unwrap();
+                panic!("SCM_RIGHTS send exceeded nonblocking deadline: {error}");
+            }
+        };
+        drop(receiver);
+        send_thread.join().unwrap();
+
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            ScmRightsError::WouldBlock { socket: ref path } if path == &socket.path
+        ));
+        assert!(error.is_fallback_safe());
+        assert!(!error.fallback_decision().sends_client_error());
     }
 
     fn recv_fd_and_token(stream: UnixStream) -> (RawFd, HandoffToken) {

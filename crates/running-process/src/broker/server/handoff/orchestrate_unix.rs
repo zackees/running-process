@@ -210,11 +210,12 @@ where
         Ok(success) => success,
         Err(error) => {
             acks.abandon(tokens, &request.token);
+            let fd_may_have_reached_backend = error.fd_may_have_reached_backend();
             return abandoned(
                 UnixHandoffStage::Send,
                 error.fallback_decision(),
                 request.fd,
-                false,
+                fd_may_have_reached_backend,
                 error.to_string(),
             );
         }
