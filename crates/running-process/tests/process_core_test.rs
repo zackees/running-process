@@ -9,8 +9,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(windows)]
 use std::path::PathBuf;
 #[cfg(windows)]
-use std::process::{Command, Stdio};
-#[cfg(windows)]
+use std::process::Stdio;
+#[cfg(any(windows, unix))]
+use std::process::Command;
 use std::thread;
 
 use running_process::{
@@ -768,7 +769,6 @@ time.sleep(60)";
         }
     }
     let grandchild_pid = grandchild_pid.expect("did not observe GRANDCHILD_PID line");
-
     // Crank the safety-net drain deadline way up so the only way
     // kill() can return fast is via the CancelIoEx fast path.
     let prior = env::var_os("RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS");
@@ -815,12 +815,18 @@ gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);\
 print('GRANDCHILD_PID=' + str(gc.pid), flush=True);\
 time.sleep(60)";
 
-    let process = NativeProcess::new(config(
+    let process_config = config(
         CommandSpec::Argv(vec!["python".into(), "-c".into(), script.into()]),
         true,
         StdinMode::Inherit,
         None,
-    ));
+    );
+    #[cfg(unix)]
+    let process_config = ProcessConfig {
+        create_process_group: true,
+        ..process_config
+    };
+    let process = NativeProcess::new(process_config);
 
     process.start().unwrap();
 
@@ -841,6 +847,12 @@ time.sleep(60)";
         }
     }
     let grandchild_pid = grandchild_pid.expect("did not observe GRANDCHILD_PID line");
+    #[cfg(unix)]
+    let grandchild_identity = Command::new("ps")
+        .args(["-o", "lstart=", "-p", &grandchild_pid.to_string()])
+        .output()
+        .expect("query grandchild start identity")
+        .stdout;
 
     // The grandchild now holds the stdout pipe open. kill() on the
     // parent reaps the parent but the reader thread is still blocked
@@ -862,9 +874,44 @@ time.sleep(60)";
             .stderr(Stdio::null())
             .status();
     }
-    #[cfg(not(windows))]
-    unsafe {
-        libc::kill(grandchild_pid as i32, libc::SIGKILL);
+    #[cfg(unix)]
+    {
+        let is_running = || {
+            let identity_matches = Command::new("ps")
+                .args(["-o", "lstart=", "-p", &grandchild_pid.to_string()])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| output.stdout == grandchild_identity)
+                .unwrap_or(false);
+            if !identity_matches {
+                return false;
+            }
+            Command::new("ps")
+                .args(["-o", "stat=", "-p", &grandchild_pid.to_string()])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| {
+                    let state = String::from_utf8_lossy(&output.stdout);
+                    !state.trim_start().starts_with('Z')
+                })
+                .unwrap_or(false)
+        };
+        let gone_deadline = Instant::now() + Duration::from_secs(2);
+        while is_running() && Instant::now() < gone_deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let survived = is_running();
+        if survived {
+            unsafe {
+                libc::kill(grandchild_pid as i32, libc::SIGKILL);
+            }
+        }
+        assert!(
+            !survived,
+            "grandchild {grandchild_pid} survived kill() on its owned process group"
+        );
     }
 }
 

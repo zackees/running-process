@@ -1,5 +1,9 @@
 use std::fs::OpenOptions;
 use std::io::Write;
+#[cfg(any(test, unix))]
+use std::sync::Mutex;
+#[cfg(any(test, unix))]
+use std::thread;
 use std::time::{Duration, Instant};
 
 pub(crate) const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_PATH";
@@ -21,6 +25,37 @@ pub(crate) fn kill_drain_deadline() -> Instant {
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_KILL_DRAIN_TIMEOUT);
     Instant::now() + timeout
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn poll_until<T>(
+    deadline: Instant,
+    interval: Duration,
+    mut poll: impl FnMut() -> std::io::Result<Option<T>>,
+) -> std::io::Result<Option<T>> {
+    loop {
+        if let Some(value) = poll()? {
+            return Ok(Some(value));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(interval.min(deadline.saturating_duration_since(now)));
+    }
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn poll_mutex_until<S, T>(
+    state: &Mutex<S>,
+    deadline: Instant,
+    interval: Duration,
+    mut poll: impl FnMut(&mut S) -> std::io::Result<Option<T>>,
+) -> std::io::Result<Option<T>> {
+    poll_until(deadline, interval, || {
+        let mut guard = state.lock().expect("child mutex poisoned");
+        poll(&mut guard)
+    })
 }
 
 pub(crate) fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
@@ -70,5 +105,66 @@ pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
     #[cfg(not(unix))]
     {
         status.code().unwrap_or(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn mutex_poll_releases_lock_between_attempts() {
+        let state = Arc::new(Mutex::new(()));
+        let worker_state = Arc::clone(&state);
+        let (polled_tx, polled_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            poll_mutex_until(
+                &worker_state,
+                Instant::now() + Duration::from_millis(100),
+                Duration::from_millis(50),
+                |_| {
+                    let _ = polled_tx.send(());
+                    Ok::<_, std::io::Error>(None::<()>)
+                },
+            )
+        });
+
+        polled_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("poll never started");
+        let available_deadline = Instant::now() + Duration::from_millis(40);
+        let mut available = false;
+        while Instant::now() < available_deadline {
+            if state.try_lock().is_ok() {
+                available = true;
+                break;
+            }
+            thread::yield_now();
+        }
+        assert!(
+            available,
+            "child mutex remained locked between bounded polls"
+        );
+        assert_eq!(worker.join().expect("poll worker panicked").unwrap(), None);
+    }
+
+    #[test]
+    fn mutex_poll_returns_ready_value_exactly_once() {
+        let attempts = AtomicUsize::new(0);
+        let value = poll_mutex_until(
+            &Mutex::new(()),
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(10),
+            |_| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, std::io::Error>(Some(17))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(value, Some(17));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

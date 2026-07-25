@@ -2,6 +2,9 @@ use std::io;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::helpers::{kill_drain_deadline, poll_until};
 
 trait UnixChild: Send {
     fn kill(&mut self) -> io::Result<()>;
@@ -61,15 +64,30 @@ impl SpawnedInner {
     }
 
     pub fn shutdown(&mut self) {
+        self.shutdown_with_deadline(kill_drain_deadline());
+    }
+
+    fn shutdown_with_deadline(&mut self, deadline: Instant) {
         unsafe {
             libc::killpg(self.pgid, libc::SIGKILL);
         }
-        // Reap.
-        let mut guard = self.child.lock().expect("child mutex poisoned");
-        if let Some(child) = guard.as_mut() {
-            let _ = child.wait();
+        let Some(mut child) = self.child.lock().expect("child mutex poisoned").take() else {
+            return;
+        };
+        match poll_until(deadline, Duration::from_millis(10), || child.try_wait()) {
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => spawn_background_reaper(child),
         }
     }
+}
+
+fn spawn_background_reaper(mut child: Box<dyn UnixChild>) {
+    thread::spawn(move || {
+        // Once ownership is off the caller's teardown path, a blocking wait is
+        // the most reliable terminal policy: it reaps exactly once without a
+        // retry loop, spinning, or retaining the shared child mutex.
+        let _ = child.wait();
+    });
 }
 
 fn slot_to_stdio(slot: &super::StdioSource<'_>) -> io::Result<Stdio> {
@@ -292,7 +310,6 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Condvar, mpsc};
-    use std::time::{Duration, Instant};
 
     struct FakeChild {
         wait_gate: Arc<(Mutex<bool>, Condvar)>,
@@ -315,7 +332,9 @@ mod tests {
         }
 
         fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
-            Ok(None)
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            let released = *self.wait_gate.0.lock().expect("wait gate mutex poisoned");
+            Ok(released.then(|| std::process::ExitStatus::from_raw(0)))
         }
     }
 
@@ -351,14 +370,17 @@ mod tests {
         condvar.notify_all();
     }
 
-    struct ShutdownOnDrop(Option<SpawnedInner>);
+    struct ShutdownOnDrop {
+        inner: Option<SpawnedInner>,
+        deadline: Instant,
+    }
 
     impl Drop for ShutdownOnDrop {
         fn drop(&mut self) {
-            self.0
+            self.inner
                 .as_mut()
                 .expect("test wrapper missing inner")
-                .shutdown();
+                .shutdown_with_deadline(self.deadline);
         }
     }
 
@@ -372,7 +394,10 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let started = Instant::now();
         let worker = thread::spawn(move || {
-            drop(ShutdownOnDrop(Some(inner)));
+            drop(ShutdownOnDrop {
+                inner: Some(inner),
+                deadline: Instant::now() + Duration::from_millis(50),
+            });
             let _ = tx.send(started.elapsed());
         });
 
@@ -396,7 +421,9 @@ mod tests {
             wait_gate,
             waits,
         } = blocked_inner();
-        let worker = thread::spawn(move || inner.shutdown());
+        let worker = thread::spawn(move || {
+            inner.shutdown_with_deadline(Instant::now() + Duration::from_millis(50));
+        });
         let deadline = Instant::now() + Duration::from_secs(1);
         while waits.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
             thread::yield_now();
@@ -410,5 +437,46 @@ mod tests {
             child_mutex_available,
             "shutdown held the child mutex across reaping"
         );
+    }
+
+    struct ReadyChild {
+        polls: Arc<AtomicUsize>,
+        waits: Arc<AtomicUsize>,
+    }
+
+    impl UnixChild for ReadyChild {
+        fn kill(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            Ok(std::process::ExitStatus::from_raw(0))
+        }
+
+        fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(std::process::ExitStatus::from_raw(0)))
+        }
+    }
+
+    #[test]
+    fn shutdown_reaps_ready_child_exactly_once() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let waits = Arc::new(AtomicUsize::new(0));
+        let child: Arc<Mutex<Option<Box<dyn UnixChild>>>> =
+            Arc::new(Mutex::new(Some(Box::new(ReadyChild {
+                polls: Arc::clone(&polls),
+                waits: Arc::clone(&waits),
+            }))));
+        let mut inner = SpawnedInner {
+            child,
+            pgid: i32::MAX,
+        };
+
+        inner.shutdown_with_deadline(Instant::now() + Duration::from_secs(1));
+
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert_eq!(waits.load(Ordering::SeqCst), 0);
     }
 }
