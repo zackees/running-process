@@ -1,5 +1,8 @@
 use super::*;
 use crate::{unix_signal_process, unix_signal_process_group, UnixSignal};
+use std::io;
+use std::os::fd::RawFd;
+use std::sync::TryLockError;
 use sysinfo::{Pid, System};
 
 fn system_pid(pid: u32) -> Pid {
@@ -67,8 +70,89 @@ pub(super) fn send_interrupt(process: &NativePtyProcess) -> Result<(), PtyError>
         unix_signal_process_group(pid, UnixSignal::Interrupt)?;
         return Ok(());
     }
-    drop(guard);
-    process.write_impl(&[0x03], false)
+
+    // The raw Ctrl-C fallback is explicitly best-effort. Never wait behind an
+    // ordinary input write that is already blocked on a full PTY queue.
+    let _writer_guard = match handles.writer.try_lock() {
+        Ok(writer) => writer,
+        Err(TryLockError::WouldBlock) => return Ok(()),
+        Err(TryLockError::Poisoned(_)) => {
+            return Err(PtyError::Other("pty writer mutex poisoned".into()))
+        }
+    };
+    let master_fd = handles
+        .master
+        .as_raw_fd()
+        .ok_or_else(|| PtyError::Other("PTY master does not expose a Unix descriptor".into()))?;
+    process.record_input_metrics(&[0x03], false);
+    write_nonblocking_byte(master_fd, 0x03)?;
+    Ok(())
+}
+
+struct FdFlagsGuard {
+    fd: RawFd,
+    original_flags: libc::c_int,
+    restored: bool,
+}
+
+impl FdFlagsGuard {
+    fn make_nonblocking(fd: RawFd) -> io::Result<Self> {
+        let original_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if original_flags == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, original_flags | libc::O_NONBLOCK) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            fd,
+            original_flags,
+            restored: false,
+        })
+    }
+
+    fn restore(mut self) -> io::Result<()> {
+        let result = unsafe { libc::fcntl(self.fd, libc::F_SETFL, self.original_flags) };
+        self.restored = true;
+        if result == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for FdFlagsGuard {
+    fn drop(&mut self) {
+        if !self.restored {
+            let _ = unsafe { libc::fcntl(self.fd, libc::F_SETFL, self.original_flags) };
+        }
+    }
+}
+
+fn write_nonblocking_byte(fd: RawFd, byte: u8) -> io::Result<()> {
+    let flags = FdFlagsGuard::make_nonblocking(fd)?;
+    let written = unsafe { libc::write(fd, (&byte as *const u8).cast(), 1) };
+    let write_result = if written == 1 {
+        Ok(())
+    } else if written == -1 {
+        let error = io::Error::last_os_error();
+        if matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        ) {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "PTY interrupt fallback wrote zero bytes",
+        ))
+    };
+    let restore_result = flags.restore();
+    restore_result.and(write_result)
 }
 
 pub(super) fn terminate(process: &NativePtyProcess) -> Result<(), PtyError> {
@@ -140,6 +224,10 @@ mod tests {
 
         fn process_group_leader(&self) -> Option<i32> {
             None
+        }
+
+        fn as_raw_fd(&self) -> Option<std::os::fd::RawFd> {
+            Some(self._fd.as_raw_fd())
         }
     }
 
@@ -260,5 +348,59 @@ mod tests {
             "interrupt fallback blocked for {elapsed:?} on a full PTY input queue"
         );
         assert!(result.is_ok(), "best-effort fallback failed: {result:?}");
+    }
+
+    #[test]
+    fn nonblocking_interrupt_write_restores_descriptor_flags() {
+        let (master, slave) = open_full_pty_input_queue();
+        let before = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+        assert_ne!(before, -1);
+
+        write_nonblocking_byte(master.as_raw_fd(), 0x03)
+            .expect("a full input queue is an expected best-effort drop");
+
+        let after = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+        assert_eq!(after, before, "fallback changed the PTY descriptor flags");
+        drop(slave);
+    }
+
+    #[test]
+    fn nonblocking_interrupt_write_reports_fcntl_failure() {
+        let error = write_nonblocking_byte(-1, 0x03).expect_err("invalid fd must fail");
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+    }
+
+    #[test]
+    fn interrupt_fallback_does_not_wait_for_busy_writer_mutex() {
+        let (master, slave) = open_full_pty_input_queue();
+        let writer_fd = unsafe { libc::dup(master.as_raw_fd()) };
+        assert_ne!(writer_fd, -1);
+        let writer = Arc::new(Mutex::new(
+            Box::new(unsafe { File::from_raw_fd(writer_fd) }) as Box<dyn Write + Send>,
+        ));
+
+        let process = NativePtyProcess::new(vec!["unused".into()], None, None, 24, 80, None)
+            .expect("test process");
+        *process.handles.lock().expect("handles mutex") = Some(NativePtyHandles {
+            master: Box::new(NoGroupMaster { _fd: master }),
+            writer: Arc::clone(&writer),
+            child: Box::new(RunningChild),
+        });
+
+        let writer_guard = writer.lock().expect("writer mutex");
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = send_interrupt(&process);
+            let _ = tx.send(result);
+            let _ = process.handles.lock().expect("handles mutex").take();
+        });
+
+        let result = rx
+            .recv_timeout(Duration::from_millis(150))
+            .expect("interrupt fallback waited for the busy writer mutex");
+        assert!(result.is_ok(), "best-effort fallback failed: {result:?}");
+        drop(writer_guard);
+        drop(slave);
+        worker.join().expect("interrupt worker panicked");
     }
 }
