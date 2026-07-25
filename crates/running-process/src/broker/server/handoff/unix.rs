@@ -323,6 +323,14 @@ fn socket_connect_error(socket: &Path, error: std::io::Error) -> ScmRightsError 
 
 #[cfg(unix)]
 fn sendmsg_error(fd: std::os::fd::RawFd, socket: &Path, error: std::io::Error) -> ScmRightsError {
+    // macOS reports ENOBUFS rather than EAGAIN when a Unix stream's ancillary
+    // data queue is saturated. This is the same transient backpressure
+    // condition: no descriptor was accepted and the caller must reconnect.
+    if error.raw_os_error() == Some(libc::ENOBUFS) {
+        return ScmRightsError::WouldBlock {
+            socket: socket.to_path_buf(),
+        };
+    }
     match error.kind() {
         std::io::ErrorKind::PermissionDenied => ScmRightsError::PermissionDenied {
             fd,
@@ -490,6 +498,23 @@ mod tests {
     }
 
     #[test]
+    fn ancillary_queue_enobufs_maps_to_silent_would_block() {
+        let socket = Path::new("saturated-handoff");
+        let error = sendmsg_error(
+            7,
+            socket,
+            std::io::Error::from_raw_os_error(libc::ENOBUFS),
+        );
+
+        assert!(matches!(
+            error,
+            ScmRightsError::WouldBlock { socket: ref path } if path == socket
+        ));
+        assert!(error.is_fallback_safe());
+        assert!(!error.fallback_decision().sends_client_error());
+    }
+
+    #[test]
     fn send_scm_rights_over_connected_socket_transfers_fd_and_token() {
         let (sender, receiver) = UnixStream::pair().unwrap();
         let file = File::open("/dev/null").unwrap();
@@ -553,7 +578,7 @@ mod tests {
         assert!(matches!(
             error,
             ScmRightsError::WouldBlock { socket: ref path } if path == &socket.path
-        ));
+        ), "unexpected saturated send result: {error:?}");
         assert!(error.is_fallback_safe());
         assert!(!error.fallback_decision().sends_client_error());
     }
