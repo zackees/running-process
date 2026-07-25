@@ -138,7 +138,10 @@ pub use types::{
 
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 #[cfg(unix)]
-pub(crate) use helpers::{completed_reap_after_signal, poll_mutex_until};
+pub(crate) use helpers::{
+    child_try_wait_error_is_retryable, completed_reap_after_signal, poll_mutex_until,
+    with_child_lock_for_signal,
+};
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
 #[cfg(windows)]
@@ -574,7 +577,16 @@ impl NativeProcess {
                                 true
                             }
                             Ok(None) => false,
-                            Err(_) => return,
+                            Err(_error) => {
+                                #[cfg(unix)]
+                                if child_try_wait_error_is_retryable(&_error) {
+                                    false
+                                } else {
+                                    return;
+                                }
+                                #[cfg(windows)]
+                                return;
+                            }
                         }
                     } else {
                         return;
@@ -776,21 +788,16 @@ impl NativeProcess {
         #[cfg(unix)]
         {
             let deadline = kill_drain_deadline();
-            let pid = {
-                let guard = self.child.lock().expect("child mutex poisoned");
-                guard.as_ref().ok_or(ProcessError::NotRunning)?.child.id()
-            };
-            let group_signaled = self.config.create_process_group
-                && unix_signal_process_group(pid as i32, UnixSignal::Kill).is_ok();
-            if !group_signaled {
-                let mut guard = self.child.lock().expect("child mutex poisoned");
-                guard
-                    .as_mut()
-                    .ok_or(ProcessError::NotRunning)?
-                    .child
-                    .kill()
-                    .map_err(ProcessError::Io)?;
-            }
+            let pid = with_child_lock_for_signal(&self.child, |state| {
+                let child = &mut state.as_mut().ok_or(ProcessError::NotRunning)?.child;
+                let pid = child.id();
+                let group_signaled = self.config.create_process_group
+                    && unix_signal_process_group(pid as i32, UnixSignal::Kill).is_ok();
+                if !group_signaled {
+                    child.kill().map_err(ProcessError::Io)?;
+                }
+                Ok(pid)
+            })?;
 
             // Wake capture readers immediately after signal delivery. In
             // particular, this prevents a surviving pipe-owning descendant

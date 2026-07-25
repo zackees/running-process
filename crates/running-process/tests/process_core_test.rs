@@ -870,6 +870,7 @@ time.sleep(60)"
     let is_original_grandchild_running = || {
         Command::new("ps")
             .args([
+                "-ww",
                 "-o",
                 "stat=",
                 "-o",

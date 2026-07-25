@@ -66,6 +66,20 @@ pub(crate) fn completed_reap_after_signal<T>(result: std::io::Result<Option<T>>)
     result.ok().flatten()
 }
 
+#[cfg(any(test, unix))]
+pub(crate) fn child_try_wait_error_is_retryable(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::Interrupted
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn with_child_lock_for_signal<S, T>(
+    state: &Mutex<S>,
+    signal: impl FnOnce(&mut S) -> T,
+) -> T {
+    let mut guard = state.lock().expect("child mutex poisoned");
+    signal(&mut guard)
+}
+
 pub(crate) fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
     let Some(path) = std::env::var_os(CHILD_PID_LOG_PATH_ENV) else {
         return Ok(());
@@ -180,5 +194,44 @@ mod tests {
     fn successful_signal_treats_reap_error_like_timeout() {
         let error = std::io::Error::other("injected try_wait failure");
         assert_eq!(completed_reap_after_signal::<i32>(Err(error)), None);
+    }
+
+    #[test]
+    fn exit_waiter_retries_only_interrupted_try_wait_errors() {
+        let interrupted = std::io::Error::from(std::io::ErrorKind::Interrupted);
+        let terminal = std::io::Error::other("injected terminal error");
+        assert!(child_try_wait_error_is_retryable(&interrupted));
+        assert!(!child_try_wait_error_is_retryable(&terminal));
+    }
+
+    #[test]
+    fn child_lock_covers_pid_validation_through_signal_delivery() {
+        let state = Arc::new(Mutex::new(7_u32));
+        let worker_state = Arc::clone(&state);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let worker_release = Arc::clone(&release);
+        let worker = thread::spawn(move || {
+            with_child_lock_for_signal(&worker_state, |pid| {
+                assert_eq!(*pid, 7);
+                entered_tx.send(()).expect("signal checkpoint receiver");
+                let (lock, condvar) = &*worker_release;
+                let mut released = lock.lock().expect("release mutex poisoned");
+                while !*released {
+                    released = condvar.wait(released).expect("release mutex poisoned");
+                }
+            });
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("signal closure never started");
+        assert!(
+            state.try_lock().is_err(),
+            "child lock was released between PID validation and signaling"
+        );
+        *release.0.lock().expect("release mutex poisoned") = true;
+        release.1.notify_all();
+        worker.join().expect("signal worker panicked");
+        assert!(state.try_lock().is_ok());
     }
 }
