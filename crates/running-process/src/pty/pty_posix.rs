@@ -113,7 +113,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     struct NoGroupMaster {
-        fd: OwnedFd,
+        _fd: OwnedFd,
     }
 
     impl PtyMaster for NoGroupMaster {
@@ -219,7 +219,7 @@ mod tests {
         let process = NativePtyProcess::new(vec!["unused".into()], None, None, 24, 80, None)
             .expect("test process");
         *process.handles.lock().expect("handles mutex") = Some(NativePtyHandles {
-            master: Box::new(NoGroupMaster { fd: master }),
+            master: Box::new(NoGroupMaster { _fd: master }),
             writer: Arc::new(Mutex::new(Box::new(writer))),
             child: Box::new(RunningChild),
         });
