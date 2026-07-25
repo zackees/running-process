@@ -169,6 +169,7 @@ jobs:
           echo "RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }-C link-args=-Wl,-rpath,$nightly_sysroot/lib" >> "$GITHUB_ENV"
 
       - name: Dylint negative fixture
+        id: dylint_negative
         if: ${{ inputs.dylint }}
         env:
           CARGO_BIN: cargo
@@ -176,11 +177,23 @@ jobs:
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --manifest-path lints/running-process-env-literal/Cargo.toml --locked
 
       - name: Dylint workspace gate
+        id: dylint_workspace
         if: ${{ inputs.dylint }}
         env:
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --all --workspace
+
+      - name: Diagnose Dylint plugin loading
+        if: ${{ failure() && (steps.dylint_negative.outcome == 'failure' || steps.dylint_workspace.outcome == 'failure') }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
+        run: |
+          lint_library="$(find "$CARGO_TARGET_DIR/debug" -maxdepth 1 -type f -name 'librunning_process_env_literal@*.so' -print -quit)"
+          test -n "$lint_library"
+          readelf -d "$lint_library" | grep -E 'NEEDED|RPATH|RUNPATH' || true
+          ldd -r "$lint_library" || true
+          python -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$lint_library" || true
 
       - name: Restore build environment after Dylint
         if: ${{ always() && inputs.dylint }}
