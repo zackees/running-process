@@ -960,3 +960,120 @@ fn shell_command_returns_command_with_shell() {
     #[cfg(not(windows))]
     assert!(program.contains("sh"));
 }
+
+#[test]
+fn capture_wakeup_wins_when_pipe_and_cancel_are_both_ready() {
+    assert_eq!(capture_poll_action(1, 1), CapturePollAction::Cancel);
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_capture_wakeup_interrupts_blocked_reader_and_closes_fds() {
+    use std::fs::File;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::sync::mpsc;
+
+    let mut pipe_fds = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(pipe_fds.as_mut_ptr()) }, 0);
+    let read_file = unsafe { File::from_raw_fd(pipe_fds[0]) };
+    let _held_open_writer = unsafe { File::from_raw_fd(pipe_fds[1]) };
+    let (mut reader, wake_writer) =
+        NativeProcess::prepare_unix_capture_reader(read_file).expect("prepare reader");
+    let capture_fd = reader.reader.as_raw_fd();
+    let wake_read_fd = reader.wake_reader.as_raw_fd();
+    let wake_write_fd = wake_writer.as_raw_fd();
+
+    let (done_tx, done_rx) = mpsc::channel();
+    let reader_thread = std::thread::spawn(move || {
+        let mut byte = [0_u8; 1];
+        let result = reader.read(&mut byte);
+        drop(reader);
+        done_tx.send(result).expect("report read result");
+    });
+
+    std::thread::sleep(Duration::from_millis(20));
+    let byte = [1_u8; 1];
+    assert_eq!(
+        unsafe { libc::write(wake_write_fd, byte.as_ptr().cast(), byte.len()) },
+        1
+    );
+    let result = done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("blocked reader must exit after wakeup");
+    assert_eq!(
+        result
+            .expect_err("wakeup should interrupt the capture read")
+            .kind(),
+        std::io::ErrorKind::Interrupted
+    );
+    reader_thread.join().expect("reader thread joins");
+
+    assert_eq!(unsafe { libc::fcntl(capture_fd, libc::F_GETFD) }, -1);
+    assert_eq!(unsafe { libc::fcntl(wake_read_fd, libc::F_GETFD) }, -1);
+    drop(wake_writer);
+    assert_eq!(unsafe { libc::fcntl(wake_write_fd, libc::F_GETFD) }, -1);
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_natural_exit_cancels_both_orphaned_capture_readers() {
+    struct KillPidOnDrop(libc::pid_t);
+
+    impl Drop for KillPidOnDrop {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+                libc::waitpid(self.0, std::ptr::null_mut(), libc::WNOHANG);
+            }
+        }
+    }
+
+    let process = NativeProcess::new(ProcessConfig {
+        command: CommandSpec::Argv(vec![
+            "sh".into(),
+            "-c".into(),
+            "sleep 60 & echo $!".into(),
+        ]),
+        cwd: None,
+        env: None,
+        capture: true,
+        stderr_mode: StderrMode::Pipe,
+        creationflags: None,
+        create_process_group: false,
+        stdin_mode: StdinMode::Inherit,
+        nice: None,
+    });
+    process.start().expect("spawn shell");
+    let grandchild_pid =
+        match process.read_stream(StreamKind::Stdout, Some(Duration::from_secs(5))) {
+            ReadStatus::Line(line) => String::from_utf8(line)
+                .expect("pid is UTF-8")
+                .trim()
+                .parse::<libc::pid_t>()
+                .expect("parse grandchild pid"),
+            other => panic!("expected grandchild pid line, got {other:?}"),
+        };
+    let _grandchild_guard = KillPidOnDrop(grandchild_pid);
+
+    process
+        .wait(Some(Duration::from_secs(10)))
+        .expect("direct shell exits");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let cleared = {
+            let wakers = process
+                .capture_wakers
+                .lock()
+                .expect("capture wakers mutex poisoned");
+            wakers.stdout.is_none() && wakers.stderr.is_none()
+        };
+        if cleared {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "stdout/stderr reader wake FDs remained owned after bounded teardown"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
