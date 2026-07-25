@@ -8,15 +8,15 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(windows)]
 use std::path::PathBuf;
-#[cfg(windows)]
-use std::process::Stdio;
 #[cfg(any(windows, unix))]
 use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
 use std::thread;
 
 use running_process::{
-    run_command, CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode,
-    StdinMode, StreamKind,
+    CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode,
+    StreamKind, run_command,
 };
 
 fn config(
@@ -434,12 +434,16 @@ fn read_combined_returns_events_from_both_streams() {
         }
     }
 
-    assert!(events
-        .iter()
-        .any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
-    assert!(events
-        .iter()
-        .any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.stream == StreamKind::Stdout && e.line == b"out")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.stream == StreamKind::Stderr && e.line == b"err")
+    );
 }
 
 #[test]
@@ -505,12 +509,16 @@ fn captured_combined_includes_both_streams() {
     process.wait(Some(Duration::from_secs(5))).unwrap();
 
     let combined = process.captured_combined();
-    assert!(combined
-        .iter()
-        .any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
-    assert!(combined
-        .iter()
-        .any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
+    assert!(
+        combined
+            .iter()
+            .any(|e| e.stream == StreamKind::Stdout && e.line == b"out")
+    );
+    assert!(
+        combined
+            .iter()
+            .any(|e| e.stream == StreamKind::Stderr && e.line == b"err")
+    );
 }
 
 #[test]
@@ -808,15 +816,26 @@ fn kill_returns_when_grandchild_inherits_stdout_pipe() {
     // 60 s with inherited stdout, then itself sleep 60 s. We kill the
     // parent before either sleep elapses; the grandchild stays alive
     // (and thus the pipe stays open) for the duration of the test.
-    let script = "\
+    let marker = format!(
+        "running-process-619-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_nanos()
+    );
+    let grandchild_code = format!("import time; time.sleep(60) # {marker}");
+    let script = format!(
+        "\
 import os, subprocess, sys, time;\
 print('PARENT_PID=' + str(os.getpid()), flush=True);\
-gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);\
+gc = subprocess.Popen([sys.executable, '-c', {grandchild_code:?}]);\
 print('GRANDCHILD_PID=' + str(gc.pid), flush=True);\
-time.sleep(60)";
+time.sleep(60)"
+    );
 
     let process_config = config(
-        CommandSpec::Argv(vec!["python".into(), "-c".into(), script.into()]),
+        CommandSpec::Argv(vec!["python".into(), "-c".into(), script]),
         true,
         StdinMode::Inherit,
         None,
@@ -848,11 +867,31 @@ time.sleep(60)";
     }
     let grandchild_pid = grandchild_pid.expect("did not observe GRANDCHILD_PID line");
     #[cfg(unix)]
-    let grandchild_identity = Command::new("ps")
-        .args(["-o", "lstart=", "-p", &grandchild_pid.to_string()])
-        .output()
-        .expect("query grandchild start identity")
-        .stdout;
+    let is_original_grandchild_running = || {
+        Command::new("ps")
+            .args([
+                "-o",
+                "stat=",
+                "-o",
+                "command=",
+                "-p",
+                &grandchild_pid.to_string(),
+            ])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                let state_and_command = String::from_utf8_lossy(&output.stdout);
+                state_and_command.contains(&marker)
+                    && !state_and_command.trim_start().starts_with('Z')
+            })
+            .unwrap_or(false)
+    };
+    #[cfg(unix)]
+    assert!(
+        is_original_grandchild_running(),
+        "grandchild identity marker was not observable before kill"
+    );
 
     // The grandchild now holds the stdout pipe open. kill() on the
     // parent reaps the parent but the reader thread is still blocked
@@ -876,34 +915,14 @@ time.sleep(60)";
     }
     #[cfg(unix)]
     {
-        let is_running = || {
-            let identity_matches = Command::new("ps")
-                .args(["-o", "lstart=", "-p", &grandchild_pid.to_string()])
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| output.stdout == grandchild_identity)
-                .unwrap_or(false);
-            if !identity_matches {
-                return false;
-            }
-            Command::new("ps")
-                .args(["-o", "stat=", "-p", &grandchild_pid.to_string()])
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| {
-                    let state = String::from_utf8_lossy(&output.stdout);
-                    !state.trim_start().starts_with('Z')
-                })
-                .unwrap_or(false)
-        };
         let gone_deadline = Instant::now() + Duration::from_secs(2);
-        while is_running() && Instant::now() < gone_deadline {
+        while is_original_grandchild_running() && Instant::now() < gone_deadline {
             thread::sleep(Duration::from_millis(10));
         }
-        let survived = is_running();
+        let survived = is_original_grandchild_running();
         if survived {
+            // The unique marker proves this PID still belongs to this test,
+            // so emergency cleanup cannot signal a recycled unrelated PID.
             unsafe {
                 libc::kill(grandchild_pid as i32, libc::SIGKILL);
             }

@@ -58,6 +58,14 @@ pub(crate) fn poll_mutex_until<S, T>(
     })
 }
 
+#[cfg(any(test, unix))]
+pub(crate) fn completed_reap_after_signal<T>(result: std::io::Result<Option<T>>) -> Option<T> {
+    // Once termination was successfully delivered, reaping is best effort on
+    // the caller's bounded path. The dedicated waiter remains responsible for
+    // eventual reaping after either a timeout or a transient try_wait error.
+    result.ok().flatten()
+}
+
 pub(crate) fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
     let Some(path) = std::env::var_os(CHILD_PID_LOG_PATH_ENV) else {
         return Ok(());
@@ -166,5 +174,11 @@ mod tests {
 
         assert_eq!(value, Some(17));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn successful_signal_treats_reap_error_like_timeout() {
+        let error = std::io::Error::other("injected try_wait failure");
+        assert_eq!(completed_reap_after_signal::<i32>(Err(error)), None);
     }
 }

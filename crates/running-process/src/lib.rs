@@ -138,7 +138,7 @@ pub use types::{
 
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 #[cfg(unix)]
-pub(crate) use helpers::poll_mutex_until;
+pub(crate) use helpers::{completed_reap_after_signal, poll_mutex_until};
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
 #[cfg(windows)]
@@ -796,15 +796,14 @@ impl NativeProcess {
             // particular, this prevents a surviving pipe-owning descendant
             // from extending the bounded reap window.
             self.cancel_capture_io();
-            if let Some(status) =
+            let reap_result =
                 poll_mutex_until(&self.child, deadline, Duration::from_millis(10), |state| {
                     match state.as_mut() {
                         Some(child) => child.child.try_wait(),
                         None => Ok(None),
                     }
-                })
-                .map_err(ProcessError::Io)?
-            {
+                });
+            if let Some(status) = completed_reap_after_signal(reap_result) {
                 let code = exit_code(status);
                 self.set_returncode(code);
                 self.shared.emit_exited(pid, code);

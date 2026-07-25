@@ -68,12 +68,13 @@ impl SpawnedInner {
     }
 
     fn shutdown_with_deadline(&mut self, deadline: Instant) {
-        unsafe {
-            libc::killpg(self.pgid, libc::SIGKILL);
-        }
+        let group_signaled = unsafe { libc::killpg(self.pgid, libc::SIGKILL) == 0 };
         let Some(mut child) = self.child.lock().expect("child mutex poisoned").take() else {
             return;
         };
+        if !group_signaled {
+            let _ = child.kill();
+        }
         match poll_until(deadline, Duration::from_millis(10), || child.try_wait()) {
             Ok(Some(_)) => {}
             Ok(None) | Err(_) => spawn_background_reaper(child),
@@ -314,10 +315,12 @@ mod tests {
     struct FakeChild {
         wait_gate: Arc<(Mutex<bool>, Condvar)>,
         waits: Arc<AtomicUsize>,
+        kills: Arc<AtomicUsize>,
     }
 
     impl UnixChild for FakeChild {
         fn kill(&mut self) -> io::Result<()> {
+            self.kills.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
@@ -343,15 +346,18 @@ mod tests {
         child: Arc<Mutex<Option<Box<dyn UnixChild>>>>,
         wait_gate: Arc<(Mutex<bool>, Condvar)>,
         waits: Arc<AtomicUsize>,
+        kills: Arc<AtomicUsize>,
     }
 
     fn blocked_inner() -> BlockedFixture {
         let wait_gate = Arc::new((Mutex::new(false), Condvar::new()));
         let waits = Arc::new(AtomicUsize::new(0));
+        let kills = Arc::new(AtomicUsize::new(0));
         let child: Arc<Mutex<Option<Box<dyn UnixChild>>>> =
             Arc::new(Mutex::new(Some(Box::new(FakeChild {
                 wait_gate: Arc::clone(&wait_gate),
                 waits: Arc::clone(&waits),
+                kills: Arc::clone(&kills),
             }))));
         BlockedFixture {
             inner: SpawnedInner {
@@ -361,6 +367,7 @@ mod tests {
             child,
             wait_gate,
             waits,
+            kills,
         }
     }
 
@@ -420,6 +427,7 @@ mod tests {
             child,
             wait_gate,
             waits,
+            ..
         } = blocked_inner();
         let worker = thread::spawn(move || {
             inner.shutdown_with_deadline(Instant::now() + Duration::from_millis(50));
@@ -478,5 +486,20 @@ mod tests {
 
         assert_eq!(polls.load(Ordering::SeqCst), 1);
         assert_eq!(waits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn shutdown_falls_back_to_direct_kill_when_group_signal_fails() {
+        let BlockedFixture {
+            mut inner,
+            wait_gate,
+            kills,
+            ..
+        } = blocked_inner();
+        release_wait(&wait_gate);
+
+        inner.shutdown_with_deadline(Instant::now() + Duration::from_secs(1));
+
+        assert_eq!(kills.load(Ordering::SeqCst), 1);
     }
 }
