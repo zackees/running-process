@@ -183,6 +183,18 @@ mod tests {
         let master = unsafe { OwnedFd::from_raw_fd(master) };
         let slave = unsafe { OwnedFd::from_raw_fd(slave) };
 
+        let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), termios.as_mut_ptr()) },
+            0
+        );
+        let mut termios = unsafe { termios.assume_init() };
+        unsafe { libc::cfmakeraw(&mut termios) };
+        assert_eq!(
+            unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &termios) },
+            0
+        );
+
         let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
         assert_ne!(flags, -1);
         assert_ne!(
@@ -233,10 +245,14 @@ mod tests {
         });
 
         let timely = rx.recv_timeout(DEADLINE);
-        drop(slave);
+        let mut drain = [0u8; 1024];
+        assert!(
+            unsafe { libc::read(slave.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len(),) } > 0,
+            "failed to drain the full PTY queue"
+        );
         let (result, elapsed) = timely
             .or_else(|_| rx.recv_timeout(Duration::from_secs(1)))
-            .expect("interrupt fallback did not unblock after closing PTY slave");
+            .expect("interrupt fallback did not unblock after draining the PTY queue");
         worker.join().expect("interrupt worker panicked");
 
         assert!(
