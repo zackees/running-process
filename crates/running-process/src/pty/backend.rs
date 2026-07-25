@@ -50,6 +50,9 @@ pub trait PtyMaster: Send + 'static {
     /// `None` on Windows where the concept doesn't exist.
     #[cfg(unix)]
     fn process_group_leader(&self) -> Option<i32>;
+    /// Return the Unix PTY master descriptor for bounded control writes.
+    #[cfg(unix)]
+    fn as_raw_fd(&self) -> Option<std::os::fd::RawFd>;
 }
 
 /// Platform-neutral handle for a child process running inside a PTY.
@@ -238,6 +241,9 @@ mod unix {
         }
         fn process_group_leader(&self) -> Option<i32> {
             self.0.process_group_leader()
+        }
+        fn as_raw_fd(&self) -> Option<std::os::fd::RawFd> {
+            self.0.as_raw_fd()
         }
     }
 
