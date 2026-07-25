@@ -305,16 +305,24 @@ fn timed_out_offer_read_closes_received_scm_rights_fd() {
     cleanup_test_socket(&socket_name);
 
     observer
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .expect("set observer timeout");
+        .set_nonblocking(true)
+        .expect("nonblocking observer");
+    let closure_deadline = Instant::now() + Duration::from_secs(1);
     let mut byte = [0_u8; 1];
-    assert_eq!(
-        observer
-            .read(&mut byte)
-            .expect("observe descriptor closure"),
-        0,
-        "received SCM_RIGHTS descriptor leaked after offer timeout"
-    );
+    loop {
+        match observer.read(&mut byte) {
+            Ok(0) => break,
+            Ok(count) => panic!("unexpected {count} bytes on descriptor observer"),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < closure_deadline,
+                    "received SCM_RIGHTS descriptor leaked after offer timeout"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("failed to observe descriptor closure: {error}"),
+        }
+    }
 }
 
 /// One blocking overlapped read (`write == false`) or write (`write ==
