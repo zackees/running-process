@@ -158,6 +158,13 @@ jobs:
           path: ${{ runner.temp }}/running-process-dylint-target
           key: dylint-target-v1-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'Cargo.lock') }}
 
+      - name: Configure Dylint runtime libraries
+        if: ${{ inputs.dylint }}
+        run: |
+          nightly_sysroot="$(find "${RUSTUP_HOME:-$HOME/.rustup}/toolchains" -maxdepth 1 -type d -name 'nightly-2026-04-16-*' -print -quit)"
+          test -n "$nightly_sysroot"
+          echo "LD_LIBRARY_PATH=$nightly_sysroot/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Dylint negative fixture
         if: ${{ inputs.dylint }}
         env:
