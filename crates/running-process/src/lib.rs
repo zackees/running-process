@@ -138,6 +138,11 @@ pub use types::{
 
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 #[cfg(unix)]
+pub(crate) use helpers::{
+    child_signal_disposition, child_try_wait_error_is_retryable, completed_reap_after_signal,
+    poll_mutex_until, with_child_lock_for_signal, ChildSignalDisposition,
+};
+#[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
 #[cfg(windows)]
 pub(crate) use windows::{
@@ -572,7 +577,16 @@ impl NativeProcess {
                                 true
                             }
                             Ok(None) => false,
-                            Err(_) => return,
+                            Err(_error) => {
+                                #[cfg(unix)]
+                                if child_try_wait_error_is_retryable(&_error) {
+                                    false
+                                } else {
+                                    return;
+                                }
+                                #[cfg(windows)]
+                                return;
+                            }
                         }
                     } else {
                         return;
@@ -758,6 +772,7 @@ impl NativeProcess {
 
     fn kill_impl(&self) -> Result<(), ProcessError> {
         crate::rp_rust_debug_scope!("running_process::NativeProcess::kill");
+        #[cfg(windows)]
         {
             let mut guard = self.child.lock().expect("child mutex poisoned");
             let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
@@ -770,30 +785,76 @@ impl NativeProcess {
             // `exited` event (guarded against double-emit by the waiter).
             self.shared.emit_exited(pid, code);
         }
-        // Interrupt any pending capture `read()` in the per-stream reader
-        // threads so they fall out of their loops immediately. This is what
-        // makes the grandchild-pipe-orphan
-        // case (FastLED Bug B: uv.exe spawns a python.exe grandchild
-        // that inherits the pipe and outlives uv) wake up in
-        // microseconds instead of waiting for the bounded-drain
-        // safety-net deadline below.
-        #[cfg(any(windows, unix))]
-        self.cancel_capture_io();
-        // Synchronize with the per-stream reader threads so that by the
-        // time kill() returns, the capture queues have flipped from
-        // "blocked on read" to "closed" and downstream pollers (e.g.
-        // take_combined_line) observe EOS instead of timeout. Without
-        // this, callers that hit a wait()-timeout path see Python code
-        // raise TimeoutError, kill the child, then race the reader
-        // threads — a 10ms poll loop can miss the EOS flip entirely.
-        //
-        // The deadline remains a safety-net if the platform wake mechanism
-        // does not fire.
-        public_symbols::rp_native_process_wait_for_capture_completion_with_deadline_public(
-            self,
-            kill_drain_deadline(),
-        );
-        Ok(())
+        #[cfg(unix)]
+        {
+            let deadline = kill_drain_deadline();
+            let (pid, already_reaped) = with_child_lock_for_signal(&self.child, |state| {
+                let child = &mut state.as_mut().ok_or(ProcessError::NotRunning)?.child;
+                let pid = child.id();
+                match child_signal_disposition(child.try_wait()).map_err(ProcessError::Io)? {
+                    ChildSignalDisposition::AlreadyExited(status) => Ok((pid, Some(status))),
+                    ChildSignalDisposition::Signal => {
+                        let group_signaled = self.config.create_process_group
+                            && unix_signal_process_group(pid as i32, UnixSignal::Kill).is_ok();
+                        if !group_signaled {
+                            child.kill().map_err(ProcessError::Io)?;
+                        }
+                        Ok((pid, None))
+                    }
+                }
+            })?;
+
+            // Wake capture readers immediately after signal delivery. In
+            // particular, this prevents a surviving pipe-owning descendant
+            // from extending the bounded reap window.
+            self.cancel_capture_io();
+            let reaped = already_reaped.or_else(|| {
+                let reap_result =
+                    poll_mutex_until(&self.child, deadline, Duration::from_millis(10), |state| {
+                        match state.as_mut() {
+                            Some(child) => child.child.try_wait(),
+                            None => Ok(None),
+                        }
+                    });
+                completed_reap_after_signal(reap_result)
+            });
+            if let Some(status) = reaped {
+                let code = exit_code(status);
+                self.set_returncode(code);
+                self.shared.emit_exited(pid, code);
+            }
+            public_symbols::rp_native_process_wait_for_capture_completion_with_deadline_public(
+                self, deadline,
+            );
+            Ok(())
+        }
+        #[cfg(windows)]
+        {
+            // Interrupt any pending capture `read()` in the per-stream reader
+            // threads so they fall out of their loops immediately. This is what
+            // makes the grandchild-pipe-orphan
+            // case (FastLED Bug B: uv.exe spawns a python.exe grandchild
+            // that inherits the pipe and outlives uv) wake up in
+            // microseconds instead of waiting for the bounded-drain
+            // safety-net deadline below.
+            #[cfg(any(windows, unix))]
+            self.cancel_capture_io();
+            // Synchronize with the per-stream reader threads so that by the
+            // time kill() returns, the capture queues have flipped from
+            // "blocked on read" to "closed" and downstream pollers (e.g.
+            // take_combined_line) observe EOS instead of timeout. Without
+            // this, callers that hit a wait()-timeout path see Python code
+            // raise TimeoutError, kill the child, then race the reader
+            // threads — a 10ms poll loop can miss the EOS flip entirely.
+            //
+            // The deadline remains a safety-net if the platform wake mechanism
+            // does not fire.
+            public_symbols::rp_native_process_wait_for_capture_completion_with_deadline_public(
+                self,
+                kill_drain_deadline(),
+            );
+            Ok(())
+        }
     }
 
     /// Terminate the child process.

@@ -1,5 +1,9 @@
 use std::fs::OpenOptions;
 use std::io::Write;
+#[cfg(any(test, unix))]
+use std::sync::Mutex;
+#[cfg(any(test, unix))]
+use std::thread;
 use std::time::{Duration, Instant};
 
 pub(crate) const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_PATH";
@@ -21,6 +25,76 @@ pub(crate) fn kill_drain_deadline() -> Instant {
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_KILL_DRAIN_TIMEOUT);
     Instant::now() + timeout
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn poll_until<T>(
+    deadline: Instant,
+    interval: Duration,
+    mut poll: impl FnMut() -> std::io::Result<Option<T>>,
+) -> std::io::Result<Option<T>> {
+    loop {
+        if let Some(value) = poll()? {
+            return Ok(Some(value));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(interval.min(deadline.saturating_duration_since(now)));
+    }
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn poll_mutex_until<S, T>(
+    state: &Mutex<S>,
+    deadline: Instant,
+    interval: Duration,
+    mut poll: impl FnMut(&mut S) -> std::io::Result<Option<T>>,
+) -> std::io::Result<Option<T>> {
+    poll_until(deadline, interval, || {
+        let mut guard = state.lock().expect("child mutex poisoned");
+        poll(&mut guard)
+    })
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn completed_reap_after_signal<T>(result: std::io::Result<Option<T>>) -> Option<T> {
+    // Once termination was successfully delivered, reaping is best effort on
+    // the caller's bounded path. The dedicated waiter remains responsible for
+    // eventual reaping after either a timeout or a transient try_wait error.
+    result.ok().flatten()
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn child_try_wait_error_is_retryable(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::Interrupted
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn with_child_lock_for_signal<S, T>(
+    state: &Mutex<S>,
+    signal: impl FnOnce(&mut S) -> T,
+) -> T {
+    let mut guard = state.lock().expect("child mutex poisoned");
+    signal(&mut guard)
+}
+
+#[cfg(any(test, unix))]
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ChildSignalDisposition<T> {
+    AlreadyExited(T),
+    Signal,
+}
+
+#[cfg(any(test, unix))]
+pub(crate) fn child_signal_disposition<T>(
+    status: std::io::Result<Option<T>>,
+) -> std::io::Result<ChildSignalDisposition<T>> {
+    status.map(|status| match status {
+        Some(status) => ChildSignalDisposition::AlreadyExited(status),
+        None => ChildSignalDisposition::Signal,
+    })
 }
 
 pub(crate) fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
@@ -70,5 +144,117 @@ pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
     #[cfg(not(unix))]
     {
         status.code().unwrap_or(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn mutex_poll_releases_lock_between_attempts() {
+        let state = Arc::new(Mutex::new(()));
+        let worker_state = Arc::clone(&state);
+        let (polled_tx, polled_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            poll_mutex_until(
+                &worker_state,
+                Instant::now() + Duration::from_millis(100),
+                Duration::from_millis(50),
+                |_| {
+                    let _ = polled_tx.send(());
+                    Ok::<_, std::io::Error>(None::<()>)
+                },
+            )
+        });
+
+        polled_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("poll never started");
+        let available_deadline = Instant::now() + Duration::from_millis(40);
+        let mut available = false;
+        while Instant::now() < available_deadline {
+            if state.try_lock().is_ok() {
+                available = true;
+                break;
+            }
+            thread::yield_now();
+        }
+        assert!(
+            available,
+            "child mutex remained locked between bounded polls"
+        );
+        assert_eq!(worker.join().expect("poll worker panicked").unwrap(), None);
+    }
+
+    #[test]
+    fn mutex_poll_returns_ready_value_exactly_once() {
+        let attempts = AtomicUsize::new(0);
+        let value = poll_mutex_until(
+            &Mutex::new(()),
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(10),
+            |_| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, std::io::Error>(Some(17))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(value, Some(17));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn successful_signal_treats_reap_error_like_timeout() {
+        let error = std::io::Error::other("injected try_wait failure");
+        assert_eq!(completed_reap_after_signal::<i32>(Err(error)), None);
+    }
+
+    #[test]
+    fn exit_waiter_retries_only_interrupted_try_wait_errors() {
+        let interrupted = std::io::Error::from(std::io::ErrorKind::Interrupted);
+        let terminal = std::io::Error::other("injected terminal error");
+        assert!(child_try_wait_error_is_retryable(&interrupted));
+        assert!(!child_try_wait_error_is_retryable(&terminal));
+    }
+
+    #[test]
+    fn child_lock_covers_pid_validation_through_signal_delivery() {
+        let state = Arc::new(Mutex::new(7_u32));
+        let worker_state = Arc::clone(&state);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let worker_release = Arc::clone(&release);
+        let worker = thread::spawn(move || {
+            with_child_lock_for_signal(&worker_state, |pid| {
+                assert_eq!(*pid, 7);
+                entered_tx.send(()).expect("signal checkpoint receiver");
+                let (lock, condvar) = &*worker_release;
+                let mut released = lock.lock().expect("release mutex poisoned");
+                while !*released {
+                    released = condvar.wait(released).expect("release mutex poisoned");
+                }
+            });
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("signal closure never started");
+        assert!(
+            state.try_lock().is_err(),
+            "child lock was released between PID validation and signaling"
+        );
+        *release.0.lock().expect("release mutex poisoned") = true;
+        release.1.notify_all();
+        worker.join().expect("signal worker panicked");
+        assert!(state.try_lock().is_ok());
+    }
+
+    #[test]
+    fn already_reaped_child_never_reaches_signal_delivery() {
+        let status = child_signal_disposition(Ok(Some(23))).unwrap();
+        assert_eq!(status, ChildSignalDisposition::AlreadyExited(23));
     }
 }

@@ -2,9 +2,32 @@ use std::io;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::helpers::{kill_drain_deadline, poll_until};
+
+trait UnixChild: Send {
+    fn kill(&mut self) -> io::Result<()>;
+    fn wait(&mut self) -> io::Result<std::process::ExitStatus>;
+    fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>>;
+}
+
+impl UnixChild for std::process::Child {
+    fn kill(&mut self) -> io::Result<()> {
+        std::process::Child::kill(self)
+    }
+
+    fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        std::process::Child::wait(self)
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        std::process::Child::try_wait(self)
+    }
+}
 
 pub struct SpawnedInner {
-    child: Arc<Mutex<Option<std::process::Child>>>,
+    child: Arc<Mutex<Option<Box<dyn UnixChild>>>>,
     pgid: i32,
 }
 
@@ -41,15 +64,31 @@ impl SpawnedInner {
     }
 
     pub fn shutdown(&mut self) {
-        unsafe {
-            libc::killpg(self.pgid, libc::SIGKILL);
+        self.shutdown_with_deadline(kill_drain_deadline());
+    }
+
+    fn shutdown_with_deadline(&mut self, deadline: Instant) {
+        let group_signaled = unsafe { libc::killpg(self.pgid, libc::SIGKILL) == 0 };
+        let Some(mut child) = self.child.lock().expect("child mutex poisoned").take() else {
+            return;
+        };
+        if !group_signaled {
+            let _ = child.kill();
         }
-        // Reap.
-        let mut guard = self.child.lock().expect("child mutex poisoned");
-        if let Some(child) = guard.as_mut() {
-            let _ = child.wait();
+        match poll_until(deadline, Duration::from_millis(10), || child.try_wait()) {
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => spawn_background_reaper(child),
         }
     }
+}
+
+fn spawn_background_reaper(mut child: Box<dyn UnixChild>) {
+    thread::spawn(move || {
+        // Once ownership is off the caller's teardown path, a blocking wait is
+        // the most reliable terminal policy: it reaps exactly once without a
+        // retry loop, spinning, or retaining the shared child mutex.
+        let _ = child.wait();
+    });
 }
 
 fn slot_to_stdio(slot: &super::StdioSource<'_>) -> io::Result<Stdio> {
@@ -132,7 +171,7 @@ pub fn spawn(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    let child = Arc::new(Mutex::new(Some(child)));
+    let child: Arc<Mutex<Option<Box<dyn UnixChild>>>> = Arc::new(Mutex::new(Some(Box::new(child))));
 
     // Drain watcher: wait for exit, then sleep `drain_timeout`. We
     // don't proactively close anything on Unix — Rust's ChildStdin/etc.
@@ -263,5 +302,204 @@ unsafe fn close_extra_fds() {
     let max = if max < 0 { 4096 } else { max as libc::c_int };
     for fd in 3..max {
         libc::close(fd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Condvar, mpsc};
+
+    struct FakeChild {
+        wait_gate: Arc<(Mutex<bool>, Condvar)>,
+        waits: Arc<AtomicUsize>,
+        kills: Arc<AtomicUsize>,
+    }
+
+    impl UnixChild for FakeChild {
+        fn kill(&mut self) -> io::Result<()> {
+            self.kills.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            let (lock, condvar) = &*self.wait_gate;
+            let mut released = lock.lock().expect("wait gate mutex poisoned");
+            while !*released {
+                released = condvar.wait(released).expect("wait gate mutex poisoned");
+            }
+            Ok(std::process::ExitStatus::from_raw(0))
+        }
+
+        fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            let released = *self.wait_gate.0.lock().expect("wait gate mutex poisoned");
+            Ok(released.then(|| std::process::ExitStatus::from_raw(0)))
+        }
+    }
+
+    struct BlockedFixture {
+        inner: SpawnedInner,
+        child: Arc<Mutex<Option<Box<dyn UnixChild>>>>,
+        wait_gate: Arc<(Mutex<bool>, Condvar)>,
+        waits: Arc<AtomicUsize>,
+        kills: Arc<AtomicUsize>,
+    }
+
+    fn blocked_inner() -> BlockedFixture {
+        let wait_gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let waits = Arc::new(AtomicUsize::new(0));
+        let kills = Arc::new(AtomicUsize::new(0));
+        let child: Arc<Mutex<Option<Box<dyn UnixChild>>>> =
+            Arc::new(Mutex::new(Some(Box::new(FakeChild {
+                wait_gate: Arc::clone(&wait_gate),
+                waits: Arc::clone(&waits),
+                kills: Arc::clone(&kills),
+            }))));
+        BlockedFixture {
+            inner: SpawnedInner {
+                child: Arc::clone(&child),
+                pgid: i32::MAX,
+            },
+            child,
+            wait_gate,
+            waits,
+            kills,
+        }
+    }
+
+    fn release_wait(wait_gate: &Arc<(Mutex<bool>, Condvar)>) {
+        let (lock, condvar) = &**wait_gate;
+        *lock.lock().expect("wait gate mutex poisoned") = true;
+        condvar.notify_all();
+    }
+
+    struct ShutdownOnDrop {
+        inner: Option<SpawnedInner>,
+        deadline: Instant,
+    }
+
+    impl Drop for ShutdownOnDrop {
+        fn drop(&mut self) {
+            self.inner
+                .as_mut()
+                .expect("test wrapper missing inner")
+                .shutdown_with_deadline(self.deadline);
+        }
+    }
+
+    #[test]
+    fn drop_is_bounded_when_child_wait_does_not_complete() {
+        // Regression for #619: SpawnedChild::drop delegates directly to
+        // SpawnedInner::shutdown, modeled by this wrapper around the fake child.
+        let BlockedFixture {
+            inner, wait_gate, ..
+        } = blocked_inner();
+        let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
+        let worker = thread::spawn(move || {
+            drop(ShutdownOnDrop {
+                inner: Some(inner),
+                deadline: Instant::now() + Duration::from_millis(50),
+            });
+            let _ = tx.send(started.elapsed());
+        });
+
+        let timely = rx.recv_timeout(Duration::from_millis(100));
+        release_wait(&wait_gate);
+        let elapsed = timely
+            .or_else(|_| rx.recv_timeout(Duration::from_secs(1)))
+            .expect("shutdown did not unblock after releasing fake child");
+        worker.join().expect("shutdown worker panicked");
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "Drop blocked for {elapsed:?} in child.wait()"
+        );
+    }
+
+    #[test]
+    fn shutdown_does_not_hold_child_mutex_while_reaping() {
+        let BlockedFixture {
+            mut inner,
+            child,
+            wait_gate,
+            waits,
+            ..
+        } = blocked_inner();
+        let worker = thread::spawn(move || {
+            inner.shutdown_with_deadline(Instant::now() + Duration::from_millis(50));
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while waits.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(waits.load(Ordering::SeqCst), 1, "fake wait never started");
+
+        let child_mutex_available = child.try_lock().is_ok();
+        release_wait(&wait_gate);
+        worker.join().expect("shutdown worker panicked");
+        assert!(
+            child_mutex_available,
+            "shutdown held the child mutex across reaping"
+        );
+    }
+
+    struct ReadyChild {
+        polls: Arc<AtomicUsize>,
+        waits: Arc<AtomicUsize>,
+    }
+
+    impl UnixChild for ReadyChild {
+        fn kill(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            Ok(std::process::ExitStatus::from_raw(0))
+        }
+
+        fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(std::process::ExitStatus::from_raw(0)))
+        }
+    }
+
+    #[test]
+    fn shutdown_reaps_ready_child_exactly_once() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let waits = Arc::new(AtomicUsize::new(0));
+        let child: Arc<Mutex<Option<Box<dyn UnixChild>>>> =
+            Arc::new(Mutex::new(Some(Box::new(ReadyChild {
+                polls: Arc::clone(&polls),
+                waits: Arc::clone(&waits),
+            }))));
+        let mut inner = SpawnedInner {
+            child,
+            pgid: i32::MAX,
+        };
+
+        inner.shutdown_with_deadline(Instant::now() + Duration::from_secs(1));
+
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert_eq!(waits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn shutdown_falls_back_to_direct_kill_when_group_signal_fails() {
+        let BlockedFixture {
+            mut inner,
+            wait_gate,
+            kills,
+            ..
+        } = blocked_inner();
+        release_wait(&wait_gate);
+
+        inner.shutdown_with_deadline(Instant::now() + Duration::from_secs(1));
+
+        assert_eq!(kills.load(Ordering::SeqCst), 1);
     }
 }
