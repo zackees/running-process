@@ -319,12 +319,14 @@ mod tests {
         }
     }
 
-    fn blocked_inner() -> (
-        SpawnedInner,
-        Arc<Mutex<Option<Box<dyn UnixChild>>>>,
-        Arc<(Mutex<bool>, Condvar)>,
-        Arc<AtomicUsize>,
-    ) {
+    struct BlockedFixture {
+        inner: SpawnedInner,
+        child: Arc<Mutex<Option<Box<dyn UnixChild>>>>,
+        wait_gate: Arc<(Mutex<bool>, Condvar)>,
+        waits: Arc<AtomicUsize>,
+    }
+
+    fn blocked_inner() -> BlockedFixture {
         let wait_gate = Arc::new((Mutex::new(false), Condvar::new()));
         let waits = Arc::new(AtomicUsize::new(0));
         let child: Arc<Mutex<Option<Box<dyn UnixChild>>>> =
@@ -332,15 +334,15 @@ mod tests {
                 wait_gate: Arc::clone(&wait_gate),
                 waits: Arc::clone(&waits),
             }))));
-        (
-            SpawnedInner {
+        BlockedFixture {
+            inner: SpawnedInner {
                 child: Arc::clone(&child),
                 pgid: i32::MAX,
             },
             child,
             wait_gate,
             waits,
-        )
+        }
     }
 
     fn release_wait(wait_gate: &Arc<(Mutex<bool>, Condvar)>) {
@@ -364,7 +366,9 @@ mod tests {
     fn drop_is_bounded_when_child_wait_does_not_complete() {
         // Regression for #619: SpawnedChild::drop delegates directly to
         // SpawnedInner::shutdown, modeled by this wrapper around the fake child.
-        let (inner, _child, wait_gate, _waits) = blocked_inner();
+        let BlockedFixture {
+            inner, wait_gate, ..
+        } = blocked_inner();
         let (tx, rx) = mpsc::channel();
         let started = Instant::now();
         let worker = thread::spawn(move || {
@@ -386,7 +390,12 @@ mod tests {
 
     #[test]
     fn shutdown_does_not_hold_child_mutex_while_reaping() {
-        let (mut inner, child, wait_gate, waits) = blocked_inner();
+        let BlockedFixture {
+            mut inner,
+            child,
+            wait_gate,
+            waits,
+        } = blocked_inner();
         let worker = thread::spawn(move || inner.shutdown());
         let deadline = Instant::now() + Duration::from_secs(1);
         while waits.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
