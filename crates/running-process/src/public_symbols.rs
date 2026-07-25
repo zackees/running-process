@@ -1,5 +1,7 @@
 #![allow(improper_ctypes_definitions)]
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use super::*;
@@ -63,7 +65,26 @@ pub unsafe extern "C" fn rp_native_process_wait_for_capture_completion_public(
     let Some(process) = (unsafe { process.as_ref() }) else {
         return;
     };
-    process.wait_for_capture_completion_impl();
+    // No panic may cross a C ABI boundary. The void ABI is retained for
+    // compatibility: both natural completion and forced deadline completion
+    // return normally.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        process.finish_capture_drain_with_deadline(exported_capture_wait_deadline());
+    }));
+}
+
+#[cfg(test)]
+static EXPORTED_CAPTURE_WAIT_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn exported_capture_wait_deadline() -> Instant {
+    #[cfg(test)]
+    {
+        let timeout_ms = EXPORTED_CAPTURE_WAIT_TIMEOUT_MS.load(Ordering::Acquire);
+        if timeout_ms != 0 {
+            return Instant::now() + Duration::from_millis(timeout_ms);
+        }
+    }
+    kill_drain_deadline()
 }
 
 #[unsafe(no_mangle)]
@@ -76,9 +97,27 @@ pub extern "C" fn rp_native_process_wait_for_capture_completion_with_deadline_pu
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::sync::{Arc, mpsc};
+
+    static EXPORTED_WAIT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TimeoutOverride;
+
+    impl TimeoutOverride {
+        fn set(timeout_ms: u64) -> Self {
+            EXPORTED_CAPTURE_WAIT_TIMEOUT_MS.store(timeout_ms, Ordering::Release);
+            Self
+        }
+    }
+
+    impl Drop for TimeoutOverride {
+        fn drop(&mut self) {
+            EXPORTED_CAPTURE_WAIT_TIMEOUT_MS.store(0, Ordering::Release);
+        }
+    }
 
     fn capture_process() -> Arc<NativeProcess> {
         Arc::new(NativeProcess::new(ProcessConfig {
@@ -103,6 +142,10 @@ mod tests {
 
     #[test]
     fn exported_capture_wait_is_bounded_when_capture_never_closes() {
+        let _test_guard = EXPORTED_WAIT_TEST_LOCK
+            .lock()
+            .expect("exported wait test mutex poisoned");
+        let _timeout_override = TimeoutOverride::set(50);
         // Regression for #620: call the shipped symbol itself while its
         // production capture state remains open forever.
         let process = capture_process();
@@ -139,6 +182,9 @@ mod tests {
 
     #[test]
     fn exported_capture_wait_returns_for_normal_completion() {
+        let _test_guard = EXPORTED_WAIT_TEST_LOCK
+            .lock()
+            .expect("exported wait test mutex poisoned");
         let process = capture_process();
         close_fake_capture(&process);
         let started = Instant::now();
@@ -150,6 +196,9 @@ mod tests {
 
     #[test]
     fn exported_capture_wait_accepts_null_without_taking_ownership() {
+        let _test_guard = EXPORTED_WAIT_TEST_LOCK
+            .lock()
+            .expect("exported wait test mutex poisoned");
         unsafe {
             rp_native_process_wait_for_capture_completion_public(std::ptr::null());
         }
@@ -160,6 +209,28 @@ mod tests {
             rp_native_process_wait_for_capture_completion_public(Arc::as_ptr(&process));
         }
         assert_eq!(Arc::strong_count(&retained), 2);
+    }
+
+    #[test]
+    fn exported_capture_wait_contains_internal_panics() {
+        let _test_guard = EXPORTED_WAIT_TEST_LOCK
+            .lock()
+            .expect("exported wait test mutex poisoned");
+        let process = capture_process();
+        let poison_target = Arc::clone(&process);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target
+                .shared
+                .queues
+                .lock()
+                .expect("queue mutex poisoned before test");
+            panic!("injected queue poison");
+        })
+        .join();
+
+        unsafe {
+            rp_native_process_wait_for_capture_completion_public(Arc::as_ptr(&process));
+        }
     }
 }
 
