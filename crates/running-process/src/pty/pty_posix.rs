@@ -95,15 +95,35 @@ struct FdFlagsGuard {
     restored: bool,
 }
 
+fn get_fd_flags(fd: RawFd) -> io::Result<libc::c_int> {
+    loop {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags != -1 {
+            return Ok(flags);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn set_fd_flags(fd: RawFd, flags: libc::c_int) -> io::Result<()> {
+    loop {
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags) } != -1 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
 impl FdFlagsGuard {
     fn make_nonblocking(fd: RawFd) -> io::Result<Self> {
-        let original_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if original_flags == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        if unsafe { libc::fcntl(fd, libc::F_SETFL, original_flags | libc::O_NONBLOCK) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        let original_flags = get_fd_flags(fd)?;
+        set_fd_flags(fd, original_flags | libc::O_NONBLOCK)?;
         Ok(Self {
             fd,
             original_flags,
@@ -112,20 +132,16 @@ impl FdFlagsGuard {
     }
 
     fn restore(mut self) -> io::Result<()> {
-        let result = unsafe { libc::fcntl(self.fd, libc::F_SETFL, self.original_flags) };
+        set_fd_flags(self.fd, self.original_flags)?;
         self.restored = true;
-        if result == -1 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 }
 
 impl Drop for FdFlagsGuard {
     fn drop(&mut self) {
         if !self.restored {
-            let _ = unsafe { libc::fcntl(self.fd, libc::F_SETFL, self.original_flags) };
+            let _ = set_fd_flags(self.fd, self.original_flags);
         }
     }
 }
@@ -308,8 +324,10 @@ mod tests {
     }
 
     #[test]
+    // Regression for #618: the fallback itself must finish before this test
+    // drains the deliberately full, non-reading PTY input queue.
     fn interrupt_fallback_does_not_block_on_full_pty_input_queue() {
-        const DEADLINE: Duration = Duration::from_millis(150);
+        const DEADLINE: Duration = Duration::from_secs(1);
 
         let (master, slave) = open_full_pty_input_queue();
         let writer_fd = unsafe { libc::dup(master.as_raw_fd()) };
@@ -324,23 +342,29 @@ mod tests {
             child: Box::new(RunningChild),
         });
 
+        let (ready_tx, ready_rx) = mpsc::channel();
         let (tx, rx) = mpsc::channel();
-        let started = Instant::now();
         let worker = std::thread::spawn(move || {
+            let _ = ready_tx.send(());
             let result = send_interrupt(&process);
-            let _ = tx.send((result, started.elapsed()));
+            let _ = tx.send(result);
             let _ = process.handles.lock().expect("handles mutex").take();
         });
 
+        ready_rx
+            .recv_timeout(DEADLINE)
+            .expect("interrupt worker did not start");
+        let started = Instant::now();
         let timely = rx.recv_timeout(DEADLINE);
         let mut drain = [0u8; 1024];
         assert!(
             unsafe { libc::read(slave.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len(),) } > 0,
             "failed to drain the full PTY queue"
         );
-        let (result, elapsed) = timely
+        let result = timely
             .or_else(|_| rx.recv_timeout(Duration::from_secs(1)))
             .expect("interrupt fallback did not unblock after draining the PTY queue");
+        let elapsed = started.elapsed();
         worker.join().expect("interrupt worker panicked");
 
         assert!(
@@ -368,6 +392,14 @@ mod tests {
     fn nonblocking_interrupt_write_reports_fcntl_failure() {
         let error = write_nonblocking_byte(-1, 0x03).expect_err("invalid fd must fail");
         assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+
+        let guard = FdFlagsGuard {
+            fd: -1,
+            original_flags: 0,
+            restored: false,
+        };
+        let restore_error = guard.restore().expect_err("invalid fd restore must fail");
+        assert_eq!(restore_error.raw_os_error(), Some(libc::EBADF));
     }
 
     #[test]
