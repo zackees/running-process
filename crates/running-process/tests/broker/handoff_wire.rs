@@ -17,11 +17,12 @@ use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{ListenerOptions, Stream};
 use prost::Message;
 use running_process::broker::backend_lib::{
-    read_handoff_offer, serve_handoff_offer, write_handoff_ack, BackendHandoffWireError,
-    HandoffAcceptance, HandoffRejectionReason,
+    read_handoff_offer, serve_handoff_offer_with_deadline, write_handoff_ack,
+    BackendHandoffWireError, HandoffAcceptance, HandoffRejectionReason,
 };
 use running_process::broker::protocol::{
-    read_frame, write_frame, Frame, FrameKind, HandoffAck, HandoffOffer, PayloadEncoding,
+    read_frame, write_frame, Frame, FrameKind, FramingError, HandoffAck, HandoffOffer,
+    PayloadEncoding,
 };
 use running_process::broker::server::handoff::{
     execute_windows_handoff_with_transport, handoff_ack_frame, handoff_offer_frame,
@@ -173,6 +174,97 @@ fn assert_ack_read_honors_deadline(label: &str, trickle: bool) {
     );
 }
 
+#[test]
+fn serve_handoff_offer_with_deadline_times_out_a_silent_peer() {
+    assert_offer_read_honors_deadline("hw-offer-silent-deadline", OfferPeer::Silent);
+}
+
+#[test]
+fn serve_handoff_offer_with_deadline_times_out_a_partial_peer() {
+    assert_offer_read_honors_deadline("hw-offer-partial-deadline", OfferPeer::Partial);
+}
+
+#[test]
+fn serve_handoff_offer_with_deadline_stops_a_continuous_trickle() {
+    assert_offer_read_honors_deadline("hw-offer-trickle-deadline", OfferPeer::Trickle);
+}
+
+enum OfferPeer {
+    Silent,
+    Partial,
+    Trickle,
+}
+
+fn assert_offer_read_honors_deadline(label: &str, peer: OfferPeer) {
+    use std::io::Write as _;
+
+    let (mut broker_side, mut backend_side) = connected_pair(label);
+    let writer = match peer {
+        OfferPeer::Silent => None,
+        OfferPeer::Partial => Some(thread::spawn(move || {
+            broker_side
+                .write_all(&[1, 0])
+                .expect("partial offer prefix");
+            thread::sleep(Duration::from_millis(100));
+        })),
+        OfferPeer::Trickle => Some(thread::spawn(move || {
+            let offer = HandoffOffer {
+                handle_value: 0xB0B,
+                token: token(0x71).as_bytes().to_vec(),
+                service_name: SERVICE.into(),
+                correlation_id: CORRELATION_ID,
+            };
+            let frame = handoff_offer_frame(&offer);
+            let mut frame_bytes = Vec::new();
+            frame.encode(&mut frame_bytes).unwrap();
+            let mut wire = Vec::new();
+            write_frame(&mut wire, &frame_bytes).unwrap();
+            for byte in wire {
+                if broker_side.write_all(&[byte]).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(8));
+            }
+        })),
+    };
+
+    let now = Instant::now();
+    let mut pending_tokens = HandoffTokenStore::new();
+    let expected = issue_token(&mut pending_tokens, now, 0x71);
+    let started = Instant::now();
+    let error = serve_handoff_offer_with_deadline(
+        &mut backend_side,
+        &mut pending_tokens,
+        expected,
+        now,
+        started + Duration::from_millis(30),
+    )
+    .expect_err("incomplete offer must time out");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "offer read exceeded its public deadline bound"
+    );
+    assert!(
+        matches!(
+            error,
+            BackendHandoffWireError::Framing(FramingError::Io(ref error))
+                if error.kind() == io::ErrorKind::TimedOut
+        ),
+        "unexpected deadline error: {error:?}"
+    );
+    assert_eq!(
+        pending_tokens.pending_len(),
+        1,
+        "timed-out offers must not consume the expected token"
+    );
+
+    drop(backend_side);
+    if let Some(writer) = writer {
+        writer.join().expect("offer peer");
+    }
+}
+
 fn bind_test_socket(socket_name: &str) -> io::Result<interprocess::local_socket::Listener> {
     #[cfg(unix)]
     {
@@ -287,9 +379,14 @@ fn wire_delivery_completes_orchestration_and_consumes_token_once() {
         let backend_now = Instant::now();
         let mut backend_tokens = HandoffTokenStore::new();
         let expected = issue_token(&mut backend_tokens, backend_now, 0x31);
-        let acceptance =
-            serve_handoff_offer(&mut stream, &mut backend_tokens, expected, backend_now)
-                .expect("serve handoff offer");
+        let acceptance = serve_handoff_offer_with_deadline(
+            &mut stream,
+            &mut backend_tokens,
+            expected,
+            backend_now,
+            backend_now + Duration::from_secs(5),
+        )
+        .expect("serve handoff offer");
         (acceptance, backend_tokens.pending_len())
     });
 
@@ -338,8 +435,14 @@ fn refused_ack_falls_back_and_revokes_token() {
         let backend_now = Instant::now();
         let mut backend_tokens = HandoffTokenStore::new();
         let expected = issue_token(&mut backend_tokens, backend_now, 0x42);
-        serve_handoff_offer(&mut stream, &mut backend_tokens, expected, backend_now)
-            .expect("serve handoff offer")
+        serve_handoff_offer_with_deadline(
+            &mut stream,
+            &mut backend_tokens,
+            expected,
+            backend_now,
+            backend_now + Duration::from_secs(5),
+        )
+        .expect("serve handoff offer")
     });
 
     let mut delivery = wire_delivery(broker_side);

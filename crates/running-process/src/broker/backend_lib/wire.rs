@@ -27,6 +27,7 @@ use crate::broker::backend_lib::accept_handed_off::{
 use crate::broker::protocol::{
     read_frame, write_frame, Frame, FrameKind, FramingError, HandoffAck, HandoffOffer,
 };
+use crate::broker::server::deadline_stream::with_nonblocking_deadline;
 use crate::broker::server::handoff::wire::{handoff_ack_frame, validate_handoff_frame};
 use crate::broker::server::{HandoffToken, HandoffTokenStore};
 
@@ -47,6 +48,12 @@ pub enum BackendHandoffWireError {
     UnexpectedFrame(&'static str),
 }
 
+impl From<std::io::Error> for BackendHandoffWireError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Framing(FramingError::Io(error))
+    }
+}
+
 /// Read and validate one broker→backend [`HandoffOffer`] frame.
 pub fn read_handoff_offer<S: Read>(
     stream: &mut S,
@@ -63,6 +70,15 @@ pub fn read_handoff_offer<S: Read>(
         ));
     }
     Ok(offer)
+}
+
+/// Read one broker→backend [`HandoffOffer`] from a production local socket
+/// with an absolute deadline, restoring blocking mode before returning.
+pub fn read_handoff_offer_with_deadline(
+    stream: &mut interprocess::local_socket::Stream,
+    deadline: Instant,
+) -> Result<HandoffOffer, BackendHandoffWireError> {
+    with_nonblocking_deadline(stream, deadline, |stream| read_handoff_offer(stream))
 }
 
 /// Validate/consume one received offer and write the matching [`HandoffAck`].
@@ -121,13 +137,57 @@ pub fn write_handoff_ack<S: Write>(
 ///
 /// Convenience composition of [`read_handoff_offer`] and
 /// [`respond_to_handoff_offer`] for backends serving one handoff per
-/// control exchange.
+/// control exchange. This legacy generic entry point cannot configure bounded
+/// I/O itself; callers must pre-bound custom streams. Production local-socket
+/// users should call [`serve_handoff_offer_with_deadline`] instead.
+#[deprecated(
+    since = "4.6.2",
+    note = "use serve_handoff_offer_with_deadline for production local sockets"
+)]
 pub fn serve_handoff_offer<S: Read + Write>(
     stream: &mut S,
     pending_tokens: &mut HandoffTokenStore,
     expected_token: HandoffToken,
     now: Instant,
 ) -> Result<HandoffAcceptance<HandoffOffer>, BackendHandoffWireError> {
+    serve_handoff_offer_inner(stream, pending_tokens, expected_token, now)
+}
+
+fn serve_handoff_offer_inner<S: Read + Write>(
+    stream: &mut S,
+    pending_tokens: &mut HandoffTokenStore,
+    expected_token: HandoffToken,
+    now: Instant,
+) -> Result<HandoffAcceptance<HandoffOffer>, BackendHandoffWireError> {
     let offer = read_handoff_offer(stream)?;
+    respond_to_handoff_offer(stream, pending_tokens, expected_token, offer, now)
+}
+
+/// Serve one handoff offer over a production local socket with an absolute
+/// read deadline.
+///
+/// The stream is temporarily switched to nonblocking mode so silent, partial,
+/// and continuously trickling peers cannot extend the bound. Blocking mode is
+/// restored before the token is consumed and the ACK is written. If both the
+/// read and mode restoration fail, the read error takes precedence so a timeout
+/// remains classified as [`FramingError::Io`] with
+/// [`std::io::ErrorKind::TimedOut`].
+///
+/// This wire helper does not receive or acquire an out-of-band descriptor.
+/// A consuming transport that receives an `SCM_RIGHTS` descriptor before
+/// calling this function must retain it in an owned RAII value and drop it when
+/// this function returns an error, including a deadline expiry.
+///
+/// The deprecated [`serve_handoff_offer`] remains available for compatibility
+/// with custom `Read + Write` streams whose bounded-I/O policy is configured by
+/// the caller.
+pub fn serve_handoff_offer_with_deadline(
+    stream: &mut interprocess::local_socket::Stream,
+    pending_tokens: &mut HandoffTokenStore,
+    expected_token: HandoffToken,
+    now: Instant,
+    deadline: Instant,
+) -> Result<HandoffAcceptance<HandoffOffer>, BackendHandoffWireError> {
+    let offer = read_handoff_offer_with_deadline(stream, deadline)?;
     respond_to_handoff_offer(stream, pending_tokens, expected_token, offer, now)
 }
