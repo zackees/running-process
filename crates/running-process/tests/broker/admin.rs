@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "daemon")]
 use interprocess::local_socket::traits::Listener;
+use interprocess::local_socket::traits::Stream as _;
 use prost::Message;
 use serde_json::Value;
 
@@ -18,7 +19,7 @@ use running_process::broker::client::{send_admin_request, BrokerClientError};
 use running_process::broker::lifecycle::CRASH_DUMP_DIR_ENV;
 use running_process::broker::protocol::{
     read_frame, write_frame, AdminReply, AdminReplyKind, AdminRequest, AdminVerb, Frame, FrameKind,
-    PayloadEncoding,
+    FramingError, PayloadEncoding,
 };
 use running_process::broker::server::admin::{
     handle_admin_connection, handle_admin_frame, render_admin_reply, render_backend_health_json,
@@ -27,8 +28,8 @@ use running_process::broker::server::admin::{
     AdminBackend, AdminInodePressure, AdminSnapshot, AdminSpawnBudget, ADMIN_SCHEMA_VERSION,
 };
 use running_process::broker::server::{
-    serve_one_admin_socket, BackendKey, BackendRegistry, BrokerInstanceKey, SpawnBudgetSnapshot,
-    ADMIN_PAYLOAD_PROTOCOL,
+    serve_one_admin_socket, AdminConnectionError, BackendKey, BackendRegistry, BrokerInstanceKey,
+    SpawnBudgetSnapshot, ADMIN_PAYLOAD_PROTOCOL,
 };
 
 use crate::backend_handle_common::{current_daemon, verified_backend_from_daemon};
@@ -438,6 +439,40 @@ fn serve_one_admin_socket_round_trips_client_request() {
     assert_eq!(parse_json(&client_reply.body)["command"], "status");
 }
 
+#[test]
+fn serve_one_admin_socket_times_out_a_partial_peer_and_cleans_up() {
+    use std::io::Write;
+
+    let _env_lock = crate::HELLO_TIMEOUT_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _timeout = crate::HelloTimeoutOverride::new("50");
+
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let server = thread::spawn(move || serve_one_admin_socket(&server_socket, &snapshot()));
+    let name = running_process::broker::server::local_socket_name(&socket_name)
+        .unwrap()
+        .into_owned();
+    let mut client = connect_with_retry(name);
+    client.write_all(&[1, 0]).unwrap();
+
+    let started = Instant::now();
+    let error = server.join().unwrap().unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        matches!(
+        error,
+        AdminConnectionError::Framing(FramingError::Io(ref error))
+            if error.kind() == std::io::ErrorKind::TimedOut
+        ),
+        "unexpected serve-once error: {error:?}"
+    );
+    drop(client);
+    #[cfg(unix)]
+    assert!(!std::path::Path::new(&socket_name).exists());
+}
+
 #[cfg(feature = "daemon")]
 #[test]
 fn broker_cli_status_queries_live_admin_socket() {
@@ -529,6 +564,21 @@ fn is_pending_bind_error(err: &std::io::Error) -> bool {
             | std::io::ErrorKind::WouldBlock
             | std::io::ErrorKind::TimedOut
     )
+}
+
+fn connect_with_retry(
+    name: interprocess::local_socket::Name<'static>,
+) -> interprocess::local_socket::Stream {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match interprocess::local_socket::Stream::connect(name.borrow()) {
+            Ok(stream) => return stream,
+            Err(err) if Instant::now() < deadline && is_pending_bind_error(&err) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("timed out connecting to broker admin socket: {err}"),
+        }
+    }
 }
 
 fn unique_socket_name() -> String {

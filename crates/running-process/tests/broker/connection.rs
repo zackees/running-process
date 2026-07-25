@@ -9,13 +9,13 @@ use interprocess::local_socket::prelude::*;
 use prost::Message;
 use running_process::broker::protocol::{
     hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, ErrorCode,
-    Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
+    Frame, FrameKind, FramingError, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
 };
 use running_process::broker::server::{
     handle_hello_connection, handle_hello_connection_with_peer_policy, local_socket_name,
     serve_local_socket_connections, serve_one_local_socket,
-    serve_one_local_socket_with_peer_policy, HelloHandler, PeerCredentialPolicy, PeerIdentity,
-    RegisteredBackend,
+    serve_one_local_socket_with_peer_policy, BrokerConnectionError, HelloHandler,
+    PeerCredentialPolicy, PeerIdentity, RegisteredBackend,
 };
 
 fn service_definition() -> ServiceDefinition {
@@ -262,6 +262,35 @@ fn serve_one_local_socket_round_trips_hello() {
         }
         HelloReplyResult::Refused(refused) => panic!("unexpected refusal: {refused:?}"),
     }
+}
+
+#[test]
+fn serve_one_local_socket_times_out_a_silent_peer_and_cleans_up() {
+    let _env_lock = crate::HELLO_TIMEOUT_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _timeout = crate::HelloTimeoutOverride::new("50");
+
+    let socket_name = unique_socket_name();
+    let server_socket = socket_name.clone();
+    let server = thread::spawn(move || serve_one_local_socket(&server_socket, &handler()));
+    let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let client = connect_with_retry(name);
+
+    let started = Instant::now();
+    let error = server.join().unwrap().unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        matches!(
+        error,
+        BrokerConnectionError::Framing(FramingError::Io(ref error))
+            if error.kind() == io::ErrorKind::TimedOut
+        ),
+        "unexpected serve-once error: {error:?}"
+    );
+    drop(client);
+    #[cfg(unix)]
+    assert!(!std::path::Path::new(&socket_name).exists());
 }
 
 #[test]

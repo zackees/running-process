@@ -18,6 +18,7 @@ use crate::broker::protocol::{
     FrameKind, FramingError, HelloReply, PayloadEncoding, Refused, CONTROL_PAYLOAD_PROTOCOL,
     MAX_HELLO_BYTES, PROTOCOL_VERSION,
 };
+use crate::broker::server::deadline_stream::{hello_read_deadline, with_nonblocking_deadline};
 use crate::broker::server::{HelloHandler, HelloRouter, PeerIdentity};
 
 /// Peer credential policy applied before reading a Hello frame.
@@ -212,7 +213,9 @@ where
     let result = (|| {
         let mut stream = listener.accept()?;
         let peer = peer_identity_from_stream(&stream)?;
-        handle_hello_connection_with_peer_policy(&mut stream, responder, peer, peer_policy)
+        with_nonblocking_deadline(&mut stream, hello_read_deadline(), |stream| {
+            handle_hello_connection_with_peer_policy(stream, responder, peer, peer_policy)
+        })
     })();
     drop(listener);
     drop(cleanup);
@@ -260,13 +263,15 @@ pub fn serve_local_socket_connections_with_peer_policy(
             let handler = Arc::clone(&handler);
             let peer_policy = Arc::clone(&peer_policy);
             workers.push(thread::spawn(move || {
-                handle_hello_connection_with_peer_policy(
-                    &mut stream,
-                    handler.as_ref(),
-                    peer,
-                    peer_policy.as_ref(),
-                )
-                .map(|_| ())
+                with_nonblocking_deadline(&mut stream, hello_read_deadline(), |stream| {
+                    handle_hello_connection_with_peer_policy(
+                        stream,
+                        handler.as_ref(),
+                        peer,
+                        peer_policy.as_ref(),
+                    )
+                    .map(|_| ())
+                })
             }));
         }
 
@@ -325,12 +330,9 @@ where
         for _ in 0..connection_count {
             let mut stream = listener.accept()?;
             let peer = peer_identity_from_stream(&stream)?;
-            let _ = handle_hello_connection_with_peer_policy(
-                &mut stream,
-                responder,
-                peer,
-                peer_policy,
-            )?;
+            let _ = with_nonblocking_deadline(&mut stream, hello_read_deadline(), |stream| {
+                handle_hello_connection_with_peer_policy(stream, responder, peer, peer_policy)
+            })?;
         }
         Ok(())
     })();
