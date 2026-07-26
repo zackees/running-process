@@ -391,6 +391,7 @@ impl SpawnedInner {
 pub fn spawn_daemon(
     command: &mut Command,
     policy: super::EnvironmentPolicy,
+    breakaway: bool,
 ) -> io::Result<super::DaemonChild> {
     let stdin = open_nul(false)?;
     let stdout = open_nul(true)?;
@@ -400,7 +401,7 @@ pub fn spawn_daemon(
         &stdin,
         &stdout,
         &stderr,
-        CreateMode::Daemon,
+        CreateMode::Daemon { breakaway },
         policy,
     )?;
     Ok(super::DaemonChild {
@@ -533,8 +534,23 @@ fn drain_watcher(process_handle: OwnedHandle, timeout: Duration, keep: Arc<()>) 
 }
 
 enum CreateMode {
-    Daemon,
-    Contained { show_console: bool },
+    Daemon {
+        /// Whether to request `CREATE_BREAKAWAY_FROM_JOB`.
+        ///
+        /// Opt-in, because "detached daemon" and "escapes my caller's Job
+        /// Object" are genuinely different properties and callers want them
+        /// independently. A build daemon (zccache/sccache) started beneath an
+        /// agent session needs to escape or the kernel kills it when that
+        /// session's job closes. A child spawned as a daemon merely to obtain
+        /// sanitized handle inheritance must NOT escape — see
+        /// `testbins/src/bin/spawner.rs`, which relies on its sleepers staying
+        /// in the caller's job so `containment_test` can prove they die with
+        /// it.
+        breakaway: bool,
+    },
+    Contained {
+        show_console: bool,
+    },
 }
 
 /// Returns (process_handle, pid). For `Contained` mode the process is
@@ -618,7 +634,7 @@ fn create_process_inner(
 
     let mut flags: DWORD = EXTENDED_STARTUPINFO_PRESENT;
     match mode {
-        CreateMode::Daemon => {
+        CreateMode::Daemon { breakaway } => {
             // Daemons run with no visible console window and in a new
             // process group so Ctrl-C / Ctrl-Break delivered to the
             // parent's console group never reaches them.
@@ -641,7 +657,7 @@ fn create_process_inner(
             // detached it made itself. Breakaway is the only escape; the
             // job must permit it via JOB_OBJECT_LIMIT_BREAKAWAY_OK, which
             // every job this crate creates now sets.
-            flags = daemon_creation_flags(flags);
+            flags = daemon_creation_flags(flags, breakaway);
         }
         CreateMode::Contained { show_console } => {
             // We need to assign to a Job Object before the child runs.
@@ -713,7 +729,7 @@ fn create_process_inner(
     // thread handle to the caller; the caller assigns to the Job Object
     // then resumes. For Daemon mode (not CREATE_SUSPENDED) the thread is
     // already running and we just close the thread handle here.
-    if matches!(mode, CreateMode::Daemon) {
+    if matches!(mode, CreateMode::Daemon { .. }) {
         unsafe {
             CloseHandle(pi.hThread);
         }
@@ -726,9 +742,16 @@ fn create_process_inner(
 /// Creation flags for a detached daemon, layered onto `base`.
 ///
 /// Split out from the spawn path so the flag composition is unit-testable
-/// without actually creating a process.
-fn daemon_creation_flags(base: DWORD) -> DWORD {
-    base | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
+/// without actually creating a process. `breakaway` adds
+/// `CREATE_BREAKAWAY_FROM_JOB`; see [`CreateMode::Daemon`] for why it is
+/// opt-in rather than implied by "daemon".
+fn daemon_creation_flags(base: DWORD, breakaway: bool) -> DWORD {
+    let flags = base | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+    if breakaway {
+        flags | CREATE_BREAKAWAY_FROM_JOB
+    } else {
+        flags
+    }
 }
 
 #[cfg(test)]
@@ -738,9 +761,24 @@ mod daemon_flag_tests {
     /// Breakaway is what lets a daemon outlive the job its spawner sits in.
     /// Without it, KILL_ON_JOB_CLOSE reaps the daemon when the job closes.
     #[test]
-    fn daemon_flags_request_breakaway() {
-        let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT);
+    fn daemon_flags_request_breakaway_when_opted_in() {
+        let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT, true);
         assert_ne!(flags & CREATE_BREAKAWAY_FROM_JOB, 0);
+        assert_ne!(flags & CREATE_NEW_PROCESS_GROUP, 0);
+        assert_ne!(flags & CREATE_NO_WINDOW, 0);
+    }
+
+    /// The default must NOT break away: `testbin-spawner` spawns sleepers as
+    /// daemons purely for handle sanitization and relies on them staying in
+    /// the caller's job, which `containment_test` asserts.
+    #[test]
+    fn daemon_flags_stay_in_job_by_default() {
+        let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT, false);
+        assert_eq!(
+            flags & CREATE_BREAKAWAY_FROM_JOB,
+            0,
+            "breakaway must be opt-in"
+        );
         assert_ne!(flags & CREATE_NEW_PROCESS_GROUP, 0);
         assert_ne!(flags & CREATE_NO_WINDOW, 0);
     }
@@ -749,21 +787,25 @@ mod daemon_flag_tests {
     /// contained path where the caller resumes after assigning the job.
     #[test]
     fn daemon_flags_never_suspend() {
-        let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT);
-        assert_eq!(flags & CREATE_SUSPENDED, 0);
-        assert_ne!(flags & EXTENDED_STARTUPINFO_PRESENT, 0, "base preserved");
+        for breakaway in [true, false] {
+            let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT, breakaway);
+            assert_eq!(flags & CREATE_SUSPENDED, 0);
+            assert_ne!(flags & EXTENDED_STARTUPINFO_PRESENT, 0, "base preserved");
+        }
     }
 
     /// The ERROR_ACCESS_DENIED retry must clear only the breakaway bit, so
     /// the fallback spawn is otherwise identical to the first attempt.
     #[test]
     fn breakaway_fallback_clears_only_that_bit() {
-        let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT);
+        let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT, true);
         let fallback = flags & !CREATE_BREAKAWAY_FROM_JOB;
         assert_eq!(fallback & CREATE_BREAKAWAY_FROM_JOB, 0);
-        assert_eq!(fallback, flags & !CREATE_BREAKAWAY_FROM_JOB);
-        assert_ne!(fallback & CREATE_NO_WINDOW, 0);
-        assert_ne!(fallback & CREATE_NEW_PROCESS_GROUP, 0);
+        assert_eq!(
+            fallback,
+            daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT, false),
+            "fallback must equal the non-breakaway flag set"
+        );
     }
 }
 
