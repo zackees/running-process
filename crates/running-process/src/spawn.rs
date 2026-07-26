@@ -342,13 +342,66 @@ pub fn spawn_daemon_with_env_policy(
     command: &mut Command,
     policy: EnvironmentPolicy,
 ) -> std::io::Result<DaemonChild> {
+    spawn_daemon_inner(command, policy, false)
+}
+
+/// Like [`spawn_daemon`], but the child also **breaks away from any Job
+/// Object the spawner belongs to** (Windows; a no-op elsewhere).
+///
+/// Use this for a daemon that must outlive the process tree that happened to
+/// start it — a build cache server, a language server, anything discovered
+/// and reused by later, unrelated invocations.
+///
+/// # Why this is separate from [`spawn_daemon`]
+///
+/// "Detached lifetime" and "escapes my caller's containment" are different
+/// properties, and callers genuinely want them independently. Job Object
+/// membership is inherited by every descendant at any depth, and jobs created
+/// by this crate carry `KILL_ON_JOB_CLOSE` — so without breakaway the kernel
+/// terminates such a daemon the moment the spawner's job handle drops, no
+/// matter how detached the daemon made itself.
+///
+/// But making that unconditional breaks the opposite use: a child spawned as
+/// a daemon purely to obtain a sanitized handle list must stay inside the
+/// caller's job. `testbins/src/bin/spawner.rs` does exactly this, and
+/// `containment_test::test_contained_group_kills_grandchildren` fails if its
+/// sleepers escape.
+///
+/// # Refusal is not silent
+///
+/// `CREATE_BREAKAWAY_FROM_JOB` is *refused*, not ignored, when the spawner
+/// sits inside a job that lacks `JOB_OBJECT_LIMIT_BREAKAWAY_OK`:
+/// `CreateProcessW` fails with `ERROR_ACCESS_DENIED`. Outer jobs we do not
+/// control are common (CI runners, container supervisors, debuggers), so the
+/// spawn retries once with the flag cleared — a daemon that stays contained
+/// beats a daemon that fails to start.
+pub fn spawn_daemon_breaking_away_from_job(command: &mut Command) -> std::io::Result<DaemonChild> {
+    spawn_daemon_inner(command, EnvironmentPolicy::Auto, true)
+}
+
+/// [`spawn_daemon_breaking_away_from_job`] with an explicit env policy.
+pub fn spawn_daemon_breaking_away_with_env_policy(
+    command: &mut Command,
+    policy: EnvironmentPolicy,
+) -> std::io::Result<DaemonChild> {
+    spawn_daemon_inner(command, policy, true)
+}
+
+fn spawn_daemon_inner(
+    command: &mut Command,
+    policy: EnvironmentPolicy,
+    breakaway: bool,
+) -> std::io::Result<DaemonChild> {
     let policy = policy.resolve(SpawnLifetime::Daemon);
     #[cfg(windows)]
     {
-        imp::spawn_daemon(command, policy)
+        imp::spawn_daemon(command, policy, breakaway)
     }
     #[cfg(unix)]
     {
+        // Unix has no Job Object; `setsid` already detaches the daemon from
+        // the parent's session and process group, so breakaway is moot.
+        let _ = breakaway;
         unix_impl::spawn_daemon(command, policy)
     }
 }

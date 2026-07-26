@@ -706,7 +706,7 @@ pub fn assign_child_to_windows_kill_on_close_job(
     };
     use winapi::um::winnt::{
         JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
     let Some(handle) = handle else {
@@ -721,7 +721,11 @@ pub fn assign_child_to_windows_kill_on_close_job(
     }
 
     let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // Matches the non-PTY job (`windows.rs`): permit opt-in breakaway so a
+    // daemon spawned beneath a PTY session can outlive it. Containment is
+    // unchanged for children that don't request CREATE_BREAKAWAY_FROM_JOB.
+    info.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     let result = unsafe {
         SetInformationJobObject(
             job,
