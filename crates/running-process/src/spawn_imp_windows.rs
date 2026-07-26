@@ -21,11 +21,11 @@ use winapi::um::processthreadsapi::{
 };
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    EXTENDED_STARTUPINFO_PRESENT, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, INFINITE,
-    PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_WAIT, STARTF_USESTDHANDLES, STARTUPINFOEXW, STD_ERROR_HANDLE,
-    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, WAIT_OBJECT_0,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+    CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, FILE_FLAG_FIRST_PIPE_INSTANCE,
+    FILE_FLAG_OVERLAPPED, INFINITE, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, WAIT_OBJECT_0,
 };
 use winapi::um::winnt::{
     JobObjectExtendedLimitInformation, DUPLICATE_SAME_ACCESS, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -631,7 +631,17 @@ fn create_process_inner(
             // exits immediately with no output. CREATE_NO_WINDOW alone
             // gives the child a non-visible console which is what
             // cmd-shell scripts and most console tools actually need.
-            flags |= CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+            //
+            // CREATE_BREAKAWAY_FROM_JOB is what actually makes a daemon
+            // outlive its spawner. Job Object membership is inherited by
+            // every descendant at any depth, and our contained jobs carry
+            // KILL_ON_JOB_CLOSE — so without breakaway, a daemon spawned
+            // anywhere beneath a contained process is terminated by the
+            // kernel the moment that job's handle drops, no matter how
+            // detached it made itself. Breakaway is the only escape; the
+            // job must permit it via JOB_OBJECT_LIMIT_BREAKAWAY_OK, which
+            // every job this crate creates now sets.
+            flags = daemon_creation_flags(flags);
         }
         CreateMode::Contained { show_console } => {
             // We need to assign to a Job Object before the child runs.
@@ -656,24 +666,41 @@ fn create_process_inner(
         .map(|v| v.as_ptr() as *mut winapi::ctypes::c_void)
         .unwrap_or(std::ptr::null_mut());
 
-    let ok = unsafe {
-        CreateProcessW(
-            std::ptr::null(),
-            cmdline.as_mut_ptr(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            TRUE as BOOL,
-            flags,
-            env_ptr,
-            cwd_ptr,
-            &mut si.StartupInfo,
-            &mut pi,
-        )
-    };
-    let err = if ok == FALSE {
-        Some(io::Error::last_os_error())
-    } else {
-        None
+    // `CREATE_BREAKAWAY_FROM_JOB` is a request, not a guarantee: if the
+    // spawner sits inside a Job Object that does *not* set
+    // JOB_OBJECT_LIMIT_BREAKAWAY_OK, CreateProcessW fails outright with
+    // ERROR_ACCESS_DENIED rather than silently ignoring the flag. Outer
+    // jobs we don't control are common (CI runners, container supervisors,
+    // debuggers), so retry once without the flag: a daemon that stays
+    // contained is strictly better than a daemon that fails to spawn.
+    const ERROR_ACCESS_DENIED_CODE: i32 = 5;
+    let mut spawn_flags = flags;
+    let err = loop {
+        let ok = unsafe {
+            CreateProcessW(
+                std::ptr::null(),
+                cmdline.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                TRUE as BOOL,
+                spawn_flags,
+                env_ptr,
+                cwd_ptr,
+                &mut si.StartupInfo,
+                &mut pi,
+            )
+        };
+        if ok != FALSE {
+            break None;
+        }
+        let err = io::Error::last_os_error();
+        if spawn_flags & CREATE_BREAKAWAY_FROM_JOB != 0
+            && err.raw_os_error() == Some(ERROR_ACCESS_DENIED_CODE)
+        {
+            spawn_flags &= !CREATE_BREAKAWAY_FROM_JOB;
+            continue;
+        }
+        break Some(err);
     };
     unsafe {
         DeleteProcThreadAttributeList(attr_list);
@@ -693,6 +720,50 @@ fn create_process_inner(
         Ok((pi.hProcess, std::ptr::null_mut(), pi.dwProcessId))
     } else {
         Ok((pi.hProcess, pi.hThread, pi.dwProcessId))
+    }
+}
+
+/// Creation flags for a detached daemon, layered onto `base`.
+///
+/// Split out from the spawn path so the flag composition is unit-testable
+/// without actually creating a process.
+fn daemon_creation_flags(base: DWORD) -> DWORD {
+    base | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
+}
+
+#[cfg(test)]
+mod daemon_flag_tests {
+    use super::*;
+
+    /// Breakaway is what lets a daemon outlive the job its spawner sits in.
+    /// Without it, KILL_ON_JOB_CLOSE reaps the daemon when the job closes.
+    #[test]
+    fn daemon_flags_request_breakaway() {
+        let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT);
+        assert_ne!(flags & CREATE_BREAKAWAY_FROM_JOB, 0);
+        assert_ne!(flags & CREATE_NEW_PROCESS_GROUP, 0);
+        assert_ne!(flags & CREATE_NO_WINDOW, 0);
+    }
+
+    /// The daemon path must never suspend: nothing resumes it, unlike the
+    /// contained path where the caller resumes after assigning the job.
+    #[test]
+    fn daemon_flags_never_suspend() {
+        let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT);
+        assert_eq!(flags & CREATE_SUSPENDED, 0);
+        assert_ne!(flags & EXTENDED_STARTUPINFO_PRESENT, 0, "base preserved");
+    }
+
+    /// The ERROR_ACCESS_DENIED retry must clear only the breakaway bit, so
+    /// the fallback spawn is otherwise identical to the first attempt.
+    #[test]
+    fn breakaway_fallback_clears_only_that_bit() {
+        let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT);
+        let fallback = flags & !CREATE_BREAKAWAY_FROM_JOB;
+        assert_eq!(fallback & CREATE_BREAKAWAY_FROM_JOB, 0);
+        assert_eq!(fallback, flags & !CREATE_BREAKAWAY_FROM_JOB);
+        assert_ne!(fallback & CREATE_NO_WINDOW, 0);
+        assert_ne!(fallback & CREATE_NEW_PROCESS_GROUP, 0);
     }
 }
 

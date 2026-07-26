@@ -86,7 +86,7 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
     };
     use winapi::um::winnt::{
         JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
     let handle = child.as_raw_handle();
@@ -96,7 +96,12 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
     }
 
     let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // BREAKAWAY_OK does not weaken containment on its own: a child escapes
+    // only if it explicitly passes CREATE_BREAKAWAY_FROM_JOB. Without it,
+    // that request fails with ERROR_ACCESS_DENIED and long-lived daemons
+    // spawned beneath this job are killed when the job handle drops.
+    info.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     let ok = unsafe {
         SetInformationJobObject(
             job,
