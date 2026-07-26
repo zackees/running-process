@@ -65,12 +65,9 @@ jobs:
         with:
           tool: nextest
 
-      # llvm-profdata has been crashing with SIGILL during the post-test
-      # merge since 2026-06-21 (first red run; the LD_PRELOAD interposer
-      # landed the same day — instrumented processes exiting through
-      # hooked file APIs are the prime suspect for truncated/corrupt
-      # .profraw files). Enable core dumps so the triage step below can
-      # produce a real backtrace.
+      # Keep core capture while the graceful broker shutdown change soaks.
+      # Historical LLVM 21.1.8 profile inputs triggered SIGILL, but the
+      # producer and exact corruption mechanism have not been established.
       - name: Enable core dumps
         run: |
           sudo sysctl -w kernel.core_pattern="$PWD/logs/core.%e.%p"
@@ -108,14 +105,16 @@ jobs:
           mkdir -p logs/bad-profraw
           found_bad=0
           while IFS= read -r -d '' f; do
-            if ! "$PROFDATA" show "$f" >/dev/null 2>&1; then
-              rc=$?
+            "$PROFDATA" show "$f" >/dev/null 2>&1
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
               echo "BAD (rc=$rc): $f ($(stat -c%s "$f") bytes)"
               cp "$f" logs/bad-profraw/ || true
               found_bad=1
             fi
           done < <(find target/llvm-cov-target -name '*.profraw' -print0 2>/dev/null)
           [ "$found_bad" -eq 0 ] && echo "no individually-invalid profraw found; crash may need the full merge set"
+          [ -f logs/bad-profraw/manifest.json ] && cat logs/bad-profraw/manifest.json
           echo "::endgroup::"
 
           echo "::group::merge retry excluding bad files"
@@ -123,16 +122,17 @@ jobs:
             "$PROFDATA" show "$f" >/dev/null 2>&1 && echo "$f"
           done > logs/good-profraw-list
           wc -l logs/good-profraw-list
-          "$PROFDATA" merge -sparse -f logs/good-profraw-list -o logs/retry.profdata && echo "MERGE OF VALID FILES SUCCEEDED — poison file(s) confirmed as root cause"
+          "$PROFDATA" merge -sparse -f logs/good-profraw-list -o logs/retry.profdata && echo "merge retry excluding individually rejected files succeeded"
           echo "::endgroup::"
 
-      - name: Upload poison profraw files
-        if: ${{ failure() }}
+      - name: Upload rejected profraw evidence
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-bad-profraw
-          path: logs/bad-profraw/*
-          if-no-files-found: warn
+          path: logs/bad-profraw/**
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload Python coverage artifact
         if: always()

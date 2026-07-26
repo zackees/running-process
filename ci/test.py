@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+import platform
 import shlex
+import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from ci.dev_build import ensure_dev_wheel
@@ -161,34 +165,98 @@ def _find_llvm_profdata() -> Path | None:
     return None
 
 
-def _prune_invalid_profraw(profile_dir: Path) -> None:
-    """Delete .profraw files llvm-profdata cannot read on its own.
+def _prune_invalid_profraw(
+    profile_dir: Path,
+    *,
+    bad_dir: Path | None = None,
+    profdata_command: Sequence[str] | None = None,
+) -> int:
+    """Preserve, document, then remove profiles rejected by llvm-profdata.
 
-    Instrumented daemons this suite kills at teardown (SIGTERM/SIGKILL —
-    e.g. the broker-v2 accept loop) never run the atexit profile flush,
-    so a file caught mid-write is truncated. llvm-profdata crashes with
-    SIGILL when such a file is in the merge set; validating each file
-    individually and dropping the bad ones loses only the killed
-    processes' counters while keeping the merge alive.
+    A nonzero probe proves only that the input is unusable by this LLVM
+    build. It does not establish truncation or identify the process that
+    produced the file. Rejected inputs are copied with a manifest before
+    removal so a green coverage run still leaves an upstream reproducer.
     """
-    profdata = _find_llvm_profdata()
-    if profdata is None or not profile_dir.is_dir():
-        return
-    pruned = 0
-    for profraw in profile_dir.rglob("*.profraw"):
+    if profdata_command is None:
+        profdata = _find_llvm_profdata()
+        if profdata is None:
+            return 0
+        profdata_command = [str(profdata)]
+    if not profile_dir.is_dir():
+        return 0
+
+    command_prefix = list(profdata_command)
+    version_probe = subprocess.run(
+        [*command_prefix, "--version"],
+        capture_output=True,
+        text=True,
+    )
+    llvm_version = (version_probe.stdout or version_probe.stderr).strip()
+    rejected: list[tuple[Path, subprocess.CompletedProcess[str]]] = []
+    for profraw in sorted(profile_dir.rglob("*.profraw")):
+        probe_command = [*command_prefix, "show", str(profraw)]
         probe = subprocess.run(
-            [str(profdata), "show", str(profraw)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            probe_command,
+            capture_output=True,
+            text=True,
         )
         if probe.returncode != 0:
-            print(
-                f"coverage: pruning invalid profraw ({probe.returncode}): {profraw}",
-                flush=True,
-            )
-            profraw.unlink(missing_ok=True)
-            pruned += 1
-    print(f"coverage: pruned {pruned} invalid .profraw file(s)", flush=True)
+            rejected.append((profraw, probe))
+
+    if not rejected:
+        print("coverage: pruned 0 invalid .profraw file(s)", flush=True)
+        return 0
+
+    evidence_dir = bad_dir or ROOT / "logs" / "bad-profraw"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, object]] = []
+    for profraw, probe in rejected:
+        relative = profraw.relative_to(profile_dir)
+        preserved = evidence_dir / relative
+        preserved.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(profraw, preserved)
+        command = [*command_prefix, "show", str(profraw)]
+        entries.append(
+            {
+                "filename": profraw.name,
+                "original_path": str(profraw),
+                "preserved_path": str(preserved.relative_to(evidence_dir)),
+                "size_bytes": profraw.stat().st_size,
+                "probe_command": command,
+                "probe_returncode": probe.returncode,
+                "probe_signal": -probe.returncode if probe.returncode < 0 else None,
+                "probe_stderr": probe.stderr.strip(),
+            }
+        )
+
+    manifest = {
+        "llvm_version": llvm_version,
+        "llvm_version_command": [*command_prefix, "--version"],
+        "runner_os": os.environ.get("RUNNER_OS") or platform.platform(),
+        "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+        "github_commit": os.environ.get("GITHUB_SHA"),
+        "rejected_profiles": entries,
+    }
+    manifest_path = evidence_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    # The copies and their manifest now exist; only at this point is it safe
+    # to keep the rejected inputs out of cargo-llvm-cov's merge set.
+    for profraw, probe in rejected:
+        print(
+            f"coverage: preserving and pruning invalid profraw ({probe.returncode}): {profraw}",
+            flush=True,
+        )
+        profraw.unlink()
+    print(
+        f"coverage: pruned {len(rejected)} invalid .profraw file(s); evidence: {evidence_dir}",
+        flush=True,
+    )
+    return len(rejected)
 
 
 def run_live(cmd: list[str]) -> int:
@@ -334,14 +402,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         if coverage:
-            # Split run/report so corrupt .profraw files can be pruned in
-            # between. This suite spawns instrumented daemons (the broker-v2
-            # accept loop from #533 exits via SIGTERM in production) and
-            # kills them at teardown; a process killed mid-profile-write
-            # leaves a truncated .profraw and rustup's llvm-profdata
-            # SIGILLs on it during the merge — coverage was red on every
-            # run from the #533 merge (2026-06-21) onward. Dropping the
-            # invalid files loses only the killed processes' counters.
+            # Split run/report so individually unreadable profiles can be
+            # preserved and excluded before the final report. Historical
+            # LLVM 21.1.8 inputs have crashed llvm-profdata with SIGILL;
+            # pruning is retained as defense in depth while graceful daemon
+            # profile flushing soaks on main.
             cargo_cmd = supervised_command(
                 python,
                 *cargo_command("llvm-cov", "nextest", "--workspace", "--no-report"),
