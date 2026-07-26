@@ -5,7 +5,7 @@ use std::io::Write;
 fn main() {
     let pid = std::process::id();
     println!("PID={pid}");
-    match std::env::var("RUNNING_PROCESS_ORIGINATOR") {
+    match std::env::var(running_process::ORIGINATOR_ENV_VAR) {
         Ok(val) => println!("ORIGINATOR={val}"),
         Err(_) => println!("ORIGINATOR=<not set>"),
     }
