@@ -7,7 +7,10 @@
 //! responsibility is now scoped to:
 //!
 //! - holding an optional `originator` label,
-//! - injecting [`ORIGINATOR_ENV_VAR`] into every child the group spawns,
+//! - injecting [`ORIGINATOR_ENV_VAR`] into every *contained* child the group
+//!   spawns, and stripping it from every *daemon* child (a daemon outlives its
+//!   spawner, so it must not be attributable to it — see
+//!   [`ContainedProcessGroup::spawn_daemon`]),
 //! - dispatching to either [`crate::spawn()`] or [`crate::spawn_daemon`].
 //!
 //! # `RUNNING_PROCESS_ORIGINATOR` environment variable
@@ -107,18 +110,84 @@ impl ContainedProcessGroup {
     /// handle list, and survives the returned [`DaemonChild`] being
     /// dropped. To terminate, call [`DaemonChild::kill`].
     ///
-    /// The parent-child association (this group's originator env var)
-    /// is injected into the child before the spawn so cross-process
-    /// tracking can resolve the spawned daemon back to its parent.
+    /// The originator env var is deliberately **stripped**, never injected.
+    ///
+    /// A daemon outlives the process that happened to start it — that is the
+    /// entire point of spawning one. Tagging it `TOOL:<spawner pid>` makes it
+    /// indistinguishable from an abandoned descendant, so as soon as the
+    /// spawner exits, any originator-based reaper sees a live process whose
+    /// originator is dead and kills it. Build-cache daemons (zccache, sccache)
+    /// are the common casualty: they are started lazily by whichever compiler
+    /// invocation happens to run first, inherit that session's tag, and get
+    /// reaped when it ends — taking the warm cache down with them.
+    ///
+    /// This also restores the intent of the daemon environment policy.
+    /// [`crate::EnvironmentPolicy::Auto`] resolves to `UserBaseline` for
+    /// daemons, which rebuilds the environment from the user's login identity
+    /// and drops process-local variables. Explicit `command.env(...)` entries
+    /// are applied *last*, so injecting here silently defeated that policy for
+    /// this one variable.
     pub fn spawn_daemon(&self, command: &mut Command) -> Result<DaemonChild, std::io::Error> {
-        self.inject_originator_env(command);
+        Self::strip_originator_env(command);
         free_spawn_daemon(command)
+    }
+
+    /// Remove the originator tag from `command`. Split out from
+    /// [`Self::spawn_daemon`] so the policy is unit-testable without
+    /// spawning a real detached process.
+    fn strip_originator_env(command: &mut Command) {
+        command.env_remove(ORIGINATOR_ENV_VAR);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn originator_entry(command: &Command) -> Option<Option<&std::ffi::OsStr>> {
+        let key = std::ffi::OsStr::new(ORIGINATOR_ENV_VAR);
+        command.get_envs().find(|(k, _)| *k == key).map(|(_, v)| v)
+    }
+
+    /// A daemon must not carry its spawner's originator tag: it outlives the
+    /// spawner, so the tag turns it into reaper bait the moment the spawner
+    /// exits. `env_remove` must win even when the caller explicitly set it.
+    #[test]
+    fn spawn_daemon_strips_originator_env() {
+        let mut cmd = Command::new("echo");
+        cmd.env(ORIGINATOR_ENV_VAR, "CLUD:12345");
+        ContainedProcessGroup::strip_originator_env(&mut cmd);
+        assert_eq!(
+            originator_entry(&cmd),
+            Some(None),
+            "daemon command must carry an explicit removal of {ORIGINATOR_ENV_VAR}"
+        );
+    }
+
+    /// The stripping must be unconditional — a group *with* an originator is
+    /// exactly the case that used to inject the tag into daemons.
+    #[test]
+    fn spawn_daemon_strips_originator_even_for_tagged_group() {
+        let group = ContainedProcessGroup::with_originator("CLUD").unwrap();
+        assert!(group.originator().is_some());
+        let mut cmd = Command::new("echo");
+        ContainedProcessGroup::strip_originator_env(&mut cmd);
+        assert_eq!(originator_entry(&cmd), Some(None));
+    }
+
+    /// Contrast: *contained* children keep the tag. That is what makes the
+    /// on-exit reaper able to find genuinely abandoned descendants.
+    #[test]
+    fn contained_spawn_still_injects_originator_env() {
+        let group = ContainedProcessGroup::with_originator("CLUD").unwrap();
+        let mut cmd = Command::new("echo");
+        group.inject_originator_env(&mut cmd);
+        let expected = format!("CLUD:{}", std::process::id());
+        assert_eq!(
+            originator_entry(&cmd),
+            Some(Some(std::ffi::OsStr::new(expected.as_str())))
+        );
+    }
 
     #[test]
     fn contained_process_group_creates_successfully() {
