@@ -160,10 +160,11 @@ jobs:
 
       - name: Dylint negative fixture
         if: ${{ inputs.dylint }}
+        working-directory: lints/running-process-env-literal
         env:
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
-        run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --manifest-path lints/running-process-env-literal/Cargo.toml --locked
+        run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
 
       - name: Dylint workspace gate
         if: ${{ inputs.dylint }}

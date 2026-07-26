@@ -27,6 +27,9 @@ coverage-rust.lcov
 *.log
 logs/
 .cargo/
+!lints/running-process-env-literal/.cargo/
+lints/running-process-env-literal/.cargo/*
+!lints/running-process-env-literal/.cargo/config.toml
 .rustup/
 .loop/
 .claude/

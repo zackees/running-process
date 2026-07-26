@@ -8,6 +8,8 @@ use sysinfo::{ProcessRefreshKind, System};
 use crate::daemon_client;
 use crate::helpers::system_pid;
 
+const PID_DB_ENV: &str = "RUNNING_PROCESS_PID_DB";
+
 #[derive(Clone)]
 pub(crate) struct ActiveProcessRecord {
     pub(crate) pid: u32,
@@ -89,7 +91,7 @@ pub(crate) fn same_process_identity(pid: u32, created_at: f64, tolerance_seconds
 }
 
 pub(crate) fn tracked_process_db_path() -> PyResult<PathBuf> {
-    if let Ok(value) = std::env::var("RUNNING_PROCESS_PID_DB") {
+    if let Ok(value) = std::env::var(PID_DB_ENV) {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed));

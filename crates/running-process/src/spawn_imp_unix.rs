@@ -110,7 +110,7 @@ pub fn spawn_daemon(
 ) -> io::Result<super::DaemonChild> {
     use std::os::unix::process::CommandExt;
 
-    apply_environment_policy(command, policy);
+    apply_environment_policy(command, policy)?;
 
     command
         .stdin(Stdio::null())
@@ -139,7 +139,7 @@ pub fn spawn(
 ) -> io::Result<super::SpawnedChild> {
     use std::os::unix::process::CommandExt;
 
-    apply_environment_policy(command, policy);
+    apply_environment_policy(command, policy)?;
     command.stdin(slot_to_stdio(&stdio.stdin)?);
     command.stdout(slot_to_stdio(&stdio.stdout)?);
     command.stderr(slot_to_stdio(&stdio.stderr)?);
@@ -218,29 +218,50 @@ pub fn spawn(
     })
 }
 
-fn apply_environment_policy(command: &mut Command, policy: super::EnvironmentPolicy) {
+fn apply_environment_policy(
+    command: &mut Command,
+    policy: super::EnvironmentPolicy,
+) -> io::Result<()> {
     match policy {
-        super::EnvironmentPolicy::Clear => {
-            // Preserve explicit Command::env overrides while changing the
-            // base to empty. Command::env_clear() also clears the override
-            // map, so snapshot and restore it.
+        super::EnvironmentPolicy::Inherit => return Ok(()),
+        super::EnvironmentPolicy::Auto => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Auto environment policy must be resolved before platform spawn",
+            ));
+        }
+        super::EnvironmentPolicy::Clear | super::EnvironmentPolicy::UserBaseline => {
+            // Changing the base with env_clear() also clears Command's
+            // explicit mutation map. Snapshot additions, overrides, and
+            // removals so they can be replayed after the selected base.
             let explicit: Vec<_> = command
                 .get_envs()
-                .filter_map(|(key, value)| {
-                    value.map(|value| (key.to_os_string(), value.to_os_string()))
-                })
+                .map(|(key, value)| (key.to_os_string(), value.map(std::ffi::OsStr::to_os_string)))
                 .collect();
+            let baseline = match policy {
+                super::EnvironmentPolicy::UserBaseline => {
+                    crate::environment::user_baseline_environment()?
+                }
+                super::EnvironmentPolicy::Clear => Vec::new(),
+                _ => unreachable!(),
+            };
+
             command.env_clear();
-            command.envs(explicit);
-        }
-        super::EnvironmentPolicy::Inherit
-        | super::EnvironmentPolicy::UserBaseline
-        | super::EnvironmentPolicy::Auto => {
-            // There is no stable Unix API equivalent to Windows
-            // CreateEnvironmentBlock. UserBaseline conservatively falls
-            // back to inheritance on Unix.
+            command.envs(baseline);
+            for (key, value) in explicit {
+                match value {
+                    Some(value) => {
+                        command.env(key, value);
+                    }
+                    None => {
+                        command.env_remove(key);
+                    }
+                }
+            }
         }
     }
+
+    Ok(())
 }
 
 /// Async-signal-safe fd sweep used in pre_exec. See sanitized.rs (now

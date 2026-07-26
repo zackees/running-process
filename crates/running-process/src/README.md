@@ -4,7 +4,7 @@ Top-level modules of the published `running-process` crate. Feature gating is
 described in the repo-root `CLAUDE.md` ("Rust workspace" section).
 
 - `lib.rs` / `public_symbols.rs` — crate surface and re-exports
-- `environment.rs` — user baseline environment (Windows `CreateEnvironmentBlock`, Unix snapshot)
+- `environment.rs` — user baseline environment (Windows `CreateEnvironmentBlock`, Unix login reconstruction)
 - `spawn.rs`, `spawn_imp_unix.rs`, `spawn_imp_windows.rs` — process spawn implementations
 - `process_tree.rs` — process-tree enumeration and tree kill
 - `containment.rs` — Job Objects / process-group containment

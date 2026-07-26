@@ -36,8 +36,9 @@ use std::time::Duration;
 
 /// Selects the base environment used for a newly spawned process.
 ///
-/// Explicit values added through [`Command::env`] or [`Command::envs`]
-/// are applied after the selected base and therefore win on duplicate keys.
+/// Explicit mutations added through [`Command::env`], [`Command::envs`], or
+/// [`Command::env_remove`] are applied after the selected base and therefore
+/// always win.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EnvironmentPolicy {
     /// Choose from the process lifetime: contained subprocesses inherit,
@@ -46,13 +47,19 @@ pub enum EnvironmentPolicy {
     Auto,
     /// Inherit the spawning process's environment.
     Inherit,
-    /// Start from the logged-in user's machine + user environment.
+    /// Start from the logged-in user's machine + user environment, discarding
+    /// the spawning process's ambient environment except for the documented
+    /// Unix locale, time-zone, and temporary-directory allowlist.
     ///
     /// Windows implements this with `CreateEnvironmentBlock`. Unix
     /// reconstructs a clean login environment from the user's identity
     /// (`getpwuid_r` → `USER`/`LOGNAME`/`HOME`/`SHELL`, platform default
-    /// `PATH`, carried-over locale/`TZ`/`TMPDIR`), falling back to
-    /// inheritance only when the passwd entry cannot be resolved.
+    /// `PATH`, carried-over locale/`TZ`/`TMPDIR`), falling back to inheritance
+    /// only when the passwd entry cannot be resolved.
+    ///
+    /// Consumers that need values such as `CARGO_HOME`, `RUSTUP_HOME`,
+    /// `SOLDR_*`, credentials, or runner-specific paths must pass them
+    /// explicitly on the [`Command`].
     UserBaseline,
     /// Start from an empty environment.
     Clear,
@@ -324,6 +331,13 @@ pub fn spawn_daemon_with_clear_env(
 }
 
 /// Spawn a detached daemon using an explicit environment policy.
+///
+/// [`EnvironmentPolicy::Auto`] resolves to
+/// [`EnvironmentPolicy::UserBaseline`] for daemons, excluding unlisted
+/// ambient variables. Use [`EnvironmentPolicy::Inherit`] as the explicit
+/// escape hatch for trusted callers that require the full parent environment.
+/// In every mode, explicit command environment additions, overrides, and
+/// removals are applied last.
 pub fn spawn_daemon_with_env_policy(
     command: &mut Command,
     policy: EnvironmentPolicy,

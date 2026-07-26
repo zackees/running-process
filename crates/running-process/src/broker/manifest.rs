@@ -30,6 +30,9 @@ pub const CACHE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.running-process.cac
 /// Highest manifest schema this crate understands.
 pub const SUPPORTED_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
+/// Test/development override for the central manifest registry directory.
+pub const RUNNING_PROCESS_MANIFEST_DIR_ENV: &str = "RUNNING_PROCESS_MANIFEST_DIR";
+
 /// Errors returned by manifest persistence and validation.
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestError {
@@ -178,7 +181,7 @@ pub fn scan_central(registry_dir: &Path) -> Vec<ManifestScanEntry> {
 /// `RUNNING_PROCESS_MANIFEST_DIR` is honored as a test/development
 /// override. Production callers should leave it unset.
 pub fn central_registry_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os("RUNNING_PROCESS_MANIFEST_DIR") {
+    if let Some(path) = std::env::var_os(RUNNING_PROCESS_MANIFEST_DIR_ENV) {
         return PathBuf::from(path);
     }
 

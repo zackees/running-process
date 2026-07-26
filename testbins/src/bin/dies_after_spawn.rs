@@ -11,9 +11,10 @@ use std::process::Command;
 
 use running_process::{spawn, SpawnStdio};
 
+const SPAWN_TARGET_ENV: &str = "RUNNING_PROCESS_SPAWN_TARGET";
+
 fn main() {
-    let target = std::env::var("RUNNING_PROCESS_SPAWN_TARGET")
-        .expect("RUNNING_PROCESS_SPAWN_TARGET must be set");
+    let target = std::env::var(SPAWN_TARGET_ENV).expect("RUNNING_PROCESS_SPAWN_TARGET must be set");
 
     let mut cmd = Command::new(&target);
     let child = spawn(&mut cmd, SpawnStdio::default()).expect("spawn grandchild");
