@@ -239,7 +239,7 @@ impl From<EndpointSerde> for Endpoint {
     }
 }
 
-pub(crate) fn sha256_file(path: &Path) -> Result<[u8; 32], io::Error> {
+pub fn sha256_file(path: &Path) -> Result<[u8; 32], io::Error> {
     let bytes = fs::read(path)?;
     let digest = Sha256::digest(&bytes);
     let mut out = [0_u8; 32];
