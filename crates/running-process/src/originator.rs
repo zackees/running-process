@@ -138,6 +138,59 @@ pub fn find_processes_by_originator(tool: &str) -> Vec<OriginatorProcessInfo> {
     results
 }
 
+/// PIDs of every process that declared itself a daemon via
+/// [`crate::DAEMON_MARKER_ENV_VAR`].
+///
+/// The companion query to the marker set in `spawn_daemon`. A reaper needs
+/// both halves: [`find_processes_by_originator`] tells it what a session
+/// spawned, and this tells it what asked to outlive that session. Without a
+/// way to read the marker, the exemption has to be inferred from the *absence*
+/// of an originator tag — exactly the ambiguity the marker exists to remove
+/// (zackees/clud#522).
+///
+/// Deliberately a separate scan rather than a field on
+/// [`OriginatorProcessInfo`]: a declared daemon has had its originator tag
+/// stripped, so it never appears in that result set at all.
+///
+/// # Example
+///
+/// ```no_run
+/// use running_process::originator::find_declared_daemon_pids;
+///
+/// let daemons = find_declared_daemon_pids();
+/// // Never reap a process that asked to outlive its spawner.
+/// let may_reap = |pid: u32| !daemons.contains(&pid);
+/// # let _ = may_reap(1);
+/// ```
+pub fn find_declared_daemon_pids() -> std::collections::HashSet<u32> {
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessRefreshKind::new().with_environ(UpdateKind::Always));
+
+    let prefix = format!("{}=", crate::DAEMON_MARKER_ENV_VAR);
+    system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let declared = process
+                .environ()
+                .iter()
+                .any(|entry| entry.strip_prefix(&prefix).is_some_and(is_truthy_marker));
+            declared.then(|| pid.as_u32())
+        })
+        .collect()
+}
+
+/// The marker is written as `1`, but accept the usual truthy spellings so a
+/// consumer setting it by hand is not silently ignored. Anything empty or
+/// explicitly falsey means "not declared" — a stray `…=0` must never exempt a
+/// process from reaping.
+fn is_truthy_marker(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
+}
+
 /// Check whether the parent PID is alive and is plausibly the original parent.
 fn is_parent_alive(system: &System, parent_pid: u32, child_start_time: u64) -> bool {
     let parent_sysinfo_pid = Pid::from_u32(parent_pid);
@@ -299,5 +352,25 @@ mod tests {
         // Should not panic — results may or may not be empty depending on
         // whether any process happens to have the env var with format ":PID"
         let _ = results;
+    }
+
+    /// A stray `RUNNING_PROCESS_IS_DAEMON=0` must not silently exempt a
+    /// process from reaping, so only truthy spellings count as a declaration.
+    #[test]
+    fn only_truthy_marker_values_declare_a_daemon() {
+        for declared in ["1", "true", "yes", "on", "TRUE", " 1 "] {
+            assert!(is_truthy_marker(declared), "{declared:?} should declare");
+        }
+        for not_declared in ["", "0", "false", "no", "off", "  ", "FALSE"] {
+            assert!(!is_truthy_marker(not_declared), "{not_declared:?} must not");
+        }
+    }
+
+    /// This process was not spawned as a daemon, so it must never appear in
+    /// its own result set — the scan reads each process's environment rather
+    /// than assuming anything about the caller.
+    #[test]
+    fn declared_daemon_scan_excludes_an_undeclared_self() {
+        assert!(!find_declared_daemon_pids().contains(&std::process::id()));
     }
 }
