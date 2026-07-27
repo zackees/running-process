@@ -12,6 +12,13 @@ SOURCES: list[tuple[str, str]] = [
     ("src/running_process/__init__.py", r'^__version__\s*=\s*"([^"]+)"'),
     ("pyproject.toml", r'^version\s*=\s*"([^"]+)"'),
     ("Cargo.toml", r'^version\s*=\s*"([^"]+)"'),
+    # The Python extension crate pins its sibling by exact version. Left
+    # behind, it does not merely drift -- `cargo publish` cannot resolve
+    # it, so the release fails after the tag is already cut.
+    (
+        "crates/running-process-py/Cargo.toml",
+        r'^running-process\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"',
+    ),
 ]
 
 
