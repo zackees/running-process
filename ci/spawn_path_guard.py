@@ -88,6 +88,10 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
+    # Probe client worker (#633): `thread::Builder::spawn` starts a THREAD,
+    # not a process. It exists precisely so `probe::install()` performs no
+    # I/O on the calling thread.
+    Path("crates/running-process/src/probe/worker.rs"),
     # rpprobed beacon acceptor (#631): `thread::Builder::spawn` starts a
     # THREAD, not a process — it answers beacon identity handshakes while
     # the main loop serves the control socket. Same rationale as the

@@ -122,6 +122,17 @@ daemon = [
     "dep:rusqlite",
 ]
 originator-scan = []               # used by running-process-py for cwd-tagging
+
+# #633: the probe client facade (`src/probe/`). Talks to `rpprobed` over IPC —
+# it deliberately does NOT depend on the probe *daemon* crate.
+#
+# `running-process-probe` is pulled in with default-features off purely for the
+# `probe_diag.v1` schema. Its injection vehicles (`inject_windows`,
+# `inject_unix`) are gated on that crate's `embed-helper` feature, which stays
+# off here, so enabling `probe` adds zero injection symbols to this crate — the
+# #539 static-AV-surface invariant is preserved. `probe_facade_adds_no_injection_symbols`
+# asserts this rather than trusting it.
+probe = ["client", "dep:running-process-probe"]
 # #433 R4: opt-in test seam. Gates the `RUNNING_PROCESS_FAKE_BACKEND` backdoor
 # inside `connect_to_backend`. OFF by default and never listed by production
 # consumers, so the backdoor is physically absent from every shipped build.
@@ -153,6 +164,9 @@ clap = { version = "4", features = ["derive"], optional = true }
 blake3 = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
 getrandom = { version = "0.4", optional = true }
+# #633: schema-only dependency for the probe client facade. default-features
+# off keeps the interposer/injection machinery out — see the `probe` feature.
+running-process-probe = { path = "../running-process-probe", default-features = false, optional = true }
 # Wave 5 of #165: daemon-feature deps. All optional.
 # tokio: `client-async` (#414) only needs the `rt` (spawn_blocking)
 # and `time` (`tokio::time::timeout`) features; the `daemon` feature

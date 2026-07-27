@@ -27,6 +27,7 @@ here in the same change.
 | `blake3` | `[dependencies]` | `client` feature | Per-user broker identity hashing. No network transport purpose. |
 | `sha2` | `[dependencies]` | `client` feature | Manifest and binary digest verification. Security-sensitive integrity primitive. |
 | `getrandom` | `[dependencies]` | `client` feature | Backend pipe randomness. Security-sensitive entropy boundary. |
+| `running-process-probe` | `[dependencies]` | `probe` feature | Schema-only: supplies the `probe_diag.v1` prost types to the probe client facade (#633). Pulled in with `default-features = false`, so the crate's injection vehicles (gated on its `embed-helper` feature) are never compiled here and the main crate keeps zero injection symbols. No network transport purpose. |
 | `tokio` | `[dependencies]` | `daemon` feature | Async runtime for broker daemon tasks. `full` features include broad Tokio APIs, so code review must keep broker operation local-IPC-only. |
 | `tokio-util` | `[dependencies]` | `daemon` feature | Codec helpers for local IPC framing. Untrusted-input framing boundary. |
 | `bytes` | `[dependencies]` | `daemon` feature | Buffer type used by async framing. Untrusted-input sizing boundary. |

@@ -1469,6 +1469,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "protox",
+ "running-process-probe",
  "rusqlite",
  "serde",
  "serde_json",
