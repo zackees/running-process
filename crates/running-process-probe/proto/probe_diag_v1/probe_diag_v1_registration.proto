@@ -122,3 +122,35 @@ message UnregisterProcess {
 message ListProcesses {
   reserved 1 to 7;
 }
+
+// Beacon identity handshake (#631).
+//
+// Anything can bind a TCP port, so a successful connect to the beacon proves
+// nothing. Before a client treats a listener as the probe daemon it sends this
+// hello and requires the daemon to echo the nonce and return a fixed magic.
+// A decoy that doesn't speak the framed protocol fails the exchange, and the
+// client classifies it as a stranger rather than mis-registering with it.
+message ProbeHello {
+  // Fresh per attempt. Echoed back so a replayed or canned reply captured from
+  // an earlier exchange doesn't satisfy a later one.
+  bytes nonce = 1;
+  reserved 2 to 7;
+}
+
+message ProbeHelloReply {
+  // Must equal the ProbeHello nonce byte-for-byte.
+  bytes nonce_echo = 1;
+
+  // Fixed protocol magic. See PROBE_HELLO_MAGIC in the daemon crate.
+  uint64 magic = 2;
+
+  uint64 daemon_pid = 3;
+
+  // Where to reach the daemon proper. The bearer token is deliberately NOT
+  // here — it lives only in the owner-only discovery file, so a peer that can
+  // reach the loopback beacon still cannot obtain it.
+  string control_socket = 4;
+  uint32 http_port = 5;
+
+  reserved 6 to 15;
+}

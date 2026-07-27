@@ -1,0 +1,46 @@
+[package]
+name = "running-process-probe-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "rpprobed — probe daemon skeleton: bring-up, discovery, and control socket (#631)"
+publish = false
+
+[[bin]]
+name = "rpprobed"
+path = "src/bin/rpprobed.rs"
+
+[dependencies]
+# Broker primitives reused as libraries: framing codec, peer-cred/owner-only
+# ACL, privilege refusal, SID hashing, private-dir hardening. The probe daemon
+# is NOT a broker backend — it borrows the plumbing, not the wire.
+running-process = { path = "../running-process", default-features = false, features = [
+    "client",
+] }
+# probe_diag.v1 schema (S1 / #630).
+running-process-probe = { path = "../running-process-probe" }
+
+interprocess = "2"
+prost = "0.14"
+thiserror = { workspace = true }
+getrandom = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS sun_path is 104 bytes, so the socket leaf is a hash rather than the
+# full name.
+blake3 = "1"
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"
+
+[lints]
+workspace = true

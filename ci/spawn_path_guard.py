@@ -84,9 +84,15 @@ ALLOWED_RUST_COMMAND_NEW = {
     # `/bin/true` for env-setting smoke tests. No production spawn
     # path runs through this module.
     Path("crates/running-process-probe/src/inject_unix.rs"),
+
 }
 
 ALLOWED_RUST_SPAWN = {
+    # rpprobed beacon acceptor (#631): `thread::Builder::spawn` starts a
+    # THREAD, not a process — it answers beacon identity handshakes while
+    # the main loop serves the control socket. Same rationale as the
+    # broker-v2 binary entry below.
+    Path("crates/running-process-probe-daemon/src/bin/rpprobed.rs"),
     Path("crates/running-process/src/lib.rs"),
     Path("crates/running-process/src/containment.rs"),
     # Inline tests module for running-process lib root.

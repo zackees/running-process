@@ -1507,6 +1507,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "running-process-probe-daemon"
+version = "4.6.4"
+dependencies = [
+ "blake3",
+ "getrandom 0.4.2",
+ "interprocess",
+ "libc",
+ "prost",
+ "running-process",
+ "running-process-probe",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "running-process-probe-interposer-linux"
 version = "4.6.4"
 dependencies = [

@@ -55,11 +55,16 @@ message ProbeEnvelope {
     CrashQuery crash_query = 31;
     CrashRecord crash_record = 32;
     CrashQueryReply crash_query_reply = 34;
+
+    // Beacon identity handshake (#631). Additive into the headroom the
+    // original reserved range left open.
+    ProbeHello probe_hello = 35;
+    ProbeHelloReply probe_hello_reply = 36;
   }
 
   // Headroom so hot-path header fields can still be added inside the 1-byte
   // tag range (fields 1-15 encode their tag in a single byte).
   reserved 4 to 15;
 
-  reserved 35 to 63;
+  reserved 37 to 63;
 }
