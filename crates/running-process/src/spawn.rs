@@ -294,6 +294,34 @@ impl Drop for SpawnedChild {
     }
 }
 
+/// Set on every child spawned through the daemon path, so a process can be
+/// recognized as a *declared daemon* rather than inferred to be one.
+///
+/// # Why a positive marker
+///
+/// Reapers previously had to infer daemon-ness from the **absence** of
+/// [`crate::ORIGINATOR_ENV_VAR`], which `spawn_daemon` strips. But absence is
+/// overloaded: it means both "this process deliberately detached itself" and
+/// "something in the chain clobbered the environment" — and those are
+/// byte-identical at the observation point, so no amount of process-lineage
+/// tracking can separate them. See zackees/clud#522, where an
+/// ancestry-fallback proposal and a daemon exemption read the same signal and
+/// drew opposite conclusions.
+///
+/// A positive declaration removes the ambiguity: only a process that actually
+/// went through the daemon path carries this.
+///
+/// # Caveat
+///
+/// This is still an environment variable, so a chain that strips
+/// `RUNNING_PROCESS_ORIGINATOR` strips this too. It narrows the ambiguous case
+/// rather than eliminating it; a durable answer would need the daemon's
+/// supervisor to register the PID somewhere the reaper can read.
+///
+/// Distinct from `RUNNING_PROCESS_DAEMON_SCOPE`, which names a broker scope
+/// and is unrelated.
+pub const DAEMON_MARKER_ENV_VAR: &str = "RUNNING_PROCESS_IS_DAEMON";
+
 /// Spawn `command` as a detached daemon. NUL stdio, sanitized handles,
 /// no console window, ignores parent's Ctrl-C / SIGINT (Windows:
 /// `CREATE_NEW_PROCESS_GROUP` + `DETACHED_PROCESS`; Unix: `setsid` puts the
@@ -387,11 +415,22 @@ pub fn spawn_daemon_breaking_away_with_env_policy(
     spawn_daemon_inner(command, policy, true)
 }
 
+/// Apply the daemon self-declaration to `command`. Split out from
+/// [`spawn_daemon_inner`] so the policy is unit-testable without spawning a
+/// real detached process.
+pub(crate) fn mark_as_daemon(command: &mut Command) {
+    command.env(DAEMON_MARKER_ENV_VAR, "1");
+}
+
 fn spawn_daemon_inner(
     command: &mut Command,
     policy: EnvironmentPolicy,
     breakaway: bool,
 ) -> std::io::Result<DaemonChild> {
+    // Every daemon-spawn variant funnels through here, so this is the one
+    // place that can mark them all — including the free functions consumers
+    // like zccache call directly.
+    mark_as_daemon(command);
     let policy = policy.resolve(SpawnLifetime::Daemon);
     #[cfg(windows)]
     {

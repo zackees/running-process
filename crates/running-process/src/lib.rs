@@ -125,7 +125,7 @@ pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
     spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env,
     spawn_daemon_with_env_policy, spawn_with_env_policy, DaemonChild, EnvironmentPolicy,
-    SpawnStdio, SpawnedChild, StdioSource,
+    SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR,
 };
 pub use terminal_graphics::{
     current_terminal_capabilities, current_terminal_capabilities_with_timeout,

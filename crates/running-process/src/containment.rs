@@ -149,6 +149,32 @@ mod tests {
         command.get_envs().find(|(k, _)| *k == key).map(|(_, v)| v)
     }
 
+    /// The two halves must compose: a daemon drops the originator tag *and*
+    /// carries the positive marker. Absence alone is ambiguous — it also
+    /// describes a process whose environment was clobbered — so a reaper
+    /// needs the declaration, not just the missing tag (clud#522).
+    #[test]
+    fn daemon_declares_itself_and_drops_the_originator_tag() {
+        let mut cmd = Command::new("echo");
+        cmd.env(ORIGINATOR_ENV_VAR, "CLUD:12345");
+        ContainedProcessGroup::strip_originator_env(&mut cmd);
+        crate::spawn::mark_as_daemon(&mut cmd);
+
+        assert_eq!(
+            originator_entry(&cmd),
+            Some(None),
+            "the originator tag must still be removed"
+        );
+        let marker = std::ffi::OsStr::new(crate::DAEMON_MARKER_ENV_VAR);
+        assert_eq!(
+            cmd.get_envs()
+                .find(|(k, _)| *k == marker)
+                .and_then(|(_, v)| v),
+            Some(std::ffi::OsStr::new("1")),
+            "a daemon must positively declare itself"
+        );
+    }
+
     /// A daemon must not carry its spawner's originator tag: it outlives the
     /// spawner, so the tag turns it into reaper bait the moment the spawner
     /// exits. `env_remove` must win even when the caller explicitly set it.
