@@ -1,6 +1,9 @@
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // cargo-llvm-cov sets this cfg while linking LLVM's profiling runtime.
+    println!("cargo:rustc-check-cfg=cfg(coverage)");
+
     // Without these, edits to the .proto don't reliably retrigger
     // codegen on incremental builds.
     println!("cargo:rerun-if-changed=proto/daemon.proto");

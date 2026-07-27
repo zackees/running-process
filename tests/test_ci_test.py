@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -79,6 +81,74 @@ def _expected_seam_test_cmd(python: str) -> list[str]:
     if ci_test.sys.platform == "win32":
         cmd += ["--test-threads", "1"]
     return cmd
+
+
+def test_prune_invalid_profraw_preserves_evidence_before_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_dir = tmp_path / "profiles"
+    bad_dir = tmp_path / "logs" / "bad-profraw"
+    profile_dir.mkdir()
+    valid = profile_dir / "valid.profraw"
+    invalid = profile_dir / "nested" / "invalid.profraw"
+    invalid.parent.mkdir()
+    valid.write_bytes(b"valid-profile")
+    invalid.write_bytes(b"rejected-profile")
+
+    fake_profdata = tmp_path / "fake_llvm_profdata.py"
+    fake_profdata.write_text(
+        "\n".join(
+            [
+                "import pathlib",
+                "import sys",
+                "if sys.argv[1] == '--version':",
+                "    print('LLVM fake-profdata 21.1.8')",
+                "    raise SystemExit(0)",
+                "profile = pathlib.Path(sys.argv[-1])",
+                "raise SystemExit(23 if profile.name.startswith('invalid') else 0)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RUNNER_OS", "fake-linux")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123456")
+    monkeypatch.setenv("GITHUB_SHA", "deadbeef")
+
+    count = ci_test._prune_invalid_profraw(
+        profile_dir,
+        bad_dir=bad_dir,
+        profdata_command=[sys.executable, str(fake_profdata)],
+    )
+
+    assert count == 1
+    assert valid.read_bytes() == b"valid-profile"
+    assert not invalid.exists()
+    assert (bad_dir / "nested" / "invalid.profraw").read_bytes() == b"rejected-profile"
+    manifest = json.loads((bad_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["llvm_version"] == "LLVM fake-profdata 21.1.8"
+    assert manifest["runner_os"] == "fake-linux"
+    assert manifest["github_run_id"] == "123456"
+    assert manifest["github_commit"] == "deadbeef"
+    assert manifest["rejected_profiles"] == [
+        {
+            "filename": "invalid.profraw",
+            "original_path": str(invalid),
+            "preserved_path": "nested\\invalid.profraw"
+            if sys.platform == "win32"
+            else "nested/invalid.profraw",
+            "probe_command": [
+                sys.executable,
+                str(fake_profdata),
+                "show",
+                str(invalid),
+            ],
+            "probe_returncode": 23,
+            "probe_signal": None,
+            "probe_stderr": "",
+            "size_bytes": len(b"rejected-profile"),
+        }
+    ]
 
 
 def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:

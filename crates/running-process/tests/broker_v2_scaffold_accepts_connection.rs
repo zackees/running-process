@@ -8,8 +8,8 @@
 #![cfg(feature = "client")]
 
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
 use std::ops::{Deref, DerefMut};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,56 @@ fn binary_exits_clean_with_no_bind_flag() {
         stdout.contains("running-process-broker-v2"),
         "expected version banner in stdout, got: {stdout}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_requests_bounded_clean_shutdown() {
+    #[cfg(coverage)]
+    let profiles_before = coverage_profile_files();
+
+    let program = unique_program("sigterm");
+    let path = env!("CARGO_BIN_EXE_running-process-broker-v2");
+    let mut child = ChildGuard(
+        Command::new(path)
+            .arg("--program")
+            .arg(&program)
+            .env("RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn broker"),
+    );
+    let pid = child.id();
+    let (_socket_path, stdout_thread) =
+        read_bound_path_bounded(child.stdout.take().expect("piped stdout"));
+
+    // SAFETY: `pid` belongs to the live child we just spawned.
+    let signal_result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    assert_eq!(
+        signal_result,
+        0,
+        "send SIGTERM: {}",
+        std::io::Error::last_os_error()
+    );
+
+    let exit = wait_with_deadline(&mut child, Duration::from_secs(3))
+        .expect("broker must return through normal control flow after SIGTERM");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("piped stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stderr");
+    stdout_thread.join().expect("stdout reader joins");
+    assert!(
+        exit.success(),
+        "SIGTERM exit must be successful: {exit:?}\nstderr:\n{stderr}"
+    );
+
+    #[cfg(coverage)]
+    assert_new_coverage_profiles_are_valid(&profiles_before);
 }
 
 /// Full bind/accept round-trip: spawn the binary, parse the bound path
@@ -129,10 +179,7 @@ fn binary_binds_pipe_accepts_connection_and_exits() {
                     // limit, surfacing as a misleading "exceeds capacity of
                     // sun_path" error from `Stream::connect` later.
                     let rest = rest.trim_end();
-                    let path_only = rest
-                        .rsplit_once(" (")
-                        .map(|(p, _)| p)
-                        .unwrap_or(rest);
+                    let path_only = rest.rsplit_once(" (").map(|(p, _)| p).unwrap_or(rest);
                     socket_path = Some(path_only.to_string());
                     break;
                 }
@@ -239,25 +286,29 @@ fn partial_frame_does_not_hang_once_mode() {
 fn assert_once_stall_times_out(initial_bytes: &[u8]) {
     let program = unique_program("once-timeout");
     let path = env!("CARGO_BIN_EXE_running-process-broker-v2");
-    let mut child = ChildGuard(Command::new(path)
-        .arg("--once")
-        .arg("--program")
-        .arg(&program)
-        .env(
-            "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
-            TEST_HELLO_TIMEOUT_MS,
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn binary"));
+    let mut child = ChildGuard(
+        Command::new(path)
+            .arg("--once")
+            .arg("--program")
+            .arg(&program)
+            .env(
+                "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
+                TEST_HELLO_TIMEOUT_MS,
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn binary"),
+    );
     let (socket_path, stdout_thread) =
         read_bound_path_bounded(child.stdout.take().expect("piped stdout"));
     let name = wrap_socket_name(&socket_path).expect("wrap socket name");
     let mut stalled = Stream::connect(name).expect("connect stalled peer");
     if !initial_bytes.is_empty() {
         use std::io::Write as _;
-        stalled.write_all(initial_bytes).expect("write partial frame");
+        stalled
+            .write_all(initial_bytes)
+            .expect("write partial frame");
     }
 
     let exit = wait_with_deadline(&mut child, Duration::from_secs(6))
@@ -298,19 +349,21 @@ fn silent_peers_release_all_handler_slots_after_deadline() {
     .expect("install service definition");
 
     let path = env!("CARGO_BIN_EXE_running-process-broker-v2");
-    let mut child = ChildGuard(Command::new(path)
-        .arg("--program")
-        .arg(&program)
-        .env("RUNNING_PROCESS_SERVICE_DEF_DIR", svc_dir.path())
-        .env(
-            "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
-            TEST_HELLO_TIMEOUT_MS,
-        )
-        .env("RUNNING_PROCESS_BROKER_MAX_INFLIGHT_HANDLERS", "4")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn binary"));
+    let mut child = ChildGuard(
+        Command::new(path)
+            .arg("--program")
+            .arg(&program)
+            .env("RUNNING_PROCESS_SERVICE_DEF_DIR", svc_dir.path())
+            .env(
+                "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
+                TEST_HELLO_TIMEOUT_MS,
+            )
+            .env("RUNNING_PROCESS_BROKER_MAX_INFLIGHT_HANDLERS", "4")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn binary"),
+    );
     let (socket_path, stdout_thread) =
         read_bound_path_bounded(child.stdout.take().expect("piped stdout"));
     let (stderr_tx, stderr_rx) = mpsc::channel();
@@ -491,6 +544,91 @@ fn wait_with_deadline(
     }
     let _ = child.kill();
     Err(format!("binary did not exit within {deadline:?}"))
+}
+
+#[cfg(coverage)]
+fn coverage_profile_files() -> std::collections::HashSet<std::path::PathBuf> {
+    let pattern =
+        std::env::var_os("LLVM_PROFILE_FILE").expect("cargo-llvm-cov must set LLVM_PROFILE_FILE");
+    let pattern = std::path::PathBuf::from(pattern);
+    let root = pattern
+        .parent()
+        .expect("LLVM_PROFILE_FILE has a parent directory");
+    let root = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .expect("current directory")
+            .join(root)
+    };
+    let mut profiles = std::collections::HashSet::new();
+    collect_profraw(&root, &mut profiles);
+    profiles
+}
+
+#[cfg(coverage)]
+fn collect_profraw(
+    directory: &std::path::Path,
+    profiles: &mut std::collections::HashSet<std::path::PathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_profraw(&path, profiles);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "profraw")
+        {
+            profiles.insert(path);
+        }
+    }
+}
+
+#[cfg(coverage)]
+fn assert_new_coverage_profiles_are_valid(
+    profiles_before: &std::collections::HashSet<std::path::PathBuf>,
+) {
+    let profiles_after = coverage_profile_files();
+    let new_profiles: Vec<_> = profiles_after.difference(profiles_before).collect();
+    assert!(
+        !new_profiles.is_empty(),
+        "graceful broker exit must write at least one new .profraw"
+    );
+
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .expect("run rustc to locate llvm-profdata");
+    assert!(sysroot.status.success(), "rustc --print sysroot failed");
+    let sysroot = std::path::PathBuf::from(
+        String::from_utf8(sysroot.stdout)
+            .expect("UTF-8 sysroot")
+            .trim(),
+    );
+    let llvm_profdata = std::fs::read_dir(sysroot.join("lib/rustlib"))
+        .expect("read rustlib targets")
+        .flatten()
+        .map(|entry| entry.path().join("bin/llvm-profdata"))
+        .find(|candidate| candidate.is_file())
+        .expect("llvm-tools-preview llvm-profdata");
+
+    for profile in new_profiles {
+        let output = Command::new(&llvm_profdata)
+            .arg("show")
+            .arg(profile)
+            .output()
+            .expect("run llvm-profdata show");
+        assert!(
+            output.status.success(),
+            "broker profile rejected by llvm-profdata: {}\nstdout:\n{}\nstderr:\n{}",
+            profile.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
 }
 
 // `read_to_string` is on `Read`, not `BufRead`; import it explicitly so

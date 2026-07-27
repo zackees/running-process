@@ -10,8 +10,8 @@
 //!    earlier integration tests.
 //! 2. **Persistent accept loop** — each accepted connection spawns
 //!    a thread that handles the Hello round-trip. The accept loop
-//!    is bounded only by the OS's pending-connection backlog;
-//!    in-flight handlers are bounded by the OS thread cap.
+//!    polls with bounded latency so Unix SIGTERM/SIGINT can request a
+//!    normal shutdown; in-flight handlers are drained with a deadline.
 //! 3. **ServiceDefinitionLoader integration** — on each Hello, look
 //!    up `hello.service_name` via the default v2 service-definition
 //!    directory ([`ServiceDefinitionLoader::default_root`]). Reject
@@ -33,7 +33,7 @@
 //!   `broker-v2-scaffold`.
 //!
 //! Future slices:
-//! - SIGTERM / Ctrl+C graceful shutdown (drain in-flight handlers).
+//! - Windows console-event graceful shutdown.
 //! - Backend-pipe resolution + adopt forwarding.
 //! - Single-instance lock (refuse start if another broker is bound).
 //! - Refuse-privileged-run guard (port from v1).
@@ -41,12 +41,13 @@
 use std::env;
 use std::io::Write;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::{Listener as _, Stream as _};
-use interprocess::local_socket::ListenerOptions;
+use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions};
 use prost::Message;
 use running_process::broker::lifecycle::names_v2::v2_program_pipe;
 use running_process::broker::lifecycle::privilege::refuse_privileged_run;
@@ -56,8 +57,8 @@ use running_process::broker::protocol::{
     ENVELOPE_VERSION,
 };
 use running_process::broker::protocol_v2::ServiceDefinitionLoader;
-use running_process::broker::server::service_def_loader::ServiceDefinitionError;
 use running_process::broker::server::deadline_stream::{hello_read_deadline, DeadlineStream};
+use running_process::broker::server::service_def_loader::ServiceDefinitionError;
 
 /// Default program name when `--program` is not passed. Matches the
 /// slice-3c scaffold so existing integration tests keep working.
@@ -68,6 +69,59 @@ const SCAFFOLD_PIPE_IDX: u32 = 0;
 /// cap is the hard upper bound but we want backpressure before that.
 const MAX_INFLIGHT_HANDLERS: usize = 256;
 const MAX_INFLIGHT_HANDLERS_ENV: &str = "RUNNING_PROCESS_BROKER_MAX_INFLIGHT_HANDLERS";
+const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const HANDLER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[cfg(unix)]
+static SIGNAL_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn record_shutdown_signal(_signal: libc::c_int) {
+    // Async-signal-safe by construction: do not allocate, log, join threads,
+    // or call the LLVM profile runtime from this handler.
+    SIGNAL_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+#[cfg(unix)]
+fn install_shutdown_signal_handlers() -> std::io::Result<()> {
+    SIGNAL_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+        // SAFETY: `record_shutdown_signal` has C ABI, lives for the process
+        // lifetime, and performs only an atomic store.
+        let previous = unsafe {
+            libc::signal(
+                signal,
+                record_shutdown_signal as *const () as libc::sighandler_t,
+            )
+        };
+        if previous == libc::SIG_ERR {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(coverage)]
+unsafe extern "C" {
+    fn __llvm_profile_write_file() -> libc::c_int;
+}
+
+fn flush_coverage_profile() -> Result<(), String> {
+    #[cfg(coverage)]
+    {
+        // SAFETY: cargo-llvm-cov links this process with LLVM's profiling
+        // runtime. This call occurs after the signal handler has returned and
+        // after handler threads have been drained, in ordinary Rust control
+        // flow.
+        let result = unsafe { __llvm_profile_write_file() };
+        if result != 0 {
+            return Err(format!(
+                "__llvm_profile_write_file returned nonzero status {result}"
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn max_inflight_handlers() -> usize {
     std::env::var(MAX_INFLIGHT_HANDLERS_ENV)
@@ -151,14 +205,14 @@ fn main() -> ExitCode {
     // would bind the v2 pipe in a namespace other users can't reach
     // AND would create privileged sockets that downstream daemons
     // get adopted into. Mirrors v1's `running-process-broker-v1`
-    // startup check exactly. The `RUNNING_PROCESS_ALLOW_PRIVILEGED`
+    // startup check exactly. The `RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED`
     // env var is honored for isolated test environments that
     // intentionally exercise privileged startup behavior.
     if let Err(err) = refuse_privileged_run() {
         eprintln!(
             "running-process-broker-v2: refusing privileged startup: {err}. \
              Run as an unprivileged user, or set \
-             RUNNING_PROCESS_ALLOW_PRIVILEGED=1 for isolated test environments only."
+             RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED=1 for isolated test environments only."
         );
         return ExitCode::from(77); // EX_NOPERM
     }
@@ -252,7 +306,23 @@ fn main() -> ExitCode {
     let exit_code = if opts.once {
         accept_one(&listener, Arc::clone(&loader))
     } else {
-        accept_loop(&listener, Arc::clone(&loader), Arc::clone(&inflight))
+        #[cfg(unix)]
+        if let Err(err) = install_shutdown_signal_handlers() {
+            eprintln!("running-process-broker-v2: install shutdown signal handlers failed: {err}");
+            return ExitCode::from(1);
+        }
+
+        #[cfg(unix)]
+        let shutdown = &SIGNAL_SHUTDOWN_REQUESTED;
+        #[cfg(not(unix))]
+        let shutdown = &AtomicBool::new(false);
+
+        accept_loop(
+            &listener,
+            Arc::clone(&loader),
+            Arc::clone(&inflight),
+            shutdown,
+        )
     };
 
     #[cfg(unix)]
@@ -260,22 +330,34 @@ fn main() -> ExitCode {
         let _ = std::fs::remove_file(&socket_path);
     }
 
+    if let Err(err) = flush_coverage_profile() {
+        eprintln!("running-process-broker-v2: coverage profile flush failed: {err}");
+        return ExitCode::from(1);
+    }
+
     exit_code
 }
 
 /// Persistent accept loop. Spawns one handler thread per accepted
-/// connection, bounded by `MAX_INFLIGHT_HANDLERS`. Returns `ExitCode`
-/// only on terminal accept failure (the loop itself never returns
-/// success — production exit is via SIGTERM, a follow-up slice).
+/// connection, bounded by `MAX_INFLIGHT_HANDLERS`. A nonblocking listener
+/// makes the shutdown flag observable within [`ACCEPT_POLL_INTERVAL`].
 fn accept_loop(
     listener: &interprocess::local_socket::Listener,
     loader: Arc<ServiceDefinitionLoader>,
     inflight: Arc<AtomicUsize>,
+    shutdown: &AtomicBool,
 ) -> ExitCode {
+    if let Err(err) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
+        eprintln!("running-process-broker-v2: set listener nonblocking failed: {err}");
+        return ExitCode::from(1);
+    }
+
     let max_inflight = max_inflight_handlers();
+    let mut handlers = Vec::new();
     loop {
-        match listener.accept() {
-            Ok(stream) => {
+        reap_finished_handlers(&mut handlers);
+        match poll_accept_until_shutdown(shutdown, || listener.accept()) {
+            Ok(Some(stream)) => {
                 // Backpressure: refuse to spawn if we're already at the cap.
                 // The peer's blocking read on the Hello-reply socket will
                 // see EOF when this branch closes the stream.
@@ -300,19 +382,27 @@ fn accept_loop(
                             Ok(svc) => println!(
                                 "running-process-broker-v2 Hello service={svc:?} negotiated",
                             ),
-                            Err(err) => eprintln!(
-                                "running-process-broker-v2 Hello handler failed: {err}"
-                            ),
+                            Err(err) => {
+                                eprintln!("running-process-broker-v2 Hello handler failed: {err}")
+                            }
                         }
                     });
-                if let Err(err) = spawn_result {
-                    eprintln!(
-                        "running-process-broker-v2: thread spawn failed: {err}; \
-                         dropping connection"
-                    );
-                    // Decrement here since the spawned thread never ran.
-                    inflight.fetch_sub(1, Ordering::SeqCst);
+                match spawn_result {
+                    Ok(handler) => handlers.push(handler),
+                    Err(err) => {
+                        eprintln!(
+                            "running-process-broker-v2: thread spawn failed: {err}; \
+                             dropping connection"
+                        );
+                        // Decrement here since the spawned thread never ran.
+                        inflight.fetch_sub(1, Ordering::SeqCst);
+                    }
                 }
+            }
+            Ok(None) => {
+                println!("running-process-broker-v2: shutdown requested; draining handlers");
+                drain_handlers(&mut handlers, HANDLER_DRAIN_TIMEOUT);
+                return ExitCode::SUCCESS;
             }
             Err(err) => {
                 // accept() errors are typically fatal (listener died);
@@ -321,6 +411,55 @@ fn accept_loop(
                 return ExitCode::from(1);
             }
         }
+    }
+}
+
+fn poll_accept_until_shutdown<T>(
+    shutdown: &AtomicBool,
+    mut accept: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<Option<T>> {
+    while !shutdown.load(Ordering::Relaxed) {
+        match accept() {
+            Ok(value) => return Ok(Some(value)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(ACCEPT_POLL_INTERVAL);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(None)
+}
+
+fn reap_finished_handlers(handlers: &mut Vec<thread::JoinHandle<()>>) {
+    let mut index = 0;
+    while index < handlers.len() {
+        if handlers[index].is_finished() {
+            let handler = handlers.swap_remove(index);
+            if handler.join().is_err() {
+                eprintln!("running-process-broker-v2: handler thread panicked");
+            }
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn drain_handlers(handlers: &mut Vec<thread::JoinHandle<()>>, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while !handlers.is_empty() && Instant::now() < deadline {
+        reap_finished_handlers(handlers);
+        if !handlers.is_empty() {
+            thread::sleep(ACCEPT_POLL_INTERVAL);
+        }
+    }
+    reap_finished_handlers(handlers);
+    if !handlers.is_empty() {
+        eprintln!(
+            "running-process-broker-v2: handler drain timed out after {timeout:?}; \
+             detaching {} handler(s)",
+            handlers.len()
+        );
     }
 }
 
@@ -644,6 +783,35 @@ mod tests {
     }
 
     #[test]
+    fn accept_poll_exits_without_accepting_after_shutdown_request() {
+        let shutdown = AtomicBool::new(true);
+        let result = poll_accept_until_shutdown(&shutdown, || -> std::io::Result<()> {
+            panic!("accept must not run after shutdown")
+        })
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn accept_poll_observes_shutdown_while_listener_would_block() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let setter = Arc::clone(&shutdown);
+        let signaler = thread::spawn(move || {
+            thread::sleep(ACCEPT_POLL_INTERVAL);
+            setter.store(true, Ordering::Relaxed);
+        });
+        let start = Instant::now();
+        let result = poll_accept_until_shutdown(&shutdown, || -> std::io::Result<()> {
+            Err(std::io::ErrorKind::WouldBlock.into())
+        })
+        .unwrap();
+
+        signaler.join().unwrap();
+        assert!(result.is_none());
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
     fn parse_cli_defaults() {
         let args = vec!["bin".to_owned()];
         let opts = parse_cli(&args).unwrap();
@@ -654,7 +822,11 @@ mod tests {
 
     #[test]
     fn parse_cli_program_arg() {
-        let args = vec!["bin".to_owned(), "--program".to_owned(), "zccache".to_owned()];
+        let args = vec![
+            "bin".to_owned(),
+            "--program".to_owned(),
+            "zccache".to_owned(),
+        ];
         let opts = parse_cli(&args).unwrap();
         assert_eq!(opts.program, "zccache");
     }
@@ -742,11 +914,7 @@ mod tests {
         match reply.result {
             Some(hello_reply::Result::Refused(r)) => {
                 assert_eq!(r.code, ErrorCode::ErrorVersionBlocked as i32);
-                assert!(
-                    r.reason.contains("allow_list"),
-                    "got: {}",
-                    r.reason
-                );
+                assert!(r.reason.contains("allow_list"), "got: {}", r.reason);
             }
             other => panic!("expected Refused, got {other:?}"),
         }
