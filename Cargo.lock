@@ -1504,6 +1504,8 @@ dependencies = [
  "protox",
  "running-process",
  "tempfile",
+ "thiserror 2.0.18",
+ "winapi",
  "windows-sys 0.59.0",
 ]
 
