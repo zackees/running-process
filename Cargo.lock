@@ -1351,7 +1351,7 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.6.2"
+version = "4.6.3"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-observer"
-version = "4.6.2"
+version = "4.6.3"
 dependencies = [
  "blake3",
  "dirs",
@@ -1401,21 +1401,21 @@ dependencies = [
 
 [[package]]
 name = "running-process-observer-interposer-linux"
-version = "4.6.2"
+version = "4.6.3"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "running-process-observer-interposer-macos"
-version = "4.6.2"
+version = "4.6.3"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "running-process-observer-interposer-windows"
-version = "4.6.2"
+version = "4.6.3"
 dependencies = [
  "retour",
  "windows-sys 0.59.0",
@@ -1423,7 +1423,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "4.6.2"
+version = "4.6.3"
 dependencies = [
  "interprocess",
  "libc",
@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-win-gnu-bridge"
-version = "4.6.2"
+version = "4.6.3"
 dependencies = [
  "windows-sys 0.59.0",
 ]
