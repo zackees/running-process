@@ -1,0 +1,124 @@
+syntax = "proto3";
+
+package running_process.probe_diag.v1;
+
+import "probe_diag_v1/probe_diag_v1_common.proto";
+
+// Registration: how a process enrolls itself with the probe daemon.
+//
+// The probe model is enrollment, not discovery — an app opts in by registering
+// itself, and only ARMED processes are findable. Nothing here grants access on
+// its own; the daemon enforces the state machine (S3).
+
+enum Runtime {
+  RUNTIME_UNSPECIFIED = 0;
+  RUNTIME_NATIVE = 1;
+  // Mixed-mode: a Python process also carries native frames beneath the
+  // interpreter frames, so it still needs native symbolization.
+  RUNTIME_PYTHON = 2;
+  reserved 3 to 15;
+}
+
+enum SupportedOp {
+  SUPPORTED_OP_UNSPECIFIED = 0;
+  SUPPORTED_OP_STACK_CAPTURE = 1;
+  SUPPORTED_OP_CPU_PROFILE = 2;
+  SUPPORTED_OP_HEAP_PROFILE = 3;
+  SUPPORTED_OP_OFF_CPU_PROFILE = 4;
+  reserved 5 to 31;
+}
+
+enum SymbolSource {
+  SYMBOL_SOURCE_UNSPECIFIED = 0;
+  SYMBOL_SOURCE_NONE = 1;
+  SYMBOL_SOURCE_LOCAL = 2;
+  SYMBOL_SOURCE_MANIFEST = 3;
+  reserved 4 to 15;
+}
+
+// What the registering process permits.
+//
+// Env values are default-deny: an operator opts specific variables in by name
+// via `env_allowlist`. Process environments routinely carry credentials, so
+// exposing them wholesale on a query surface would leak secrets.
+message AllowPolicy {
+  bool allow_all_ops = 1;
+  repeated string env_allowlist = 2;
+  reserved 3 to 15;
+}
+
+// What the process discloses about itself on query surfaces.
+message Disclosure {
+  bool expose_exe_path = 1;
+  bool expose_cmdline = 2;
+  bool expose_env_names = 3;
+  reserved 4 to 15;
+}
+
+message RegisterProcess {
+  ProcessKey key = 1;
+
+  string exe_path = 2;
+  bytes exe_sha256 = 3;
+
+  // Coarse grouping for cross-instance queries ("all clud crashes").
+  string app_class = 4;
+  string app_name = 5;
+  string app_version = 6;
+  string instance_name = 7;
+
+  string arch = 8;
+  string os = 9;
+
+  Runtime runtime = 10;
+  repeated SupportedOp supported_ops = 11;
+  SymbolSource symbol_source = 12;
+  AllowPolicy allow_policy = 13;
+  Disclosure disclosure = 14;
+
+  // Version range the client can speak. The daemon picks one or refuses.
+  uint32 protocol_min = 15;
+  uint32 protocol_max = 16;
+
+  // Single-use, client-generated. The daemon rejects a replayed nonce so a
+  // captured registration frame cannot be used to re-enroll later.
+  bytes registration_nonce = 17;
+
+  reserved 18 to 31;
+}
+
+message RegistrationStatus {
+  enum State {
+    STATE_UNREGISTERED = 0;
+    STATE_REGISTERING = 1;
+    // Reached only after identity-verify AND capability-grant both succeed.
+    STATE_ARMED = 2;
+    STATE_DROPPED = 3;
+    reserved 4 to 15;
+  }
+
+  State state = 1;
+  ProbeErrorCode error = 2;
+  string detail = 3;
+
+  // The daemon's own identity, so the app can verify who it is talking to
+  // before granting anything. Mutual identity, not one-way.
+  ProcessKey daemon_key = 4;
+
+  reserved 5 to 15;
+}
+
+// Liveness. A registration whose heartbeats stop is reaped.
+message Heartbeat {
+  ProcessKey key = 1;
+  reserved 2 to 7;
+}
+
+message UnregisterProcess {
+  ProcessKey key = 1;
+  reserved 2 to 7;
+}
+
+message ListProcesses {
+  reserved 1 to 7;
+}
