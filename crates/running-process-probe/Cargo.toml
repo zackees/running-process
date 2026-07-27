@@ -43,6 +43,17 @@ embed-helper = ["dep:dirs", "dep:blake3", "dep:windows-sys"]
 dirs = { version = "6", optional = true }
 blake3 = { version = "1", optional = true }
 
+# The probe_diag.v1 schema (#630) is always compiled — it is the crate's
+# wire, not an opt-in. `prost` is non-optional; the "no injection symbols"
+# invariant constrains the MAIN crate, not this one, and the interposer
+# crates don't depend on this crate so they pay nothing.
+#
+# Must stay in this cross-platform `[dependencies]` table. It previously sat
+# below the `[target.'cfg(target_os = "windows")'.dependencies]` header,
+# which silently scoped it to Windows — the crate then built here but failed
+# every Linux/macOS lane with "could not find `prost`".
+prost = "0.14"
+
 # Slice 6d adds the Windows-side injection vehicle
 # (`CreateRemoteThread(LoadLibraryW, dll_path)`). Gated on
 # `target_os = "windows"` so the rest of the workspace doesn't pull
@@ -57,12 +68,22 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
 ], optional = true }
 
+[build-dependencies]
+prost-build = "0.14"
+protox = "0.9"
+
 [dev-dependencies]
 # `tempfile` for tests that exercise the cache-extract machinery
 # against per-test directories instead of the shared
 # `helper_cache_dir()` (which would race across parallel tests).
 tempfile = "3"
 libc = "0.2"
+# Framing primitives for the wire round-trip tests. The probe wire reuses
+# the broker's framing codec rather than re-deriving the 16 MiB cap.
+running-process = { path = "../running-process", default-features = false, features = [
+    "client",
+] }
+proptest = "1"
 
 [lints]
 workspace = true
