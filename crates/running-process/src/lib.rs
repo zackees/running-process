@@ -119,7 +119,9 @@ pub use observer::{
     ObserverEvent, ObserverEventKind, ObserverSubscriber,
 };
 #[cfg(feature = "originator-scan")]
-pub use originator::{find_processes_by_originator, OriginatorProcessInfo};
+pub use originator::{
+    find_declared_daemon_pids, find_processes_by_originator, OriginatorProcessInfo,
+};
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
