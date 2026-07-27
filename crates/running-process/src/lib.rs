@@ -55,6 +55,11 @@ pub mod client;
 #[cfg(feature = "client")]
 pub mod broker;
 
+/// Probe client facade (#633). Gated on the `probe` feature so a build
+/// without it contains none of this code.
+#[cfg(feature = "probe")]
+pub mod probe;
+
 // Phase 1 of #228 (issue #230): maintenance subcommands exposed via
 // the `runpm` CLI. Currently just `release-handles` — a cross-platform
 // scaffold for the Windows worktree-teardown handle-race fix
