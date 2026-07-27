@@ -117,10 +117,16 @@ class TestPtyTuiRepaint(unittest.TestCase):
         # runner images canonicalizes CUP(1,1) to the equivalent short
         # form `\x1b[H` even in passthrough mode. Either form proves the
         # cursor-home escape survived the PTY instead of being eaten.
+        #
+        # Anchor on the `COUNTER` payload: the testbin's clear preamble
+        # is `\x1b[H\x1b[2J`, so a bare "contains `\x1b[H`" check would
+        # pass on the preamble alone and stop proving that the per-tick
+        # repaint escapes survived. See #660.
         self.assertTrue(
-            b"\x1b[1;1H" in captured or b"\x1b[H" in captured,
-            "cursor-home escape (`\\x1b[1;1H` or `\\x1b[H`) missing "
-            "from PTY output",
+            b"\x1b[1;1HCOUNTER" in captured or b"\x1b[HCOUNTER" in captured,
+            "tick repaint missing from PTY output: expected "
+            "`\\x1b[1;1HCOUNTER` or `\\x1b[HCOUNTER`, got "
+            f"{captured!r}",
         )
 
         # Plaintext bookend assertions: first and last counter values
