@@ -1,5 +1,5 @@
 [package]
-name = "running-process-observer-interposer-windows"
+name = "running-process-probe-interposer-windows"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "Windows DLL-injection interposer for the running-process file-hook tier (#551 slice 6)"
 publish = false
 
-# cdylib so the resulting `running_process_observer_interposer_windows.dll`
+# cdylib so the resulting `running_process_probe_interposer_windows.dll`
 # can be `LoadLibrary`'d into target processes by the sidecar injector
 # (slice 6d's pattern: suspend → CreateRemoteThread(LoadLibraryW) →
 # resume; see #551 design body for the AV exposure mitigation

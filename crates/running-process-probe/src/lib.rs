@@ -12,7 +12,7 @@
 //!
 //! The injector and per-OS interposer code live in this crate, behind
 //! the `embed-helper` Cargo feature, and ship via the bundled
-//! `running-process-observer-helper` binary embedded at build time and
+//! `running-process-probe-agent` binary embedded at build time and
 //! extracted to a per-user cache directory at first use. The main
 //! [`running_process`] crate stays **completely clean of injection
 //! symbols** (`CreateRemoteThread`, `dlopen` of interposers, etc.) so
@@ -37,7 +37,7 @@
 //!   embedded helper is available for this build (`feature_enabled`)
 //!   and whether the host has the per-OS injection vehicle (filled in
 //!   by slices 4–6).
-//! - Placeholder `running-process-observer-helper` binary that prints a
+//! - Placeholder `running-process-probe-agent` binary that prints a
 //!   version banner and exits — proves the workspace plumbing.
 //!
 //! No injection, no IPC, no events. Slice 2 adds the embed-and-extract
@@ -138,7 +138,7 @@ pub fn negotiate_hook_support() -> HookSupport {
         #[cfg(target_os = "windows")]
         {
             // Slice 6d landed: the `inject_into_pid` vehicle is wired.
-            // The interposer DLL itself (running-process-observer-
+            // The interposer DLL itself (running-process-probe-
             // interposer-windows) ships separately and the caller
             // provides its on-disk path.
             HookSupport::Available
@@ -182,7 +182,7 @@ pub fn negotiate_hook_support() -> HookSupport {
 ///   (XDG cache on Linux, `~/Library/Caches` on macOS,
 ///   `%LOCALAPPDATA%` on Windows, via the `dirs` crate).
 /// - [`helper_filename`] — stable per-build filename
-///   (`running-process-observer-helper-<version>-<target>.[exe]`).
+///   (`running-process-probe-agent-<version>-<target>.[exe]`).
 /// - [`extract_helper_blob`] — idempotent: writes `blob` to
 ///   `<cache>/<filename>` if the existing file's blake3 hash doesn't
 ///   match, sets the executable bit on Unix. Returns the path.
@@ -200,16 +200,16 @@ pub mod embed {
     /// Top-level subdirectory under the OS cache root that holds the
     /// extracted helper. Versioned via the crate's package version so
     /// stale helpers from older installs don't get reused.
-    const CACHE_SUBDIR: &str = "running-process-observer";
+    const CACHE_SUBDIR: &str = "running-process-probe";
 
     /// Return the OS-specific cache directory the helper lives in,
     /// creating it on disk if it doesn't already exist.
     ///
     /// Paths:
-    /// - **Linux**: `$XDG_CACHE_HOME/running-process-observer` or
-    ///   `~/.cache/running-process-observer`
-    /// - **macOS**: `~/Library/Caches/running-process-observer`
-    /// - **Windows**: `%LOCALAPPDATA%\running-process-observer`
+    /// - **Linux**: `$XDG_CACHE_HOME/running-process-probe` or
+    ///   `~/.cache/running-process-probe`
+    /// - **macOS**: `~/Library/Caches/running-process-probe`
+    /// - **Windows**: `%LOCALAPPDATA%\running-process-probe`
     pub fn helper_cache_dir() -> io::Result<PathBuf> {
         let base = dirs::cache_dir().ok_or_else(|| {
             io::Error::new(
@@ -231,7 +231,7 @@ pub mod embed {
         let target = std::env::consts::ARCH;
         let os = std::env::consts::OS;
         let ext = if cfg!(windows) { ".exe" } else { "" };
-        format!("running-process-observer-helper-{version}-{target}-{os}{ext}")
+        format!("running-process-probe-agent-{version}-{target}-{os}{ext}")
     }
 
     /// The fully-resolved path the extracted helper will live at.
@@ -388,15 +388,15 @@ mod tests {
             );
             // The trailing component must be our versioned subdir.
             assert!(
-                p.ends_with("running-process-observer"),
-                "expected cache path to end in running-process-observer, got {p:?}"
+                p.ends_with("running-process-probe"),
+                "expected cache path to end in running-process-probe, got {p:?}"
             );
         }
 
         #[test]
         fn helper_filename_carries_version_and_arch() {
             let name = helper_filename();
-            assert!(name.starts_with("running-process-observer-helper-"));
+            assert!(name.starts_with("running-process-probe-agent-"));
             assert!(
                 name.contains(env!("CARGO_PKG_VERSION")),
                 "filename must carry the crate version: {name}"

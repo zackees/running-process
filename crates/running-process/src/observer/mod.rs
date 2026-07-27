@@ -620,7 +620,7 @@ pub enum ObserverEventKind {
     DescendantExited,
     /// A file was opened by the observed process. Emitted on the
     /// [`EventCategory::File`] category by the **hook tier** of the
-    /// observer (the sidecar interposer in `running-process-observer`,
+    /// observer (the sidecar interposer in `running-process-probe`,
     /// tracked by #551). The pid in [`ObserverEvent::pid`] is the
     /// process that performed the call. `flags` is the platform-native
     /// open flags (POSIX `O_*` on Unix; Windows `dwDesiredAccess` |

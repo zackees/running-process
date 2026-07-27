@@ -1389,7 +1389,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "running-process-observer"
+name = "running-process-probe"
 version = "4.6.4"
 dependencies = [
  "blake3",
@@ -1400,21 +1400,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "running-process-observer-interposer-linux"
+name = "running-process-probe-interposer-linux"
 version = "4.6.4"
 dependencies = [
  "libc",
 ]
 
 [[package]]
-name = "running-process-observer-interposer-macos"
+name = "running-process-probe-interposer-macos"
 version = "4.6.4"
 dependencies = [
  "libc",
 ]
 
 [[package]]
-name = "running-process-observer-interposer-windows"
+name = "running-process-probe-interposer-windows"
 version = "4.6.4"
 dependencies = [
  "retour",

@@ -1,14 +1,14 @@
 //! macOS `DYLD_INSERT_LIBRARIES` interposer for the running-process
 //! file-hook tier (#551 slice 5).
 //!
-//! Built as a cdylib `librunning_process_observer_interposer_macos.dylib`.
+//! Built as a cdylib `librunning_process_probe_interposer_macos.dylib`.
 //! At load time (when a target process is launched with
-//! `DYLD_INSERT_LIBRARIES=…/librunning_process_observer_interposer_macos.dylib`),
+//! `DYLD_INSERT_LIBRARIES=…/librunning_process_probe_interposer_macos.dylib`),
 //! the dynamic linker loads this library before the C runtime and any
 //! symbols we export shadow libc's. A load-time constructor eagerly
 //! resolves the real functions via `dlsym(RTLD_NEXT, "…")`; each shadow
 //! invokes its resolved function, then emits an
-//! `RPO_HOOK …` line on stderr matching the Linux interposer's
+//! `RPP_HOOK …` line on stderr matching the Linux interposer's
 //! format (#551 slice 4).
 //!
 //! ## Differences from the Linux interposer
@@ -288,26 +288,26 @@ fn emit_line(line: &str) {
 
 fn emit_open(path: &str, flags: c_int, fd: c_int) {
     emit_line(&format!(
-        "RPO_HOOK file-open path={path:?} flags={flags} fd={fd}\n"
+        "RPP_HOOK file-open path={path:?} flags={flags} fd={fd}\n"
     ));
 }
 
 fn emit_close(path: &str, fd: c_int) {
-    emit_line(&format!("RPO_HOOK file-close path={path:?} fd={fd}\n"));
+    emit_line(&format!("RPP_HOOK file-close path={path:?} fd={fd}\n"));
 }
 
 fn emit_write(path: &str, fd: c_int, byte_count: i64) {
     emit_line(&format!(
-        "RPO_HOOK file-write path={path:?} fd={fd} byte_count={byte_count}\n"
+        "RPP_HOOK file-write path={path:?} fd={fd} byte_count={byte_count}\n"
     ));
 }
 
 fn emit_unlink(path: &str) {
-    emit_line(&format!("RPO_HOOK file-unlink path={path:?}\n"));
+    emit_line(&format!("RPP_HOOK file-unlink path={path:?}\n"));
 }
 
 fn emit_rename(from: &str, to: &str) {
-    emit_line(&format!("RPO_HOOK file-rename from={from:?} to={to:?}\n"));
+    emit_line(&format!("RPP_HOOK file-rename from={from:?} to={to:?}\n"));
 }
 
 // ── fd-table helpers ──

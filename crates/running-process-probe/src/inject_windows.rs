@@ -2,7 +2,7 @@
 //! (#551 slice 6d).
 //!
 //! Injects an arbitrary DLL (the
-//! `running-process-observer-interposer-windows.dll` payload built
+//! `running-process-probe-interposer-windows.dll` payload built
 //! in slices 6a–6c) into a target process by:
 //!
 //! 1. `OpenProcess(target_pid)` with the access rights we need:

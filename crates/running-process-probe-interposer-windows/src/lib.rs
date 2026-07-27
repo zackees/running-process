@@ -1,7 +1,7 @@
 //! Windows DLL-injection interposer for the running-process
 //! file-hook tier (#551 slice 6).
 //!
-//! Built as a cdylib `running_process_observer_interposer_windows.dll`.
+//! Built as a cdylib `running_process_probe_interposer_windows.dll`.
 //! Unlike the Linux LD_PRELOAD and macOS DYLD_INSERT_LIBRARIES
 //! interposers — which the dynamic linker loads automatically when
 //! the appropriate env var is set — Windows has no equivalent loader
@@ -18,7 +18,7 @@
 //!    and calls our `DllMain` with `DLL_PROCESS_ATTACH`.
 //! 4. `DllMain` installs `retour`-backed inline detours on the Win32
 //!    file APIs. Each detour calls the original via a trampoline,
-//!    emitting an `RPO_HOOK …` line on stderr matching the
+//!    emitting an `RPP_HOOK …` line on stderr matching the
 //!    Linux + macOS interposer format.
 //!
 //! ## AV / EDR exposure
@@ -27,8 +27,8 @@
 //! the prototypical "process injection" pattern AV/EDR products flag
 //! aggressively. The `#551` design body documents the mitigation:
 //! injection lives in the **sidecar helper binary**
-//! (`running-process-observer-helper`, slices 1–2) which is embedded
-//! in the `running-process-observer` crate via `include_bytes!` and
+//! (`running-process-probe-agent`, slices 1–2) which is embedded
+//! in the `running-process-probe` crate via `include_bytes!` and
 //! extracted to a per-user cache at first use. The main
 //! `running-process` crate stays free of injection symbols entirely.
 //! This DLL (the **payload**) doesn't itself call the injection
@@ -173,7 +173,7 @@ fn handle_table_remove(handle: HANDLE) -> Option<String> {
 /// installation failed). The `IN_HOOK` reentrancy guard handles
 /// the case where another hook called this and the `WriteFile`
 /// detour fires — it short-circuits the emit-recursion path.
-/// Bounded queue of pending `RPO_HOOK …` lines plus a wakeup condvar.
+/// Bounded queue of pending `RPP_HOOK …` lines plus a wakeup condvar.
 /// `emit_bytes` enqueues here (never blocks); a dedicated drain thread
 /// writes them to stderr with a blocking `WriteFile`. This decouples the
 /// host process's own file operations from stderr backpressure (issue
@@ -200,7 +200,7 @@ fn emit_queue() -> &'static EmitQueue {
     })
 }
 
-/// Enqueue an `RPO_HOOK` line for the drain thread. Non-blocking: takes a
+/// Enqueue an `RPP_HOOK` line for the drain thread. Non-blocking: takes a
 /// brief mutex, drops the oldest line on overflow, and returns — a hooked
 /// file op never blocks on stderr.
 fn emit_bytes(bytes: &[u8]) {
@@ -290,28 +290,28 @@ fn emit_open(path: &str, access: u32, disposition: u32, handle: HANDLE) {
     // pack `dwDesiredAccess` and `dwCreationDisposition` into a
     // structured value the downstream parser can split on.
     emit_line(&format!(
-        "RPO_HOOK file-open path={path:?} access=0x{access:08x} disposition={disposition} handle={handle:p}\n",
+        "RPP_HOOK file-open path={path:?} access=0x{access:08x} disposition={disposition} handle={handle:p}\n",
     ));
 }
 
 fn emit_close(path: &str, handle: HANDLE) {
     emit_line(&format!(
-        "RPO_HOOK file-close path={path:?} handle={handle:p}\n"
+        "RPP_HOOK file-close path={path:?} handle={handle:p}\n"
     ));
 }
 
 fn emit_write(path: &str, handle: HANDLE, byte_count: u32) {
     emit_line(&format!(
-        "RPO_HOOK file-write path={path:?} handle={handle:p} byte_count={byte_count}\n"
+        "RPP_HOOK file-write path={path:?} handle={handle:p} byte_count={byte_count}\n"
     ));
 }
 
 fn emit_unlink(path: &str) {
-    emit_line(&format!("RPO_HOOK file-unlink path={path:?}\n"));
+    emit_line(&format!("RPP_HOOK file-unlink path={path:?}\n"));
 }
 
 fn emit_rename(from: &str, to: &str) {
-    emit_line(&format!("RPO_HOOK file-rename from={from:?} to={to:?}\n"));
+    emit_line(&format!("RPP_HOOK file-rename from={from:?} to={to:?}\n"));
 }
 
 // ── Path helpers ──
@@ -342,7 +342,7 @@ fn wide_cstr_to_string(ptr: *const u16) -> Option<String> {
 // ── Detour bodies ──
 
 /// Detour body for `CreateFileW`. Calls the original via the
-/// stashed trampoline, emits an `RPO_HOOK file-open` line on
+/// stashed trampoline, emits an `RPP_HOOK file-open` line on
 /// success, registers the handle in the HANDLE→path table, and
 /// returns the original handle. Failures (`INVALID_HANDLE_VALUE`)
 /// pass through without emitting or registering.
@@ -595,50 +595,50 @@ unsafe fn install_detours() {
     // is to narrow down which retour call (CreateFileW? WriteFile?
     // CloseHandle?) is misbehaving inside cmd.exe / our testbin
     // probe.
-    emit_line("RPO_HOOK install begin=CreateFileW\n");
+    emit_line("RPP_HOOK install begin=CreateFileW\n");
     install_one(
         module,
         c"CreateFileW",
         create_file_w_detour as *const (),
         &REAL_CREATE_FILE_W,
     );
-    emit_line("RPO_HOOK install end=CreateFileW\n");
+    emit_line("RPP_HOOK install end=CreateFileW\n");
 
-    emit_line("RPO_HOOK install begin=WriteFile\n");
+    emit_line("RPP_HOOK install begin=WriteFile\n");
     install_one(
         module,
         c"WriteFile",
         write_file_detour as *const (),
         &REAL_WRITE_FILE,
     );
-    emit_line("RPO_HOOK install end=WriteFile\n");
+    emit_line("RPP_HOOK install end=WriteFile\n");
 
-    emit_line("RPO_HOOK install begin=CloseHandle\n");
+    emit_line("RPP_HOOK install begin=CloseHandle\n");
     install_one(
         module,
         c"CloseHandle",
         close_handle_detour as *const (),
         &REAL_CLOSE_HANDLE,
     );
-    emit_line("RPO_HOOK install end=CloseHandle\n");
+    emit_line("RPP_HOOK install end=CloseHandle\n");
 
-    emit_line("RPO_HOOK install begin=DeleteFileW\n");
+    emit_line("RPP_HOOK install begin=DeleteFileW\n");
     install_one(
         module,
         c"DeleteFileW",
         delete_file_w_detour as *const (),
         &REAL_DELETE_FILE_W,
     );
-    emit_line("RPO_HOOK install end=DeleteFileW\n");
+    emit_line("RPP_HOOK install end=DeleteFileW\n");
 
-    emit_line("RPO_HOOK install begin=MoveFileExW\n");
+    emit_line("RPP_HOOK install begin=MoveFileExW\n");
     install_one(
         module,
         c"MoveFileExW",
         move_file_ex_w_detour as *const (),
         &REAL_MOVE_FILE_EX_W,
     );
-    emit_line("RPO_HOOK install end=MoveFileExW\n");
+    emit_line("RPP_HOOK install end=MoveFileExW\n");
 }
 
 /// `CreateThread`-compatible worker entrypoint that drives
@@ -652,9 +652,9 @@ unsafe extern "system" fn install_thread_main(_param: *mut core::ffi::c_void) ->
     start_emit_drain_thread();
     // Diagnostic line so the slice 7 integration test can confirm
     // the worker thread actually ran.
-    emit_line("RPO_HOOK install-thread-start\n");
+    emit_line("RPP_HOOK install-thread-start\n");
     install_detours();
-    emit_line("RPO_HOOK install-thread-done\n");
+    emit_line("RPP_HOOK install-thread-done\n");
     0
 }
 

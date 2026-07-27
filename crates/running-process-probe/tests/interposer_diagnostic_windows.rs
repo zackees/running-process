@@ -2,7 +2,7 @@
 //! fire on a real file API call — that's the ignored test in
 //! `interposer_integration_windows.rs`. Instead: spawn a long-
 //! running child, inject the interposer, capture stderr, and
-//! report which `RPO_HOOK install begin=… / end=…` pair lines
+//! report which `RPP_HOOK install begin=… / end=…` pair lines
 //! appeared. The pattern of which "end=" lines are missing tells
 //! us which retour install hung or errored.
 //!
@@ -18,7 +18,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use running_process_observer::inject_into_pid;
+use running_process_probe::inject_into_pid;
 
 fn target_profile_dir() -> PathBuf {
     let exe = std::env::current_exe().expect("current_exe");
@@ -37,12 +37,12 @@ fn build_interposer_dll() -> PathBuf {
         Command::new("cargo")
     };
     let status = cmd
-        .args(["build", "-p", "running-process-observer-interposer-windows"])
+        .args(["build", "-p", "running-process-probe-interposer-windows"])
         .status()
         .expect("cargo build");
     assert!(status.success(), "cargo build failed: {status:?}");
     let p = target_profile_dir()
-        .join("running_process_observer_interposer_windows.dll");
+        .join("running_process_probe_interposer_windows.dll");
     assert!(p.exists(), "interposer DLL missing at {p:?}");
     p
 }
@@ -139,7 +139,7 @@ fn diagnose_install_progress() {
     eprintln!("captured stderr bytes: {}", captured.len());
     eprintln!("---");
     for line in captured.lines() {
-        if line.contains("RPO_HOOK") {
+        if line.contains("RPP_HOOK") {
             eprintln!("  {line}");
         }
     }

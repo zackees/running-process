@@ -1,4 +1,4 @@
-//! `running-process-observer-helper` — sidecar binary for #551.
+//! `running-process-probe-agent` — sidecar binary for #551.
 //!
 //! Slice 1 scaffold: prints a version banner and exits cleanly. Proves
 //! the workspace plumbing — this binary needs to compile on Windows
@@ -18,7 +18,7 @@
 
 fn main() {
     println!(
-        "running-process-observer-helper {} — slice 1 of #551 (inert scaffold)",
+        "running-process-probe-agent {} — slice 1 of #551 (inert scaffold)",
         env!("CARGO_PKG_VERSION")
     );
 }

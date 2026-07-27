@@ -2,7 +2,7 @@
 //!
 //! Calls `kernel32!CreateFileW` directly with a path the test
 //! controls, then exits. Used by
-//! `crates/running-process-observer/tests/interposer_integration_windows.rs`
+//! `crates/running-process-probe/tests/interposer_integration_windows.rs`
 //! to assert the slice 6 detours fire on a real (non-diagnostic)
 //! file-open call — Windows analog to the Linux + macOS slice 7d/e
 //! tests, which use `/bin/cat` (POSIX `open(2)`) for the same
@@ -11,9 +11,9 @@
 //! Why a dedicated fixture: cmd's `type` builtin doesn't appear to
 //! go through `kernel32!CreateFileW` (#551 slice 7c investigation),
 //! so the slice 7a/7b integration test could only assert that
-//! *some* `RPO_HOOK` line fires (the install-thread sentinel). A
+//! *some* `RPP_HOOK` line fires (the install-thread sentinel). A
 //! fixture that explicitly calls `CreateFileW` produces a
-//! deterministic `RPO_HOOK file-open path=…` line tied to the
+//! deterministic `RPP_HOOK file-open path=…` line tied to the
 //! probe path, giving the test the same path-specific assertion
 //! that the POSIX tests have.
 //!

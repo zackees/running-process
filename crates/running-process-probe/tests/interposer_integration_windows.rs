@@ -3,7 +3,7 @@
 //! Wires the slice 6 pieces together: build the interposer DLL,
 //! spawn a real child process, inject the DLL via the slice 6d
 //! injection vehicle, then assert that the detours installed in
-//! `DllMain` actually fire — `RPO_HOOK …` lines must appear on
+//! `DllMain` actually fire — `RPP_HOOK …` lines must appear on
 //! the child's stderr after the inject returns.
 //!
 //! This is the first test that exercises the full pipeline
@@ -15,7 +15,7 @@
 //! 3. The detours installed in `DllMain` actually intercept
 //!    subsequent file APIs in the target's address space.
 //! 4. The intercepted events arrive on the child's stderr in the
-//!    documented `RPO_HOOK` format.
+//!    documented `RPP_HOOK` format.
 
 #![cfg(all(feature = "embed-helper", target_os = "windows"))]
 
@@ -25,7 +25,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use running_process_observer::inject_into_pid;
+use running_process_probe::inject_into_pid;
 
 /// Locate the workspace `target/<triple>/<profile>/` directory the
 /// current test binary was built into. The test binary lives at
@@ -81,15 +81,15 @@ fn cargo_command() -> Command {
 
 /// Build the Windows interposer DLL on demand. Returns its path.
 ///
-/// Shells out to `cargo build -p running-process-observer-
+/// Shells out to `cargo build -p running-process-probe-
 /// interposer-windows`. The first run rebuilds; subsequent runs
 /// are no-ops because cargo's incremental checks find no changes.
 /// Either way we end up with the DLL at
-/// `<target>/<profile>/running_process_observer_interposer_windows.dll`.
+/// `<target>/<profile>/running_process_probe_interposer_windows.dll`.
 fn build_and_locate_interposer_dll() -> PathBuf {
     let profile_dir = target_profile_dir();
     let mut cmd = cargo_command();
-    cmd.args(["build", "-p", "running-process-observer-interposer-windows"]);
+    cmd.args(["build", "-p", "running-process-probe-interposer-windows"]);
     add_current_test_target_flags(&mut cmd, &profile_dir);
     let status = cmd.status().expect("spawn cargo to build interposer dll");
     assert!(
@@ -97,7 +97,7 @@ fn build_and_locate_interposer_dll() -> PathBuf {
         "cargo build of interposer DLL failed: {status:?}"
     );
 
-    let dll = profile_dir.join("running_process_observer_interposer_windows.dll");
+    let dll = profile_dir.join("running_process_probe_interposer_windows.dll");
     assert!(
         dll.exists(),
         "expected interposer DLL at {dll:?} after cargo build"
@@ -155,7 +155,7 @@ fn which(name: &str) -> Option<PathBuf> {
 // deadline-poll exit condition so the test exits early on
 // success.
 #[test]
-fn interposer_dll_fires_rpo_hook_after_inject() {
+fn interposer_dll_fires_rpp_hook_after_inject() {
     let dll = build_and_locate_interposer_dll();
     build_createfilew_probe();
 
@@ -180,7 +180,7 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
     // 2000 ms delay so the inject + worker-thread install (~200 ms
     // in practice) lands comfortably before the fixture calls
     // CreateFileW. The slice 6b detour intercepts that call and
-    // emits `RPO_HOOK file-open path=<probe_path> ...` on stderr.
+    // emits `RPP_HOOK file-open path=<probe_path> ...` on stderr.
     let mut child = Command::new(&fixture)
         .arg("2000")
         .arg(&probe_path)
@@ -199,7 +199,7 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
 
     // Slice 7b: DllMain returns immediately, then a worker thread
     // installs the retour detours off the loader lock. Give that
-    // thread time to finish before we expect any RPO_HOOK output.
+    // thread time to finish before we expect any RPP_HOOK output.
     // 200 ms is comfortably more than the empirical worst case
     // (retour install measures ~30 ms per detour × 5 detours, with
     // VirtualProtect overhead).
@@ -230,7 +230,7 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
         }
     });
 
-    // Wait until we observe a `RPO_HOOK file-open` line for our
+    // Wait until we observe a `RPP_HOOK file-open` line for our
     // probe file OR the deadline hits. The interposer formats paths
     // via `{:?}` which doubles backslashes, so we can't match on
     // the raw probe path. Match on the unambiguous tail substring
@@ -239,7 +239,7 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
     while Instant::now() < deadline {
         if stderr_text
             .lock()
-            .map(|s| s.contains("RPO_HOOK file-open") && s.contains("probe.txt"))
+            .map(|s| s.contains("RPP_HOOK file-open") && s.contains("probe.txt"))
             .unwrap_or(false)
         {
             break;
@@ -255,21 +255,21 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
     let hmodule = inject_result.expect("inject_into_pid should succeed");
     assert!(hmodule != 0, "remote LoadLibraryW returned NULL");
 
-    // The interposer's detours emit one or more `RPO_HOOK ...`
+    // The interposer's detours emit one or more `RPP_HOOK ...`
     // lines from inside cmd's address space (its CreateFileW
     // calls for the `type` builtin, plus any incidental file I/O
     // cmd.exe does itself). We just need to see one.
     let captured = stderr_text.lock().map(|s| s.clone()).unwrap_or_default();
     assert!(
-        captured.contains("RPO_HOOK"),
-        "expected at least one RPO_HOOK line on the child's stderr; \
+        captured.contains("RPP_HOOK"),
+        "expected at least one RPP_HOOK line on the child's stderr; \
          got: {captured:?}"
     );
 
     // Slice 7c: stronger assertion than the original 7a/7b shape.
     // The testbin-createfilew-probe fixture calls
     // kernel32!CreateFileW directly with our probe path, so the
-    // slice 6b detour fires and produces an `RPO_HOOK file-open
+    // slice 6b detour fires and produces an `RPP_HOOK file-open
     // path=...probe.txt... ...` line. We assert both the
     // `file-open` event kind and the unambiguous `probe.txt`
     // basename appear — proves the detour intercepts real file
@@ -280,8 +280,8 @@ fn interposer_dll_fires_rpo_hook_after_inject() {
     // alone is unambiguous since the fixture only ever opens that
     // file.
     assert!(
-        captured.contains("RPO_HOOK file-open") && captured.contains("probe.txt"),
-        "expected `RPO_HOOK file-open path=...probe.txt...` after \
+        captured.contains("RPP_HOOK file-open") && captured.contains("probe.txt"),
+        "expected `RPP_HOOK file-open path=...probe.txt...` after \
          the detoured CreateFileW call; got: {captured:?}"
     );
 }
