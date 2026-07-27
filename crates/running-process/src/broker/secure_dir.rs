@@ -15,7 +15,7 @@ enum EnsurePrivateDirOutcome {
 }
 
 /// Create `path` and restrict it to the current user.
-pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
+pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     ensure_private_dir_with_outcome(path).map(|_| ())
 }
 
@@ -50,7 +50,7 @@ fn ensure_private_dir_with_outcome(path: &Path) -> io::Result<EnsurePrivateDirOu
 }
 
 /// Return true when `path` has current-user-only permissions.
-pub(crate) fn private_dir_permissions_are_private(path: &Path) -> io::Result<bool> {
+pub fn private_dir_permissions_are_private(path: &Path) -> io::Result<bool> {
     platform_private_dir_permissions_are_private(path)
 }
 

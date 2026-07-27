@@ -28,7 +28,7 @@ pub mod lifecycle;
 pub mod manifest;
 pub mod protocol;
 pub mod protocol_v2;
-pub(crate) mod secure_dir;
+pub mod secure_dir;
 pub mod server;
 
 /// Framing byte for every v1 broker connection. Wire layout:
