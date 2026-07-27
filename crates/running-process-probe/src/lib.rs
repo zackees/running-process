@@ -51,6 +51,29 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+/// The `running_process.probe_diag.v1` wire schema (#630).
+///
+/// The probe daemon speaks its own protobuf package rather than
+/// multiplexing over the frozen broker `Frame` registry — it is not a
+/// broker backend. Messages are framed with the broker's framing codec
+/// (`[u8 version][u32 LE len][prost]`, 16 MiB cap), which is reused as a
+/// library so the cap is shared rather than re-derived.
+pub mod probe_diag {
+    /// Version 1 of the probe diagnostic wire.
+    pub mod v1 {
+        // prost generates one file per package, named after it. The
+        // generated types inherit doc comments from the .proto, but prost
+        // does not emit docs for every derived item, so the crate-level
+        // `warn(missing_docs)` is relaxed here.
+        #![allow(missing_docs)]
+
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/running_process.probe_diag.v1.rs"
+        ));
+    }
+}
+
 /// Opt-in configuration that turns the file-hook tier on for a single
 /// spawned process (and its descendants, on Linux + macOS where env-var
 /// inheritance handles re-injection automatically; Windows uses
