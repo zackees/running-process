@@ -16,7 +16,7 @@
 //!    [`inject_env_name`] (resolves to `LD_PRELOAD`) set to
 //!    the interposer's path, via [`inject_via_env`] (slice 6e).
 //! 4. Capture the child's stderr on a background thread.
-//! 5. Assert at least one `RPO_HOOK file-open` line appears with
+//! 5. Assert at least one `RPP_HOOK file-open` line appears with
 //!    the probe path.
 //!
 //! Why we can assert the *specific* path on Linux but not on
@@ -35,7 +35,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use running_process_observer::inject_via_env;
+use running_process_probe::inject_via_env;
 
 unsafe extern "C" {
     fn open(path: *const std::os::raw::c_char, flags: std::os::raw::c_int) -> std::os::raw::c_int;
@@ -67,7 +67,7 @@ fn build_and_locate_interposer_so() -> PathBuf {
         .args([
             "build",
             "-p",
-            "running-process-observer-interposer-linux",
+            "running-process-probe-interposer-linux",
             "--features",
             "test-seams",
         ])
@@ -78,7 +78,7 @@ fn build_and_locate_interposer_so() -> PathBuf {
         "cargo build of interposer .so failed: {status:?}"
     );
 
-    let so = target_profile_dir().join("librunning_process_observer_interposer_linux.so");
+    let so = target_profile_dir().join("librunning_process_probe_interposer_linux.so");
     assert!(
         so.exists(),
         "expected interposer .so at {so:?} after cargo build"
@@ -87,7 +87,7 @@ fn build_and_locate_interposer_so() -> PathBuf {
 }
 
 #[test]
-fn interposer_so_fires_rpo_hook_via_ld_preload() {
+fn interposer_so_fires_rpp_hook_via_ld_preload() {
     let so = build_and_locate_interposer_so();
 
     // Probe file the child will `cat` after spawn. Tempdir so we
@@ -132,13 +132,13 @@ fn interposer_so_fires_rpo_hook_via_ld_preload() {
         }
     });
 
-    // Wait for the probe-path RPO_HOOK or the deadline.
+    // Wait for the probe-path RPP_HOOK or the deadline.
     let probe_marker = probe_path.display().to_string();
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if stderr_text
             .lock()
-            .map(|s| s.contains("RPO_HOOK") && s.contains(&probe_marker))
+            .map(|s| s.contains("RPP_HOOK") && s.contains(&probe_marker))
             .unwrap_or(false)
         {
             break;
@@ -154,15 +154,15 @@ fn interposer_so_fires_rpo_hook_via_ld_preload() {
 
     let captured = stderr_text.lock().map(|s| s.clone()).unwrap_or_default();
     assert!(
-        captured.contains("RPO_HOOK"),
-        "expected at least one RPO_HOOK line on the child's stderr; got: {captured:?}"
+        captured.contains("RPP_HOOK"),
+        "expected at least one RPP_HOOK line on the child's stderr; got: {captured:?}"
     );
     // Stronger assertion than Windows can make today: we want to
     // see our specific probe path, proving the detour fires on a
     // real (non-diagnostic) file-open call.
     assert!(
         captured.contains(&probe_marker),
-        "expected RPO_HOOK line for our probe path {probe_marker:?}; got: {captured:?}"
+        "expected RPP_HOOK line for our probe path {probe_marker:?}; got: {captured:?}"
     );
 }
 

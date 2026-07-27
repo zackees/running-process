@@ -13,7 +13,7 @@ toolchain with no Windows SDK and no MSVC `link.exe`.
 | Surface | Mechanism | Notes |
 | --- | --- | --- |
 | ConPTY — `CreatePseudoConsole` / `ResizePseudoConsole` / `ClosePseudoConsole` | **direct** | `windows-sys` bundles a per-target import library (`windows-targets` → `windows_x86_64_gnu`); the GNU linker resolves these directly. See [`src/conpty.rs`](src/conpty.rs). |
-| `retour` inline detours / DLL injection | **direct** | `retour`, `iced-x86`, and `windows-sys` link under GNU; the observer integration smoke test injects the GNU-built DLL and observes `RPO_HOOK` output. |
+| `retour` inline detours / DLL injection | **direct** | `retour`, `iced-x86`, and `windows-sys` link under GNU; the observer integration smoke test injects the GNU-built DLL and observes `RPP_HOOK` output. |
 | `libsqlite3-sys` (bundled) | **direct with MinGW-w64 gcc** | The daemon feature builds bundled sqlite via the `cc` crate when `gcc.exe` is on `PATH`. |
 | `procdump` / DbgHelp minidump | **out-of-scope** | Dev-only (`test-watchdog`), not on the shipped path. |
 

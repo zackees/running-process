@@ -18,7 +18,7 @@
 //! every CI image, we run the probe through `/bin/cat`
 //! explicitly, and document the caveat: on hosts where
 //! `/bin/cat` itself is SIP-protected, the test is expected to
-//! emit no `RPO_HOOK` lines and gracefully reports skip.
+//! emit no `RPP_HOOK` lines and gracefully reports skip.
 //!
 //! The slice 5 interposer's behavior here matches the snapshot
 //! tier from #539 — both tiers depend on the same SIP-bypass
@@ -33,7 +33,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use running_process_observer::inject_via_env;
+use running_process_probe::inject_via_env;
 
 /// Locate the workspace `target/<triple>/<profile>/` directory the
 /// current test binary was built into. The test binary lives at
@@ -54,7 +54,7 @@ fn build_and_locate_interposer_dylib() -> PathBuf {
         .args([
             "build",
             "-p",
-            "running-process-observer-interposer-macos",
+            "running-process-probe-interposer-macos",
             "--features",
             "test-seams",
         ])
@@ -65,7 +65,7 @@ fn build_and_locate_interposer_dylib() -> PathBuf {
         "cargo build of interposer .dylib failed: {status:?}"
     );
 
-    let dylib = target_profile_dir().join("librunning_process_observer_interposer_macos.dylib");
+    let dylib = target_profile_dir().join("librunning_process_probe_interposer_macos.dylib");
     assert!(
         dylib.exists(),
         "expected interposer .dylib at {dylib:?} after cargo build"
@@ -152,7 +152,7 @@ fn interposer_post_fork_child_progresses_with_inherited_locked_state() {
 }
 
 #[test]
-fn interposer_dylib_fires_rpo_hook_via_dyld_insert() {
+fn interposer_dylib_fires_rpp_hook_via_dyld_insert() {
     let dylib = build_and_locate_interposer_dylib();
 
     // Probe file the child will `cat` after spawn.
@@ -164,7 +164,7 @@ fn interposer_dylib_fires_rpo_hook_via_dyld_insert() {
     // runtime-protected the test will produce no events (see
     // module header). When unprotected (Linux-compat shims, some
     // CI images), the slice 5 `open`/`openat` shadows fire and
-    // emit `RPO_HOOK file-open` with the probe path.
+    // emit `RPP_HOOK file-open` with the probe path.
     let mut cmd = Command::new("/bin/cat");
     cmd.arg(&probe_path)
         .stdout(Stdio::null())
@@ -198,7 +198,7 @@ fn interposer_dylib_fires_rpo_hook_via_dyld_insert() {
     while Instant::now() < deadline {
         if stderr_text
             .lock()
-            .map(|s| s.contains("RPO_HOOK") && s.contains(&probe_marker))
+            .map(|s| s.contains("RPP_HOOK") && s.contains(&probe_marker))
             .unwrap_or(false)
         {
             break;
@@ -212,15 +212,15 @@ fn interposer_dylib_fires_rpo_hook_via_dyld_insert() {
 
     let captured = stderr_text.lock().map(|s| s.clone()).unwrap_or_default();
 
-    // SIP graceful-skip: if no RPO_HOOK lines arrived at all,
+    // SIP graceful-skip: if no RPP_HOOK lines arrived at all,
     // the most likely cause is hardened-runtime / library
     // validation refusing the DYLD_INSERT_LIBRARIES. Document
     // that in the test output and pass — same posture as the
     // snapshot tier from #539 (the boundary is "binaries the
     // user owns AND library validation isn't enforced for").
-    if !captured.contains("RPO_HOOK") {
+    if !captured.contains("RPP_HOOK") {
         eprintln!(
-            "skipping detour assertion: no RPO_HOOK lines on stderr — \
+            "skipping detour assertion: no RPP_HOOK lines on stderr — \
              /bin/cat is likely library-validated on this host. \
              captured stderr: {captured:?}"
         );
@@ -228,10 +228,10 @@ fn interposer_dylib_fires_rpo_hook_via_dyld_insert() {
     }
 
     // Stronger assertion when the host *did* allow injection:
-    // the specific probe path must appear in a RPO_HOOK line,
+    // the specific probe path must appear in a RPP_HOOK line,
     // proving the detour fires on a real file-open call.
     assert!(
         captured.contains(&probe_marker),
-        "expected RPO_HOOK line for our probe path {probe_marker:?}; got: {captured:?}"
+        "expected RPP_HOOK line for our probe path {probe_marker:?}; got: {captured:?}"
     );
 }

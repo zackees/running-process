@@ -13,14 +13,14 @@
 //!
 //! Slice 7's integration tests will additionally exercise the
 //! interposer DLL itself by capturing the child's stderr and
-//! asserting `RPO_HOOK file-open …` lines fire.
+//! asserting `RPP_HOOK file-open …` lines fire.
 
 #![cfg(all(feature = "embed-helper", target_os = "windows"))]
 
 use std::path::PathBuf;
 use std::process::Command;
 
-use running_process_observer::inject_into_pid;
+use running_process_probe::inject_into_pid;
 
 /// Resolve the absolute path to `version.dll` in `C:\Windows\System32`.
 /// Returns `None` if `SystemRoot` isn't set or the file isn't there

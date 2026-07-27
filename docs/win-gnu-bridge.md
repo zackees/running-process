@@ -26,7 +26,7 @@ necessary**:
 | Surface | Mechanism | Status |
 | --- | --- | --- |
 | ConPTY (`CreatePseudoConsole` / `ResizePseudoConsole` / `ClosePseudoConsole`) | **direct** (`windows-sys` bundled `-gnu` import lib) | in scope, done |
-| `retour` inline detours / DLL injection (`running-process-observer-interposer-windows`) | **direct** (`retour` + `iced-x86` + `windows-sys` all link under `-gnu`) | in scope, done |
+| `retour` inline detours / DLL injection (`running-process-probe-interposer-windows`) | **direct** (`retour` + `iced-x86` + `windows-sys` all link under `-gnu`) | in scope, done |
 | `libsqlite3-sys` bundled (daemon feature) | **direct** (`cc` crate finds MinGW-w64 `gcc.exe` and builds the sqlite amalgamation) | in scope, done |
 | `procdump` / DbgHelp minidump (`test-watchdog`) | dev-only, not on the shipped path | out of scope |
 
@@ -49,11 +49,11 @@ soldr cargo build -p running-process --features daemon \
     --target x86_64-pc-windows-gnu
 
 # The file-hook observer interposer path.
-soldr cargo build -p running-process-observer-interposer-windows \
+soldr cargo build -p running-process-probe-interposer-windows \
     --target x86_64-pc-windows-gnu
-soldr cargo build -p running-process-observer --features embed-helper \
+soldr cargo build -p running-process-probe --features embed-helper \
     --target x86_64-pc-windows-gnu
-soldr cargo test -p running-process-observer --features embed-helper \
+soldr cargo test -p running-process-probe --features embed-helper \
     --test interposer_integration_windows \
     --target x86_64-pc-windows-gnu
 ```
@@ -73,7 +73,7 @@ linkability check on any Windows host (MSVC or GNU).
 The Windows interposer smoke test builds the DLL and
 `testbin-createfilew-probe` for the same active target triple as the test
 binary. Under `x86_64-pc-windows-gnu`, it injects the GNU-built DLL via
-`CreateRemoteThread(LoadLibraryW)` and waits for a real `RPO_HOOK file-open`
+`CreateRemoteThread(LoadLibraryW)` and waits for a real `RPP_HOOK file-open`
 line emitted by the `retour::RawDetour` `CreateFileW` hook. That validates
 the GNU ABI path for the inline trampoline, the `iced-x86` prologue decode,
 the `VirtualProtect`-backed patch install, and the deferred `DllMain` worker

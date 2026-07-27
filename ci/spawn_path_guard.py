@@ -83,7 +83,7 @@ ALLOWED_RUST_COMMAND_NEW = {
     # inline `#[cfg(test)] mod tests` fixtures that construct
     # `/bin/true` for env-setting smoke tests. No production spawn
     # path runs through this module.
-    Path("crates/running-process-observer/src/inject_unix.rs"),
+    Path("crates/running-process-probe/src/inject_unix.rs"),
 }
 
 ALLOWED_RUST_SPAWN = {
@@ -175,7 +175,7 @@ ALLOWED_RUST_SPAWN = {
     Path("testbins/src/bin/spawner.rs"),
     # #551 slice 6e: see comment in ALLOWED_RUST_COMMAND_NEW. The
     # `.spawn()` hit is the rustdoc usage example, not production.
-    Path("crates/running-process-observer/src/inject_unix.rs"),
+    Path("crates/running-process-probe/src/inject_unix.rs"),
 }
 
 ALLOWED_PORTABLE_PTY = {

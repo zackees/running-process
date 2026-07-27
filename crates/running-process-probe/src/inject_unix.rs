@@ -69,7 +69,7 @@ pub fn inject_env_name() -> &'static str {
 /// Returns the borrow on `command` so the call chains:
 ///
 /// ```ignore
-/// running_process_observer::inject_via_env(
+/// running_process_probe::inject_via_env(
 ///     &mut Command::new("my-target"),
 ///     &interposer_path,
 /// )?

@@ -1,16 +1,16 @@
 //! Linux LD_PRELOAD interposer for the running-process file-hook
 //! tier (#551 slice 4).
 //!
-//! Built as a cdylib `librunning_process_observer_interposer_linux.so`.
+//! Built as a cdylib `librunning_process_probe_interposer_linux.so`.
 //! At load time (when a target process is launched with
-//! `LD_PRELOAD=…/librunning_process_observer_interposer_linux.so`),
+//! `LD_PRELOAD=…/librunning_process_probe_interposer_linux.so`),
 //! this library shadows libc's file-operation symbols. Its load-time
 //! constructor eagerly resolves the real functions via `dlsym(RTLD_NEXT, ...)`;
 //! each shadow invokes its resolved function, then emits
 //! an event line to **stderr** in the form:
 //!
 //! ```text
-//! RPO_HOOK file-open path="<resolved path>" flags=<int> fd=<int>
+//! RPP_HOOK file-open path="<resolved path>" flags=<int> fd=<int>
 //! ```
 //!
 //! Stderr is the slice-4a transport. Slice 4b will replace this with
@@ -438,27 +438,27 @@ fn emit_line(line: &str) {
 }
 
 fn emit_open(path: &str, flags: c_int, fd: c_int) {
-    let line = format!("RPO_HOOK file-open path={path:?} flags={flags} fd={fd}\n");
+    let line = format!("RPP_HOOK file-open path={path:?} flags={flags} fd={fd}\n");
     emit_line(&line);
 }
 
 fn emit_close(path: &str, fd: c_int) {
-    let line = format!("RPO_HOOK file-close path={path:?} fd={fd}\n");
+    let line = format!("RPP_HOOK file-close path={path:?} fd={fd}\n");
     emit_line(&line);
 }
 
 fn emit_write(path: &str, fd: c_int, byte_count: i64) {
-    let line = format!("RPO_HOOK file-write path={path:?} fd={fd} byte_count={byte_count}\n");
+    let line = format!("RPP_HOOK file-write path={path:?} fd={fd} byte_count={byte_count}\n");
     emit_line(&line);
 }
 
 fn emit_unlink(path: &str) {
-    let line = format!("RPO_HOOK file-unlink path={path:?}\n");
+    let line = format!("RPP_HOOK file-unlink path={path:?}\n");
     emit_line(&line);
 }
 
 fn emit_rename(from: &str, to: &str) {
-    let line = format!("RPO_HOOK file-rename from={from:?} to={to:?}\n");
+    let line = format!("RPP_HOOK file-rename from={from:?} to={to:?}\n");
     emit_line(&line);
 }
 

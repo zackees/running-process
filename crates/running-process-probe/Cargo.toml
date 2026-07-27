@@ -1,5 +1,5 @@
 [package]
-name = "running-process-observer"
+name = "running-process-probe"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,7 +19,7 @@ publish = false
 # per the original #539 design. Enforced via `objdump`/`dumpbin` assertion
 # in PR 2 (embed-and-extract machinery).
 [[bin]]
-name = "running-process-observer-helper"
+name = "running-process-probe-agent"
 path = "src/bin/helper.rs"
 
 [features]

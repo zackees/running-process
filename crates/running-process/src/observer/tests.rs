@@ -390,7 +390,7 @@ fn descendant_event_kind_string_forms_are_stable() {
 
 #[test]
 fn file_hook_event_kind_string_forms_are_stable() {
-    // These are the hook-tier event names the running-process-observer
+    // These are the hook-tier event names the running-process-probe
     // sidecar (#551) will emit. Locking the lowercase forms now keeps
     // serialization stable across the interposer payloads landing in
     // slices 4–6 of #551.

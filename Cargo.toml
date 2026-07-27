@@ -2,10 +2,10 @@
 resolver = "2"
 members = [
     "crates/running-process",
-    "crates/running-process-observer",
-    "crates/running-process-observer-interposer-linux",
-    "crates/running-process-observer-interposer-macos",
-    "crates/running-process-observer-interposer-windows",
+    "crates/running-process-probe",
+    "crates/running-process-probe-interposer-linux",
+    "crates/running-process-probe-interposer-macos",
+    "crates/running-process-probe-interposer-windows",
     "crates/running-process-py",
     "crates/running-process-win-gnu-bridge",
     "crates/test-watchdog",
