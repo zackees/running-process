@@ -69,6 +69,13 @@ ALLOWED_RUST_COMMAND_NEW = {
     # Test-only watchdog crate (publish=false, dev-dep only) — invokes
     # procdump.exe via Command::new when the watchdog fires.
     Path("crates/test-watchdog/src/lib.rs"),
+    # #637 symbolization worker supervisor: constructs a Command naming only
+    # the sibling worker binary (or an operator-supplied override that must
+    # already exist), then hands it straight to the sanitized
+    # `running_process::spawn::spawn` surface with piped stdio. No user input
+    # reaches the program path or the argument list — the capture travels on
+    # stdin — and the child is deadline-bounded and killed if it overruns.
+    Path("crates/running-process-probe-daemon/src/symbolication.rs"),
     # Testbins (test fixtures): builds Command values to hand to the
     # sanitized spawn surface (or, on Unix, to bare std::Command::spawn
     # because our sanitized spawn calls setpgid in the child, which
