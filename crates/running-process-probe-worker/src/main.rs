@@ -11,7 +11,7 @@
 
 use std::io::{Read as _, Write as _};
 
-use running_process_probe_worker::{symbolize, RawCapture};
+use running_process_probe_worker::{render_text, symbolize, RawCapture};
 
 /// Largest capture accepted.
 ///
@@ -50,8 +50,13 @@ fn run() -> Result<(), String> {
 
     let report = symbolize(&capture).map_err(|e| format!("symbolization failed: {e}"))?;
 
-    let encoded =
-        serde_json::to_vec(&report).map_err(|e| format!("cannot encode the report: {e}"))?;
+    // `--text` renders for a person; the default stays JSON because the
+    // daemon is the usual caller and parses it.
+    let encoded = if std::env::args().any(|a| a == "--text") {
+        render_text(&report).into_bytes()
+    } else {
+        serde_json::to_vec(&report).map_err(|e| format!("cannot encode the report: {e}"))?
+    };
 
     let mut stdout = std::io::stdout().lock();
     stdout

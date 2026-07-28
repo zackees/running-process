@@ -31,8 +31,13 @@ struct Outcome {
 }
 
 /// Run the worker with `input` on stdin.
-#[allow(clippy::disallowed_methods)]
 fn run_worker(input: &[u8]) -> Outcome {
+    run_worker_with(input, &[])
+}
+
+/// Run the worker with `input` on stdin and extra argv.
+#[allow(clippy::disallowed_methods)]
+fn run_worker_with(input: &[u8], args: &[&str]) -> Outcome {
     let binary = worker_binary();
     assert!(
         binary.exists(),
@@ -41,6 +46,7 @@ fn run_worker(input: &[u8]) -> Outcome {
     );
 
     let mut child = Command::new(&binary)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -150,4 +156,59 @@ fn the_minidump_format_is_refused_for_now() {
         "stderr should name the unsupported format; got {:?}",
         outcome.stderr
     );
+}
+
+/// `--text` must actually reach the binary and change its output.
+///
+/// The renderer is unit-tested; this asserts the flag is wired, which is the
+/// part unit tests cannot see.
+#[test]
+fn the_text_flag_renders_a_human_readable_report() {
+    let outcome = run_worker_with(CAPTURE.as_bytes(), &["--text"]);
+    assert!(
+        outcome.status.success(),
+        "worker failed: {}",
+        outcome.stderr
+    );
+
+    assert!(
+        outcome.stdout.contains("Thread 4242"),
+        "expected a rendered thread header, got {:?}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("fixture.dll+0x1000"),
+        "expected module+offset, got {:?}",
+        outcome.stdout
+    );
+    // The interpreter half must survive into the text form too.
+    assert!(
+        outcome.stdout.contains("app.py:3 in handler"),
+        "expected the Python frame, got {:?}",
+        outcome.stdout
+    );
+    assert!(
+        !outcome.stdout.trim_start().starts_with('{'),
+        "--text still emitted JSON: {:?}",
+        outcome.stdout
+    );
+}
+
+/// Without the flag the output stays machine-readable, since the daemon
+/// parses it.
+#[test]
+fn the_default_output_is_still_json() {
+    let outcome = run_worker(CAPTURE.as_bytes());
+    assert!(
+        outcome.status.success(),
+        "worker failed: {}",
+        outcome.stderr
+    );
+    serde_json::from_str::<serde_json::Value>(&outcome.stdout).unwrap_or_else(|e| {
+        panic!(
+            "default output must be JSON: {e}
+{}",
+            outcome.stdout
+        )
+    });
 }

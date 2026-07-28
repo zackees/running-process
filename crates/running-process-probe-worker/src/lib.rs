@@ -23,8 +23,10 @@
 
 #[cfg(target_os = "windows")]
 pub mod pdb_symbols;
+pub mod render;
 pub mod symbolize;
 pub mod wire;
 
+pub use render::render_text;
 pub use symbolize::{symbolize, SymbolizeError};
 pub use wire::{RawCapture, SymbolReport};
