@@ -1224,7 +1224,6 @@ mod tests {
     ///
     /// Uses a temp directory so a broker running on the developer's machine
     /// cannot make it pass or fail by accident.
-    #[test]
     /// The page has to reflect backends the broker actually negotiated.
     ///
     /// Before this, every piece worked in isolation and the chain was not
@@ -1270,6 +1269,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn starting_the_surface_publishes_an_endpoint_that_answers() {
         use std::io::{Read as _, Write as _};
 
