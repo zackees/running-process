@@ -151,10 +151,6 @@ pub enum IconScope {
     },
 }
 
-// Test-only discriminator; see its definition for why it exists.
-#[cfg(all(windows, test))]
-pub(crate) use imp::any_console_window_exists;
-
 /// Whether a window can accept an icon.
 ///
 /// Cheap, and safe to call before deciding whether to ship an icon at all.
@@ -281,27 +277,6 @@ mod imp {
         };
         unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
         (!search.found.is_null()).then_some(search.found)
-    }
-
-    /// Whether this session has ANY console window at all.
-    ///
-    /// Deliberately a separate enumeration from `console_window_of_pid`, not
-    /// a call to it. It exists so a test can tell "the lookup is broken" from
-    /// "this session creates no console windows" — and a discriminator that
-    /// shared the code it discriminates would fail in both cases at once,
-    /// which is exactly the confusion it is meant to resolve.
-    #[cfg(test)]
-    pub(crate) fn any_console_window_exists() -> bool {
-        unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
-            if class_name(hwnd) == CONHOST_CLASS {
-                *(lparam as *mut bool) = true;
-                return FALSE;
-            }
-            TRUE
-        }
-        let mut found = false;
-        unsafe { EnumWindows(Some(visit), &mut found as *mut bool as LPARAM) };
-        found
     }
 
     pub(super) fn icon_support(scope: IconScope) -> IconSupport {
@@ -571,6 +546,29 @@ mod tests {
         assert!(
             reason.contains("console window"),
             "the reason should name what is missing: {reason}"
+        );
+    }
+
+    /// Looking up our OWN pid must find the same window the host scope does.
+    ///
+    /// This is the deterministic test of the pid lookup: no spawning, no
+    /// waiting, no session-wide state. Whenever this process has a console
+    /// window, `Child { pid: self }` names that very window, so the two
+    /// scopes must agree — and a broken `console_window_of_pid` makes them
+    /// disagree immediately.
+    ///
+    /// Where there is no console window both are unsupported, which is also
+    /// agreement, so the assertion holds on every machine.
+    #[test]
+    fn own_pid_resolves_to_the_host_console_window() {
+        let host = icon_support(IconScope::Host);
+        let own = icon_support(IconScope::Child {
+            pid: std::process::id(),
+        });
+        assert_eq!(
+            host.is_available(),
+            own.is_available(),
+            "host scope says {host:?} but our own pid says {own:?}; the pid lookup              disagrees with the direct console-window lookup"
         );
     }
 
