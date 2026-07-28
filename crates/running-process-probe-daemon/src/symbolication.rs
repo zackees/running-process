@@ -118,6 +118,16 @@ pub fn symbolize_with_worker_at(
     capture_json: &[u8],
     timeout: Duration,
 ) -> Result<String, WorkerError> {
+    // Check the binary exists before spawning. On Unix a missing program is
+    // NOT reported as a spawn error here: exec fails in the forked child, and
+    // the child cannot write its errno back through std's report pipe, so it
+    // aborts (SIGABRT) and the parent sees a dead worker instead of `Err`.
+    // Without this check a typo in the override surfaces as "worker exited
+    // with code -6" rather than "worker not found".
+    if !binary.is_file() {
+        return Err(WorkerError::NotFound);
+    }
+
     // Routed through the sanitized spawn layer so the child gets sanitized
     // handles and no visible console, like every other spawn in the workspace.
     let mut command = std::process::Command::new(binary);
@@ -281,14 +291,22 @@ mod tests {
         assert!(report.contains("m.dll"));
     }
 
+    /// A missing binary must be reported as such on every platform.
+    ///
+    /// Discovered in CI: on Unix the sanitized spawn layer does *not* return
+    /// `Err` for a nonexistent program. exec fails in the forked child, which
+    /// then cannot write its errno back through std's report pipe and aborts,
+    /// so the parent observed `WorkerDied { code: -6 }` — an unrecognizable
+    /// diagnosis for "you named a file that isn't there". The existence check
+    /// makes the answer the same everywhere.
     #[test]
-    fn a_missing_binary_is_not_found_rather_than_a_panic() {
+    fn a_missing_binary_is_reported_as_not_found() {
         let missing = PathBuf::from("definitely-not-a-real-worker-binary");
         let error = symbolize_with_worker_at(&missing, CAPTURE.as_bytes(), DEFAULT_WORKER_TIMEOUT)
             .expect_err("a missing binary cannot symbolize");
         assert!(
-            matches!(error, WorkerError::Spawn(_)),
-            "expected a spawn failure, got {error}"
+            matches!(error, WorkerError::NotFound),
+            "expected NotFound, got {error}"
         );
     }
 
