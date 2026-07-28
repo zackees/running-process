@@ -148,7 +148,14 @@ Active pending work lives in [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md). Root-le
 
 **Testing**: Use `unittest` framework (TestCase, assertEqual, etc.). Pytest is only the runner — avoid pytest-specific fixtures and decorators.
 
-**Keyboard interrupts**: Use `handle_keyboard_interrupt(exception)` from `running_process.interrupt_handler` instead of directly calling `_thread.interrupt_main()`. The KBI linter (`ci/lint_python/keyboard_interrupt_checker.py`) enforces this.
+**Keyboard interrupts**: Use `handle_keyboard_interrupt(exception)` from `running_process.interrupt_handler` instead of directly calling `_thread.interrupt_main()`. The KBI linter (`ci/lint_python/keyboard_interrupt_checker.py`) enforces this as part of `./lint`, scoped to `src`.
+
+Re-raising (`raise`), `_thread.interrupt_main()`, and an `isinstance(exc, KeyboardInterrupt)` dispatch inside a broad handler all satisfy the rule — what it forbids is *swallowing* an interrupt, because one that never reaches the main thread is one the user cannot deliver. A deliberate exception (a CLI's top-level handler, where Ctrl+C is the documented way to quit) is marked `# noqa: KBI002` with a comment saying why; a bare `# noqa` will not silence it.
+
+Run it alone with:
+```bash
+uv run --no-sync python -m ci.lint_python.keyboard_interrupt_checker src --exclude .venv venv dist .build
+```
 
 **Bincode forbidden**: `disallowed_methods = "deny"` is wired through `clippy.toml` at the workspace root — every member crate refuses bincode serialization (broker wire stays prost-only). Phase 0 of #228.
 
