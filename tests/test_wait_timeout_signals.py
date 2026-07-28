@@ -141,7 +141,18 @@ def test_wait_raises_keyboard_interrupt_promptly_while_main_thread_is_blocked() 
 
     worker.join(timeout=1)
     assert sent_at
-    assert time.perf_counter() - sent_at[0] < 0.2
+
+    # The regression this guards against is `wait()` not noticing the
+    # interrupt at all and returning only when the child finishes — the child
+    # sleeps 2s, so that is the failure signature. Anything comfortably under
+    # that proves the interrupt was observed rather than waited out.
+    #
+    # The bound was 0.2s, which a shared CI runner missed by 14ms (#723);
+    # scheduling jitter on a loaded macos-arm box is not evidence of an
+    # interrupt-latency regression. 1.0s is still 2x under the child's sleep,
+    # so the real failure mode remains caught.
+    latency = time.perf_counter() - sent_at[0]
+    assert latency < 1.0, f"interrupt took {latency:.3f}s; expected well under the child's 2s sleep"
 
 
 def test_exit_status_classifies_possible_oom_for_sigkill_on_unix() -> None:

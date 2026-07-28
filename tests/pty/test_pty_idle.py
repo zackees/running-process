@@ -595,13 +595,24 @@ def test_pseudo_terminal_wait_for_idle_can_arm_on_explicit_input_submit() -> Non
                 ),
                 pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
             ),
-            timeout=0.35,
+            # A harness bound on how long to wait for an answer, NOT the
+            # property under test — that is the three assertions below. Held
+            # at 0.35s this failed on loaded CI runners (#723) because the
+            # budget expired before the ~0.19s detection could happen, which
+            # says nothing about idle detection being wrong. Widening it makes
+            # the test more deterministic without weakening any assertion:
+            # `exit_reason` still distinguishes detection from expiry.
+            timeout=2.0,
         )
         elapsed = time.time() - started
         worker.join(timeout=1.0)
 
         assert result.idle_detected is True
+        # The discriminator: had the outer budget expired instead, this would
+        # be "timeout". Widening that budget cannot mask a failure to detect.
         assert result.exit_reason == "idle_timeout"
+        # Idle must not be reported instantly — the input submit has to arm it
+        # first. This is the lower bound the widened budget does not touch.
         assert elapsed >= 0.15
     finally:
         with contextlib.suppress(Exception):
