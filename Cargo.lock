@@ -1607,6 +1607,7 @@ dependencies = [
  "pyo3",
  "regex",
  "running-process",
+ "running-process-probe",
  "sysinfo",
  "winapi",
 ]
