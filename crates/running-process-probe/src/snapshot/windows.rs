@@ -21,9 +21,68 @@ use winapi::um::tlhelp32::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use winapi::um::winnt::{
-    CONTEXT, CONTEXT_FULL, MEMORY_BASIC_INFORMATION, MEM_COMMIT, THREAD_GET_CONTEXT,
+    CONTEXT, MEMORY_BASIC_INFORMATION, MEM_COMMIT, THREAD_GET_CONTEXT,
     THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
 };
+
+/// Register set to request. x86_64 exposes a `CONTEXT_FULL` alias; aarch64
+/// does not, so compose control+integer, which is what the stack walk needs.
+#[cfg(target_arch = "x86_64")]
+const WANTED_CONTEXT: u32 = winapi::um::winnt::CONTEXT_FULL;
+#[cfg(target_arch = "aarch64")]
+const WANTED_CONTEXT: u32 = winapi::um::winnt::CONTEXT_CONTROL | winapi::um::winnt::CONTEXT_INTEGER;
+
+/// `CONTEXT` with the alignment `GetThreadContext` requires.
+///
+/// winapi's `CONTEXT` carries no alignment attribute (its aarch64 definition
+/// even says `// FIXME align 16`), but the API requires 16-byte alignment on
+/// both architectures and fails with `ERROR_NOACCESS` otherwise. A bare local
+/// is aligned only by accident of stack layout — which is exactly the kind of
+/// bug that appears when unrelated code shifts the frame, so pin it here.
+#[repr(align(16))]
+struct AlignedContext(CONTEXT);
+
+/// Registers the unwinder needs, named per architecture.
+struct CapturedRegs {
+    sp: u64,
+    ip: u64,
+    fp: u64,
+    /// Link register. `Some` only on aarch64.
+    lr: Option<u64>,
+}
+
+/// Pull the unwind-relevant registers out of a `CONTEXT`.
+///
+/// The whole architecture difference in this file lives here.
+#[cfg(target_arch = "x86_64")]
+fn captured_regs(context: &CONTEXT) -> CapturedRegs {
+    CapturedRegs {
+        sp: context.Rsp,
+        ip: context.Rip,
+        fp: context.Rbp,
+        // x86_64 has no link register; the return address is on the stack.
+        lr: None,
+    }
+}
+
+/// # Safety
+///
+/// Reads the aarch64 `CONTEXT` union, which is initialized by
+/// `GetThreadContext` before this is called.
+#[cfg(target_arch = "aarch64")]
+fn captured_regs(context: &CONTEXT) -> CapturedRegs {
+    // Fp/Lr live in the X-register union rather than as named top-level
+    // fields the way Rbp does on x86_64.
+    let s = unsafe { context.u.s() };
+    CapturedRegs {
+        sp: context.Sp,
+        ip: context.Pc,
+        fp: s.Fp,
+        // Load-bearing: a leaf frame's return address is in LR, not on the
+        // stack, so dropping it loses the innermost frame.
+        lr: Some(s.Lr),
+    }
+}
 
 use super::{CaptureKind, Snapshot, SnapshotConfig, SnapshotError, SnapshotStats, ThreadSample};
 
@@ -106,13 +165,14 @@ fn capture_thread(tid: u32, max_stack_bytes: usize, scratch: &mut [u8]) -> Optio
         return None;
     }
 
-    let mut context: CONTEXT = unsafe { std::mem::zeroed() };
-    context.ContextFlags = CONTEXT_FULL;
-    let got_context = unsafe { GetThreadContext(handle, &mut context) };
+    let mut aligned: AlignedContext = unsafe { std::mem::zeroed() };
+    aligned.0.ContextFlags = WANTED_CONTEXT;
+    let got_context = unsafe { GetThreadContext(handle, &mut aligned.0) };
 
     let mut copied = 0usize;
-    let (sp, ip, fp) = if got_context != FALSE {
-        let sp = context.Rsp;
+    let regs = if got_context != FALSE {
+        let regs = captured_regs(&aligned.0);
+        let sp = regs.sp;
         if let Some(top) = committed_stack_top(sp) {
             let available = top.saturating_sub(sp) as usize;
             let want = available.min(max_stack_bytes).min(scratch.len());
@@ -123,9 +183,14 @@ fn capture_thread(tid: u32, max_stack_bytes: usize, scratch: &mut [u8]) -> Optio
                 copied = want;
             }
         }
-        (sp, context.Rip, context.Rbp)
+        regs
     } else {
-        (0, 0, 0)
+        CapturedRegs {
+            sp: 0,
+            ip: 0,
+            fp: 0,
+            lr: None,
+        }
     };
 
     unsafe { ResumeThread(handle) };
@@ -143,9 +208,10 @@ fn capture_thread(tid: u32, max_stack_bytes: usize, scratch: &mut [u8]) -> Optio
 
     Some(ThreadSample {
         os_tid: u64::from(tid),
-        stack_pointer: sp,
-        instruction_pointer: ip,
-        frame_pointer: fp,
+        stack_pointer: regs.sp,
+        instruction_pointer: regs.ip,
+        frame_pointer: regs.fp,
+        link_register: regs.lr,
         stack_bytes,
         truncated,
         kind: CaptureKind::RawContext,

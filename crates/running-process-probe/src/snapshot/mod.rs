@@ -28,17 +28,16 @@
 //! whether that final step has run, so a consumer can never mistake raw
 //! captures for unwound frames.
 
-// x86_64 only. The capture reads `CONTEXT.Rsp`/`Rip`/`Rbp`, which are
-// x86_64 register names; Windows on ARM64 uses `Sp`/`Pc`/`Fp` and a different
-// unwind model. Same architecture gate the Windows interposer already carries.
-// ARM64 support is a separate change, not a silently-wrong register read.
-#[cfg(all(windows, target_arch = "x86_64"))]
+// Both Windows architectures are supported. The register names and the
+// unwinder differ per arch (see `windows.rs` / `unwind.rs`); everything else --
+// enumeration, suspend/resume sequencing, stack-copy bounds -- is shared.
+#[cfg(windows)]
 pub mod modules;
 
-#[cfg(all(windows, target_arch = "x86_64"))]
+#[cfg(windows)]
 pub mod unwind;
 
-#[cfg(all(windows, target_arch = "x86_64"))]
+#[cfg(windows)]
 mod windows;
 
 // Deliberately not platform-gated: the sink is pure Rust, so every CI lane
@@ -73,6 +72,12 @@ pub struct ThreadSample {
     pub instruction_pointer: u64,
     /// Frame pointer at capture time.
     pub frame_pointer: u64,
+    /// Link register, on architectures that have one (aarch64).
+    ///
+    /// Load-bearing there: a leaf frame's return address lives in LR rather
+    /// than on the stack, so unwinding without it loses the first frame.
+    /// `None` on x86_64, which has no such register.
+    pub link_register: Option<u64>,
     /// Bytes copied from the stack, starting at `stack_pointer`.
     pub stack_bytes: Vec<u8>,
     /// True when the stack was longer than [`MAX_STACK_BYTES`], so the copy is
@@ -164,11 +169,11 @@ pub enum SnapshotError {
 /// landed, rather than silently returning an empty snapshot that would read as
 /// "this process has no threads".
 pub fn capture_all_threads(config: &SnapshotConfig) -> Result<Snapshot, SnapshotError> {
-    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[cfg(windows)]
     {
         windows::capture(config)
     }
-    #[cfg(not(all(windows, target_arch = "x86_64")))]
+    #[cfg(not(windows))]
     {
         let _ = config;
         Err(SnapshotError::Unsupported)
@@ -214,7 +219,7 @@ mod tests {
         assert_eq!(snap.pause(), Duration::from_micros(1500));
     }
 
-    #[cfg(not(all(windows, target_arch = "x86_64")))]
+    #[cfg(not(windows))]
     #[test]
     fn unimplemented_platforms_report_unsupported_not_empty() {
         // An empty Ok(Snapshot) would read as "no threads", which is a very

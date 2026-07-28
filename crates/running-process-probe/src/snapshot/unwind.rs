@@ -20,8 +20,42 @@
 
 use std::ops::Range;
 
-use framehop::x86_64::{CacheX86_64, UnwindRegsX86_64, UnwinderX86_64};
 use framehop::{Module, ModuleSectionInfo, Unwinder};
+
+#[cfg(target_arch = "aarch64")]
+use framehop::aarch64::{
+    CacheAarch64 as ArchCache, UnwindRegsAarch64 as ArchRegs, UnwinderAarch64 as ArchUnwinder,
+};
+#[cfg(target_arch = "x86_64")]
+use framehop::x86_64::{
+    CacheX86_64 as ArchCache, UnwindRegsX86_64 as ArchRegs, UnwinderX86_64 as ArchUnwinder,
+};
+
+/// Build the architecture's register set from a captured sample.
+///
+/// The two constructors take different triples, and the difference is easy to
+/// get wrong silently: x86_64 wants the instruction pointer, aarch64 wants the
+/// **link register**. A leaf frame's return address lives in LR on aarch64, so
+/// passing the PC there yields a plausible-looking but wrong innermost frame.
+#[cfg(target_arch = "x86_64")]
+fn arch_regs(sample: &ThreadSample) -> ArchRegs {
+    ArchRegs::new(
+        sample.instruction_pointer,
+        sample.stack_pointer,
+        sample.frame_pointer,
+    )
+}
+
+#[cfg(target_arch = "aarch64")]
+fn arch_regs(sample: &ThreadSample) -> ArchRegs {
+    ArchRegs::new(
+        // Falls back to the PC only if the capture had no LR, which would
+        // itself be a capture bug rather than a normal state.
+        sample.link_register.unwrap_or(sample.instruction_pointer),
+        sample.stack_pointer,
+        sample.frame_pointer,
+    )
+}
 
 use super::modules::LoadedModule;
 use super::{Snapshot, ThreadSample};
@@ -88,8 +122,8 @@ impl ModuleSectionInfo<Vec<u8>> for MappedModuleSections {
 }
 
 /// Build an unwinder covering `modules`.
-pub fn build_unwinder(modules: &[LoadedModule]) -> UnwinderX86_64<Vec<u8>> {
-    let mut unwinder = UnwinderX86_64::new();
+pub fn build_unwinder(modules: &[LoadedModule]) -> ArchUnwinder<Vec<u8>> {
+    let mut unwinder = ArchUnwinder::new();
     for module in modules {
         let range = module.range();
         unwinder.add_module(Module::new(
@@ -107,8 +141,8 @@ pub fn build_unwinder(modules: &[LoadedModule]) -> UnwinderX86_64<Vec<u8>> {
 /// Reads only `sample`'s copied bytes; the thread itself is long since
 /// resumed.
 pub fn unwind_sample(
-    unwinder: &UnwinderX86_64<Vec<u8>>,
-    cache: &mut CacheX86_64,
+    unwinder: &ArchUnwinder<Vec<u8>>,
+    cache: &mut ArchCache,
     sample: &ThreadSample,
 ) -> Vec<u64> {
     let sp = sample.stack_pointer;
@@ -129,11 +163,7 @@ pub fn unwind_sample(
         Ok(u64::from_le_bytes(word))
     };
 
-    let regs = UnwindRegsX86_64::new(
-        sample.instruction_pointer,
-        sample.stack_pointer,
-        sample.frame_pointer,
-    );
+    let regs = arch_regs(sample);
 
     let mut frames = Vec::new();
     let mut iter = unwinder.iter_frames(sample.instruction_pointer, regs, cache, &mut read_stack);
@@ -148,7 +178,7 @@ pub fn unwind_sample(
 /// Sets `frames_resolved` only here — the one place frames actually exist.
 pub fn resolve_frames(snapshot: &mut Snapshot, modules: &[LoadedModule]) {
     let unwinder = build_unwinder(modules);
-    let mut cache = CacheX86_64::new();
+    let mut cache = ArchCache::new();
 
     for sample in &mut snapshot.threads {
         sample.frames = unwind_sample(&unwinder, &mut cache, sample);
@@ -188,6 +218,7 @@ mod tests {
             stack_pointer: 0x1000,
             instruction_pointer: 0x2000,
             frame_pointer: 0,
+            link_register: None,
             // Deliberately tiny: any read past 16 bytes must fail rather than
             // read adjacent memory.
             stack_bytes: vec![0u8; 16],
@@ -197,7 +228,7 @@ mod tests {
         };
         let modules = enumerate_modules().expect("modules");
         let unwinder = build_unwinder(&modules);
-        let mut cache = CacheX86_64::new();
+        let mut cache = ArchCache::new();
 
         // Must terminate, not panic or spin, on a stack it cannot follow.
         let frames = unwind_sample(&unwinder, &mut cache, &sample);
