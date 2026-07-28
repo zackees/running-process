@@ -13,6 +13,11 @@ requires_probe = pytest.mark.skipif(
     reason="this build of _native has no probe support",
 )
 
+requires_snapshot = pytest.mark.skipif(
+    not probe.snapshot_supported(),
+    reason="native stack capture is not implemented on this platform",
+)
+
 # A socket that deliberately does not exist. Enrollment must succeed anyway —
 # an absent daemon is a normal condition the worker retries through — so this
 # keeps the tests independent of whether a daemon happens to be running.
@@ -124,6 +129,106 @@ class TestProbeInstall(unittest.TestCase):
             1,
             f"exactly one close should do the release, got {results}",
         )
+
+
+@requires_probe
+@requires_snapshot
+class TestMixedModeSnapshot(unittest.TestCase):
+    """Native and interpreter frames for the same OS thread (#634)."""
+
+    def test_snapshot_reports_this_processes_threads(self):
+        dumps = probe.snapshot()
+        self.assertGreater(len(dumps), 0, "a live process has threads")
+        for os_tid, dump in dumps.items():
+            self.assertEqual(os_tid, dump.os_tid)
+
+    def test_the_calling_thread_has_python_frames(self):
+        # A thread cannot suspend itself, so the caller contributes no native
+        # frames — but its Python frames must still be present, which is the
+        # case that would break if the two views were merged by position.
+        dumps = probe.snapshot()
+        me = threading.get_native_id()
+        self.assertIn(me, dumps, f"calling thread {me} missing from {list(dumps)}")
+        self.assertTrue(
+            dumps[me].python,
+            "the calling thread must contribute interpreter frames",
+        )
+
+    def test_python_frames_name_this_test(self):
+        # Proves the interpreter frames belong to the thread they are filed
+        # under, rather than being an arbitrary non-empty list.
+        dumps = probe.snapshot()
+        me = dumps[threading.get_native_id()]
+        functions = [f.name for f in me.python]
+        self.assertIn(
+            "test_python_frames_name_this_test",
+            functions,
+            f"own frame absent from {functions}",
+        )
+
+    def test_a_thread_blocked_in_rust_reports_both_stacks(self):
+        """The acceptance case: mixed-mode capture of a native-blocked thread.
+
+        The worker parks inside a real native call, so its machine stack is
+        down in `_native` while its Python stack still shows the call that got
+        it there. Both must appear, filed under the same OS thread id.
+
+        The blocking call must *release* the GIL, which is what any well-behaved
+        one does — a native call that blocks while holding the GIL freezes the
+        whole interpreter, so no snapshot could run at all. (`_native`'s
+        `native_test_hang_in_rust` is deliberately the GIL-holding kind: it
+        exists to be dumped by an external debugger, and using it here
+        deadlocks.)
+        """
+        from running_process import _native
+
+        detector = _native.NativeIdleDetector(
+            30.0,  # timeout_seconds — long enough to still be blocked
+            30.0,  # stability_window_seconds
+            0.05,  # sample_interval_seconds
+            _native.NativeSignalBool(True),
+        )
+        worker_tid: list[int] = []
+        entered = threading.Event()
+
+        def worker():
+            worker_tid.append(threading.get_native_id())
+            entered.set()
+            detector.wait(20.0)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(timeout=30), "worker never started")
+            # Give the thread time to get down into the native wait rather
+            # than still be on its way there.
+            time.sleep(0.5)
+            self.assertTrue(worker_tid, "worker never recorded its tid")
+
+            dumps = probe.snapshot()
+            tid = worker_tid[0]
+            self.assertIn(
+                tid, dumps, f"blocked thread {tid} missing from {list(dumps)}"
+            )
+
+            dump = dumps[tid]
+            self.assertTrue(
+                dump.native,
+                "a thread parked in a native call must yield native frames",
+            )
+            self.assertTrue(
+                dump.python,
+                "the same thread must still yield its interpreter frames",
+            )
+            self.assertTrue(dump.is_mixed())
+            self.assertIn(
+                "worker",
+                [f.name for f in dump.python],
+                "the Python half must show the call that entered native code",
+            )
+        finally:
+            detector.mark_exit(0, False)
+            thread.join(timeout=30)
 
 
 class TestProbeUnavailable(unittest.TestCase):

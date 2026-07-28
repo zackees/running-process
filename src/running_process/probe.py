@@ -25,7 +25,9 @@ the worker retries through, not an error.
 
 import atexit
 import faulthandler
+import sys
 import threading
+import traceback
 from dataclasses import dataclass, field
 
 from running_process.interrupt_handler import handle_keyboard_interrupt
@@ -126,6 +128,92 @@ class ProbeGuard:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+
+@dataclass
+class ThreadDump:
+    """One OS thread's stacks, from both sides of the interpreter boundary.
+
+    The two lists describe the *same* thread at the same moment, presented
+    side by side rather than interleaved. Interleaving requires knowing which
+    native frames belong under which Python frame, which is a later slice; the
+    side-by-side view is already enough to see that a thread is blocked in
+    native code and which Python call put it there.
+    """
+
+    os_tid: int
+    # Raw return addresses. Symbolization happens off-process, so these are
+    # integers here by design, not an oversight.
+    native: list[int] = field(default_factory=list)
+    # Pre-resolved ``(file, line, function, text)`` entries.
+    python: list[traceback.FrameSummary] = field(default_factory=list)
+
+    def is_mixed(self) -> bool:
+        """Whether both halves were captured for this thread."""
+        return bool(self.native) and bool(self.python)
+
+
+def snapshot_supported() -> bool:
+    """Whether native stack capture works on this platform and build."""
+    native = _native_module()
+    if native is None or not hasattr(native, "native_probe_snapshot_supported"):
+        return False
+    return bool(native.native_probe_snapshot_supported())
+
+
+def snapshot() -> dict[int, ThreadDump]:
+    """Capture every thread's native and interpreter stacks.
+
+    Threads are aligned by OS thread id — never by list position, which would
+    silently pair unrelated stacks whenever the two views disagree about how
+    many threads exist. They routinely do: the calling thread has Python frames
+    but no native ones (a thread cannot suspend itself), and interpreter-less
+    threads created by native code have the reverse.
+
+    Raises ``NotImplementedError`` where native capture is unimplemented, so an
+    unsupported platform is distinguishable from a process with no threads.
+    """
+    native_mod = _native_module()
+    if native_mod is None:
+        raise ProbeUnavailableError(
+            "this build of running_process._native has no probe support"
+        )
+
+    # Native capture first: it suspends siblings briefly, and doing it before
+    # the interpreter walk keeps the two views as close together in time as
+    # possible.
+    native_frames: dict[int, list[int]] = native_mod.native_probe_snapshot()
+
+    # Map interpreter thread ids to OS thread ids. `sys._current_frames()` is
+    # keyed by the former and the native capture by the latter; they are
+    # different numbers.
+    os_tid_by_ident: dict[int, int] = {}
+    for thread in threading.enumerate():
+        ident = thread.ident
+        native_id = getattr(thread, "native_id", None)
+        if ident is not None and native_id is not None:
+            os_tid_by_ident[ident] = native_id
+
+    dumps: dict[int, ThreadDump] = {
+        os_tid: ThreadDump(os_tid=os_tid, native=list(frames))
+        for os_tid, frames in native_frames.items()
+    }
+
+    for ident, frame in sys._current_frames().items():
+        os_tid = os_tid_by_ident.get(ident)
+        if os_tid is None:
+            # A Python thread whose OS id we cannot determine. Key it by its
+            # interpreter id rather than dropping it — an unpairable stack is
+            # still worth reporting, and silently discarding it would look
+            # like the thread did not exist.
+            os_tid = ident
+        dump = dumps.get(os_tid)
+        if dump is None:
+            dump = ThreadDump(os_tid=os_tid)
+            dumps[os_tid] = dump
+        dump.python = traceback.extract_stack(frame)
+
+    return dumps
 
 
 def install(config: ProbeConfig, *, required: bool = False) -> ProbeGuard | None:

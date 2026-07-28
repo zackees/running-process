@@ -42,7 +42,10 @@ pub(crate) use pid_tracking::{
     untrack_process_pid,
 };
 pub(crate) use priority::native_apply_process_nice;
-pub(crate) use probe::{native_probe_install, native_probe_is_armed, native_probe_uninstall};
+pub(crate) use probe::{
+    native_probe_install, native_probe_is_armed, native_probe_snapshot,
+    native_probe_snapshot_supported, native_probe_uninstall,
+};
 pub(crate) use process::NativeRunningProcess;
 pub(crate) use process_tree::{
     native_get_process_tree_info, native_is_same_process, native_kill_process_tree,
@@ -96,6 +99,8 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(native_probe_install, module)?)?;
     module.add_function(wrap_pyfunction!(native_probe_uninstall, module)?)?;
     module.add_function(wrap_pyfunction!(native_probe_is_armed, module)?)?;
+    module.add_function(wrap_pyfunction!(native_probe_snapshot, module)?)?;
+    module.add_function(wrap_pyfunction!(native_probe_snapshot_supported, module)?)?;
     module.add_function(wrap_pyfunction!(monitor_console_windows, module)?)?;
     module.add("VERSION", PyString::new(_py, env!("CARGO_PKG_VERSION")))?;
     Ok(())

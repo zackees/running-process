@@ -180,6 +180,32 @@ pub fn capture_all_threads(config: &SnapshotConfig) -> Result<Snapshot, Snapshot
     }
 }
 
+/// Capture every sibling thread and resolve each capture to return addresses.
+///
+/// The two halves are separate functions because they have opposite
+/// constraints — capture runs with threads suspended and must do almost
+/// nothing, while unwinding runs afterwards and may allocate freely. Callers
+/// that just want frames should not have to know that, or to remember that
+/// resolving requires a module inventory taken from the same process.
+///
+/// Returns [`SnapshotError::Unsupported`] wherever [`capture_all_threads`]
+/// does, so an unsupported platform is never mistaken for a thread-less
+/// process.
+pub fn capture_and_resolve(config: &SnapshotConfig) -> Result<Snapshot, SnapshotError> {
+    #[cfg(windows)]
+    {
+        let mut snapshot = capture_all_threads(config)?;
+        let modules = modules::enumerate_modules()?;
+        unwind::resolve_frames(&mut snapshot, &modules);
+        Ok(snapshot)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = config;
+        Err(SnapshotError::Unsupported)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +213,24 @@ mod tests {
     #[test]
     fn default_config_uses_the_documented_cap() {
         assert_eq!(SnapshotConfig::default().max_stack_bytes, MAX_STACK_BYTES);
+    }
+
+    /// The combined entry point must resolve, not just capture.
+    ///
+    /// `capture_all_threads` alone leaves `frames` empty and
+    /// `frames_resolved` false; this is the difference between the two.
+    #[cfg(windows)]
+    #[test]
+    fn capture_and_resolve_produces_resolved_frames() {
+        let snapshot = capture_and_resolve(&SnapshotConfig::default()).expect("capture");
+        assert!(
+            snapshot.frames_resolved,
+            "the combined path must run the unwinder"
+        );
+        assert!(
+            snapshot.threads.iter().any(|t| !t.frames.is_empty()),
+            "at least one captured thread should yield frames"
+        );
     }
 
     #[test]

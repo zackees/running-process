@@ -137,6 +137,54 @@ pub(crate) fn native_probe_is_armed(handle: u64) -> bool {
     with_guards(|guards| guards.get(&handle).is_some_and(|g| g.is_armed()))
 }
 
+/// Capture the machine stacks of every other thread in this process.
+///
+/// Returns `{os_tid: [return_address, ...]}`. Addresses, not symbols —
+/// resolving them is off-process work in a later slice.
+///
+/// The calling thread is absent by construction: a thread cannot suspend
+/// itself. In a Python process that means the interpreter thread running this
+/// call contributes its Python frames (via `sys._current_frames()`) but no
+/// native ones, which is why the Python layer merges the two views rather than
+/// assuming every tid appears in both.
+///
+/// # The GIL
+///
+/// Released for the duration. Capture suspends sibling OS threads, and some of
+/// those threads hold the GIL — suspending a GIL holder while this thread also
+/// wanted the GIL would deadlock the interpreter.
+#[pyfunction]
+pub(crate) fn native_probe_snapshot(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    use running_process_probe::snapshot::{capture_and_resolve, SnapshotConfig, SnapshotError};
+
+    let snapshot = py
+        .detach(|| capture_and_resolve(&SnapshotConfig::default()))
+        .map_err(|e| match e {
+            SnapshotError::Unsupported => pyo3::exceptions::PyNotImplementedError::new_err(
+                "native stack capture is not implemented on this platform",
+            ),
+            other => PyRuntimeError::new_err(format!("stack capture failed: {other}")),
+        })?;
+
+    let out = pyo3::types::PyDict::new(py);
+    for sample in &snapshot.threads {
+        let frames = pyo3::types::PyList::empty(py);
+        for address in &sample.frames {
+            frames.append(*address)?;
+        }
+        out.set_item(sample.os_tid, frames)?;
+    }
+    Ok(out.into_any().unbind())
+}
+
+/// Whether [`native_probe_snapshot`] is implemented on this platform.
+///
+/// Lets callers branch without provoking and catching an exception.
+#[pyfunction]
+pub(crate) fn native_probe_snapshot_supported() -> bool {
+    cfg!(windows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
