@@ -200,12 +200,28 @@ fn assert_offer_read_honors_deadline(label: &str, peer: OfferPeer) {
     let (mut broker_side, mut backend_side) = connected_pair(label);
     let writer = match peer {
         OfferPeer::Silent => None,
-        OfferPeer::Partial => Some(thread::spawn(move || {
+        OfferPeer::Partial => {
+            // Send the prefix before the read starts, not from the spawned
+            // thread.
+            //
+            // Spawning first raced the reader's teardown: the read times out
+            // after 30ms and drops its end, so a writer thread scheduled late
+            // hit `BrokenPipe: The pipe is being closed` and panicked on the
+            // `expect`. Seen on a loaded machine during a parallel sweep.
+            //
+            // Tolerating the error instead would have hidden the race and
+            // quietly turned this into the `Silent` case — the partial prefix
+            // that gives this test its name would never reach the reader.
+            // Writing synchronously guarantees it does; the thread then only
+            // has to keep the connection open past the deadline.
             broker_side
                 .write_all(&[1, 0])
                 .expect("partial offer prefix");
-            thread::sleep(Duration::from_millis(100));
-        })),
+            Some(thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                drop(broker_side);
+            }))
+        }
         OfferPeer::Trickle => Some(thread::spawn(move || {
             let offer = HandoffOffer {
                 handle_value: 0xB0B,
