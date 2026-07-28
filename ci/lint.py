@@ -107,6 +107,32 @@ def main() -> int:
         )
     ) != 0:
         return 1
+    # KeyboardInterrupt discipline (KBI001/KBI002). Scoped to `src`: the rule
+    # is about library code, where an interrupt on a worker thread has to
+    # reach the main thread to be seen at all. Test helpers that swallow
+    # exceptions in an availability probe are not that.
+    if run(
+        supervised_command(
+            python,
+            str(python),
+            "-m",
+            "ci.lint_python.keyboard_interrupt_checker",
+            "src",
+            "--exclude",
+            ".venv",
+            "venv",
+            "dist",
+            ".build",
+        )
+    ) != 0:
+        print(
+            "lint: KeyboardInterrupt handling violations. See CLAUDE.md "
+            "'Keyboard interrupts'; suppress a deliberate exception with "
+            "`# noqa: KBI002` and a comment saying why.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     return 0
 
 

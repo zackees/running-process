@@ -600,7 +600,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("[dashboard] press Ctrl+C to stop")
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:  # noqa: KBI002
+        # Top-level CLI handler on the main thread: Ctrl+C is the documented
+        # way to stop the dashboard, so it exits cleanly rather than
+        # propagating. Re-raising would replace an orderly shutdown with a
+        # traceback for the expected way to quit.
         print("\n[dashboard] shutting down")
         server.shutdown()
     return 0

@@ -93,4 +93,24 @@ def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> Non
             "tests",
             "ci",
         ],
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            python,
+            "-m",
+            "ci.lint_python.keyboard_interrupt_checker",
+            # Scoped to `src`: the rule is about library code, where an
+            # interrupt on a worker thread has to reach the main thread to be
+            # seen at all.
+            "src",
+            "--exclude",
+            ".venv",
+            "venv",
+            "dist",
+            ".build",
+        ],
     ]
