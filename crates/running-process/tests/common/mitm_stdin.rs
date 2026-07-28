@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
