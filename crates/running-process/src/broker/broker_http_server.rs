@@ -62,25 +62,23 @@ impl BrokerHttpServer {
         let listener = match resolved.port {
             BrokerHttpPort::Static { port } => try_bind(resolved, port)?,
             BrokerHttpPort::Dynamic => try_bind(resolved, 0)?,
-            BrokerHttpPort::StaticOrFallback { preferred } => {
-                match try_bind(resolved, preferred) {
-                    Ok(l) => l,
-                    Err(BrokerHttpServerError::Bind { source, .. })
-                        if source.kind() == std::io::ErrorKind::AddrInUse =>
-                    {
-                        try_bind(resolved, 0)?
-                    }
-                    Err(other) => return Err(other),
+            BrokerHttpPort::StaticOrFallback { preferred } => match try_bind(resolved, preferred) {
+                Ok(l) => l,
+                Err(BrokerHttpServerError::Bind { source, .. })
+                    if source.kind() == std::io::ErrorKind::AddrInUse =>
+                {
+                    try_bind(resolved, 0)?
                 }
-            }
+                Err(other) => return Err(other),
+            },
         };
-        let local = listener.local_addr().map_err(|source| {
-            BrokerHttpServerError::Bind {
+        let local = listener
+            .local_addr()
+            .map_err(|source| BrokerHttpServerError::Bind {
                 addr: resolved.addr,
                 port: 0,
                 source,
-            }
-        })?;
+            })?;
         Ok(Self {
             listener,
             local,
@@ -103,10 +101,7 @@ impl BrokerHttpServer {
     }
 }
 
-fn try_bind(
-    resolved: ResolvedHttpBind,
-    port: u16,
-) -> Result<TcpListener, BrokerHttpServerError> {
+fn try_bind(resolved: ResolvedHttpBind, port: u16) -> Result<TcpListener, BrokerHttpServerError> {
     let bind_addr = SocketAddr::new(resolved.addr, port);
     TcpListener::bind(bind_addr).map_err(|source| BrokerHttpServerError::Bind {
         addr: resolved.addr,
@@ -144,21 +139,20 @@ fn handle_one(mut stream: TcpStream, registry: &HttpEndpointRegistry) -> std::io
         .unwrap_or("/")
         .to_string();
 
-    let (status_line, content_type, body) = if request_line.starts_with("GET ")
-        && (path == "/" || path.is_empty())
-    {
-        (
-            "HTTP/1.1 200 OK",
-            "text/html; charset=utf-8",
-            render_aggregator_page(registry),
-        )
-    } else {
-        (
-            "HTTP/1.1 404 Not Found",
-            "text/plain; charset=utf-8",
-            "not found\n".to_string(),
-        )
-    };
+    let (status_line, content_type, body) =
+        if request_line.starts_with("GET ") && (path == "/" || path.is_empty()) {
+            (
+                "HTTP/1.1 200 OK",
+                "text/html; charset=utf-8",
+                render_aggregator_page(registry),
+            )
+        } else {
+            (
+                "HTTP/1.1 404 Not Found",
+                "text/plain; charset=utf-8",
+                "not found\n".to_string(),
+            )
+        };
 
     let response = format!(
         "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -187,9 +181,7 @@ fn render_aggregator_page(registry: &HttpEndpointRegistry) -> String {
     let mut buttons = String::new();
     let mut initial_src = String::new();
     if snap.is_empty() {
-        buttons.push_str(
-            r#"<span class="empty">no backends registered yet</span>"#,
-        );
+        buttons.push_str(r#"<span class="empty">no backends registered yet</span>"#);
     } else {
         for (id, port) in &snap {
             match port {
@@ -327,8 +319,8 @@ mod tests {
     #[test]
     fn aggregator_page_with_no_backends_shows_empty_state() {
         let reg = Arc::new(HttpEndpointRegistry::new());
-        let s = BrokerHttpServer::bind(BrokerHttpPort::Dynamic, reg)
-            .expect("dynamic bind succeeds");
+        let s =
+            BrokerHttpServer::bind(BrokerHttpPort::Dynamic, reg).expect("dynamic bind succeeds");
         let local = s.local_addr();
         let handle = thread::spawn(move || {
             s.serve_once().expect("serve_once succeeds");

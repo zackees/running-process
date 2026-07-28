@@ -504,11 +504,7 @@ mod tests {
     #[test]
     fn ancillary_queue_enobufs_maps_to_silent_would_block() {
         let socket = Path::new("saturated-handoff");
-        let error = sendmsg_error(
-            7,
-            socket,
-            std::io::Error::from_raw_os_error(libc::ENOBUFS),
-        );
+        let error = sendmsg_error(7, socket, std::io::Error::from_raw_os_error(libc::ENOBUFS));
 
         assert!(matches!(
             error,
@@ -522,11 +518,7 @@ mod tests {
     #[test]
     fn saturated_ancillary_queue_emsgsize_maps_to_silent_would_block() {
         let socket = Path::new("saturated-handoff");
-        let error = sendmsg_error(
-            7,
-            socket,
-            std::io::Error::from_raw_os_error(libc::EMSGSIZE),
-        );
+        let error = sendmsg_error(7, socket, std::io::Error::from_raw_os_error(libc::EMSGSIZE));
 
         assert!(matches!(
             error,
@@ -542,11 +534,8 @@ mod tests {
         let file = File::open("/dev/null").unwrap();
         let token = HandoffToken::from_bytes([0x43; 16]);
         let socket = UnixHandoffSocket::new("connected-handoff");
-        let attempt = ScmRightsAttempt::new(
-            UnixFileDescriptor::new(file.as_raw_fd()),
-            socket,
-            token,
-        );
+        let attempt =
+            ScmRightsAttempt::new(UnixFileDescriptor::new(file.as_raw_fd()), socket, token);
 
         let success = try_send_scm_rights_over(sender.as_raw_fd(), &attempt).unwrap();
         let (received_fd, received_token) = recv_fd_and_token(receiver);
@@ -597,10 +586,13 @@ mod tests {
         send_thread.join().unwrap();
 
         let error = result.unwrap_err();
-        assert!(matches!(
-            error,
-            ScmRightsError::WouldBlock { socket: ref path } if path == &socket.path
-        ), "unexpected saturated send result: {error:?}");
+        assert!(
+            matches!(
+                error,
+                ScmRightsError::WouldBlock { socket: ref path } if path == &socket.path
+            ),
+            "unexpected saturated send result: {error:?}"
+        );
         assert!(error.is_fallback_safe());
         assert!(!error.fallback_decision().sends_client_error());
     }

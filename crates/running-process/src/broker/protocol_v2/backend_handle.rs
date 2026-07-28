@@ -86,7 +86,8 @@ mod tests {
         let v2_ep = TypeId::of::<Endpoint>();
         assert_eq!(v1_ep, v2_ep, "Endpoint aliased");
 
-        let v1_err = TypeId::of::<super::super::super::backend_lifecycle::identity::IdentityError>();
+        let v1_err =
+            TypeId::of::<super::super::super::backend_lifecycle::identity::IdentityError>();
         let v2_err = TypeId::of::<IdentityError>();
         assert_eq!(v1_err, v2_err, "IdentityError aliased");
 

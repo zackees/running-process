@@ -100,7 +100,7 @@ pub extern "C" fn rp_native_process_wait_for_capture_completion_with_deadline_pu
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, mpsc};
+    use std::sync::{mpsc, Arc};
 
     static EXPORTED_WAIT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

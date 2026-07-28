@@ -210,19 +210,16 @@ mod tests {
             let name = {
                 use interprocess::local_socket::{GenericNamespaced, ToNsName};
                 let bare = format!("rp-brokered-backend-stub-{endpoint}");
-                ToNsName::to_ns_name::<GenericNamespaced>(bare.as_str())?
-                    .into_owned()
+                ToNsName::to_ns_name::<GenericNamespaced>(bare.as_str())?.into_owned()
             };
             #[cfg(unix)]
             let name = {
                 use interprocess::local_socket::{GenericFilePath, ToFsName};
-                let path = std::env::temp_dir()
-                    .join(format!("rp-brokered-backend-stub-{endpoint}.sock"));
+                let path =
+                    std::env::temp_dir().join(format!("rp-brokered-backend-stub-{endpoint}.sock"));
                 let _ = std::fs::remove_file(&path);
-                ToFsName::to_fs_name::<GenericFilePath>(
-                    path.to_string_lossy().as_ref(),
-                )?
-                .into_owned()
+                ToFsName::to_fs_name::<GenericFilePath>(path.to_string_lossy().as_ref())?
+                    .into_owned()
             };
             let listener = ListenerOptions::new().name(name).create_sync()?;
             Ok(listener)
@@ -301,8 +298,7 @@ mod tests {
             }
         }
 
-        let result =
-            std::panic::catch_unwind(|| bootstrap::<FailingBackend>("bootstrap-failure"));
+        let result = std::panic::catch_unwind(|| bootstrap::<FailingBackend>("bootstrap-failure"));
         // The orchestrator returns Err — never panics — when bind fails.
         // catch_unwind preserves that as Ok(Err(...)).
         let inner = result.expect("bind error should be returned, not a panic");

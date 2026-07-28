@@ -47,10 +47,10 @@ use crate::broker::protocol::{
     read_frame, validate_frame_envelope, write_frame, Frame, FrameKind, FrameValidationError,
     HandoffAck, HandoffOffer, PayloadEncoding, PROTOCOL_VERSION,
 };
+use crate::broker::server::deadline_stream::DeadlineStream;
 use crate::broker::server::handoff::handoff_token::HandoffToken;
 use crate::broker::server::handoff::orchestrate::{HandoffDelivery, HandoffDeliveryError};
 use crate::broker::server::handoff::windows::WindowsHandleValue;
-use crate::broker::server::deadline_stream::DeadlineStream;
 
 /// Payload protocol reserved for broker↔backend handoff offer/ACK frames.
 ///

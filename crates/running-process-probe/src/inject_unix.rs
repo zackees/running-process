@@ -172,8 +172,7 @@ mod tests {
     fn inject_via_env_rejects_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut cmd = Command::new("/bin/true");
-        let err = inject_via_env(&mut cmd, dir.path())
-            .expect_err("expected InvalidInput");
+        let err = inject_via_env(&mut cmd, dir.path()).expect_err("expected InvalidInput");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }

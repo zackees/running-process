@@ -56,7 +56,9 @@ fn main() {
         eprintln!("usage: {} <delay_ms> <path>", args[0]);
         std::process::exit(2);
     }
-    let delay_ms: u64 = args[1].parse().expect("delay_ms must be a positive integer");
+    let delay_ms: u64 = args[1]
+        .parse()
+        .expect("delay_ms must be a positive integer");
     let path = &args[2];
 
     std::thread::sleep(Duration::from_millis(delay_ms));

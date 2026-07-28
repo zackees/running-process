@@ -387,7 +387,9 @@ mod tests {
         let loader = ServiceDefinitionLoader::new(dir.path());
         let a = loader.load("zccache").expect("load");
         let b = loader.reload("zccache").expect("reload");
-        let c = loader.lookup_or_reload("zccache").expect("lookup_or_reload");
+        let c = loader
+            .lookup_or_reload("zccache")
+            .expect("lookup_or_reload");
         assert_eq!(a, b);
         assert_eq!(b, c);
     }

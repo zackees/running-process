@@ -81,8 +81,8 @@ mod tests {
 
     #[test]
     fn v2_program_pipe_happy_path() {
-        let name = v2_program_pipe("zccache", VALID_SID, 0)
-            .expect("valid inputs produce a v2 pipe name");
+        let name =
+            v2_program_pipe("zccache", VALID_SID, 0).expect("valid inputs produce a v2 pipe name");
         assert_eq!(name, "rpb-v2-zccache-deadbeefcafef00d-0");
     }
 

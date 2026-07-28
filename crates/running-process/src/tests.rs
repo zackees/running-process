@@ -1031,11 +1031,7 @@ fn unix_natural_exit_cancels_both_orphaned_capture_readers() {
     }
 
     let process = NativeProcess::new(ProcessConfig {
-        command: CommandSpec::Argv(vec![
-            "sh".into(),
-            "-c".into(),
-            "sleep 60 & echo $!".into(),
-        ]),
+        command: CommandSpec::Argv(vec!["sh".into(), "-c".into(), "sleep 60 & echo $!".into()]),
         cwd: None,
         env: None,
         capture: true,
@@ -1046,15 +1042,15 @@ fn unix_natural_exit_cancels_both_orphaned_capture_readers() {
         nice: None,
     });
     process.start().expect("spawn shell");
-    let grandchild_pid =
-        match process.read_stream(StreamKind::Stdout, Some(Duration::from_secs(5))) {
-            ReadStatus::Line(line) => String::from_utf8(line)
-                .expect("pid is UTF-8")
-                .trim()
-                .parse::<libc::pid_t>()
-                .expect("parse grandchild pid"),
-            other => panic!("expected grandchild pid line, got {other:?}"),
-        };
+    let grandchild_pid = match process.read_stream(StreamKind::Stdout, Some(Duration::from_secs(5)))
+    {
+        ReadStatus::Line(line) => String::from_utf8(line)
+            .expect("pid is UTF-8")
+            .trim()
+            .parse::<libc::pid_t>()
+            .expect("parse grandchild pid"),
+        other => panic!("expected grandchild pid line, got {other:?}"),
+    };
     let _grandchild_guard = KillPidOnDrop(grandchild_pid);
 
     process

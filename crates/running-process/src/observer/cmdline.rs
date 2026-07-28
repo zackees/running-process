@@ -79,8 +79,7 @@ mod macos_impl {
                 "pid 0 is the kernel scheduler — not queryable",
             ));
         }
-        let mut name: [libc::c_int; 3] =
-            [CTL_KERN, KERN_PROCARGS2, pid as libc::c_int];
+        let mut name: [libc::c_int; 3] = [CTL_KERN, KERN_PROCARGS2, pid as libc::c_int];
         // Size probe: pass null buf to learn the required length.
         let mut len: libc::size_t = 0;
         let r = unsafe {
@@ -183,10 +182,7 @@ mod macos_impl {
 
         #[test]
         fn parses_argv_skipping_exec_path_and_padding() {
-            let buf = build_procargs2(
-                "/usr/bin/myprog",
-                &["myprog", "--flag", "value with space"],
-            );
+            let buf = build_procargs2("/usr/bin/myprog", &["myprog", "--flag", "value with space"]);
             let out = parse_procargs2(&buf).expect("parse");
             assert_eq!(out, "myprog --flag value with space");
         }

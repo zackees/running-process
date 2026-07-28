@@ -151,7 +151,7 @@ pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, mpsc};
+    use std::sync::{mpsc, Arc};
 
     #[test]
     fn mutex_poll_releases_lock_between_attempts() {

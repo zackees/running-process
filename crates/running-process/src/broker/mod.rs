@@ -9,12 +9,12 @@
 
 pub mod adopt;
 pub mod backend_handle;
-pub mod broker_http_port;
-pub mod broker_http_server;
-pub mod brokered_backend;
 pub mod backend_lib;
 pub mod backend_lifecycle;
 pub mod backend_sdk;
+pub mod broker_http_port;
+pub mod broker_http_server;
+pub mod brokered_backend;
 pub mod builders;
 pub mod capabilities;
 pub mod client;
@@ -22,8 +22,8 @@ pub mod client_v2;
 pub mod doctor;
 pub mod fs_health;
 pub mod get_http_endpoint_dispatch;
-pub mod http_endpoint_registry;
 pub mod host_identity;
+pub mod http_endpoint_registry;
 pub mod lifecycle;
 pub mod manifest;
 pub mod protocol;

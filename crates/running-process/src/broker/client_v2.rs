@@ -331,9 +331,8 @@ mod tests {
             let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
             #[cfg(unix)]
             let _cleanup = {
-                let _ = std::fs::create_dir_all(
-                    std::path::Path::new(&socket_path).parent().unwrap(),
-                );
+                let _ =
+                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
@@ -404,8 +403,8 @@ mod tests {
 
     #[test]
     fn connect_with_no_broker_returns_dial_error() {
-        let err = connect("client-v2-no-broker-ever", "0.0.0")
-            .expect_err("no broker => Dial error");
+        let err =
+            connect("client-v2-no-broker-ever", "0.0.0").expect_err("no broker => Dial error");
         match err {
             BrokerV2Error::Dial { .. } => {}
             other => panic!("expected Dial, got: {other:?}"),
@@ -421,9 +420,8 @@ mod tests {
             let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
             #[cfg(unix)]
             let _cleanup = {
-                let _ = std::fs::create_dir_all(
-                    std::path::Path::new(&socket_path).parent().unwrap(),
-                );
+                let _ =
+                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
@@ -476,9 +474,8 @@ mod tests {
             let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
             #[cfg(unix)]
             let _cleanup = {
-                let _ = std::fs::create_dir_all(
-                    std::path::Path::new(&socket_path).parent().unwrap(),
-                );
+                let _ =
+                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
@@ -514,9 +511,8 @@ mod tests {
             let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
             #[cfg(unix)]
             let _cleanup = {
-                let _ = std::fs::create_dir_all(
-                    std::path::Path::new(&socket_path).parent().unwrap(),
-                );
+                let _ =
+                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
@@ -603,9 +599,8 @@ mod tests {
             let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
             #[cfg(unix)]
             let _cleanup = {
-                let _ = std::fs::create_dir_all(
-                    std::path::Path::new(&socket_path).parent().unwrap(),
-                );
+                let _ =
+                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
@@ -661,9 +656,8 @@ mod tests {
             let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
             #[cfg(unix)]
             let _cleanup = {
-                let _ = std::fs::create_dir_all(
-                    std::path::Path::new(&socket_path).parent().unwrap(),
-                );
+                let _ =
+                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
@@ -703,9 +697,7 @@ mod tests {
         // disconnect first: Framing(UnexpectedEof), Io(BrokenPipe), or
         // Dial (rare race). All are transport-class — none is a session.
         match err {
-            BrokerV2Error::Framing(_)
-            | BrokerV2Error::Io(_)
-            | BrokerV2Error::Dial { .. } => {}
+            BrokerV2Error::Framing(_) | BrokerV2Error::Io(_) | BrokerV2Error::Dial { .. } => {}
             other => panic!("expected transport variant, got: {other:?}"),
         }
         assert!(
