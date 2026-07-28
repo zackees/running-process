@@ -41,6 +41,10 @@ pub mod unwind;
 #[cfg(all(windows, target_arch = "x86_64"))]
 mod windows;
 
+// Deliberately not platform-gated: the sink is pure Rust, so every CI lane
+// exercises the backpressure contract rather than only Windows.
+pub mod stream;
+
 use std::time::Duration;
 
 /// Upper bound on the stack bytes copied per thread.
