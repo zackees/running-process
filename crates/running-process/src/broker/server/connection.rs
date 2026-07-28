@@ -462,7 +462,7 @@ pub(super) fn refused_reply(
     }
 }
 
-pub(super) fn peer_identity_from_stream(
+pub fn peer_identity_from_stream(
     stream: &interprocess::local_socket::Stream,
 ) -> Result<PeerIdentity, BrokerConnectionError> {
     use interprocess::local_socket::traits::StreamCommon;
