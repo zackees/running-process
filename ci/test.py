@@ -524,7 +524,23 @@ def main(argv: list[str] | None = None) -> int:
 
             # Fixtures first, for the same reason as the non-coverage path
             # below: tests look the binaries up rather than building them.
-            if run(cargo_command("build", "-p", "testbins")) != 0:
+            #
+            # `--target-dir` is not optional here. cargo-llvm-cov redirects
+            # the build into `target/llvm-cov-target`, so the test binary
+            # resolves fixtures relative to *that* tree; a plain build would
+            # put them in `target/debug` where nothing looks.
+            if (
+                run(
+                    cargo_command(
+                        "build",
+                        "-p",
+                        "testbins",
+                        "--target-dir",
+                        "target/llvm-cov-target",
+                    )
+                )
+                != 0
+            ):
                 return 1
 
             # Split run/report so individually unreadable profiles can be
