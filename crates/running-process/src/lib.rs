@@ -24,6 +24,7 @@ pub mod console_detect;
 pub mod containment;
 pub mod environment;
 mod helpers;
+pub mod window_icon;
 // Phase 1 of #221: process-observation capability model + portable
 // lifecycle baseline. Core-feature-clean (std-only: mpsc + SystemTime),
 // so the started/exited baseline is available to the base library
@@ -144,6 +145,7 @@ pub use types::{
     CommandSpec, ProcessConfig, ProcessError, ReadStatus, RunOutput, StderrMode, StdinMode,
     StreamEvent, StreamKind,
 };
+pub use window_icon::{host_icon_support, set_host_icon, IconError, IconSource, IconSupport};
 
 #[cfg(unix)]
 pub(crate) use helpers::{
