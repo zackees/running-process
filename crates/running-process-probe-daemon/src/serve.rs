@@ -32,7 +32,7 @@ use running_process_probe::probe_diag::v1::{
 };
 
 use crate::probe_ops::{IdentityVerdict, ProbeErrorCode, ProbeOps, ProbeReply, ProbeRequest};
-use crate::registry::{AllowPolicy, Disclosure, ProcessKey, RegisterRequest};
+use crate::registry::{AllowPolicy, Disclosure, ProcessKey, RegisterRequest, Runtime};
 
 /// Cap on one request frame.
 ///
@@ -116,6 +116,7 @@ fn register_from_proto(req: RegisterProcess) -> Option<RegisterRequest> {
         },
         nonce,
         supported_ops: Vec::new(),
+        runtime: Runtime::from_proto(req.runtime),
     })
 }
 
@@ -548,10 +549,92 @@ mod tests {
             disclosure: Disclosure::default(),
             nonce: [1u8; 32],
             supported_ops: Vec::new(),
+            runtime: Runtime::Native,
         };
         assert!(
             !verify_identity(&request, true).verified,
             "a mismatched executable hash must not verify"
         );
+    }
+
+    /// A declared runtime must survive the wire and land in the registry.
+    ///
+    /// Goes through the real proto decode and the real `dispatch`, then reads
+    /// the stored entry back, so a break anywhere in the chain — proto field,
+    /// `from_proto`, `RegisterRequest`, or the `RegEntry` construction — fails
+    /// here.
+    ///
+    /// `dispatch` is driven directly rather than through `serve_connection`
+    /// because that function drops the connection's registrations on its way
+    /// out, which is exactly the behavior we want everywhere else.
+    fn stored_runtime_for(wire_runtime: i32, nonce: u8) -> Runtime {
+        let registry = Arc::new(crate::registry::Registry::new(OWNER.into()));
+        let ops = ProbeOps::new(
+            Arc::clone(&registry),
+            PeerCredentialPolicy::OwnerOnly {
+                uid_or_sid: OWNER.into(),
+            },
+        );
+
+        let mut envelope = self_register_envelope(nonce, 1);
+        let Some(Body::Register(req)) = envelope.body.as_mut() else {
+            panic!("expected a register body");
+        };
+        req.runtime = wire_runtime;
+
+        let request = request_from_envelope(envelope).expect("decodes");
+        let ProbeRequest::Register(reg) = &request else {
+            panic!("expected a register request");
+        };
+        let verdict = verify_identity(reg, true);
+        let key = reg.key.clone();
+
+        let reply = ops.dispatch(request, &peer(), 1, verdict);
+        assert!(
+            !matches!(reply, ProbeReply::Refused { .. }),
+            "registration was refused: {reply:?}"
+        );
+
+        registry
+            .get(&key)
+            .expect("registration should be stored")
+            .runtime
+    }
+
+    #[test]
+    fn a_declared_python_runtime_reaches_the_registry() {
+        assert_eq!(
+            stored_runtime_for(wire::Runtime::Python as i32, 0x51),
+            Runtime::Python,
+            "the daemon must record the runtime the client declared"
+        );
+    }
+
+    /// Without this, the test above would pass no matter what was sent.
+    #[test]
+    fn an_undeclared_runtime_is_not_python() {
+        assert_eq!(
+            stored_runtime_for(wire::Runtime::Unspecified as i32, 0x52),
+            Runtime::Unspecified
+        );
+    }
+
+    /// A native declaration is distinguishable from no declaration at all.
+    #[test]
+    fn a_declared_native_runtime_is_recorded_as_native() {
+        assert_eq!(
+            stored_runtime_for(wire::Runtime::Native as i32, 0x54),
+            Runtime::Native
+        );
+    }
+
+    /// A runtime this daemon does not know must not cost the registration.
+    ///
+    /// The proto reserves 3..15 for future runtimes. An older daemon meeting a
+    /// newer client should still register it and simply skip runtime-specific
+    /// handling.
+    #[test]
+    fn an_unknown_runtime_still_registers() {
+        assert_eq!(stored_runtime_for(9, 0x53), Runtime::Unspecified);
     }
 }

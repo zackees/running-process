@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use running_process_probe::probe_diag::v1::ProcessKey;
+use running_process_probe::probe_diag::v1::{ProcessKey, Runtime as ProtoRuntime};
 
 /// How often the worker heartbeats. Matches the daemon's expectation; its
 /// grace is three intervals, so a single missed beat is survivable.
@@ -73,6 +73,33 @@ pub struct Disclosure {
     pub disclose_cwd: bool,
 }
 
+/// Which language runtime this process is.
+///
+/// The daemon uses this to decide what a captured stack *means*. A native
+/// process yields machine frames and nothing else; a Python process runs an
+/// interpreter above those frames, so its stacks are mixed-mode and need the
+/// interpreter half attached before they read as the program the operator
+/// wrote. Declaring it at registration is what lets the daemon know which
+/// treatment applies without inspecting the process.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Runtime {
+    /// Machine frames only.
+    #[default]
+    Native,
+    /// CPython: machine frames plus interpreter frames above them.
+    Python,
+}
+
+impl Runtime {
+    /// The wire value for this runtime.
+    fn to_proto(self) -> ProtoRuntime {
+        match self {
+            Self::Native => ProtoRuntime::Native,
+            Self::Python => ProtoRuntime::Python,
+        }
+    }
+}
+
 /// Configuration for [`install`].
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -92,6 +119,9 @@ pub struct Config {
     pub socket_override: Option<PathBuf>,
     /// Heartbeat cadence.
     pub heartbeat_interval: Duration,
+    /// Language runtime to report. Defaults to [`Runtime::Native`]; the Python
+    /// client sets [`Runtime::Python`].
+    pub runtime: Runtime,
 }
 
 impl Config {
@@ -108,6 +138,7 @@ impl Config {
             disclosure: Disclosure::default(),
             socket_override: None,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
+            runtime: Runtime::Native,
         }
     }
 
@@ -126,6 +157,12 @@ impl Config {
     /// Set the instance discriminator.
     pub fn with_instance(mut self, instance: impl Into<String>) -> Self {
         self.instance = Some(instance.into());
+        self
+    }
+
+    /// Declare the language runtime this process is.
+    pub fn with_runtime(mut self, runtime: Runtime) -> Self {
+        self.runtime = runtime;
         self
     }
 }
