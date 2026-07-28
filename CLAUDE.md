@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-A Rust-backed Python library (v4.5.9) for subprocess and PTY process management across Windows, macOS, and Linux.
+A Rust-backed Python library (v4.6.4) for subprocess and PTY process management across Windows, macOS, and Linux.
 
 ### Layered Design
 
@@ -33,7 +33,7 @@ A Rust-backed Python library (v4.5.9) for subprocess and PTY process management 
 - **`running-process-probe-interposer-{linux,macos,windows}`** (publish=false): per-OS cdylib + rlib interposers that ship the actual file-API detours (`open`/`openat`/`close`/`write`/`unlink`/`rename` and Windows equivalents — `CreateFileW`/`WriteFile`/`CloseHandle`/`DeleteFileW`/`MoveFileExW`). Linux uses `LD_PRELOAD` + `dlsym(RTLD_NEXT, …)`; macOS uses `DYLD_INSERT_LIBRARIES` (SIP / hardened-runtime carve-outs apply); Windows uses `retour::RawDetour` inline trampolines, gated on `x86_64` only (`retour 0.4.0-alpha.4` uses iced-x86 which doesn't support ARM64). Each emits `RPP_HOOK …` lines on stderr in a shared format. Non-target hosts compile to an inert rlib stub so the workspace builds end-to-end.
 - **`running-process-win-gnu-bridge`** (`crates/running-process-win-gnu-bridge/`, publish=false): build seam (#580) exposing the MSVC-obligatory Windows API surface to `x86_64-pc-windows-gnu` builds. Inert no-op on MSVC / non-Windows; on `-gnu` it statically imports the ConPTY entry points (`CreatePseudoConsole` / `ResizePseudoConsole` / `ClosePseudoConsole`) directly from `windows-sys` (which bundles a per-target `-gnu` import lib), proving the surface links with no Windows SDK / MSVC `link.exe`. `retour` detours / DLL injection and the bundled `libsqlite3-sys` daemon build are validated under GNU; the daemon path needs MinGW-w64 `gcc.exe` on `PATH`. See `docs/win-gnu-bridge.md`.
 - **`test-watchdog`** (`crates/test-watchdog/`, publish=false): cross-platform hang-dump helper used as dev-dep by `running-process` tests (procdump minidump on Windows, gdb/lldb all-thread backtraces on Unix).
-- **`testbins`**: test-fixture binaries (`cwd-reporter`, `dies-after-spawn`, `emitter`, `env-dump`, `env-reporter`, `sleeper`, `slow-stdin-reader`, `spawner`, `stdin-echoer`, `stubborn`, `tui-counter`, `createfilew-probe`).
+- **`testbins`** (`testbins/` at the repo root, not under `crates/`): test-fixture binaries (`cwd-reporter`, `dies-after-spawn`, `emitter`, `env-dump`, `env-reporter`, `sleeper`, `slow-stdin-reader`, `spawner`, `stdin-echoer`, `stubborn`, `tui-counter`, `createfilew-probe`).
 
 **Python-Rust bridge**: `running_process._native` module compiled via maturin. Python's `PseudoTerminalProcess.start()` calls `NativeProcess.for_pty()` which creates a `NativePtyProcess` on the Rust side.
 
@@ -48,11 +48,25 @@ uv run build.py --release    # Publish-grade wheels in dist/
 **Testing:**
 ```bash
 ./test                                                  # Full suite: Rust tests + dev build + pytest
+soldr cargo build -p testbins                           # REQUIRED before a bare `nextest` run (see below)
 uv run --no-sync pytest tests -v                        # Python tests only (preserves the existing venv)
 uv run --no-sync pytest tests/test_foo.py -v            # Single test file
 uv run --no-sync pytest tests/test_foo.py::TestClass::test_method -v  # Single test
 RUNNING_PROCESS_LIVE_TESTS=1 uv run --no-sync pytest -m live tests -v  # Integration tests
 ```
+
+**Test fixtures are built once, up front.** The Rust tests locate the
+`testbins` binaries by path; they no longer build them on demand. `./test` and
+CI do this for you, but a bare `soldr cargo nextest run -p running-process`
+does not, and the tests will fail naming the missing fixture and the command
+to run.
+
+They used to build themselves, once per call. That took cargo's
+build-directory lock, and nextest gives each test its own process, so a
+full-suite run had dozens of cargo invocations queued on one lock — which
+presented as an unexplained 30s+ hang (#747). Any new way of invoking the
+suite has to build the fixtures first, with a matching `--target` /
+`--target-dir` when the tests do not run against the host tree.
 
 **`uv run` policy.** Bare `uv run …` is **blocked by the pre-tool hook** because it auto-syncs the maturin project and forces a full native rebuild on every invocation (see zackees/soldr#805). Always pass `--no-project` for pure-Python scripts, `--no-sync` to reuse the warm venv, or `--frozen` to lock to the existing lockfile. The escape hatch for a legitimate full-rebuild is `./test`.
 
