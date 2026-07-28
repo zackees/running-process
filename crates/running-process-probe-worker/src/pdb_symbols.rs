@@ -127,9 +127,32 @@ pub fn image_debug_id(image: &Path) -> Option<DebugId> {
     let file = object::File::parse(&*bytes).ok()?;
     let cv = file.pdb_info().ok()??;
     Some(DebugId {
-        guid: cv.guid(),
+        guid: guid_pe_to_rfc4122(cv.guid()),
         age: cv.age(),
     })
+}
+
+/// Convert a PE CodeView GUID to RFC-4122 byte order.
+///
+/// A GUID is not 16 opaque bytes. Its first three fields are a `u32` and two
+/// `u16`, which the PE stores little-endian, while `Uuid::as_bytes` — and
+/// therefore the PDB side — yields them big-endian. The trailing 8 bytes are
+/// a plain array and identical in both.
+///
+/// Comparing the two raw forms directly finds them unequal for *every* image,
+/// which does not look like a bug: symbolization simply reports "no symbols"
+/// forever. CI caught it via `a_binary_matches_its_own_pdb`, on a pair that
+/// must match by construction:
+///
+/// ```text
+/// PE : [F9 E2 A7 BC | 1D CF | 63 4A | 86 A8 …]
+/// PDB: [BC A7 E2 F9 | CF 1D | 4A 63 | 86 A8 …]
+/// ```
+fn guid_pe_to_rfc4122(mut raw: [u8; 16]) -> [u8; 16] {
+    raw[0..4].reverse();
+    raw[4..6].reverse();
+    raw[6..8].reverse();
+    raw
 }
 
 /// Read the debug identity out of a PDB.
@@ -292,6 +315,34 @@ mod tests {
             guid: [guid_byte; 16],
             age,
         }
+    }
+
+    /// The three leading GUID fields swap; the trailing eight do not.
+    ///
+    /// Pinned separately from the end-to-end check so the conversion is
+    /// covered on platforms with no PDB to compare against.
+    #[test]
+    fn the_pe_guid_is_reordered_field_wise() {
+        let pe = [
+            0xF9, 0xE2, 0xA7, 0xBC, 0x1D, 0xCF, 0x63, 0x4A, 0x86, 0xA8, 0xD1, 0xE6, 0xD2, 0x8B,
+            0xB3, 0xD0,
+        ];
+        let expected = [
+            0xBC, 0xA7, 0xE2, 0xF9, 0xCF, 0x1D, 0x4A, 0x63, 0x86, 0xA8, 0xD1, 0xE6, 0xD2, 0x8B,
+            0xB3, 0xD0,
+        ];
+        assert_eq!(guid_pe_to_rfc4122(pe), expected);
+    }
+
+    /// Converting twice returns the original: the swap is its own inverse, so
+    /// a stray second call is detectable rather than silently harmless.
+    #[test]
+    fn the_guid_conversion_is_its_own_inverse() {
+        let pe = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10,
+        ];
+        assert_eq!(guid_pe_to_rfc4122(guid_pe_to_rfc4122(pe)), pe);
     }
 
     #[test]
