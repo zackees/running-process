@@ -18,54 +18,36 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use running_process::{spawn, SpawnStdio, StdioSource};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn testbin_path(name: &str) -> PathBuf {
-    let output = Command::new(env!("CARGO"))
-        .args([
-            "build",
-            "-p",
-            "testbins",
-            "--bin",
-            name,
-            "--message-format=json",
-        ])
-        .stderr(std::process::Stdio::inherit())
-        .output()
-        .expect("failed to run cargo build");
+    // Fixtures are built once, before the suite runs (see `ci/test.py`).
+    //
+    // This used to invoke `cargo build -p testbins` on every call. That takes
+    // cargo's build-directory lock, and nextest runs each test in its own
+    // process, so a full-suite run had dozens of cargo invocations contending
+    // for one lock. `Command::output` waits for EOF with no deadline, and
+    // cargo's "Blocking waiting for file lock" note went to inherited stderr
+    // the harness only shows on failure — so it presented as an unexplained
+    // 30s+ hang. See running-process#747 for the symbolized stack.
+    let exe = std::env::current_exe().expect("current exe");
+    // .../target/<triple>/<profile>/deps/<test-binary>
+    let profile_dir = exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("test binary should live in <profile>/deps/");
+    let path = profile_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     assert!(
-        output.status.success(),
-        "`cargo build -p {name}` failed with status {}",
-        output.status,
+        path.is_file(),
+        "test fixture `{name}` is missing at {}.
+         Build the fixtures first:  soldr cargo build -p testbins",
+        path.display()
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if !line.contains("\"compiler-artifact\"") || !line.contains(name) {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if v["reason"] == "compiler-artifact"
-                && v["target"]["kind"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|k| k == "bin"))
-            {
-                if let Some(exe) = v["executable"].as_str() {
-                    let p = PathBuf::from(exe);
-                    let deadline = Instant::now() + Duration::from_secs(5);
-                    while !p.exists() && Instant::now() < deadline {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    assert!(p.exists(), "cargo reported {p:?} but it does not exist");
-                    return p;
-                }
-            }
-        }
-    }
-    panic!("`cargo build -p {name}` succeeded but no binary artifact found");
+    path
 }
 
 fn pipe_stdio() -> SpawnStdio<'static> {
