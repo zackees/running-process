@@ -338,6 +338,22 @@ mod tests {
         }
     }
 
+    /// A heartbeat for this process, carrying `request_id`.
+    fn heartbeat_envelope(request_id: u64) -> ProbeEnvelope {
+        ProbeEnvelope {
+            wire_version: 1,
+            request_id,
+            deadline_unix_ms: 0,
+            body: Some(Body::Heartbeat(wire::Heartbeat {
+                key: Some(wire::ProcessKey {
+                    pid: u64::from(std::process::id()),
+                    start_time: Some(1_700_000_000_000),
+                    boot_id: Some(running_process::broker::host_identity::current().boot_id),
+                }),
+            })),
+        }
+    }
+
     /// Drive `serve_connection` over an in-memory duplex.
     fn serve_bytes(ops: &ProbeOps, requests: &[ProbeEnvelope], conn_id: u64) -> Vec<ProbeEnvelope> {
         let mut input = Vec::new();
@@ -394,6 +410,38 @@ mod tests {
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].request_id, 7, "request_id must be echoed");
         assert_eq!(status(&replies[0]).state, 2, "2 == ARMED");
+    }
+
+    /// Every reply to a decodable request must echo that request's id, across
+    /// a whole connection and whether the request succeeded or was refused.
+    ///
+    /// The client verifies this on its side and treats a mismatch as a dead
+    /// connection (`ClientError::Desync`). If the daemon ever stopped echoing
+    /// — including on the refusal paths, which are easy to overlook — every
+    /// client would drop its connection and re-register in a loop. Asserting
+    /// it on only the happy path would not catch that.
+    #[test]
+    fn every_reply_echoes_the_id_of_the_request_it_answers() {
+        let ops = ops();
+        // Distinct, non-sequential ids so an off-by-one or an index-based
+        // reply would be visible rather than coincidentally correct.
+        let requests = vec![
+            self_register_envelope(1, 100),
+            // Same nonce again: refused as a replay, and still has to echo.
+            self_register_envelope(1, 205),
+            heartbeat_envelope(311),
+        ];
+        let sent: Vec<u64> = requests.iter().map(|r| r.request_id).collect();
+
+        let replies = serve_bytes(&ops, &requests, 1);
+
+        assert_eq!(
+            replies.len(),
+            sent.len(),
+            "every request must draw exactly one reply"
+        );
+        let echoed: Vec<u64> = replies.iter().map(|r| r.request_id).collect();
+        assert_eq!(echoed, sent, "replies must echo their request ids in order");
     }
 
     /// The contract that makes the daemon's liveness model work.

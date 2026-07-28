@@ -39,6 +39,19 @@ pub enum ClientError {
     /// The daemon replied with something other than the expected message.
     #[error("unexpected reply from probe daemon")]
     UnexpectedReply,
+    /// A reply arrived that answers a different request.
+    ///
+    /// Distinct from [`ClientError::Wire`] because it means the stream is
+    /// still perfectly well-framed but no longer aligned — every subsequent
+    /// reply on it would answer the wrong request. The connection cannot be
+    /// reused, only rebuilt.
+    #[error("probe daemon reply is out of order: expected request {expected}, got {got}")]
+    Desync {
+        /// The request id that was sent.
+        expected: u64,
+        /// The request id the received frame claimed to answer.
+        got: u64,
+    },
 }
 
 /// The operations a probe client performs.
@@ -93,22 +106,59 @@ impl SocketProbeClient {
     }
 
     fn round_trip(&mut self, body: Body) -> Result<ProbeEnvelope, ClientError> {
-        let envelope = ProbeEnvelope {
-            wire_version: 1,
-            request_id: self.next_request_id(),
-            deadline_unix_ms: 0,
-            body: Some(body),
-        };
-
-        write_frame(&mut self.stream, &envelope.encode_to_vec())
-            .map_err(|e| ClientError::Wire(e.to_string()))?;
-
-        let bytes = read_frame_with_cap(&mut self.stream, MAX_REPLY_BYTES.min(MAX_FRAME_BYTES))
-            .map_err(|e| ClientError::Wire(e.to_string()))?;
-
-        ProbeEnvelope::decode(bytes.as_slice())
-            .map_err(|e| ClientError::Wire(format!("decode reply: {e}")))
+        let request_id = self.next_request_id();
+        round_trip_on(&mut self.stream, request_id, body)
     }
+}
+
+/// Send one request and read the reply that answers it.
+///
+/// Split from [`SocketProbeClient`] so the correlation rule below can be
+/// tested over an in-memory stream. Bound to a socket it could only be
+/// exercised against a live daemon, which is exactly the wrong place to
+/// verify a desync guard.
+fn round_trip_on<S: io::Read + io::Write>(
+    stream: &mut S,
+    request_id: u64,
+    body: Body,
+) -> Result<ProbeEnvelope, ClientError> {
+    let envelope = ProbeEnvelope {
+        wire_version: 1,
+        request_id,
+        deadline_unix_ms: 0,
+        body: Some(body),
+    };
+
+    write_frame(stream, &envelope.encode_to_vec()).map_err(|e| ClientError::Wire(e.to_string()))?;
+
+    let bytes = read_frame_with_cap(stream, MAX_REPLY_BYTES.min(MAX_FRAME_BYTES))
+        .map_err(|e| ClientError::Wire(e.to_string()))?;
+
+    let reply = ProbeEnvelope::decode(bytes.as_slice())
+        .map_err(|e| ClientError::Wire(format!("decode reply: {e}")))?;
+
+    // The next frame on this socket is not necessarily *this* request's
+    // reply. `request_id` exists to say which request a frame answers, and
+    // until now it was written and never read back.
+    //
+    // That is harmless only while the daemon is a pure responder. The moment
+    // it pushes anything unsolicited — the forwarded capture request #637
+    // needs is the concrete case — the next `heartbeat` would read that push,
+    // accept it as its own reply, and leave every later reply answering the
+    // previous request. A silent, permanent off-by-one, on a channel whose
+    // whole job is to report process state accurately.
+    //
+    // Failing loudly is also self-healing: the worker treats a heartbeat
+    // error as a dead connection and re-runs the full register handshake, so
+    // a desynced client resynchronizes instead of reporting stale data.
+    if reply.request_id != request_id {
+        return Err(ClientError::Desync {
+            expected: request_id,
+            got: reply.request_id,
+        });
+    }
+
+    Ok(reply)
 }
 
 impl ProbeClient for SocketProbeClient {
@@ -208,5 +258,125 @@ mod tests {
         assert_eq!(*c.registered.lock().unwrap(), 1);
         assert_eq!(*c.heartbeats.lock().unwrap(), 1);
         assert_eq!(*c.unregistered.lock().unwrap(), 1);
+    }
+
+    /// A stream preloaded with the frames the daemon "sends", recording what
+    /// the client wrote.
+    struct Duplex {
+        incoming: io::Cursor<Vec<u8>>,
+        written: Vec<u8>,
+    }
+
+    impl io::Read for Duplex {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.incoming.read(buf)
+        }
+    }
+
+    impl io::Write for Duplex {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Build a stream that will hand back `frames` in order.
+    fn daemon_sending(frames: &[ProbeEnvelope]) -> Duplex {
+        let mut bytes = Vec::new();
+        for frame in frames {
+            write_frame(&mut bytes, &frame.encode_to_vec()).unwrap();
+        }
+        Duplex {
+            incoming: io::Cursor::new(bytes),
+            written: Vec::new(),
+        }
+    }
+
+    /// A `RegistrationStatus` reply claiming to answer `request_id`.
+    fn reply_to(request_id: u64) -> ProbeEnvelope {
+        ProbeEnvelope {
+            wire_version: 1,
+            request_id,
+            deadline_unix_ms: 0,
+            body: Some(Body::RegistrationStatus(RegistrationStatus::default())),
+        }
+    }
+
+    fn heartbeat_body() -> Body {
+        Body::Heartbeat(Heartbeat::default())
+    }
+
+    #[test]
+    fn a_reply_that_answers_the_request_is_accepted() {
+        let mut stream = daemon_sending(&[reply_to(7)]);
+        let reply = round_trip_on(&mut stream, 7, heartbeat_body()).expect("matching id");
+        assert_eq!(reply.request_id, 7);
+    }
+
+    /// The request id must actually be sent, not merely compared against.
+    /// A guard that checked a number the daemon never received would reject
+    /// every well-behaved reply.
+    #[test]
+    fn the_request_carries_the_id_the_reply_is_matched_against() {
+        let mut stream = daemon_sending(&[reply_to(42)]);
+        round_trip_on(&mut stream, 42, heartbeat_body()).unwrap();
+
+        let mut sent = io::Cursor::new(stream.written);
+        let frame = read_frame_with_cap(&mut sent, MAX_REPLY_BYTES).expect("a request was written");
+        let envelope = ProbeEnvelope::decode(frame.as_slice()).unwrap();
+        assert_eq!(envelope.request_id, 42);
+    }
+
+    #[test]
+    fn a_reply_answering_a_different_request_is_refused() {
+        let mut stream = daemon_sending(&[reply_to(2)]);
+        match round_trip_on(&mut stream, 1, heartbeat_body()) {
+            Err(ClientError::Desync { expected, got }) => {
+                assert_eq!((expected, got), (1, 2));
+            }
+            other => panic!("expected a desync error, got {other:?}"),
+        }
+    }
+
+    /// The case this guard exists for (#637).
+    ///
+    /// The daemon pushes an unsolicited frame — a forwarded capture request —
+    /// and only then the heartbeat reply. Without correlation the client
+    /// accepts the push as its heartbeat reply and every later reply answers
+    /// the previous request, silently and permanently.
+    #[test]
+    fn an_unsolicited_push_is_not_mistaken_for_the_reply() {
+        // request_id 0 is what a server-initiated frame carries: it answers
+        // no request of ours.
+        let push = ProbeEnvelope {
+            wire_version: 1,
+            request_id: 0,
+            deadline_unix_ms: 0,
+            body: Some(Body::Heartbeat(Heartbeat::default())),
+        };
+        let mut stream = daemon_sending(&[push, reply_to(1)]);
+
+        let outcome = round_trip_on(&mut stream, 1, heartbeat_body());
+        assert!(
+            matches!(outcome, Err(ClientError::Desync { .. })),
+            "a pushed frame must not be consumed as this request's reply, got {outcome:?}"
+        );
+    }
+
+    /// Desync must be distinguishable from a framing failure: one means the
+    /// stream is broken, the other that it is intact but misaligned. Both are
+    /// fatal to the connection, but only one indicates a protocol bug.
+    #[test]
+    fn desync_is_not_reported_as_a_wire_error() {
+        let mut stream = daemon_sending(&[reply_to(9)]);
+        let err = round_trip_on(&mut stream, 8, heartbeat_body()).unwrap_err();
+        assert!(!matches!(err, ClientError::Wire(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("out of order"),
+            "the message should say what went wrong: {err}"
+        );
     }
 }
