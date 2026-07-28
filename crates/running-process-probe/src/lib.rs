@@ -48,8 +48,13 @@
 // injection vehicle in [`inject_windows`] can opt into unsafe via
 // `#[allow(unsafe_code)]` on the module. The rest of the crate
 // remains unsafe-free.
+// `snapshot` opts into unsafe at the module level: thread enumeration,
+// suspension, and context reads are FFI-only operations with no safe
+// wrapper. The rest of the crate remains unsafe-free.
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
+
+pub mod snapshot;
 
 /// The `running_process.probe_diag.v1` wire schema (#630).
 ///

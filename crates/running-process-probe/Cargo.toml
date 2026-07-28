@@ -53,6 +53,8 @@ blake3 = { version = "1", optional = true }
 # which silently scoped it to Windows — the crate then built here but failed
 # every Linux/macOS lane with "could not find `prost`".
 prost = "0.14"
+# #635: typed snapshot errors.
+thiserror = { workspace = true }
 
 # Slice 6d adds the Windows-side injection vehicle
 # (`CreateRemoteThread(LoadLibraryW, dll_path)`). Gated on
@@ -67,6 +69,19 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Memory",
     "Win32_System_Threading",
 ], optional = true }
+
+# #635: cooperative all-thread capture. `processthreadsapi` for
+# Suspend/Resume/GetThreadContext, `tlhelp32` to enumerate our own threads,
+# `memoryapi` to bound the stack copy at the committed region. Deliberately NO
+# `dbghelp`: its process-global lock has no place in a capture path that runs
+# with threads suspended.
+winapi = { version = "0.3", features = [
+    "handleapi",
+    "memoryapi",
+    "processthreadsapi",
+    "tlhelp32",
+    "winnt",
+] }
 
 [build-dependencies]
 prost-build = "0.14"
