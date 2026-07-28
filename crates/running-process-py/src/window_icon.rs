@@ -15,7 +15,7 @@
 
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use running_process::window_icon::{self, IconError, IconSource};
+use running_process::window_icon::{self, IconError, IconSource, StockIcon};
 
 /// Why the host cannot accept an icon, or `None` when it can.
 ///
@@ -49,6 +49,55 @@ pub(crate) fn native_set_window_icon_from_path(path: &str) -> PyResult<()> {
 #[pyfunction]
 pub(crate) fn native_set_window_icon_from_bytes(data: Vec<u8>) -> PyResult<()> {
     window_icon::set_host_icon(&IconSource::Bytes(data)).map_err(to_py_error)
+}
+
+/// Names accepted by [`native_set_window_icon_stock`], in declaration order.
+///
+/// Exposed so the Python layer can build its enum from one list rather than
+/// repeating the names and letting the two drift.
+pub(crate) const STOCK_ICON_NAMES: [&str; 5] =
+    ["application", "warning", "error", "information", "shield"];
+
+/// Message for a name this build does not know.
+///
+/// Built as a plain `String` rather than inside the `PyErr` so it can be
+/// asserted without an initialized interpreter — formatting a `PyErr` needs
+/// the GIL, which a plain unit-test run does not have.
+fn unknown_stock_message(name: &str) -> String {
+    format!(
+        "unknown stock icon {name:?}; expected one of {}",
+        STOCK_ICON_NAMES.join(", ")
+    )
+}
+
+fn parse_stock(name: &str) -> Option<StockIcon> {
+    match name {
+        "application" => Some(StockIcon::Application),
+        "warning" => Some(StockIcon::Warning),
+        "error" => Some(StockIcon::Error),
+        "information" => Some(StockIcon::Information),
+        "shield" => Some(StockIcon::Shield),
+        _ => None,
+    }
+}
+
+/// Set the host console window's icon to one the OS already provides.
+///
+/// Takes a name rather than an integer because Python has no way to reference
+/// the Rust enum, and an unknown name raises `ValueError` **listing the valid
+/// ones** — a bare "invalid icon" would leave a caller guessing at a set they
+/// cannot enumerate.
+#[pyfunction]
+pub(crate) fn native_set_window_icon_stock(name: &str) -> PyResult<()> {
+    let stock =
+        parse_stock(name).ok_or_else(|| PyValueError::new_err(unknown_stock_message(name)))?;
+    window_icon::set_host_icon(&IconSource::Stock(stock)).map_err(to_py_error)
+}
+
+/// The stock icon names this build accepts.
+#[pyfunction]
+pub(crate) fn native_stock_icon_names() -> Vec<&'static str> {
+    STOCK_ICON_NAMES.to_vec()
 }
 
 /// Which Python exception an [`IconError`] becomes.
@@ -106,6 +155,47 @@ mod tests {
         let rust = window_icon::host_icon_support();
         assert_eq!(native_window_icon_support(), rust.reason());
         assert_eq!(native_window_icon_support().is_none(), rust.is_available());
+    }
+
+    /// Every advertised name must parse. A name in the list that the parser
+    /// rejects would raise `ValueError` for a caller who did exactly what the
+    /// error message told them to.
+    #[test]
+    fn every_advertised_stock_name_parses() {
+        for name in STOCK_ICON_NAMES {
+            assert!(
+                parse_stock(name).is_some(),
+                "{name} is advertised but unparsable"
+            );
+        }
+        assert_eq!(native_stock_icon_names(), STOCK_ICON_NAMES.to_vec());
+    }
+
+    /// Distinct names must not collapse onto one variant.
+    #[test]
+    fn stock_names_map_to_distinct_variants() {
+        let mut seen = Vec::new();
+        for name in STOCK_ICON_NAMES {
+            let variant = parse_stock(name).unwrap();
+            assert!(
+                !seen.contains(&variant),
+                "{name} duplicates an earlier variant"
+            );
+            seen.push(variant);
+        }
+    }
+
+    /// An unknown name must name the alternatives, not just refuse.
+    ///
+    /// A caller cannot enumerate the valid set from Python, so "invalid icon"
+    /// alone would leave them guessing.
+    #[test]
+    fn an_unknown_stock_name_lists_the_valid_ones() {
+        let text = unknown_stock_message("sparkle");
+        assert!(text.contains("sparkle"), "should echo the bad name: {text}");
+        for name in STOCK_ICON_NAMES {
+            assert!(text.contains(name), "should list {name}: {text}");
+        }
     }
 
     /// Malformed bytes are the caller's data, not an OS fault.
