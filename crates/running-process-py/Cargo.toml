@@ -25,9 +25,7 @@ sysinfo = "0.30"
 winapi = { version = "0.3", features = ["consoleapi", "handleapi", "jobapi2", "processenv", "processthreadsapi", "synchapi", "winbase", "wincon", "winnt", "winuser"] }
 prost = "0.14"
 interprocess = "2"
-
-[dev-dependencies]
-# Test-only: supplies the probe_diag.v1 prost enums so the Python binding's
-# runtime declaration can be asserted against the real wire values rather than
-# hardcoded integers.
+# Supplies the probe_diag.v1 prost enums and the all-thread snapshot API.
+# default-features = false keeps the crate's injection vehicles (gated on its
+# embed-helper feature) out of the extension module entirely.
 running-process-probe = { path = "../running-process-probe", default-features = false }
