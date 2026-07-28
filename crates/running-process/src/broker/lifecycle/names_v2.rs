@@ -73,9 +73,120 @@ fn validate_sid_hash(sid_hash: &str) -> Result<(), PipePathError> {
     Ok(())
 }
 
+/// Directory holding a v2 broker's per-user runtime state.
+///
+/// # Why this exists as one function
+///
+/// On Unix the broker's socket already lives in a directory, so runtime
+/// state had an implicit home. On Windows the socket is a named pipe in a
+/// kernel namespace with no directory at all — so anything that must be a
+/// *file* (the HTTP endpoint published by [`super::super::broker_http_discovery`],
+/// for one) had nowhere agreed to live.
+///
+/// A publisher and a reader that each derive that location independently
+/// will eventually disagree, and the failure is silent: the reader simply
+/// reports "no broker running" forever. Both sides call this instead.
+///
+/// The directory is not created here. Callers that write into it create it
+/// owner-only at that point; callers that only read must treat an absent
+/// directory as "nothing published", which is a normal state.
+///
+/// # Why no `getuid()`
+///
+/// The obvious way to keep two users on one host apart is a uid in the path,
+/// and that is what the binary's socket-directory helper does. But `libc`'s
+/// `getuid` is an `unsafe` call, and `crates/running-process/src/broker/` is
+/// covered by an unsafe inventory that is reviewed as a security surface
+/// (`tests/security/unsafe_inventory.rs`). Adding `unsafe` there to look up a
+/// uid is not a trade worth making.
+///
+/// Every branch below instead lands inside a location the OS already scopes
+/// to one user — `XDG_RUNTIME_DIR`, macOS's per-user `TMPDIR`, `LOCALAPPDATA`,
+/// or the per-user cache directory. Separation comes from the base directory
+/// rather than from a uid spelled into the leaf, and the file itself is
+/// written owner-only by `broker_http_discovery::publish_http_port`.
+///
+/// A consequence worth stating: this is *not* guaranteed to be the same
+/// directory the Unix socket lives in. It is the agreed home for broker-v2
+/// runtime *files*, which is all the publisher and reader need to share.
+pub fn broker_v2_runtime_dir() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    // Last resort, and deliberately not `/tmp`: a per-user directory keeps
+    // two accounts on one host from colliding without naming a uid. Only
+    // reached when the platform's runtime/temp variable is unset — cron and
+    // sessionless ssh being the realistic cases.
+    fn per_user_fallback() -> PathBuf {
+        dirs::cache_dir()
+            .or_else(dirs::data_local_dir)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("running-process")
+            .join("broker-v2")
+    }
+
+    #[cfg(windows)]
+    {
+        // Named pipes have no directory, so this is chosen rather than
+        // derived. `data_local_dir` is per-user and non-roaming, which is
+        // what a machine-local endpoint file wants — a roaming profile
+        // would carry a port from another machine.
+        dirs::data_local_dir()
+            .map(|d| d.join("running-process").join("broker-v2"))
+            .unwrap_or_else(per_user_fallback)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // macOS hands each user a private `TMPDIR` (`/var/folders/…`), so it
+        // is already per-user. The short leaf matters here: the broker's
+        // sockets share this root and `sun_path` is only 104 bytes.
+        match std::env::var_os("TMPDIR") {
+            Some(tmp) => PathBuf::from(tmp).join("rp-broker-v2"),
+            None => per_user_fallback(),
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        match std::env::var_os("XDG_RUNTIME_DIR") {
+            Some(d) => PathBuf::from(d).join("running-process").join("broker-v2"),
+            None => per_user_fallback(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A relative path would resolve against the current directory, so a
+    /// broker and a client started from different working directories would
+    /// silently use different files.
+    #[test]
+    fn the_runtime_dir_is_absolute() {
+        let dir = broker_v2_runtime_dir();
+        assert!(dir.is_absolute(), "{} is not absolute", dir.display());
+    }
+
+    /// The publisher and the reader are separate calls. If this were not
+    /// stable, one would write where the other never looks.
+    #[test]
+    fn the_runtime_dir_is_stable_across_calls() {
+        assert_eq!(broker_v2_runtime_dir(), broker_v2_runtime_dir());
+    }
+
+    /// Must not collide with v1 or the daemon's state: two brokers sharing a
+    /// directory would each overwrite the other's published endpoint.
+    #[test]
+    fn the_runtime_dir_is_specific_to_broker_v2() {
+        let dir = broker_v2_runtime_dir();
+        let text = dir.to_string_lossy();
+        assert!(
+            text.contains("broker-v2"),
+            "{text} does not name broker-v2, so it may be shared with other components"
+        );
+    }
 
     const VALID_SID: &str = "deadbeefcafef00d";
 
