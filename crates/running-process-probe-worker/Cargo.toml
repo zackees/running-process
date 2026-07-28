@@ -1,0 +1,28 @@
+[package]
+name = "running-process-probe-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Never published: this is an internal sidecar binary shipped alongside the
+# daemon, and it is the crate that will own the heavy symbol-file parsers.
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "running_process_probe_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "running-process-probe-worker"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

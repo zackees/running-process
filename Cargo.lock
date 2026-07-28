@@ -1598,6 +1598,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "running-process-probe-worker"
+version = "4.6.4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "running-process-py"
 version = "4.6.4"
 dependencies = [
