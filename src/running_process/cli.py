@@ -12,17 +12,24 @@ import threading
 import time
 from collections.abc import Sequence
 from contextlib import suppress
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
 from running_process import OriginatorProcessInfo, find_processes_by_originator
+from running_process.dump_paths import (
+    RUNNING_PROCESS_STACK_DUMP_DIR_ENV,
+    artifact_stem,
+    stack_dump_dir,
+    utc_now_iso,
+)
 from running_process.process_utils import kill_process_tree
 
 IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
 IN_RUNNING_PROCESS_VALUE = "running-process-cli"
 ORIGINATOR_ENV_VAR = "RUNNING_PROCESS_ORIGINATOR"
-RUNNING_PROCESS_STACK_DUMP_DIR_ENV = "RUNNING_PROCESS_STACK_DUMP_DIR"
+# Re-exported: this module was the historical home of the constant.
+__all__ = ["RUNNING_PROCESS_STACK_DUMP_DIR_ENV"]
+
 DEFAULT_STACK_DUMP_TIMEOUT_EXIT_CODE = 124
 _PY_SPY_DUMP_TIMEOUT_SECONDS = 10.0
 _DIAGNOSTIC_STREAM_TAIL_LIMIT_BYTES = 16 * 1024
@@ -121,18 +128,11 @@ def _report_process_leaks(originator_tool: str | None, stream: TextIO) -> None:
 
 
 def _stack_dump_dir(override: Path | None) -> Path:
-    if override is not None:
-        return override
-    configured = os.environ.get(RUNNING_PROCESS_STACK_DUMP_DIR_ENV)
-    if configured:
-        return Path(configured)
-    return Path.cwd() / "logs" / "running-process"
+    return stack_dump_dir(override)
 
 
 def _artifact_stem(*, reason: str, pid: int | None) -> str:
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    pid_part = str(pid) if pid is not None else "unknown"
-    return f"{timestamp}-pid{pid_part}-{reason}"
+    return artifact_stem(reason=reason, pid=pid)
 
 
 def _safe_write(stream: TextIO, message: str) -> None:
@@ -152,7 +152,7 @@ def _write_stream_bytes(stream: TextIO, data: bytes) -> None:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return utc_now_iso()
 
 
 def _write_dump_metadata(

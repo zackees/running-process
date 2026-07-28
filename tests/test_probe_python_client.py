@@ -1,5 +1,6 @@
 """Tests for the Python probe client (#634)."""
 
+import os
 import threading
 import time
 import unittest
@@ -255,3 +256,97 @@ class TestProbeUnavailable(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@requires_probe
+@requires_snapshot
+class TestWriteDump(unittest.TestCase):
+    """The mixed-mode artifact (#713)."""
+
+    def _dump(self, tmp):
+        from pathlib import Path
+
+        return probe.write_dump(reason="test", dump_dir=Path(tmp))
+
+    def test_writes_metadata_and_a_stacks_artifact(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_path = self._dump(tmp)
+            self.assertTrue(metadata_path.is_file())
+
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["reason"], "test")
+            self.assertEqual(metadata["pid"], os.getpid())
+            self.assertGreater(metadata["thread_count"], 0)
+
+            stacks_path = Path(tmp) / metadata["artifacts"][0]
+            self.assertTrue(stacks_path.is_file(), "the named artifact must exist")
+
+    def test_the_artifact_carries_both_halves_keyed_by_tid(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_path = self._dump(tmp)
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            payload = json.loads(
+                (Path(tmp) / metadata["artifacts"][0]).read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(payload["pid"], os.getpid())
+            self.assertEqual(payload["runtime"], "python")
+
+            by_tid = {t["os_tid"]: t for t in payload["threads"]}
+            me = by_tid[threading.get_native_id()]
+            self.assertTrue(me["python"], "the caller must contribute Python frames")
+            self.assertIn(
+                "test_the_artifact_carries_both_halves_keyed_by_tid",
+                [f["func"] for f in me["python"]],
+                "the Python half must describe this very test",
+            )
+            # At least one thread should carry native frames; the caller
+            # cannot, since a thread cannot suspend itself.
+            self.assertTrue(
+                any(t["native"] for t in payload["threads"]),
+                "no thread reported native frames",
+            )
+
+    def test_native_addresses_are_hex(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_path = self._dump(tmp)
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            payload = json.loads(
+                (Path(tmp) / metadata["artifacts"][0]).read_text(encoding="utf-8")
+            )
+            addresses = [a for t in payload["threads"] for a in t["native"]]
+            self.assertTrue(addresses, "expected some native addresses")
+            for address in addresses:
+                self.assertTrue(
+                    address.startswith("0x"),
+                    f"addresses should be hex for symbolizers; got {address}",
+                )
+                int(address, 16)
+
+    def test_the_artifact_states_its_scope(self):
+        # The artifact must not be mistakable for another process's stacks,
+        # nor its missing symbol names read as a failure.
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_path = self._dump(tmp)
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            payload = json.loads(
+                (Path(tmp) / metadata["artifacts"][0]).read_text(encoding="utf-8")
+            )
+            self.assertIn("calling process", payload["scope"])
+            self.assertIn("unsymbolized", payload["native_frames"])
