@@ -68,3 +68,38 @@ class TestDegradedBuild(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSetHostIconFromBytes(unittest.TestCase):
+    """The embedded-icon path (#577)."""
+
+    def test_garbage_bytes_never_report_success(self):
+        # An unsupported terminal refuses first; a supported one fails to
+        # decode. Returning None as though it worked is the one wrong answer.
+        with self.assertRaises(
+            (window_icon.IconUnsupportedError, ValueError, OSError)
+        ):
+            window_icon.set_host_icon_from_bytes(b"\xff" * 64)
+
+    def test_empty_bytes_never_report_success(self):
+        with self.assertRaises(
+            (window_icon.IconUnsupportedError, ValueError, OSError)
+        ):
+            window_icon.set_host_icon_from_bytes(b"")
+
+    def test_raises_when_native_is_absent(self):
+        original = window_icon._native_module
+        window_icon._native_module = lambda: None
+        try:
+            with self.assertRaises(window_icon.IconUnsupportedError):
+                window_icon.set_host_icon_from_bytes(b"whatever")
+        finally:
+            window_icon._native_module = original
+
+    def test_accepts_a_bytearray(self):
+        # Callers reading from a file or a resource loader get bytearray or
+        # memoryview; the conversion happens here rather than at every call.
+        with self.assertRaises(
+            (window_icon.IconUnsupportedError, ValueError, OSError)
+        ):
+            window_icon.set_host_icon_from_bytes(bytearray(b"\xff" * 32))
