@@ -5,6 +5,7 @@ import os
 import platform
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -162,6 +163,117 @@ def _find_llvm_profdata() -> Path | None:
     exe = "llvm-profdata.exe" if sys.platform == "win32" else "llvm-profdata"
     for candidate in Path(sysroot).glob(f"lib/rustlib/*/bin/{exe}"):
         return candidate
+    return None
+
+
+def describe_abnormal_exit(returncode: int) -> str | None:
+    """Describe a process killed by a fault, or ``None`` for a normal exit.
+
+    A crash and a refusal both surface as "nonzero", but they mean opposite
+    things: a nonzero exit is the tool reporting a problem with its input, a
+    fault is the tool itself being unable to run. Coverage failures have been
+    misread as the former when they were the latter (#626).
+    """
+    # POSIX: Python reports a signal death as the negated signal number.
+    if returncode < 0:
+        signum = -returncode
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = "unknown signal"
+        return f"terminated by signal {signum} ({name})"
+
+    # Windows: an unhandled exception surfaces as the NTSTATUS code, which is
+    # what Python hands back as the return code.
+    windows_status = {
+        0xC000001D: "STATUS_ILLEGAL_INSTRUCTION",
+        0xC0000005: "STATUS_ACCESS_VIOLATION",
+        0xC000008C: "STATUS_ARRAY_BOUNDS_EXCEEDED",
+        0xC0000094: "STATUS_INTEGER_DIVIDE_BY_ZERO",
+        0xC00000FD: "STATUS_STACK_OVERFLOW",
+    }
+    # Return codes come back signed on Windows; normalize before lookup.
+    unsigned = returncode & 0xFFFFFFFF
+    if unsigned in windows_status:
+        return f"terminated by {windows_status[unsigned]} (0x{unsigned:08X})"
+    return None
+
+
+def _cpu_description() -> str:
+    """Best-effort CPU identification, for toolchain-mismatch diagnosis.
+
+    An illegal instruction usually means the binary was built for a newer
+    microarchitecture than the runner provides, so the CPU is the first thing
+    an investigator needs and the hardest to recover after the fact.
+    """
+    parts = [platform.machine() or "unknown-arch"]
+    if platform.processor():
+        parts.append(platform.processor())
+    try:
+        if sys.platform.startswith("linux"):
+            text = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+            for line in text.splitlines():
+                if line.startswith("flags") or line.startswith("Features"):
+                    parts.append(line.split(":", 1)[1].strip())
+                    break
+    except OSError:
+        pass
+    return " | ".join(parts)
+
+
+def llvm_profdata_preflight(
+    profdata_command: Sequence[str] | None = None,
+) -> str | None:
+    """Check that ``llvm-profdata`` can run at all; return a diagnostic if not.
+
+    #626: on some runners the pinned toolchain's ``llvm-profdata`` dies with
+    SIGILL while merging profiles. That happens *after* the whole suite has
+    passed, so a 20-minute run ends with a bare signal number and no
+    indication that the toolchain, not the code, is at fault.
+
+    Probing the binary first turns that into a fast, named failure. Only a
+    *fault* is treated as disqualifying — a nonzero exit means the tool ran
+    and objected to its arguments, which is exactly what a merge with no
+    inputs should do.
+
+    Returns ``None`` when the binary is usable, or when it cannot be located
+    (coverage will then fail on its own terms rather than on a guess).
+    """
+    if profdata_command is None:
+        profdata = _find_llvm_profdata()
+        if profdata is None:
+            return None
+        profdata_command = [str(profdata)]
+    command_prefix = list(profdata_command)
+
+    version_text = ""
+    for probe_args in (["--version"], ["merge", "-sparse", "-o", os.devnull]):
+        command = [*command_prefix, *probe_args]
+        try:
+            probe = subprocess.run(command, capture_output=True, text=True)
+        except OSError as exc:
+            return f"coverage: cannot execute {shlex.join(command)}: {exc}"
+
+        if probe_args == ["--version"]:
+            version_text = (probe.stdout or probe.stderr).strip()
+
+        fault = describe_abnormal_exit(probe.returncode)
+        if fault is not None:
+            return "\n".join(
+                [
+                    "coverage: llvm-profdata is unusable on this machine "
+                    "— refusing to run the suite before failing on it (#626).",
+                    f"  command:  {shlex.join(command)}",
+                    f"  outcome:  {fault}",
+                    f"  binary:   {command_prefix[0]}",
+                    f"  version:  {version_text or '<unavailable>'}",
+                    f"  cpu:      {_cpu_description()}",
+                    f"  os:       {os.environ.get('RUNNER_OS') or platform.platform()}",
+                    "  This is a toolchain/CPU incompatibility, not a test or "
+                    "coverage failure. Compare against a system llvm-profdata "
+                    "or pin a toolchain whose llvm-tools match the runner.",
+                ]
+            )
     return None
 
 
@@ -402,6 +514,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         if coverage:
+            # Fail fast on a toolchain that cannot merge profiles at all.
+            # Without this the suite runs to completion and only then dies in
+            # the merge, reporting a bare signal number (#626).
+            unusable = llvm_profdata_preflight()
+            if unusable is not None:
+                print(unusable, file=sys.stderr, flush=True)
+                return 1
+
             # Split run/report so individually unreadable profiles can be
             # preserved and excluded before the final report. Historical
             # LLVM 21.1.8 inputs have crashed llvm-profdata with SIGILL;
@@ -424,7 +544,27 @@ def main(argv: list[str] | None = None) -> int:
                 "--output-path",
                 "coverage-rust.lcov",
             )
-            if run(report_cmd) != 0:
+            report_code = run(report_cmd)
+            if report_code != 0:
+                # The preflight clears the binary in isolation; a fault here
+                # means real profile data triggered it. Say so, rather than
+                # letting a signal number read as a coverage regression.
+                fault = describe_abnormal_exit(report_code)
+                if fault is not None:
+                    print(
+                        "\n".join(
+                            [
+                                f"coverage: the report step {fault} while merging "
+                                "real profiles (#626).",
+                                f"  command: {shlex.join(report_cmd)}",
+                                f"  cpu:     {_cpu_description()}",
+                                "  The tests themselves passed. Rejected inputs, if "
+                                "any, were preserved under logs/bad-profraw.",
+                            ]
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 return 1
         else:
             # Step 1: compile all test binaries (no supervisor, no timeout)
