@@ -242,6 +242,7 @@ mod tests {
             disclosure: Disclosure::default(),
             nonce: [nonce; 32],
             supported_ops: vec![],
+            runtime: crate::registry::Runtime::Native,
         })
     }
 

@@ -45,6 +45,43 @@ pub struct ProcessKey {
     pub boot_id: String,
 }
 
+/// Language runtime a registrant declared itself to be.
+///
+/// This is a *claim*, like `app_name` — the daemon cannot verify it, because a
+/// Python process is a native interpreter binary and looks like any other
+/// executable from outside. It is recorded so later slices know whether a
+/// captured stack needs interpreter frames attached to be readable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Runtime {
+    /// The registrant declared nothing, or declared a value this daemon does
+    /// not know. Treated as "no runtime-specific handling" rather than as an
+    /// error — see [`Runtime::from_proto`].
+    #[default]
+    Unspecified,
+    /// Machine frames only.
+    Native,
+    /// CPython: machine frames with interpreter frames above them.
+    Python,
+}
+
+impl Runtime {
+    /// Map a wire value onto a known runtime.
+    ///
+    /// An unrecognized value becomes [`Runtime::Unspecified`] rather than
+    /// refusing the registration. The proto reserves 3..15 for runtimes that
+    /// do not exist yet, so a newer client declaring one of those would
+    /// otherwise be unable to register with an older daemon at all — losing
+    /// the whole registration over a field that only selects optional
+    /// treatment.
+    pub fn from_proto(value: i32) -> Self {
+        match value {
+            1 => Self::Native,
+            2 => Self::Python,
+            _ => Self::Unspecified,
+        }
+    }
+}
+
 /// What a registrant permits.
 #[derive(Clone, Debug, Default)]
 pub struct AllowPolicy {
@@ -90,6 +127,8 @@ pub struct RegisterRequest {
     pub nonce: [u8; 32],
     /// Operations the registrant supports.
     pub supported_ops: Vec<String>,
+    /// Language runtime the registrant declared.
+    pub runtime: Runtime,
 }
 
 /// One registration.
@@ -105,6 +144,8 @@ pub struct RegEntry {
     pub exe_path: PathBuf,
     /// Coarse grouping for cross-instance queries.
     pub app_class: String,
+    /// Language runtime the registrant declared.
+    pub runtime: Runtime,
     /// What the registrant permits.
     pub allow_policy: AllowPolicy,
     /// What the registrant discloses.
@@ -278,6 +319,7 @@ impl Registry {
             peer,
             exe_path: req.exe_path,
             app_class: req.app_class,
+            runtime: req.runtime,
             allow_policy: req.allow_policy,
             disclosure: req.disclosure,
             conn_id,
@@ -418,6 +460,7 @@ mod tests {
             disclosure: Disclosure::default(),
             nonce: [nonce; 32],
             supported_ops: vec![],
+            runtime: Runtime::Native,
         }
     }
 

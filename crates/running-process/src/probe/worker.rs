@@ -64,6 +64,11 @@ pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
         instance_name: config.instance.clone().unwrap_or_default(),
         arch: std::env::consts::ARCH.to_string(),
         os: std::env::consts::OS.to_string(),
+        // Declared, never inferred. The daemon cannot tell a Python process
+        // from a native one by looking at it — the interpreter is just another
+        // native executable — so leaving this at its default would report
+        // every registrant as UNSPECIFIED.
+        runtime: config.runtime.to_proto() as i32,
         registration_nonce: nonce.to_vec(),
         ..Default::default()
     })
@@ -194,6 +199,28 @@ mod tests {
         assert_eq!(req.app_class, "test-app");
         assert_eq!(req.arch, std::env::consts::ARCH);
         assert_eq!(req.os, std::env::consts::OS);
+    }
+
+    /// The runtime must be declared on the wire, not left at the proto default.
+    ///
+    /// `UNSPECIFIED` is what the field held before it was populated at all, so
+    /// asserting the concrete value is what distinguishes "reported native"
+    /// from "reported nothing".
+    #[test]
+    fn the_declared_runtime_reaches_the_request() {
+        use running_process_probe::probe_diag::v1::Runtime as ProtoRuntime;
+
+        let native = build_register_request(&Config::new("a")).unwrap();
+        assert_eq!(
+            native.runtime,
+            ProtoRuntime::Native as i32,
+            "a Rust registrant defaults to native, not unspecified"
+        );
+
+        let python =
+            build_register_request(&Config::new("a").with_runtime(super::super::Runtime::Python))
+                .unwrap();
+        assert_eq!(python.runtime, ProtoRuntime::Python as i32);
     }
 
     #[test]
