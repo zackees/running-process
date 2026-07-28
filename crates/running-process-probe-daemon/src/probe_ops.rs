@@ -18,7 +18,7 @@ use std::time::Duration;
 use running_process::broker::server::{PeerCredentialPolicy, PeerIdentity};
 
 use crate::registry::{ProcessKey, RegisterError, RegisterRequest, Registry};
-use crate::state::StateError;
+use crate::state::{RegState, StateError};
 
 /// How often a registrant is expected to heartbeat.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -61,6 +61,13 @@ pub enum ProbeRequest {
     /// Voluntarily deregister. Best-effort only — liveness is the real
     /// mechanism, since a crashed process never sends this.
     Unregister(ProcessKey),
+    /// Ask for a stack capture of the named process.
+    ///
+    /// The daemon does not perform the capture: it is cooperative and
+    /// in-process, so the target walks its own threads. This request is the
+    /// operator's ask; forwarding it to the target is a later slice. What is
+    /// validated here is whether the target is eligible at all.
+    CaptureStack(ProcessKey),
 }
 
 /// The reply to a [`ProbeRequest`].
@@ -149,6 +156,7 @@ impl ProbeOps {
                 Ok(()) => ProbeReply::Ack,
                 Err(e) => refuse(e),
             },
+            ProbeRequest::CaptureStack(key) => self.capture_stack(&key),
             ProbeRequest::Unregister(key) => {
                 if let Some(entry) = self.registry.get(&key) {
                     self.registry.drop_by_conn(entry.conn_id);
@@ -160,6 +168,42 @@ impl ProbeOps {
                     }
                 }
             }
+        }
+    }
+
+    /// Validate a capture request against the registry.
+    ///
+    /// Answers the two questions that can actually differ here with separate
+    /// refusals: an unknown process means the caller has the wrong key, an
+    /// unarmed one means wait or re-register. Collapsing them would leave an
+    /// operator guessing.
+    ///
+    /// No per-request ownership check: `dispatch` already refuses any peer the
+    /// owner policy rejects, and the daemon is owner-only, so a registration
+    /// belonging to a different user is unreachable from here. A check for it
+    /// would be a branch nothing can take — a false promise about what this
+    /// function guards.
+    fn capture_stack(&self, key: &ProcessKey) -> ProbeReply {
+        let Some(entry) = self.registry.get(key) else {
+            return ProbeReply::Refused {
+                code: ProbeErrorCode::NotRegistered,
+                reason: "no registration for this process key".into(),
+            };
+        };
+
+        if entry.state != RegState::Armed {
+            return ProbeReply::Refused {
+                code: ProbeErrorCode::NotArmed,
+                reason: format!("process is {:?}, not ARMED", entry.state),
+            };
+        }
+
+        // Eligible, but nothing captures yet: the target must be asked over
+        // its own connection, which this slice does not do. Refusing is the
+        // honest answer — an Ack would claim a capture had been started.
+        ProbeReply::Refused {
+            code: ProbeErrorCode::MalformedRequest,
+            reason: "capture forwarding to the target process is not implemented yet".into(),
         }
     }
 
@@ -250,6 +294,82 @@ mod tests {
         IdentityVerdict {
             verified: true,
             connection_alive: true,
+        }
+    }
+
+    /// An unknown process must be refused as unregistered, not as malformed.
+    #[test]
+    fn a_capture_for_an_unknown_process_is_not_registered() {
+        let ops = ops();
+        let key = ProcessKey {
+            pid: 999_999,
+            started_at_unix_ms: 1,
+            boot_id: "b".into(),
+        };
+        match ops.dispatch(ProbeRequest::CaptureStack(key), &peer(), 1, good()) {
+            ProbeReply::Refused { code, .. } => assert_eq!(code, ProbeErrorCode::NotRegistered),
+            other => panic!("expected NotRegistered, got {other:?}"),
+        }
+    }
+
+    /// A registered-but-unarmed process is a different problem from an
+    /// unknown one, and gets a different code so the caller can tell.
+    #[test]
+    fn a_capture_for_an_unarmed_process_says_so() {
+        let ops = ops();
+        let request = request(std::process::id(), 0x71);
+        let key = request.key.clone();
+        // Register without arming: identity not verified.
+        let verdict = IdentityVerdict {
+            verified: false,
+            connection_alive: true,
+        };
+        let _ = ops.dispatch(ProbeRequest::Register(request), &peer(), 1, verdict);
+
+        match ops.dispatch(ProbeRequest::CaptureStack(key), &peer(), 1, good()) {
+            ProbeReply::Refused { code, reason } => {
+                assert_eq!(code, ProbeErrorCode::NotArmed);
+                assert!(
+                    reason.contains("ARMED"),
+                    "reason should name the state: {reason}"
+                );
+            }
+            other => panic!("expected NotArmed, got {other:?}"),
+        }
+    }
+
+    /// A foreign peer is stopped by the owner policy in `dispatch`, before
+    /// the registry is consulted at all — so the refusal cannot disclose
+    /// whether the process exists or what state it is in.
+    ///
+    /// An earlier version of this test claimed to exercise a per-request
+    /// ownership check inside `capture_stack`. It did not: the policy refuses
+    /// first, and with the daemon owner-only that check could never fire.
+    /// Removing the check left this property, which is the one that matters.
+    #[test]
+    fn a_foreign_peer_is_refused_before_the_registry_is_consulted() {
+        let ops = ops();
+        let request = request(std::process::id(), 0x72);
+        let key = request.key.clone();
+        let verdict = IdentityVerdict {
+            verified: false,
+            connection_alive: true,
+        };
+        let _ = ops.dispatch(ProbeRequest::Register(request), &peer(), 1, verdict);
+
+        let stranger = PeerIdentity {
+            pid: 1234,
+            uid_or_sid: "someone-else".into(),
+        };
+        match ops.dispatch(ProbeRequest::CaptureStack(key), &stranger, 2, good()) {
+            ProbeReply::Refused { code, reason } => {
+                assert_eq!(code, ProbeErrorCode::PeerRejected);
+                assert!(
+                    !reason.contains("ARMED") && !reason.contains("registration"),
+                    "the refusal must not disclose registry state: {reason}"
+                );
+            }
+            other => panic!("expected PeerRejected, got {other:?}"),
         }
     }
 

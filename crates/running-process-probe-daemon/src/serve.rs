@@ -59,6 +59,11 @@ pub fn request_from_envelope(envelope: ProbeEnvelope) -> Option<ProbeRequest> {
         Body::Register(req) => Some(ProbeRequest::Register(Box::new(register_from_proto(req)?))),
         Body::Heartbeat(hb) => Some(ProbeRequest::Heartbeat(key_from_proto(hb.key?)?)),
         Body::Unregister(un) => Some(ProbeRequest::Unregister(key_from_proto(un.key?)?)),
+        // Recognised even though forwarding is unimplemented, so the caller
+        // gets a reason about the *target* rather than "unsupported body",
+        // which would be indistinguishable from a message this daemon has
+        // never heard of.
+        Body::CaptureStack(req) => Some(ProbeRequest::CaptureStack(key_from_proto(req.key?)?)),
         _ => None,
     }
 }
@@ -555,6 +560,53 @@ mod tests {
             !verify_identity(&request, true).verified,
             "a mismatched executable hash must not verify"
         );
+    }
+
+    /// A capture request must be recognised, not fall through to the
+    /// unsupported-body path.
+    #[test]
+    fn a_capture_request_is_decoded() {
+        let envelope = ProbeEnvelope {
+            wire_version: 1,
+            request_id: 1,
+            deadline_unix_ms: 0,
+            body: Some(Body::CaptureStack(wire::CaptureStackRequest {
+                key: Some(wire::ProcessKey {
+                    pid: 4242,
+                    start_time: Some(1_700_000_000_000),
+                    boot_id: Some("boot".into()),
+                }),
+                ..Default::default()
+            })),
+        };
+        match request_from_envelope(envelope) {
+            Some(ProbeRequest::CaptureStack(key)) => {
+                assert_eq!(key.pid, 4242);
+                assert_eq!(key.started_at_unix_ms, 1_700_000_000_000);
+            }
+            other => panic!("expected CaptureStack, got {other:?}"),
+        }
+    }
+
+    /// A capture request without a start time must be refused for the same
+    /// reason registration is: a key that cannot survive PID reuse would let
+    /// a capture target whatever process now holds that pid.
+    #[test]
+    fn a_capture_request_without_a_start_time_is_rejected() {
+        let envelope = ProbeEnvelope {
+            wire_version: 1,
+            request_id: 1,
+            deadline_unix_ms: 0,
+            body: Some(Body::CaptureStack(wire::CaptureStackRequest {
+                key: Some(wire::ProcessKey {
+                    pid: 4242,
+                    start_time: None,
+                    boot_id: Some("boot".into()),
+                }),
+                ..Default::default()
+            })),
+        };
+        assert!(request_from_envelope(envelope).is_none());
     }
 
     /// A declared runtime must survive the wire and land in the registry.
