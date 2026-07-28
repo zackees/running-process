@@ -13,7 +13,7 @@
 //! every recent Windows install. So `native_window_icon_support` is exposed
 //! alongside, and the setter raises rather than returning quietly.
 
-use pyo3::exceptions::{PyOSError, PyRuntimeError};
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use running_process::window_icon::{self, IconError, IconSource};
 
@@ -37,6 +37,20 @@ pub(crate) fn native_set_window_icon_from_path(path: &str) -> PyResult<()> {
     window_icon::set_host_icon(&IconSource::Path(path.into())).map_err(to_py_error)
 }
 
+/// Set the host console window's icon from `.ico` bytes.
+///
+/// Takes the data by value rather than a path so an application can embed its
+/// icon in the wheel and never depend on a file existing at runtime — the case
+/// a packaged Python app actually has.
+///
+/// Raises the same exceptions as the path form, plus `ValueError` when the
+/// bytes are not a usable icon: that is the caller's data being wrong, which
+/// is a different problem from the file system or the terminal.
+#[pyfunction]
+pub(crate) fn native_set_window_icon_from_bytes(data: Vec<u8>) -> PyResult<()> {
+    window_icon::set_host_icon(&IconSource::Bytes(data)).map_err(to_py_error)
+}
+
 /// Which Python exception an [`IconError`] becomes.
 ///
 /// Split from the conversion so the mapping is testable without an
@@ -47,13 +61,18 @@ enum ErrorKind {
     /// The terminal will never accept an icon: not retryable, and not caused
     /// by the caller's input.
     Unsupported,
-    /// Something about the supplied icon failed.
+    /// The supplied icon data is malformed. The caller's input, and fixable
+    /// by supplying different bytes — so a `ValueError`, not an `OSError`,
+    /// which would suggest the file system or the OS was at fault.
+    BadData,
+    /// Something else about loading the icon failed.
     Os,
 }
 
 fn classify(error: &IconError) -> ErrorKind {
     match error {
         IconError::Unsupported { .. } => ErrorKind::Unsupported,
+        IconError::Decode(_) => ErrorKind::BadData,
         _ => ErrorKind::Os,
     }
 }
@@ -61,6 +80,7 @@ fn classify(error: &IconError) -> ErrorKind {
 fn to_py_error(error: IconError) -> PyErr {
     match classify(&error) {
         ErrorKind::Unsupported => PyRuntimeError::new_err(error.to_string()),
+        ErrorKind::BadData => PyValueError::new_err(error.to_string()),
         ErrorKind::Os => PyOSError::new_err(error.to_string()),
     }
 }
@@ -86,6 +106,26 @@ mod tests {
         let rust = window_icon::host_icon_support();
         assert_eq!(native_window_icon_support(), rust.reason());
         assert_eq!(native_window_icon_support().is_none(), rust.is_available());
+    }
+
+    /// Malformed bytes are the caller's data, not an OS fault.
+    #[test]
+    fn bad_icon_data_maps_to_a_value_error() {
+        use running_process::window_icon::ico::IcoError;
+        assert_eq!(
+            classify(&IconError::Decode(IcoError::NotAnIcon)),
+            ErrorKind::BadData
+        );
+    }
+
+    /// Garbage must be refused whatever the host: an unsupported terminal
+    /// rejects it first, a supported one fails to decode. Never `Ok`.
+    #[test]
+    fn garbage_bytes_never_report_success() {
+        assert!(
+            native_set_window_icon_from_bytes(vec![0xFF; 64]).is_err(),
+            "garbage is not an icon"
+        );
     }
 
     /// The two failure kinds must map to different exceptions, because the

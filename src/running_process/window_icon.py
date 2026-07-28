@@ -80,3 +80,29 @@ def set_host_icon(path: str) -> None:
         # The native layer raises RuntimeError only for an unsupported host;
         # a bad file arrives as OSError and is left to propagate unchanged.
         raise IconUnsupportedError(str(exc)) from exc
+
+
+def set_host_icon_from_bytes(data: bytes) -> None:
+    """Set the host console window icon from ``.ico`` bytes.
+
+    Takes the data rather than a path so a packaged application can embed its
+    icon and never depend on a file existing at runtime, which is the case an
+    installed wheel actually has.
+
+    Raises :class:`IconUnsupportedError` when the terminal cannot accept an
+    icon, and ``ValueError`` when the bytes are not a usable icon — the
+    caller's data being wrong is a different problem from the terminal
+    refusing, and only one of them is worth retrying with different input.
+    """
+    native = _native_module()
+    if native is None or not hasattr(native, "native_set_window_icon_from_bytes"):
+        raise IconUnsupportedError(
+            "this build of running_process._native has no window-icon support"
+        )
+    try:
+        native.native_set_window_icon_from_bytes(bytes(data))
+    except RuntimeError as exc:
+        # ValueError is also a subclass of Exception but not of RuntimeError,
+        # so malformed data propagates untouched; only the unsupported-host
+        # RuntimeError is retyped.
+        raise IconUnsupportedError(str(exc)) from exc
