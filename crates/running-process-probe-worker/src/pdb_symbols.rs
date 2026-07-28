@@ -35,8 +35,10 @@ impl SymbolTable {
     /// outcome — a stripped release binary, or a machine that does not have
     /// the symbols — and it degrades rather than failing the capture.
     pub fn for_image(image: &Path) -> Option<Self> {
-        let pdb_path = pdb_path_for(image)?;
-        Self::from_pdb(&pdb_path)
+        match locate(image, &search_dirs()) {
+            Located::Found(path) => Self::from_pdb(&path),
+            _ => None,
+        }
     }
 
     /// Build a table from an explicit PDB file.
@@ -179,23 +181,6 @@ pub fn identity_matches(image: DebugId, pdb: DebugId) -> bool {
     image.guid == pdb.guid && pdb.age >= image.age
 }
 
-/// Locate the PDB for `image`, verifying it describes this exact build.
-///
-/// Only the sibling `<stem>.pdb` is considered. The path recorded inside the
-/// PE points at wherever the binary was *built*, which on another machine is
-/// either absent or — worse — a different build's file with the same name.
-///
-/// Being in the right place is not enough. A rebuild leaves a `.pdb` beside
-/// the binary that is one build stale, and its symbols would resolve to
-/// plausible, wrong function names with nothing downstream able to tell. So
-/// the recorded GUID and age must match before the file is trusted (#638).
-///
-/// An image with no debug directory has nothing to match against, so no PDB
-/// is accepted for it: an unverifiable claim is refused rather than assumed.
-fn pdb_path_for(image: &Path) -> Option<PathBuf> {
-    pdb_path_for_with_search(image, &search_dirs())
-}
-
 /// Environment variable holding extra directories to search for symbol files.
 ///
 /// Separated by the platform's path separator, like `PATH`.
@@ -209,8 +194,8 @@ fn search_dirs() -> Vec<PathBuf> {
 /// Split a `PATH`-style value into directories.
 ///
 /// Takes the value rather than reading the environment so it is testable
-/// without mutating process-global state — which would make the tests
-/// order-dependent on each other, and needs `unsafe` besides.
+/// without mutating process-global state, which would make the tests
+/// order-dependent on each other and needs `unsafe` besides.
 fn parse_search_dirs(raw: Option<std::ffi::OsString>) -> Vec<PathBuf> {
     let Some(raw) = raw else {
         return Vec::new();
@@ -223,41 +208,87 @@ fn parse_search_dirs(raw: Option<std::ffi::OsString>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Locate a PDB for `image`, verifying every candidate before accepting it.
+/// Why symbolization did or did not find usable symbols for a module.
 ///
-/// Searches the image's own directory first, then `extra` in order. Symbols
-/// are routinely archived away from the binary they describe — a stripped
-/// release next to a symbol store is the ordinary case — so "beside the
-/// binary" alone finds nothing for exactly the builds worth symbolizing.
+/// A bare "no symbols" conflates situations an operator must act on
+/// differently: nothing to find is a build that shipped without symbols, while
+/// a candidate that failed verification means the wrong symbols are sitting
+/// where the right ones belong — a stale copy in a symbol store, or a search
+/// path pointing at another build. The second is a misconfiguration that will
+/// keep producing empty reports until someone notices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Located {
+    /// A verified symbol file.
+    Found(PathBuf),
+    /// No file of the expected name existed anywhere searched.
+    NotFound,
+    /// Files existed but none described this build.
+    ///
+    /// Carries how many were rejected, because one is a stale copy and
+    /// several is a search path aimed at the wrong tree.
+    Mismatched {
+        /// Candidates that existed but failed verification.
+        rejected: usize,
+    },
+    /// The image itself carries no debug directory, so nothing could ever be
+    /// matched against it. A stripped build, not a missing file.
+    NoDebugDirectory,
+}
+
+/// Locate a PDB for `image`, reporting why when there is none.
 ///
-/// Every candidate is identity-checked. Widening *where* we look must not
-/// widen *what* we trust: a search path makes it far more likely to meet a
-/// same-named PDB from a different build, so the GUID and age decide, not the
-/// filename. A candidate that fails verification is skipped and the search
-/// continues, rather than aborting — the right file may be later in the path.
-pub fn pdb_path_for_with_search(image: &Path, extra: &[PathBuf]) -> Option<PathBuf> {
-    // Read once: the image's identity does not change between candidates, and
-    // an image with no debug directory can never match anything.
-    let expected = image_debug_id(image)?;
-    let file_name = image.with_extension("pdb");
-    let file_name = file_name.file_name()?;
+/// The image's own directory is searched first, so a search path cannot
+/// shadow symbols shipped beside a binary. Every candidate is identity-checked
+/// — widening where we look must not widen what we trust — and a candidate
+/// that fails is skipped rather than aborting the search, since the right file
+/// may be later in the path.
+pub fn locate(image: &Path, extra: &[PathBuf]) -> Located {
+    let Some(expected) = image_debug_id(image) else {
+        return Located::NoDebugDirectory;
+    };
+    let Some(file_name) = image
+        .with_extension("pdb")
+        .file_name()
+        .map(|n| n.to_owned())
+    else {
+        return Located::NotFound;
+    };
 
     let beside = image.with_extension("pdb");
-    let candidates = std::iter::once(beside).chain(extra.iter().map(|dir| dir.join(file_name)));
+    let candidates = std::iter::once(beside).chain(extra.iter().map(|dir| dir.join(&file_name)));
 
+    let mut rejected = 0usize;
     for candidate in candidates {
         if !candidate.is_file() {
             continue;
         }
-        let Some(actual) = pdb_debug_id(&candidate) else {
-            // Unreadable identity: cannot be verified, so it is not trusted.
-            continue;
-        };
-        if identity_matches(expected, actual) {
-            return Some(candidate);
+        match pdb_debug_id(&candidate) {
+            Some(actual) if identity_matches(expected, actual) => return Located::Found(candidate),
+            // Present but unusable — the identity disagrees, or it could not
+            // be read at all. Both mean a file is sitting where the right one
+            // belongs.
+            _ => rejected += 1,
         }
     }
-    None
+
+    if rejected == 0 {
+        Located::NotFound
+    } else {
+        Located::Mismatched { rejected }
+    }
+}
+
+/// Locate a PDB for `image`, verifying it describes this exact build.
+///
+/// Thin wrapper over [`locate`] for callers that only need the path. The
+/// reason for a miss is available from `locate` itself, and the report uses
+/// it: "no symbols" alone cannot distinguish a stripped build from the wrong
+/// symbols sitting where the right ones belong.
+pub fn pdb_path_for_with_search(image: &Path, extra: &[PathBuf]) -> Option<PathBuf> {
+    match locate(image, extra) {
+        Located::Found(path) => Some(path),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -470,7 +501,7 @@ mod tests {
         }
         let exe = std::env::current_exe().expect("current exe");
         assert!(
-            pdb_path_for(&exe).is_some(),
+            pdb_path_for_with_search(&exe, &[]).is_some(),
             "the binary's own sibling PDB should pass identity verification"
         );
     }
@@ -497,7 +528,7 @@ mod tests {
         .expect("write pdb");
 
         assert!(
-            pdb_path_for(&fake_exe).is_none(),
+            pdb_path_for_with_search(&fake_exe, &[]).is_none(),
             "a PDB whose identity cannot be verified must not be accepted"
         );
     }

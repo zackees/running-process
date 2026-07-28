@@ -18,7 +18,8 @@
 //! capture backends land.
 
 use crate::wire::{
-    CaptureFormat, FrameStatus, RawCapture, RawThread, SymFrame, SymThread, SymbolReport,
+    CaptureFormat, FrameStatus, ModuleReport, ModuleSymbolStatus, RawCapture, RawThread, SymFrame,
+    SymThread, SymbolReport,
 };
 
 /// Why symbolization could not produce a report.
@@ -54,8 +55,9 @@ pub fn symbolize(capture: &RawCapture) -> Result<SymbolReport, SymbolizeError> {
         .iter()
         .map(|thread| symbolize_thread(capture, &cache, thread))
         .collect();
+    let modules = module_reports(capture);
 
-    Ok(SymbolReport { threads })
+    Ok(SymbolReport { threads, modules })
 }
 
 /// Symbol tables, built once per module and reused across every frame.
@@ -85,6 +87,61 @@ fn build_symbol_cache(capture: &RawCapture) -> SymbolCache {
 #[cfg(not(target_os = "windows"))]
 fn build_symbol_cache(capture: &RawCapture) -> SymbolCache {
     capture.modules.iter().map(|_| None).collect()
+}
+
+/// Per-module account of the symbol lookup.
+#[cfg(target_os = "windows")]
+fn module_reports(capture: &RawCapture) -> Vec<ModuleReport> {
+    use crate::pdb_symbols::{locate, Located};
+
+    capture
+        .modules
+        .iter()
+        .map(|module| {
+            let Some(path) = module.path_hint.as_ref() else {
+                // Without a path there is nothing to look beside; that is a
+                // property of the capture, not of the build.
+                return ModuleReport {
+                    name: module.name.clone(),
+                    status: ModuleSymbolStatus::NotFound,
+                    ..Default::default()
+                };
+            };
+            let (status, symbol_file, rejected) = match locate(std::path::Path::new(path), &[]) {
+                Located::Found(p) => (
+                    ModuleSymbolStatus::Resolved,
+                    Some(p.to_string_lossy().into_owned()),
+                    0,
+                ),
+                Located::NotFound => (ModuleSymbolStatus::NotFound, None, 0),
+                Located::Mismatched { rejected } => {
+                    (ModuleSymbolStatus::Mismatched, None, rejected)
+                }
+                Located::NoDebugDirectory => (ModuleSymbolStatus::NoDebugDirectory, None, 0),
+            };
+            ModuleReport {
+                name: module.name.clone(),
+                status,
+                symbol_file,
+                rejected_candidates: rejected,
+            }
+        })
+        .collect()
+}
+
+/// No symbol reader on this platform, so every module reports as much rather
+/// than as "not found", which would blame the build for a missing parser.
+#[cfg(not(target_os = "windows"))]
+fn module_reports(capture: &RawCapture) -> Vec<ModuleReport> {
+    capture
+        .modules
+        .iter()
+        .map(|module| ModuleReport {
+            name: module.name.clone(),
+            status: ModuleSymbolStatus::Unsupported,
+            ..Default::default()
+        })
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -174,6 +231,70 @@ mod tests {
             name: name.into(),
             ..Default::default()
         }
+    }
+
+    /// Every module gets an account, so a reader can tell why a frame is
+    /// unsymbolized rather than only that it is.
+    #[test]
+    fn every_module_is_accounted_for() {
+        let capture = capture_with(vec![module("a.dll"), module("b.dll")], Vec::new());
+        let report = symbolize(&capture).unwrap();
+        assert_eq!(report.modules.len(), 2);
+        assert_eq!(report.modules[0].name, "a.dll");
+        assert_eq!(report.modules[1].name, "b.dll");
+    }
+
+    /// A module with no path could never be looked beside; that is a property
+    /// of the capture, and must not be reported as a stripped build.
+    #[test]
+    fn a_module_without_a_path_is_not_found_rather_than_stripped() {
+        let capture = capture_with(vec![module("ghost.dll")], Vec::new());
+        let status = symbolize(&capture).unwrap().modules[0].status.clone();
+        assert!(
+            matches!(
+                status,
+                ModuleSymbolStatus::NotFound | ModuleSymbolStatus::Unsupported
+            ),
+            "got {status:?}"
+        );
+    }
+
+    /// A missing binary yields "not found", never "mismatched": nothing was
+    /// rejected, so nothing is misconfigured.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_missing_binary_reports_not_found_with_no_rejections() {
+        let capture = RawCapture {
+            format: CaptureFormat::CooperativeFrames,
+            modules: vec![ModuleRef {
+                name: "gone.dll".into(),
+                path_hint: Some("no-such-binary-anywhere.dll".into()),
+                ..Default::default()
+            }],
+            threads: Vec::new(),
+        };
+        let entry = symbolize(&capture).unwrap().modules.remove(0);
+        assert_eq!(entry.status, ModuleSymbolStatus::NoDebugDirectory);
+        assert_eq!(entry.rejected_candidates, 0);
+        assert!(entry.symbol_file.is_none());
+    }
+
+    /// The status names are wire surface; renaming one silently breaks a
+    /// consumer.
+    #[test]
+    fn module_status_uses_stable_wire_names() {
+        assert_eq!(
+            serde_json::to_string(&ModuleSymbolStatus::Mismatched).unwrap(),
+            r#""mismatched""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ModuleSymbolStatus::NoDebugDirectory).unwrap(),
+            r#""no_debug_directory""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ModuleSymbolStatus::NotFound).unwrap(),
+            r#""not_found""#
+        );
     }
 
     #[test]
