@@ -542,14 +542,31 @@ mod tests {
         }
     }
 
-    /// A pid that owns no console window must be refused, with a reason
-    /// that tells the caller what to do about it.
+    /// A pid that owns no console window must be refused, with a reason.
+    ///
+    /// Platform-neutral: off Windows the whole feature is unavailable and
+    /// says so, which is a different sentence but the same contract. An
+    /// earlier version asserted the Windows wording here and failed on the
+    /// musl and coverage lanes — the assertion was Windows-specific while the
+    /// test was not.
     #[test]
     fn a_process_with_no_console_window_is_unsupported() {
         // pid 0 is the system idle process and never owns a console window,
         // so this is stable across machines and needs no fixture.
         let support = icon_support(IconScope::Child { pid: 0 });
         assert!(!support.is_available());
+        assert!(
+            !support.reason().expect("must explain itself").is_empty(),
+            "an unsupported result must carry a usable reason"
+        );
+    }
+
+    /// On Windows the reason must name what is actually missing, so a caller
+    /// knows to spawn with CREATE_NEW_CONSOLE rather than retrying.
+    #[cfg(windows)]
+    #[test]
+    fn a_childless_pid_reason_names_the_console_window() {
+        let support = icon_support(IconScope::Child { pid: 0 });
         let reason = support.reason().expect("must explain itself");
         assert!(
             reason.contains("console window"),
