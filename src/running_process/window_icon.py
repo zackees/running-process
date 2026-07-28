@@ -24,6 +24,26 @@ terminal, and no in-process API changes that.
 
 from __future__ import annotations
 
+from enum import Enum
+
+
+class StockIcon(str, Enum):
+    """An icon the operating system already provides.
+
+    An enum rather than a bare string so the valid set is discoverable — a
+    caller can see the options without consulting docs, and a typo is caught
+    at the call site instead of at runtime.
+
+    Subclasses ``str`` so an existing caller passing ``"warning"`` keeps
+    working; the enum is the discoverable form, not a new requirement.
+    """
+
+    APPLICATION = "application"
+    WARNING = "warning"
+    ERROR = "error"
+    INFORMATION = "information"
+    SHIELD = "shield"
+
 
 class IconUnsupportedError(RuntimeError):
     """The host terminal will never accept an icon from this process.
@@ -105,4 +125,25 @@ def set_host_icon_from_bytes(data: bytes) -> None:
         # ValueError is also a subclass of Exception but not of RuntimeError,
         # so malformed data propagates untouched; only the unsupported-host
         # RuntimeError is retyped.
+        raise IconUnsupportedError(str(exc)) from exc
+
+
+def set_host_icon_stock(icon: StockIcon | str) -> None:
+    """Set the host console window icon to one the OS provides.
+
+    Accepts a :class:`StockIcon` or its string value. Raises
+    :class:`IconUnsupportedError` when the terminal cannot accept an icon, and
+    ``ValueError`` — naming the valid options — for an unknown icon.
+    """
+    native = _native_module()
+    if native is None or not hasattr(native, "native_set_window_icon_stock"):
+        raise IconUnsupportedError(
+            "this build of running_process._native has no window-icon support"
+        )
+    name = icon.value if isinstance(icon, StockIcon) else str(icon)
+    try:
+        native.native_set_window_icon_stock(name)
+    except RuntimeError as exc:
+        # Only the unsupported-host RuntimeError is retyped; ValueError for an
+        # unknown name propagates untouched, since it is a different problem.
         raise IconUnsupportedError(str(exc)) from exc

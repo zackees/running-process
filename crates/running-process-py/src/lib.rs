@@ -58,7 +58,8 @@ pub(crate) use py_native_process::PyNativeProcess;
 pub(crate) use signal_bool::NativeSignalBool;
 pub(crate) use terminal_input::{NativeTerminalInput, NativeTerminalInputEvent};
 pub(crate) use window_icon::{
-    native_set_window_icon_from_bytes, native_set_window_icon_from_path, native_window_icon_support,
+    native_set_window_icon_from_bytes, native_set_window_icon_from_path,
+    native_set_window_icon_stock, native_stock_icon_names, native_window_icon_support,
 };
 
 #[pymodule]
@@ -108,6 +109,8 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(native_window_icon_support, module)?)?;
     module.add_function(wrap_pyfunction!(native_set_window_icon_from_path, module)?)?;
     module.add_function(wrap_pyfunction!(native_set_window_icon_from_bytes, module)?)?;
+    module.add_function(wrap_pyfunction!(native_set_window_icon_stock, module)?)?;
+    module.add_function(wrap_pyfunction!(native_stock_icon_names, module)?)?;
     module.add_function(wrap_pyfunction!(monitor_console_windows, module)?)?;
     module.add("VERSION", PyString::new(_py, env!("CARGO_PKG_VERSION")))?;
     Ok(())

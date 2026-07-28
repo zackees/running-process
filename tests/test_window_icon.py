@@ -103,3 +103,48 @@ class TestSetHostIconFromBytes(unittest.TestCase):
             (window_icon.IconUnsupportedError, ValueError, OSError)
         ):
             window_icon.set_host_icon_from_bytes(bytearray(b"\xff" * 32))
+
+
+class TestStockIcons(unittest.TestCase):
+    """Stock icons (#577)."""
+
+    def test_python_enum_matches_the_native_list(self):
+        # The two lists must not drift: a name Python offers that the native
+        # layer rejects would raise ValueError for a caller who used the enum.
+        from running_process import _native
+
+        native_names = set(_native.native_stock_icon_names())
+        python_names = {member.value for member in window_icon.StockIcon}
+        self.assertEqual(python_names, native_names)
+
+    def test_stock_icon_is_a_str_subclass(self):
+        # So a caller passing the bare string keeps working.
+        self.assertIsInstance(window_icon.StockIcon.WARNING, str)
+        self.assertEqual(window_icon.StockIcon.WARNING, "warning")
+
+    def test_unknown_name_raises_value_error_listing_options(self):
+        with self.assertRaises(ValueError) as caught:
+            window_icon.set_host_icon_stock("sparkle")
+        message = str(caught.exception)
+        self.assertIn("sparkle", message)
+        self.assertIn("warning", message)
+
+    def test_a_valid_stock_icon_never_reports_a_bogus_error(self):
+        # On an unsupported host this raises IconUnsupportedError; on a
+        # supported one it succeeds. What it must never do is claim the name
+        # was invalid.
+        try:
+            window_icon.set_host_icon_stock(window_icon.StockIcon.WARNING)
+        except window_icon.IconUnsupportedError:
+            pass
+        except ValueError as exc:
+            self.fail(f"a valid stock icon was reported invalid: {exc}")
+
+    def test_raises_when_native_is_absent(self):
+        original = window_icon._native_module
+        window_icon._native_module = lambda: None
+        try:
+            with self.assertRaises(window_icon.IconUnsupportedError):
+                window_icon.set_host_icon_stock(window_icon.StockIcon.ERROR)
+        finally:
+            window_icon._native_module = original
