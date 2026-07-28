@@ -138,28 +138,29 @@ class TestMixedModeSnapshot(unittest.TestCase):
     """Native and interpreter frames for the same OS thread (#634)."""
 
     def test_snapshot_reports_this_processes_threads(self):
-        dumps = probe.snapshot()
-        self.assertGreater(len(dumps), 0, "a live process has threads")
-        for os_tid, dump in dumps.items():
+        captured = probe.snapshot()
+        self.assertGreater(len(captured.threads), 0, "a live process has threads")
+        for os_tid, dump in captured.threads.items():
             self.assertEqual(os_tid, dump.os_tid)
 
     def test_the_calling_thread_has_python_frames(self):
         # A thread cannot suspend itself, so the caller contributes no native
         # frames — but its Python frames must still be present, which is the
         # case that would break if the two views were merged by position.
-        dumps = probe.snapshot()
+        captured = probe.snapshot()
         me = threading.get_native_id()
-        self.assertIn(me, dumps, f"calling thread {me} missing from {list(dumps)}")
+        self.assertIn(
+            me, captured.threads, f"calling thread {me} missing from {list(captured.threads)}"
+        )
         self.assertTrue(
-            dumps[me].python,
+            captured.threads[me].python,
             "the calling thread must contribute interpreter frames",
         )
 
     def test_python_frames_name_this_test(self):
         # Proves the interpreter frames belong to the thread they are filed
         # under, rather than being an arbitrary non-empty list.
-        dumps = probe.snapshot()
-        me = dumps[threading.get_native_id()]
+        me = probe.snapshot().threads[threading.get_native_id()]
         functions = [f.name for f in me.python]
         self.assertIn(
             "test_python_frames_name_this_test",
@@ -206,13 +207,15 @@ class TestMixedModeSnapshot(unittest.TestCase):
             time.sleep(0.5)
             self.assertTrue(worker_tid, "worker never recorded its tid")
 
-            dumps = probe.snapshot()
+            captured = probe.snapshot()
             tid = worker_tid[0]
             self.assertIn(
-                tid, dumps, f"blocked thread {tid} missing from {list(dumps)}"
+                tid,
+                captured.threads,
+                f"blocked thread {tid} missing from {list(captured.threads)}",
             )
 
-            dump = dumps[tid]
+            dump = captured.threads[tid]
             self.assertTrue(
                 dump.native,
                 "a thread parked in a native call must yield native frames",
@@ -315,7 +318,7 @@ class TestWriteDump(unittest.TestCase):
                 "no thread reported native frames",
             )
 
-    def test_native_addresses_are_hex(self):
+    def test_native_frames_are_module_relative_and_hex(self):
         import json
         import tempfile
         from pathlib import Path
@@ -326,14 +329,59 @@ class TestWriteDump(unittest.TestCase):
             payload = json.loads(
                 (Path(tmp) / metadata["artifacts"][0]).read_text(encoding="utf-8")
             )
-            addresses = [a for t in payload["threads"] for a in t["native"]]
-            self.assertTrue(addresses, "expected some native addresses")
-            for address in addresses:
+
+            frames = [f for t in payload["threads"] for f in t["native"]]
+            self.assertTrue(frames, "expected some native frames")
+            for frame in frames:
                 self.assertTrue(
-                    address.startswith("0x"),
-                    f"addresses should be hex for symbolizers; got {address}",
+                    frame["offset"].startswith("0x"),
+                    f"offsets should be hex for symbolizers; got {frame['offset']}",
                 )
-                int(address, 16)
+                int(frame["offset"], 16)
+
+            # The point of the change: an attributed frame names a module in
+            # the artifact's own module list, so the offset can be resolved
+            # against that binary later.
+            attributed = [f for f in frames if f["attributed"]]
+            self.assertTrue(
+                attributed,
+                "no frame was attributed to a module; the artifact cannot be symbolized",
+            )
+            for frame in attributed:
+                self.assertIsNotNone(frame["module_index"])
+                self.assertLess(frame["module_index"], len(payload["modules"]))
+
+    def test_the_artifact_lists_the_modules_its_frames_reference(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_path = self._dump(tmp)
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            payload = json.loads(
+                (Path(tmp) / metadata["artifacts"][0]).read_text(encoding="utf-8")
+            )
+
+            self.assertTrue(payload["modules"], "expected referenced modules")
+            for module in payload["modules"]:
+                self.assertTrue(module["name"])
+                # The path is what makes the capture symbolizable: the symbol
+                # file lives beside the binary.
+                self.assertIsNotNone(module["path"], f"{module['name']} has no path")
+            self.assertEqual(metadata["module_count"], len(payload["modules"]))
+
+    def test_snapshot_attributes_frames_to_modules(self):
+        captured = probe.snapshot()
+        frames = [f for d in captured.threads.values() for f in d.native]
+        self.assertTrue(frames, "expected native frames")
+
+        attributed = [f for f in frames if f.is_attributed()]
+        self.assertTrue(attributed, "no frame matched any loaded module")
+        for frame in attributed:
+            module = captured.module_of(frame)
+            self.assertIsNotNone(module)
+            self.assertTrue(module.name)
 
     def test_the_artifact_states_its_scope(self):
         # The artifact must not be mistakable for another process's stacks,

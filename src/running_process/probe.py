@@ -135,6 +135,40 @@ class ProbeGuard:
 
 
 @dataclass
+class ModuleInfo:
+    """A loaded module a capture referenced."""
+
+    name: str
+    #: Full path on disk, when the OS reported one. The symbol file lives
+    #: beside it, so this is what makes a capture symbolizable later.
+    path: str | None
+    #: Base the module was loaded at. Provenance only — the frame offsets are
+    #: already relative, so nothing downstream needs it.
+    base: int
+
+
+@dataclass
+class NativeFrame:
+    """One machine frame, expressed relative to its module.
+
+    Module + offset rather than an absolute address: an absolute address is
+    meaningless outside the process that produced it and outside the moment it
+    was captured, because the same build loads at a different base next time.
+    """
+
+    #: Index into :attr:`Snapshot.modules`, or ``None`` when the address fell
+    #: outside every loaded module. Never guessed — a wrong attribution
+    #: becomes a confident wrong function name nothing downstream can catch.
+    module_index: int | None
+    #: Offset within that module, or the raw address when unattributed.
+    offset: int
+
+    def is_attributed(self) -> bool:
+        """Whether this frame belongs to a known module."""
+        return self.module_index is not None
+
+
+@dataclass
 class ThreadDump:
     """One OS thread's stacks, from both sides of the interpreter boundary.
 
@@ -146,15 +180,40 @@ class ThreadDump:
     """
 
     os_tid: int
-    # Raw return addresses. Symbolization happens off-process, so these are
-    # integers here by design, not an oversight.
-    native: list[int] = field(default_factory=list)
-    # Pre-resolved ``(file, line, function, text)`` entries.
+    native: list[NativeFrame] = field(default_factory=list)
+    #: Pre-resolved ``(file, line, function, text)`` entries.
     python: list[traceback.FrameSummary] = field(default_factory=list)
 
     def is_mixed(self) -> bool:
         """Whether both halves were captured for this thread."""
         return bool(self.native) and bool(self.python)
+
+
+@dataclass
+class Snapshot:
+    """A capture of every thread, with modules resolved."""
+
+    modules: list[ModuleInfo] = field(default_factory=list)
+    threads: dict[int, ThreadDump] = field(default_factory=dict)
+
+    def module_of(self, frame: NativeFrame) -> ModuleInfo | None:
+        """The module a frame belongs to, or ``None`` if unattributed."""
+        if frame.module_index is None:
+            return None
+        return self.modules[frame.module_index]
+
+    def unattributed_frames(self) -> int:
+        """Frames that matched no loaded module.
+
+        Many of these mean the module inventory did not describe the capture,
+        which is a different problem from symbols merely being absent.
+        """
+        return sum(
+            1
+            for dump in self.threads.values()
+            for frame in dump.native
+            if not frame.is_attributed()
+        )
 
 
 def snapshot_supported() -> bool:
@@ -165,7 +224,7 @@ def snapshot_supported() -> bool:
     return bool(native.native_probe_snapshot_supported())
 
 
-def snapshot() -> dict[int, ThreadDump]:
+def snapshot() -> Snapshot:
     """Capture every thread's native and interpreter stacks.
 
     Threads are aligned by OS thread id — never by list position, which would
@@ -186,7 +245,22 @@ def snapshot() -> dict[int, ThreadDump]:
     # Native capture first: it suspends siblings briefly, and doing it before
     # the interpreter walk keeps the two views as close together in time as
     # possible.
-    native_frames: dict[int, list[int]] = native_mod.native_probe_snapshot()
+    captured = native_mod.native_probe_snapshot()
+
+    result = Snapshot(
+        modules=[
+            ModuleInfo(name=m["name"], path=m["path"], base=m["base"])
+            for m in captured["modules"]
+        ]
+    )
+    for os_tid, frames in captured["threads"].items():
+        result.threads[os_tid] = ThreadDump(
+            os_tid=os_tid,
+            native=[
+                NativeFrame(module_index=index, offset=offset)
+                for index, offset in frames
+            ],
+        )
 
     # Map interpreter thread ids to OS thread ids. `sys._current_frames()` is
     # keyed by the former and the native capture by the latter; they are
@@ -198,11 +272,6 @@ def snapshot() -> dict[int, ThreadDump]:
         if ident is not None and native_id is not None:
             os_tid_by_ident[ident] = native_id
 
-    dumps: dict[int, ThreadDump] = {
-        os_tid: ThreadDump(os_tid=os_tid, native=list(frames))
-        for os_tid, frames in native_frames.items()
-    }
-
     for ident, frame in sys._current_frames().items():
         os_tid = os_tid_by_ident.get(ident)
         if os_tid is None:
@@ -211,13 +280,13 @@ def snapshot() -> dict[int, ThreadDump]:
             # still worth reporting, and silently discarding it would look
             # like the thread did not exist.
             os_tid = ident
-        dump = dumps.get(os_tid)
+        dump = result.threads.get(os_tid)
         if dump is None:
             dump = ThreadDump(os_tid=os_tid)
-            dumps[os_tid] = dump
+            result.threads[os_tid] = dump
         dump.python = traceback.extract_stack(frame)
 
-    return dumps
+    return result
 
 
 def install(config: ProbeConfig, *, required: bool = False) -> ProbeGuard | None:
@@ -285,7 +354,7 @@ def write_dump(
     Raises ``NotImplementedError`` where native capture is unimplemented, and
     ``ProbeUnavailableError`` on a build without probe support.
     """
-    dumps = snapshot()
+    captured = snapshot()
 
     directory = stack_dump_dir(dump_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -295,10 +364,19 @@ def write_dump(
     threads = [
         {
             "os_tid": dump.os_tid,
-            # Hex, because these are addresses and every other tool that will
-            # consume them (a symbolizer, a disassembler, a debugger) speaks
-            # hex. Decimal would need converting at every use.
-            "native": [f"0x{address:x}" for address in dump.native],
+            # Module + offset, so this artifact can be symbolized later against
+            # the same build — on another machine, after this process is gone.
+            # Absolute addresses could not be.
+            "native": [
+                {
+                    "module_index": frame.module_index,
+                    # Hex, because every tool that will consume these (a
+                    # symbolizer, a disassembler, a debugger) speaks hex.
+                    "offset": f"0x{frame.offset:x}",
+                    "attributed": frame.is_attributed(),
+                }
+                for frame in dump.native
+            ],
             "python": [
                 {
                     "file": frame.filename,
@@ -310,7 +388,7 @@ def write_dump(
             ],
             "is_mixed": dump.is_mixed(),
         }
-        for dump in sorted(dumps.values(), key=lambda d: d.os_tid)
+        for dump in sorted(captured.threads.values(), key=lambda d: d.os_tid)
     ]
 
     stacks_path = directory / f"{stem}.mixed-stacks.json"
@@ -324,7 +402,11 @@ def write_dump(
                 # stacks, and so the absence of symbol names is understood as
                 # by-design rather than as a failure.
                 "scope": "calling process only",
-                "native_frames": "unsymbolized return addresses",
+                "native_frames": "module-relative offsets, unsymbolized",
+                "modules": [
+                    {"name": m.name, "path": m.path, "base": f"0x{m.base:x}"}
+                    for m in captured.modules
+                ],
                 "threads": threads,
             },
             indent=2,
@@ -340,6 +422,10 @@ def write_dump(
         "artifacts": [stacks_path.name],
         "thread_count": len(threads),
         "mixed_thread_count": sum(1 for t in threads if t["is_mixed"]),
+        "module_count": len(captured.modules),
+        # Surfaced in the metadata so a reader can tell a sparse capture from
+        # one whose module inventory did not match.
+        "unattributed_frames": captured.unattributed_frames(),
     }
     if extra_metadata:
         metadata.update(extra_metadata)
