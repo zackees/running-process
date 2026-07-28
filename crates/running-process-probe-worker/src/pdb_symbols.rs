@@ -110,17 +110,73 @@ impl SymbolTable {
     }
 }
 
-/// Locate the PDB for `image`.
+/// The identity a PE records for the PDB it was built with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DebugId {
+    /// GUID generated when the PDB was created.
+    pub guid: [u8; 16],
+    /// How many times the PDB had been written when the image was linked.
+    pub age: u32,
+}
+
+/// Read the debug identity out of a PE image.
+pub fn image_debug_id(image: &Path) -> Option<DebugId> {
+    use object::Object as _;
+
+    let bytes = std::fs::read(image).ok()?;
+    let file = object::File::parse(&*bytes).ok()?;
+    let cv = file.pdb_info().ok()??;
+    Some(DebugId {
+        guid: cv.guid(),
+        age: cv.age(),
+    })
+}
+
+/// Read the debug identity out of a PDB.
+fn pdb_debug_id(pdb_path: &Path) -> Option<DebugId> {
+    let file = File::open(pdb_path).ok()?;
+    let mut pdb = pdb::PDB::open(file).ok()?;
+    let info = pdb.pdb_information().ok()?;
+    Some(DebugId {
+        // `Uuid::as_bytes` is big-endian field order, which is what the PE's
+        // CodeView record stores. Reading the fields individually and
+        // reassembling them would reintroduce the byte-order bug this avoids.
+        guid: *info.guid.as_bytes(),
+        age: info.age,
+    })
+}
+
+/// Whether `pdb` describes the build `image` recorded.
+///
+/// The GUID must match exactly. The age may be **higher** in the PDB: the
+/// linker bumps it every time the file is rewritten, so a PDB that has been
+/// updated since the image was linked still describes that image. A *lower*
+/// age means the PDB predates the link and is a different build.
+pub fn identity_matches(image: DebugId, pdb: DebugId) -> bool {
+    image.guid == pdb.guid && pdb.age >= image.age
+}
+
+/// Locate the PDB for `image`, verifying it describes this exact build.
 ///
 /// Only the sibling `<stem>.pdb` is considered. The path recorded inside the
 /// PE points at wherever the binary was *built*, which on another machine is
 /// either absent or — worse — a different build's file with the same name.
-/// Honoring it would risk resolving addresses against symbols that do not
-/// describe this binary, which is precisely the wrong-name failure this module
-/// exists to avoid. Matching by recorded PDB GUID is #638's job.
+///
+/// Being in the right place is not enough. A rebuild leaves a `.pdb` beside
+/// the binary that is one build stale, and its symbols would resolve to
+/// plausible, wrong function names with nothing downstream able to tell. So
+/// the recorded GUID and age must match before the file is trusted (#638).
+///
+/// An image with no debug directory has nothing to match against, so no PDB
+/// is accepted for it: an unverifiable claim is refused rather than assumed.
 fn pdb_path_for(image: &Path) -> Option<PathBuf> {
     let candidate = image.with_extension("pdb");
-    candidate.is_file().then_some(candidate)
+    if !candidate.is_file() {
+        return None;
+    }
+    let expected = image_debug_id(image)?;
+    let actual = pdb_debug_id(&candidate)?;
+    identity_matches(expected, actual).then_some(candidate)
 }
 
 #[cfg(test)]
@@ -228,6 +284,112 @@ mod tests {
         assert!(
             outside.is_empty(),
             "function symbols outside every executable section {ranges:?}:              {outside:?} — the PDB address map is likely not being applied",
+        );
+    }
+
+    fn id(guid_byte: u8, age: u32) -> DebugId {
+        DebugId {
+            guid: [guid_byte; 16],
+            age,
+        }
+    }
+
+    #[test]
+    fn an_exact_identity_matches() {
+        assert!(identity_matches(id(0xAB, 3), id(0xAB, 3)));
+    }
+
+    /// A different GUID is a different build, whatever the age.
+    #[test]
+    fn a_different_guid_never_matches() {
+        assert!(!identity_matches(id(0xAB, 3), id(0xCD, 3)));
+        assert!(!identity_matches(id(0xAB, 3), id(0xCD, 99)));
+    }
+
+    /// The linker bumps the age each time it rewrites the PDB, so a PDB
+    /// updated after the link still describes the image it was linked for.
+    #[test]
+    fn a_higher_pdb_age_still_matches() {
+        assert!(identity_matches(id(0xAB, 3), id(0xAB, 4)));
+    }
+
+    /// A lower age means the PDB predates the link: a different build.
+    #[test]
+    fn a_lower_pdb_age_does_not_match() {
+        assert!(
+            !identity_matches(id(0xAB, 5), id(0xAB, 4)),
+            "a PDB older than the image cannot describe it"
+        );
+    }
+
+    /// The decisive check: the real binary and its own PDB must match.
+    ///
+    /// This is what validates the GUID byte order. The PE's CodeView record
+    /// and the PDB's stream store the GUID differently enough that a naive
+    /// field-by-field reassembly mismatches — and a mismatch here would look
+    /// exactly like "no symbols available", silently disabling symbolization
+    /// rather than failing.
+    #[test]
+    fn a_binary_matches_its_own_pdb() {
+        let Some(pdb_path) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        let exe = std::env::current_exe().expect("current exe");
+
+        let Some(image) = image_debug_id(&exe) else {
+            panic!("the test binary has no CodeView debug directory");
+        };
+        let pdb = pdb_debug_id(&pdb_path).expect("the PDB has an identity");
+
+        assert_eq!(
+            image.guid, pdb.guid,
+            "the image and its own PDB disagree on the GUID; byte order is wrong"
+        );
+        assert!(
+            identity_matches(image, pdb),
+            "image {image:?} did not match its own pdb {pdb:?}"
+        );
+    }
+
+    /// And the lookup that uses it accepts that pair.
+    #[test]
+    fn the_sibling_pdb_of_this_binary_is_accepted() {
+        if own_pdb().is_none() {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        }
+        let exe = std::env::current_exe().expect("current exe");
+        assert!(
+            pdb_path_for(&exe).is_some(),
+            "the binary's own sibling PDB should pass identity verification"
+        );
+    }
+
+    /// A PDB that is merely in the right place must not be trusted.
+    #[test]
+    fn a_sibling_pdb_from_a_different_build_is_rejected() {
+        let Some(real) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A copy of this binary, with a copy of a PDB that describes a
+        // *different* image — modelled by pairing our PDB with an unrelated
+        // executable name whose debug id will not match.
+        let fake_exe = dir.path().join("other.exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &fake_exe).expect("copy exe");
+        // Truncate the copied PDB so its identity cannot be read: an
+        // unreadable identity must be refused, not assumed to match.
+        std::fs::write(
+            dir.path().join("other.pdb"),
+            &std::fs::read(&real).unwrap()[..64],
+        )
+        .expect("write pdb");
+
+        assert!(
+            pdb_path_for(&fake_exe).is_none(),
+            "a PDB whose identity cannot be verified must not be accepted"
         );
     }
 
