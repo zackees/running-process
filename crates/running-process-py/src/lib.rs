@@ -21,6 +21,7 @@ mod py_native_process;
 mod registry;
 mod signal_bool;
 mod terminal_input;
+mod window_icon;
 
 #[cfg(test)]
 mod tests;
@@ -56,6 +57,7 @@ pub(crate) use pty_process::NativePtyProcess;
 pub(crate) use py_native_process::PyNativeProcess;
 pub(crate) use signal_bool::NativeSignalBool;
 pub(crate) use terminal_input::{NativeTerminalInput, NativeTerminalInputEvent};
+pub(crate) use window_icon::{native_set_window_icon_from_path, native_window_icon_support};
 
 #[pymodule]
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -101,6 +103,8 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(native_probe_is_armed, module)?)?;
     module.add_function(wrap_pyfunction!(native_probe_snapshot, module)?)?;
     module.add_function(wrap_pyfunction!(native_probe_snapshot_supported, module)?)?;
+    module.add_function(wrap_pyfunction!(native_window_icon_support, module)?)?;
+    module.add_function(wrap_pyfunction!(native_set_window_icon_from_path, module)?)?;
     module.add_function(wrap_pyfunction!(monitor_console_windows, module)?)?;
     module.add("VERSION", PyString::new(_py, env!("CARGO_PKG_VERSION")))?;
     Ok(())
