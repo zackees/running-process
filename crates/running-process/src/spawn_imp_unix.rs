@@ -266,6 +266,26 @@ fn apply_environment_policy(
 
 /// Async-signal-safe fd sweep used in pre_exec. See sanitized.rs (now
 /// merged here) for the rationale.
+///
+/// # Marked close-on-exec, not closed
+///
+/// The goal is that the child inherits nothing past `exec`, and `FD_CLOEXEC`
+/// delivers exactly that — the kernel closes the descriptors as part of the
+/// `exec` itself.
+///
+/// Closing them here instead used to break a protocol we do not own. Rust's
+/// `Command::spawn` reports `exec` failure through a `CLOEXEC` pipe: the child
+/// writes its `errno` to it, and the parent turns that into
+/// `Err(io::Error)`. That pipe is an fd ≥ 3, so this sweep closed it. When
+/// `exec` then failed — a mistyped program path being the ordinary case — the
+/// child could not report why, and std's internal
+/// `assert!(output.write(&bytes).is_ok())` aborted it. The caller saw a child
+/// that died with `SIGABRT` rather than `Err(NotFound)`, and the two demand
+/// completely different responses from an operator. See #716.
+///
+/// `CLOEXEC` keeps the descriptors usable for the instant between here and
+/// `exec`, which is all std needs, while still guaranteeing the child that
+/// actually starts inherits none of them.
 unsafe fn close_extra_fds() {
     #[cfg(target_os = "linux")]
     {
@@ -279,10 +299,20 @@ unsafe fn close_extra_fds() {
         ))]
         {
             const SYS_CLOSE_RANGE: libc::c_long = 436;
-            let rc = libc::syscall(SYS_CLOSE_RANGE, 3u32, libc::c_uint::MAX, 0u32);
+            // CLOSE_RANGE_CLOEXEC (Linux 5.11+): mark the range close-on-exec
+            // instead of closing it now.
+            const CLOSE_RANGE_CLOEXEC: libc::c_uint = 4;
+            let rc = libc::syscall(
+                SYS_CLOSE_RANGE,
+                3u32,
+                libc::c_uint::MAX,
+                CLOSE_RANGE_CLOEXEC,
+            );
             if rc == 0 {
                 return;
             }
+            // Older kernels reject the flag (EINVAL); fall through to the
+            // per-descriptor sweep rather than closing the range outright.
         }
     }
 
@@ -312,7 +342,7 @@ unsafe fn close_extra_fds() {
                 continue;
             }
             if fd > 2 && fd != dir_fd {
-                libc::close(fd);
+                set_cloexec(fd);
             }
         }
         libc::closedir(dir);
@@ -322,8 +352,21 @@ unsafe fn close_extra_fds() {
     let max = libc::sysconf(libc::_SC_OPEN_MAX);
     let max = if max < 0 { 4096 } else { max as libc::c_int };
     for fd in 3..max {
-        libc::close(fd);
+        set_cloexec(fd);
     }
+}
+
+/// Mark one descriptor close-on-exec, preserving any other flags.
+///
+/// `fcntl` is async-signal-safe, which matters because this runs in the
+/// forked child. Failures are ignored: the descriptor may simply not be open,
+/// which is the common case in a sweep over a range.
+unsafe fn set_cloexec(fd: libc::c_int) {
+    let flags = libc::fcntl(fd, libc::F_GETFD);
+    if flags == -1 {
+        return;
+    }
+    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
 }
 
 #[cfg(test)]

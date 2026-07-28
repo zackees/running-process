@@ -1075,3 +1075,48 @@ fn unix_natural_exit_cancels_both_orphaned_capture_readers() {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+
+/// A program that does not exist must be reported as an error, on every
+/// platform.
+///
+/// This is the ordinary way a spawn goes wrong — a mistyped path, a
+/// missing sibling binary — and it has to be distinguishable from "the
+/// program started and then failed": one is fixed by correcting a path,
+/// the other by debugging the program.
+///
+/// On Unix this failed before #716. `exec` fails in the forked child, and
+/// the child reports its `errno` to the parent through a `CLOEXEC` pipe
+/// std creates for the purpose. The pre-exec fd sweep closed that pipe, so
+/// the child could not report anything and aborted instead, surfacing as a
+/// child that died of `SIGABRT`.
+#[test]
+fn spawning_a_nonexistent_program_is_an_error() {
+    let mut command = std::process::Command::new("running-process-definitely-no-such-program");
+    let result = spawn(
+        &mut command,
+        crate::spawn::SpawnStdio {
+            stdin: crate::spawn::StdioSource::Null,
+            stdout: crate::spawn::StdioSource::Null,
+            stderr: crate::spawn::StdioSource::Null,
+            ..Default::default()
+        },
+    );
+
+    match result {
+        Err(e) => {
+            // The kind matters: callers branch on NotFound to tell a bad
+            // path from a program that ran and failed.
+            assert_eq!(
+                e.kind(),
+                std::io::ErrorKind::NotFound,
+                "expected NotFound, got {e:?}"
+            );
+        }
+        Ok(mut child) => {
+            let code = child.wait();
+            panic!(
+                    "spawning a nonexistent program produced a child instead of an                      error (exit: {code:?}) — see #716"
+                );
+        }
+    }
+}
