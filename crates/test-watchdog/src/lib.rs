@@ -105,10 +105,27 @@ fn install_active(timeout: Duration, message: String, dump_path: Option<PathBuf>
 
 #[cfg(any(windows, unix))]
 fn default_dump_path(pid: u32) -> PathBuf {
+    // NOTE: the file name must not contain the substring `pid`.
+    //
+    // ProcDump treats `PID` in an output file name as a substitution token
+    // and replaces it with the process id. Asking for
+    // `test-watchdog-pid38972.dmp` therefore writes
+    // `test-watchdog-3897238972.dmp` — the id, twice.
+    //
+    // `fire` already recovers by parsing procdump's `Dump 1 initiated:`
+    // line, so the path it reports has always been correct. What silently
+    // did not work was anything matching on the name it *asked* for: a CI
+    // step archiving `test-watchdog-pid*` collected nothing, and a caller
+    // that passes an explicit `dump_path` could not rely on that file
+    // existing. Observed 2026-07-28 while chasing running-process#747,
+    // where the missing artifact made an intermittent hang look
+    // undiagnosable.
     #[cfg(windows)]
-    let name = format!("test-watchdog-pid{pid}.dmp");
+    let name = format!("test-watchdog-{pid}.dmp");
+    // Unix has no such rewriting; kept in the same shape so both platforms
+    // agree on where dumps land.
     #[cfg(unix)]
-    let name = format!("test-watchdog-pid{pid}.backtrace.txt");
+    let name = format!("test-watchdog-{pid}.backtrace.txt");
     std::env::temp_dir().join(name)
 }
 
@@ -350,5 +367,33 @@ mod tests {
         drop(guard);
         std::thread::sleep(Duration::from_millis(300));
         // Reaching this point proves the watchdog did not fire.
+    }
+
+    /// ProcDump substitutes `PID` in an output file name with the process
+    /// id, so a name containing it is rewritten and the file lands somewhere
+    /// the caller never asked for. Guarding the rule directly, because the
+    /// symptom — a dump that exists but cannot be found by name — reads as
+    /// "no dump was produced" and makes a hang look undiagnosable.
+    #[test]
+    fn the_default_dump_name_avoids_procdump_substitution_tokens() {
+        let name = default_dump_path(38972)
+            .file_name()
+            .expect("a file name")
+            .to_string_lossy()
+            .into_owned();
+
+        assert!(
+            !name.to_ascii_lowercase().contains("pid"),
+            "{name} contains the `pid` token, which procdump rewrites"
+        );
+        assert!(
+            name.contains("38972"),
+            "{name} should still identify the process"
+        );
+        // The doubled-id shape the old name produced.
+        assert!(
+            !name.contains("3897238972"),
+            "{name} looks like the id was substituted twice"
+        );
     }
 }

@@ -3,6 +3,7 @@
 use std::io;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use interprocess::local_socket::prelude::*;
 use running_process::broker::client::{
@@ -105,6 +106,7 @@ fn broker_disabled_by_env_rejects_unknown_values() {
 
 #[test]
 fn connect_to_backend_uses_cached_endpoint_when_versions_match() {
+    let _watchdog = hang_watchdog("connect_to_backend_uses_cached_endpoint_when_versions_match");
     let cached_backend = unique_socket_name("cached-backend");
     let backend = spawn_accept_once(cached_backend.clone());
 
@@ -121,6 +123,7 @@ fn connect_to_backend_uses_cached_endpoint_when_versions_match() {
 
 #[test]
 fn connect_to_backend_falls_back_to_broker_when_cache_missing() {
+    let _watchdog = hang_watchdog("connect_to_backend_falls_back_to_broker_when_cache_missing");
     let broker_endpoint = unique_socket_name("broker");
     let backend_endpoint = unique_socket_name("backend");
     let backend = spawn_accept_once(backend_endpoint.clone());
@@ -142,6 +145,8 @@ fn connect_to_backend_falls_back_to_broker_when_cache_missing() {
 
 #[test]
 fn connect_to_backend_falls_back_to_broker_when_cached_endpoint_is_stale() {
+    let _watchdog =
+        hang_watchdog("connect_to_backend_falls_back_to_broker_when_cached_endpoint_is_stale");
     let broker_endpoint = unique_socket_name("broker-stale-cache");
     let backend_endpoint = unique_socket_name("backend-stale-cache");
     let stale_cached_endpoint = unique_socket_name("stale-cached-backend");
@@ -165,6 +170,7 @@ fn connect_to_backend_falls_back_to_broker_when_cached_endpoint_is_stale() {
 
 #[test]
 fn connect_to_backend_does_not_skip_when_versions_differ() {
+    let _watchdog = hang_watchdog("connect_to_backend_does_not_skip_when_versions_differ");
     let broker_endpoint = unique_socket_name("broker-mismatch");
     let backend_endpoint = unique_socket_name("backend-mismatch");
     let backend = spawn_accept_once(backend_endpoint.clone());
@@ -184,6 +190,7 @@ fn connect_to_backend_does_not_skip_when_versions_differ() {
 #[cfg(feature = "test-seams")]
 #[test]
 fn connect_to_backend_uses_fake_backend_seam_when_set() {
+    let _watchdog = hang_watchdog("connect_to_backend_uses_fake_backend_seam_when_set");
     let _lock = DISABLE_ENV_LOCK.lock().unwrap();
     let fake_backend = unique_socket_name("fake-backend");
     let backend = spawn_accept_once(fake_backend.clone());
@@ -206,6 +213,8 @@ fn connect_to_backend_uses_fake_backend_seam_when_set() {
 #[cfg(feature = "test-seams")]
 #[test]
 fn connect_to_backend_ignores_fake_backend_seam_when_broker_disabled() {
+    let _watchdog =
+        hang_watchdog("connect_to_backend_ignores_fake_backend_seam_when_broker_disabled");
     let _lock = DISABLE_ENV_LOCK.lock().unwrap();
     let broker_endpoint = unique_socket_name("broker-fake-disabled");
     let backend_endpoint = unique_socket_name("backend-fake-disabled");
@@ -245,6 +254,7 @@ fn connect_to_backend_fake_backend_connect_error_does_not_fall_back() {
 #[cfg(feature = "test-seams")]
 #[test]
 fn connect_to_backend_ignores_empty_fake_backend_seam() {
+    let _watchdog = hang_watchdog("connect_to_backend_ignores_empty_fake_backend_seam");
     let _lock = DISABLE_ENV_LOCK.lock().unwrap();
     let broker_endpoint = unique_socket_name("broker-fake-empty");
     let backend_endpoint = unique_socket_name("backend-fake-empty");
@@ -266,6 +276,7 @@ fn connect_to_backend_ignores_empty_fake_backend_seam() {
 #[cfg(feature = "test-seams")]
 #[test]
 fn connect_to_backend_ignores_unset_fake_backend_seam() {
+    let _watchdog = hang_watchdog("connect_to_backend_ignores_unset_fake_backend_seam");
     let _lock = DISABLE_ENV_LOCK.lock().unwrap();
     let cached_backend = unique_socket_name("cached-backend-no-fake");
     let backend = spawn_accept_once(cached_backend.clone());
@@ -313,6 +324,7 @@ fn refusal_kind_maps_wire_codes() {
 
 #[test]
 fn connect_to_backend_classifies_unknown_service_refusal() {
+    let _watchdog = hang_watchdog("connect_to_backend_classifies_unknown_service_refusal");
     let broker_endpoint = unique_socket_name("broker-refuse-unknown");
     let backend_endpoint = unique_socket_name("backend-refuse-unknown");
     let broker = spawn_broker_once(broker_endpoint.clone(), backend_endpoint.clone());
@@ -327,6 +339,7 @@ fn connect_to_backend_classifies_unknown_service_refusal() {
 
 #[test]
 fn connect_to_backend_classifies_blocked_version_refusal() {
+    let _watchdog = hang_watchdog("connect_to_backend_classifies_blocked_version_refusal");
     let broker_endpoint = unique_socket_name("broker-refuse-version");
     let backend_endpoint = unique_socket_name("backend-refuse-version");
     let broker = spawn_broker_once(broker_endpoint.clone(), backend_endpoint.clone());
@@ -337,6 +350,31 @@ fn connect_to_backend_classifies_blocked_version_refusal() {
 
     assert_eq!(error.refusal_kind(), Some(RefusalKind::VersionBlocked));
     broker.join().unwrap().unwrap();
+}
+
+/// Turn a hang in these tests into a stack dump instead of a bare timeout.
+///
+/// Every test below hands a socket to a helper thread and then `join()`s it.
+/// If the connection the helper is waiting to `accept()` never arrives, that
+/// join blocks forever: there is no deadline on it, and `JoinHandle` has no
+/// timed form. What the runner reports is "timed out after 120s" with no
+/// indication of which side was stuck or why.
+///
+/// This has actually happened — see running-process#747, where
+/// `connect_to_backend_uses_cached_endpoint_when_versions_match` hit
+/// nextest's 120s kill during a full-suite run and left nothing to diagnose.
+/// The watchdog fires first and writes an all-thread dump, so the next
+/// occurrence names the blocked call instead of only its duration.
+///
+/// 30s is far above these tests' normal runtime (milliseconds) and well
+/// under the 120s harness kill, so it never pre-empts a slow-but-working
+/// run and always beats the runner to the evidence.
+fn hang_watchdog(test_name: &'static str) -> test_watchdog::WatchdogGuard {
+    test_watchdog::install(
+        Duration::from_secs(30),
+        format!("{test_name} appears to be hung waiting on a test socket"),
+        None,
+    )
 }
 
 fn spawn_accept_once(socket_name: String) -> thread::JoinHandle<io::Result<()>> {

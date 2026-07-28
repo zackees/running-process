@@ -10,8 +10,9 @@
 //!    earlier integration tests.
 //! 2. **Persistent accept loop** — each accepted connection spawns
 //!    a thread that handles the Hello round-trip. The accept loop
-//!    polls with bounded latency so Unix SIGTERM/SIGINT can request a
-//!    normal shutdown; in-flight handlers are drained with a deadline.
+//!    polls with bounded latency so a shutdown request can be observed:
+//!    SIGTERM/SIGINT on Unix, console control events on Windows.
+//!    In-flight handlers are then drained with a deadline.
 //! 3. **ServiceDefinitionLoader integration** — on each Hello, look
 //!    up `hello.service_name` via the default v2 service-definition
 //!    directory ([`ServiceDefinitionLoader::default_root`]). Reject
@@ -33,10 +34,12 @@
 //!   `broker-v2-scaffold`.
 //!
 //! Future slices:
-//! - Windows console-event graceful shutdown.
-//! - Backend-pipe resolution + adopt forwarding.
-//! - Single-instance lock (refuse start if another broker is bound).
-//! - Refuse-privileged-run guard (port from v1).
+//! - Backend-pipe resolution + adopt forwarding (the `Negotiated` reply still
+//!   carries an empty `backend_pipe`; see running-process#532 item 5).
+//!
+//! The single-instance lock and the refuse-privileged-run guard were also
+//! listed here as future work; both have since landed (`is_already_bound_error`
+//! and `refuse_privileged_run` respectively).
 
 use std::env;
 use std::io::Write;
@@ -49,7 +52,11 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::traits::{Listener as _, Stream as _};
 use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions};
 use prost::Message;
-use running_process::broker::lifecycle::names_v2::v2_program_pipe;
+use running_process::broker::broker_http_discovery;
+use running_process::broker::broker_http_port::BrokerHttpPort;
+use running_process::broker::broker_http_server::BrokerHttpServer;
+use running_process::broker::http_endpoint_registry::HttpEndpointRegistry;
+use running_process::broker::lifecycle::names_v2::{broker_v2_runtime_dir, v2_program_pipe};
 use running_process::broker::lifecycle::privilege::refuse_privileged_run;
 use running_process::broker::lifecycle::sid::user_sid_hash;
 use running_process::broker::protocol::{
@@ -101,6 +108,73 @@ fn install_shutdown_signal_handlers() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Set when Windows delivers a console control event.
+///
+/// The Windows counterpart of [`SIGNAL_SHUTDOWN_REQUESTED`]. Without it the
+/// accept loop on Windows polled a flag nothing ever set, so the broker never
+/// drained or unbound — it only ever died when killed.
+#[cfg(windows)]
+static CONSOLE_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Console control handler.
+///
+/// Windows runs this on a thread it injects into the process, so it does the
+/// same thing the Unix signal handler does and no more: one atomic store. No
+/// allocation, no logging, no joining threads.
+///
+/// Returning `TRUE` claims the event. For `CTRL_C_EVENT` and
+/// `CTRL_BREAK_EVENT` that suppresses the default terminate, which is the
+/// point — the accept loop needs to observe the flag and drain.
+#[cfg(windows)]
+unsafe extern "system" fn console_ctrl_handler(
+    ctrl_type: winapi::shared::minwindef::DWORD,
+) -> winapi::shared::minwindef::BOOL {
+    use winapi::um::wincon::{
+        CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    };
+
+    match ctrl_type {
+        CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT
+        | CTRL_SHUTDOWN_EVENT => {
+            CONSOLE_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+            winapi::shared::minwindef::TRUE
+        }
+        // Anything else is left to the next handler rather than swallowed.
+        _ => winapi::shared::minwindef::FALSE,
+    }
+}
+
+/// Install the console control handler.
+///
+/// # The close/logoff/shutdown events are on a clock
+///
+/// `CTRL_C_EVENT` and `CTRL_BREAK_EVENT` leave the process running once
+/// claimed. The other three do not: Windows gives a console process a few
+/// seconds after `CTRL_CLOSE_EVENT` (and less at logoff/shutdown) and then
+/// terminates it regardless of what the handler returns.
+///
+/// [`HANDLER_DRAIN_TIMEOUT`] is 5s, which is the same order as that budget —
+/// so on a window close a long-running handler may be cut off mid-drain. That
+/// is still strictly better than today's behavior, where the loop never even
+/// begins to drain, but it is a bound rather than a guarantee and should not
+/// be described as a graceful shutdown in every case.
+#[cfg(windows)]
+fn install_shutdown_console_handler() -> std::io::Result<()> {
+    CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+    // SAFETY: `console_ctrl_handler` has the required `system` ABI, lives for
+    // the process lifetime, and performs only an atomic store.
+    let installed = unsafe {
+        winapi::um::consoleapi::SetConsoleCtrlHandler(
+            Some(console_ctrl_handler),
+            winapi::shared::minwindef::TRUE,
+        )
+    };
+    if installed == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(coverage)]
 unsafe extern "C" {
     fn __llvm_profile_write_file() -> libc::c_int;
@@ -144,6 +218,36 @@ struct CliOptions {
     no_bind: bool,
     once: bool,
     program: String,
+    /// `None` means no HTTP surface at all — the default.
+    ///
+    /// #483 calls the per-backend HTTP servers optional, and a broker that
+    /// opened a listening TCP port merely by starting would be a surprise on
+    /// a shared host. Opting in keeps the default surface to the local socket.
+    http_port: Option<BrokerHttpPort>,
+}
+
+/// Parse the `--http-port` value.
+///
+/// `dynamic` maps to an OS-allocated port. A number maps to
+/// [`BrokerHttpPort::StaticOrFallback`] rather than `Static`: now that the
+/// resolved port is published for discovery, falling back to an OS-allocated
+/// port keeps the broker running and still reachable, whereas `Static` would
+/// abort startup because something unrelated held the port. An operator who
+/// truly needs an exact port can set `RUNNING_PROCESS_BROKER_HTTP_PORT`,
+/// which resolution collapses to `Static`.
+fn parse_http_port(value: &str) -> Result<BrokerHttpPort, String> {
+    if value.eq_ignore_ascii_case("dynamic") {
+        return Ok(BrokerHttpPort::Dynamic);
+    }
+    match value.parse::<u16>() {
+        // 0 already means "OS-allocated" to the sockets layer; naming it
+        // `Dynamic` keeps the resolved config honest about what will happen.
+        Ok(0) => Ok(BrokerHttpPort::Dynamic),
+        Ok(preferred) => Ok(BrokerHttpPort::StaticOrFallback { preferred }),
+        Err(_) => Err(format!(
+            "--http-port expects a port number or `dynamic`, got {value:?}"
+        )),
+    }
 }
 
 fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
@@ -151,6 +255,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
         no_bind: false,
         once: false,
         program: DEFAULT_PROGRAM.to_owned(),
+        http_port: None,
     };
     let mut i = 1; // skip argv[0]
     while i < args.len() {
@@ -164,12 +269,20 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
                 }
                 opts.program = args[i].clone();
             }
+            "--http-port" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("--http-port requires a value".to_owned());
+                }
+                opts.http_port = Some(parse_http_port(&args[i])?);
+            }
             "--help" | "-h" => {
                 return Err(format!(
                     "running-process-broker-v2 {} — usage:\n  \
-                     [--program <name>]  (default: {DEFAULT_PROGRAM})\n  \
-                     [--once]            (accept one connection then exit)\n  \
-                     [--no-bind]         (exit 0 immediately; for integration test)",
+                     [--program <name>]     (default: {DEFAULT_PROGRAM})\n  \
+                     [--once]               (accept one connection then exit)\n  \
+                     [--no-bind]            (exit 0 immediately; for integration test)\n  \
+                     [--http-port <n|dynamic>]  (serve the aggregation page; off by default)",
                     env!("CARGO_PKG_VERSION")
                 ));
             }
@@ -303,6 +416,23 @@ fn main() -> ExitCode {
     let loader = Arc::new(ServiceDefinitionLoader::default_root());
     let inflight = Arc::new(AtomicUsize::new(0));
 
+    // Optional HTTP aggregation surface (#483). Started after the control
+    // socket is bound, so a broker that loses the single-instance race exits
+    // before it can publish an endpoint another broker owns.
+    let http = opts.http_port.and_then(|config| {
+        match start_http_surface(config, &opts.program, &broker_v2_runtime_dir()) {
+            Ok(started) => Some(started),
+            Err(err) => {
+                // Not fatal: the broker's job is the control socket, and the
+                // HTTP page is an optional view onto it. Exiting here would
+                // take out working brokering because a diagnostic page could
+                // not bind.
+                eprintln!("running-process-broker-v2: HTTP surface disabled: {err}");
+                None
+            }
+        }
+    });
+
     let exit_code = if opts.once {
         accept_one(&listener, Arc::clone(&loader))
     } else {
@@ -312,9 +442,19 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
 
+        #[cfg(windows)]
+        if let Err(err) = install_shutdown_console_handler() {
+            eprintln!("running-process-broker-v2: install console control handler failed: {err}");
+            return ExitCode::from(1);
+        }
+
         #[cfg(unix)]
         let shutdown = &SIGNAL_SHUTDOWN_REQUESTED;
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        let shutdown = &CONSOLE_SHUTDOWN_REQUESTED;
+        // Kept so the loop still compiles on a target that is neither, where
+        // there is no shutdown source to observe.
+        #[cfg(not(any(unix, windows)))]
         let shutdown = &AtomicBool::new(false);
 
         accept_loop(
@@ -330,12 +470,82 @@ fn main() -> ExitCode {
         let _ = std::fs::remove_file(&socket_path);
     }
 
+    // Retract the published endpoint before exiting. A stale file would send
+    // every reader to a port this process no longer listens on — worse than
+    // no file at all, which readers already treat as "not running".
+    if let Some(started) = &http {
+        if let Err(err) =
+            broker_http_discovery::unpublish_http_port(&broker_v2_runtime_dir(), &started.program)
+        {
+            eprintln!("running-process-broker-v2: could not unpublish HTTP endpoint: {err}");
+        }
+    }
+
     if let Err(err) = flush_coverage_profile() {
         eprintln!("running-process-broker-v2: coverage profile flush failed: {err}");
         return ExitCode::from(1);
     }
 
     exit_code
+}
+
+/// A running HTTP surface, kept so the endpoint can be retracted on exit.
+struct HttpSurface {
+    program: String,
+}
+
+/// Bind the HTTP aggregation surface, publish where it landed, and serve it.
+///
+/// # Publishing happens after binding, never before
+///
+/// The bound port is not always the requested one — `StaticOrFallback` falls
+/// back to an OS-allocated port, and `Dynamic` never had a number to begin
+/// with. Publishing the *requested* port would advertise an endpoint nobody
+/// is listening on, and the reader has no way to tell that from a live one.
+/// So the address published is the one taken from the bound listener.
+/// `runtime_dir` is a parameter rather than derived inside so a test can
+/// point it at a temp directory. Derived internally, the only way to exercise
+/// this function would be to write into the real per-user runtime directory,
+/// which collides with any broker actually running on the machine.
+fn start_http_surface(
+    config: BrokerHttpPort,
+    program: &str,
+    runtime_dir: &std::path::Path,
+) -> Result<HttpSurface, String> {
+    let registry = Arc::new(HttpEndpointRegistry::new());
+    let server = BrokerHttpServer::bind(config, registry).map_err(|e| e.to_string())?;
+    let local = server.local_addr();
+
+    let path =
+        broker_http_discovery::publish_http_port(runtime_dir, program, local.ip(), local.port())
+            .map_err(|e| format!("publishing {local} to {}: {e}", runtime_dir.display()))?;
+
+    println!(
+        "running-process-broker-v2 http at http://{local} (published to {})",
+        path.display()
+    );
+    if let Err(err) = std::io::stdout().flush() {
+        eprintln!("running-process-broker-v2: stdout flush failed: {err}");
+    }
+
+    // Detached: the surface is read-only and stateless, so there is nothing
+    // to drain at shutdown. The thread ends with the process, and the
+    // published file — the part that outlives it — is retracted by `main`.
+    thread::Builder::new()
+        .name("rpb-v2-http".to_string())
+        .spawn(move || loop {
+            if let Err(err) = server.serve_once() {
+                // One failed accept says nothing about the next. Logging and
+                // continuing keeps a transient error from silently taking the
+                // page down for the life of the broker.
+                eprintln!("running-process-broker-v2: http accept failed: {err}");
+            }
+        })
+        .map_err(|e| format!("spawning the http thread: {e}"))?;
+
+    Ok(HttpSurface {
+        program: program.to_owned(),
+    })
 }
 
 /// Persistent accept loop. Spawns one handler thread per accepted
@@ -792,6 +1002,78 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Every console event that means "you are going away" must set the flag.
+    ///
+    /// Missing one would leave the broker in the state this change exists to
+    /// fix: still polling a flag nothing sets, never draining, never
+    /// unbinding.
+    #[cfg(windows)]
+    #[test]
+    fn every_shutdown_console_event_requests_shutdown() {
+        use winapi::um::wincon::{
+            CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT,
+            CTRL_SHUTDOWN_EVENT,
+        };
+
+        for event in [
+            CTRL_C_EVENT,
+            CTRL_BREAK_EVENT,
+            CTRL_CLOSE_EVENT,
+            CTRL_LOGOFF_EVENT,
+            CTRL_SHUTDOWN_EVENT,
+        ] {
+            CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+            // SAFETY: calling the handler directly; it only stores an atomic.
+            let handled = unsafe { console_ctrl_handler(event) };
+            assert_eq!(
+                handled,
+                winapi::shared::minwindef::TRUE,
+                "event {event} must be claimed, or Windows applies the default \
+                 terminate and the drain never runs"
+            );
+            assert!(
+                CONSOLE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed),
+                "event {event} did not request shutdown"
+            );
+        }
+        CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+    }
+
+    /// An event we do not recognize must be passed on, not swallowed.
+    /// Claiming it would suppress whatever handler comes next for an event
+    /// this broker has no opinion about.
+    #[cfg(windows)]
+    #[test]
+    fn an_unrecognized_console_event_is_declined() {
+        CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+        // SAFETY: as above.
+        let handled = unsafe { console_ctrl_handler(0xDEAD_BEEF) };
+        assert_eq!(handled, winapi::shared::minwindef::FALSE);
+        assert!(
+            !CONSOLE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed),
+            "an unrelated event must not request shutdown"
+        );
+    }
+
+    /// Registration has to actually succeed — the handler being correct is
+    /// worth nothing if Windows never calls it.
+    ///
+    /// This is the boundary of what is verified here: that the handler is
+    /// installed and behaves correctly once invoked. That Windows delivers
+    /// Ctrl+C to a registered handler is OS-defined behavior and is not
+    /// re-tested, because generating a real console event would signal every
+    /// process sharing this console, including the test runner.
+    #[cfg(windows)]
+    #[test]
+    fn the_console_handler_installs() {
+        install_shutdown_console_handler()
+            .expect("SetConsoleCtrlHandler should accept the handler");
+        assert!(
+            !CONSOLE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed),
+            "installing must start from a clear flag, or the loop would exit at once"
+        );
+    }
+
     #[test]
     fn accept_poll_observes_shutdown_while_listener_would_block() {
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -848,6 +1130,125 @@ mod tests {
     fn parse_cli_unknown_arg_errs() {
         let args = vec!["bin".to_owned(), "--bogus".to_owned()];
         assert!(parse_cli(&args).is_err());
+    }
+
+    /// The HTTP surface is opt-in: starting the broker must not open a
+    /// listening TCP port on its own.
+    #[test]
+    fn the_http_surface_is_off_unless_asked_for() {
+        let opts = parse_cli(&["bin".to_owned()]).unwrap();
+        assert!(opts.http_port.is_none());
+    }
+
+    #[test]
+    fn http_port_accepts_dynamic_and_a_number() {
+        assert_eq!(parse_http_port("dynamic").unwrap(), BrokerHttpPort::Dynamic);
+        assert_eq!(parse_http_port("DYNAMIC").unwrap(), BrokerHttpPort::Dynamic);
+        assert_eq!(
+            parse_http_port("8080").unwrap(),
+            BrokerHttpPort::StaticOrFallback { preferred: 8080 }
+        );
+    }
+
+    /// Port 0 already means "OS-allocated" at the sockets layer. Reporting it
+    /// as `StaticOrFallback { preferred: 0 }` would describe a fallback that
+    /// can never trigger.
+    #[test]
+    fn http_port_zero_is_dynamic() {
+        assert_eq!(parse_http_port("0").unwrap(), BrokerHttpPort::Dynamic);
+    }
+
+    /// A typo must not be silently reinterpreted as a default — that would
+    /// bind a port the operator did not ask for.
+    #[test]
+    fn http_port_rejects_a_non_port() {
+        for bad in ["", "http", "-1", "65536", "80x"] {
+            assert!(
+                parse_http_port(bad).is_err(),
+                "{bad:?} should not parse as a port"
+            );
+        }
+    }
+
+    #[test]
+    fn http_port_requires_a_value() {
+        let args = vec!["bin".to_owned(), "--http-port".to_owned()];
+        assert!(parse_cli(&args).is_err());
+    }
+
+    #[test]
+    fn parse_cli_threads_the_http_port_through() {
+        let args = vec![
+            "bin".to_owned(),
+            "--http-port".to_owned(),
+            "dynamic".to_owned(),
+        ];
+        let opts = parse_cli(&args).unwrap();
+        assert_eq!(opts.http_port, Some(BrokerHttpPort::Dynamic));
+    }
+
+    /// The wiring, end to end: `start_http_surface` must bind, publish where
+    /// it actually landed, and leave something serving there.
+    ///
+    /// This drives `start_http_surface` itself rather than re-doing its steps.
+    /// A test that bound and published on its own would keep passing if the
+    /// function stopped doing either — which is the failure this exists to
+    /// catch.
+    ///
+    /// Uses a temp directory so a broker running on the developer's machine
+    /// cannot make it pass or fail by accident.
+    #[test]
+    fn starting_the_surface_publishes_an_endpoint_that_answers() {
+        use std::io::{Read as _, Write as _};
+
+        let dir = tempdir().unwrap();
+        let started =
+            start_http_surface(BrokerHttpPort::Dynamic, "test-program", dir.path()).unwrap();
+        assert_eq!(started.program, "test-program");
+
+        let (ip, port) = broker_http_discovery::read_http_port(dir.path(), "test-program")
+            .unwrap()
+            .expect("the surface publishes its endpoint");
+        assert_ne!(port, 0, "a published port of 0 is not reachable");
+
+        // Connect to the address as published. Anything else would test a
+        // port we learned some other way, and would not prove the published
+        // one is the live one.
+        let mut stream = std::net::TcpStream::connect(std::net::SocketAddr::new(ip, port))
+            .expect("the published endpoint accepts connections");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let text = String::from_utf8_lossy(&response);
+        assert!(
+            text.starts_with("HTTP/"),
+            "expected an HTTP response, got {text:?}"
+        );
+    }
+
+    /// A stale file sends every reader to a port nobody is listening on,
+    /// which is worse than the absent file readers already handle.
+    #[test]
+    fn unpublishing_leaves_no_endpoint_behind() {
+        let dir = tempdir().unwrap();
+        broker_http_discovery::publish_http_port(
+            dir.path(),
+            "test-program",
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            1234,
+        )
+        .unwrap();
+        broker_http_discovery::unpublish_http_port(dir.path(), "test-program").unwrap();
+        assert_eq!(
+            broker_http_discovery::read_http_port(dir.path(), "test-program").unwrap(),
+            None
+        );
     }
 
     #[test]
