@@ -181,8 +181,16 @@ fn stream_reads_report_timeout_then_eof() {
         process.read_stream(StreamKind::Stdout, Some(Duration::from_millis(10))),
         ReadStatus::Timeout
     );
+    // Generous, deliberately. What this asserts is that a read with time to
+    // spare returns the line — not how fast a Python interpreter starts. The
+    // child sleeps 200ms and then prints, but a cold interpreter under a
+    // parallel test run can take seconds to reach that sleep, and a 2s bound
+    // made this fail roughly 1 run in 10 (running-process#747).
+    //
+    // The 10ms timeout above is the real requirement and stays tight: it is
+    // what proves a short deadline reports `Timeout` rather than blocking.
     assert!(matches!(
-        process.read_stream(StreamKind::Stdout, Some(Duration::from_secs(2))),
+        process.read_stream(StreamKind::Stdout, Some(Duration::from_secs(30))),
         ReadStatus::Line(line) if line == b"ready"
     ));
     process.wait(Some(Duration::from_secs(5))).unwrap();
