@@ -23,11 +23,17 @@
 
 use std::path::PathBuf;
 
+pub mod ico;
+
 /// Where an icon comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IconSource {
     /// Icon file on disk: `.ico` on Windows.
     Path(PathBuf),
+    /// Raw `.ico` bytes, typically embedded in the binary with
+    /// `include_bytes!` so an application ships its own icon without needing
+    /// a file to exist at runtime.
+    Bytes(Vec<u8>),
 }
 
 /// Whether this process can set its host window's icon.
@@ -81,6 +87,21 @@ pub enum IconError {
         #[source]
         source: std::io::Error,
     },
+    /// The OS refused to build an icon from otherwise well-formed data.
+    ///
+    /// Removed in #720 because nothing constructed it; reinstated here
+    /// because `CreateIconFromResourceEx` can fail on data this crate has
+    /// already validated the shape of — the image itself may still be
+    /// something the OS will not decode.
+    #[error("the system refused the icon data: {0}")]
+    Apply(#[source] std::io::Error),
+    /// The supplied bytes are not a usable icon.
+    ///
+    /// Separate from [`IconError::Load`] because the remedy differs: a bad
+    /// path is fixed by pointing somewhere else, malformed bytes by fixing
+    /// what was embedded.
+    #[error("supplied icon data is unusable: {0}")]
+    Decode(ico::IcoError),
 }
 
 /// Whether this process's host window can accept an icon.
@@ -116,11 +137,12 @@ mod imp {
     use super::{IconError, IconSource, IconSupport};
     use std::os::windows::ffi::OsStrExt as _;
 
+    use winapi::shared::minwindef::{DWORD, TRUE};
     use winapi::shared::windef::{HICON, HWND};
     use winapi::um::wincon::GetConsoleWindow;
     use winapi::um::winuser::{
-        GetClassNameW, LoadImageW, SendMessageW, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
-        WM_SETICON,
+        CreateIconFromResourceEx, GetClassNameW, LoadImageW, SendMessageW, IMAGE_ICON,
+        LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_SETICON,
     };
 
     /// `wParam` values for `WM_SETICON`.
@@ -166,12 +188,8 @@ mod imp {
         }
     }
 
-    pub(super) fn set_host_icon(source: &IconSource) -> Result<(), IconError> {
-        let hwnd = console_window().ok_or(IconError::Unsupported {
-            reason: "the console window disappeared between the support probe and the call",
-        })?;
-
-        let IconSource::Path(path) = source;
+    /// Load an icon from a file, letting the OS pick the best size.
+    fn load_from_path(path: &std::path::Path) -> Result<HICON, IconError> {
         let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
         wide.push(0);
 
@@ -189,10 +207,53 @@ mod imp {
         } as HICON;
         if icon.is_null() {
             return Err(IconError::Load {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 source: std::io::Error::last_os_error(),
             });
         }
+        Ok(icon)
+    }
+
+    /// Load an icon from `.ico` bytes held in memory.
+    ///
+    /// There is no `LoadImage` equivalent that takes a whole `.ico` from
+    /// memory, so the directory is walked here to find one image and
+    /// `CreateIconFromResourceEx` is given exactly that span. The bytes are
+    /// treated as untrusted: `super::ico::best_image` bounds-checks every
+    /// offset before we hand a length to the OS, which would otherwise read
+    /// whatever follows in our address space.
+    fn load_from_bytes(bytes: &[u8]) -> Result<HICON, IconError> {
+        let span = super::ico::best_image(bytes).map_err(IconError::Decode)?;
+        let image = &bytes[span.offset..span.offset + span.len];
+
+        // 0x00030000 is the icon resource version the API expects.
+        const ICON_RESOURCE_VERSION: DWORD = 0x0003_0000;
+        let icon = unsafe {
+            CreateIconFromResourceEx(
+                image.as_ptr() as *mut u8,
+                image.len() as DWORD,
+                TRUE,
+                ICON_RESOURCE_VERSION,
+                0,
+                0,
+                LR_DEFAULTSIZE,
+            )
+        };
+        if icon.is_null() {
+            return Err(IconError::Apply(std::io::Error::last_os_error()));
+        }
+        Ok(icon)
+    }
+
+    pub(super) fn set_host_icon(source: &IconSource) -> Result<(), IconError> {
+        let hwnd = console_window().ok_or(IconError::Unsupported {
+            reason: "the console window disappeared between the support probe and the call",
+        })?;
+
+        let icon = match source {
+            IconSource::Path(path) => load_from_path(path)?,
+            IconSource::Bytes(bytes) => load_from_bytes(bytes)?,
+        };
 
         // Both slots: the small icon is the title bar and Alt+Tab, the big one
         // is the taskbar. Setting only one leaves the other stale, which looks
@@ -289,6 +350,32 @@ mod tests {
         assert!(
             matches!(error, IconError::Unsupported { .. }),
             "a missing file must not mask the unsupported verdict; got {error}"
+        );
+    }
+
+    /// Malformed bytes must be refused before the OS sees them.
+    ///
+    /// Runs everywhere by forcing the verdict, because the decode happens
+    /// before any window is touched — so this covers the validation on
+    /// platforms that have no console window at all.
+    #[test]
+    fn malformed_icon_bytes_are_refused() {
+        let result =
+            set_host_icon_given(IconSupport::Available, &IconSource::Bytes(vec![0xFF; 64]));
+        let error = result.expect_err("garbage is not an icon");
+        assert!(
+            matches!(error, IconError::Decode(_) | IconError::Unsupported { .. }),
+            "expected a refusal before the OS was handed anything, got {error}"
+        );
+    }
+
+    #[test]
+    fn empty_icon_bytes_are_refused() {
+        let error = set_host_icon_given(IconSupport::Available, &IconSource::Bytes(Vec::new()))
+            .expect_err("empty data is not an icon");
+        assert!(
+            matches!(error, IconError::Decode(_) | IconError::Unsupported { .. }),
+            "got {error}"
         );
     }
 
