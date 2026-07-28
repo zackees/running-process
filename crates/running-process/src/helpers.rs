@@ -161,7 +161,9 @@ mod tests {
         let worker = thread::spawn(move || {
             poll_mutex_until(
                 &worker_state,
-                Instant::now() + Duration::from_millis(100),
+                // Long enough that the observation window below fits entirely
+                // inside it — see the note there.
+                Instant::now() + Duration::from_secs(4),
                 Duration::from_millis(50),
                 |_| {
                     let _ = polled_tx.send(());
@@ -173,7 +175,16 @@ mod tests {
         polled_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("poll never started");
-        let available_deadline = Instant::now() + Duration::from_millis(40);
+        // How long to wait for the lock to become free. This has to stay
+        // comfortably *inside* the worker's polling deadline above: once the
+        // worker finishes it drops the lock for good, so a window that
+        // outlived it would report success without ever observing a release
+        // between polls — the test would pass no matter how the lock is held.
+        //
+        // 40ms was too tight to survive a loaded machine (seen failing in a
+        // parallel full-suite sweep), so both bounds were raised together
+        // rather than just this one.
+        let available_deadline = Instant::now() + Duration::from_secs(1);
         let mut available = false;
         while Instant::now() < available_deadline {
             if state.try_lock().is_ok() {
