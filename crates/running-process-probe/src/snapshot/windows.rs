@@ -149,6 +149,7 @@ fn capture_thread(tid: u32, max_stack_bytes: usize, scratch: &mut [u8]) -> Optio
         stack_bytes,
         truncated,
         kind: CaptureKind::RawContext,
+        frames: Vec::new(),
     })
 }
 

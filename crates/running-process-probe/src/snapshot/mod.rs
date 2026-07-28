@@ -36,6 +36,9 @@
 pub mod modules;
 
 #[cfg(all(windows, target_arch = "x86_64"))]
+pub mod unwind;
+
+#[cfg(all(windows, target_arch = "x86_64"))]
 mod windows;
 
 use std::time::Duration;
@@ -74,6 +77,10 @@ pub struct ThreadSample {
     pub truncated: bool,
     /// What stage this sample is at.
     pub kind: CaptureKind,
+    /// Return addresses, once unwinding has run. Empty until then — check
+    /// [`Snapshot::frames_resolved`] rather than inferring from emptiness,
+    /// since a thread with an unwalkable stack also yields none.
+    pub frames: Vec<u64>,
 }
 
 /// What a capture cost and covered.
