@@ -158,7 +158,10 @@ mod tests {
             return;
         };
         let table = SymbolTable::from_pdb(&pdb_path).expect("the test binary's PDB has symbols");
-        assert!(!table.is_empty(), "the test binary PDB should list functions");
+        assert!(
+            !table.is_empty(),
+            "the test binary PDB should list functions"
+        );
     }
 
     /// Every symbol RVA must land inside an executable section of the PE.
