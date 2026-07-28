@@ -15,7 +15,7 @@
 //! "this frame is in a function called nothing" — which is why an unresolved
 //! frame never renders as a blank where a name would go.
 
-use crate::wire::{FrameStatus, SymFrame, SymbolReport};
+use crate::wire::{FrameStatus, ModuleSymbolStatus, SymFrame, SymbolReport};
 
 /// Render `report` as a human-readable stack dump.
 pub fn render_text(report: &SymbolReport) -> String {
@@ -26,6 +26,26 @@ pub fn render_text(report: &SymbolReport) -> String {
         // headers with empty bodies.
         out.push_str("(no threads in report)\n");
         return out;
+    }
+
+    // Modules whose symbols were expected but unusable, listed before the
+    // stacks. A reader scanning unnamed frames should not have to infer that
+    // the wrong PDB is on disk somewhere — that is a fixable misconfiguration
+    // and worth saying outright.
+    let problems: Vec<_> = report
+        .modules
+        .iter()
+        .filter(|m| m.status == ModuleSymbolStatus::Mismatched)
+        .collect();
+    if !problems.is_empty() {
+        out.push_str("Symbol problems\n");
+        for module in problems {
+            out.push_str(&format!(
+                "  {}: {} candidate(s) found but none matched this build\n",
+                module.name, module.rejected_candidates
+            ));
+        }
+        out.push('\n');
     }
 
     for (position, thread) in report.threads.iter().enumerate() {
@@ -108,7 +128,49 @@ mod tests {
     }
 
     fn report(threads: Vec<SymThread>) -> SymbolReport {
-        SymbolReport { threads }
+        SymbolReport {
+            threads,
+            ..Default::default()
+        }
+    }
+
+    /// A mismatched module is called out, because unnamed frames alone do
+    /// not tell a reader that the wrong symbols are on disk.
+    #[test]
+    fn mismatched_modules_are_reported_above_the_stacks() {
+        use crate::wire::{ModuleReport, ModuleSymbolStatus};
+
+        let mut r = report(vec![SymThread {
+            os_tid: 1,
+            name: None,
+            frames: vec![frame("a.dll", 0x10, FrameStatus::RawOnly, None)],
+            py_frames: Vec::new(),
+        }]);
+        r.modules = vec![ModuleReport {
+            name: "a.dll".into(),
+            status: ModuleSymbolStatus::Mismatched,
+            rejected_candidates: 2,
+            ..Default::default()
+        }];
+        let text = render_text(&r);
+
+        assert!(text.contains("Symbol problems"), "{text}");
+        assert!(text.contains("a.dll: 2 candidate"), "{text}");
+        let problems_at = text.find("Symbol problems").unwrap();
+        let thread_at = text.find("Thread 1").unwrap();
+        assert!(problems_at < thread_at, "problems must precede the stacks");
+    }
+
+    /// A report with nothing wrong must not grow a noisy empty section.
+    #[test]
+    fn a_clean_report_has_no_problems_section() {
+        let r = report(vec![SymThread {
+            os_tid: 1,
+            name: None,
+            frames: vec![frame("a.dll", 0x10, FrameStatus::Resolved, Some("f"))],
+            py_frames: Vec::new(),
+        }]);
+        assert!(!render_text(&r).contains("Symbol problems"));
     }
 
     #[test]

@@ -168,11 +168,55 @@ pub struct SymThread {
     pub py_frames: Vec<PyFrame>,
 }
 
+/// Why a module's symbols were or were not usable.
+///
+/// Reported per module because "no symbols" alone conflates situations that
+/// need different responses: a build that shipped without symbols is expected,
+/// while a file that failed verification means the *wrong* symbols are sitting
+/// where the right ones belong — which keeps producing empty reports until
+/// someone is told.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleSymbolStatus {
+    /// Symbols were found and verified against this build.
+    Resolved,
+    /// No symbol file of the expected name existed anywhere searched.
+    #[default]
+    NotFound,
+    /// Files existed but none described this build.
+    Mismatched,
+    /// The image carries no debug directory — a stripped build.
+    NoDebugDirectory,
+    /// This platform has no symbol reader.
+    Unsupported,
+}
+
+/// What became of one module's symbols.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ModuleReport {
+    /// Module name as it appeared in the capture.
+    pub name: String,
+    /// How the symbol lookup ended.
+    pub status: ModuleSymbolStatus,
+    /// Symbol file actually used, when one was.
+    #[serde(default)]
+    pub symbol_file: Option<String>,
+    /// Candidates that existed but failed verification.
+    ///
+    /// One is a stale copy; several suggest a search path aimed at the wrong
+    /// tree.
+    #[serde(default)]
+    pub rejected_candidates: usize,
+}
+
 /// What the worker writes to stdout.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SymbolReport {
     /// Symbolized threads, in capture order.
     pub threads: Vec<SymThread>,
+    /// One entry per module the capture referenced, in capture order.
+    #[serde(default)]
+    pub modules: Vec<ModuleReport>,
 }
 
 #[cfg(test)]
