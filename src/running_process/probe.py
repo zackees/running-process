@@ -25,11 +25,15 @@ the worker retries through, not an error.
 
 import atexit
 import faulthandler
+import json
+import os
 import sys
 import threading
 import traceback
 from dataclasses import dataclass, field
+from pathlib import Path
 
+from running_process.dump_paths import artifact_stem, stack_dump_dir, utc_now_iso
 from running_process.interrupt_handler import handle_keyboard_interrupt
 
 
@@ -254,3 +258,93 @@ def install(config: ProbeConfig, *, required: bool = False) -> ProbeGuard | None
     # connection to drop.
     atexit.register(guard.close)
     return guard
+
+
+def write_dump(
+    *,
+    reason: str = "probe",
+    dump_dir: Path | None = None,
+    extra_metadata: dict[str, object] | None = None,
+) -> Path:
+    """Write this process's mixed-mode stacks as a diagnostic artifact.
+
+    Produces two files under the shared dump directory, named with the same
+    stem convention the CLI supervisor uses so an operator finds all evidence
+    in one place: ``<stem>.mixed-stacks.json`` and ``<stem>.json`` metadata.
+
+    Returns the path to the metadata file.
+
+    This describes the **calling** process and no other. That is not a
+    limitation to be worked around: the capture suspends sibling threads of
+    this process, so there is no version of it that reaches across a process
+    boundary. The CLI's ``py-spy``/debugger dumps target a supervised child by
+    pid and remain separate for exactly that reason — emitting this artifact
+    alongside them would file the supervisor's threads under the child's
+    diagnostics, which is worse than having no artifact at all.
+
+    Raises ``NotImplementedError`` where native capture is unimplemented, and
+    ``ProbeUnavailableError`` on a build without probe support.
+    """
+    dumps = snapshot()
+
+    directory = stack_dump_dir(dump_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    pid = os.getpid()
+    stem = artifact_stem(reason=reason, pid=pid)
+
+    threads = [
+        {
+            "os_tid": dump.os_tid,
+            # Hex, because these are addresses and every other tool that will
+            # consume them (a symbolizer, a disassembler, a debugger) speaks
+            # hex. Decimal would need converting at every use.
+            "native": [f"0x{address:x}" for address in dump.native],
+            "python": [
+                {
+                    "file": frame.filename,
+                    "line": frame.lineno,
+                    "func": frame.name,
+                    "text": frame.line,
+                }
+                for frame in dump.python
+            ],
+            "is_mixed": dump.is_mixed(),
+        }
+        for dump in sorted(dumps.values(), key=lambda d: d.os_tid)
+    ]
+
+    stacks_path = directory / f"{stem}.mixed-stacks.json"
+    stacks_path.write_text(
+        json.dumps(
+            {
+                "pid": pid,
+                "runtime": "python",
+                "python_version": sys.version,
+                # Stated outright so nobody reads these as another process's
+                # stacks, and so the absence of symbol names is understood as
+                # by-design rather than as a failure.
+                "scope": "calling process only",
+                "native_frames": "unsymbolized return addresses",
+                "threads": threads,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    metadata = {
+        "reason": reason,
+        "pid": pid,
+        "timestamp_utc": utc_now_iso(),
+        "artifacts": [stacks_path.name],
+        "thread_count": len(threads),
+        "mixed_thread_count": sum(1 for t in threads if t["is_mixed"]),
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    metadata_path = directory / f"{stem}.json"
+    metadata_path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return metadata_path
