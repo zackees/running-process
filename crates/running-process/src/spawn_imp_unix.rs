@@ -472,15 +472,25 @@ mod tests {
             let _ = tx.send(started.elapsed());
         });
 
-        let timely = rx.recv_timeout(Duration::from_millis(100));
+        // The property is causal, not a stopwatch reading: Drop must return
+        // WITHOUT waiting for the child, so it must report back before the
+        // gate is released. A blocked Drop cannot, whatever the machine load.
+        //
+        // Asserting a wall-clock bound instead conflated that with "finished
+        // inside 100ms", which a loaded runner broke by 0.2ms. The window
+        // below is generous because it only bounds how long a *failure* takes
+        // to detect: a correct Drop returns at its 50ms deadline and never
+        // approaches it.
+        let timely = rx.recv_timeout(Duration::from_secs(5));
         release_wait(&wait_gate);
+        let returned_before_release = timely.is_ok();
         let elapsed = timely
-            .or_else(|_| rx.recv_timeout(Duration::from_secs(1)))
-            .expect("shutdown did not unblock after releasing fake child");
+            .or_else(|_| rx.recv_timeout(Duration::from_secs(5)))
+            .expect("shutdown did not unblock even after releasing fake child");
         worker.join().expect("shutdown worker panicked");
         assert!(
-            elapsed < Duration::from_millis(100),
-            "Drop blocked for {elapsed:?} in child.wait()"
+            returned_before_release,
+            "Drop blocked in child.wait() until the fake child was released              (took {elapsed:?}); its deadline should have bounded it"
         );
     }
 
