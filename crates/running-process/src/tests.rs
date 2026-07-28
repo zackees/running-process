@@ -1120,3 +1120,69 @@ fn spawning_a_nonexistent_program_is_an_error() {
         }
     }
 }
+
+/// A child given its own console must be targetable by pid.
+///
+/// This is the only test of the *positive* `IconScope::Child` path. The unit
+/// tests beside the implementation all use pids that own no console window,
+/// so they exercise the enumeration returning nothing — they would pass
+/// against a `console_window_of_pid` that always returned `None`.
+///
+/// `CREATE_NEW_CONSOLE` gives the child a console of its own rather than
+/// inheriting ours, which is exactly the case the scope exists for.
+#[cfg(windows)]
+#[test]
+fn a_child_with_its_own_console_is_targetable_by_pid() {
+    use crate::window_icon::{icon_support, set_icon, IconScope, IconSource, StockIcon};
+    use std::os::windows::process::CommandExt as _;
+
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+    // Sleeps so the console outlives the probe. `cmd /c timeout` needs a
+    // console, which is what we want it to own.
+    let mut child = std::process::Command::new("cmd")
+        .args(["/c", "timeout", "/t", "10", "/nobreak"])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .expect("spawn a child with its own console");
+
+    let pid = child.id();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut support = icon_support(IconScope::Child { pid });
+    while !support.is_available() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        support = icon_support(IconScope::Child { pid });
+    }
+
+    let available = support.is_available();
+    let reason = support.reason();
+    let set_result = if available {
+        Some(set_icon(
+            IconScope::Child { pid },
+            &IconSource::Stock(StockIcon::Warning),
+        ))
+    } else {
+        None
+    };
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match set_result {
+        Some(result) => {
+            result.expect("a child console window that was found must accept an icon");
+        }
+        None => {
+            // Distinguish "the lookup is broken" from "this session creates
+            // no console windows". Without this the test skips on a broken
+            // lookup and passes, proving nothing — verified by sabotage:
+            // forcing `console_window_of_pid` to return `None` took exactly
+            // this branch.
+            assert!(
+                !crate::window_icon::any_console_window_exists(),
+                "console windows exist in this session, but the child's could not be                  found by pid ({reason:?}) — the lookup is broken, not the environment"
+            );
+            eprintln!("skipping: this session creates no console windows at all ({reason:?})");
+        }
+    }
+}
