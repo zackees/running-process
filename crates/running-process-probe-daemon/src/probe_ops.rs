@@ -110,6 +110,13 @@ impl ProbeOps {
         }
     }
 
+    /// The owner policy, for tests that must confirm it agrees with the
+    /// registry's owner string.
+    #[doc(hidden)]
+    pub fn owner_policy_for_test(&self) -> PeerCredentialPolicy {
+        self.owner_policy.clone()
+    }
+
     /// Borrow the registry (queries, reaping).
     pub fn registry(&self) -> &Arc<Registry> {
         &self.registry

@@ -268,7 +268,7 @@ fn run_as_daemon(
     // not authorization — the peer must also be this user.
     // The registration brain. Shared across connections so every peer sees one
     // registry.
-    let ops = running_process_probe_daemon::serve::build_ops(sid_hash.to_string())?;
+    let ops = running_process_probe_daemon::serve::build_ops()?;
 
     for conn in control.incoming() {
         match conn {
@@ -276,13 +276,24 @@ fn run_as_daemon(
                 let ops = std::sync::Arc::clone(&ops);
                 let conn_id = running_process_probe_daemon::serve::next_conn_id();
 
-                // Peer credentials are the authorization boundary: reaching the
-                // socket is not the same as being allowed to use it. The
-                // listener already applies the owner policy, and `dispatch`
-                // re-checks, so this identity is what that check consumes.
-                let peer = running_process::broker::server::PeerIdentity {
-                    pid: 0,
-                    uid_or_sid: sid_hash.to_string(),
+                // Peer credentials are the authorization boundary: reaching
+                // the socket is not the same as being allowed to use it.
+                //
+                // Read from the SOCKET, never synthesized from our own config.
+                // A fabricated identity would make `dispatch`'s owner check
+                // compare the owner against itself and always pass, turning
+                // the defense-in-depth layer into a no-op.
+                let peer = match running_process::broker::server::peer_identity_from_stream(&stream)
+                {
+                    Ok(peer) => peer,
+                    Err(e) => {
+                        // Unreadable credentials mean we cannot say who this
+                        // is. Refuse rather than serve an unidentified peer.
+                        eprintln!(
+                            "rpprobed: refusing connection with unreadable peer credentials: {e}"
+                        );
+                        continue;
+                    }
                 };
 
                 // One thread per connection: a slow or wedged client must not

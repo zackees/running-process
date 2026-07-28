@@ -53,11 +53,11 @@ pub use broadcast::{
 };
 pub use connection::{
     handle_hello_connection, handle_hello_connection_with,
-    handle_hello_connection_with_peer_policy, local_socket_name, serve_local_socket_connections,
-    serve_local_socket_connections_with, serve_local_socket_connections_with_peer_policy,
-    serve_local_socket_connections_with_policy, serve_one_local_socket,
-    serve_one_local_socket_with, serve_one_local_socket_with_peer_policy, BrokerConnectionError,
-    HelloResponder, PeerCredentialPolicy,
+    handle_hello_connection_with_peer_policy, local_socket_name, peer_identity_from_stream,
+    serve_local_socket_connections, serve_local_socket_connections_with,
+    serve_local_socket_connections_with_peer_policy, serve_local_socket_connections_with_policy,
+    serve_one_local_socket, serve_one_local_socket_with, serve_one_local_socket_with_peer_policy,
+    BrokerConnectionError, HelloResponder, PeerCredentialPolicy,
 };
 pub use control_socket::{
     handle_control_connection_with_peer_policy,

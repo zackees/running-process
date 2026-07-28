@@ -256,10 +256,27 @@ fn write_reply<S: io::Write>(
     Ok(())
 }
 
-/// Build the ops core for a daemon owned by `owner`.
-pub fn build_ops(owner: String) -> io::Result<Arc<ProbeOps>> {
+/// Build the ops core for a daemon owned by the current user.
+///
+/// The registry's owner and the peer policy MUST come from the same source.
+/// `ProbeOps` compares peers against the policy, and `Registry::begin_register`
+/// compares them against its own `owner` string — if those are expressed
+/// differently (a raw uid/SID versus, say, a SID *hash* used for endpoint
+/// naming), one of the two checks rejects everything while the other passes.
+/// Both are derived here from `PeerCredentialPolicy::current_user()`, which is
+/// also what `peer_identity_from_stream` reports, so all three agree.
+pub fn build_ops() -> io::Result<Arc<ProbeOps>> {
     let policy = running_process::broker::server::PeerCredentialPolicy::current_user()
         .ok_or_else(|| io::Error::other("cannot resolve the current user for the owner policy"))?;
+
+    let owner = match &policy {
+        running_process::broker::server::PeerCredentialPolicy::OwnerOnly { uid_or_sid } => {
+            uid_or_sid.clone()
+        }
+        #[allow(unreachable_patterns)]
+        _ => return Err(io::Error::other("owner policy is not owner-scoped")),
+    };
+
     Ok(Arc::new(ProbeOps::new(
         Arc::new(crate::registry::Registry::new(owner)),
         policy,
@@ -462,6 +479,54 @@ mod tests {
             key_from_proto(key).is_none(),
             "pid-only identity would silently alias across PID reuse"
         );
+    }
+
+    /// The registry owner and the peer policy must be expressed identically.
+    ///
+    /// They are compared against the same socket-derived `PeerIdentity` by two
+    /// different code paths (`ProbeOps::dispatch` via the policy,
+    /// `Registry::begin_register` via the owner string). If one held a raw
+    /// uid/SID and the other a SID *hash*, registration would be rejected
+    /// unconditionally while the policy check passed — a mismatch that only
+    /// appears once real credentials are read off the socket.
+    #[test]
+    fn registry_owner_matches_the_peer_policy() {
+        let ops = build_ops().expect("build ops");
+
+        let policy_owner = match ops.owner_policy_for_test() {
+            PeerCredentialPolicy::OwnerOnly { uid_or_sid } => uid_or_sid,
+            other => panic!("expected OwnerOnly, got {other:?}"),
+        };
+
+        // A peer reporting exactly the policy's identity must be accepted by
+        // the registry too, not just by the policy.
+        let peer = PeerIdentity {
+            pid: std::process::id(),
+            uid_or_sid: policy_owner,
+        };
+        let reply = ops.dispatch(
+            ProbeRequest::Heartbeat(ProcessKey {
+                pid: 1,
+                started_at_unix_ms: 1,
+                boot_id: String::new(),
+            }),
+            &peer,
+            1,
+            IdentityVerdict {
+                verified: true,
+                connection_alive: true,
+            },
+        );
+        // NotRegistered is the right refusal here (no such key). PeerRejected
+        // would mean the owner strings disagree.
+        match reply {
+            ProbeReply::Refused { code, .. } => assert_eq!(
+                code,
+                ProbeErrorCode::NotRegistered,
+                "owner mismatch: the registry rejected the policy's own identity"
+            ),
+            other => panic!("unexpected reply {other:?}"),
+        }
     }
 
     #[test]
