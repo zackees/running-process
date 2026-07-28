@@ -1147,7 +1147,17 @@ fn a_child_with_its_own_console_is_targetable_by_pid() {
         .expect("spawn a child with its own console");
 
     let pid = child.id();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // A hosted runner has no window station that creates console windows, so
+    // this test always skips there — verified in CI, where it took the skip
+    // branch after burning the full wait. Keep the generous deadline on a
+    // developer machine, where the window does appear and this is the only
+    // positive coverage of the pid lookup, but do not pay for it in CI.
+    let wait = if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::from_secs(10)
+    };
+    let deadline = std::time::Instant::now() + wait;
     let mut support = icon_support(IconScope::Child { pid });
     while !support.is_available() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(50));
