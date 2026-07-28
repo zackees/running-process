@@ -283,7 +283,14 @@ mod tests {
             .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
             .expect("write request");
         client
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            // A harness bound on how long to wait for the answer, not the
+            // property under test — that is the page content asserted below.
+            // Two seconds is enough on an idle machine and not enough on a
+            // busy one: the suite runs these in parallel, and a test that
+            // spawns processes elsewhere can push this past the limit. A
+            // response that is merely slow is not a defect, so the bound is
+            // generous; a server that never answers still fails.
+            .set_read_timeout(Some(Duration::from_secs(30)))
             .expect("set_read_timeout");
         let mut buf = String::new();
         client.read_to_string(&mut buf).expect("read response");
@@ -330,7 +337,14 @@ mod tests {
             .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
             .expect("write request");
         client
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            // A harness bound on how long to wait for the answer, not the
+            // property under test — that is the page content asserted below.
+            // Two seconds is enough on an idle machine and not enough on a
+            // busy one: the suite runs these in parallel, and a test that
+            // spawns processes elsewhere can push this past the limit. A
+            // response that is merely slow is not a defect, so the bound is
+            // generous; a server that never answers still fails.
+            .set_read_timeout(Some(Duration::from_secs(30)))
             .expect("set_read_timeout");
         let mut buf = String::new();
         client.read_to_string(&mut buf).expect("read response");
