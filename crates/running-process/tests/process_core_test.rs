@@ -14,6 +14,23 @@ use std::process::Command;
 use std::process::Stdio;
 use std::thread;
 
+/// How long to wait for a child to exit.
+///
+/// Deliberately generous. These children are Python interpreters, and a cold
+/// start under a parallel test run can take seconds before the script even
+/// begins executing. What these tests assert is the exit status and the
+/// captured output — never how quickly the interpreter got going.
+///
+/// 5s was too tight: `captures_stdout_and_stderr_separately_when_requested`,
+/// `captured_combined_includes_both_streams`,
+/// `normalizes_crlf_and_preserves_invalid_bytes` and
+/// `has_pending_combined_reports_correctly` all failed on a loaded machine
+/// during a parallel sweep (running-process#747).
+///
+/// Waits that deliberately expect a `Timeout` keep their own short bounds and
+/// are untouched.
+const CHILD_EXIT_WAIT: Duration = Duration::from_secs(30);
+
 use running_process::{
     run_command, CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode,
     StdinMode, StreamKind,
@@ -52,7 +69,7 @@ fn captures_stderr_in_stdout_by_default() {
     ));
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     assert!(process.captured_stdout().iter().any(|line| line == b"out"));
@@ -77,7 +94,7 @@ fn run_command_returns_raw_output_and_exit_code() {
                 None,
             )
         },
-        Some(Duration::from_secs(5)),
+        Some(CHILD_EXIT_WAIT),
     )
     .unwrap();
 
@@ -103,7 +120,7 @@ fn run_command_drains_stdout_and_stderr_concurrently() {
                 None,
             )
         },
-        Some(Duration::from_secs(5)),
+        Some(CHILD_EXIT_WAIT),
     )
     .unwrap();
 
@@ -154,7 +171,7 @@ fn captures_stdout_and_stderr_separately_when_requested() {
     });
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     assert!(process.captured_stdout().iter().any(|line| line == b"out"));
@@ -185,7 +202,7 @@ fn stream_reads_report_timeout_then_eof() {
         process.read_stream(StreamKind::Stdout, Some(Duration::from_secs(2))),
         ReadStatus::Line(line) if line == b"ready"
     ));
-    process.wait(Some(Duration::from_secs(5))).unwrap();
+    process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
     assert_eq!(
         process.read_stream(StreamKind::Stdout, Some(Duration::from_millis(10))),
         ReadStatus::Eof
@@ -209,7 +226,7 @@ fn normalizes_crlf_and_preserves_invalid_bytes() {
     });
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     assert_eq!(
@@ -236,7 +253,7 @@ fn supports_piped_stdin_filter_execution() {
 
     process.start().unwrap();
     process.write_stdin(b"abc").unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     assert_eq!(process.captured_stdout(), vec![b"cba".to_vec()]);
@@ -259,7 +276,7 @@ fn captured_output_can_be_cleared_to_release_memory() {
     });
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     assert_eq!(process.captured_stream_bytes(StreamKind::Stdout), 5);
@@ -290,7 +307,7 @@ fn applies_positive_nice_before_exec() {
     });
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     let observed = String::from_utf8(process.captured_stdout()[0].clone())
@@ -423,7 +440,7 @@ fn read_combined_returns_events_from_both_streams() {
     });
 
     process.start().unwrap();
-    process.wait(Some(Duration::from_secs(5))).unwrap();
+    process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     let mut events = Vec::new();
     loop {
@@ -459,7 +476,7 @@ fn drain_combined_returns_all_pending() {
     });
 
     process.start().unwrap();
-    process.wait(Some(Duration::from_secs(5))).unwrap();
+    process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
     // Small sleep to let reader threads finish queuing
     std::thread::sleep(Duration::from_millis(50));
 
@@ -477,7 +494,7 @@ fn has_pending_combined_reports_correctly() {
     ));
 
     process.start().unwrap();
-    process.wait(Some(Duration::from_secs(5))).unwrap();
+    process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
     std::thread::sleep(Duration::from_millis(50));
 
     assert!(process.has_pending_combined());
@@ -502,7 +519,7 @@ fn captured_combined_includes_both_streams() {
     });
 
     process.start().unwrap();
-    process.wait(Some(Duration::from_secs(5))).unwrap();
+    process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     let combined = process.captured_combined();
     assert!(combined
@@ -530,7 +547,7 @@ fn captured_combined_bytes_and_clear() {
     });
 
     process.start().unwrap();
-    process.wait(Some(Duration::from_secs(5))).unwrap();
+    process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(process.captured_combined_bytes(), 4);
     assert_eq!(process.clear_captured_combined(), 4);
@@ -550,7 +567,7 @@ fn shell_command_captures_output() {
     ));
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     let stdout = process.captured_stdout();
@@ -584,7 +601,7 @@ fn custom_cwd_is_respected() {
     });
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     let output = String::from_utf8(process.captured_stdout()[0].clone()).unwrap();
@@ -622,7 +639,7 @@ fn custom_env_is_applied() {
     });
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     assert_eq!(process.captured_stdout(), vec![b"hello_coverage".to_vec()]);
@@ -644,7 +661,7 @@ fn stdin_null_produces_empty_input() {
     ));
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     assert_eq!(process.captured_stdout(), vec![b"0".to_vec()]);
@@ -671,7 +688,7 @@ fn poll_returns_none_while_running_then_exit_code() {
     assert!(status.is_none(), "expected None, got {:?}", status);
 
     // Wait for it to finish
-    process.wait(Some(Duration::from_secs(5))).unwrap();
+    process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
     let status = process.poll().unwrap();
     assert_eq!(status, Some(0));
 }
@@ -705,7 +722,7 @@ fn close_on_already_finished_is_noop() {
     ));
 
     process.start().unwrap();
-    process.wait(Some(Duration::from_secs(5))).unwrap();
+    process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
     process.close().unwrap();
 }
 
@@ -1113,7 +1130,7 @@ fn create_process_group_sets_new_pgid() {
     });
 
     process.start().unwrap();
-    let code = process.wait(Some(Duration::from_secs(5))).unwrap();
+    let code = process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
 
     assert_eq!(code, 0);
     assert_eq!(process.captured_stdout(), vec![b"True".to_vec()]);
