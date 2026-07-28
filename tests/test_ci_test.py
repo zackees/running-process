@@ -525,3 +525,161 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
             "live",
         ],
     ]
+
+
+def _fake_profdata(tmp_path: Path, body: str) -> list[str]:
+    """A stand-in llvm-profdata whose behavior the test dictates."""
+    script = tmp_path / "fake_profdata.py"
+    script.write_text(body, encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+def test_describe_abnormal_exit_names_a_signal_death() -> None:
+    # POSIX reports a signal death as the negated signal number.
+    described = ci_test.describe_abnormal_exit(-4)
+    assert described is not None
+    assert "signal 4" in described
+    assert "SIGILL" in described
+
+
+def test_describe_abnormal_exit_names_a_windows_fault() -> None:
+    # 0xC000001D is STATUS_ILLEGAL_INSTRUCTION, the #626 failure on Windows.
+    described = ci_test.describe_abnormal_exit(0xC000001D)
+    assert described is not None
+    assert "STATUS_ILLEGAL_INSTRUCTION" in described
+
+
+def test_describe_abnormal_exit_ignores_ordinary_exits() -> None:
+    # A tool that ran and objected is not a broken tool; conflating the two is
+    # the misreading #626 is about.
+    assert ci_test.describe_abnormal_exit(0) is None
+    assert ci_test.describe_abnormal_exit(1) is None
+    assert ci_test.describe_abnormal_exit(23) is None
+
+
+def test_llvm_profdata_preflight_accepts_a_working_binary(tmp_path: Path) -> None:
+    command = _fake_profdata(
+        tmp_path,
+        "\n".join(
+            [
+                "import sys",
+                "if sys.argv[1] == '--version':",
+                "    print('LLVM fake-profdata 21.1.8')",
+                "    raise SystemExit(0)",
+                # A merge with no inputs objects; that is a normal exit and
+                # must not be mistaken for a broken toolchain.
+                "raise SystemExit(1)",
+            ]
+        ),
+    )
+    assert ci_test.llvm_profdata_preflight(profdata_command=command) is None
+
+
+def test_llvm_profdata_preflight_reports_a_faulting_binary(tmp_path: Path) -> None:
+    command = _fake_profdata(
+        tmp_path,
+        "\n".join(
+            [
+                "import os",
+                "import signal",
+                "import sys",
+                "if sys.argv[1] == '--version':",
+                "    print('LLVM fake-profdata 21.1.8')",
+                "    raise SystemExit(0)",
+                # Die the way #626 dies: a fault during merge, not an exit.
+                "if sys.platform == 'win32':",
+                "    os._exit(-1073741795)",  # 0xC000001D as a signed int
+                "os.kill(os.getpid(), signal.SIGILL)",
+            ]
+        ),
+    )
+    diagnostic = ci_test.llvm_profdata_preflight(profdata_command=command)
+
+    assert diagnostic is not None, "a faulting llvm-profdata must be reported"
+    assert "#626" in diagnostic
+    # The version must be captured from the probe that worked, so an
+    # investigator learns which toolchain produced the fault.
+    assert "fake-profdata 21.1.8" in diagnostic
+    assert "toolchain/CPU incompatibility" in diagnostic
+
+
+def test_llvm_profdata_preflight_reports_an_unrunnable_binary(tmp_path: Path) -> None:
+    missing = str(tmp_path / "does-not-exist")
+    diagnostic = ci_test.llvm_profdata_preflight(profdata_command=[missing])
+    assert diagnostic is not None
+    assert "cannot execute" in diagnostic
+
+
+def test_llvm_profdata_preflight_is_silent_when_the_binary_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No llvm-profdata at all is not this check's business: coverage should
+    # fail on its own terms rather than on a guess from the preflight.
+    monkeypatch.setattr(ci_test, "_find_llvm_profdata", lambda: None)
+    assert ci_test.llvm_profdata_preflight() is None
+
+
+def test_main_aborts_coverage_before_running_tests_when_profdata_faults(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The preflight must gate the suite, not merely exist.
+
+    Its whole value is being consulted *before* the expensive run, so this
+    asserts no command was issued at all.
+    """
+    commands: list[list[str]] = []
+
+    monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
+    monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.delenv("RUNNING_PROCESS_LIVE_TESTS", raising=False)
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
+    monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
+    monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
+    monkeypatch.setattr(ci_test, "_ensure_nextest_installed", lambda: True)
+    monkeypatch.setattr(
+        ci_test,
+        "run",
+        lambda cmd: commands.append(list(cmd)) or 0,
+    )
+    monkeypatch.setattr(
+        ci_test,
+        "llvm_profdata_preflight",
+        lambda *args, **kwargs: "coverage: llvm-profdata is unusable (#626).",
+    )
+
+    result = ci_test.main(["--coverage"])
+
+    assert result == 1
+    assert commands == [], "the suite must not run once the toolchain is known bad"
+    assert "#626" in capsys.readouterr().err
+
+
+def test_main_runs_coverage_when_the_preflight_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guard against the preflight blocking a healthy toolchain."""
+    commands: list[list[str]] = []
+
+    monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
+    monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
+    monkeypatch.delenv("RUNNING_PROCESS_LIVE_TESTS", raising=False)
+    monkeypatch.setenv(ci_test.SKIP_LINUX_DOCKER_ENV, "1")
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
+    monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
+    monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
+    monkeypatch.setattr(ci_test, "_ensure_nextest_installed", lambda: True)
+    monkeypatch.setattr(ci_test, "_prune_invalid_profraw", lambda *a, **k: 0)
+    monkeypatch.setattr(ci_test, "llvm_profdata_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        ci_test,
+        "run",
+        lambda cmd: commands.append(list(cmd)) or 0,
+    )
+
+    result = ci_test.main(["--coverage"])
+
+    assert result == 0
+    assert any("llvm-cov" in " ".join(cmd) for cmd in commands), (
+        f"coverage should have run; issued {commands}"
+    )
