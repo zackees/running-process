@@ -266,10 +266,40 @@ fn run_as_daemon(
 
     // Control socket: owner-only via peer credentials. Reaching the socket is
     // not authorization — the peer must also be this user.
+    // The registration brain. Shared across connections so every peer sees one
+    // registry.
+    let ops = running_process_probe_daemon::serve::build_ops(sid_hash.to_string())?;
+
     for conn in control.incoming() {
         match conn {
-            Ok(_stream) => {
-                // Request handling lands in S3 (registration contract).
+            Ok(mut stream) => {
+                let ops = std::sync::Arc::clone(&ops);
+                let conn_id = running_process_probe_daemon::serve::next_conn_id();
+
+                // Peer credentials are the authorization boundary: reaching the
+                // socket is not the same as being allowed to use it. The
+                // listener already applies the owner policy, and `dispatch`
+                // re-checks, so this identity is what that check consumes.
+                let peer = running_process::broker::server::PeerIdentity {
+                    pid: 0,
+                    uid_or_sid: sid_hash.to_string(),
+                };
+
+                // One thread per connection: a slow or wedged client must not
+                // stall the accept loop for everyone else.
+                if let Err(e) = std::thread::Builder::new()
+                    .name(format!("rpprobed-conn-{conn_id}"))
+                    .spawn(move || {
+                        running_process_probe_daemon::serve::serve_connection(
+                            &mut stream,
+                            &ops,
+                            &peer,
+                            conn_id,
+                        );
+                    })
+                {
+                    eprintln!("rpprobed: cannot spawn connection handler: {e}");
+                }
             }
             Err(e) => {
                 eprintln!("rpprobed: control accept error: {e}");
