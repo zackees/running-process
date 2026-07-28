@@ -90,8 +90,40 @@ fn validate_sid_hash(sid_hash: &str) -> Result<(), PipePathError> {
 /// The directory is not created here. Callers that write into it create it
 /// owner-only at that point; callers that only read must treat an absent
 /// directory as "nothing published", which is a normal state.
+///
+/// # Why no `getuid()`
+///
+/// The obvious way to keep two users on one host apart is a uid in the path,
+/// and that is what the binary's socket-directory helper does. But `libc`'s
+/// `getuid` is an `unsafe` call, and `crates/running-process/src/broker/` is
+/// covered by an unsafe inventory that is reviewed as a security surface
+/// (`tests/security/unsafe_inventory.rs`). Adding `unsafe` there to look up a
+/// uid is not a trade worth making.
+///
+/// Every branch below instead lands inside a location the OS already scopes
+/// to one user — `XDG_RUNTIME_DIR`, macOS's per-user `TMPDIR`, `LOCALAPPDATA`,
+/// or the per-user cache directory. Separation comes from the base directory
+/// rather than from a uid spelled into the leaf, and the file itself is
+/// written owner-only by `broker_http_discovery::publish_http_port`.
+///
+/// A consequence worth stating: this is *not* guaranteed to be the same
+/// directory the Unix socket lives in. It is the agreed home for broker-v2
+/// runtime *files*, which is all the publisher and reader need to share.
 pub fn broker_v2_runtime_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
+
+    // Last resort, and deliberately not `/tmp`: a per-user directory keeps
+    // two accounts on one host from colliding without naming a uid. Only
+    // reached when the platform's runtime/temp variable is unset — cron and
+    // sessionless ssh being the realistic cases.
+    fn per_user_fallback() -> PathBuf {
+        dirs::cache_dir()
+            .or_else(dirs::data_local_dir)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("running-process")
+            .join("broker-v2")
+    }
 
     #[cfg(windows)]
     {
@@ -100,33 +132,26 @@ pub fn broker_v2_runtime_dir() -> std::path::PathBuf {
         // what a machine-local endpoint file wants — a roaming profile
         // would carry a port from another machine.
         dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-            .join("running-process")
-            .join("broker-v2")
+            .map(|d| d.join("running-process").join("broker-v2"))
+            .unwrap_or_else(per_user_fallback)
     }
 
     #[cfg(target_os = "macos")]
     {
-        // Matches the socket directory: macOS `sun_path` is 104 bytes, so
-        // the broker keeps its sockets under a short `$TMPDIR` leaf, and
-        // runtime files belong beside them.
-        let uid = unsafe { libc::getuid() };
-        let tmp = std::env::var_os("TMPDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        tmp.join(format!(".rp-{uid}-broker-v2"))
+        // macOS hands each user a private `TMPDIR` (`/var/folders/…`), so it
+        // is already per-user. The short leaf matters here: the broker's
+        // sockets share this root and `sun_path` is only 104 bytes.
+        match std::env::var_os("TMPDIR") {
+            Some(tmp) => PathBuf::from(tmp).join("rp-broker-v2"),
+            None => per_user_fallback(),
+        }
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
-            PathBuf::from(d).join("running-process").join("broker-v2")
-        } else {
-            // XDG_RUNTIME_DIR is absent in plenty of real environments
-            // (cron, ssh without a session). The uid keeps two users on
-            // one host from sharing a directory.
-            let uid = unsafe { libc::getuid() };
-            PathBuf::from(format!("/tmp/running-process-{uid}/broker-v2"))
+        match std::env::var_os("XDG_RUNTIME_DIR") {
+            Some(d) => PathBuf::from(d).join("running-process").join("broker-v2"),
+            None => per_user_fallback(),
         }
     }
 }
