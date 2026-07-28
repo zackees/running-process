@@ -4,6 +4,7 @@ members = [
     "crates/running-process",
     "crates/running-process-probe",
     "crates/running-process-probe-daemon",
+    "crates/running-process-probe-worker",
     "crates/running-process-probe-interposer-linux",
     "crates/running-process-probe-interposer-macos",
     "crates/running-process-probe-interposer-windows",
