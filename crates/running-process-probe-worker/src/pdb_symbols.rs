@@ -192,6 +192,11 @@ mod tests {
         let bytes = std::fs::read(&exe).expect("read own image");
         let file = object::File::parse(&*bytes).expect("parse own PE");
 
+        // `section.address()` is a VIRTUAL address — image base included —
+        // while PDB symbols are RVAs. Subtracting the base puts both in the
+        // same space. Comparing them directly reports every symbol as out of
+        // range, which is how the first version of this test failed on CI.
+        let base = file.relative_address_base();
         let ranges: Vec<(u64, u64)> = file
             .sections()
             .filter(|s| match s.flags() {
@@ -201,7 +206,10 @@ mod tests {
                 }
                 _ => false,
             })
-            .map(|s| (s.address(), s.address() + s.size()))
+            .map(|s| {
+                let start = s.address().saturating_sub(base);
+                (start, start + s.size())
+            })
             .collect();
         assert!(!ranges.is_empty(), "the PE should have executable sections");
 
