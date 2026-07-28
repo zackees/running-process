@@ -64,8 +64,13 @@ def _native_module():
     return _native
 
 
-def icon_support() -> str | None:
-    """Why the host cannot accept an icon, or ``None`` when it can.
+def icon_support(pid: int | None = None) -> str | None:
+    """Why the window cannot accept an icon, or ``None`` when it can.
+
+    With no ``pid`` this asks about the calling process's own console window;
+    with one, about that child's. A child that inherited this console has none
+    *of its own* and is reported unsupported — targeting it would change this
+    process's icon too, which is not what the caller asked for.
 
     Returning the reason rather than a bare bool is deliberate: a caller that
     only learns "no" has nothing to log, and cannot tell "this terminal never
@@ -74,15 +79,15 @@ def icon_support() -> str | None:
     native = _native_module()
     if native is None:
         return "this build of running_process._native has no window-icon support"
-    return native.native_window_icon_support()
+    return native.native_window_icon_support(pid)
 
 
-def is_supported() -> bool:
-    """Whether the host window will accept an icon."""
-    return icon_support() is None
+def is_supported(pid: int | None = None) -> bool:
+    """Whether the window will accept an icon."""
+    return icon_support(pid) is None
 
 
-def set_host_icon(path: str) -> None:
+def set_host_icon(path: str, pid: int | None = None) -> None:
     """Set this process's host console window icon from a ``.ico`` file.
 
     Raises :class:`IconUnsupportedError` when the terminal cannot accept one,
@@ -95,14 +100,14 @@ def set_host_icon(path: str) -> None:
             "this build of running_process._native has no window-icon support"
         )
     try:
-        native.native_set_window_icon_from_path(str(path))
+        native.native_set_window_icon_from_path(str(path), pid)
     except RuntimeError as exc:
         # The native layer raises RuntimeError only for an unsupported host;
         # a bad file arrives as OSError and is left to propagate unchanged.
         raise IconUnsupportedError(str(exc)) from exc
 
 
-def set_host_icon_from_bytes(data: bytes) -> None:
+def set_host_icon_from_bytes(data: bytes, pid: int | None = None) -> None:
     """Set the host console window icon from ``.ico`` bytes.
 
     Takes the data rather than a path so a packaged application can embed its
@@ -120,7 +125,7 @@ def set_host_icon_from_bytes(data: bytes) -> None:
             "this build of running_process._native has no window-icon support"
         )
     try:
-        native.native_set_window_icon_from_bytes(bytes(data))
+        native.native_set_window_icon_from_bytes(bytes(data), pid)
     except RuntimeError as exc:
         # ValueError is also a subclass of Exception but not of RuntimeError,
         # so malformed data propagates untouched; only the unsupported-host
@@ -128,7 +133,7 @@ def set_host_icon_from_bytes(data: bytes) -> None:
         raise IconUnsupportedError(str(exc)) from exc
 
 
-def set_host_icon_stock(icon: StockIcon | str) -> None:
+def set_host_icon_stock(icon: StockIcon | str, pid: int | None = None) -> None:
     """Set the host console window icon to one the OS provides.
 
     Accepts a :class:`StockIcon` or its string value. Raises
@@ -142,7 +147,7 @@ def set_host_icon_stock(icon: StockIcon | str) -> None:
         )
     name = icon.value if isinstance(icon, StockIcon) else str(icon)
     try:
-        native.native_set_window_icon_stock(name)
+        native.native_set_window_icon_stock(name, pid)
     except RuntimeError as exc:
         # Only the unsupported-host RuntimeError is retyped; ValueError for an
         # unknown name propagates untouched, since it is a different problem.
