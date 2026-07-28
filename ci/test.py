@@ -522,6 +522,27 @@ def main(argv: list[str] | None = None) -> int:
                 print(unusable, file=sys.stderr, flush=True)
                 return 1
 
+            # Fixtures first, for the same reason as the non-coverage path
+            # below: tests look the binaries up rather than building them.
+            #
+            # `--target-dir` is not optional here. cargo-llvm-cov redirects
+            # the build into `target/llvm-cov-target`, so the test binary
+            # resolves fixtures relative to *that* tree; a plain build would
+            # put them in `target/debug` where nothing looks.
+            if (
+                run(
+                    cargo_command(
+                        "build",
+                        "-p",
+                        "testbins",
+                        "--target-dir",
+                        "target/llvm-cov-target",
+                    )
+                )
+                != 0
+            ):
+                return 1
+
             # Split run/report so individually unreadable profiles can be
             # preserved and excluded before the final report. Historical
             # LLVM 21.1.8 inputs have crashed llvm-profdata with SIGILL;
@@ -567,6 +588,18 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 return 1
         else:
+            # Step 0: build the test fixtures.
+            #
+            # `testbin_path` in the Rust tests used to run `cargo build -p
+            # testbins` itself, once per call. That takes cargo's
+            # build-directory lock, and nextest gives each test its own
+            # process, so a full-suite run had dozens of cargo invocations
+            # queueing on one lock — surfacing as an unexplained 30s+ hang
+            # (#747). Building the fixtures once here means the tests only
+            # have to look them up.
+            if run(cargo_command("build", "-p", "testbins")) != 0:
+                return 1
+
             # Step 1: compile all test binaries (no supervisor, no timeout)
             build_args = cargo_command("nextest", "run", "--workspace", "--no-run")
             if run(build_args) != 0:

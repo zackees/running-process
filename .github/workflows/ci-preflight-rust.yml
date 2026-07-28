@@ -133,5 +133,12 @@ jobs:
       # non-host musl triple (e.g. aarch64-musl on x86 runner), this
       # step needs `qemu-user-static` and `cross` instead — flag in
       # PR review.
+      # Fixtures are built once, up front; the tests look them up rather
+      # than each invoking `cargo build` themselves (running-process#747).
+      # This lane calls nextest directly instead of going through
+      # `ci.test`, so it needs its own build — with the same `--target`,
+      # or the binaries land in the host tree and the tests miss them.
+      - name: Build test fixtures
+        run: cargo build -p testbins --target ${{ inputs.target }}
       - name: cargo nextest run --target ${{ inputs.target }}
         run: cargo nextest run --workspace --exclude running-process-py --features client --target ${{ inputs.target }}

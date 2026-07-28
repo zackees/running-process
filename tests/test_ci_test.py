@@ -23,6 +23,11 @@ def _isolate_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ci_test, "_ensure_nextest_installed", lambda: True)
 
 
+def _expected_build_testbins_cmd() -> list[str]:
+    """Fixtures are built once up front so tests only look them up (#747)."""
+    return ["cargo", "build", "-p", "testbins"]
+
+
 def _expected_cargo_build_tests_cmd() -> list[str]:
     """Build the expected unsupervised nextest --no-run command."""
     return ["cargo", "nextest", "run", "--workspace", "--no-run"]
@@ -181,6 +186,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     linux_timeout = str(ci_test.DEFAULT_LINUX_TEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
+        _expected_build_testbins_cmd(),
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
@@ -258,6 +264,7 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
+        _expected_build_testbins_cmd(),
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
@@ -299,6 +306,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     pytest_timeout = str(ci_test.DEFAULT_PYTEST_TIMEOUT_SECONDS)
     assert result == 0
     assert commands == [
+        _expected_build_testbins_cmd(),
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
@@ -468,6 +476,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     assert result == 0
     assert os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] == "1"
     assert commands == [
+        _expected_build_testbins_cmd(),
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
