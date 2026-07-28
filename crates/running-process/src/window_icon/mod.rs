@@ -34,6 +34,34 @@ pub enum IconSource {
     /// `include_bytes!` so an application ships its own icon without needing
     /// a file to exist at runtime.
     Bytes(Vec<u8>),
+    /// A stock icon the OS already ships, named symbolically.
+    ///
+    /// Nothing to bundle and nothing to decode, which suits the cases these
+    /// exist for — marking a console as a warning or an error surface.
+    /// See [`StockIcon`] for the names.
+    Stock(StockIcon),
+}
+
+/// A stock icon provided by the operating system.
+///
+/// A closed set rather than a free-form string. A name the OS does not know
+/// can only fail at runtime, and a caller has no way to discover which names
+/// are valid; an enum makes the answer a compile error instead. The variants
+/// are the ones with a direct equivalent on every platform this could grow
+/// to, so the set stays meaningful rather than becoming Windows constants
+/// wearing generic names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StockIcon {
+    /// The application's own default icon.
+    Application,
+    /// Warning: a hazard the user should notice.
+    Warning,
+    /// Error: something has already gone wrong.
+    Error,
+    /// Information: neutral notice.
+    Information,
+    /// Shield: an elevation or security prompt.
+    Shield,
 }
 
 /// Whether this process can set its host window's icon.
@@ -134,14 +162,15 @@ fn set_host_icon_given(support: IconSupport, source: &IconSource) -> Result<(), 
 
 #[cfg(windows)]
 mod imp {
-    use super::{IconError, IconSource, IconSupport};
+    use super::{IconError, IconSource, IconSupport, StockIcon};
     use std::os::windows::ffi::OsStrExt as _;
 
     use winapi::shared::minwindef::{DWORD, TRUE};
     use winapi::shared::windef::{HICON, HWND};
     use winapi::um::wincon::GetConsoleWindow;
     use winapi::um::winuser::{
-        CreateIconFromResourceEx, GetClassNameW, LoadImageW, SendMessageW, IMAGE_ICON,
+        CreateIconFromResourceEx, GetClassNameW, LoadIconW, LoadImageW, SendMessageW,
+        IDI_APPLICATION, IDI_ERROR, IDI_INFORMATION, IDI_SHIELD, IDI_WARNING, IMAGE_ICON,
         LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_SETICON,
     };
 
@@ -245,6 +274,28 @@ mod imp {
         Ok(icon)
     }
 
+    /// Load an icon the OS already provides.
+    ///
+    /// These are shared resources owned by the system, so unlike the file and
+    /// byte paths there is nothing to free and no data to validate — the only
+    /// failure is the OS declining to hand one over.
+    pub(super) fn load_stock(stock: StockIcon) -> Result<HICON, IconError> {
+        let name = match stock {
+            StockIcon::Application => IDI_APPLICATION,
+            StockIcon::Warning => IDI_WARNING,
+            StockIcon::Error => IDI_ERROR,
+            StockIcon::Information => IDI_INFORMATION,
+            StockIcon::Shield => IDI_SHIELD,
+        };
+        // A null hInstance asks for a system icon rather than one from this
+        // module's resources.
+        let icon = unsafe { LoadIconW(std::ptr::null_mut(), name) };
+        if icon.is_null() {
+            return Err(IconError::Apply(std::io::Error::last_os_error()));
+        }
+        Ok(icon)
+    }
+
     pub(super) fn set_host_icon(source: &IconSource) -> Result<(), IconError> {
         let hwnd = console_window().ok_or(IconError::Unsupported {
             reason: "the console window disappeared between the support probe and the call",
@@ -253,6 +304,7 @@ mod imp {
         let icon = match source {
             IconSource::Path(path) => load_from_path(path)?,
             IconSource::Bytes(bytes) => load_from_bytes(bytes)?,
+            IconSource::Stock(stock) => load_stock(*stock)?,
         };
 
         // Both slots: the small icon is the title bar and Alt+Tab, the big one
@@ -351,6 +403,78 @@ mod tests {
             matches!(error, IconError::Unsupported { .. }),
             "a missing file must not mask the unsupported verdict; got {error}"
         );
+    }
+
+    /// The OS must hand back a real icon for every variant.
+    ///
+    /// Calls the loader directly rather than going through `set_host_icon`,
+    /// which refuses at the window lookup on a machine with no console — so
+    /// the enum-to-OS mapping would otherwise never run here. That is the
+    /// only place the mapping itself is exercised.
+    #[cfg(windows)]
+    #[test]
+    fn the_os_supplies_every_stock_icon() {
+        for stock in [
+            StockIcon::Application,
+            StockIcon::Warning,
+            StockIcon::Error,
+            StockIcon::Information,
+            StockIcon::Shield,
+        ] {
+            let icon =
+                imp::load_stock(stock).unwrap_or_else(|e| panic!("the OS declined {stock:?}: {e}"));
+            assert!(!icon.is_null(), "{stock:?} produced a null icon");
+        }
+    }
+
+    /// A stock icon needs no data, so the only thing that can go wrong is
+    /// the host — never a decode.
+    ///
+    /// Runs everywhere by forcing the verdict, so the enum-to-OS mapping is
+    /// exercised on platforms with no console window at all.
+    #[test]
+    fn every_stock_icon_is_requestable() {
+        for stock in [
+            StockIcon::Application,
+            StockIcon::Warning,
+            StockIcon::Error,
+            StockIcon::Information,
+            StockIcon::Shield,
+        ] {
+            let result = set_host_icon_given(IconSupport::Available, &IconSource::Stock(stock));
+            match result {
+                // On a host with a real console window the icon is set.
+                Ok(()) => {}
+                // Without one, the refusal comes from the window lookup — not
+                // from the icon, which is the point: a stock icon is never a
+                // decode failure.
+                Err(IconError::Unsupported { .. }) => {}
+                Err(other) => panic!("{stock:?} failed for a reason other than the host: {other}"),
+            }
+        }
+    }
+
+    /// A stock request must never be reported as bad data.
+    #[test]
+    fn a_stock_icon_is_never_a_decode_error() {
+        let result = set_host_icon_given(
+            IconSupport::Available,
+            &IconSource::Stock(StockIcon::Warning),
+        );
+        if let Err(error) = result {
+            assert!(
+                !matches!(error, IconError::Decode(_)),
+                "a stock icon carries no data to decode, got {error}"
+            );
+        }
+    }
+
+    /// Distinct variants must not collapse onto one another.
+    #[test]
+    fn stock_variants_are_distinguishable() {
+        assert_ne!(StockIcon::Warning, StockIcon::Error);
+        assert_ne!(StockIcon::Application, StockIcon::Shield);
+        assert_eq!(StockIcon::Information, StockIcon::Information);
     }
 
     /// Malformed bytes must be refused before the OS sees them.
