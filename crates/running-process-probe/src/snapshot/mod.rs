@@ -33,6 +33,9 @@
 // unwind model. Same architecture gate the Windows interposer already carries.
 // ARM64 support is a separate change, not a silently-wrong register read.
 #[cfg(all(windows, target_arch = "x86_64"))]
+pub mod modules;
+
+#[cfg(all(windows, target_arch = "x86_64"))]
 mod windows;
 
 use std::time::Duration;
