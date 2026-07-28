@@ -1120,3 +1120,76 @@ fn spawning_a_nonexistent_program_is_an_error() {
         }
     }
 }
+
+/// A child given its own console must be targetable by pid.
+///
+/// This is the only test of the *positive* `IconScope::Child` path. The unit
+/// tests beside the implementation all use pids that own no console window,
+/// so they exercise the enumeration returning nothing — they would pass
+/// against a `console_window_of_pid` that always returned `None`.
+///
+/// `CREATE_NEW_CONSOLE` gives the child a console of its own rather than
+/// inheriting ours, which is exactly the case the scope exists for.
+#[cfg(windows)]
+#[test]
+fn a_child_with_its_own_console_is_targetable_by_pid() {
+    use crate::window_icon::{icon_support, set_icon, IconScope, IconSource, StockIcon};
+    use std::os::windows::process::CommandExt as _;
+
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+    // Sleeps so the console outlives the probe. `cmd /c timeout` needs a
+    // console, which is what we want it to own.
+    let mut child = std::process::Command::new("cmd")
+        .args(["/c", "timeout", "/t", "10", "/nobreak"])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .expect("spawn a child with its own console");
+
+    let pid = child.id();
+    // A hosted runner has no window station that creates console windows, so
+    // this test always skips there — verified in CI, where it took the skip
+    // branch after burning the full wait. Keep the generous deadline on a
+    // developer machine, where the window does appear and this is the only
+    // positive coverage of the pid lookup, but do not pay for it in CI.
+    let wait = if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::from_secs(10)
+    };
+    let deadline = std::time::Instant::now() + wait;
+    let mut support = icon_support(IconScope::Child { pid });
+    while !support.is_available() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        support = icon_support(IconScope::Child { pid });
+    }
+
+    let available = support.is_available();
+    let reason = support.reason();
+    let set_result = if available {
+        Some(set_icon(
+            IconScope::Child { pid },
+            &IconSource::Stock(StockIcon::Warning),
+        ))
+    } else {
+        None
+    };
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match set_result {
+        Some(result) => {
+            result.expect("a child console window that was found must accept an icon");
+        }
+        None => {
+            // A visible skip, not a silent one. An earlier version asserted
+            // here on whether ANY console window exists in the session — but
+            // that is session-wide state an unrelated window can satisfy, and
+            // the child's own window can appear just after the deadline, so
+            // it flaked. `own_pid_resolves_to_the_host_console_window` covers
+            // the pid lookup deterministically instead.
+            eprintln!("skipping: no console window appeared for the child ({reason:?})");
+        }
+    }
+}

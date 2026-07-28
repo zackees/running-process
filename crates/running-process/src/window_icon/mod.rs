@@ -132,11 +132,35 @@ pub enum IconError {
     Decode(ico::IcoError),
 }
 
-/// Whether this process's host window can accept an icon.
+/// Which window an icon operation targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconScope {
+    /// This process's own host console window.
+    Host,
+    /// A child process's console window.
+    ///
+    /// Only meaningful when the child was given its own console
+    /// (`CREATE_NEW_CONSOLE` on Windows). A child that inherited ours shares
+    /// the same window, so targeting it changes this process's icon too —
+    /// that is inherent to sharing a console, not a failure, and
+    /// [`icon_support`] reports it as available because the icon really does
+    /// change.
+    Child {
+        /// Process id of the child.
+        pid: u32,
+    },
+}
+
+/// Whether a window can accept an icon.
 ///
 /// Cheap, and safe to call before deciding whether to ship an icon at all.
+pub fn icon_support(scope: IconScope) -> IconSupport {
+    imp::icon_support(scope)
+}
+
+/// Whether this process's host window can accept an icon.
 pub fn host_icon_support() -> IconSupport {
-    imp::host_icon_support()
+    icon_support(IconScope::Host)
 }
 
 /// Set the icon on this process's host console window.
@@ -144,7 +168,15 @@ pub fn host_icon_support() -> IconSupport {
 /// Returns [`IconError::Unsupported`] when the host does not accept icons,
 /// rather than succeeding without effect.
 pub fn set_host_icon(source: &IconSource) -> Result<(), IconError> {
-    set_host_icon_given(host_icon_support(), source)
+    set_icon(IconScope::Host, source)
+}
+
+/// Set the icon on the window named by `scope`.
+///
+/// Returns [`IconError::Unsupported`] when that window does not accept icons,
+/// rather than succeeding without effect.
+pub fn set_icon(scope: IconScope, source: &IconSource) -> Result<(), IconError> {
+    set_icon_given(icon_support(scope), scope, source)
 }
 
 /// [`set_host_icon`] with the support verdict supplied.
@@ -153,25 +185,34 @@ pub fn set_host_icon(source: &IconSource) -> Result<(), IconError> {
 /// depending on whether the machine running the tests happens to have a
 /// console window. A test that only exercises the refusal when the ambient
 /// host is unsupported silently checks nothing everywhere else.
+#[cfg(test)]
 fn set_host_icon_given(support: IconSupport, source: &IconSource) -> Result<(), IconError> {
+    set_icon_given(support, IconScope::Host, source)
+}
+
+fn set_icon_given(
+    support: IconSupport,
+    scope: IconScope,
+    source: &IconSource,
+) -> Result<(), IconError> {
     match support {
-        IconSupport::Available => imp::set_host_icon(source),
+        IconSupport::Available => imp::set_icon(scope, source),
         IconSupport::Unsupported { reason } => Err(IconError::Unsupported { reason }),
     }
 }
 
 #[cfg(windows)]
 mod imp {
-    use super::{IconError, IconSource, IconSupport, StockIcon};
+    use super::{IconError, IconScope, IconSource, IconSupport, StockIcon};
     use std::os::windows::ffi::OsStrExt as _;
 
-    use winapi::shared::minwindef::{DWORD, TRUE};
+    use winapi::shared::minwindef::{BOOL, DWORD, FALSE, LPARAM, TRUE};
     use winapi::shared::windef::{HICON, HWND};
     use winapi::um::wincon::GetConsoleWindow;
     use winapi::um::winuser::{
-        CreateIconFromResourceEx, GetClassNameW, LoadIconW, LoadImageW, SendMessageW,
-        IDI_APPLICATION, IDI_ERROR, IDI_INFORMATION, IDI_SHIELD, IDI_WARNING, IMAGE_ICON,
-        LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_SETICON,
+        CreateIconFromResourceEx, EnumWindows, GetClassNameW, GetWindowThreadProcessId, LoadIconW,
+        LoadImageW, SendMessageW, IDI_APPLICATION, IDI_ERROR, IDI_INFORMATION, IDI_SHIELD,
+        IDI_WARNING, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_SETICON,
     };
 
     /// `wParam` values for `WM_SETICON`.
@@ -200,7 +241,56 @@ mod imp {
         String::from_utf16_lossy(&buffer[..len as usize])
     }
 
-    pub(super) fn host_icon_support() -> IconSupport {
+    /// The console window a scope names, if there is one.
+    fn window_for(scope: IconScope) -> Option<HWND> {
+        match scope {
+            IconScope::Host => console_window(),
+            IconScope::Child { pid } => console_window_of_pid(pid),
+        }
+    }
+
+    /// Find the console window owned by `pid`.
+    ///
+    /// A process has at most one console window, so the first match is the
+    /// answer. The class is checked here as well as in the support probe
+    /// because a process can own windows that are not its console.
+    fn console_window_of_pid(pid: u32) -> Option<HWND> {
+        struct Search {
+            pid: u32,
+            found: HWND,
+        }
+
+        unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let search = &mut *(lparam as *mut Search);
+            let mut owner: DWORD = 0;
+            GetWindowThreadProcessId(hwnd, &mut owner);
+            if owner == search.pid && class_name(hwnd) == CONHOST_CLASS {
+                search.found = hwnd;
+                return FALSE; // stop: a process has one console window
+            }
+            TRUE
+        }
+
+        let mut search = Search {
+            pid,
+            found: std::ptr::null_mut(),
+        };
+        unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
+        (!search.found.is_null()).then_some(search.found)
+    }
+
+    pub(super) fn icon_support(scope: IconScope) -> IconSupport {
+        if let IconScope::Child { pid } = scope {
+            return match console_window_of_pid(pid) {
+                Some(_) => IconSupport::Available,
+                // Either the child has no console of its own (it inherited
+                // ours, or was created with CREATE_NO_WINDOW), or it has
+                // already exited. Both mean there is no window to target.
+                None => IconSupport::Unsupported {
+                    reason: "that process has no console window of its own (it may share this                              one, have been created without a window, or have exited)",
+                },
+            };
+        }
         let Some(hwnd) = console_window() else {
             return IconSupport::Unsupported {
                 reason: "this process has no console window (detached, or output is redirected \
@@ -296,8 +386,8 @@ mod imp {
         Ok(icon)
     }
 
-    pub(super) fn set_host_icon(source: &IconSource) -> Result<(), IconError> {
-        let hwnd = console_window().ok_or(IconError::Unsupported {
+    pub(super) fn set_icon(scope: IconScope, source: &IconSource) -> Result<(), IconError> {
+        let hwnd = window_for(scope).ok_or(IconError::Unsupported {
             reason: "the console window disappeared between the support probe and the call",
         })?;
 
@@ -320,17 +410,17 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::{IconError, IconSource, IconSupport};
+    use super::{IconError, IconScope, IconSource, IconSupport};
 
-    pub(super) fn host_icon_support() -> IconSupport {
+    pub(super) fn icon_support(_scope: IconScope) -> IconSupport {
         IconSupport::Unsupported {
-            reason: "setting the host window icon is implemented on Windows conhost only",
+            reason: "setting a window icon is implemented on Windows conhost only",
         }
     }
 
-    pub(super) fn set_host_icon(_source: &IconSource) -> Result<(), IconError> {
+    pub(super) fn set_icon(_scope: IconScope, _source: &IconSource) -> Result<(), IconError> {
         Err(IconError::Unsupported {
-            reason: "setting the host window icon is implemented on Windows conhost only",
+            reason: "setting a window icon is implemented on Windows conhost only",
         })
     }
 }
@@ -425,6 +515,97 @@ mod tests {
                 imp::load_stock(stock).unwrap_or_else(|e| panic!("the OS declined {stock:?}: {e}"));
             assert!(!icon.is_null(), "{stock:?} produced a null icon");
         }
+    }
+
+    /// A pid that owns no console window must be refused, with a reason.
+    ///
+    /// Platform-neutral: off Windows the whole feature is unavailable and
+    /// says so, which is a different sentence but the same contract. An
+    /// earlier version asserted the Windows wording here and failed on the
+    /// musl and coverage lanes — the assertion was Windows-specific while the
+    /// test was not.
+    #[test]
+    fn a_process_with_no_console_window_is_unsupported() {
+        // pid 0 is the system idle process and never owns a console window,
+        // so this is stable across machines and needs no fixture.
+        let support = icon_support(IconScope::Child { pid: 0 });
+        assert!(!support.is_available());
+        assert!(
+            !support.reason().expect("must explain itself").is_empty(),
+            "an unsupported result must carry a usable reason"
+        );
+    }
+
+    /// On Windows the reason must name what is actually missing, so a caller
+    /// knows to spawn with CREATE_NEW_CONSOLE rather than retrying.
+    #[cfg(windows)]
+    #[test]
+    fn a_childless_pid_reason_names_the_console_window() {
+        let support = icon_support(IconScope::Child { pid: 0 });
+        let reason = support.reason().expect("must explain itself");
+        assert!(
+            reason.contains("console window"),
+            "the reason should name what is missing: {reason}"
+        );
+    }
+
+    /// Looking up our OWN pid must find the same window the host scope does.
+    ///
+    /// This is the deterministic test of the pid lookup: no spawning, no
+    /// waiting, no session-wide state. Whenever this process has a console
+    /// window, `Child { pid: self }` names that very window, so the two
+    /// scopes must agree — and a broken `console_window_of_pid` makes them
+    /// disagree immediately.
+    ///
+    /// Where there is no console window both are unsupported, which is also
+    /// agreement, so the assertion holds on every machine.
+    #[test]
+    fn own_pid_resolves_to_the_host_console_window() {
+        let host = icon_support(IconScope::Host);
+        let own = icon_support(IconScope::Child {
+            pid: std::process::id(),
+        });
+        assert_eq!(
+            host.is_available(),
+            own.is_available(),
+            "host scope says {host:?} but our own pid says {own:?}; the pid lookup              disagrees with the direct console-window lookup"
+        );
+    }
+
+    /// And the setter refuses rather than silently doing nothing.
+    #[test]
+    fn setting_a_childless_pid_is_an_error() {
+        let error = set_icon(
+            IconScope::Child { pid: 0 },
+            &IconSource::Stock(StockIcon::Warning),
+        )
+        .expect_err("a pid with no console cannot take an icon");
+        assert!(
+            matches!(error, IconError::Unsupported { .. }),
+            "expected Unsupported, got {error}"
+        );
+    }
+
+    /// An exited process cannot be targeted either — same answer, so a caller
+    /// does not have to distinguish "never had one" from "gone".
+    #[test]
+    fn an_implausible_pid_is_unsupported() {
+        let support = icon_support(IconScope::Child { pid: u32::MAX });
+        assert!(!support.is_available());
+    }
+
+    /// Host scope must keep answering exactly as before: the scope-aware
+    /// entry point is a generalisation, not a behaviour change.
+    #[test]
+    fn host_scope_agrees_with_the_host_specific_helper() {
+        assert_eq!(icon_support(IconScope::Host), host_icon_support());
+    }
+
+    #[test]
+    fn scopes_are_distinguishable() {
+        assert_ne!(IconScope::Host, IconScope::Child { pid: 1 });
+        assert_ne!(IconScope::Child { pid: 1 }, IconScope::Child { pid: 2 });
+        assert_eq!(IconScope::Child { pid: 7 }, IconScope::Child { pid: 7 });
     }
 
     /// A stock icon needs no data, so the only thing that can go wrong is
