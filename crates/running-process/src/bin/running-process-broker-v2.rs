@@ -434,7 +434,11 @@ fn main() -> ExitCode {
     });
 
     let exit_code = if opts.once {
-        accept_one(&listener, Arc::clone(&loader))
+        accept_one(
+            &listener,
+            Arc::clone(&loader),
+            http.as_ref().map(|h| Arc::clone(&h.registry)),
+        )
     } else {
         #[cfg(unix)]
         if let Err(err) = install_shutdown_signal_handlers() {
@@ -462,6 +466,7 @@ fn main() -> ExitCode {
             Arc::clone(&loader),
             Arc::clone(&inflight),
             shutdown,
+            http.as_ref().map(|h| Arc::clone(&h.registry)),
         )
     };
 
@@ -492,6 +497,10 @@ fn main() -> ExitCode {
 /// A running HTTP surface, kept so the endpoint can be retracted on exit.
 struct HttpSurface {
     program: String,
+    /// Shared with the accept path, which is what actually knows when a
+    /// backend shows up. Without this the page renders correctly and always
+    /// says "no backends registered yet".
+    registry: Arc<HttpEndpointRegistry>,
 }
 
 /// Bind the HTTP aggregation surface, publish where it landed, and serve it.
@@ -513,7 +522,8 @@ fn start_http_surface(
     runtime_dir: &std::path::Path,
 ) -> Result<HttpSurface, String> {
     let registry = Arc::new(HttpEndpointRegistry::new());
-    let server = BrokerHttpServer::bind(config, registry).map_err(|e| e.to_string())?;
+    let server =
+        BrokerHttpServer::bind(config, Arc::clone(&registry)).map_err(|e| e.to_string())?;
     let local = server.local_addr();
 
     let path =
@@ -545,6 +555,7 @@ fn start_http_surface(
 
     Ok(HttpSurface {
         program: program.to_owned(),
+        registry,
     })
 }
 
@@ -556,6 +567,7 @@ fn accept_loop(
     loader: Arc<ServiceDefinitionLoader>,
     inflight: Arc<AtomicUsize>,
     shutdown: &AtomicBool,
+    http: Option<Arc<HttpEndpointRegistry>>,
 ) -> ExitCode {
     if let Err(err) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
         eprintln!("running-process-broker-v2: set listener nonblocking failed: {err}");
@@ -582,6 +594,7 @@ fn accept_loop(
                 }
                 let loader = Arc::clone(&loader);
                 let inflight_handler = Arc::clone(&inflight);
+                let http_handler = http.clone();
                 let spawn_result = thread::Builder::new()
                     .name("rpb-v2-handler".to_string())
                     .spawn(move || {
@@ -589,9 +602,19 @@ fn accept_loop(
                         let mut s = stream;
                         let result = handle_hello_with_deadline(&mut s, &loader);
                         match result {
-                            Ok(svc) => println!(
-                                "running-process-broker-v2 Hello service={svc:?} negotiated",
-                            ),
+                            Ok(svc) => {
+                                // A negotiated Hello is the first moment a
+                                // backend id exists, so it is where the
+                                // aggregation page learns the backend is
+                                // there. The port arrives separately; until
+                                // then it renders as `(starting...)`.
+                                if let Some(reg) = &http_handler {
+                                    reg.track(svc.clone());
+                                }
+                                println!(
+                                    "running-process-broker-v2 Hello service={svc:?} negotiated",
+                                )
+                            }
                             Err(err) => {
                                 eprintln!("running-process-broker-v2 Hello handler failed: {err}")
                             }
@@ -678,12 +701,16 @@ fn drain_handlers(handlers: &mut Vec<thread::JoinHandle<()>>, timeout: Duration)
 fn accept_one(
     listener: &interprocess::local_socket::Listener,
     loader: Arc<ServiceDefinitionLoader>,
+    http: Option<Arc<HttpEndpointRegistry>>,
 ) -> ExitCode {
     match listener.accept() {
         Ok(mut stream) => {
             println!("running-process-broker-v2 peer connected (--once)");
             match handle_hello_with_deadline(&mut stream, &loader) {
                 Ok(svc) => {
+                    if let Some(reg) = &http {
+                        reg.track(svc.clone());
+                    }
                     println!(
                         "running-process-broker-v2 Hello for service {svc:?} negotiated; exiting"
                     );
@@ -1198,6 +1225,51 @@ mod tests {
     /// Uses a temp directory so a broker running on the developer's machine
     /// cannot make it pass or fail by accident.
     #[test]
+    /// The page has to reflect backends the broker actually negotiated.
+    ///
+    /// Before this, every piece worked in isolation and the chain was not
+    /// joined: `render_aggregator_page` was complete, but nothing outside
+    /// tests ever wrote to the registry, so a running broker served a page
+    /// that permanently read "no backends registered yet".
+    ///
+    /// This drives the surface the binary actually builds and asserts on the
+    /// rendered HTML, rather than on the registry it just wrote to — which
+    /// would pass even if the server were handed a different registry.
+    #[test]
+    fn the_page_lists_a_backend_once_it_is_tracked() {
+        use std::io::{Read as _, Write as _};
+
+        let dir = tempdir().unwrap();
+        let started =
+            start_http_surface(BrokerHttpPort::Dynamic, "track-program", dir.path()).unwrap();
+
+        // What the accept path does on a negotiated Hello.
+        started.registry.track("zccache".to_string());
+
+        let (ip, port) = broker_http_discovery::read_http_port(dir.path(), "track-program")
+            .unwrap()
+            .expect("endpoint published");
+        let mut stream = std::net::TcpStream::connect(std::net::SocketAddr::new(ip, port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut body = Vec::new();
+        stream.read_to_end(&mut body).unwrap();
+        let page = String::from_utf8_lossy(&body);
+
+        assert!(
+            page.contains("zccache"),
+            "backend missing from page: {page}"
+        );
+        assert!(
+            !page.contains("no backends registered yet"),
+            "page still claims nothing is registered: {page}"
+        );
+    }
+
     fn starting_the_surface_publishes_an_endpoint_that_answers() {
         use std::io::{Read as _, Write as _};
 
