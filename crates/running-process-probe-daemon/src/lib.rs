@@ -25,6 +25,7 @@ pub mod discovery;
 pub mod names;
 pub mod probe_ops;
 pub mod registry;
+pub mod serve;
 pub mod state;
 
 /// Overrides the seeded beacon port, equivalent to `--beacon-port`.
