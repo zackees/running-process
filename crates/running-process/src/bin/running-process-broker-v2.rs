@@ -10,8 +10,9 @@
 //!    earlier integration tests.
 //! 2. **Persistent accept loop** — each accepted connection spawns
 //!    a thread that handles the Hello round-trip. The accept loop
-//!    polls with bounded latency so Unix SIGTERM/SIGINT can request a
-//!    normal shutdown; in-flight handlers are drained with a deadline.
+//!    polls with bounded latency so a shutdown request can be observed:
+//!    SIGTERM/SIGINT on Unix, console control events on Windows.
+//!    In-flight handlers are then drained with a deadline.
 //! 3. **ServiceDefinitionLoader integration** — on each Hello, look
 //!    up `hello.service_name` via the default v2 service-definition
 //!    directory ([`ServiceDefinitionLoader::default_root`]). Reject
@@ -33,10 +34,12 @@
 //!   `broker-v2-scaffold`.
 //!
 //! Future slices:
-//! - Windows console-event graceful shutdown.
-//! - Backend-pipe resolution + adopt forwarding.
-//! - Single-instance lock (refuse start if another broker is bound).
-//! - Refuse-privileged-run guard (port from v1).
+//! - Backend-pipe resolution + adopt forwarding (the `Negotiated` reply still
+//!   carries an empty `backend_pipe`; see running-process#532 item 5).
+//!
+//! The single-instance lock and the refuse-privileged-run guard were also
+//! listed here as future work; both have since landed (`is_already_bound_error`
+//! and `refuse_privileged_run` respectively).
 
 use std::env;
 use std::io::Write;
@@ -97,6 +100,73 @@ fn install_shutdown_signal_handlers() -> std::io::Result<()> {
         if previous == libc::SIG_ERR {
             return Err(std::io::Error::last_os_error());
         }
+    }
+    Ok(())
+}
+
+/// Set when Windows delivers a console control event.
+///
+/// The Windows counterpart of [`SIGNAL_SHUTDOWN_REQUESTED`]. Without it the
+/// accept loop on Windows polled a flag nothing ever set, so the broker never
+/// drained or unbound — it only ever died when killed.
+#[cfg(windows)]
+static CONSOLE_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Console control handler.
+///
+/// Windows runs this on a thread it injects into the process, so it does the
+/// same thing the Unix signal handler does and no more: one atomic store. No
+/// allocation, no logging, no joining threads.
+///
+/// Returning `TRUE` claims the event. For `CTRL_C_EVENT` and
+/// `CTRL_BREAK_EVENT` that suppresses the default terminate, which is the
+/// point — the accept loop needs to observe the flag and drain.
+#[cfg(windows)]
+unsafe extern "system" fn console_ctrl_handler(
+    ctrl_type: winapi::shared::minwindef::DWORD,
+) -> winapi::shared::minwindef::BOOL {
+    use winapi::um::wincon::{
+        CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    };
+
+    match ctrl_type {
+        CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT
+        | CTRL_SHUTDOWN_EVENT => {
+            CONSOLE_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+            winapi::shared::minwindef::TRUE
+        }
+        // Anything else is left to the next handler rather than swallowed.
+        _ => winapi::shared::minwindef::FALSE,
+    }
+}
+
+/// Install the console control handler.
+///
+/// # The close/logoff/shutdown events are on a clock
+///
+/// `CTRL_C_EVENT` and `CTRL_BREAK_EVENT` leave the process running once
+/// claimed. The other three do not: Windows gives a console process a few
+/// seconds after `CTRL_CLOSE_EVENT` (and less at logoff/shutdown) and then
+/// terminates it regardless of what the handler returns.
+///
+/// [`HANDLER_DRAIN_TIMEOUT`] is 5s, which is the same order as that budget —
+/// so on a window close a long-running handler may be cut off mid-drain. That
+/// is still strictly better than today's behavior, where the loop never even
+/// begins to drain, but it is a bound rather than a guarantee and should not
+/// be described as a graceful shutdown in every case.
+#[cfg(windows)]
+fn install_shutdown_console_handler() -> std::io::Result<()> {
+    CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+    // SAFETY: `console_ctrl_handler` has the required `system` ABI, lives for
+    // the process lifetime, and performs only an atomic store.
+    let installed = unsafe {
+        winapi::um::consoleapi::SetConsoleCtrlHandler(
+            Some(console_ctrl_handler),
+            winapi::shared::minwindef::TRUE,
+        )
+    };
+    if installed == 0 {
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
@@ -312,9 +382,19 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
 
+        #[cfg(windows)]
+        if let Err(err) = install_shutdown_console_handler() {
+            eprintln!("running-process-broker-v2: install console control handler failed: {err}");
+            return ExitCode::from(1);
+        }
+
         #[cfg(unix)]
         let shutdown = &SIGNAL_SHUTDOWN_REQUESTED;
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        let shutdown = &CONSOLE_SHUTDOWN_REQUESTED;
+        // Kept so the loop still compiles on a target that is neither, where
+        // there is no shutdown source to observe.
+        #[cfg(not(any(unix, windows)))]
         let shutdown = &AtomicBool::new(false);
 
         accept_loop(
@@ -790,6 +870,78 @@ mod tests {
         })
         .unwrap();
         assert!(result.is_none());
+    }
+
+    /// Every console event that means "you are going away" must set the flag.
+    ///
+    /// Missing one would leave the broker in the state this change exists to
+    /// fix: still polling a flag nothing sets, never draining, never
+    /// unbinding.
+    #[cfg(windows)]
+    #[test]
+    fn every_shutdown_console_event_requests_shutdown() {
+        use winapi::um::wincon::{
+            CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT,
+            CTRL_SHUTDOWN_EVENT,
+        };
+
+        for event in [
+            CTRL_C_EVENT,
+            CTRL_BREAK_EVENT,
+            CTRL_CLOSE_EVENT,
+            CTRL_LOGOFF_EVENT,
+            CTRL_SHUTDOWN_EVENT,
+        ] {
+            CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+            // SAFETY: calling the handler directly; it only stores an atomic.
+            let handled = unsafe { console_ctrl_handler(event) };
+            assert_eq!(
+                handled,
+                winapi::shared::minwindef::TRUE,
+                "event {event} must be claimed, or Windows applies the default \
+                 terminate and the drain never runs"
+            );
+            assert!(
+                CONSOLE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed),
+                "event {event} did not request shutdown"
+            );
+        }
+        CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+    }
+
+    /// An event we do not recognize must be passed on, not swallowed.
+    /// Claiming it would suppress whatever handler comes next for an event
+    /// this broker has no opinion about.
+    #[cfg(windows)]
+    #[test]
+    fn an_unrecognized_console_event_is_declined() {
+        CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+        // SAFETY: as above.
+        let handled = unsafe { console_ctrl_handler(0xDEAD_BEEF) };
+        assert_eq!(handled, winapi::shared::minwindef::FALSE);
+        assert!(
+            !CONSOLE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed),
+            "an unrelated event must not request shutdown"
+        );
+    }
+
+    /// Registration has to actually succeed — the handler being correct is
+    /// worth nothing if Windows never calls it.
+    ///
+    /// This is the boundary of what is verified here: that the handler is
+    /// installed and behaves correctly once invoked. That Windows delivers
+    /// Ctrl+C to a registered handler is OS-defined behavior and is not
+    /// re-tested, because generating a real console event would signal every
+    /// process sharing this console, including the test runner.
+    #[cfg(windows)]
+    #[test]
+    fn the_console_handler_installs() {
+        install_shutdown_console_handler()
+            .expect("SetConsoleCtrlHandler should accept the handler");
+        assert!(
+            !CONSOLE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed),
+            "installing must start from a clear flag, or the loop would exit at once"
+        );
     }
 
     #[test]
