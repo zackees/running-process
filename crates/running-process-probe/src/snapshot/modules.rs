@@ -27,7 +27,9 @@ use std::ops::Range;
 
 use winapi::shared::minwindef::{DWORD, HMODULE};
 use winapi::um::processthreadsapi::GetCurrentProcess;
-use winapi::um::psapi::{EnumProcessModules, GetModuleInformation, MODULEINFO};
+use winapi::um::psapi::{
+    EnumProcessModules, GetModuleFileNameExW, GetModuleInformation, MODULEINFO,
+};
 use winapi::um::winnt::{
     IMAGE_DOS_HEADER, IMAGE_DOS_SIGNATURE, IMAGE_NT_HEADERS64, IMAGE_NT_SIGNATURE,
     IMAGE_SECTION_HEADER,
@@ -52,6 +54,13 @@ pub struct LoadedModule {
     pub base: u64,
     /// Total mapped size.
     pub size: u64,
+    /// Full path of the module on disk, when the OS could report it.
+    ///
+    /// Needed downstream to find the symbol file, which lives beside the
+    /// binary. `None` rather than a guess when the query fails: a wrong path
+    /// would load a *different* build's symbols and produce confidently wrong
+    /// function names.
+    pub path: Option<String>,
     /// Sections parsed from the mapped headers.
     pub sections: Vec<Section>,
 }
@@ -183,11 +192,26 @@ pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
         modules.push(LoadedModule {
             base,
             size: u64::from(info.SizeOfImage),
+            path: unsafe { module_path(process, handle) },
             sections,
         });
     }
 
     Ok(modules)
+}
+
+/// Full path of a loaded module, or `None` if the OS would not say.
+///
+/// # Safety
+///
+/// `handle` must be a module handle obtained from `process`.
+unsafe fn module_path(process: winapi::um::winnt::HANDLE, handle: HMODULE) -> Option<String> {
+    let mut buffer = [0u16; 32768];
+    let len = GetModuleFileNameExW(process, handle, buffer.as_mut_ptr(), buffer.len() as DWORD);
+    if len == 0 {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buffer[..len as usize]))
 }
 
 /// Find the module containing `address`.

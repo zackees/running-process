@@ -31,6 +31,10 @@
 // Both Windows architectures are supported. The register names and the
 // unwinder differ per arch (see `windows.rs` / `unwind.rs`); everything else --
 // enumeration, suspend/resume sequencing, stack-copy bounds -- is shared.
+// Attribution needs the module inventory, which is Windows-only until the
+// Unix capture backends land (#635).
+#[cfg(windows)]
+pub mod attribute;
 #[cfg(windows)]
 pub mod modules;
 
