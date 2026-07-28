@@ -49,11 +49,7 @@ impl HttpEndpointRegistry {
     ///
     /// Inserts the backend if it wasn't already tracked. Returns the
     /// previous port for that backend if any.
-    pub fn register_backend_http_endpoint(
-        &self,
-        backend_id: BackendId,
-        port: u16,
-    ) -> Option<u16> {
+    pub fn register_backend_http_endpoint(&self, backend_id: BackendId, port: u16) -> Option<u16> {
         let mut map = self.inner.lock().expect("registry mutex poisoned");
         map.insert(backend_id, Some(port)).flatten()
     }
@@ -167,7 +163,10 @@ mod tests {
         snap.sort();
         assert_eq!(
             snap,
-            vec![("fbuild".to_string(), Some(8002)), ("zccache".to_string(), None)]
+            vec![
+                ("fbuild".to_string(), Some(8002)),
+                ("zccache".to_string(), None)
+            ]
         );
     }
 

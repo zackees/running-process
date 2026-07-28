@@ -331,7 +331,7 @@ mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Condvar, mpsc};
+    use std::sync::{mpsc, Condvar};
 
     struct FakeChild {
         wait_gate: Arc<(Mutex<bool>, Condvar)>,

@@ -14,9 +14,7 @@
 
 use prost::Message;
 
-use crate::broker::protocol_v2::{
-    GetBrokerHttpEndpointRequest, GetBrokerHttpEndpointResponse,
-};
+use crate::broker::protocol_v2::{GetBrokerHttpEndpointRequest, GetBrokerHttpEndpointResponse};
 
 /// In-broker resolved HTTP endpoint state (set at boot per #483 §3 via
 /// `BrokerHttpPort::resolve(config, env)`).

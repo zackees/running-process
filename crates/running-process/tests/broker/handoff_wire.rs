@@ -28,9 +28,8 @@ use running_process::broker::server::handoff::{
     execute_windows_handoff_with_transport, handoff_ack_frame, handoff_offer_frame,
     DuplicateHandleAttempt, DuplicateHandleResult, DuplicateHandleSuccess, HandoffAckRegistry,
     HandoffDelivery, HandoffDeliveryError, HandoffToken, HandoffTokenStore, PendingHandoffBackend,
-    WindowsHandleValue,
-    WindowsHandoffOutcome, WindowsHandoffRequest, WindowsHandoffStage, WireHandoffDelivery,
-    HANDOFF_PAYLOAD_PROTOCOL,
+    WindowsHandleValue, WindowsHandoffOutcome, WindowsHandoffRequest, WindowsHandoffStage,
+    WireHandoffDelivery, HANDOFF_PAYLOAD_PROTOCOL,
 };
 use running_process::broker::server::local_socket_name;
 

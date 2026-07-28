@@ -41,8 +41,7 @@ fn build_interposer_dll() -> PathBuf {
         .status()
         .expect("cargo build");
     assert!(status.success(), "cargo build failed: {status:?}");
-    let p = target_profile_dir()
-        .join("running_process_probe_interposer_windows.dll");
+    let p = target_profile_dir().join("running_process_probe_interposer_windows.dll");
     assert!(p.exists(), "interposer DLL missing at {p:?}");
     p
 }

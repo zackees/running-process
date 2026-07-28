@@ -56,6 +56,11 @@ def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> Non
             "cargo",
             "fmt",
             "--all",
+            # Verify, never rewrite: plain `cargo fmt --all` exits 0 whether or
+            # not it changed anything, so it could never fail CI and it
+            # silently rewrote contributors' working trees. See #694.
+            "--",
+            "--check",
         ],
         [
             python,

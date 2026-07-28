@@ -15,8 +15,8 @@ use std::process::Stdio;
 use std::thread;
 
 use running_process::{
-    CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode,
-    StreamKind, run_command,
+    run_command, CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode,
+    StdinMode, StreamKind,
 };
 
 fn config(
@@ -434,16 +434,12 @@ fn read_combined_returns_events_from_both_streams() {
         }
     }
 
-    assert!(
-        events
-            .iter()
-            .any(|e| e.stream == StreamKind::Stdout && e.line == b"out")
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| e.stream == StreamKind::Stderr && e.line == b"err")
-    );
+    assert!(events
+        .iter()
+        .any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
+    assert!(events
+        .iter()
+        .any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
 }
 
 #[test]
@@ -509,16 +505,12 @@ fn captured_combined_includes_both_streams() {
     process.wait(Some(Duration::from_secs(5))).unwrap();
 
     let combined = process.captured_combined();
-    assert!(
-        combined
-            .iter()
-            .any(|e| e.stream == StreamKind::Stdout && e.line == b"out")
-    );
-    assert!(
-        combined
-            .iter()
-            .any(|e| e.stream == StreamKind::Stderr && e.line == b"err")
-    );
+    assert!(combined
+        .iter()
+        .any(|e| e.stream == StreamKind::Stdout && e.line == b"out"));
+    assert!(combined
+        .iter()
+        .any(|e| e.stream == StreamKind::Stderr && e.line == b"err"));
 }
 
 #[test]

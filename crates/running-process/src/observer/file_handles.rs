@@ -160,11 +160,12 @@ mod windows_impl {
         let raw = query_system_handles()?;
         let header_size = std::mem::size_of::<SystemHandleInformationExHeader>();
         if raw.len() < header_size {
-            return Err(std::io::Error::other("NtQuerySystemInformation returned < header bytes"));
+            return Err(std::io::Error::other(
+                "NtQuerySystemInformation returned < header bytes",
+            ));
         }
-        let header = unsafe {
-            std::ptr::read(raw.as_ptr() as *const SystemHandleInformationExHeader)
-        };
+        let header =
+            unsafe { std::ptr::read(raw.as_ptr() as *const SystemHandleInformationExHeader) };
         let entry_size = std::mem::size_of::<SystemHandleTableEntryInfoEx>();
         let max_entries = (raw.len() - header_size) / entry_size;
         let entries_count = std::cmp::min(header.number_of_handles, max_entries);
@@ -228,7 +229,9 @@ mod windows_impl {
                         "NtQuerySystemInformation handle table exceeds 256 MiB (returned hint={returned})",
                     )));
                 }
-                size = size.saturating_mul(2).max(returned.saturating_add(64 * 1024));
+                size = size
+                    .saturating_mul(2)
+                    .max(returned.saturating_add(64 * 1024));
                 continue;
             }
             return Err(std::io::Error::other(format!(
@@ -334,9 +337,8 @@ mod windows_impl {
         if buffer_addr < buf_start || buffer_addr.saturating_add(len_bytes) > buf_end {
             return None;
         }
-        let wide: &[u16] = unsafe {
-            std::slice::from_raw_parts(us.buffer as *const u16, len_bytes / 2)
-        };
+        let wide: &[u16] =
+            unsafe { std::slice::from_raw_parts(us.buffer as *const u16, len_bytes / 2) };
         Some(String::from_utf16_lossy(wide))
     }
 
@@ -438,7 +440,13 @@ mod macos_impl {
         }
         let entry_size = std::mem::size_of::<ProcFdInfo>();
         let count = (size as usize) / entry_size;
-        let mut fds: Vec<ProcFdInfo> = vec![ProcFdInfo { proc_fd: 0, proc_fdtype: 0 }; count];
+        let mut fds: Vec<ProcFdInfo> = vec![
+            ProcFdInfo {
+                proc_fd: 0,
+                proc_fdtype: 0
+            };
+            count
+        ];
         let written = unsafe {
             libc::proc_pidinfo(
                 pid as libc::c_int,
@@ -523,8 +531,7 @@ mod tests {
             .map(str::to_owned)
             .unwrap_or_default();
 
-        let handles =
-            read_process_file_handles(std::process::id()).expect("read self handles");
+        let handles = read_process_file_handles(std::process::id()).expect("read self handles");
         let canonical_str = canonical.to_string_lossy();
         let raw_str = path.to_string_lossy();
         let found = handles.iter().any(|h| {

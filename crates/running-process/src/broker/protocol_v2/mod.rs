@@ -51,8 +51,8 @@ mod tests {
         };
 
         let bytes = original.encode_to_vec();
-        let decoded = ServiceDefinition::decode(bytes.as_slice())
-            .expect("encoded ServiceDefinition decodes");
+        let decoded =
+            ServiceDefinition::decode(bytes.as_slice()).expect("encoded ServiceDefinition decodes");
 
         assert_eq!(decoded.service_name, "zccache");
         assert!(decoded.http_server.is_none());
@@ -73,8 +73,8 @@ mod tests {
         };
 
         let bytes = original.encode_to_vec();
-        let decoded = ServiceDefinition::decode(bytes.as_slice())
-            .expect("encoded ServiceDefinition decodes");
+        let decoded =
+            ServiceDefinition::decode(bytes.as_slice()).expect("encoded ServiceDefinition decodes");
 
         let cap = decoded
             .http_server
@@ -96,8 +96,8 @@ mod tests {
         };
 
         let bytes = original.encode_to_vec();
-        let decoded = ServiceDefinition::decode(bytes.as_slice())
-            .expect("encoded ServiceDefinition decodes");
+        let decoded =
+            ServiceDefinition::decode(bytes.as_slice()).expect("encoded ServiceDefinition decodes");
 
         let cap = decoded
             .http_server
@@ -131,8 +131,8 @@ mod tests {
         };
 
         let bytes = original.encode_to_vec();
-        let decoded = ServiceDefinition::decode(bytes.as_slice())
-            .expect("encoded ServiceDefinition decodes");
+        let decoded =
+            ServiceDefinition::decode(bytes.as_slice()).expect("encoded ServiceDefinition decodes");
 
         assert_eq!(decoded.service_name, "zccache");
         assert_eq!(decoded.binary_path, "/usr/local/bin/zccache-daemon");
@@ -209,8 +209,7 @@ mod tests {
         let original = BackendHttpReady { port: 49_152 };
 
         let bytes = original.encode_to_vec();
-        let decoded =
-            BackendHttpReady::decode(bytes.as_slice()).expect("BackendHttpReady decodes");
+        let decoded = BackendHttpReady::decode(bytes.as_slice()).expect("BackendHttpReady decodes");
 
         assert_eq!(decoded.port, 49_152);
     }

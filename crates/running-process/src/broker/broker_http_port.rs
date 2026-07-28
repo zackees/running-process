@@ -136,9 +136,7 @@ mod tests {
     #[test]
     fn port_env_set_overrides_to_static() {
         with_env(Some("8080"), None, || {
-            let r = BrokerHttpPort::resolve(BrokerHttpPort::StaticOrFallback {
-                preferred: 12_345,
-            });
+            let r = BrokerHttpPort::resolve(BrokerHttpPort::StaticOrFallback { preferred: 12_345 });
             assert_eq!(r.port, BrokerHttpPort::Static { port: 8080 });
         });
     }

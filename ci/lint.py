@@ -9,7 +9,12 @@ from ci.dev_build import repo_python
 from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
+# Local default. A cold `cargo fmt --all` or `clippy --workspace` does not
+# finish in 10s, so the old value made `./lint` fail on the developer's own
+# machine while CI (which sets RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS
+# to 300 in ci-preflight.yml) passed. Set the env var to empty or 0 to
+# disable supervision entirely.
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 COMMAND_TIMEOUT_ENV = "RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS"
 
 
@@ -60,7 +65,19 @@ def main() -> int:
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.spawn_path_guard")) != 0:
         return 1
-    if run(supervised_command(python, *cargo_command("fmt", "--all"))) != 0:
+    # `--check`, not write mode. Plain `cargo fmt --all` reformats the tree
+    # and exits 0 whether or not it changed anything, so it can essentially
+    # never fail: CI would reformat its checkout, throw it away, and report
+    # green while the committed tree drifted. It also silently rewrote
+    # contributors' working trees, sweeping unrelated files into their
+    # commits. Verifying instead of mutating fixes both. See #694.
+    if run(supervised_command(python, *cargo_command("fmt", "--all", "--", "--check"))) != 0:
+        print(
+            "lint: formatting drift detected. Run `soldr cargo fmt --all` and "
+            "commit the result.",
+            file=sys.stderr,
+            flush=True,
+        )
         return 1
     if run(
         supervised_command(

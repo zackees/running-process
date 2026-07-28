@@ -183,11 +183,7 @@ pub fn negotiate_hook_support() -> HookSupport {
             // which binary the caller will spawn.
             HookSupport::Available
         }
-        #[cfg(not(any(
-            target_os = "windows",
-            target_os = "linux",
-            target_os = "macos"
-        )))]
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         {
             HookSupport::Unavailable {
                 reason: "#551: no injector wired for this OS",
@@ -383,17 +379,9 @@ mod tests {
             // tier-1 platforms now report Available with the
             // embed-helper feature on. Other Unix targets (e.g.
             // FreeBSD) still report Unavailable.
-            #[cfg(any(
-                target_os = "windows",
-                target_os = "linux",
-                target_os = "macos"
-            ))]
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             assert_eq!(s, HookSupport::Available);
-            #[cfg(not(any(
-                target_os = "windows",
-                target_os = "linux",
-                target_os = "macos"
-            )))]
+            #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
             assert!(matches!(s, HookSupport::Unavailable { reason } if reason.contains("#551")));
         }
     }
@@ -430,9 +418,15 @@ mod tests {
                 "filename must carry the crate version: {name}"
             );
             #[cfg(windows)]
-            assert!(name.ends_with(".exe"), "Windows filename needs .exe: {name}");
+            assert!(
+                name.ends_with(".exe"),
+                "Windows filename needs .exe: {name}"
+            );
             #[cfg(not(windows))]
-            assert!(!name.contains(".exe"), "Unix filename must not have .exe: {name}");
+            assert!(
+                !name.contains(".exe"),
+                "Unix filename must not have .exe: {name}"
+            );
         }
 
         #[test]
