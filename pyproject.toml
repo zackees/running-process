@@ -73,6 +73,11 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "PT", "RUF"]
+# Codes owned by ci/lint_python/keyboard_interrupt_checker.py. Without this,
+# ruff treats `# noqa: KBI002` as an unused directive (RUF100) and `--fix`
+# DELETES it — silently disarming the suppression, so `./lint` then fails on
+# the very line that was deliberately exempted.
+external = ["KBI001", "KBI002"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["N802", "N803", "N806", "PT009", "PT027"]

@@ -211,6 +211,63 @@ class TestRepositoryIsClean(unittest.TestCase):
                 found.append(f"{path}:{violation.line} {violation.code}")
         self.assertEqual(found, [], f"unexpected KBI violations: {found}")
 
+class TestRuffDoesNotStripSuppressions(unittest.TestCase):
+    """`ruff check --fix` must leave `# noqa: KBI00x` alone.
+
+    Ruff treats a noqa naming a code it does not own as an unused directive
+    (RUF100) and `--fix` DELETES it. Since `./lint` runs ruff before this
+    checker, that silently disarmed every suppression and then failed on the
+    very line that was deliberately exempted. `[tool.ruff.lint] external`
+    declares the codes so ruff leaves them alone.
+    """
+
+    def test_ruff_config_declares_the_kbi_codes_as_external(self):
+        from pathlib import Path
+
+        import tomllib
+
+        root = Path(__file__).resolve().parent.parent
+        config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        external = config["tool"]["ruff"]["lint"].get("external", [])
+        self.assertIn("KBI001", external)
+        self.assertIn("KBI002", external)
+
+    def test_a_kbi_suppression_survives_ruff_fix(self):
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        ruff = shutil.which("ruff") or str(Path(sys.executable).with_name("ruff"))
+        if not Path(ruff).exists():
+            self.skipTest("ruff not available")
+
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(dir=root) as tmp:
+            # Inside the repo so ruff picks up pyproject.toml's config.
+            probe = Path(tmp) / "probe.py"
+            probe.write_text(
+                "def main():\n"
+                "    try:\n"
+                "        serve()\n"
+                "    except KeyboardInterrupt:  # noqa: KBI002\n"
+                "        shutdown()\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [ruff, "check", "--fix", str(probe)],
+                capture_output=True,
+                cwd=root,
+                check=False,
+            )
+            self.assertIn(
+                "# noqa: KBI002",
+                probe.read_text(encoding="utf-8"),
+                "ruff --fix stripped the suppression; ./lint would then fail "
+                "on the deliberately exempted line",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
