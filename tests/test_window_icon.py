@@ -148,3 +148,36 @@ class TestStockIcons(unittest.TestCase):
                 window_icon.set_host_icon_stock(window_icon.StockIcon.ERROR)
         finally:
             window_icon._native_module = original
+
+
+class TestChildScope(unittest.TestCase):
+    """Targeting a child's console window by pid (#577)."""
+
+    def test_a_childless_pid_is_unsupported(self):
+        # pid 0 never owns a console window on any platform.
+        self.assertIsNotNone(window_icon.icon_support(0))
+        self.assertFalse(window_icon.is_supported(0))
+
+    def test_omitting_pid_means_the_host(self):
+        self.assertEqual(window_icon.icon_support(), window_icon.icon_support(None))
+
+    def test_setters_accept_a_pid_and_refuse_a_childless_one(self):
+        for call in (
+            lambda: window_icon.set_host_icon("x.ico", 0),
+            lambda: window_icon.set_host_icon_from_bytes(b"\xff" * 32, 0),
+            lambda: window_icon.set_host_icon_stock(window_icon.StockIcon.WARNING, 0),
+        ):
+            with self.assertRaises(
+                (window_icon.IconUnsupportedError, ValueError, OSError)
+            ):
+                call()
+
+    def test_a_childless_pid_is_reported_even_where_the_host_is_supported(self):
+        # The scope must actually reach the native layer: if pid were ignored,
+        # this would mirror the host's answer instead of its own.
+        if not window_icon.is_supported():
+            self.skipTest("host is unsupported here; this needs a supported host")
+        self.assertFalse(
+            window_icon.is_supported(0),
+            "pid 0 has no console window even when the host does",
+        )

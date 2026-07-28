@@ -15,7 +15,7 @@
 
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use running_process::window_icon::{self, IconError, IconSource, StockIcon};
+use running_process::window_icon::{self, IconError, IconScope, IconSource, StockIcon};
 
 /// Why the host cannot accept an icon, or `None` when it can.
 ///
@@ -23,8 +23,21 @@ use running_process::window_icon::{self, IconError, IconSource, StockIcon};
 /// only learns "no" has nothing to log, and nothing to distinguish "this
 /// terminal never allows it" from "this process has no console right now".
 #[pyfunction]
-pub(crate) fn native_window_icon_support() -> Option<&'static str> {
-    window_icon::host_icon_support().reason()
+#[pyo3(signature = (pid=None))]
+pub(crate) fn native_window_icon_support(pid: Option<u32>) -> Option<&'static str> {
+    window_icon::icon_support(scope_of(pid)).reason()
+}
+
+/// `None` means this process's own window; a pid names a child's.
+///
+/// Modelled as an optional pid rather than two functions because the caller's
+/// question is the same either way — only the window differs — and a caller
+/// that already has a pid should not have to find a different entry point.
+fn scope_of(pid: Option<u32>) -> IconScope {
+    match pid {
+        None => IconScope::Host,
+        Some(pid) => IconScope::Child { pid },
+    }
 }
 
 /// Set the host console window's icon from a `.ico` file.
@@ -33,8 +46,9 @@ pub(crate) fn native_window_icon_support() -> Option<&'static str> {
 /// when the file cannot be loaded — different problems with different
 /// remedies, so they are different exception types.
 #[pyfunction]
-pub(crate) fn native_set_window_icon_from_path(path: &str) -> PyResult<()> {
-    window_icon::set_host_icon(&IconSource::Path(path.into())).map_err(to_py_error)
+#[pyo3(signature = (path, pid=None))]
+pub(crate) fn native_set_window_icon_from_path(path: &str, pid: Option<u32>) -> PyResult<()> {
+    window_icon::set_icon(scope_of(pid), &IconSource::Path(path.into())).map_err(to_py_error)
 }
 
 /// Set the host console window's icon from `.ico` bytes.
@@ -47,8 +61,9 @@ pub(crate) fn native_set_window_icon_from_path(path: &str) -> PyResult<()> {
 /// bytes are not a usable icon: that is the caller's data being wrong, which
 /// is a different problem from the file system or the terminal.
 #[pyfunction]
-pub(crate) fn native_set_window_icon_from_bytes(data: Vec<u8>) -> PyResult<()> {
-    window_icon::set_host_icon(&IconSource::Bytes(data)).map_err(to_py_error)
+#[pyo3(signature = (data, pid=None))]
+pub(crate) fn native_set_window_icon_from_bytes(data: Vec<u8>, pid: Option<u32>) -> PyResult<()> {
+    window_icon::set_icon(scope_of(pid), &IconSource::Bytes(data)).map_err(to_py_error)
 }
 
 /// Names accepted by [`native_set_window_icon_stock`], in declaration order.
@@ -88,10 +103,11 @@ fn parse_stock(name: &str) -> Option<StockIcon> {
 /// ones** — a bare "invalid icon" would leave a caller guessing at a set they
 /// cannot enumerate.
 #[pyfunction]
-pub(crate) fn native_set_window_icon_stock(name: &str) -> PyResult<()> {
+#[pyo3(signature = (name, pid=None))]
+pub(crate) fn native_set_window_icon_stock(name: &str, pid: Option<u32>) -> PyResult<()> {
     let stock =
         parse_stock(name).ok_or_else(|| PyValueError::new_err(unknown_stock_message(name)))?;
-    window_icon::set_host_icon(&IconSource::Stock(stock)).map_err(to_py_error)
+    window_icon::set_icon(scope_of(pid), &IconSource::Stock(stock)).map_err(to_py_error)
 }
 
 /// The stock icon names this build accepts.
@@ -142,7 +158,7 @@ mod tests {
     /// console window at all.
     #[test]
     fn support_is_reportable_everywhere() {
-        match native_window_icon_support() {
+        match native_window_icon_support(None) {
             None => {} // available
             Some(reason) => assert!(!reason.is_empty(), "a refusal must explain itself"),
         }
@@ -153,8 +169,11 @@ mod tests {
     #[test]
     fn the_binding_agrees_with_the_rust_verdict() {
         let rust = window_icon::host_icon_support();
-        assert_eq!(native_window_icon_support(), rust.reason());
-        assert_eq!(native_window_icon_support().is_none(), rust.is_available());
+        assert_eq!(native_window_icon_support(None), rust.reason());
+        assert_eq!(
+            native_window_icon_support(None).is_none(),
+            rust.is_available()
+        );
     }
 
     /// Every advertised name must parse. A name in the list that the parser
@@ -198,6 +217,29 @@ mod tests {
         }
     }
 
+    /// A pid that owns no console window must be refused, and never confused
+    /// with the host — the whole reason the scope is threaded through.
+    #[test]
+    fn a_childless_pid_is_unsupported_even_when_the_host_is_not() {
+        // pid 0 never owns a console window, on any machine.
+        assert!(native_window_icon_support(Some(0)).is_some());
+        assert!(
+            native_set_window_icon_from_path("anything.ico", Some(0)).is_err(),
+            "a pid with no console cannot take an icon"
+        );
+    }
+
+    /// Passing no pid must mean the host, not "some process".
+    #[test]
+    fn an_absent_pid_selects_the_host() {
+        assert_eq!(scope_of(None), IconScope::Host);
+        assert_eq!(scope_of(Some(7)), IconScope::Child { pid: 7 });
+        assert_eq!(
+            native_window_icon_support(None),
+            window_icon::host_icon_support().reason()
+        );
+    }
+
     /// Malformed bytes are the caller's data, not an OS fault.
     #[test]
     fn bad_icon_data_maps_to_a_value_error() {
@@ -213,7 +255,7 @@ mod tests {
     #[test]
     fn garbage_bytes_never_report_success() {
         assert!(
-            native_set_window_icon_from_bytes(vec![0xFF; 64]).is_err(),
+            native_set_window_icon_from_bytes(vec![0xFF; 64], None).is_err(),
             "garbage is not an icon"
         );
     }
@@ -243,7 +285,7 @@ mod tests {
     #[test]
     fn a_missing_file_never_reports_success() {
         assert!(
-            native_set_window_icon_from_path("no-such-icon-file.ico").is_err(),
+            native_set_window_icon_from_path("no-such-icon-file.ico", None).is_err(),
             "a missing file cannot produce a set icon"
         );
     }
