@@ -139,8 +139,19 @@ pub(crate) fn native_probe_is_armed(handle: u64) -> bool {
 
 /// Capture the machine stacks of every other thread in this process.
 ///
-/// Returns `{os_tid: [return_address, ...]}`. Addresses, not symbols —
-/// resolving them is off-process work in a later slice.
+/// Returns `{"modules": [{"name", "path", "base"}, ...],
+///           "threads": {os_tid: [[module_index_or_None, offset], ...]}}`.
+///
+/// Frames are **module + offset**, not absolute addresses. An absolute address
+/// is meaningless outside the process that produced it and outside the moment
+/// it was captured, since the same build loads at a different base next time.
+/// Module-relative frames survive both, which is what makes a capture
+/// symbolizable later — and symbolization is the only reason to capture.
+///
+/// A frame whose address fell outside every loaded module has `None` for its
+/// module index and keeps the raw address. It is not assigned to the nearest
+/// module: a wrong attribution becomes a confident wrong function name that
+/// nothing downstream can detect.
 ///
 /// The calling thread is absent by construction: a thread cannot suspend
 /// itself. In a Python process that means the interpreter thread running this
@@ -150,31 +161,75 @@ pub(crate) fn native_probe_is_armed(handle: u64) -> bool {
 ///
 /// # The GIL
 ///
-/// Released for the duration. Capture suspends sibling OS threads, and some of
-/// those threads hold the GIL — suspending a GIL holder while this thread also
-/// wanted the GIL would deadlock the interpreter.
+/// Released for the capture and the module enumeration. Capture suspends
+/// sibling OS threads, and some of those threads hold the GIL — suspending a
+/// GIL holder while this thread also wanted the GIL would deadlock the
+/// interpreter.
 #[pyfunction]
 pub(crate) fn native_probe_snapshot(py: Python<'_>) -> PyResult<Py<PyAny>> {
-    use running_process_probe::snapshot::{capture_and_resolve, SnapshotConfig, SnapshotError};
-
-    let snapshot = py
-        .detach(|| capture_and_resolve(&SnapshotConfig::default()))
-        .map_err(|e| match e {
-            SnapshotError::Unsupported => pyo3::exceptions::PyNotImplementedError::new_err(
-                "native stack capture is not implemented on this platform",
-            ),
-            other => PyRuntimeError::new_err(format!("stack capture failed: {other}")),
-        })?;
-
-    let out = pyo3::types::PyDict::new(py);
-    for sample in &snapshot.threads {
-        let frames = pyo3::types::PyList::empty(py);
-        for address in &sample.frames {
-            frames.append(*address)?;
-        }
-        out.set_item(sample.os_tid, frames)?;
+    #[cfg(not(windows))]
+    {
+        // No capture backend and therefore no module inventory (#635).
+        // Refusing here keeps the whole attribution path Windows-gated
+        // instead of stubbing types that would have no meaning.
+        let _ = py;
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "native stack capture is not implemented on this platform",
+        ))
     }
-    Ok(out.into_any().unbind())
+
+    #[cfg(windows)]
+    {
+        use running_process_probe::snapshot::{
+            attribute::attribute, capture_and_resolve, modules::enumerate_modules, SnapshotConfig,
+            SnapshotError,
+        };
+
+        let attributed = py
+            .detach(|| -> Result<_, SnapshotError> {
+                let snapshot = capture_and_resolve(&SnapshotConfig::default())?;
+                // Enumerated in the same process, immediately after the
+                // capture, because module bases describe this address space
+                // and no other.
+                let modules = enumerate_modules()?;
+                Ok(attribute(&snapshot, &modules))
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("stack capture failed: {e}")))?;
+
+        let modules = pyo3::types::PyList::empty(py);
+        for module in &attributed.modules {
+            let entry = pyo3::types::PyDict::new(py);
+            entry.set_item("name", &module.name)?;
+            entry.set_item("path", module.path.as_deref())?;
+            entry.set_item("base", module.base)?;
+            modules.append(entry)?;
+        }
+
+        let threads = pyo3::types::PyDict::new(py);
+        for thread in &attributed.threads {
+            let frames = pyo3::types::PyList::empty(py);
+            for frame in &thread.frames {
+                let pair = pyo3::types::PyTuple::new(
+                    py,
+                    [
+                        frame.module_index.into_pyobject(py)?.into_any().unbind(),
+                        frame
+                            .relative_address
+                            .into_pyobject(py)?
+                            .into_any()
+                            .unbind(),
+                    ],
+                )?;
+                frames.append(pair)?;
+            }
+            threads.set_item(thread.os_tid, frames)?;
+        }
+
+        let out = pyo3::types::PyDict::new(py);
+        out.set_item("modules", modules)?;
+        out.set_item("threads", threads)?;
+        Ok(out.into_any().unbind())
+    }
 }
 
 /// Whether [`native_probe_snapshot`] is implemented on this platform.
