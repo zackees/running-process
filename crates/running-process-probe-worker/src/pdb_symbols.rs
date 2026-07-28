@@ -193,13 +193,71 @@ pub fn identity_matches(image: DebugId, pdb: DebugId) -> bool {
 /// An image with no debug directory has nothing to match against, so no PDB
 /// is accepted for it: an unverifiable claim is refused rather than assumed.
 fn pdb_path_for(image: &Path) -> Option<PathBuf> {
-    let candidate = image.with_extension("pdb");
-    if !candidate.is_file() {
-        return None;
-    }
+    pdb_path_for_with_search(image, &search_dirs())
+}
+
+/// Environment variable holding extra directories to search for symbol files.
+///
+/// Separated by the platform's path separator, like `PATH`.
+pub const SYMBOL_PATH_ENV: &str = "RUNNING_PROCESS_PROBE_SYMBOL_PATH";
+
+/// Directories to search beyond the image's own, from the environment.
+fn search_dirs() -> Vec<PathBuf> {
+    parse_search_dirs(std::env::var_os(SYMBOL_PATH_ENV))
+}
+
+/// Split a `PATH`-style value into directories.
+///
+/// Takes the value rather than reading the environment so it is testable
+/// without mutating process-global state — which would make the tests
+/// order-dependent on each other, and needs `unsafe` besides.
+fn parse_search_dirs(raw: Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    std::env::split_paths(&raw)
+        // An empty entry means the current directory to some tools; here it
+        // would search wherever the daemon happens to be running, which is
+        // not a symbol store and would only add unverified candidates.
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
+}
+
+/// Locate a PDB for `image`, verifying every candidate before accepting it.
+///
+/// Searches the image's own directory first, then `extra` in order. Symbols
+/// are routinely archived away from the binary they describe — a stripped
+/// release next to a symbol store is the ordinary case — so "beside the
+/// binary" alone finds nothing for exactly the builds worth symbolizing.
+///
+/// Every candidate is identity-checked. Widening *where* we look must not
+/// widen *what* we trust: a search path makes it far more likely to meet a
+/// same-named PDB from a different build, so the GUID and age decide, not the
+/// filename. A candidate that fails verification is skipped and the search
+/// continues, rather than aborting — the right file may be later in the path.
+pub fn pdb_path_for_with_search(image: &Path, extra: &[PathBuf]) -> Option<PathBuf> {
+    // Read once: the image's identity does not change between candidates, and
+    // an image with no debug directory can never match anything.
     let expected = image_debug_id(image)?;
-    let actual = pdb_debug_id(&candidate)?;
-    identity_matches(expected, actual).then_some(candidate)
+    let file_name = image.with_extension("pdb");
+    let file_name = file_name.file_name()?;
+
+    let beside = image.with_extension("pdb");
+    let candidates = std::iter::once(beside).chain(extra.iter().map(|dir| dir.join(file_name)));
+
+    for candidate in candidates {
+        if !candidate.is_file() {
+            continue;
+        }
+        let Some(actual) = pdb_debug_id(&candidate) else {
+            // Unreadable identity: cannot be verified, so it is not trusted.
+            continue;
+        };
+        if identity_matches(expected, actual) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -442,6 +500,140 @@ mod tests {
             pdb_path_for(&fake_exe).is_none(),
             "a PDB whose identity cannot be verified must not be accepted"
         );
+    }
+
+    /// Path parsing runs everywhere, unlike the search tests below, which
+    /// need a real PDB and skip on a machine that produces none.
+    #[test]
+    fn an_absent_symbol_path_yields_no_directories() {
+        assert!(parse_search_dirs(None).is_empty());
+    }
+
+    #[test]
+    fn empty_entries_are_dropped_rather_than_searching_the_cwd() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let raw = format!("{sep}{sep}");
+        assert!(
+            parse_search_dirs(Some(raw.into())).is_empty(),
+            "empty entries must not become a search of the working directory"
+        );
+    }
+
+    #[test]
+    fn directories_are_split_and_ordered() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let raw = format!("first{sep}second{sep}third");
+        let dirs = parse_search_dirs(Some(raw.into()));
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("first"),
+                PathBuf::from("second"),
+                PathBuf::from("third")
+            ],
+            "order matters: the search takes the first verified match"
+        );
+    }
+
+    /// A PDB in a search directory is found when none sits beside the image.
+    #[test]
+    fn a_search_directory_supplies_a_missing_pdb() {
+        let Some(real) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        let exe = std::env::current_exe().expect("current exe");
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A copy of the image with no PDB beside it, and the real PDB in a
+        // separate directory under the name the image implies.
+        let lonely_exe = dir.path().join("lonely.exe");
+        std::fs::copy(&exe, &lonely_exe).expect("copy exe");
+        let store = tempfile::tempdir().expect("store");
+        std::fs::copy(&real, store.path().join("lonely.pdb")).expect("copy pdb");
+
+        assert!(
+            pdb_path_for_with_search(&lonely_exe, &[]).is_none(),
+            "with no search path there is nothing beside the image to find"
+        );
+        let found = pdb_path_for_with_search(&lonely_exe, &[store.path().to_path_buf()])
+            .expect("the search directory should supply it");
+        assert_eq!(found, store.path().join("lonely.pdb"));
+    }
+
+    /// A same-named PDB from a different build must be skipped, not accepted
+    /// because it was in the search path.
+    #[test]
+    fn a_search_directory_candidate_is_still_identity_checked() {
+        let Some(real) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        let exe = std::env::current_exe().expect("current exe");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lonely_exe = dir.path().join("lonely.exe");
+        std::fs::copy(&exe, &lonely_exe).expect("copy exe");
+
+        // Right name, wrong contents: truncated so its identity cannot be
+        // read at all, which must be treated as "not verified".
+        let store = tempfile::tempdir().expect("store");
+        let bytes = std::fs::read(&real).expect("read pdb");
+        std::fs::write(store.path().join("lonely.pdb"), &bytes[..64]).expect("write");
+
+        assert!(
+            pdb_path_for_with_search(&lonely_exe, &[store.path().to_path_buf()]).is_none(),
+            "a candidate whose identity cannot be verified must not be accepted"
+        );
+    }
+
+    /// The search continues past a bad candidate — the right file may be
+    /// later in the path.
+    #[test]
+    fn a_bad_candidate_does_not_abort_the_search() {
+        let Some(real) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        let exe = std::env::current_exe().expect("current exe");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lonely_exe = dir.path().join("lonely.exe");
+        std::fs::copy(&exe, &lonely_exe).expect("copy exe");
+
+        let bad = tempfile::tempdir().expect("bad");
+        let bytes = std::fs::read(&real).expect("read pdb");
+        std::fs::write(bad.path().join("lonely.pdb"), &bytes[..64]).expect("write bad");
+        let good = tempfile::tempdir().expect("good");
+        std::fs::copy(&real, good.path().join("lonely.pdb")).expect("copy good");
+
+        let found = pdb_path_for_with_search(
+            &lonely_exe,
+            &[bad.path().to_path_buf(), good.path().to_path_buf()],
+        )
+        .expect("the good candidate later in the path should be found");
+        assert_eq!(found, good.path().join("lonely.pdb"));
+    }
+
+    /// The image's own directory wins, so a search path cannot shadow the
+    /// symbols shipped beside a binary.
+    #[test]
+    fn the_image_directory_is_searched_first() {
+        let Some(real) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        let exe = std::env::current_exe().expect("current exe");
+        let store = tempfile::tempdir().expect("store");
+        std::fs::copy(
+            &real,
+            store
+                .path()
+                .join(exe.with_extension("pdb").file_name().unwrap()),
+        )
+        .expect("copy pdb");
+
+        let found = pdb_path_for_with_search(&exe, &[store.path().to_path_buf()])
+            .expect("the sibling PDB should be found");
+        assert_eq!(found, exe.with_extension("pdb"), "the sibling must win");
     }
 
     #[test]
