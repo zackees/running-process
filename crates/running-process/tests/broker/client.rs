@@ -117,8 +117,9 @@ fn connect_to_backend_uses_cached_endpoint_when_versions_match() {
     assert_eq!(connection.endpoint, cached_backend);
     assert_eq!(connection.route, BackendConnectionRoute::HelloSkip);
     assert!(connection.negotiated.is_none());
-    drop(connection.stream);
+    // Join before dropping — see `spawn_accept_once`.
     backend.join().unwrap().unwrap();
+    drop(connection.stream);
 }
 
 #[test]
@@ -138,9 +139,10 @@ fn connect_to_backend_falls_back_to_broker_when_cache_missing() {
         connection.negotiated.as_ref().unwrap().daemon_version,
         "1.11.20"
     );
-    drop(connection.stream);
+    // Join before dropping — see `spawn_accept_once`.
     broker.join().unwrap().unwrap();
     backend.join().unwrap().unwrap();
+    drop(connection.stream);
 }
 
 #[test]
@@ -163,9 +165,10 @@ fn connect_to_backend_falls_back_to_broker_when_cached_endpoint_is_stale() {
         connection.negotiated.as_ref().unwrap().daemon_version,
         "1.11.20"
     );
-    drop(connection.stream);
+    // Join before dropping — see `spawn_accept_once`.
     broker.join().unwrap().unwrap();
     backend.join().unwrap().unwrap();
+    drop(connection.stream);
 }
 
 #[test]
@@ -182,9 +185,10 @@ fn connect_to_backend_does_not_skip_when_versions_differ() {
 
     assert_eq!(connection.route, BackendConnectionRoute::BrokerNegotiated);
     assert_eq!(connection.endpoint, backend_endpoint);
-    drop(connection.stream);
+    // Join before dropping — see `spawn_accept_once`.
     broker.join().unwrap().unwrap();
     backend.join().unwrap().unwrap();
+    drop(connection.stream);
 }
 
 #[cfg(feature = "test-seams")]
@@ -206,8 +210,9 @@ fn connect_to_backend_uses_fake_backend_seam_when_set() {
     assert_eq!(connection.endpoint, fake_backend);
     assert_eq!(connection.route, BackendConnectionRoute::HelloSkip);
     assert!(connection.negotiated.is_none());
-    drop(connection.stream);
+    // Join before dropping — see `spawn_accept_once`.
     backend.join().unwrap().unwrap();
+    drop(connection.stream);
 }
 
 #[cfg(feature = "test-seams")]
@@ -228,9 +233,10 @@ fn connect_to_backend_ignores_fake_backend_seam_when_broker_disabled() {
 
     assert_eq!(connection.endpoint, backend_endpoint);
     assert_eq!(connection.route, BackendConnectionRoute::BrokerNegotiated);
-    drop(connection.stream);
+    // Join before dropping — see `spawn_accept_once`.
     broker.join().unwrap().unwrap();
     backend.join().unwrap().unwrap();
+    drop(connection.stream);
 }
 
 #[cfg(feature = "test-seams")]
@@ -268,9 +274,10 @@ fn connect_to_backend_ignores_empty_fake_backend_seam() {
 
     assert_eq!(connection.endpoint, backend_endpoint);
     assert_eq!(connection.route, BackendConnectionRoute::BrokerNegotiated);
-    drop(connection.stream);
+    // Join before dropping — see `spawn_accept_once`.
     broker.join().unwrap().unwrap();
     backend.join().unwrap().unwrap();
+    drop(connection.stream);
 }
 
 #[cfg(feature = "test-seams")]
@@ -289,8 +296,9 @@ fn connect_to_backend_ignores_unset_fake_backend_seam() {
 
     assert_eq!(connection.endpoint, cached_backend);
     assert_eq!(connection.route, BackendConnectionRoute::HelloSkip);
-    drop(connection.stream);
+    // Join before dropping — see `spawn_accept_once`.
     backend.join().unwrap().unwrap();
+    drop(connection.stream);
 }
 
 #[test]
@@ -377,6 +385,24 @@ fn hang_watchdog(test_name: &'static str) -> test_watchdog::WatchdogGuard {
     )
 }
 
+/// Accept exactly one connection on `socket_name`.
+///
+/// # The caller must join this before dropping its end
+///
+/// The ready signal below fires once the listener is *bound*, not once it is
+/// inside `accept()`. So a caller that connects and then disconnects can do
+/// both before this thread ever calls `accept`.
+///
+/// That is fatal on Windows. `interprocess` documents it on
+/// `PipeListener::accept`: a client that connects and disconnects with no
+/// `accept` in between leaves a dead-on-arrival connection on the instance,
+/// and `ConnectNamedPipe` reports `ERROR_NO_DATA`. The listener clears it and
+/// blocks again — waiting for a second client that is never coming, because
+/// the only one already came and went. The test then hangs in `join()`
+/// forever.
+///
+/// Joining first keeps the connection alive across the `accept`, which
+/// returns immediately via `ERROR_PIPE_CONNECTED`. See running-process#751.
 fn spawn_accept_once(socket_name: String) -> thread::JoinHandle<io::Result<()>> {
     let display_name = socket_name.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
