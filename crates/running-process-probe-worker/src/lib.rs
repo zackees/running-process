@@ -21,6 +21,8 @@
 
 #![deny(missing_docs)]
 
+#[cfg(target_os = "windows")]
+pub mod pdb_symbols;
 pub mod symbolize;
 pub mod wire;
 
