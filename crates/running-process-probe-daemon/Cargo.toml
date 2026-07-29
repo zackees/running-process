@@ -29,14 +29,12 @@ thiserror = { workspace = true }
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { workspace = true }
+blake3 = "1"
+sysinfo = "0.30"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-# macOS sun_path is 104 bytes, so the socket leaf is a hash rather than the
-# full name.
-blake3 = "1"
 
 [dev-dependencies]
 tempfile = "3"

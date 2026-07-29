@@ -16,7 +16,7 @@ pub const SPOOL_DIR_ENV: &str = "RUNNING_PROCESS_PROBE_SPOOL_DIR";
 pub const REPORT_DIR_ENV: &str = "RUNNING_PROCESS_PROBE_CRASH_DIR";
 
 pub(crate) const MAGIC: &[u8; 8] = b"RPCRASH1";
-pub(crate) const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 2;
 /// One write, bounded independently of the crashing application's heap size.
 pub const RECORD_SIZE: usize = 16 * 1024;
 pub(crate) const HEADER_SIZE: usize = 128;
@@ -31,7 +31,10 @@ pub(crate) const MAX_FRAMES: usize = 16;
 pub(crate) const FRAME_SIZE: usize = 16;
 pub(crate) const THREAD_SIZE: usize = 16 + MAX_FRAMES * FRAME_SIZE;
 pub(crate) const RAW_OFFSET: usize = THREAD_OFFSET + MAX_THREADS * THREAD_SIZE;
-pub(crate) const MAX_RAW_CONTEXT: usize = RECORD_SIZE - RAW_OFFSET;
+pub(crate) const CWD_SIZE: usize = 1024;
+pub(crate) const CWD_OFFSET: usize = RECORD_SIZE - CWD_SIZE;
+pub(crate) const MAX_RAW_CONTEXT: usize = CWD_OFFSET - RAW_OFFSET;
+const V1_MAX_RAW_CONTEXT: usize = RECORD_SIZE - RAW_OFFSET;
 
 const OFF_VERSION: usize = 8;
 const OFF_RECORD_SIZE: usize = 12;
@@ -44,6 +47,7 @@ const OFF_THREAD_COUNT: usize = 56;
 const OFF_RAW_LEN: usize = 60;
 const OFF_FLAGS: usize = 64;
 const OFF_MODULE_COUNT: usize = 68;
+const OFF_CREATION_TIME_MS: usize = 72;
 const FLAG_TRUNCATED_THREADS: u32 = 1;
 const FLAG_TRUNCATED_CONTEXT: u32 = 2;
 const FLAG_TRUNCATED_MODULES: u32 = 4;
@@ -60,6 +64,10 @@ pub struct CrashMetadata {
     pub app_version: String,
     /// Optional instance discriminator.
     pub instance_name: String,
+    /// Process creation/install time, paired with `pid` to guard PID reuse.
+    pub creation_time_ms: u64,
+    /// Working directory captured before entering compromised context.
+    pub cwd: String,
 }
 
 /// Module identity captured before ASLR state disappears.
@@ -216,10 +224,13 @@ pub(crate) fn initialize(record: &mut [u8; RECORD_SIZE], metadata: &CrashMetadat
 
 pub(crate) fn put_metadata(record: &mut [u8; RECORD_SIZE], metadata: &CrashMetadata) {
     record[HEADER_SIZE..MODULE_OFFSET].fill(0);
+    record[CWD_OFFSET..].fill(0);
     put_text(record, HEADER_SIZE, &metadata.app_class);
     put_text(record, HEADER_SIZE + TEXT_SIZE, &metadata.app_name);
     put_text(record, HEADER_SIZE + TEXT_SIZE * 2, &metadata.app_version);
     put_text(record, HEADER_SIZE + TEXT_SIZE * 3, &metadata.instance_name);
+    put_u64(record, OFF_CREATION_TIME_MS, metadata.creation_time_ms);
+    put_text_sized(record, CWD_OFFSET, CWD_SIZE, &metadata.cwd);
 }
 
 pub(crate) fn put_sample(
@@ -330,7 +341,8 @@ pub fn parse(bytes: &[u8]) -> io::Result<RawCrashReport> {
             "incomplete or invalid crash record",
         ));
     }
-    if get_u32(bytes, OFF_VERSION) != VERSION
+    let version = get_u32(bytes, OFF_VERSION);
+    if (version != 1 && version != VERSION)
         || get_u32(bytes, OFF_RECORD_SIZE) as usize != RECORD_SIZE
     {
         return Err(io::Error::new(
@@ -342,10 +354,15 @@ pub fn parse(bytes: &[u8]) -> io::Result<RawCrashReport> {
     let module_count = get_u32(bytes, OFF_MODULE_COUNT) as usize;
     let thread_count = get_u32(bytes, OFF_THREAD_COUNT) as usize;
     let raw_len = get_u32(bytes, OFF_RAW_LEN) as usize;
+    let max_raw_context = if version == 1 {
+        V1_MAX_RAW_CONTEXT
+    } else {
+        MAX_RAW_CONTEXT
+    };
     if flags & !KNOWN_FLAGS != 0
         || module_count > MAX_MODULES
         || thread_count > MAX_THREADS
-        || raw_len > MAX_RAW_CONTEXT
+        || raw_len > max_raw_context
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -402,6 +419,16 @@ pub fn parse(bytes: &[u8]) -> io::Result<RawCrashReport> {
             app_name: get_text(bytes, HEADER_SIZE + TEXT_SIZE),
             app_version: get_text(bytes, HEADER_SIZE + TEXT_SIZE * 2),
             instance_name: get_text(bytes, HEADER_SIZE + TEXT_SIZE * 3),
+            creation_time_ms: if version == 1 {
+                0
+            } else {
+                get_u64(bytes, OFF_CREATION_TIME_MS)
+            },
+            cwd: if version == 1 {
+                String::new()
+            } else {
+                get_text_sized(bytes, CWD_OFFSET, CWD_SIZE)
+            },
         },
         modules,
         threads,
@@ -532,6 +559,8 @@ mod tests {
             app_name: "worker".into(),
             app_version: "4.6.4".into(),
             instance_name: "west".into(),
+            creation_time_ms: 1234,
+            cwd: "/work".into(),
         };
         let mut bytes = [0; RECORD_SIZE];
         initialize(&mut bytes, &metadata);
@@ -571,6 +600,25 @@ mod tests {
     }
 
     #[test]
+    fn version_one_records_remain_readable_without_new_tags() {
+        let metadata = CrashMetadata {
+            app_class: "legacy".into(),
+            app_name: "worker".into(),
+            app_version: "1".into(),
+            instance_name: String::new(),
+            creation_time_ms: 123,
+            cwd: "/new-layout".into(),
+        };
+        let mut bytes = [0; RECORD_SIZE];
+        initialize(&mut bytes, &metadata);
+        put_u32(&mut bytes, OFF_VERSION, 1);
+        let parsed = parse(&bytes).unwrap();
+        assert_eq!(parsed.metadata.app_class, "legacy");
+        assert_eq!(parsed.metadata.creation_time_ms, 0);
+        assert!(parsed.metadata.cwd.is_empty());
+    }
+
+    #[test]
     fn partial_record_is_refused() {
         assert!(parse(&[0; 100]).is_err());
     }
@@ -582,6 +630,8 @@ mod tests {
             app_name: "b".into(),
             app_version: "c".into(),
             instance_name: String::new(),
+            creation_time_ms: 1,
+            cwd: "/test".into(),
         };
         let mut bytes = [0; RECORD_SIZE];
         initialize(&mut bytes, &metadata);
@@ -611,6 +661,8 @@ mod tests {
             app_name: "b".into(),
             app_version: "c".into(),
             instance_name: String::new(),
+            creation_time_ms: 1,
+            cwd: "/test".into(),
         };
         let mut bytes = [0; RECORD_SIZE];
         initialize(&mut bytes, &metadata);
