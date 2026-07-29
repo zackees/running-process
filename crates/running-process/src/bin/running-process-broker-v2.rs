@@ -19,11 +19,15 @@
 //!    unknown services with `ErrorServiceUnknown`; reject
 //!    out-of-policy versions with `ErrorVersionBlocked` (mirrors
 //!    v1's `hello_router::refused_from_version_policy`).
-//! 4. **Adopt-stub** — replies `Negotiated { backend_pipe: "" }` for
-//!    successful Hellos. Real backend-pipe resolution (read the
-//!    daemon's IPC endpoint from its `BackendIdentity` sidecar +
-//!    forward the adopt traffic) is a follow-up slice; this slice
-//!    proves the discovery + version-policy contract end-to-end.
+//! 4. **Backend-pipe resolution** — a successful Hello replies `Negotiated`
+//!    carrying the IPC endpoint published by the daemon started with
+//!    `--service <name>`, read from its identity file (#532 item 5). When no
+//!    daemon has published, the pipe is empty rather than the Hello being
+//!    refused: the service can be registered and version-compatible while its
+//!    daemon has not started yet.
+//!
+//!    Forwarding the adopt traffic over that pipe is still future work; this
+//!    resolves the endpoint, it does not proxy to it.
 //!
 //! Flags:
 //! - `--no-bind`: skip the bind entirely; exit 0 (kept for the
@@ -34,8 +38,8 @@
 //!   `broker-v2-scaffold`.
 //!
 //! Future slices:
-//! - Backend-pipe resolution + adopt forwarding (the `Negotiated` reply still
-//!   carries an empty `backend_pipe`; see running-process#532 item 5).
+//! - Adopt forwarding. Backend-pipe *resolution* has landed (#532 item 5);
+//!   forwarding the adopt traffic itself has not.
 //!
 //! The single-instance lock and the refuse-privileged-run guard were also
 //! listed here as future work; both have since landed (`is_already_bound_error`
@@ -761,7 +765,8 @@ fn handle_hello_bytes<S: std::io::Write>(
 ) -> Result<String, String> {
     let hello = Hello::decode(bytes.as_slice()).map_err(|e| format!("decode Hello: {e}"))?;
 
-    let reply = build_hello_reply(&hello, loader);
+    let backend_pipe = resolve_backend_pipe(&hello.service_name);
+    let reply = build_hello_reply(&hello, loader, &backend_pipe);
 
     let mut body = Vec::with_capacity(reply.encoded_len());
     reply
@@ -779,7 +784,30 @@ fn handle_hello_bytes<S: std::io::Write>(
 /// Pure decision function — takes a Hello + a loader and returns the
 /// HelloReply we should send. Split out from `handle_hello` so the
 /// policy logic is unit-testable without standing up a real listener.
-fn build_hello_reply(hello: &Hello, loader: &ServiceDefinitionLoader) -> HelloReply {
+/// Where the daemon backing `service` can be reached, or empty if none has
+/// published.
+///
+/// Reads the identity file the daemon writes when started with `--service`
+/// (see running-process#532). The path comes from `daemon_identity_path`, the
+/// same function the daemon publishes through, so the two cannot drift.
+///
+/// Absent is a normal state, not an error: a service can be registered and
+/// version-compatible while its daemon has not started yet, or was launched
+/// without `--service`. Callers get an empty pipe and the pre-#532 behaviour.
+fn resolve_backend_pipe(service: &str) -> String {
+    use running_process::broker::backend_sdk::read_daemon_identity_file;
+    use running_process::broker::lifecycle::names_v2::daemon_identity_path;
+
+    read_daemon_identity_file(&daemon_identity_path(service))
+        .map(|daemon| daemon.ipc_endpoint.path)
+        .unwrap_or_default()
+}
+
+fn build_hello_reply(
+    hello: &Hello,
+    loader: &ServiceDefinitionLoader,
+    backend_pipe: &str,
+) -> HelloReply {
     // 1. Look up the service. Unknown service → ErrorServiceUnknown.
     let definition = match loader.load(&hello.service_name) {
         Ok(d) => d,
@@ -843,9 +871,14 @@ fn build_hello_reply(hello: &Hello, loader: &ServiceDefinitionLoader) -> HelloRe
         );
     }
 
-    // 3. Happy path. Empty backend_pipe; real adopt-forwarding is a
-    //    follow-up slice. The peer can still observe the Negotiated
-    //    reply + the registered binary_path via subsequent control RPCs.
+    // 3. Happy path. `backend_pipe` is resolved by the caller — reading a
+    //    daemon's published identity is I/O, and this stays a pure decision
+    //    function so the policy above is testable without a filesystem.
+    //
+    //    An unresolved pipe is empty rather than a refusal: a service can be
+    //    registered and version-compatible while its daemon has not started
+    //    or was launched without `--service`. That is the pre-#532 behaviour,
+    //    and refusing would turn a startup ordering detail into a hard error.
     //
     // `daemon_version` reports the **broker binary's own version**, not
     // `definition.min_version`. Min-version is a per-service floor
@@ -859,7 +892,7 @@ fn build_hello_reply(hello: &Hello, loader: &ServiceDefinitionLoader) -> HelloRe
         result: Some(hello_reply::Result::Negotiated(Negotiated {
             negotiated_protocol: ENVELOPE_VERSION as u32,
             daemon_version: env!("CARGO_PKG_VERSION").into(),
-            backend_pipe: String::new(),
+            backend_pipe: backend_pipe.to_string(),
             warnings: Vec::new(),
             server_capabilities: 0,
             keepalive_interval_secs: 0,
@@ -1323,12 +1356,53 @@ mod tests {
         );
     }
 
+    /// The pipe the broker hands back must be the one the daemon published.
+    ///
+    /// Drives `resolve_backend_pipe` — the function the Hello path calls —
+    /// rather than reading the file directly, so this fails if resolution
+    /// stops consulting the published identity at all.
+    #[test]
+    fn a_published_daemon_identity_becomes_the_backend_pipe() {
+        use running_process::broker::backend_lifecycle::identity::DaemonProcess;
+        use running_process::broker::backend_sdk::{
+            remove_daemon_identity_file, write_daemon_identity_file,
+        };
+        use running_process::broker::lifecycle::names_v2::daemon_identity_path;
+        use running_process::broker::protocol::Endpoint;
+        use running_process::broker::secure_dir::ensure_private_dir;
+
+        let service = format!("resolve-test-{}", std::process::id());
+        assert_eq!(
+            resolve_backend_pipe(&service),
+            "",
+            "nothing published yet, so there is no pipe to report"
+        );
+
+        let path = daemon_identity_path(&service);
+        ensure_private_dir(path.parent().expect("parent")).expect("private dir");
+        let endpoint = Endpoint {
+            namespace_id: String::new(),
+            path: "daemon-endpoint-under-test".to_string(),
+        };
+        let daemon = DaemonProcess::current_process(endpoint, None).expect("identity");
+        write_daemon_identity_file(&path, &daemon).expect("publish");
+
+        assert_eq!(resolve_backend_pipe(&service), "daemon-endpoint-under-test");
+
+        remove_daemon_identity_file(&path);
+        assert_eq!(
+            resolve_backend_pipe(&service),
+            "",
+            "a retracted daemon must stop being advertised"
+        );
+    }
+
     #[test]
     fn build_hello_reply_refuses_unknown_service() {
         let dir = tempdir().unwrap();
         let loader = ServiceDefinitionLoader::new(dir.path());
         let hello = make_hello("nosuch", "1.0.0");
-        let reply = build_hello_reply(&hello, &loader);
+        let reply = build_hello_reply(&hello, &loader, "");
         match reply.result {
             Some(hello_reply::Result::Refused(r)) => {
                 assert_eq!(r.code, ErrorCode::ErrorServiceUnknown as i32);
@@ -1345,11 +1419,13 @@ mod tests {
             .unwrap();
         let loader = ServiceDefinitionLoader::new(dir.path());
         let hello = make_hello("zccache", "1.0.0");
-        let reply = build_hello_reply(&hello, &loader);
+        let reply = build_hello_reply(&hello, &loader, "");
         match reply.result {
             Some(hello_reply::Result::Negotiated(n)) => {
                 assert_eq!(n.connection_id, 42);
-                assert!(n.backend_pipe.is_empty(), "adopt forwarding is follow-up");
+                // Empty here because this test passes no resolved pipe.
+                // Resolution is the caller's job and is covered separately.
+                assert!(n.backend_pipe.is_empty());
             }
             other => panic!("expected Negotiated, got {other:?}"),
         }
@@ -1364,7 +1440,7 @@ mod tests {
             .unwrap();
         let loader = ServiceDefinitionLoader::new(dir.path());
         let hello = make_hello("zccache", "1.0.0");
-        let reply = build_hello_reply(&hello, &loader);
+        let reply = build_hello_reply(&hello, &loader, "");
         match reply.result {
             Some(hello_reply::Result::Refused(r)) => {
                 assert_eq!(r.code, ErrorCode::ErrorVersionBlocked as i32);
@@ -1383,7 +1459,7 @@ mod tests {
             .unwrap();
         let loader = ServiceDefinitionLoader::new(dir.path());
         let hello = make_hello("zccache", "1.2.0");
-        let reply = build_hello_reply(&hello, &loader);
+        let reply = build_hello_reply(&hello, &loader, "");
         match reply.result {
             Some(hello_reply::Result::Refused(r)) => {
                 assert_eq!(r.code, ErrorCode::ErrorVersionBlocked as i32);
@@ -1435,7 +1511,7 @@ mod tests {
             .unwrap();
         let loader = ServiceDefinitionLoader::new(dir.path());
         let hello = make_hello("zccache", "1.1.0");
-        let reply = build_hello_reply(&hello, &loader);
+        let reply = build_hello_reply(&hello, &loader, "");
         assert!(matches!(
             reply.result,
             Some(hello_reply::Result::Negotiated(_))
