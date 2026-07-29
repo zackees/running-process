@@ -315,13 +315,45 @@ mod tests {
             tid
         }
 
+        #[cfg(not(all(windows, target_arch = "x86_64")))]
         #[inline(never)]
-        fn blocked_marker(ready: &AtomicBool, stop: &AtomicBool) {
+        fn blocked_leaf(ready: &AtomicBool, stop: &AtomicBool) {
             ready.store(true, Ordering::Release);
             while !stop.load(Ordering::Acquire) {
                 std::hint::spin_loop();
                 std::hint::black_box(());
             }
+        }
+
+        /// Keep every post-ready sample point inside this function on Windows.
+        ///
+        /// In an unoptimized MSVC build, `AtomicBool::load` may be emitted as
+        /// an out-of-line helper. Sampling in that helper makes the fixture
+        /// depend on unwinding compiler support code before it can find the
+        /// marker. The single-byte load is atomic on x86_64, and x86 loads
+        /// already have acquire ordering.
+        #[cfg(all(windows, target_arch = "x86_64"))]
+        #[inline(never)]
+        #[allow(unsafe_code)]
+        fn blocked_leaf(ready: &AtomicBool, stop: &AtomicBool) {
+            ready.store(true, Ordering::Release);
+            unsafe {
+                std::arch::asm!(
+                    "2:",
+                    "cmp byte ptr [{stop}], 0",
+                    "je 2b",
+                    stop = in(reg) stop.as_ptr(),
+                    options(nostack),
+                );
+            }
+        }
+
+        #[inline(never)]
+        fn blocked_marker(ready: &AtomicBool, stop: &AtomicBool) {
+            blocked_leaf(ready, stop);
+            // Code after the leaf call prevents tail-call elimination, making
+            // blocked_marker a real caller frame for the acceptance test.
+            std::hint::black_box(stop);
         }
 
         let ready = Arc::new(AtomicBool::new(false));
@@ -357,8 +389,9 @@ mod tests {
             sample
                 .frames
                 .iter()
+                .skip(1)
                 .any(|frame| frame.abs_diff(marker) < 4096),
-            "unwound frames did not contain blocked_marker near {marker:#x} \
+            "unwound caller frames did not contain blocked_marker near {marker:#x} \
              (captured ip={:#x}): {:?}",
             sample.instruction_pointer,
             sample.frames,

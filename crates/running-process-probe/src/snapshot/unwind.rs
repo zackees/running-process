@@ -83,10 +83,10 @@ fn instruction_pointer(sample: &ThreadSample) -> u64 {
 use super::modules::LoadedModule;
 use super::{Snapshot, ThreadSample};
 
-/// Sections framehop may ask for. `.pdata`/`.xdata` carry the x86_64 unwind
-/// tables; `.text` anchors code addresses.
+/// Sections framehop may ask for. `.pdata` plus `.rdata`/`.xdata` carry the
+/// x86_64 unwind tables; `.text` anchors code addresses.
 #[cfg(windows)]
-const WANTED_SECTIONS: &[&str] = &[".text", ".pdata", ".xdata"];
+const WANTED_SECTIONS: &[&str] = &[".text", ".pdata", ".rdata", ".xdata"];
 
 /// Adapts a [`LoadedModule`] to framehop's section interface.
 ///
