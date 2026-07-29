@@ -317,12 +317,13 @@ mod tests {
 
         #[cfg(not(all(windows, target_arch = "x86_64")))]
         #[inline(never)]
-        fn blocked_leaf(ready: &AtomicBool, stop: &AtomicBool) {
+        fn blocked_leaf(ready: &AtomicBool, stop: &AtomicBool) -> bool {
             ready.store(true, Ordering::Release);
             while !stop.load(Ordering::Acquire) {
                 std::hint::spin_loop();
                 std::hint::black_box(());
             }
+            stop.load(Ordering::Acquire)
         }
 
         /// Keep every post-ready sample point inside this function on Windows.
@@ -335,25 +336,29 @@ mod tests {
         #[cfg(all(windows, target_arch = "x86_64"))]
         #[inline(never)]
         #[allow(unsafe_code)]
-        fn blocked_leaf(ready: &AtomicBool, stop: &AtomicBool) {
+        fn blocked_leaf(ready: &AtomicBool, stop: &AtomicBool) -> bool {
             ready.store(true, Ordering::Release);
+            let observed: u8;
             unsafe {
                 std::arch::asm!(
                     "2:",
-                    "cmp byte ptr [{stop}], 0",
+                    "mov {observed}, byte ptr [{stop}]",
+                    "test {observed}, {observed}",
                     "je 2b",
                     stop = in(reg) stop.as_ptr(),
+                    observed = out(reg_byte) observed,
                     options(nostack),
                 );
             }
+            observed != 0
         }
 
         #[inline(never)]
         fn blocked_marker(ready: &AtomicBool, stop: &AtomicBool) {
-            blocked_leaf(ready, stop);
-            // Code after the leaf call prevents tail-call elimination, making
-            // blocked_marker a real caller frame for the acceptance test.
-            std::hint::black_box(stop);
+            let observed = blocked_leaf(ready, stop);
+            // This depends on the leaf's return value, so it cannot be hoisted
+            // before the call. That makes blocked_marker a real caller frame.
+            std::hint::black_box(observed);
         }
 
         let ready = Arc::new(AtomicBool::new(false));
