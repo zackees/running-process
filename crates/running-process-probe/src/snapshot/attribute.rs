@@ -133,8 +133,10 @@ fn module_name(module: &LoadedModule) -> String {
     module
         .path
         .as_deref()
-        .and_then(|p| std::path::Path::new(p).file_name())
-        .map(|n| n.to_string_lossy().into_owned())
+        // Captures can be decoded or tested on a different host OS, so accept
+        // both native separator styles instead of delegating to host `Path`.
+        .and_then(|path| path.rsplit(['/', '\\']).find(|part| !part.is_empty()))
+        .map(str::to_owned)
         .unwrap_or_else(|| format!("{:#x}", module.base))
 }
 
@@ -148,6 +150,8 @@ mod tests {
         LoadedModule {
             base,
             size,
+            mapped_ranges: Vec::new(),
+            executable_ranges: Vec::new(),
             path: path.map(str::to_owned),
             sections: Vec::<Section>::new(),
         }

@@ -1590,6 +1590,8 @@ dependencies = [
  "dirs",
  "framehop",
  "libc",
+ "mach2",
+ "object",
  "proptest",
  "prost",
  "prost-build",

@@ -22,14 +22,19 @@
 
 #![allow(unsafe_code)] // Module enumeration and header reads are FFI/raw-pointer work.
 
-use std::io;
 use std::ops::Range;
 
+#[cfg(windows)]
+use std::io;
+#[cfg(windows)]
 use winapi::shared::minwindef::{DWORD, HMODULE};
+#[cfg(windows)]
 use winapi::um::processthreadsapi::GetCurrentProcess;
+#[cfg(windows)]
 use winapi::um::psapi::{
     EnumProcessModules, GetModuleFileNameExW, GetModuleInformation, MODULEINFO,
 };
+#[cfg(windows)]
 use winapi::um::winnt::{
     IMAGE_DOS_HEADER, IMAGE_DOS_SIGNATURE, IMAGE_NT_HEADERS64, IMAGE_NT_SIGNATURE,
     IMAGE_SECTION_HEADER,
@@ -54,6 +59,11 @@ pub struct LoadedModule {
     pub base: u64,
     /// Total mapped size.
     pub size: u64,
+    /// Actual mapped address ranges when they differ from `base..base+size`.
+    pub(crate) mapped_ranges: Vec<Range<u64>>,
+    /// Mapped ranges whose OS protection permits instruction execution.
+    #[cfg_attr(any(windows, not(target_arch = "x86_64")), allow(dead_code))]
+    pub(crate) executable_ranges: Vec<Range<u64>>,
     /// Full path of the module on disk, when the OS could report it.
     ///
     /// Needed downstream to find the symbol file, which lives beside the
@@ -68,12 +78,29 @@ pub struct LoadedModule {
 impl LoadedModule {
     /// Address range covered by the whole module.
     pub fn range(&self) -> Range<u64> {
-        self.base..self.base + self.size
+        match (self.mapped_ranges.first(), self.mapped_ranges.last()) {
+            (Some(first), Some(last)) => first.start..last.end,
+            _ => self.base..self.base + self.size,
+        }
     }
 
     /// Whether `address` falls inside this module.
     pub fn contains(&self, address: u64) -> bool {
-        self.range().contains(&address)
+        if self.mapped_ranges.is_empty() {
+            self.range().contains(&address)
+        } else {
+            self.mapped_ranges
+                .iter()
+                .any(|range| range.contains(&address))
+        }
+    }
+
+    /// Whether `address` falls inside an executable mapping for this module.
+    #[cfg_attr(any(windows, not(target_arch = "x86_64")), allow(dead_code))]
+    pub(crate) fn contains_executable(&self, address: u64) -> bool {
+        self.executable_ranges
+            .iter()
+            .any(|range| range.contains(&address))
     }
 
     /// Look up a section by name, e.g. `.text` or `.pdata`.
@@ -89,6 +116,7 @@ impl LoadedModule {
 /// `base` must be the base address of a PE image currently mapped into this
 /// process. Callers get that from [`enumerate_modules`], which obtains it from
 /// the OS.
+#[cfg(windows)]
 unsafe fn read_sections(base: u64) -> Option<Vec<Section>> {
     let dos = base as *const IMAGE_DOS_HEADER;
     if (*dos).e_magic != IMAGE_DOS_SIGNATURE {
@@ -138,6 +166,7 @@ unsafe fn read_sections(base: u64) -> Option<Vec<Section>> {
 }
 
 /// Enumerate every module mapped into this process.
+#[cfg(windows)]
 pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
     let process = unsafe { GetCurrentProcess() };
 
@@ -192,6 +221,8 @@ pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
         modules.push(LoadedModule {
             base,
             size: u64::from(info.SizeOfImage),
+            mapped_ranges: Vec::new(),
+            executable_ranges: Vec::new(),
             path: unsafe { module_path(process, handle) },
             sections,
         });
@@ -205,6 +236,7 @@ pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
 /// # Safety
 ///
 /// `handle` must be a module handle obtained from `process`.
+#[cfg(windows)]
 unsafe fn module_path(process: winapi::um::winnt::HANDLE, handle: HMODULE) -> Option<String> {
     let mut buffer = [0u16; 32768];
     let len = GetModuleFileNameExW(process, handle, buffer.as_mut_ptr(), buffer.len() as DWORD);
@@ -219,7 +251,263 @@ pub fn module_for_address(modules: &[LoadedModule], address: u64) -> Option<&Loa
     modules.iter().find(|m| m.contains(address))
 }
 
-#[cfg(test)]
+#[cfg(target_os = "linux")]
+fn next_maps_field(input: &str) -> Option<(&str, &str)> {
+    let input = input.trim_start();
+    let end = input.find(char::is_whitespace).unwrap_or(input.len());
+    (!input.is_empty()).then_some((&input[..end], &input[end..]))
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxImage {
+    mapped_ranges: Vec<Range<u64>>,
+    executable_ranges: Vec<Range<u64>>,
+    load_bias: u64,
+    path: String,
+}
+
+#[cfg(target_os = "linux")]
+type LinuxImageKey = (String, String, String, u64);
+
+#[cfg(target_os = "linux")]
+struct LinuxMapping {
+    range: Range<u64>,
+    executable: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn linux_images() -> std::io::Result<Vec<LinuxImage>> {
+    use std::collections::BTreeMap;
+
+    // (path, device, inode, load instance) -> individual mapped ranges.
+    let mut images: BTreeMap<LinuxImageKey, Vec<LinuxMapping>> = BTreeMap::new();
+    for line in std::fs::read_to_string("/proc/self/maps")?.lines() {
+        let Some((range, rest)) = next_maps_field(line) else {
+            continue;
+        };
+        let Some((perms, rest)) = next_maps_field(rest) else {
+            continue;
+        };
+        let Some((offset, rest)) = next_maps_field(rest) else {
+            continue;
+        };
+        let Some((dev, rest)) = next_maps_field(rest) else {
+            continue;
+        };
+        let Some((inode, rest)) = next_maps_field(rest) else {
+            continue;
+        };
+        let path = rest.trim_start();
+        if !path.starts_with('/') {
+            continue;
+        }
+        if path.ends_with(" (deleted)") {
+            // Reopening the same pathname could read a replacement build,
+            // producing plausible but wrong unwind rules. A deleted mapping
+            // is safer left raw.
+            continue;
+        }
+        let path = path.to_owned();
+        let Some((start, end)) = range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end), Ok(offset)) = (
+            u64::from_str_radix(start, 16),
+            u64::from_str_radix(end, 16),
+            u64::from_str_radix(offset, 16),
+        ) else {
+            continue;
+        };
+        let candidate_base = start.saturating_sub(offset);
+        images
+            .entry((path, dev.to_owned(), inode.to_owned(), candidate_base))
+            .or_default()
+            .push(LinuxMapping {
+                range: start..end,
+                executable: perms.as_bytes().get(2) == Some(&b'x'),
+            });
+    }
+
+    Ok(images
+        .into_iter()
+        .map(|((path, _dev, _inode, load_bias), mut mappings)| {
+            mappings.sort_by_key(|mapping| mapping.range.start);
+            LinuxImage {
+                mapped_ranges: mappings
+                    .iter()
+                    .map(|mapping| mapping.range.clone())
+                    .collect(),
+                executable_ranges: mappings
+                    .into_iter()
+                    .filter_map(|mapping| mapping.executable.then_some(mapping.range))
+                    .collect(),
+                load_bias,
+                path,
+            }
+        })
+        .collect())
+}
+
+#[cfg(target_os = "linux")]
+/// Enumerate ELF images mapped in the current Linux process.
+pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
+    use object::{Object, ObjectKind, ObjectSection};
+
+    let mut modules = Vec::new();
+    for LinuxImage {
+        mapped_ranges,
+        executable_ranges,
+        load_bias,
+        path,
+    } in linux_images()?
+    {
+        let Some(mapped_start) = mapped_ranges.first().map(|range| range.start) else {
+            continue;
+        };
+        let Some(mapped_end) = mapped_ranges.last().map(|range| range.end) else {
+            continue;
+        };
+        let Ok(data) = std::fs::read(&path) else {
+            // A deleted/replaced mapping remains valid for raw capture but
+            // cannot safely provide unwind metadata from disk. Leave it out
+            // rather than attribute it to a different build.
+            continue;
+        };
+        let Ok(file) = object::File::parse(data.as_slice()) else {
+            continue;
+        };
+        let base = if file.kind() == ObjectKind::Executable {
+            0
+        } else {
+            load_bias
+        };
+        let sections = file
+            .sections()
+            .filter_map(|section| {
+                let name = section.name().ok()?.to_owned();
+                let start = base.checked_add(section.address())?;
+                let end = start.checked_add(section.size())?;
+                Some(Section {
+                    name,
+                    range: start..end,
+                })
+            })
+            .collect();
+
+        modules.push(LoadedModule {
+            base,
+            size: mapped_end.saturating_sub(mapped_start),
+            mapped_ranges,
+            executable_ranges,
+            path: Some(path),
+            sections,
+        });
+    }
+    modules.sort_by_key(|module| module.base);
+    Ok(modules)
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn _dyld_image_count() -> u32;
+    fn _dyld_get_image_header(image_index: u32) -> *const libc::c_void;
+    fn _dyld_get_image_vmaddr_slide(image_index: u32) -> isize;
+    fn _dyld_get_image_name(image_index: u32) -> *const libc::c_char;
+}
+
+#[cfg(target_os = "macos")]
+fn add_slide(address: u64, slide: isize) -> Option<u64> {
+    if slide >= 0 {
+        address.checked_add(slide as u64)
+    } else {
+        address.checked_sub(slide.unsigned_abs() as u64)
+    }
+}
+
+#[cfg(target_os = "macos")]
+/// Enumerate Mach-O images loaded by dyld in the current macOS process.
+pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
+    use object::{Object, ObjectSection, ObjectSegment};
+    use std::ffi::CStr;
+
+    let count = unsafe { _dyld_image_count() };
+    let mut modules = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let name = unsafe { _dyld_get_image_name(index) };
+        let header = unsafe { _dyld_get_image_header(index) };
+        if name.is_null() || header.is_null() {
+            continue;
+        }
+        let path = unsafe { CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned();
+        let Ok(data) = std::fs::read(&path) else {
+            // Some system images live only in the shared dyld cache. Their
+            // raw frames remain unattributed rather than being paired with
+            // metadata read from a different file.
+            continue;
+        };
+        let Ok(file) = object::File::parse(data.as_slice()) else {
+            continue;
+        };
+        let slide = unsafe { _dyld_get_image_vmaddr_slide(index) };
+        let base_svma = file.relative_address_base();
+        let base = add_slide(base_svma, slide).unwrap_or(header as u64);
+
+        let mut mapped_start = u64::MAX;
+        let mut mapped_end = 0u64;
+        let mut executable_ranges = Vec::new();
+        for segment in file.segments() {
+            if segment.name().ok().flatten() == Some("__PAGEZERO") {
+                continue;
+            }
+            let Some(start) = add_slide(segment.address(), slide) else {
+                continue;
+            };
+            let Some(end) = start.checked_add(segment.size()) else {
+                continue;
+            };
+            mapped_start = mapped_start.min(start);
+            mapped_end = mapped_end.max(end);
+            if matches!(
+                segment.flags(),
+                object::SegmentFlags::MachO { initprot, .. }
+                    if initprot & object::macho::VM_PROT_EXECUTE != 0
+            ) {
+                executable_ranges.push(start..end);
+            }
+        }
+        if mapped_start == u64::MAX || mapped_end <= base {
+            continue;
+        }
+
+        let sections = file
+            .sections()
+            .filter_map(|section| {
+                let name = section.name().ok()?.to_owned();
+                let start = add_slide(section.address(), slide)?;
+                let end = start.checked_add(section.size())?;
+                Some(Section {
+                    name,
+                    range: start..end,
+                })
+            })
+            .collect();
+        let _ = mapped_start;
+        modules.push(LoadedModule {
+            base,
+            size: mapped_end - base,
+            mapped_ranges: Vec::new(),
+            executable_ranges,
+            path: Some(path),
+            sections,
+        });
+    }
+    modules.sort_by_key(|module| module.base);
+    Ok(modules)
+}
+
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
@@ -319,5 +607,40 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+
+    #[test]
+    fn maps_path_preserves_spaces_and_deleted_suffix() {
+        let line = "1000-2000 r-xp 00000000 08:01 42 /tmp/a file (deleted)";
+        let (_, rest) = next_maps_field(line).unwrap();
+        let (_, rest) = next_maps_field(rest).unwrap();
+        let (_, rest) = next_maps_field(rest).unwrap();
+        let (_, rest) = next_maps_field(rest).unwrap();
+        let (_, rest) = next_maps_field(rest).unwrap();
+        assert_eq!(rest.trim_start(), "/tmp/a file (deleted)");
+        assert!(rest.trim_start().ends_with(" (deleted)"));
+    }
+
+    #[test]
+    fn elf_load_bias_does_not_expand_mapped_coverage_to_zero() {
+        let module = LoadedModule {
+            base: 0,
+            size: 0x2000,
+            mapped_ranges: vec![0x400000..0x401000, 0x402000..0x403000],
+            executable_ranges: std::iter::once(0x400000..0x401000).collect(),
+            path: Some("/tmp/non-pie".into()),
+            sections: Vec::new(),
+        };
+        assert!(module.contains(0x400100));
+        assert!(module.contains(0x402100));
+        assert!(!module.contains(0x401100));
+        assert!(!module.contains(1));
+        assert!(module.contains_executable(0x400100));
+        assert!(!module.contains_executable(0x402100));
     }
 }

@@ -95,6 +95,9 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
+    # #635 known-stack test: `thread::Builder::spawn` names the fixture
+    # `blocked_marker`; this is an in-process thread, not a child process.
+    Path("crates/running-process-probe/src/snapshot/mod.rs"),
     # Probe client worker (#633): `thread::Builder::spawn` starts a THREAD,
     # not a process. It exists precisely so `probe::install()` performs no
     # I/O on the calling thread.

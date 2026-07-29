@@ -57,6 +57,20 @@ prost = "0.14"
 thiserror = { workspace = true }
 framehop = "0.13"
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+# #635 cooperative capture uses realtime signals/ucontext on Linux and Mach
+# thread APIs on macOS. This must be a normal dependency: snapshot capture is
+# production code, not only a test seam.
+libc = "0.2"
+# Parse unwind sections only after every captured thread is running again.
+# Keeping parsers out of the signal/suspend window is the safety boundary.
+object = { version = "0.36", default-features = false, features = ["read", "std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# libc exposes thread_info but not the suspend/state/Mach-VM APIs or
+# architecture state structs needed for cooperative capture.
+mach2 = "0.4"
+
 # Slice 6d adds the Windows-side injection vehicle
 # (`CreateRemoteThread(LoadLibraryW, dll_path)`). Gated on
 # `target_os = "windows"` so the rest of the workspace doesn't pull
