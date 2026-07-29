@@ -247,7 +247,14 @@ fn next_maps_field(input: &str) -> Option<(&str, &str)> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_images() -> std::io::Result<Vec<(Vec<Range<u64>>, u64, String)>> {
+struct LinuxImage {
+    mapped_ranges: Vec<Range<u64>>,
+    load_bias: u64,
+    path: String,
+}
+
+#[cfg(target_os = "linux")]
+fn linux_images() -> std::io::Result<Vec<LinuxImage>> {
     use std::collections::BTreeMap;
 
     // (path, device, inode, load instance) -> individual mapped ranges.
@@ -300,7 +307,11 @@ fn linux_images() -> std::io::Result<Vec<(Vec<Range<u64>>, u64, String)>> {
         .into_iter()
         .map(|((path, _dev, _inode, load_bias), mut ranges)| {
             ranges.sort_by_key(|range| range.start);
-            (ranges, load_bias, path)
+            LinuxImage {
+                mapped_ranges: ranges,
+                load_bias,
+                path,
+            }
         })
         .collect())
 }
@@ -311,7 +322,12 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
     use object::{Object, ObjectKind, ObjectSection};
 
     let mut modules = Vec::new();
-    for (mapped_ranges, load_bias, path) in linux_images()? {
+    for LinuxImage {
+        mapped_ranges,
+        load_bias,
+        path,
+    } in linux_images()?
+    {
         let Some(mapped_start) = mapped_ranges.first().map(|range| range.start) else {
             continue;
         };
