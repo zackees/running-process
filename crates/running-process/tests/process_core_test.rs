@@ -13,6 +13,8 @@ use std::process::Command;
 #[cfg(windows)]
 use std::process::Stdio;
 use std::thread;
+#[cfg(unix)]
+use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
 /// How long to wait for a child to exit.
 ///
@@ -179,6 +181,24 @@ fn bounded_run_stops_allocating_after_output_limit() {
         result,
         Err(ProcessError::OutputLimitExceeded { limit: 1024 })
     ));
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_std_command_preserves_non_utf8_process_inputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let program = temp.path().join(OsString::from_vec(b"shell-\xff".to_vec()));
+    std::os::unix::fs::symlink("/bin/sh", &program).unwrap();
+
+    let mut command = Command::new(program);
+    command
+        .args(["-c", "printf %s \"$RP_BYTES\"; printf %s \"$1\"", "sh"])
+        .arg(OsString::from_vec(b"arg-\xfe".to_vec()))
+        .env("RP_BYTES", OsString::from_vec(b"environment-\xff".to_vec()));
+
+    let output =
+        running_process::run_std_command_bounded(command, Some(CHILD_EXIT_WAIT), 4096).unwrap();
+    assert_eq!(output.stdout, b"environment-\xffarg-\xfe");
 }
 
 #[cfg(target_os = "linux")]
