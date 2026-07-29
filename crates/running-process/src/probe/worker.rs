@@ -9,7 +9,9 @@
 //! in-memory, so a daemon restart forgets us and only a fresh registration
 //! returns this process to `ARMED`.
 
-use std::io;
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -18,6 +20,7 @@ use std::time::Duration;
 use running_process_probe::probe_diag::v1::{
     AllowPolicy as WireAllowPolicy, Disclosure as WireDisclosure, ProcessKey, RegisterProcess,
 };
+use sha2::{Digest, Sha256};
 
 use super::client::{HeartbeatWork, ProbeClient, SocketProbeClient};
 use super::Config;
@@ -108,9 +111,9 @@ fn run(
     // Reading and hashing the executable can take hundreds of milliseconds on
     // Windows. Keep it on this worker so `probe::install` never performs file
     // I/O on the application's calling thread.
-    let Ok(exe_sha256) = crate::broker::backend_lifecycle::identity::sha256_file(
-        std::path::Path::new(&request.exe_path),
-    ) else {
+    let Ok(Some(exe_sha256)) =
+        sha256_file_interruptible(Path::new(&request.exe_path), stop.as_ref())
+    else {
         return;
     };
     request.exe_sha256 = exe_sha256.to_vec();
@@ -151,6 +154,39 @@ fn run(
             }
         }
     }
+}
+
+/// Hash a file without making worker shutdown wait for all remaining I/O.
+///
+/// In particular, cross-compiled test executables can be large and slow to
+/// read under emulation. Checking between bounded reads keeps [`super::Guard`]
+/// drop latency independent of the executable's total size.
+fn sha256_file_interruptible(path: &Path, stop: &AtomicBool) -> io::Result<Option<[u8; 32]>> {
+    if stop.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let read = match file.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    let mut digest = [0_u8; 32];
+    digest.copy_from_slice(&hasher.finalize());
+    Ok(Some(digest))
 }
 
 fn fresh_nonce() -> io::Result<[u8; 32]> {
@@ -313,6 +349,28 @@ mod tests {
         let start = std::time::Instant::now();
         sleep_interruptible(Duration::from_millis(150), &stop);
         assert!(start.elapsed() >= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn executable_hash_matches_the_canonical_identity_hash() {
+        let path = std::env::current_exe().unwrap();
+        let stop = AtomicBool::new(false);
+        let actual = sha256_file_interruptible(&path, &stop)
+            .unwrap()
+            .expect("hash should complete");
+        let expected = crate::broker::backend_lifecycle::identity::sha256_file(&path).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn executable_hash_short_circuits_before_open_when_stopped() {
+        let stop = AtomicBool::new(true);
+        let missing = Path::new("this-file-does-not-exist");
+        assert_eq!(
+            sha256_file_interruptible(missing, &stop).unwrap(),
+            None,
+            "an already-set stop flag must win over file I/O"
+        );
     }
 
     #[test]
