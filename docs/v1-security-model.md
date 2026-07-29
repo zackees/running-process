@@ -173,6 +173,18 @@ The `fs_health.rs` inventory covers the Unix inode-pressure probe (#390): two
 broker-owned constant (never peer-supplied), the struct is stack-local, and
 only the inode counters are read out.
 
+The `host_identity.rs` inventory includes the Windows boot-identity fix
+(#757). The primary path calls `RegGetValueW` for the fixed, machine-local
+`PrefetchParameters\BootId` DWORD and accepts it only after validating the
+return status, registry type, and exact four-byte length. If that value is
+unavailable, the fallback queries the current process's documented
+`ProcessTelemetryIdInformation` through `NtQueryInformationProcess`. It uses
+the non-owning current-process pseudo-handle, probes the kernel-reported buffer
+size, caps allocation at 1 MiB, retries once if the size grows, and reads
+`BootId` only after the returned length covers that field. The final fallback
+is a process-stable unique token, so loss of both OS sources fails closed
+instead of accepting an identity with a cross-boot constant.
+
 The `server/handoff/unix.rs` inventory covers the Unix `SCM_RIGHTS` boundary:
 constructing and inspecting `msghdr` control messages, calling `sendmsg` and
 `recvmsg`, and closing the duplicated descriptor received by the compatibility

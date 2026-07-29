@@ -239,8 +239,14 @@ fn windows_process_boot_counter() -> Option<u32> {
 
     let boot_id_offset = std::mem::offset_of!(ProcessTelemetryInfo, boot_id);
     let boot_id_end = boot_id_offset + std::mem::size_of::<u32>();
+    const MAX_PROCESS_TELEMETRY_BYTES: usize = 1024 * 1024;
+
+    // SAFETY: GetCurrentProcess returns a pseudo-handle owned by Windows; it
+    // must not and will not be closed by this process.
     let process = unsafe { GetCurrentProcess() };
     let mut needed = 0_u32;
+    // SAFETY: a zero-length probe with a null output buffer asks the kernel for
+    // the required allocation size. `needed` is valid writable storage.
     unsafe {
         NtQueryInformationProcess(
             process,
@@ -250,7 +256,7 @@ fn windows_process_boot_counter() -> Option<u32> {
             &mut needed,
         );
     };
-    if (needed as usize) < boot_id_end {
+    if (needed as usize) < boot_id_end || needed as usize > MAX_PROCESS_TELEMETRY_BYTES {
         return None;
     }
 
@@ -261,6 +267,9 @@ fn windows_process_boot_counter() -> Option<u32> {
         let mut buffer = vec![0_u64; words];
         let capacity = buffer.len() * std::mem::size_of::<u64>();
         let mut returned = needed;
+        // SAFETY: `buffer` is writable for `capacity` bytes and is aligned more
+        // strictly than the telemetry header. The current-process pseudo-handle
+        // remains valid for the lifetime of this call.
         let status = unsafe {
             NtQueryInformationProcess(
                 process,
@@ -271,6 +280,9 @@ fn windows_process_boot_counter() -> Option<u32> {
             )
         };
         if status >= 0 && returned as usize >= boot_id_end {
+            // SAFETY: the successful query reported at least `boot_id_end`
+            // initialized bytes. `read_unaligned` avoids relying on the buffer's
+            // alignment for the field read.
             let boot_id = unsafe {
                 std::ptr::read_unaligned(
                     buffer
@@ -282,7 +294,7 @@ fn windows_process_boot_counter() -> Option<u32> {
             };
             return Some(boot_id);
         }
-        if returned as usize <= capacity {
+        if returned as usize <= capacity || returned as usize > MAX_PROCESS_TELEMETRY_BYTES {
             return None;
         }
         needed = returned;
