@@ -221,6 +221,7 @@ trybuild = "1"
 # ClosePseudoConsole + PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE directly.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
+    "Wdk_System_Threading",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
