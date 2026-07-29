@@ -65,23 +65,10 @@ jobs:
         with:
           tool: nextest
 
-      # Keep core capture while the graceful broker shutdown change soaks.
-      # Historical LLVM 21.1.8 profile inputs triggered SIGILL, but the
-      # producer and exact corruption mechanism have not been established.
-      - name: Enable core dumps
-        run: |
-          sudo sysctl -w kernel.core_pattern="$PWD/logs/core.%e.%p"
-          mkdir -p logs
-          ulimit -c unlimited
-          echo "core pattern: $(cat /proc/sys/kernel/core_pattern)"
-
       - name: Run tests with coverage
-        shell: bash
-        run: |
-          ulimit -c unlimited
-          uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test --coverage
+        run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test --coverage
 
-      - name: Coverage crash triage (backtrace + profraw bisect)
+      - name: Coverage profraw diagnostics
         if: ${{ failure() }}
         shell: bash
         run: |
@@ -90,15 +77,6 @@ jobs:
           echo "::group::llvm-profdata identity"
           "$PROFDATA" --version || true
           file "$PROFDATA" || true
-          echo "::endgroup::"
-
-          echo "::group::gdb backtrace of core dump (if any)"
-          sudo apt-get install -y -q gdb >/dev/null 2>&1 || true
-          for core in logs/core.*; do
-            [ -f "$core" ] || continue
-            echo "--- $core ---"
-            gdb -batch -ex "bt full" -ex "info registers" "$PROFDATA" "$core" 2>&1 | head -80
-          done
           echo "::endgroup::"
 
           echo "::group::per-profraw validation bisect"
