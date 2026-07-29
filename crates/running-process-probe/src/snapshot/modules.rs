@@ -61,6 +61,9 @@ pub struct LoadedModule {
     pub size: u64,
     /// Actual mapped address ranges when they differ from `base..base+size`.
     pub(crate) mapped_ranges: Vec<Range<u64>>,
+    /// Mapped ranges whose OS protection permits instruction execution.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) executable_ranges: Vec<Range<u64>>,
     /// Full path of the module on disk, when the OS could report it.
     ///
     /// Needed downstream to find the symbol file, which lives beside the
@@ -90,6 +93,14 @@ impl LoadedModule {
                 .iter()
                 .any(|range| range.contains(&address))
         }
+    }
+
+    /// Whether `address` falls inside an executable mapping for this module.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn contains_executable(&self, address: u64) -> bool {
+        self.executable_ranges
+            .iter()
+            .any(|range| range.contains(&address))
     }
 
     /// Look up a section by name, e.g. `.text` or `.pdata`.
@@ -211,6 +222,7 @@ pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
             base,
             size: u64::from(info.SizeOfImage),
             mapped_ranges: Vec::new(),
+            executable_ranges: Vec::new(),
             path: unsafe { module_path(process, handle) },
             sections,
         });
@@ -249,8 +261,18 @@ fn next_maps_field(input: &str) -> Option<(&str, &str)> {
 #[cfg(target_os = "linux")]
 struct LinuxImage {
     mapped_ranges: Vec<Range<u64>>,
+    executable_ranges: Vec<Range<u64>>,
     load_bias: u64,
     path: String,
+}
+
+#[cfg(target_os = "linux")]
+type LinuxImageKey = (String, String, String, u64);
+
+#[cfg(target_os = "linux")]
+struct LinuxMapping {
+    range: Range<u64>,
+    executable: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -258,12 +280,12 @@ fn linux_images() -> std::io::Result<Vec<LinuxImage>> {
     use std::collections::BTreeMap;
 
     // (path, device, inode, load instance) -> individual mapped ranges.
-    let mut images: BTreeMap<(String, String, String, u64), Vec<Range<u64>>> = BTreeMap::new();
+    let mut images: BTreeMap<LinuxImageKey, Vec<LinuxMapping>> = BTreeMap::new();
     for line in std::fs::read_to_string("/proc/self/maps")?.lines() {
         let Some((range, rest)) = next_maps_field(line) else {
             continue;
         };
-        let Some((_perms, rest)) = next_maps_field(rest) else {
+        let Some((perms, rest)) = next_maps_field(rest) else {
             continue;
         };
         let Some((offset, rest)) = next_maps_field(rest) else {
@@ -300,15 +322,25 @@ fn linux_images() -> std::io::Result<Vec<LinuxImage>> {
         images
             .entry((path, dev.to_owned(), inode.to_owned(), candidate_base))
             .or_default()
-            .push(start..end);
+            .push(LinuxMapping {
+                range: start..end,
+                executable: perms.as_bytes().get(2) == Some(&b'x'),
+            });
     }
 
     Ok(images
         .into_iter()
-        .map(|((path, _dev, _inode, load_bias), mut ranges)| {
-            ranges.sort_by_key(|range| range.start);
+        .map(|((path, _dev, _inode, load_bias), mut mappings)| {
+            mappings.sort_by_key(|mapping| mapping.range.start);
             LinuxImage {
-                mapped_ranges: ranges,
+                mapped_ranges: mappings
+                    .iter()
+                    .map(|mapping| mapping.range.clone())
+                    .collect(),
+                executable_ranges: mappings
+                    .into_iter()
+                    .filter_map(|mapping| mapping.executable.then_some(mapping.range))
+                    .collect(),
                 load_bias,
                 path,
             }
@@ -324,6 +356,7 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
     let mut modules = Vec::new();
     for LinuxImage {
         mapped_ranges,
+        executable_ranges,
         load_bias,
         path,
     } in linux_images()?
@@ -365,6 +398,7 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
             base,
             size: mapped_end.saturating_sub(mapped_start),
             mapped_ranges,
+            executable_ranges,
             path: Some(path),
             sections,
         });
@@ -422,6 +456,7 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
 
         let mut mapped_start = u64::MAX;
         let mut mapped_end = 0u64;
+        let mut executable_ranges = Vec::new();
         for segment in file.segments() {
             if segment.name().ok().flatten() == Some("__PAGEZERO") {
                 continue;
@@ -434,6 +469,13 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
             };
             mapped_start = mapped_start.min(start);
             mapped_end = mapped_end.max(end);
+            if matches!(
+                segment.flags(),
+                object::SegmentFlags::MachO { initprot, .. }
+                    if initprot & object::macho::VM_PROT_EXECUTE != 0
+            ) {
+                executable_ranges.push(start..end);
+            }
         }
         if mapped_start == u64::MAX || mapped_end <= base {
             continue;
@@ -456,6 +498,7 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
             base,
             size: mapped_end - base,
             mapped_ranges: Vec::new(),
+            executable_ranges,
             path: Some(path),
             sections,
         });
@@ -589,6 +632,7 @@ mod linux_tests {
             base: 0,
             size: 0x2000,
             mapped_ranges: vec![0x400000..0x401000, 0x402000..0x403000],
+            executable_ranges: std::iter::once(0x400000..0x401000).collect(),
             path: Some("/tmp/non-pie".into()),
             sections: Vec::new(),
         };
@@ -596,5 +640,7 @@ mod linux_tests {
         assert!(module.contains(0x402100));
         assert!(!module.contains(0x401100));
         assert!(!module.contains(1));
+        assert!(module.contains_executable(0x400100));
+        assert!(!module.contains_executable(0x402100));
     }
 }

@@ -172,6 +172,7 @@ pub fn unwind_sample(
     unwinder: &ArchUnwinder<Vec<u8>>,
     cache: &mut ArchCache,
     sample: &ThreadSample,
+    _modules: &[LoadedModule],
 ) -> Vec<u64> {
     let sp = sample.stack_pointer;
     let bytes = &sample.stack_bytes;
@@ -198,7 +199,213 @@ pub fn unwind_sample(
     while let Ok(Some(frame)) = iter.next() {
         frames.push(frame.address());
     }
+
+    // Coverage instrumentation and hand-written assembly can expose valid
+    // frame-pointer chains that are not described by usable ELF/Mach-O CFI.
+    // Recover those callers conservatively from the already-copied stack.
+    // Windows deliberately remains metadata-only so its PE unwind-table path
+    // is still exercised by the known-stack acceptance test.
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    if let Some(suspect_from) = frames
+        .iter()
+        .skip(1)
+        .position(|address| {
+            !_modules
+                .iter()
+                .any(|module| module.contains_executable(*address))
+        })
+        .map(|index| index + 1)
+        .or((frames.len() <= 1).then_some(frames.len()))
+    {
+        let recovered = frame_pointer_fallback(sample, |address| {
+            _modules
+                .iter()
+                .any(|module| module.contains_executable(address))
+        });
+        replace_suspect_callers(&mut frames, suspect_from, recovered);
+    }
+
     frames
+}
+
+/// Replace an invalid metadata-derived caller tail with a validated chain.
+#[cfg(all(
+    target_arch = "x86_64",
+    any(test, target_os = "linux", target_os = "macos")
+))]
+fn replace_suspect_callers(frames: &mut Vec<u64>, suspect_from: usize, recovered: Vec<u64>) {
+    let valid_prefix_len = suspect_from.min(frames.len());
+    let valid_callers = valid_prefix_len.saturating_sub(1);
+    let overlap = if valid_callers == 0 {
+        0
+    } else {
+        (1..=valid_callers.min(recovered.len()))
+            .rev()
+            .find(|&len| frames[valid_prefix_len - len..valid_prefix_len] == recovered[..len])
+            .unwrap_or(0)
+    };
+
+    // Always discard the known-invalid metadata tail. With no metadata caller
+    // prefix, the independently validated chain can be used in full. Otherwise
+    // extend only when the two unwind methods overlap, preserving frameless
+    // metadata-derived callers that are absent from an RBP chain.
+    frames.truncate(valid_prefix_len);
+    if valid_callers == 0 || overlap != 0 {
+        frames.extend_from_slice(&recovered[overlap..]);
+    }
+}
+
+/// Walk a conventional x86_64 RBP chain inside the bounded stack copy.
+///
+/// Every read is range-checked. Alignment and strictly increasing frame
+/// pointers reject arbitrary general-purpose RBP values, every return address
+/// must satisfy `is_return_address`, and the depth cap makes corrupt cyclic
+/// chains terminate.
+#[cfg(all(
+    target_arch = "x86_64",
+    any(test, target_os = "linux", target_os = "macos")
+))]
+fn frame_pointer_fallback(
+    sample: &ThreadSample,
+    mut is_return_address: impl FnMut(u64) -> bool,
+) -> Vec<u64> {
+    const MAX_FRAMES: usize = 256;
+
+    let stack_start = sample.stack_pointer;
+    let Some(stack_end) = stack_start.checked_add(sample.stack_bytes.len() as u64) else {
+        return Vec::new();
+    };
+    let mut frame_pointer = sample.frame_pointer;
+    let mut frames = Vec::new();
+
+    let read_word = |address: u64| -> Option<u64> {
+        if address % 8 != 0 {
+            return None;
+        }
+        let offset = usize::try_from(address.checked_sub(stack_start)?).ok()?;
+        let end = offset.checked_add(8)?;
+        let bytes = sample.stack_bytes.get(offset..end)?;
+        Some(u64::from_le_bytes(bytes.try_into().ok()?))
+    };
+
+    for _ in 0..MAX_FRAMES {
+        if frame_pointer < stack_start
+            || frame_pointer
+                .checked_add(16)
+                .is_none_or(|end| end > stack_end)
+        {
+            break;
+        }
+        let Some(previous) = read_word(frame_pointer) else {
+            break;
+        };
+        let Some(return_address) = read_word(frame_pointer + 8) else {
+            break;
+        };
+        if return_address == 0 || !is_return_address(return_address) {
+            break;
+        }
+        frames.push(return_address);
+        if previous <= frame_pointer {
+            break;
+        }
+        frame_pointer = previous;
+    }
+
+    frames
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod frame_pointer_tests {
+    use super::*;
+    use crate::snapshot::CaptureKind;
+
+    fn sample(frame_pointer: u64, stack_bytes: Vec<u8>) -> ThreadSample {
+        ThreadSample {
+            os_tid: 1,
+            stack_pointer: 0x1000,
+            instruction_pointer: 0x2000,
+            frame_pointer,
+            link_register: None,
+            stack_bytes,
+            truncated: false,
+            kind: CaptureKind::RawContext,
+            frames: Vec::new(),
+        }
+    }
+
+    fn write_word(stack: &mut [u8], address: u64, value: u64) {
+        let offset = usize::try_from(address - 0x1000).unwrap();
+        stack[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    #[test]
+    fn frame_pointer_fallback_walks_a_bounded_monotonic_chain() {
+        let mut stack = vec![0u8; 64];
+        write_word(&mut stack, 0x1000, 0x1020);
+        write_word(&mut stack, 0x1008, 0xaaaa);
+        write_word(&mut stack, 0x1020, 0);
+        write_word(&mut stack, 0x1028, 0xbbbb);
+
+        assert_eq!(
+            frame_pointer_fallback(&sample(0x1000, stack), |_| true),
+            vec![0xaaaa, 0xbbbb]
+        );
+    }
+
+    #[test]
+    fn frame_pointer_fallback_rejects_unaligned_or_backward_chains() {
+        let mut stack = vec![0u8; 64];
+        write_word(&mut stack, 0x1000, 0x1000);
+        write_word(&mut stack, 0x1008, 0xaaaa);
+
+        assert!(frame_pointer_fallback(&sample(0x1001, stack.clone()), |_| true).is_empty());
+        assert_eq!(
+            frame_pointer_fallback(&sample(0x1000, stack), |_| true),
+            vec![0xaaaa]
+        );
+    }
+
+    #[test]
+    fn frame_pointer_fallback_stops_at_an_unattributed_return_address() {
+        let mut stack = vec![0u8; 64];
+        write_word(&mut stack, 0x1000, 0x1020);
+        write_word(&mut stack, 0x1008, 0xaaaa);
+        write_word(&mut stack, 0x1020, 0);
+        write_word(&mut stack, 0x1028, 0xbbbb);
+
+        assert_eq!(
+            frame_pointer_fallback(&sample(0x1000, stack), |address| address == 0xaaaa),
+            vec![0xaaaa]
+        );
+    }
+
+    #[test]
+    fn recovered_chain_replaces_the_suspect_framehop_tail() {
+        let mut frames = vec![0x2000, 0xdead];
+
+        replace_suspect_callers(&mut frames, 1, vec![0xaaaa, 0xbbbb]);
+
+        assert_eq!(frames, vec![0x2000, 0xaaaa, 0xbbbb]);
+    }
+
+    #[test]
+    fn recovered_chain_preserves_duplicates_and_valid_framehop_prefix() {
+        let mut frames = vec![0x2000, 0xaaaa, 0xdead];
+
+        replace_suspect_callers(&mut frames, 2, vec![0xaaaa, 0xaaaa, 0xbbbb]);
+
+        assert_eq!(frames, vec![0x2000, 0xaaaa, 0xaaaa, 0xbbbb]);
+    }
+
+    #[test]
+    fn recovered_chain_without_overlap_keeps_only_the_valid_prefix() {
+        let mut frames = vec![0x2000, 0x1111, 0xdead];
+
+        replace_suspect_callers(&mut frames, 2, vec![0xaaaa, 0xbbbb]);
+
+        assert_eq!(frames, vec![0x2000, 0x1111]);
+    }
 }
 
 /// Unwind every sample in `snapshot`, recording the result.
@@ -210,7 +417,7 @@ pub fn resolve_frames(snapshot: &mut Snapshot, modules: &[LoadedModule]) {
     let mut cache = ArchCache::new();
 
     for sample in &mut snapshot.threads {
-        sample.frames = unwind_sample(&unwinder, &mut cache, sample);
+        sample.frames = unwind_sample(&unwinder, &mut cache, sample, modules);
     }
     snapshot.frames_resolved = true;
 }
@@ -320,7 +527,7 @@ pub fn resolve_frames_for_current_process(snapshot: &mut Snapshot) -> std::io::R
     let unwinder = build_unix_unwinder(&modules);
     let mut cache = ArchCache::new();
     for sample in &mut snapshot.threads {
-        sample.frames = unwind_sample(&unwinder, &mut cache, sample);
+        sample.frames = unwind_sample(&unwinder, &mut cache, sample, &modules);
     }
     snapshot.frames_resolved = true;
     Ok(())
@@ -371,7 +578,7 @@ mod tests {
         let mut cache = ArchCache::new();
 
         // Must terminate, not panic or spin, on a stack it cannot follow.
-        let frames = unwind_sample(&unwinder, &mut cache, &sample);
+        let frames = unwind_sample(&unwinder, &mut cache, &sample, &modules);
         assert!(
             frames.len() <= 2,
             "a 16-byte stack cannot yield a deep walk, got {}",
