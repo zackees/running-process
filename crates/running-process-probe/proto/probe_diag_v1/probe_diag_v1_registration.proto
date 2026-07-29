@@ -84,7 +84,14 @@ message RegisterProcess {
   // captured registration frame cannot be used to re-enroll later.
   bytes registration_nonce = 17;
 
-  reserved 18 to 31;
+  // Optional worker-only symbol discovery inputs. The daemon records these
+  // declarations but never opens or parses them; the target copies them into
+  // its raw capture and the isolated symbolization worker verifies every
+  // candidate against the module's exact build identity.
+  string symbol_manifest_path = 18;
+  repeated string symbol_paths = 19;
+
+  reserved 20 to 31;
 }
 
 message RegistrationStatus {

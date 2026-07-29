@@ -17,7 +17,13 @@ message CaptureStackRequest {
   // Bitmask; 0 means every thread.
   uint32 thread_filter = 3;
 
-  reserved 4 to 15;
+  // Snapshot of the target's ARMED registration declarations. The daemon is
+  // authoritative: the target copies these paths into the raw artifact
+  // instead of consulting mutable local configuration after the lease.
+  string symbol_manifest_path = 4;
+  repeated string symbol_paths = 5;
+
+  reserved 6 to 15;
 }
 
 message CaptureReply {

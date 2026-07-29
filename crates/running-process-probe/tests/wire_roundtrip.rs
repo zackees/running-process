@@ -61,6 +61,7 @@ fn sample_capture() -> ProbeEnvelope {
             key: Some(sample_key()),
             max_depth: 128,
             thread_filter: 0,
+            ..Default::default()
         }),
     )
 }

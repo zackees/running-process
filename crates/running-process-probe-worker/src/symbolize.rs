@@ -55,7 +55,7 @@ pub fn symbolize(capture: &RawCapture) -> Result<SymbolReport, SymbolizeError> {
         .iter()
         .map(|thread| symbolize_thread(capture, &cache, thread))
         .collect();
-    let modules = module_reports(capture);
+    let modules = module_reports(capture, &cache);
 
     Ok(SymbolReport { threads, modules })
 }
@@ -66,19 +66,16 @@ pub fn symbolize(capture: &RawCapture) -> Result<SymbolReport, SymbolizeError> {
 /// times for one thread. Entries are `None` when the module has no usable
 /// symbols, so a miss is remembered rather than retried.
 #[cfg(target_os = "windows")]
-type SymbolCache = Vec<Option<crate::pdb_symbols::SymbolTable>>;
+type SymbolCache = Vec<crate::pdb_symbols::ModuleSymbols>;
 #[cfg(not(target_os = "windows"))]
-type SymbolCache = Vec<Option<()>>;
+type SymbolCache = Vec<crate::object_symbols::ModuleSymbols>;
 
 #[cfg(target_os = "windows")]
 fn build_symbol_cache(capture: &RawCapture) -> SymbolCache {
     capture
         .modules
         .iter()
-        .map(|module| {
-            let path = module.path_hint.as_ref()?;
-            crate::pdb_symbols::SymbolTable::for_image(std::path::Path::new(path))
-        })
+        .map(|module| crate::pdb_symbols::discover_module(module, &capture.discovery))
         .collect()
 }
 
@@ -86,46 +83,47 @@ fn build_symbol_cache(capture: &RawCapture) -> SymbolCache {
 /// `RawOnly` — the module and offset are still reported.
 #[cfg(not(target_os = "windows"))]
 fn build_symbol_cache(capture: &RawCapture) -> SymbolCache {
-    capture.modules.iter().map(|_| None).collect()
+    capture
+        .modules
+        .iter()
+        .map(|module| crate::object_symbols::discover_module(module, &capture.discovery))
+        .collect()
 }
 
 /// Per-module account of the symbol lookup.
 #[cfg(target_os = "windows")]
-fn module_reports(capture: &RawCapture) -> Vec<ModuleReport> {
-    use crate::pdb_symbols::{locate, search_dirs, Located};
-
-    let search_dirs = search_dirs();
+fn module_reports(capture: &RawCapture, cache: &SymbolCache) -> Vec<ModuleReport> {
+    use crate::pdb_symbols::ModuleSymbols;
 
     capture
         .modules
         .iter()
-        .map(|module| {
-            let Some(path) = module.path_hint.as_ref() else {
-                // Without a path there is nothing to look beside; that is a
-                // property of the capture, not of the build.
-                return ModuleReport {
-                    name: module.name.clone(),
-                    status: ModuleSymbolStatus::NotFound,
-                    ..Default::default()
-                };
+        .zip(cache)
+        .map(|(module, symbols)| {
+            let (status, symbol_file, symbol_source, rejected) = match symbols {
+                ModuleSymbols::Found {
+                    symbol_file,
+                    source,
+                    ..
+                } => (
+                    ModuleSymbolStatus::Resolved,
+                    Some(symbol_file.clone()),
+                    Some(*source),
+                    0,
+                ),
+                ModuleSymbols::NotFound => (ModuleSymbolStatus::NotFound, None, None, 0),
+                ModuleSymbols::Mismatched { rejected } => {
+                    (ModuleSymbolStatus::Mismatched, None, None, *rejected)
+                }
+                ModuleSymbols::NoDebugDirectory => {
+                    (ModuleSymbolStatus::NoDebugDirectory, None, None, 0)
+                }
             };
-            let (status, symbol_file, rejected) =
-                match locate(std::path::Path::new(path), &search_dirs) {
-                    Located::Found(p) => (
-                        ModuleSymbolStatus::Resolved,
-                        Some(p.to_string_lossy().into_owned()),
-                        0,
-                    ),
-                    Located::NotFound => (ModuleSymbolStatus::NotFound, None, 0),
-                    Located::Mismatched { rejected } => {
-                        (ModuleSymbolStatus::Mismatched, None, rejected)
-                    }
-                    Located::NoDebugDirectory => (ModuleSymbolStatus::NoDebugDirectory, None, 0),
-                };
             ModuleReport {
                 name: module.name.clone(),
                 status,
                 symbol_file,
+                symbol_source,
                 rejected_candidates: rejected,
             }
         })
@@ -135,30 +133,58 @@ fn module_reports(capture: &RawCapture) -> Vec<ModuleReport> {
 /// No symbol reader on this platform, so every module reports as much rather
 /// than as "not found", which would blame the build for a missing parser.
 #[cfg(not(target_os = "windows"))]
-fn module_reports(capture: &RawCapture) -> Vec<ModuleReport> {
+fn module_reports(capture: &RawCapture, cache: &SymbolCache) -> Vec<ModuleReport> {
+    use crate::object_symbols::ModuleSymbols;
+
     capture
         .modules
         .iter()
-        .map(|module| ModuleReport {
-            name: module.name.clone(),
-            status: ModuleSymbolStatus::Unsupported,
-            ..Default::default()
+        .zip(cache)
+        .map(|(module, symbols)| {
+            let (status, symbol_file, symbol_source, rejected) = match symbols {
+                ModuleSymbols::Found {
+                    symbol_file,
+                    source,
+                    ..
+                } => (
+                    ModuleSymbolStatus::Resolved,
+                    Some(symbol_file.clone()),
+                    Some(*source),
+                    0,
+                ),
+                ModuleSymbols::NotFound => (ModuleSymbolStatus::NotFound, None, None, 0),
+                ModuleSymbols::Mismatched { rejected } => {
+                    (ModuleSymbolStatus::Mismatched, None, None, *rejected)
+                }
+                ModuleSymbols::NoDebugDirectory => {
+                    (ModuleSymbolStatus::NoDebugDirectory, None, None, 0)
+                }
+            };
+            ModuleReport {
+                name: module.name.clone(),
+                status,
+                symbol_file,
+                symbol_source,
+                rejected_candidates: rejected,
+            }
         })
         .collect()
 }
 
 #[cfg(target_os = "windows")]
 fn lookup(cache: &SymbolCache, module_index: usize, relative_address: u64) -> Option<String> {
-    cache
-        .get(module_index)?
-        .as_ref()?
-        .lookup(relative_address)
-        .map(str::to_owned)
+    let crate::pdb_symbols::ModuleSymbols::Found { table, .. } = cache.get(module_index)? else {
+        return None;
+    };
+    table.lookup(relative_address).map(str::to_owned)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn lookup(_cache: &SymbolCache, _module_index: usize, _relative_address: u64) -> Option<String> {
-    None
+fn lookup(cache: &SymbolCache, module_index: usize, relative_address: u64) -> Option<String> {
+    let crate::object_symbols::ModuleSymbols::Found { table, .. } = cache.get(module_index)? else {
+        return None;
+    };
+    table.lookup(relative_address).map(str::to_owned)
 }
 
 fn symbolize_thread(capture: &RawCapture, cache: &SymbolCache, thread: &RawThread) -> SymThread {
@@ -219,6 +245,7 @@ mod tests {
     fn capture_with(modules: Vec<ModuleRef>, frames: Vec<RawFrame>) -> RawCapture {
         RawCapture {
             format: CaptureFormat::CooperativeFrames,
+            discovery: Default::default(),
             modules,
             threads: vec![RawThread {
                 os_tid: 11,
@@ -269,6 +296,7 @@ mod tests {
     fn a_missing_binary_reports_not_found_with_no_rejections() {
         let capture = RawCapture {
             format: CaptureFormat::CooperativeFrames,
+            discovery: Default::default(),
             modules: vec![ModuleRef {
                 name: "gone.dll".into(),
                 path_hint: Some("no-such-binary-anywhere.dll".into()),
@@ -411,6 +439,7 @@ mod tests {
     fn thread_identity_and_order_survive() {
         let capture = RawCapture {
             format: CaptureFormat::CooperativeFrames,
+            discovery: Default::default(),
             modules: vec![module("a.dll")],
             threads: vec![
                 RawThread {
@@ -473,6 +502,7 @@ mod tests {
 
         let capture = RawCapture {
             format: CaptureFormat::CooperativeFrames,
+            discovery: Default::default(),
             modules: vec![ModuleRef {
                 name: "self".into(),
                 path_hint: Some(exe.to_string_lossy().into_owned()),
@@ -503,6 +533,7 @@ mod tests {
     fn a_module_without_symbols_stays_raw_only() {
         let capture = RawCapture {
             format: CaptureFormat::CooperativeFrames,
+            discovery: Default::default(),
             modules: vec![ModuleRef {
                 name: "ghost.dll".into(),
                 path_hint: Some("no-such-binary-anywhere.dll".into()),

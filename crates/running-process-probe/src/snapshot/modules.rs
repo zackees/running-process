@@ -24,6 +24,9 @@
 
 use std::ops::Range;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const MAX_MODULE_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+
 #[cfg(windows)]
 use std::io;
 #[cfg(windows)]
@@ -39,6 +42,220 @@ use winapi::um::winnt::{
     IMAGE_DOS_HEADER, IMAGE_DOS_SIGNATURE, IMAGE_NT_HEADERS64, IMAGE_NT_SIGNATURE,
     IMAGE_SECTION_HEADER,
 };
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn loaded_elf_build_ids() -> std::collections::HashMap<u64, String> {
+    use std::collections::HashMap;
+
+    unsafe extern "C" fn visit(
+        info: *mut libc::dl_phdr_info,
+        _size: libc::size_t,
+        data: *mut libc::c_void,
+    ) -> libc::c_int {
+        const MAX_NOTE_BYTES: usize = 1024 * 1024;
+        let info = unsafe { &*info };
+        let out = unsafe { &mut *data.cast::<HashMap<u64, String>>() };
+        if info.dlpi_phdr.is_null() || info.dlpi_phnum == 0 {
+            return 0;
+        }
+        let headers =
+            unsafe { std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
+        for header in headers {
+            if header.p_type != libc::PT_NOTE {
+                continue;
+            }
+            let Ok(length) = usize::try_from(header.p_memsz) else {
+                continue;
+            };
+            if length == 0 || length > MAX_NOTE_BYTES {
+                continue;
+            }
+            let Some(address) = (info.dlpi_addr as u64).checked_add(header.p_vaddr) else {
+                continue;
+            };
+            let Some(note_end) = address.checked_add(length as u64) else {
+                continue;
+            };
+            let is_mapped = headers.iter().any(|load| {
+                if load.p_type != libc::PT_LOAD || load.p_flags & libc::PF_R == 0 {
+                    return false;
+                }
+                let Some(start) = (info.dlpi_addr as u64).checked_add(load.p_vaddr) else {
+                    return false;
+                };
+                let Some(end) = start.checked_add(load.p_memsz) else {
+                    return false;
+                };
+                address >= start && note_end <= end
+            });
+            if address == 0 || !is_mapped {
+                continue;
+            }
+            let notes = unsafe { std::slice::from_raw_parts(address as *const u8, length) };
+            if let Some(build_id) = gnu_build_id_from_notes(notes) {
+                out.insert(
+                    info.dlpi_addr as u64,
+                    format!("elf:{}", hex_bytes(build_id)),
+                );
+                break;
+            }
+        }
+        0
+    }
+
+    let mut out = HashMap::new();
+    unsafe {
+        libc::dl_iterate_phdr(
+            Some(visit),
+            (&mut out as *mut HashMap<u64, String>).cast::<libc::c_void>(),
+        );
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn gnu_build_id_from_notes(mut notes: &[u8]) -> Option<&[u8]> {
+    fn aligned(value: usize) -> Option<usize> {
+        value.checked_add(3).map(|value| value & !3)
+    }
+
+    while notes.len() >= 12 {
+        let name_len = usize::try_from(u32::from_ne_bytes(notes[0..4].try_into().ok()?)).ok()?;
+        let desc_len = usize::try_from(u32::from_ne_bytes(notes[4..8].try_into().ok()?)).ok()?;
+        let kind = u32::from_ne_bytes(notes[8..12].try_into().ok()?);
+        let name_end = 12usize.checked_add(name_len)?;
+        let desc_start = 12usize.checked_add(aligned(name_len)?)?;
+        let desc_end = desc_start.checked_add(desc_len)?;
+        let next = desc_start.checked_add(aligned(desc_len)?)?;
+        if next > notes.len() || name_end > notes.len() || desc_end > notes.len() {
+            return None;
+        }
+        if kind == 3 && notes.get(12..name_end)?.starts_with(b"GNU") && desc_len > 0 {
+            return notes.get(desc_start..desc_end);
+        }
+        notes = &notes[next..];
+    }
+    None
+}
+
+#[cfg(windows)]
+unsafe fn loaded_pe_debug_info(base: u64, image_size: u64) -> Option<(String, String)> {
+    const DEBUG_DIRECTORY_INDEX: usize = 6;
+    const IMAGE_DEBUG_TYPE_CODEVIEW: u32 = 2;
+    const DEBUG_DIRECTORY_SIZE: usize = 28;
+
+    let dos = unsafe { &*(base as *const IMAGE_DOS_HEADER) };
+    if dos.e_magic != IMAGE_DOS_SIGNATURE {
+        return None;
+    }
+    let nt_offset = usize::try_from(dos.e_lfanew).ok()?;
+    if nt_offset.checked_add(std::mem::size_of::<IMAGE_NT_HEADERS64>())?
+        > usize::try_from(image_size).ok()?
+    {
+        return None;
+    }
+    let nt_address = (base as usize).checked_add(nt_offset)?;
+    let nt = unsafe { &*(nt_address as *const IMAGE_NT_HEADERS64) };
+    if nt.Signature != IMAGE_NT_SIGNATURE {
+        return None;
+    }
+    let directory = nt.OptionalHeader.DataDirectory[DEBUG_DIRECTORY_INDEX];
+    let directory_start = u64::from(directory.VirtualAddress);
+    let directory_size = usize::try_from(directory.Size).ok()?;
+    if directory_start
+        .checked_add(directory_size as u64)?
+        .gt(&image_size)
+    {
+        return None;
+    }
+    let directory_address = base.checked_add(directory_start)?;
+    let bytes =
+        unsafe { std::slice::from_raw_parts(directory_address as *const u8, directory_size) };
+    for entry in bytes.chunks_exact(DEBUG_DIRECTORY_SIZE) {
+        let kind = u32::from_le_bytes(entry[12..16].try_into().ok()?);
+        if kind != IMAGE_DEBUG_TYPE_CODEVIEW {
+            continue;
+        }
+        let size = usize::try_from(u32::from_le_bytes(entry[16..20].try_into().ok()?)).ok()?;
+        let rva = u64::from(u32::from_le_bytes(entry[20..24].try_into().ok()?));
+        if size < 24 || rva.checked_add(size as u64)?.gt(&image_size) {
+            continue;
+        }
+        let record_address = base.checked_add(rva)?;
+        let record = unsafe { std::slice::from_raw_parts(record_address as *const u8, size) };
+        if record.get(..4) != Some(b"RSDS") {
+            continue;
+        }
+        let mut guid: [u8; 16] = record.get(4..20)?.try_into().ok()?;
+        guid[0..4].reverse();
+        guid[4..6].reverse();
+        guid[6..8].reverse();
+        let age = u32::from_le_bytes(record.get(20..24)?.try_into().ok()?);
+        let path_bytes = record.get(24..)?;
+        let path_end = path_bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(path_bytes.len());
+        let recorded = String::from_utf8_lossy(&path_bytes[..path_end]);
+        let pdb_name = recorded
+            .rsplit(['/', '\\'])
+            .find(|part| !part.is_empty())?
+            .to_owned();
+        if pdb_name == "."
+            || pdb_name == ".."
+            || pdb_name.chars().any(|character| {
+                matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+            })
+        {
+            return None;
+        }
+        return Some((format!("pdb:{}-{age}", hex_bytes(&guid)), pdb_name));
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn loaded_macho_uuid(header: *const u8) -> Option<[u8; 16]> {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_UUID: u32 = 0x1b;
+    const MACH_HEADER_64_SIZE: usize = 32;
+    const MAX_LOAD_COMMAND_BYTES: usize = 1024 * 1024;
+    const MAX_LOAD_COMMANDS: u32 = 4096;
+
+    let magic = unsafe { (header.cast::<u32>()).read_unaligned() };
+    if magic != MH_MAGIC_64 {
+        return None;
+    }
+    let ncmds = unsafe { header.add(16).cast::<u32>().read_unaligned() };
+    let sizeofcmds =
+        usize::try_from(unsafe { header.add(20).cast::<u32>().read_unaligned() }).ok()?;
+    if ncmds > MAX_LOAD_COMMANDS || sizeofcmds > MAX_LOAD_COMMAND_BYTES {
+        return None;
+    }
+    let commands =
+        unsafe { std::slice::from_raw_parts(header.add(MACH_HEADER_64_SIZE), sizeofcmds) };
+    let mut offset = 0usize;
+    for _ in 0..ncmds {
+        let prefix = commands.get(offset..offset.checked_add(8)?)?;
+        let command = u32::from_le_bytes(prefix[0..4].try_into().ok()?);
+        let size = usize::try_from(u32::from_le_bytes(prefix[4..8].try_into().ok()?)).ok()?;
+        if size < 8 || offset.checked_add(size)? > commands.len() {
+            return None;
+        }
+        if command == LC_UUID && size >= 24 {
+            return commands.get(offset + 8..offset + 24)?.try_into().ok();
+        }
+        offset += size;
+    }
+    None
+}
 
 /// One section of a mapped module.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +288,14 @@ pub struct LoadedModule {
     /// would load a *different* build's symbols and produce confidently wrong
     /// function names.
     pub path: Option<String>,
+    /// Build identity observed while this module inventory was taken.
+    ///
+    /// This is read from the loaded image (or, on Linux, from the exact
+    /// device/inode still backing the mapping), so later path replacement
+    /// cannot change which symbols the capture expects.
+    pub debug_id: Option<String>,
+    /// Sanitized native symbol filename captured from the loaded image.
+    pub debug_file: Option<String>,
     /// Sections parsed from the mapped headers.
     pub sections: Vec<Section>,
 }
@@ -217,6 +442,11 @@ pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
             Some(s) => s,
             None => continue,
         };
+        let (debug_id, debug_file) = unsafe {
+            loaded_pe_debug_info(base, u64::from(info.SizeOfImage))
+                .map(|(identity, file)| (Some(identity), Some(file)))
+                .unwrap_or((None, None))
+        };
 
         modules.push(LoadedModule {
             base,
@@ -224,6 +454,8 @@ pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
             mapped_ranges: Vec::new(),
             executable_ranges: Vec::new(),
             path: unsafe { module_path(process, handle) },
+            debug_id,
+            debug_file,
             sections,
         });
     }
@@ -264,6 +496,9 @@ struct LinuxImage {
     executable_ranges: Vec<Range<u64>>,
     load_bias: u64,
     path: String,
+    device_major: u64,
+    device_minor: u64,
+    inode: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -330,9 +565,12 @@ fn linux_images() -> std::io::Result<Vec<LinuxImage>> {
 
     Ok(images
         .into_iter()
-        .map(|((path, _dev, _inode, load_bias), mut mappings)| {
+        .filter_map(|((path, device, inode, load_bias), mut mappings)| {
+            let (major, minor) = device.split_once(':')?;
+            let device_major = u64::from_str_radix(major, 16).ok()?;
+            let device_minor = u64::from_str_radix(minor, 16).ok()?;
             mappings.sort_by_key(|mapping| mapping.range.start);
-            LinuxImage {
+            Some(LinuxImage {
                 mapped_ranges: mappings
                     .iter()
                     .map(|mapping| mapping.range.clone())
@@ -343,7 +581,10 @@ fn linux_images() -> std::io::Result<Vec<LinuxImage>> {
                     .collect(),
                 load_bias,
                 path,
-            }
+                device_major,
+                device_minor,
+                inode,
+            })
         })
         .collect())
 }
@@ -352,13 +593,18 @@ fn linux_images() -> std::io::Result<Vec<LinuxImage>> {
 /// Enumerate ELF images mapped in the current Linux process.
 pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
     use object::{Object, ObjectKind, ObjectSection};
+    use std::io::Read as _;
 
     let mut modules = Vec::new();
+    let loaded_build_ids = loaded_elf_build_ids();
     for LinuxImage {
         mapped_ranges,
         executable_ranges,
         load_bias,
         path,
+        device_major,
+        device_minor,
+        inode,
     } in linux_images()?
     {
         let Some(mapped_start) = mapped_ranges.first().map(|range| range.start) else {
@@ -367,12 +613,36 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
         let Some(mapped_end) = mapped_ranges.last().map(|range| range.end) else {
             continue;
         };
-        let Ok(data) = std::fs::read(&path) else {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let Ok(file_handle) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let Ok(metadata) = file_handle.metadata() else {
+            continue;
+        };
+        if u64::from(libc::major(metadata.dev())) != device_major
+            || u64::from(libc::minor(metadata.dev())) != device_minor
+            || metadata.ino().to_string() != inode
+        {
+            // The pathname no longer names the object in /proc/self/maps.
+            continue;
+        }
+        if metadata.len() > MAX_MODULE_IMAGE_BYTES {
+            continue;
+        }
+        let mut data = Vec::new();
+        if file_handle
+            .take(MAX_MODULE_IMAGE_BYTES + 1)
+            .read_to_end(&mut data)
+            .is_err()
+            || data.len() as u64 > MAX_MODULE_IMAGE_BYTES
+        {
             // A deleted/replaced mapping remains valid for raw capture but
             // cannot safely provide unwind metadata from disk. Leave it out
             // rather than attribute it to a different build.
             continue;
-        };
+        }
         let Ok(file) = object::File::parse(data.as_slice()) else {
             continue;
         };
@@ -381,6 +651,20 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
         } else {
             load_bias
         };
+        let Some(debug_id) = loaded_build_ids.get(&base).cloned() else {
+            continue;
+        };
+        let file_debug_id = file
+            .build_id()
+            .ok()
+            .flatten()
+            .map(|build_id| format!("elf:{}", hex_bytes(build_id)));
+        if file_debug_id.as_deref() != Some(debug_id.as_str()) {
+            // Device/inode stability is not enough: an in-place overwrite can
+            // preserve both. Never consume section metadata unless the file
+            // still carries the build-id observed in the mapped PT_NOTE.
+            continue;
+        }
         let sections = file
             .sections()
             .filter_map(|section| {
@@ -400,6 +684,8 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
             mapped_ranges,
             executable_ranges,
             path: Some(path),
+            debug_id: Some(debug_id),
+            debug_file: None,
             sections,
         });
     }
@@ -429,6 +715,7 @@ fn add_slide(address: u64, slide: isize) -> Option<u64> {
 pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
     use object::{Object, ObjectSection, ObjectSegment};
     use std::ffi::CStr;
+    use std::io::Read as _;
 
     let count = unsafe { _dyld_image_count() };
     let mut modules = Vec::with_capacity(count as usize);
@@ -441,16 +728,34 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
         let path = unsafe { CStr::from_ptr(name) }
             .to_string_lossy()
             .into_owned();
-        let Ok(data) = std::fs::read(&path) else {
+        let Some(loaded_uuid) = (unsafe { loaded_macho_uuid(header.cast()) }) else {
+            continue;
+        };
+        let Ok(file_handle) = std::fs::File::open(&path) else {
             // Some system images live only in the shared dyld cache. Their
             // raw frames remain unattributed rather than being paired with
             // metadata read from a different file.
             continue;
         };
+        let mut data = Vec::new();
+        if file_handle
+            .take(MAX_MODULE_IMAGE_BYTES + 1)
+            .read_to_end(&mut data)
+            .is_err()
+            || data.len() as u64 > MAX_MODULE_IMAGE_BYTES
+        {
+            continue;
+        }
         let Ok(file) = object::File::parse(data.as_slice()) else {
             continue;
         };
+        if file.mach_uuid().ok().flatten() != Some(loaded_uuid) {
+            // The path can be replaced while dyld keeps the original image
+            // mapped. Only use on-disk sections for the exact loaded UUID.
+            continue;
+        }
         let slide = unsafe { _dyld_get_image_vmaddr_slide(index) };
+        let debug_id = Some(format!("macho:{}", hex_bytes(&loaded_uuid)));
         let base_svma = file.relative_address_base();
         let base = add_slide(base_svma, slide).unwrap_or(header as u64);
 
@@ -500,6 +805,8 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
             mapped_ranges: Vec::new(),
             executable_ranges,
             path: Some(path),
+            debug_id,
+            debug_file: None,
             sections,
         });
     }
@@ -571,6 +878,21 @@ mod tests {
     }
 
     #[test]
+    fn loaded_pe_owner_carries_its_codeview_identity() {
+        let addr = (landmark as fn() -> u64) as usize as u64;
+        let modules = enumerate_modules().expect("enumerate");
+        let owner = module_for_address(&modules, addr).expect("owning module");
+        assert!(
+            owner
+                .debug_id
+                .as_deref()
+                .is_some_and(|identity| identity.starts_with("pdb:")),
+            "loaded PE did not expose its mapped CodeView GUID+age: {:?}",
+            owner.debug_id
+        );
+    }
+
+    #[test]
     fn module_lookup_rejects_an_address_outside_every_module() {
         let modules = enumerate_modules().expect("enumerate");
         // A deliberately implausible user-mode address.
@@ -614,6 +936,9 @@ mod tests {
 mod linux_tests {
     use super::*;
 
+    #[inline(never)]
+    fn landmark() {}
+
     #[test]
     fn maps_path_preserves_spaces_and_deleted_suffix() {
         let line = "1000-2000 r-xp 00000000 08:01 42 /tmp/a file (deleted)";
@@ -634,6 +959,8 @@ mod linux_tests {
             mapped_ranges: vec![0x400000..0x401000, 0x402000..0x403000],
             executable_ranges: std::iter::once(0x400000..0x401000).collect(),
             path: Some("/tmp/non-pie".into()),
+            debug_id: None,
+            debug_file: None,
             sections: Vec::new(),
         };
         assert!(module.contains(0x400100));
@@ -642,5 +969,57 @@ mod linux_tests {
         assert!(!module.contains(1));
         assert!(module.contains_executable(0x400100));
         assert!(!module.contains_executable(0x402100));
+    }
+
+    #[test]
+    fn loaded_elf_owner_carries_its_pt_note_build_id() {
+        let address = landmark as fn() as usize as u64;
+        let modules = enumerate_modules().expect("enumerate");
+        let owner = module_for_address(&modules, address).expect("owning module");
+        assert!(
+            owner
+                .debug_id
+                .as_deref()
+                .is_some_and(|identity| identity.starts_with("elf:")),
+            "loaded ELF did not expose its PT_NOTE build-id: {:?}",
+            owner.debug_id
+        );
+    }
+
+    #[test]
+    fn gnu_note_parser_extracts_the_build_id() {
+        let mut note = Vec::new();
+        note.extend_from_slice(&4u32.to_ne_bytes());
+        note.extend_from_slice(&4u32.to_ne_bytes());
+        note.extend_from_slice(&3u32.to_ne_bytes());
+        note.extend_from_slice(b"GNU\0");
+        note.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(
+            gnu_build_id_from_notes(&note),
+            Some(&[0xaa, 0xbb, 0xcc, 0xdd][..])
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+
+    #[inline(never)]
+    fn landmark() {}
+
+    #[test]
+    fn loaded_macho_owner_carries_its_lc_uuid() {
+        let address = landmark as fn() as usize as u64;
+        let modules = enumerate_modules().expect("enumerate");
+        let owner = module_for_address(&modules, address).expect("owning module");
+        assert!(
+            owner
+                .debug_id
+                .as_deref()
+                .is_some_and(|identity| identity.starts_with("macho:")),
+            "loaded Mach-O did not expose its LC_UUID: {:?}",
+            owner.debug_id
+        );
     }
 }

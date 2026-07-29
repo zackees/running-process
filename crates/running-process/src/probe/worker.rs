@@ -44,6 +44,16 @@ const STOP_POLL: Duration = Duration::from_millis(50);
 /// a local condition, unrelated to whether a daemon exists.
 pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
     let exe = std::env::current_exe()?;
+    let manifest_path = config
+        .symbol_manifest_path
+        .as_deref()
+        .map(absolute_path)
+        .transpose()?;
+    let symbol_paths = config
+        .symbol_paths
+        .iter()
+        .map(|path| absolute_path(path))
+        .collect::<io::Result<Vec<_>>>()?;
 
     let nonce = fresh_nonce()?;
 
@@ -73,9 +83,18 @@ pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
         // native executable — so leaving this at its default would report
         // every registrant as UNSPECIFIED.
         runtime: config.runtime.to_proto() as i32,
-        // SUPPORTED_OP_STACK_CAPTURE and SYMBOL_SOURCE_LOCAL.
+        // SUPPORTED_OP_STACK_CAPTURE. A manifest declaration is more
+        // specific than the default local lookup.
         supported_ops: vec![1],
-        symbol_source: 2,
+        symbol_source: if manifest_path.is_some() { 3 } else { 2 },
+        symbol_manifest_path: manifest_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        symbol_paths: symbol_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
         allow_policy: Some(WireAllowPolicy {
             allow_all_ops: config.allow_policy.allow_all_ops,
             env_allowlist: config.disclosure.env_allowlist.clone(),
@@ -88,6 +107,14 @@ pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
         registration_nonce: nonce.to_vec(),
         ..Default::default()
     })
+}
+
+fn absolute_path(path: &Path) -> io::Result<std::path::PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
 }
 
 /// Spawn the worker thread.
@@ -371,6 +398,21 @@ mod tests {
             None,
             "an already-set stop flag must win over file I/O"
         );
+    }
+
+    #[test]
+    fn registration_absolutizes_symbol_declarations_before_the_daemon_stores_them() {
+        let request = build_register_request(
+            &Config::new("symbols")
+                .with_symbol_manifest("symbols/app.rpprobe-symbols.json")
+                .with_symbol_path("symbols/private"),
+        )
+        .unwrap();
+        assert!(Path::new(&request.symbol_manifest_path).is_absolute());
+        assert!(request
+            .symbol_paths
+            .iter()
+            .all(|path| Path::new(path).is_absolute()));
     }
 
     #[test]

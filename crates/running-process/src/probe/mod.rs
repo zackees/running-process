@@ -127,6 +127,14 @@ pub struct Config {
     pub runtime: Runtime,
     /// Native crash interception. Defaults to [`CrashPolicy::On`].
     pub crash_policy: CrashPolicy,
+    /// Optional process-level symbol manifest consumed only by the isolated
+    /// symbolization worker.
+    pub symbol_manifest_path: Option<PathBuf>,
+    /// Explicit symbol files or directories offered to the isolated worker.
+    ///
+    /// Every candidate is identity-checked; a same-named file from another
+    /// build is rejected.
+    pub symbol_paths: Vec<PathBuf>,
 }
 
 impl Config {
@@ -145,6 +153,8 @@ impl Config {
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             runtime: Runtime::Native,
             crash_policy: CrashPolicy::On,
+            symbol_manifest_path: None,
+            symbol_paths: Vec::new(),
         }
     }
 
@@ -175,6 +185,18 @@ impl Config {
     /// Select native crash interception policy.
     pub fn crash_policy(mut self, policy: CrashPolicy) -> Self {
         self.crash_policy = policy;
+        self
+    }
+
+    /// Declare a process-level symbol manifest.
+    pub fn with_symbol_manifest(mut self, path: impl Into<PathBuf>) -> Self {
+        self.symbol_manifest_path = Some(path.into());
+        self
+    }
+
+    /// Offer a symbol file or directory to the isolated worker.
+    pub fn with_symbol_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.symbol_paths.push(path.into());
         self
     }
 }
@@ -318,9 +340,18 @@ mod tests {
 
     #[test]
     fn builder_sets_version_and_instance() {
-        let cfg = Config::new("app").with_version("9.9").with_instance("i-1");
+        let cfg = Config::new("app")
+            .with_version("9.9")
+            .with_instance("i-1")
+            .with_symbol_manifest("app.symbols.json")
+            .with_symbol_path("symbols");
         assert_eq!(cfg.app_version, "9.9");
         assert_eq!(cfg.instance.as_deref(), Some("i-1"));
+        assert_eq!(
+            cfg.symbol_manifest_path.as_deref(),
+            Some(std::path::Path::new("app.symbols.json"))
+        );
+        assert_eq!(cfg.symbol_paths, vec![PathBuf::from("symbols")]);
     }
 
     /// The headline requirement: install must not block on a missing daemon.

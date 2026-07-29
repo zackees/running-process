@@ -162,6 +162,10 @@ fn register_from_proto(req: RegisterProcess) -> Option<RegisterRequest> {
             })
             .collect(),
         runtime: Runtime::from_proto(req.runtime),
+        symbol_source: req.symbol_source,
+        symbol_manifest_path: (!req.symbol_manifest_path.is_empty())
+            .then(|| PathBuf::from(req.symbol_manifest_path)),
+        symbol_paths: req.symbol_paths.into_iter().map(PathBuf::from).collect(),
     })
 }
 
@@ -988,6 +992,9 @@ mod tests {
             nonce: [1u8; 32],
             supported_ops: Vec::new(),
             runtime: Runtime::Native,
+            symbol_source: 2,
+            symbol_manifest_path: None,
+            symbol_paths: Vec::new(),
         };
         assert!(
             !verify_identity(&request, true).verified,

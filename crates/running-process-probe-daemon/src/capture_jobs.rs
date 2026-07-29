@@ -109,6 +109,7 @@ impl CaptureJobs {
             key: Some(to_wire_key(&target)),
             max_depth,
             thread_filter,
+            ..Default::default()
         };
         let job = Job {
             id: id.clone(),
