@@ -19,28 +19,26 @@
 //! this is how a stack profiler deadlocks the process it is profiling: suspend
 //! a thread inside `malloc`, then call `malloc` yourself.
 //!
-//! # Status
-//!
-//! This slice ships the OS-agnostic types and the **Windows** capture path.
-//! Linux (realtime-signal context capture) and macOS (mach `thread_suspend`)
-//! follow as separate changes, as does turning the captured registers and
-//! stack bytes into return addresses. `Snapshot::frames_resolved` reports
-//! whether that final step has run, so a consumer can never mistake raw
-//! captures for unwound frames.
+//! Windows, Linux, and macOS capture x86_64/aarch64 sibling stacks. Each
+//! backend resumes before deferred PE/ELF/Mach-O unwinding. Other platforms
+//! return [`SnapshotError::Unsupported`] rather than an empty snapshot.
 
 // Both Windows architectures are supported. The register names and the
 // unwinder differ per arch (see `windows.rs` / `unwind.rs`); everything else --
 // enumeration, suspend/resume sequencing, stack-copy bounds -- is shared.
-// Attribution needs the module inventory, which is Windows-only until the
-// Unix capture backends land (#635).
-#[cfg(windows)]
+// Attribution needs a per-object-format module inventory.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod attribute;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod modules;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod unwind;
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(windows)]
 mod windows;
 
@@ -162,6 +160,14 @@ pub enum SnapshotError {
     /// The OS refused an enumeration or capture call.
     #[error("snapshot failed: {0}")]
     Os(#[from] std::io::Error),
+    /// A macOS Mach kernel operation failed.
+    #[error("Mach operation {operation} failed with kernel code {code}")]
+    Mach {
+        /// Operation that failed.
+        operation: &'static str,
+        /// `kern_return_t` value.
+        code: i32,
+    },
 }
 
 /// Capture every sibling thread of the calling thread.
@@ -177,7 +183,15 @@ pub fn capture_all_threads(config: &SnapshotConfig) -> Result<Snapshot, Snapshot
     {
         windows::capture(config)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::capture(config)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::capture(config)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = config;
         Err(SnapshotError::Unsupported)
@@ -203,7 +217,13 @@ pub fn capture_and_resolve(config: &SnapshotConfig) -> Result<Snapshot, Snapshot
         unwind::resolve_frames(&mut snapshot, &modules);
         Ok(snapshot)
     }
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let mut snapshot = capture_all_threads(config)?;
+        unwind::resolve_frames_for_current_process(&mut snapshot)?;
+        Ok(snapshot)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = config;
         Err(SnapshotError::Unsupported)
@@ -267,7 +287,86 @@ mod tests {
         assert_eq!(snap.pause(), Duration::from_micros(1500));
     }
 
-    #[cfg(not(windows))]
+    /// #635 known-stack acceptance: the named blocked function must survive
+    /// capture and deferred unwinding as a raw return address.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn known_blocked_stack_contains_marker_frame() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        use std::sync::Arc;
+
+        #[cfg(windows)]
+        #[allow(unsafe_code)]
+        fn current_tid() -> u64 {
+            u64::from(unsafe { winapi::um::processthreadsapi::GetCurrentThreadId() })
+        }
+        #[cfg(target_os = "linux")]
+        fn current_tid() -> u64 {
+            unsafe { libc::syscall(libc::SYS_gettid) as u64 }
+        }
+        #[cfg(target_os = "macos")]
+        fn current_tid() -> u64 {
+            let mut tid = 0u64;
+            let result = unsafe { libc::pthread_threadid_np(std::ptr::null_mut(), &mut tid) };
+            assert_eq!(result, 0, "pthread_threadid_np");
+            tid
+        }
+
+        #[inline(never)]
+        fn blocked_marker(ready: &AtomicBool, stop: &AtomicBool) {
+            ready.store(true, Ordering::Release);
+            while !stop.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+                std::hint::black_box(());
+            }
+        }
+
+        let ready = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel(1);
+        let worker = {
+            let ready = Arc::clone(&ready);
+            let stop = Arc::clone(&stop);
+            std::thread::Builder::new()
+                .name("blocked_marker".into())
+                .spawn(move || {
+                    tx.send(current_tid()).unwrap();
+                    blocked_marker(&ready, &stop);
+                })
+                .unwrap()
+        };
+        let tid = rx.recv().unwrap();
+        while !ready.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+
+        let snapshot = capture_and_resolve(&SnapshotConfig::default()).expect("capture + unwind");
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+
+        let sample = snapshot
+            .threads
+            .iter()
+            .find(|sample| sample.os_tid == tid)
+            .unwrap_or_else(|| panic!("named worker {tid} absent from snapshot"));
+        let marker = blocked_marker as *const () as usize as u64;
+        assert!(
+            sample.instruction_pointer.abs_diff(marker) < 4096,
+            "worker was not captured in blocked_marker: ip={:#x}, marker={marker:#x}",
+            sample.instruction_pointer
+        );
+        assert!(
+            sample
+                .frames
+                .iter()
+                .any(|frame| frame.abs_diff(marker) < 4096),
+            "unwound frames did not contain blocked_marker near {marker:#x}: {:?}",
+            sample.frames
+        );
+    }
+
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     #[test]
     fn unimplemented_platforms_report_unsupported_not_empty() {
         // An empty Ok(Snapshot) would read as "no threads", which is a very

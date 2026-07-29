@@ -20,7 +20,9 @@
 
 use std::ops::Range;
 
-use framehop::{Module, ModuleSectionInfo, Unwinder};
+#[cfg(windows)]
+use framehop::ModuleSectionInfo;
+use framehop::{Module, Unwinder};
 
 #[cfg(target_arch = "aarch64")]
 use framehop::aarch64::{
@@ -46,7 +48,7 @@ fn arch_regs(sample: &ThreadSample) -> ArchRegs {
     )
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
 fn arch_regs(sample: &ThreadSample) -> ArchRegs {
     ArchRegs::new(
         // Falls back to the PC only if the capture had no LR, which would
@@ -57,22 +59,46 @@ fn arch_regs(sample: &ThreadSample) -> ArchRegs {
     )
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+fn arch_regs(sample: &ThreadSample) -> ArchRegs {
+    let mask = framehop::aarch64::PtrAuthMask::new_24_40();
+    ArchRegs::new_with_ptr_auth_mask(
+        mask,
+        sample.link_register.unwrap_or(sample.instruction_pointer),
+        sample.stack_pointer,
+        sample.frame_pointer,
+    )
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+fn instruction_pointer(sample: &ThreadSample) -> u64 {
+    framehop::aarch64::PtrAuthMask::new_24_40().strip_ptr_auth(sample.instruction_pointer)
+}
+
+#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+fn instruction_pointer(sample: &ThreadSample) -> u64 {
+    sample.instruction_pointer
+}
+
 use super::modules::LoadedModule;
 use super::{Snapshot, ThreadSample};
 
 /// Sections framehop may ask for. `.pdata`/`.xdata` carry the x86_64 unwind
 /// tables; `.text` anchors code addresses.
+#[cfg(windows)]
 const WANTED_SECTIONS: &[&str] = &[".text", ".pdata", ".xdata"];
 
 /// Adapts a [`LoadedModule`] to framehop's section interface.
 ///
 /// Section bytes are read straight from the mapped image — the module is in
 /// our own address space, so this is a slice, not file I/O.
+#[cfg(windows)]
 struct MappedModuleSections {
     base: u64,
     sections: Vec<(String, Range<u64>)>,
 }
 
+#[cfg(windows)]
 impl MappedModuleSections {
     fn new(module: &LoadedModule) -> Self {
         Self {
@@ -95,6 +121,7 @@ impl MappedModuleSections {
     }
 }
 
+#[cfg(windows)]
 impl ModuleSectionInfo<Vec<u8>> for MappedModuleSections {
     fn base_svma(&self) -> u64 {
         // For PE this is the image base, and because we read the *mapped*
@@ -122,6 +149,7 @@ impl ModuleSectionInfo<Vec<u8>> for MappedModuleSections {
 }
 
 /// Build an unwinder covering `modules`.
+#[cfg(windows)]
 pub fn build_unwinder(modules: &[LoadedModule]) -> ArchUnwinder<Vec<u8>> {
     let mut unwinder = ArchUnwinder::new();
     for module in modules {
@@ -166,7 +194,7 @@ pub fn unwind_sample(
     let regs = arch_regs(sample);
 
     let mut frames = Vec::new();
-    let mut iter = unwinder.iter_frames(sample.instruction_pointer, regs, cache, &mut read_stack);
+    let mut iter = unwinder.iter_frames(instruction_pointer(sample), regs, cache, &mut read_stack);
     while let Ok(Some(frame)) = iter.next() {
         frames.push(frame.address());
     }
@@ -176,6 +204,7 @@ pub fn unwind_sample(
 /// Unwind every sample in `snapshot`, recording the result.
 ///
 /// Sets `frames_resolved` only here — the one place frames actually exist.
+#[cfg(windows)]
 pub fn resolve_frames(snapshot: &mut Snapshot, modules: &[LoadedModule]) {
     let unwinder = build_unwinder(modules);
     let mut cache = ArchCache::new();
@@ -186,7 +215,118 @@ pub fn resolve_frames(snapshot: &mut Snapshot, modules: &[LoadedModule]) {
     snapshot.frames_resolved = true;
 }
 
-#[cfg(test)]
+/// Add Linux ELF or macOS Mach-O unwind metadata from the modules currently
+/// mapped in this process. Object parsing happens only after capture, when
+/// every sibling is running again.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn build_unix_unwinder(modules: &[LoadedModule]) -> ArchUnwinder<Vec<u8>> {
+    use framehop::ExplicitModuleSectionInfo;
+    #[cfg(target_os = "macos")]
+    use object::ObjectSegment;
+    use object::{Object, ObjectSection};
+
+    fn section(file: &object::File<'_>, names: &[&str]) -> (Option<Range<u64>>, Option<Vec<u8>>) {
+        for section in file.sections() {
+            let Ok(name) = section.name() else {
+                continue;
+            };
+            if !names.contains(&name) {
+                continue;
+            }
+            let range = section.address()..section.address().saturating_add(section.size());
+            let data = section
+                .uncompressed_data()
+                .ok()
+                .map(|data| data.into_owned());
+            return (Some(range), data);
+        }
+        (None, None)
+    }
+
+    let mut unwinder = ArchUnwinder::new();
+    for module in modules {
+        let Some(path) = module.path.as_deref() else {
+            continue;
+        };
+        let Ok(data) = std::fs::read(path) else {
+            continue;
+        };
+        let Ok(file) = object::File::parse(data.as_slice()) else {
+            continue;
+        };
+
+        let (text_svma, text) = section(&file, &[".text", "__text"]);
+        let (eh_frame_svma, eh_frame) = section(&file, &[".eh_frame", "__eh_frame"]);
+        let (eh_frame_hdr_svma, eh_frame_hdr) =
+            section(&file, &[".eh_frame_hdr", "__eh_frame_hdr"]);
+        let (_, unwind_info) = section(&file, &["__unwind_info"]);
+        let (stubs_svma, _) = section(&file, &["__stubs"]);
+        let (stub_helper_svma, _) = section(&file, &["__stub_helper"]);
+        let (got_svma, _) = section(&file, &[".got", "__got"]);
+
+        #[cfg(target_os = "linux")]
+        let base_svma = 0;
+        #[cfg(target_os = "macos")]
+        let base_svma = file.relative_address_base();
+
+        #[cfg(target_os = "macos")]
+        let mut text_segment_svma = None;
+        #[cfg(not(target_os = "macos"))]
+        let text_segment_svma = None;
+        #[cfg(target_os = "macos")]
+        let mut text_segment = None;
+        #[cfg(not(target_os = "macos"))]
+        let text_segment = None;
+        #[cfg(target_os = "macos")]
+        for segment in file.segments() {
+            if segment.name().ok().flatten() == Some("__TEXT") {
+                text_segment_svma =
+                    Some(segment.address()..segment.address().saturating_add(segment.size()));
+                text_segment = segment.data().ok().map(ToOwned::to_owned);
+                break;
+            }
+        }
+
+        let info = ExplicitModuleSectionInfo {
+            base_svma,
+            text_svma,
+            text,
+            stubs_svma,
+            stub_helper_svma,
+            got_svma,
+            unwind_info,
+            eh_frame_svma,
+            eh_frame,
+            eh_frame_hdr_svma,
+            eh_frame_hdr,
+            text_segment_svma,
+            text_segment,
+            ..Default::default()
+        };
+        unwinder.add_module(Module::new(
+            path.to_owned(),
+            module.range(),
+            module.base,
+            info,
+        ));
+    }
+    unwinder
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// Resolve every raw sample against the current process's ELF/Mach-O images.
+pub fn resolve_frames_for_current_process(snapshot: &mut Snapshot) -> std::io::Result<()> {
+    let modules = super::modules::enumerate_modules()?;
+    let unwinder = build_unix_unwinder(&modules);
+    let mut cache = ArchCache::new();
+    for sample in &mut snapshot.threads {
+        sample.frames = unwind_sample(&unwinder, &mut cache, sample);
+    }
+    snapshot.frames_resolved = true;
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
 mod tests {
     use super::super::modules::{enumerate_modules, module_for_address};
     use super::super::{capture_all_threads, SnapshotConfig};
