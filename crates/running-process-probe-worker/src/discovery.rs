@@ -25,6 +25,8 @@ use crate::wire::{DiscoveryConfig, ModuleRef};
 pub const BUILD_ID_CACHE_ENV: &str = "RUNNING_PROCESS_PROBE_BUILD_ID_CACHE";
 /// Admin-only, comma-separated HTTP(S) symbol-server base URLs.
 pub const SYMBOL_SERVERS_ENV: &str = "RUNNING_PROCESS_PROBE_SYMBOL_SERVERS";
+/// Platform path-list of additional local symbol-store roots.
+pub const SYMBOL_PATH_ENV: &str = "RUNNING_PROCESS_PROBE_SYMBOL_PATH";
 const MANIFEST_SCHEMA: &str = "running-process-probe-symbol-manifest/v1";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_MANIFEST_MODULES: usize = 1024;

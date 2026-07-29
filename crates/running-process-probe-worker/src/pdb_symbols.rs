@@ -381,14 +381,9 @@ pub fn identity_matches(image: DebugId, pdb: DebugId) -> bool {
     image == pdb
 }
 
-/// Environment variable holding extra directories to search for symbol files.
-///
-/// Separated by the platform's path separator, like `PATH`.
-pub const SYMBOL_PATH_ENV: &str = "RUNNING_PROCESS_PROBE_SYMBOL_PATH";
-
 /// Directories to search beyond the image's own, from the environment.
 pub(crate) fn search_dirs() -> Vec<PathBuf> {
-    parse_search_dirs(std::env::var_os(SYMBOL_PATH_ENV))
+    parse_search_dirs(std::env::var_os(discovery::SYMBOL_PATH_ENV))
 }
 
 /// Split a `PATH`-style value into directories.
