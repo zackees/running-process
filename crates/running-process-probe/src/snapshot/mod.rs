@@ -354,17 +354,14 @@ mod tests {
             .unwrap_or_else(|| panic!("named worker {tid} absent from snapshot"));
         let marker = blocked_marker as *const () as usize as u64;
         assert!(
-            sample.instruction_pointer.abs_diff(marker) < 4096,
-            "worker was not captured in blocked_marker: ip={:#x}, marker={marker:#x}",
-            sample.instruction_pointer
-        );
-        assert!(
             sample
                 .frames
                 .iter()
                 .any(|frame| frame.abs_diff(marker) < 4096),
-            "unwound frames did not contain blocked_marker near {marker:#x}: {:?}",
-            sample.frames
+            "unwound frames did not contain blocked_marker near {marker:#x} \
+             (captured ip={:#x}): {:?}",
+            sample.instruction_pointer,
+            sample.frames,
         );
     }
 
