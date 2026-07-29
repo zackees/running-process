@@ -315,7 +315,7 @@ mod tests {
             tid
         }
 
-        #[cfg(not(all(windows, target_arch = "x86_64")))]
+        #[cfg(not(target_arch = "x86_64"))]
         #[inline(never)]
         fn blocked_leaf(ready: &AtomicBool, stop: &AtomicBool) -> bool {
             ready.store(true, Ordering::Release);
@@ -326,14 +326,14 @@ mod tests {
             stop.load(Ordering::Acquire)
         }
 
-        /// Keep every post-ready sample point inside this function on Windows.
+        /// Keep every post-ready sample point inside this function on x86_64.
         ///
-        /// In an unoptimized MSVC build, `AtomicBool::load` may be emitted as
-        /// an out-of-line helper. Sampling in that helper makes the fixture
-        /// depend on unwinding compiler support code before it can find the
-        /// marker. The single-byte load is atomic on x86_64, and x86 loads
-        /// already have acquire ordering.
-        #[cfg(all(windows, target_arch = "x86_64"))]
+        /// In unoptimized or coverage-instrumented builds, `AtomicBool::load`
+        /// may be emitted as an out-of-line helper. Sampling in that helper
+        /// makes the fixture depend on unwinding compiler support code before
+        /// it can find the marker. The single-byte load is atomic on x86_64,
+        /// and x86 loads already have acquire ordering.
+        #[cfg(target_arch = "x86_64")]
         #[inline(never)]
         #[allow(unsafe_code)]
         fn blocked_leaf(ready: &AtomicBool, stop: &AtomicBool) -> bool {
@@ -356,9 +356,10 @@ mod tests {
         #[inline(never)]
         fn blocked_marker(ready: &AtomicBool, stop: &AtomicBool) {
             let observed = blocked_leaf(ready, stop);
-            // This depends on the leaf's return value, so it cannot be hoisted
-            // before the call. That makes blocked_marker a real caller frame.
-            std::hint::black_box(observed);
+            // This observable store depends on the leaf's return value, so it
+            // cannot be hoisted or removed. That makes blocked_marker a real
+            // caller frame even with coverage instrumentation.
+            ready.store(observed, Ordering::Release);
         }
 
         let ready = Arc::new(AtomicBool::new(false));
