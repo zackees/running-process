@@ -173,7 +173,7 @@ running-process-probe = { path = "../running-process-probe", default-features = 
 # layers `tokio/full` on top below. Cargo unifies feature sets, so
 # any consumer enabling both ends up with the daemon footprint
 # exactly as before.
-tokio = { version = "1", default-features = false, features = ["rt", "time"], optional = true }
+tokio = { version = "1", default-features = false, features = ["process", "rt", "time"], optional = true }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 bytes = { version = "1", optional = true }
 futures-util = { version = "0.3", features = ["sink"], optional = true }

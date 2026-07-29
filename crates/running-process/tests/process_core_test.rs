@@ -13,6 +13,8 @@ use std::process::Command;
 #[cfg(windows)]
 use std::process::Stdio;
 use std::thread;
+#[cfg(target_os = "linux")]
+use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
 /// How long to wait for a child to exit.
 ///
@@ -32,8 +34,8 @@ use std::thread;
 const CHILD_EXIT_WAIT: Duration = Duration::from_secs(30);
 
 use running_process::{
-    run_command, CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode,
-    StdinMode, StreamKind,
+    run_command, run_command_bounded, CommandSpec, NativeProcess, ProcessConfig, ProcessError,
+    ReadStatus, StderrMode, StdinMode, StreamKind,
 };
 
 fn config(
@@ -151,6 +153,83 @@ fn run_command_timeout_kills_child_and_returns_timeout() {
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "timeout path did not kill promptly"
+    );
+}
+
+#[test]
+fn bounded_run_stops_allocating_after_output_limit() {
+    let result = run_command_bounded(
+        ProcessConfig {
+            stderr_mode: StderrMode::Pipe,
+            ..config(
+                CommandSpec::Argv(vec![
+                    "python".into(),
+                    "-c".into(),
+                    "import sys; sys.stdout.buffer.write(b'x' * 4194304); sys.stdout.flush()"
+                        .into(),
+                ]),
+                false,
+                StdinMode::Null,
+                None,
+            )
+        },
+        Some(CHILD_EXIT_WAIT),
+        1024,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ProcessError::OutputLimitExceeded { limit: 1024 })
+    ));
+}
+
+// Darwin's filesystem and process launch APIs reject these byte sequences
+// with EILSEQ before exec; Linux accepts them and can exercise the lossless
+// std::process::Command delegation end to end.
+#[cfg(target_os = "linux")]
+#[test]
+fn bounded_std_command_preserves_non_utf8_process_inputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let program = temp.path().join(OsString::from_vec(b"shell-\xff".to_vec()));
+    std::os::unix::fs::symlink("/bin/sh", &program).unwrap();
+
+    let mut command = Command::new(program);
+    command
+        .args(["-c", "printf %s \"$RP_BYTES\"; printf %s \"$1\"", "sh"])
+        .arg(OsString::from_vec(b"arg-\xfe".to_vec()))
+        .env("RP_BYTES", OsString::from_vec(b"environment-\xff".to_vec()));
+
+    let output =
+        running_process::run_std_command_bounded(command, Some(CHILD_EXIT_WAIT), 4096).unwrap();
+    assert_eq!(output.stdout, b"environment-\xffarg-\xfe");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bounded_run_cancels_readers_held_by_escaped_descendant() {
+    let started = Instant::now();
+    let result = run_command_bounded(
+        config(
+            CommandSpec::Argv(vec![
+                "sh".into(),
+                "-c".into(),
+                "setsid sh -c 'sleep 3' & sleep 30".into(),
+            ]),
+            false,
+            StdinMode::Null,
+            None,
+        ),
+        Some(Duration::from_millis(100)),
+        4096,
+    );
+
+    // `run_command_bounded` returns Timeout only after its cancelable reader
+    // count reaches zero. A failed cancellation reports an I/O timeout.
+    assert!(matches!(result, Err(ProcessError::Timeout)));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "escaped descendant kept capture readers alive for {:?}",
+        started.elapsed()
     );
 }
 

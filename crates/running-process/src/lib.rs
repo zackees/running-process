@@ -132,9 +132,12 @@ pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
     spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env,
-    spawn_daemon_with_env_policy, spawn_with_env_policy, DaemonChild, EnvironmentPolicy,
+    spawn_daemon_with_env_policy, spawn_daemon_with_stdio, spawn_daemon_with_stdio_and_env_policy,
+    spawn_with_env_policy, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy,
     SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR,
 };
+#[cfg(feature = "client-async")]
+pub use spawn::{spawn_tokio, TokioSpawnOptions};
 pub use terminal_graphics::{
     current_terminal_capabilities, current_terminal_capabilities_with_timeout,
     detect_terminal_capabilities, CapabilityStatus, EvidenceStrength, GraphicsCapability,
@@ -193,6 +196,9 @@ const RETURNCODE_NOT_SET: i64 = i64::MIN;
 struct SharedState {
     queues: Mutex<QueueState>,
     condvar: Condvar,
+    capture_limit: Option<usize>,
+    capture_overflowed: AtomicBool,
+    active_capture_readers: std::sync::atomic::AtomicUsize,
     /// Atomic exit code. `RETURNCODE_NOT_SET` means "not exited yet".
     /// Updated by a background waiter thread — reading is lock-free.
     returncode: AtomicI64,
@@ -311,11 +317,16 @@ fn cleanup_child_after_start_error(mut child: Child) {
 }
 
 impl SharedState {
+    #[cfg(test)]
     fn new(capture: bool) -> Self {
-        Self::with_observer(capture, None)
+        Self::with_observer_and_limit(capture, None, None)
     }
 
-    fn with_observer(capture: bool, observer: Option<ObserverEmitter>) -> Self {
+    fn with_observer_and_limit(
+        capture: bool,
+        observer: Option<ObserverEmitter>,
+        capture_limit: Option<usize>,
+    ) -> Self {
         let queues = QueueState {
             stdout_closed: !capture,
             stderr_closed: !capture,
@@ -324,6 +335,9 @@ impl SharedState {
         Self {
             queues: Mutex::new(queues),
             condvar: Condvar::new(),
+            capture_limit,
+            capture_overflowed: AtomicBool::new(false),
+            active_capture_readers: std::sync::atomic::AtomicUsize::new(0),
             returncode: AtomicI64::new(RETURNCODE_NOT_SET),
             observer,
             observer_exit_emitted: AtomicBool::new(false),
@@ -354,6 +368,7 @@ impl SharedState {
 /// blocking code.
 pub struct NativeProcess {
     config: ProcessConfig,
+    command_override: Mutex<Option<Command>>,
     child: Arc<Mutex<Option<ChildState>>>,
     stdin: Mutex<Option<ChildStdin>>,
     shared: Arc<SharedState>,
@@ -372,7 +387,7 @@ impl NativeProcess {
     /// observation is **off by default**: no lifecycle events are emitted
     /// unless [`Self::with_observer`] is used instead.
     pub fn new(config: ProcessConfig) -> Self {
-        Self::new_with_observer(config, None)
+        Self::new_with_options(config, None, None, None)
     }
 
     /// Create a process wrapper with process observation enabled (Phase 1
@@ -392,18 +407,32 @@ impl NativeProcess {
         observer: crate::observer::ObserverConfig,
     ) -> (Self, ObserverSubscriber) {
         let (emitter, subscriber) = ObserverEmitter::new(observer);
-        let process = Self::new_with_observer(config, Some(emitter));
+        let process = Self::new_with_options(config, Some(emitter), None, None);
         (process, subscriber)
     }
 
-    fn new_with_observer(config: ProcessConfig, observer: Option<ObserverEmitter>) -> Self {
-        let shared = match observer {
-            // Off-by-default path: no emitter, no observation state.
-            None => SharedState::new(config.capture),
-            Some(emitter) => SharedState::with_observer(config.capture, Some(emitter)),
-        };
+    fn new_with_capture_limit(config: ProcessConfig, capture_limit: usize) -> Self {
+        Self::new_with_options(config, None, Some(capture_limit), None)
+    }
+
+    fn new_with_command_capture_limit(
+        command: Command,
+        config: ProcessConfig,
+        capture_limit: usize,
+    ) -> Self {
+        Self::new_with_options(config, None, Some(capture_limit), Some(command))
+    }
+
+    fn new_with_options(
+        config: ProcessConfig,
+        observer: Option<ObserverEmitter>,
+        capture_limit: Option<usize>,
+        command_override: Option<Command>,
+    ) -> Self {
+        let shared = SharedState::with_observer_and_limit(config.capture, observer, capture_limit);
         Self {
             shared: Arc::new(shared),
+            command_override: Mutex::new(command_override),
             child: Arc::new(Mutex::new(None)),
             stdin: Mutex::new(None),
             #[cfg(test)]
@@ -1251,23 +1280,34 @@ impl NativeProcess {
     }
 
     fn build_command(&self) -> Command {
-        let mut command = match &self.config.command {
-            CommandSpec::Shell(command) => shell_command(command),
-            CommandSpec::Argv(argv) => {
-                let mut command = Command::new(&argv[0]);
-                if argv.len() > 1 {
-                    command.args(&argv[1..]);
+        let command_override = self
+            .command_override
+            .lock()
+            .expect("command override mutex poisoned")
+            .take();
+        let mut command = match command_override {
+            Some(command) => command,
+            None => {
+                let mut command = match &self.config.command {
+                    CommandSpec::Shell(command) => shell_command(command),
+                    CommandSpec::Argv(argv) => {
+                        let mut command = Command::new(&argv[0]);
+                        if argv.len() > 1 {
+                            command.args(&argv[1..]);
+                        }
+                        command
+                    }
+                };
+                if let Some(cwd) = &self.config.cwd {
+                    command.current_dir(cwd);
+                }
+                if let Some(env) = &self.config.env {
+                    command.env_clear();
+                    command.envs(env.iter().map(|(k, v)| (k, v)));
                 }
                 command
             }
         };
-        if let Some(cwd) = &self.config.cwd {
-            command.current_dir(cwd);
-        }
-        if let Some(env) = &self.config.env {
-            command.env_clear();
-            command.envs(env.iter().map(|(k, v)| (k, v)));
-        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -1326,6 +1366,7 @@ impl NativeProcess {
         R: Read + Send + 'static,
     {
         let shared = Arc::clone(&self.shared);
+        shared.active_capture_readers.fetch_add(1, Ordering::AcqRel);
         thread::spawn(move || {
             let mut reader = pipe;
             let mut chunk = vec![0_u8; 65536];
@@ -1335,15 +1376,18 @@ impl NativeProcess {
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(n) => {
-                        append_raw(&shared, visible_stream, &chunk[..n]);
-                        let lines = feed_chunk(&mut pending, &chunk[..n]);
-                        emit_lines(&shared, visible_stream, lines);
+                        if append_raw(&shared, visible_stream, &chunk[..n]) {
+                            let lines = feed_chunk(&mut pending, &chunk[..n]);
+                            emit_lines(&shared, visible_stream, lines);
+                        } else {
+                            pending.clear();
+                        }
                     }
                     Err(_) => break,
                 }
             }
 
-            if !pending.is_empty() {
+            if !pending.is_empty() && !shared.capture_overflowed.load(Ordering::Acquire) {
                 emit_lines(&shared, visible_stream, vec![std::mem::take(&mut pending)]);
             }
 
@@ -1359,6 +1403,7 @@ impl NativeProcess {
                 StreamKind::Stdout => guard.stdout_closed = true,
                 StreamKind::Stderr => guard.stderr_closed = true,
             }
+            shared.active_capture_readers.fetch_sub(1, Ordering::AcqRel);
             shared.condvar.notify_all();
         });
     }
@@ -1462,6 +1507,27 @@ impl NativeProcess {
         }
         finalize_capture_completion(&self.shared, deadline)
     }
+
+    fn wait_for_capture_readers_with_deadline(&self, deadline: Instant) -> bool {
+        let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
+        while self.shared.active_capture_readers.load(Ordering::Acquire) != 0 {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (next_guard, result) = self
+                .shared
+                .condvar
+                .wait_timeout(guard, deadline - now)
+                .expect("queue mutex poisoned");
+            guard = next_guard;
+            if result.timed_out() && self.shared.active_capture_readers.load(Ordering::Acquire) != 0
+            {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Cancel any pending blocking `read()` on the parent-side capture pipes
@@ -1537,10 +1603,13 @@ fn finalize_capture_completion(shared: &SharedState, deadline: Instant) -> bool 
 }
 
 fn emit_lines(shared: &Arc<SharedState>, stream: StreamKind, lines: Vec<Vec<u8>>) {
-    if lines.is_empty() {
+    if lines.is_empty() || shared.capture_overflowed.load(Ordering::Acquire) {
         return;
     }
     let mut guard = shared.queues.lock().expect("queue mutex poisoned");
+    if shared.capture_overflowed.load(Ordering::Acquire) {
+        return;
+    }
     for line in lines {
         let line_len = line.len();
         match stream {
@@ -1563,14 +1632,30 @@ fn emit_lines(shared: &Arc<SharedState>, stream: StreamKind, lines: Vec<Vec<u8>>
     shared.condvar.notify_all();
 }
 
-fn append_raw(shared: &Arc<SharedState>, stream: StreamKind, chunk: &[u8]) {
+fn append_raw(shared: &Arc<SharedState>, stream: StreamKind, chunk: &[u8]) -> bool {
     if chunk.is_empty() {
-        return;
+        return true;
     }
     let mut guard = shared.queues.lock().expect("queue mutex poisoned");
+    let accepted = match shared.capture_limit {
+        Some(limit) => {
+            let retained = guard
+                .stdout_raw
+                .len()
+                .saturating_add(guard.stderr_raw.len());
+            chunk.len().min(limit.saturating_sub(retained))
+        }
+        None => chunk.len(),
+    };
     match stream {
-        StreamKind::Stdout => guard.stdout_raw.extend_from_slice(chunk),
-        StreamKind::Stderr => guard.stderr_raw.extend_from_slice(chunk),
+        StreamKind::Stdout => guard.stdout_raw.extend_from_slice(&chunk[..accepted]),
+        StreamKind::Stderr => guard.stderr_raw.extend_from_slice(&chunk[..accepted]),
+    }
+    if accepted != chunk.len() {
+        shared.capture_overflowed.store(true, Ordering::Release);
+        false
+    } else {
+        true
     }
 }
 
@@ -1604,6 +1689,137 @@ pub fn run_command(
         stderr: process.captured_stderr_raw(),
         exit_code,
     })
+}
+
+struct BoundedRunCleanup<'a> {
+    process: &'a NativeProcess,
+    armed: bool,
+}
+
+impl BoundedRunCleanup<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for BoundedRunCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        // Error paths must not strand either the process tree or its capture
+        // readers. Cancel first so even a failing/redundant kill cannot leave
+        // threads blocked on pipes inherited by an escaped descendant.
+        #[cfg(any(windows, unix))]
+        self.process.cancel_capture_io();
+        let _ = self.process.poll();
+        if self.process.returncode().is_none() {
+            let _ = self.process.kill();
+        } else {
+            self.process.finish_capture_drain();
+        }
+        let _ = self
+            .process
+            .wait_for_capture_readers_with_deadline(kill_drain_deadline());
+    }
+}
+
+fn run_native_process_bounded(
+    process: NativeProcess,
+    timeout: Option<Duration>,
+    output_limit: usize,
+) -> Result<RunOutput, ProcessError> {
+    process.start()?;
+    let mut cleanup = BoundedRunCleanup {
+        process: &process,
+        armed: true,
+    };
+    let started = Instant::now();
+
+    let exit_code = loop {
+        if process.shared.capture_overflowed.load(Ordering::Acquire) {
+            return Err(ProcessError::OutputLimitExceeded {
+                limit: output_limit,
+            });
+        }
+        if let Some(code) = process.poll()? {
+            process.finish_capture_drain();
+            break code;
+        }
+        if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+            return Err(ProcessError::Timeout);
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+
+    if !process.wait_for_capture_readers_with_deadline(kill_drain_deadline()) {
+        return Err(ProcessError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "capture readers did not stop after process exit",
+        )));
+    }
+    if process.shared.capture_overflowed.load(Ordering::Acquire) {
+        return Err(ProcessError::OutputLimitExceeded {
+            limit: output_limit,
+        });
+    }
+
+    let output = RunOutput {
+        stdout: process.captured_stdout_raw(),
+        stderr: process.captured_stderr_raw(),
+        exit_code,
+    };
+    cleanup.disarm();
+    Ok(output)
+}
+
+/// Run a command with an aggregate stdout/stderr capture limit.
+///
+/// Once `output_limit` bytes have been retained, further output is drained
+/// without allocation, the contained process is terminated, and
+/// [`ProcessError::OutputLimitExceeded`] is returned. Timeout and overflow
+/// paths wait for the cancelable capture readers to actually exit before
+/// returning, including when a descendant escaped the process group while
+/// retaining a pipe.
+pub fn run_command_bounded(
+    mut config: ProcessConfig,
+    timeout: Option<Duration>,
+    output_limit: usize,
+) -> Result<RunOutput, ProcessError> {
+    config.capture = true;
+    config.create_process_group = true;
+    let process = NativeProcess::new_with_capture_limit(config, output_limit);
+    run_native_process_bounded(process, timeout, output_limit)
+}
+
+/// Run an existing [`std::process::Command`] with bounded capture.
+///
+/// Unlike [`run_command_bounded`], this entrypoint preserves non-UTF-8
+/// program paths, arguments, environment keys/values, and every other command
+/// setting exactly. Running-process still owns containment, console policy,
+/// timeout cleanup, and stdout/stderr capture.
+pub fn run_std_command_bounded(
+    command: Command,
+    timeout: Option<Duration>,
+    output_limit: usize,
+) -> Result<RunOutput, ProcessError> {
+    let config = ProcessConfig {
+        // The command override is consumed before this placeholder can be
+        // inspected. Keeping ProcessConfig internal policy in one shape avoids
+        // a second process-launch implementation.
+        command: CommandSpec::Argv(vec!["running-process-command-override".to_string()]),
+        cwd: None,
+        env: None,
+        capture: true,
+        stderr_mode: StderrMode::Pipe,
+        creationflags: None,
+        create_process_group: true,
+        stdin_mode: StdinMode::Null,
+        nice: None,
+    };
+    let process = NativeProcess::new_with_command_capture_limit(command, config, output_limit);
+    run_native_process_bounded(process, timeout, output_limit)
 }
 
 pub(crate) fn shell_command(command: &str) -> Command {

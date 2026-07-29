@@ -62,6 +62,12 @@ pub enum ProcessError {
     /// The requested wait or read operation timed out.
     #[error("process timed out")]
     Timeout,
+    /// Captured stdout and stderr exceeded the caller's aggregate byte limit.
+    #[error("captured process output exceeded the {limit}-byte limit")]
+    OutputLimitExceeded {
+        /// Aggregate stdout/stderr capture limit.
+        limit: usize,
+    },
 }
 
 /// Captured output and exit status returned by one-shot process helpers.

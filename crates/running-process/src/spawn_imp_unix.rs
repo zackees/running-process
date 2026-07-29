@@ -104,8 +104,17 @@ fn slot_to_stdio(slot: &super::StdioSource<'_>) -> io::Result<Stdio> {
     }
 }
 
+fn daemon_slot_to_stdio(slot: &super::DaemonStdioSource<'_>) -> io::Result<Stdio> {
+    match slot {
+        super::DaemonStdioSource::Null => Ok(Stdio::null()),
+        super::DaemonStdioSource::Fd(fd) => Ok(Stdio::from(fd.try_clone_to_owned()?)),
+        super::DaemonStdioSource::_Phantom(_) => unreachable!(),
+    }
+}
+
 pub fn spawn_daemon(
     command: &mut Command,
+    stdio: super::DaemonStdio<'_>,
     policy: super::EnvironmentPolicy,
 ) -> io::Result<super::DaemonChild> {
     use std::os::unix::process::CommandExt;
@@ -114,8 +123,8 @@ pub fn spawn_daemon(
 
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(daemon_slot_to_stdio(&stdio.stdout)?)
+        .stderr(daemon_slot_to_stdio(&stdio.stderr)?);
 
     unsafe {
         command.pre_exec(|| {

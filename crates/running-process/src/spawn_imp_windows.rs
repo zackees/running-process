@@ -22,10 +22,11 @@ use winapi::um::processthreadsapi::{
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
-    CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, FILE_FLAG_FIRST_PIPE_INSTANCE,
-    FILE_FLAG_OVERLAPPED, INFINITE, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, WAIT_OBJECT_0,
+    CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, INFINITE, PIPE_ACCESS_INBOUND,
+    PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+    PIPE_WAIT, STARTF_USESTDHANDLES, STARTUPINFOEXW, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE, WAIT_OBJECT_0,
 };
 use winapi::um::winnt::{
     JobObjectExtendedLimitInformation, DUPLICATE_SAME_ACCESS, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -343,6 +344,19 @@ fn resolve_slot(slot: &super::StdioSource<'_>, dir: SlotDir) -> io::Result<Resol
     }
 }
 
+fn resolve_daemon_slot(
+    slot: &super::DaemonStdioSource<'_>,
+    dir: SlotDir,
+) -> io::Result<OwnedHandle> {
+    match slot {
+        super::DaemonStdioSource::Null => open_nul(!matches!(dir, SlotDir::Stdin)),
+        super::DaemonStdioSource::Handle(borrowed) => {
+            dup_inheritable(borrowed.as_raw_handle() as HANDLE)
+        }
+        super::DaemonStdioSource::_Phantom(_) => unreachable!(),
+    }
+}
+
 pub struct SpawnedInner {
     process: Option<OwnedHandle>,
     job: Option<OwnedHandle>,
@@ -390,12 +404,13 @@ impl SpawnedInner {
 
 pub fn spawn_daemon(
     command: &mut Command,
+    stdio: super::DaemonStdio<'_>,
     policy: super::EnvironmentPolicy,
     breakaway: bool,
 ) -> io::Result<super::DaemonChild> {
     let stdin = open_nul(false)?;
-    let stdout = open_nul(true)?;
-    let stderr = open_nul(true)?;
+    let stdout = resolve_daemon_slot(&stdio.stdout, SlotDir::Stdout)?;
+    let stderr = resolve_daemon_slot(&stdio.stderr, SlotDir::Stderr)?;
     let (handle, _thread, pid) = create_process_inner(
         command,
         &stdin,
@@ -635,18 +650,12 @@ fn create_process_inner(
     let mut flags: DWORD = EXTENDED_STARTUPINFO_PRESENT;
     match mode {
         CreateMode::Daemon { breakaway } => {
-            // Daemons run with no visible console window and in a new
-            // process group so Ctrl-C / Ctrl-Break delivered to the
-            // parent's console group never reaches them.
-            //
-            // We intentionally do NOT add DETACHED_PROCESS. The
-            // CREATE_NO_WINDOW + DETACHED_PROCESS combo is documented
-            // as inconsistent by MS (both touch the same console
-            // inheritance machinery): cmd.exe spawned with both
-            // attaches no console, errors on its first builtin, and
-            // exits immediately with no output. CREATE_NO_WINDOW alone
-            // gives the child a non-visible console which is what
-            // cmd-shell scripts and most console tools actually need.
+            // Daemons are detached from every console and placed in a new
+            // process group so Ctrl-C / Ctrl-Break delivered to the parent's
+            // console group never reaches them. CREATE_NO_WINDOW can still
+            // allocate a hidden conhost; DETACHED_PROCESS is the flag that
+            // guarantees the daemon owns no console at all. The two flags
+            // must not be combined.
             //
             // CREATE_BREAKAWAY_FROM_JOB is what actually makes a daemon
             // outlive its spawner. Job Object membership is inherited by
@@ -746,7 +755,7 @@ fn create_process_inner(
 /// `CREATE_BREAKAWAY_FROM_JOB`; see [`CreateMode::Daemon`] for why it is
 /// opt-in rather than implied by "daemon".
 fn daemon_creation_flags(base: DWORD, breakaway: bool) -> DWORD {
-    let flags = base | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+    let flags = base | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
     if breakaway {
         flags | CREATE_BREAKAWAY_FROM_JOB
     } else {
@@ -765,7 +774,8 @@ mod daemon_flag_tests {
         let flags = daemon_creation_flags(EXTENDED_STARTUPINFO_PRESENT, true);
         assert_ne!(flags & CREATE_BREAKAWAY_FROM_JOB, 0);
         assert_ne!(flags & CREATE_NEW_PROCESS_GROUP, 0);
-        assert_ne!(flags & CREATE_NO_WINDOW, 0);
+        assert_ne!(flags & DETACHED_PROCESS, 0);
+        assert_eq!(flags & CREATE_NO_WINDOW, 0);
     }
 
     /// The default must NOT break away: `testbin-spawner` spawns sleepers as
@@ -780,7 +790,8 @@ mod daemon_flag_tests {
             "breakaway must be opt-in"
         );
         assert_ne!(flags & CREATE_NEW_PROCESS_GROUP, 0);
-        assert_ne!(flags & CREATE_NO_WINDOW, 0);
+        assert_ne!(flags & DETACHED_PROCESS, 0);
+        assert_eq!(flags & CREATE_NO_WINDOW, 0);
     }
 
     /// The daemon path must never suspend: nothing resumes it, unlike the

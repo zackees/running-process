@@ -3,9 +3,9 @@
 //! Modes (only two; the dangerous combination `detached + caller-pipes` has no
 //! API surface):
 //!
-//!   * [`spawn_daemon`] — detached lifetime, NUL stdio, sanitized handle list,
-//!     no console window, ignores parent's Ctrl-C. The returned [`DaemonChild`]
-//!     does NOT die when dropped.
+//!   * [`spawn_daemon`] — detached lifetime, sanitized file-or-NUL stdio,
+//!     sanitized handle list, no console window, ignores parent's Ctrl-C. The
+//!     returned [`DaemonChild`] does NOT die when dropped.
 //!   * [`spawn`] — contained lifetime, caller-controlled stdio via
 //!     [`SpawnStdio`], sanitized handle list, no console window by default
 //!     (opt in via [`SpawnStdio::show_console`]), bounded drain. The returned
@@ -109,6 +109,30 @@ pub struct SpawnStdio<'a> {
     pub show_console: bool,
 }
 
+/// Creation policy for [`spawn_tokio`].
+///
+/// This compatibility entrypoint lets async daemons keep Tokio's pipe and
+/// wait APIs while making `running-process` the sole owner of child-creation
+/// policy. It defaults to contained, console-less children.
+#[cfg(feature = "client-async")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TokioSpawnOptions {
+    /// Terminate the child when Tokio's child handle is dropped.
+    pub kill_on_drop: bool,
+    /// Whether Windows children may inherit or allocate a visible console.
+    pub show_console: bool,
+}
+
+#[cfg(feature = "client-async")]
+impl Default for TokioSpawnOptions {
+    fn default() -> Self {
+        Self {
+            kill_on_drop: true,
+            show_console: false,
+        }
+    }
+}
+
 impl Default for SpawnStdio<'_> {
     fn default() -> Self {
         Self {
@@ -119,6 +143,45 @@ impl Default for SpawnStdio<'_> {
             show_console: false,
         }
     }
+}
+
+/// Caller-supplied output bindings for a detached daemon.
+///
+/// Detached children may write only to the platform null device or to
+/// caller-owned file handles. Parent stdio and anonymous pipes are
+/// intentionally unavailable: either can retain the launching process's
+/// lifetime or fail after that process exits. The child always receives a
+/// fresh inheritable duplicate, and the caller retains its original handle.
+pub struct DaemonStdio<'a> {
+    /// Source connected to the daemon's standard output.
+    pub stdout: DaemonStdioSource<'a>,
+    /// Source connected to the daemon's standard error.
+    pub stderr: DaemonStdioSource<'a>,
+}
+
+impl Default for DaemonStdio<'_> {
+    fn default() -> Self {
+        Self {
+            stdout: DaemonStdioSource::Null,
+            stderr: DaemonStdioSource::Null,
+        }
+    }
+}
+
+/// Safe output source for a detached daemon.
+pub enum DaemonStdioSource<'a> {
+    /// Connect this slot to the platform null device (`NUL` / `/dev/null`).
+    Null,
+    /// Bind this slot to a caller-owned OS handle. The wrapper duplicates the
+    /// handle into an inheritable copy for the child.
+    #[cfg(windows)]
+    Handle(BorrowedHandle<'a>),
+    /// Bind this slot to a caller-owned file descriptor. Equivalent to
+    /// `DaemonStdioSource::Handle` on Windows.
+    #[cfg(unix)]
+    Fd(BorrowedFd<'a>),
+    #[doc(hidden)]
+    _Phantom(std::marker::PhantomData<&'a ()>),
 }
 
 /// Per-slot source describing what the child should inherit for one of
@@ -154,13 +217,12 @@ pub enum StdioSource<'a> {
 
 /// Handle to a detached daemon spawned via [`spawn_daemon`].
 ///
-/// The daemon child always has stdin/stdout/stderr connected to the
-/// platform null device (`NUL` on Windows, `/dev/null` on Unix) — a
-/// detached process with inherited stdio is the classic crash-on-first-
-/// `println!` failure mode after the parent closes its end, so the
-/// daemon-spawn path forecloses that by construction. Dropping
-/// `DaemonChild` does NOT terminate the daemon; it only closes the OS
-/// handle the wrapper held. Call [`DaemonChild::kill`] to terminate.
+/// The daemon child always has stdin connected to the platform null device.
+/// Stdout and stderr also default to null, but [`spawn_daemon_with_stdio`]
+/// can bind them to caller-owned files. A detached process can never inherit
+/// parent stdio or caller pipes through this API. Dropping `DaemonChild` does
+/// NOT terminate the daemon; it only closes the OS handle the wrapper held.
+/// Call [`DaemonChild::kill`] to terminate.
 pub struct DaemonChild {
     pid: u32,
     #[cfg(windows)]
@@ -327,12 +389,37 @@ pub const DAEMON_MARKER_ENV_VAR: &str = "RUNNING_PROCESS_IS_DAEMON";
 /// `CREATE_NEW_PROCESS_GROUP` + `DETACHED_PROCESS`; Unix: `setsid` puts the
 /// daemon in a new session so it's not in the parent's foreground group).
 ///
-/// The NUL-stdio guarantee is enforced internally by the platform impls
-/// and is not configurable — a detached daemon needs sunk stdio to
-/// avoid crashing on later `println!`/`eprintln!` after the parent
-/// closes its handles.
+/// Use [`spawn_daemon_with_stdio`] when the daemon must write to stable
+/// caller-owned files. Parent stdio and anonymous pipes remain unavailable
+/// for detached children.
 pub fn spawn_daemon(command: &mut Command) -> std::io::Result<DaemonChild> {
-    spawn_daemon_with_env_policy(command, EnvironmentPolicy::Auto)
+    spawn_daemon_inner(
+        command,
+        DaemonStdio::default(),
+        EnvironmentPolicy::Auto,
+        false,
+    )
+}
+
+/// Spawn a detached daemon with file-or-NUL stdout and stderr.
+///
+/// Stdin remains connected to null. The supplied handles are duplicated into
+/// the sanitized child handle list, so the caller can close its files after
+/// this function returns without affecting the daemon.
+pub fn spawn_daemon_with_stdio(
+    command: &mut Command,
+    stdio: DaemonStdio<'_>,
+) -> std::io::Result<DaemonChild> {
+    spawn_daemon_with_stdio_and_env_policy(command, stdio, EnvironmentPolicy::Auto)
+}
+
+/// [`spawn_daemon_with_stdio`] with an explicit environment policy.
+pub fn spawn_daemon_with_stdio_and_env_policy(
+    command: &mut Command,
+    stdio: DaemonStdio<'_>,
+    policy: EnvironmentPolicy,
+) -> std::io::Result<DaemonChild> {
+    spawn_daemon_inner(command, stdio, policy, false)
 }
 
 /// Like [`spawn_daemon`] but with explicit control over whether the
@@ -355,7 +442,7 @@ pub fn spawn_daemon_with_clear_env(
     } else {
         EnvironmentPolicy::Auto
     };
-    spawn_daemon_with_env_policy(command, policy)
+    spawn_daemon_inner(command, DaemonStdio::default(), policy, false)
 }
 
 /// Spawn a detached daemon using an explicit environment policy.
@@ -370,7 +457,7 @@ pub fn spawn_daemon_with_env_policy(
     command: &mut Command,
     policy: EnvironmentPolicy,
 ) -> std::io::Result<DaemonChild> {
-    spawn_daemon_inner(command, policy, false)
+    spawn_daemon_inner(command, DaemonStdio::default(), policy, false)
 }
 
 /// Like [`spawn_daemon`], but the child also **breaks away from any Job
@@ -404,7 +491,12 @@ pub fn spawn_daemon_with_env_policy(
 /// spawn retries once with the flag cleared — a daemon that stays contained
 /// beats a daemon that fails to start.
 pub fn spawn_daemon_breaking_away_from_job(command: &mut Command) -> std::io::Result<DaemonChild> {
-    spawn_daemon_inner(command, EnvironmentPolicy::Auto, true)
+    spawn_daemon_inner(
+        command,
+        DaemonStdio::default(),
+        EnvironmentPolicy::Auto,
+        true,
+    )
 }
 
 /// [`spawn_daemon_breaking_away_from_job`] with an explicit env policy.
@@ -412,7 +504,7 @@ pub fn spawn_daemon_breaking_away_with_env_policy(
     command: &mut Command,
     policy: EnvironmentPolicy,
 ) -> std::io::Result<DaemonChild> {
-    spawn_daemon_inner(command, policy, true)
+    spawn_daemon_inner(command, DaemonStdio::default(), policy, true)
 }
 
 /// Apply the daemon self-declaration to `command`. Split out from
@@ -424,6 +516,7 @@ pub(crate) fn mark_as_daemon(command: &mut Command) {
 
 fn spawn_daemon_inner(
     command: &mut Command,
+    stdio: DaemonStdio<'_>,
     policy: EnvironmentPolicy,
     breakaway: bool,
 ) -> std::io::Result<DaemonChild> {
@@ -434,19 +527,20 @@ fn spawn_daemon_inner(
     let policy = policy.resolve(SpawnLifetime::Daemon);
     #[cfg(windows)]
     {
-        imp::spawn_daemon(command, policy, breakaway)
+        imp::spawn_daemon(command, stdio, policy, breakaway)
     }
     #[cfg(unix)]
     {
         // Unix has no Job Object; `setsid` already detaches the daemon from
         // the parent's session and process group, so breakaway is moot.
         let _ = breakaway;
-        unix_impl::spawn_daemon(command, policy)
+        unix_impl::spawn_daemon(command, stdio, policy)
     }
 }
 
 /// Spawn `command` as a contained child with caller-controlled stdio.
-/// Sanitized handles, CREATE_NO_WINDOW. Child dies when the returned
+/// Sanitized handles, and no console (`DETACHED_PROCESS` on Windows). Child
+/// dies when the returned
 /// [`SpawnedChild`] is dropped.
 pub fn spawn(command: &mut Command, stdio: SpawnStdio<'_>) -> std::io::Result<SpawnedChild> {
     spawn_with_env_policy(command, stdio, EnvironmentPolicy::Auto)
@@ -466,6 +560,36 @@ pub fn spawn_with_env_policy(
     #[cfg(unix)]
     {
         unix_impl::spawn(command, stdio, policy)
+    }
+}
+
+/// Spawn a Tokio child through the centralized process-creation boundary.
+///
+/// Callers retain Tokio's async stdin/stdout/stderr and wait APIs, but may not
+/// apply platform creation flags themselves. On Windows, console suppression
+/// is owned here. Use [`spawn`] when the stronger sanitized-handle-list and
+/// kill-on-close Job Object contract is required.
+#[cfg(feature = "client-async")]
+pub fn spawn_tokio(
+    command: &mut tokio::process::Command,
+    options: TokioSpawnOptions,
+) -> std::io::Result<tokio::process::Child> {
+    command.kill_on_drop(options.kill_on_drop);
+    #[cfg(windows)]
+    command.creation_flags(tokio_creation_flags(options.show_console));
+    #[cfg(not(windows))]
+    let _ = options.show_console;
+    command.spawn()
+}
+
+#[cfg(all(feature = "client-async", windows))]
+fn tokio_creation_flags(show_console: bool) -> u32 {
+    if show_console {
+        0
+    } else {
+        // CREATE_NO_WINDOW. Keep this policy private so consumers cannot
+        // duplicate or partially apply Windows creation flags.
+        0x0800_0000
     }
 }
 
@@ -502,6 +626,13 @@ mod tests {
     }
 
     #[test]
+    fn daemon_stdio_default_is_null() {
+        let stdio = DaemonStdio::default();
+        assert!(matches!(stdio.stdout, DaemonStdioSource::Null));
+        assert!(matches!(stdio.stderr, DaemonStdioSource::Null));
+    }
+
+    #[test]
     fn auto_environment_policy_depends_on_lifetime() {
         assert_eq!(
             EnvironmentPolicy::Auto.resolve(SpawnLifetime::Contained),
@@ -523,5 +654,24 @@ mod tests {
             assert_eq!(policy.resolve(SpawnLifetime::Contained), policy);
             assert_eq!(policy.resolve(SpawnLifetime::Daemon), policy);
         }
+    }
+
+    #[cfg(feature = "client-async")]
+    #[test]
+    fn tokio_spawn_defaults_to_contained_consoleless_children() {
+        assert_eq!(
+            TokioSpawnOptions::default(),
+            TokioSpawnOptions {
+                kill_on_drop: true,
+                show_console: false,
+            }
+        );
+    }
+
+    #[cfg(all(feature = "client-async", windows))]
+    #[test]
+    fn tokio_spawn_owns_console_creation_flags() {
+        assert_eq!(tokio_creation_flags(false), 0x0800_0000);
+        assert_eq!(tokio_creation_flags(true), 0);
     }
 }
