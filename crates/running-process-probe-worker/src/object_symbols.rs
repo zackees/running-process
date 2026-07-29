@@ -251,13 +251,14 @@ fn decompress_xz_to_temp(compressed: &[u8]) -> Option<tempfile::NamedTempFile> {
     }
 
     let mut file = tempfile::NamedTempFile::new().ok()?;
-    let mut writer = BoundedWriter {
-        inner: file.as_file_mut(),
-        written: 0,
-    };
-    lzma_rs::xz_decompress(&mut Cursor::new(compressed), &mut writer).ok()?;
-    writer.flush().ok()?;
-    drop(writer);
+    {
+        let mut writer = BoundedWriter {
+            inner: file.as_file_mut(),
+            written: 0,
+        };
+        lzma_rs::xz_decompress(&mut Cursor::new(compressed), &mut writer).ok()?;
+        writer.flush().ok()?;
+    }
     Some(file)
 }
 

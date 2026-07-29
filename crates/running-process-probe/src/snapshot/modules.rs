@@ -48,9 +48,14 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn loaded_elf_build_ids() -> std::collections::HashMap<u64, String> {
-    use std::collections::HashMap;
+struct LoadedElfIdentity {
+    load_bias: u64,
+    mapped_ranges: Vec<Range<u64>>,
+    debug_id: String,
+}
 
+#[cfg(target_os = "linux")]
+fn loaded_elf_identities() -> Vec<LoadedElfIdentity> {
     unsafe extern "C" fn visit(
         info: *mut libc::dl_phdr_info,
         _size: libc::size_t,
@@ -58,12 +63,25 @@ fn loaded_elf_build_ids() -> std::collections::HashMap<u64, String> {
     ) -> libc::c_int {
         const MAX_NOTE_BYTES: usize = 1024 * 1024;
         let info = unsafe { &*info };
-        let out = unsafe { &mut *data.cast::<HashMap<u64, String>>() };
+        let out = unsafe { &mut *data.cast::<Vec<LoadedElfIdentity>>() };
         if info.dlpi_phdr.is_null() || info.dlpi_phnum == 0 {
             return 0;
         }
+        // libc exposes Elf_Addr as u64 on our 64-bit CI hosts and as a
+        // narrower integer on 32-bit Linux; this widening keeps both valid.
+        #[allow(clippy::unnecessary_cast)]
+        let load_bias = info.dlpi_addr as u64;
         let headers =
             unsafe { std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
+        let mapped_ranges = headers
+            .iter()
+            .filter(|header| header.p_type == libc::PT_LOAD && header.p_memsz > 0)
+            .filter_map(|header| {
+                let start = load_bias.checked_add(header.p_vaddr)?;
+                let end = start.checked_add(header.p_memsz)?;
+                Some(start..end)
+            })
+            .collect::<Vec<_>>();
         for header in headers {
             if header.p_type != libc::PT_NOTE {
                 continue;
@@ -74,7 +92,7 @@ fn loaded_elf_build_ids() -> std::collections::HashMap<u64, String> {
             if length == 0 || length > MAX_NOTE_BYTES {
                 continue;
             }
-            let Some(address) = (info.dlpi_addr as u64).checked_add(header.p_vaddr) else {
+            let Some(address) = load_bias.checked_add(header.p_vaddr) else {
                 continue;
             };
             let Some(note_end) = address.checked_add(length as u64) else {
@@ -84,7 +102,7 @@ fn loaded_elf_build_ids() -> std::collections::HashMap<u64, String> {
                 if load.p_type != libc::PT_LOAD || load.p_flags & libc::PF_R == 0 {
                     return false;
                 }
-                let Some(start) = (info.dlpi_addr as u64).checked_add(load.p_vaddr) else {
+                let Some(start) = load_bias.checked_add(load.p_vaddr) else {
                     return false;
                 };
                 let Some(end) = start.checked_add(load.p_memsz) else {
@@ -97,21 +115,22 @@ fn loaded_elf_build_ids() -> std::collections::HashMap<u64, String> {
             }
             let notes = unsafe { std::slice::from_raw_parts(address as *const u8, length) };
             if let Some(build_id) = gnu_build_id_from_notes(notes) {
-                out.insert(
-                    info.dlpi_addr as u64,
-                    format!("elf:{}", hex_bytes(build_id)),
-                );
+                out.push(LoadedElfIdentity {
+                    load_bias,
+                    mapped_ranges,
+                    debug_id: format!("elf:{}", hex_bytes(build_id)),
+                });
                 break;
             }
         }
         0
     }
 
-    let mut out = HashMap::new();
+    let mut out = Vec::new();
     unsafe {
         libc::dl_iterate_phdr(
             Some(visit),
-            (&mut out as *mut HashMap<u64, String>).cast::<libc::c_void>(),
+            (&mut out as *mut Vec<LoadedElfIdentity>).cast::<libc::c_void>(),
         );
     }
     out
@@ -494,7 +513,6 @@ fn next_maps_field(input: &str) -> Option<(&str, &str)> {
 struct LinuxImage {
     mapped_ranges: Vec<Range<u64>>,
     executable_ranges: Vec<Range<u64>>,
-    load_bias: u64,
     path: String,
     device_major: u64,
     device_minor: u64,
@@ -565,7 +583,7 @@ fn linux_images() -> std::io::Result<Vec<LinuxImage>> {
 
     Ok(images
         .into_iter()
-        .filter_map(|((path, device, inode, load_bias), mut mappings)| {
+        .filter_map(|((path, device, inode, _load_bias), mut mappings)| {
             let (major, minor) = device.split_once(':')?;
             let device_major = u64::from_str_radix(major, 16).ok()?;
             let device_minor = u64::from_str_radix(minor, 16).ok()?;
@@ -579,7 +597,6 @@ fn linux_images() -> std::io::Result<Vec<LinuxImage>> {
                     .into_iter()
                     .filter_map(|mapping| mapping.executable.then_some(mapping.range))
                     .collect(),
-                load_bias,
                 path,
                 device_major,
                 device_minor,
@@ -596,11 +613,10 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
     use std::io::Read as _;
 
     let mut modules = Vec::new();
-    let loaded_build_ids = loaded_elf_build_ids();
+    let loaded_identities = loaded_elf_identities();
     for LinuxImage {
         mapped_ranges,
         executable_ranges,
-        load_bias,
         path,
         device_major,
         device_minor,
@@ -646,14 +662,21 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
         let Ok(file) = object::File::parse(data.as_slice()) else {
             continue;
         };
+        let Some(loaded_identity) = loaded_identities.iter().find(|identity| {
+            identity.mapped_ranges.iter().any(|loaded| {
+                mapped_ranges
+                    .iter()
+                    .any(|mapped| loaded.start < mapped.end && mapped.start < loaded.end)
+            })
+        }) else {
+            continue;
+        };
         let base = if file.kind() == ObjectKind::Executable {
             0
         } else {
-            load_bias
+            loaded_identity.load_bias
         };
-        let Some(debug_id) = loaded_build_ids.get(&base).cloned() else {
-            continue;
-        };
+        let debug_id = loaded_identity.debug_id.clone();
         let file_debug_id = file
             .build_id()
             .ok()
