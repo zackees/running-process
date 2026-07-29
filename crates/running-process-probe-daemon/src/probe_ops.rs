@@ -16,7 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use running_process::broker::server::{PeerCredentialPolicy, PeerIdentity};
+use running_process_probe::probe_diag::v1::{CaptureReply, CaptureStackRequest, JobStatus};
 
+use crate::capture_jobs::CaptureJobs;
 use crate::registry::{ProcessKey, RegisterError, RegisterRequest, Registry};
 use crate::state::{RegState, StateError};
 
@@ -43,6 +45,8 @@ pub enum ProbeErrorCode {
     NonceReplay,
     /// Connecting peer is not the daemon's owner.
     PeerRejected,
+    /// Registrant policy or advertised capabilities refused the operation.
+    PolicyDenied,
     /// Operation requires an ARMED registration.
     NotArmed,
     /// Identity verification failed or was not performed.
@@ -62,16 +66,24 @@ pub enum ProbeRequest {
     /// mechanism, since a crashed process never sends this.
     Unregister(ProcessKey),
     /// Ask for a stack capture of the named process.
-    ///
-    /// The daemon does not perform the capture: it is cooperative and
-    /// in-process, so the target walks its own threads. This request is the
-    /// operator's ask; forwarding it to the target is a later slice. What is
-    /// validated here is whether the target is eligible at all.
-    CaptureStack(ProcessKey),
+    CaptureStack {
+        /// Target process.
+        key: ProcessKey,
+        /// Maximum native frames per thread.
+        max_depth: u32,
+        /// Optional thread-selection bitmask.
+        thread_filter: u32,
+        /// Absolute wire deadline, or zero for the daemon default.
+        deadline_unix_ms: u64,
+    },
+    /// Target-produced raw artifact.
+    CaptureResult(CaptureReply),
+    /// Query one asynchronous capture.
+    GetJobStatus(String),
 }
 
 /// The reply to a [`ProbeRequest`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ProbeReply {
     /// Registration reached ARMED.
     Armed {
@@ -80,6 +92,12 @@ pub enum ProbeReply {
     },
     /// Request accepted, nothing further to report.
     Ack,
+    /// A target should perform this capture now.
+    CaptureRequested(CaptureStackRequest),
+    /// An operator's capture was queued.
+    CaptureAccepted(CaptureReply),
+    /// Current asynchronous job state.
+    JobStatus(JobStatus),
     /// Request refused, with a stable code and a human-readable reason.
     Refused {
         /// Machine-branchable classification.
@@ -106,6 +124,7 @@ pub struct IdentityVerdict {
 pub struct ProbeOps {
     registry: Arc<Registry>,
     owner_policy: PeerCredentialPolicy,
+    capture_jobs: CaptureJobs,
 }
 
 impl ProbeOps {
@@ -114,6 +133,7 @@ impl ProbeOps {
         Self {
             registry,
             owner_policy,
+            capture_jobs: CaptureJobs::default(),
         }
     }
 
@@ -127,6 +147,11 @@ impl ProbeOps {
     /// Borrow the registry (queries, reaping).
     pub fn registry(&self) -> &Arc<Registry> {
         &self.registry
+    }
+
+    /// Cooperative capture queue shared by all connections.
+    pub fn capture_jobs(&self) -> &CaptureJobs {
+        &self.capture_jobs
     }
 
     /// Handle one request.
@@ -152,15 +177,41 @@ impl ProbeOps {
 
         match req {
             ProbeRequest::Register(request) => self.register(*request, peer, conn_id, verdict),
-            ProbeRequest::Heartbeat(key) => match self.registry.heartbeat(&key) {
-                Ok(()) => ProbeReply::Ack,
+            ProbeRequest::Heartbeat(key) => match self.registry.heartbeat(&key, conn_id) {
+                Ok(()) => self
+                    .capture_jobs
+                    .lease(&key, conn_id)
+                    .map_or(ProbeReply::Ack, ProbeReply::CaptureRequested),
                 Err(e) => refuse(e),
             },
-            ProbeRequest::CaptureStack(key) => self.capture_stack(&key),
+            ProbeRequest::CaptureStack {
+                key,
+                max_depth,
+                thread_filter,
+                deadline_unix_ms,
+            } => self.capture_stack(key, max_depth, thread_filter, deadline_unix_ms),
+            ProbeRequest::CaptureResult(_) => ProbeReply::Refused {
+                code: ProbeErrorCode::MalformedRequest,
+                reason: "capture results must arrive on the leased connection".into(),
+            },
+            ProbeRequest::GetJobStatus(job_id) => self.capture_jobs.status(&job_id).map_or_else(
+                || ProbeReply::Refused {
+                    code: ProbeErrorCode::NotRegistered,
+                    reason: "no capture job with that id".into(),
+                },
+                ProbeReply::JobStatus,
+            ),
             ProbeRequest::Unregister(key) => {
                 if let Some(entry) = self.registry.get(&key) {
-                    self.registry.drop_by_conn(entry.conn_id);
-                    ProbeReply::Ack
+                    if entry.conn_id == conn_id {
+                        self.registry.drop_by_conn(conn_id);
+                        ProbeReply::Ack
+                    } else {
+                        ProbeReply::Refused {
+                            code: ProbeErrorCode::NotRegistered,
+                            reason: "registration belongs to another connection".into(),
+                        }
+                    }
                 } else {
                     ProbeReply::Refused {
                         code: ProbeErrorCode::NotRegistered,
@@ -183,8 +234,14 @@ impl ProbeOps {
     /// belonging to a different user is unreachable from here. A check for it
     /// would be a branch nothing can take — a false promise about what this
     /// function guards.
-    fn capture_stack(&self, key: &ProcessKey) -> ProbeReply {
-        let Some(entry) = self.registry.get(key) else {
+    fn capture_stack(
+        &self,
+        key: ProcessKey,
+        max_depth: u32,
+        thread_filter: u32,
+        deadline_unix_ms: u64,
+    ) -> ProbeReply {
+        let Some(entry) = self.registry.get(&key) else {
             return ProbeReply::Refused {
                 code: ProbeErrorCode::NotRegistered,
                 reason: "no registration for this process key".into(),
@@ -198,12 +255,26 @@ impl ProbeOps {
             };
         }
 
-        // Eligible, but nothing captures yet: the target must be asked over
-        // its own connection, which this slice does not do. Refusing is the
-        // honest answer — an Ack would claim a capture had been started.
-        ProbeReply::Refused {
-            code: ProbeErrorCode::MalformedRequest,
-            reason: "capture forwarding to the target process is not implemented yet".into(),
+        if !entry.allow_policy.allow_all_ops
+            || !entry.supported_ops.iter().any(|op| op == "stack_capture")
+        {
+            return ProbeReply::Refused {
+                code: ProbeErrorCode::PolicyDenied,
+                reason: "target did not permit and advertise stack capture".into(),
+            };
+        }
+
+        // The operator receives an asynchronous receipt. The target leases
+        // this request on its next heartbeat over its authenticated connection.
+        match self
+            .capture_jobs
+            .enqueue(key, max_depth, thread_filter, deadline_unix_ms)
+        {
+            Ok(receipt) => ProbeReply::CaptureAccepted(receipt),
+            Err(reason) => ProbeReply::Refused {
+                code: ProbeErrorCode::MalformedRequest,
+                reason: reason.into(),
+            },
         }
     }
 
@@ -282,10 +353,13 @@ mod tests {
             app_class: "clud".into(),
             app_name: "clud".into(),
             app_version: "1.0".into(),
-            allow_policy: AllowPolicy::default(),
+            allow_policy: AllowPolicy {
+                allow_all_ops: true,
+                ..Default::default()
+            },
             disclosure: Disclosure::default(),
             nonce: [nonce; 32],
-            supported_ops: vec![],
+            supported_ops: vec!["stack_capture".into()],
             runtime: crate::registry::Runtime::Native,
         })
     }
@@ -294,6 +368,15 @@ mod tests {
         IdentityVerdict {
             verified: true,
             connection_alive: true,
+        }
+    }
+
+    fn capture_request(key: ProcessKey) -> ProbeRequest {
+        ProbeRequest::CaptureStack {
+            key,
+            max_depth: 64,
+            thread_filter: 0,
+            deadline_unix_ms: 0,
         }
     }
 
@@ -306,7 +389,7 @@ mod tests {
             started_at_unix_ms: 1,
             boot_id: "b".into(),
         };
-        match ops.dispatch(ProbeRequest::CaptureStack(key), &peer(), 1, good()) {
+        match ops.dispatch(capture_request(key), &peer(), 1, good()) {
             ProbeReply::Refused { code, .. } => assert_eq!(code, ProbeErrorCode::NotRegistered),
             other => panic!("expected NotRegistered, got {other:?}"),
         }
@@ -326,7 +409,7 @@ mod tests {
         };
         let _ = ops.dispatch(ProbeRequest::Register(request), &peer(), 1, verdict);
 
-        match ops.dispatch(ProbeRequest::CaptureStack(key), &peer(), 1, good()) {
+        match ops.dispatch(capture_request(key), &peer(), 1, good()) {
             ProbeReply::Refused { code, reason } => {
                 assert_eq!(code, ProbeErrorCode::NotArmed);
                 assert!(
@@ -361,7 +444,7 @@ mod tests {
             pid: 1234,
             uid_or_sid: "someone-else".into(),
         };
-        match ops.dispatch(ProbeRequest::CaptureStack(key), &stranger, 2, good()) {
+        match ops.dispatch(capture_request(key), &stranger, 2, good()) {
             ProbeReply::Refused { code, reason } => {
                 assert_eq!(code, ProbeErrorCode::PeerRejected);
                 assert!(
@@ -492,6 +575,34 @@ mod tests {
         assert_eq!(
             ops.dispatch(ProbeRequest::Heartbeat(key), &peer(), 1, good()),
             ProbeReply::Ack
+        );
+    }
+
+    #[test]
+    fn an_eligible_capture_is_queued_then_leased_on_the_target_heartbeat() {
+        let ops = ops();
+        let key = match ops.dispatch(ProbeRequest::Register(request(20, 10)), &peer(), 41, good()) {
+            ProbeReply::Armed { key } => key,
+            other => panic!("expected Armed, got {other:?}"),
+        };
+
+        let receipt = match ops.dispatch(capture_request(key.clone()), &peer(), 99, good()) {
+            ProbeReply::CaptureAccepted(receipt) => receipt,
+            other => panic!("expected queued capture, got {other:?}"),
+        };
+        assert!(!receipt.job_id.is_empty());
+
+        match ops.dispatch(ProbeRequest::Heartbeat(key.clone()), &peer(), 41, good()) {
+            ProbeReply::CaptureRequested(request) => {
+                assert_eq!(request.max_depth, 64);
+                assert_eq!(request.key.expect("key").pid, u64::from(key.pid));
+            }
+            other => panic!("expected leased capture, got {other:?}"),
+        }
+        assert_eq!(
+            ops.dispatch(ProbeRequest::Heartbeat(key), &peer(), 41, good()),
+            ProbeReply::Ack,
+            "a second job cannot be leased until the first upload arrives"
         );
     }
 

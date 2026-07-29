@@ -21,7 +21,7 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use prost::Message as _;
@@ -33,6 +33,28 @@ use running_process_probe::probe_diag::v1::{
 
 use crate::probe_ops::{IdentityVerdict, ProbeErrorCode, ProbeOps, ProbeReply, ProbeRequest};
 use crate::registry::{AllowPolicy, Disclosure, ProcessKey, RegisterRequest, Runtime};
+
+const MAX_CONCURRENT_SYMBOLIZATIONS: usize = 2;
+static ACTIVE_SYMBOLIZATIONS: AtomicUsize = AtomicUsize::new(0);
+
+struct SymbolizationPermit;
+
+impl SymbolizationPermit {
+    fn try_acquire() -> Option<Self> {
+        ACTIVE_SYMBOLIZATIONS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < MAX_CONCURRENT_SYMBOLIZATIONS).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for SymbolizationPermit {
+    fn drop(&mut self) {
+        ACTIVE_SYMBOLIZATIONS.fetch_sub(1, Ordering::Release);
+    }
+}
 
 /// Cap on one request frame.
 ///
@@ -55,6 +77,7 @@ pub fn next_conn_id() -> u64 {
 /// answers with a structured refusal rather than closing the connection — a
 /// client speaking a newer schema should get a reply it can interpret.
 pub fn request_from_envelope(envelope: ProbeEnvelope) -> Option<ProbeRequest> {
+    let deadline_unix_ms = envelope.deadline_unix_ms;
     match envelope.body? {
         Body::Register(req) => Some(ProbeRequest::Register(Box::new(register_from_proto(req)?))),
         Body::Heartbeat(hb) => Some(ProbeRequest::Heartbeat(key_from_proto(hb.key?)?)),
@@ -63,7 +86,14 @@ pub fn request_from_envelope(envelope: ProbeEnvelope) -> Option<ProbeRequest> {
         // gets a reason about the *target* rather than "unsupported body",
         // which would be indistinguishable from a message this daemon has
         // never heard of.
-        Body::CaptureStack(req) => Some(ProbeRequest::CaptureStack(key_from_proto(req.key?)?)),
+        Body::CaptureStack(req) => Some(ProbeRequest::CaptureStack {
+            key: key_from_proto(req.key?)?,
+            max_depth: req.max_depth,
+            thread_filter: req.thread_filter,
+            deadline_unix_ms,
+        }),
+        Body::CaptureReply(reply) => Some(ProbeRequest::CaptureResult(reply)),
+        Body::JobStatusReq(request) => Some(ProbeRequest::GetJobStatus(request.job_id)),
         _ => None,
     }
 }
@@ -120,7 +150,17 @@ fn register_from_proto(req: RegisterProcess) -> Option<RegisterRequest> {
             expose_env_names: req.disclosure.map(|d| d.expose_env_names).unwrap_or(false),
         },
         nonce,
-        supported_ops: Vec::new(),
+        supported_ops: req
+            .supported_ops
+            .into_iter()
+            .filter_map(|op| match op {
+                1 => Some("stack_capture".to_string()),
+                2 => Some("cpu_profile".to_string()),
+                3 => Some("heap_profile".to_string()),
+                4 => Some("off_cpu_profile".to_string()),
+                _ => None,
+            })
+            .collect(),
         runtime: Runtime::from_proto(req.runtime),
     })
 }
@@ -168,6 +208,9 @@ pub fn envelope_from_reply(request_id: u64, reply: &ProbeReply) -> ProbeEnvelope
             detail: "ack".into(),
             ..Default::default()
         }),
+        ProbeReply::CaptureRequested(request) => Body::CaptureStack(request.clone()),
+        ProbeReply::CaptureAccepted(reply) => Body::CaptureReply(reply.clone()),
+        ProbeReply::JobStatus(status) => Body::JobStatus(status.clone()),
         ProbeReply::Refused { code, reason } => Body::RegistrationStatus(RegistrationStatus {
             // 3 == DROPPED: the request did not produce a live registration.
             state: 3,
@@ -191,6 +234,7 @@ fn probe_error_to_proto(code: ProbeErrorCode) -> i32 {
         ProbeErrorCode::OversizeField => 5,
         ProbeErrorCode::NonceReplay => 3, // POLICY_DENIED
         ProbeErrorCode::PeerRejected => 3,
+        ProbeErrorCode::PolicyDenied => 3,
         ProbeErrorCode::NotArmed => 2, // NOT_REGISTERED
         ProbeErrorCode::NotRegistered => 2,
         ProbeErrorCode::IdentityMismatch => 1, // PID_REUSE / identity
@@ -242,7 +286,10 @@ pub fn serve_connection<S: io::Read + io::Write>(
             },
         };
 
-        let reply = ops.dispatch(request, peer, conn_id, verdict);
+        let reply = match request {
+            ProbeRequest::CaptureResult(result) => finalize_capture_upload(ops, conn_id, result),
+            other => ops.dispatch(other, peer, conn_id, verdict),
+        };
         if write_reply(stream, request_id, &reply).is_err() {
             break;
         }
@@ -250,6 +297,344 @@ pub fn serve_connection<S: io::Read + io::Write>(
 
     // Every exit path lands here. This is the daemon's primary death signal.
     ops.registry().drop_by_conn(conn_id);
+}
+
+fn finalize_capture_upload(
+    ops: &ProbeOps,
+    conn_id: u64,
+    reply: running_process_probe::probe_diag::v1::CaptureReply,
+) -> ProbeReply {
+    let upload = match ops.capture_jobs().accept_upload(conn_id, reply) {
+        Ok(upload) => upload,
+        Err(reason) => {
+            return ProbeReply::Refused {
+                code: ProbeErrorCode::MalformedRequest,
+                reason: reason.into(),
+            };
+        }
+    };
+    if upload.reply.error != 0 {
+        return ProbeReply::Ack;
+    }
+    let worker = crate::symbolication::worker_path();
+    finalize_accepted_upload(ops, upload, worker.as_deref())
+}
+
+#[cfg(test)]
+fn finalize_capture_upload_with_worker(
+    ops: &ProbeOps,
+    conn_id: u64,
+    reply: running_process_probe::probe_diag::v1::CaptureReply,
+    worker: &std::path::Path,
+) -> ProbeReply {
+    let upload = match ops.capture_jobs().accept_upload(conn_id, reply) {
+        Ok(upload) => upload,
+        Err(reason) => {
+            return ProbeReply::Refused {
+                code: ProbeErrorCode::MalformedRequest,
+                reason: reason.into(),
+            };
+        }
+    };
+    if upload.reply.error != 0 {
+        return ProbeReply::Ack;
+    }
+    finalize_accepted_upload(ops, upload, Some(worker))
+}
+
+fn finalize_accepted_upload(
+    ops: &ProbeOps,
+    upload: crate::capture_jobs::CaptureUpload,
+    worker: Option<&std::path::Path>,
+) -> ProbeReply {
+    let Some(_permit) = SymbolizationPermit::try_acquire() else {
+        let failure =
+            match discard_raw_capture(&upload.reply.artifact_path, upload.deadline_unix_ms) {
+                Ok(()) => ReportFailure::internal("daemon symbolization capacity reached"),
+                Err(error) => error,
+            };
+        ops.capture_jobs()
+            .fail(&upload.job_id, failure.code, failure.detail);
+        return ProbeReply::Ack;
+    };
+    let capture = match load_raw_capture(&upload.reply.artifact_path, upload.deadline_unix_ms) {
+        Ok(capture) => capture,
+        Err(error) => {
+            ops.capture_jobs()
+                .fail(&upload.job_id, error.code, error.detail);
+            return ProbeReply::Ack;
+        }
+    };
+    let Some(worker) = worker else {
+        ops.capture_jobs().fail(
+            &upload.job_id,
+            5,
+            crate::symbolication::WorkerError::NotFound.to_string(),
+        );
+        return ProbeReply::Ack;
+    };
+    match produce_symbol_reports(
+        &upload.job_id,
+        &capture.bytes,
+        &capture.report_dir,
+        worker,
+        upload.deadline_unix_ms,
+    ) {
+        Ok(reports) => {
+            if !ops
+                .capture_jobs()
+                .complete(&upload.job_id, reports.json.to_string_lossy().into_owned())
+            {
+                let _ = std::fs::remove_file(reports.json);
+                let _ = std::fs::remove_file(reports.text);
+            }
+            ProbeReply::Ack
+        }
+        Err(error) => {
+            ops.capture_jobs()
+                .fail(&upload.job_id, error.code, error.detail);
+            // The upload itself was accepted and its job now carries the
+            // failure. Keep the healthy target connection armed; operators
+            // observe this failure through GetJobStatus.
+            ProbeReply::Ack
+        }
+    }
+}
+
+struct SymbolReports {
+    json: PathBuf,
+    text: PathBuf,
+}
+
+struct RawArtifactCleanup(PathBuf);
+
+impl Drop for RawArtifactCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+struct ReportFailure {
+    code: i32,
+    detail: String,
+}
+
+impl ReportFailure {
+    fn internal(detail: impl Into<String>) -> Self {
+        Self {
+            code: 5,
+            detail: detail.into(),
+        }
+    }
+
+    fn deadline(detail: impl Into<String>) -> Self {
+        Self {
+            code: 4,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl From<String> for ReportFailure {
+    fn from(detail: String) -> Self {
+        Self::internal(detail)
+    }
+}
+
+impl From<&str> for ReportFailure {
+    fn from(detail: &str) -> Self {
+        Self::internal(detail)
+    }
+}
+
+struct LoadedCapture {
+    bytes: Vec<u8>,
+    report_dir: PathBuf,
+    _cleanup: RawArtifactCleanup,
+}
+
+struct OpenedRawArtifact {
+    file: std::fs::File,
+    len: u64,
+    report_dir: PathBuf,
+    cleanup: RawArtifactCleanup,
+}
+
+fn open_raw_artifact(
+    raw_path: &str,
+    deadline_unix_ms: u64,
+) -> Result<OpenedRawArtifact, ReportFailure> {
+    const MAX_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
+    let _ = remaining_worker_time(deadline_unix_ms)?;
+    let path = PathBuf::from(raw_path);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "capture artifact has no valid filename".to_string())?;
+    if !file_name.starts_with("rp-probe-capture-") || !file_name.ends_with(".json") {
+        return Err("capture artifact is not a probe-owned temporary file".into());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "capture artifact has no parent directory".to_string())?;
+    let expected_parent = std::env::temp_dir()
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve temp directory: {error}"))?;
+    let actual_parent = parent
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve capture directory: {error}"))?;
+    if actual_parent != expected_parent {
+        return Err("capture artifact is outside the owner-local temp directory".into());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // FILE_FLAG_OPEN_REPARSE_POINT: inspect the named object itself, not
+        // any symlink/junction target selected after validation.
+        options.custom_flags(0x0020_0000);
+    }
+    let file = options
+        .open(&path)
+        .map_err(|error| format!("cannot open capture artifact: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect capture artifact: {error}"))?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("capture artifact is a reparse point".into());
+        }
+    }
+    if !metadata.is_file() {
+        return Err("capture artifact is not a regular file".into());
+    }
+    // From this point the named object has passed the daemon-owned path and
+    // no-follow handle checks. Consume it exactly once even if parsing or
+    // worker execution fails, so raw stack data does not accumulate in temp.
+    let cleanup = RawArtifactCleanup(path.clone());
+    if metadata.len() > MAX_CAPTURE_BYTES {
+        return Err(format!(
+            "capture artifact is not a bounded regular file ({} bytes)",
+            metadata.len()
+        )
+        .into());
+    }
+    Ok(OpenedRawArtifact {
+        file,
+        len: metadata.len(),
+        report_dir: expected_parent,
+        cleanup,
+    })
+}
+
+fn discard_raw_capture(raw_path: &str, deadline_unix_ms: u64) -> Result<(), ReportFailure> {
+    let _artifact = open_raw_artifact(raw_path, deadline_unix_ms)?;
+    Ok(())
+}
+
+fn load_raw_capture(raw_path: &str, deadline_unix_ms: u64) -> Result<LoadedCapture, ReportFailure> {
+    const MAX_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
+    let artifact = open_raw_artifact(raw_path, deadline_unix_ms)?;
+    let mut capture = Vec::with_capacity(artifact.len as usize);
+    let mut limited = io::Read::take(artifact.file, MAX_CAPTURE_BYTES + 1);
+    io::Read::read_to_end(&mut limited, &mut capture)
+        .map_err(|error| format!("cannot read capture artifact: {error}"))?;
+    if capture.len() as u64 > MAX_CAPTURE_BYTES {
+        return Err("capture artifact grew beyond the 64 MiB limit".into());
+    }
+    Ok(LoadedCapture {
+        bytes: capture,
+        report_dir: artifact.report_dir,
+        _cleanup: artifact.cleanup,
+    })
+}
+
+fn produce_symbol_reports(
+    job_id: &str,
+    capture: &[u8],
+    report_dir: &std::path::Path,
+    worker: &std::path::Path,
+    deadline_unix_ms: u64,
+) -> Result<SymbolReports, ReportFailure> {
+    let budget = remaining_worker_time(deadline_unix_ms)?;
+    let json = crate::symbolication::symbolize_with_worker_at(worker, capture, budget.timeout)
+        .map_err(|error| classify_worker_failure(error, budget.deadline_limited))?;
+    let budget = remaining_worker_time(deadline_unix_ms)?;
+    let text = crate::symbolication::symbolize_with_worker_at_text(worker, capture, budget.timeout)
+        .map_err(|error| classify_worker_failure(error, budget.deadline_limited))?;
+
+    let json_path = report_dir.join(format!("rp-probe-report-{job_id}.symbolized.json"));
+    let text_path = report_dir.join(format!("rp-probe-report-{job_id}.symbolized.txt"));
+    write_new(&json_path, json.as_bytes())
+        .map_err(|error| format!("cannot write JSON report: {error}"))?;
+    if let Err(error) = write_new(&text_path, text.as_bytes()) {
+        let _ = std::fs::remove_file(&json_path);
+        return Err(format!("cannot write text report: {error}").into());
+    }
+    Ok(SymbolReports {
+        json: json_path,
+        text: text_path,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct WorkerBudget {
+    timeout: std::time::Duration,
+    deadline_limited: bool,
+}
+
+fn remaining_worker_time(deadline_unix_ms: u64) -> Result<WorkerBudget, ReportFailure> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let remaining_ms = deadline_unix_ms.saturating_sub(now);
+    if remaining_ms == 0 {
+        return Err(ReportFailure::deadline("capture deadline elapsed"));
+    }
+    let remaining = std::time::Duration::from_millis(remaining_ms);
+    Ok(WorkerBudget {
+        timeout: remaining.min(crate::symbolication::DEFAULT_WORKER_TIMEOUT),
+        deadline_limited: remaining <= crate::symbolication::DEFAULT_WORKER_TIMEOUT,
+    })
+}
+
+fn classify_worker_failure(
+    error: crate::symbolication::WorkerError,
+    deadline_limited: bool,
+) -> ReportFailure {
+    if deadline_limited && matches!(error, crate::symbolication::WorkerError::Timeout(_)) {
+        ReportFailure::deadline(error.to_string())
+    } else {
+        ReportFailure::internal(error.to_string())
+    }
+}
+
+fn write_new(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+    use io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    let result = file.write_all(bytes).and_then(|()| file.flush());
+    if result.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+    result
 }
 
 fn write_reply<S: io::Write>(
@@ -628,7 +1013,7 @@ mod tests {
             })),
         };
         match request_from_envelope(envelope) {
-            Some(ProbeRequest::CaptureStack(key)) => {
+            Some(ProbeRequest::CaptureStack { key, .. }) => {
                 assert_eq!(key.pid, 4242);
                 assert_eq!(key.started_at_unix_ms, 1_700_000_000_000);
             }
@@ -736,5 +1121,183 @@ mod tests {
     #[test]
     fn an_unknown_runtime_still_registers() {
         assert_eq!(stored_runtime_for(9, 0x53), Runtime::Unspecified);
+    }
+
+    /// Full #637 daemon boundary: a leased target artifact is path-checked,
+    /// symbolized by real disposable workers into both formats, and exposed as
+    /// a completed asynchronous job.
+    #[test]
+    fn leased_capture_becomes_json_and_text_job_artifacts() {
+        let mut worker = std::env::current_exe().expect("test executable");
+        worker.pop();
+        if worker.ends_with("deps") {
+            worker.pop();
+        }
+        worker.push(format!(
+            "running-process-probe-worker{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        if !worker.is_file() {
+            assert!(
+                std::env::var_os("GITHUB_ACTIONS").is_none(),
+                "worker binary missing at {} in CI",
+                worker.display()
+            );
+            eprintln!("skipping: worker binary not built");
+            return;
+        }
+
+        let ops = ops();
+        let key = ProcessKey {
+            pid: std::process::id(),
+            started_at_unix_ms: 17,
+            boot_id: "boot".into(),
+        };
+        let receipt = ops
+            .capture_jobs()
+            .enqueue(key.clone(), 64, 0, 0)
+            .expect("enqueued");
+        ops.capture_jobs().lease(&key, 71).expect("lease");
+        let raw_path = std::env::temp_dir().join(format!(
+            "rp-probe-capture-test-{}-{}.json",
+            std::process::id(),
+            receipt.job_id
+        ));
+        std::fs::write(
+            &raw_path,
+            br#"{"format":"cooperative_frames","modules":[{"name":"fixture.dll"}],
+                "threads":[{"os_tid":7,"frames":[{"module_index":0,"relative_address":16}],
+                "py_frames":[{"file":"fixture.py","line":3,"func":"handler"}]}]}"#,
+        )
+        .expect("raw capture");
+
+        let reply = finalize_capture_upload_with_worker(
+            &ops,
+            71,
+            wire::CaptureReply {
+                artifact_path: raw_path.to_string_lossy().into_owned(),
+                threads_captured: 1,
+                ..Default::default()
+            },
+            &worker,
+        );
+        assert_eq!(reply, ProbeReply::Ack);
+        let status = ops
+            .capture_jobs()
+            .status(&receipt.job_id)
+            .expect("job status");
+        assert_eq!(status.state, wire::job_status::State::Complete as i32);
+        let json_path = PathBuf::from(&status.artifact_path);
+        let text_path =
+            std::env::temp_dir().join(format!("rp-probe-report-{}.symbolized.txt", receipt.job_id));
+        let json = std::fs::read_to_string(&json_path).expect("JSON report");
+        let text = std::fs::read_to_string(&text_path).expect("text report");
+        assert!(json.contains("fixture.dll"), "{json}");
+        assert!(json.contains("handler"), "{json}");
+        assert!(text.contains("fixture.dll"), "{text}");
+        assert!(text.contains("handler"), "{text}");
+        assert!(
+            !raw_path.exists(),
+            "the daemon must consume the sensitive raw artifact"
+        );
+
+        for path in [&raw_path, &json_path, &text_path] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn accepted_job_failure_is_acked_without_poisoning_the_target_connection() {
+        let ops = ops();
+        let key = ProcessKey {
+            pid: 91,
+            started_at_unix_ms: 17,
+            boot_id: "boot".into(),
+        };
+        let receipt = ops
+            .capture_jobs()
+            .enqueue(key.clone(), 64, 0, 0)
+            .expect("enqueued");
+        ops.capture_jobs().lease(&key, 71).expect("lease");
+        let missing =
+            std::env::temp_dir().join(format!("rp-probe-capture-missing-{}.json", receipt.job_id));
+        let reply = finalize_capture_upload_with_worker(
+            &ops,
+            71,
+            wire::CaptureReply {
+                artifact_path: missing.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            std::path::Path::new("unused-worker"),
+        );
+        assert_eq!(reply, ProbeReply::Ack);
+        assert_eq!(
+            ops.capture_jobs().status(&receipt.job_id).unwrap().state,
+            wire::job_status::State::Failed as i32
+        );
+
+        ops.capture_jobs()
+            .enqueue(key.clone(), 64, 0, 0)
+            .expect("a failed job must release capacity");
+        assert!(
+            ops.capture_jobs().lease(&key, 71).is_some(),
+            "the same target connection remains usable"
+        );
+    }
+
+    #[test]
+    fn worker_timeout_uses_the_deadline_code_only_when_job_budget_limited() {
+        let deadline = classify_worker_failure(
+            crate::symbolication::WorkerError::Timeout(std::time::Duration::from_secs(1)),
+            true,
+        );
+        assert_eq!(deadline.code, 4);
+        let safety_cap = classify_worker_failure(
+            crate::symbolication::WorkerError::Timeout(
+                crate::symbolication::DEFAULT_WORKER_TIMEOUT,
+            ),
+            false,
+        );
+        assert_eq!(safety_cap.code, 5);
+    }
+
+    #[test]
+    fn missing_worker_still_consumes_an_accepted_raw_artifact() {
+        let ops = ops();
+        let key = ProcessKey {
+            pid: 92,
+            started_at_unix_ms: 17,
+            boot_id: "boot".into(),
+        };
+        let receipt = ops
+            .capture_jobs()
+            .enqueue(key.clone(), 64, 0, 0)
+            .expect("enqueued");
+        ops.capture_jobs().lease(&key, 72).expect("lease");
+        let raw = std::env::temp_dir().join(format!(
+            "rp-probe-capture-worker-missing-{}.json",
+            receipt.job_id
+        ));
+        std::fs::write(&raw, b"{}").unwrap();
+        let upload = ops
+            .capture_jobs()
+            .accept_upload(
+                72,
+                wire::CaptureReply {
+                    artifact_path: raw.to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+            )
+            .expect("accepted");
+
+        assert_eq!(
+            finalize_accepted_upload(&ops, upload, None),
+            ProbeReply::Ack
+        );
+        assert!(!raw.exists());
+        assert_eq!(
+            ops.capture_jobs().status(&receipt.job_id).unwrap().state,
+            wire::job_status::State::Failed as i32
+        );
     }
 }

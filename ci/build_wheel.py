@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,20 @@ DIST = ROOT / "dist"
 TRAMPOLINE_ASSETS = ROOT / "src" / "running_process" / "assets"
 
 BuildMode = Literal["dev", "release"]
+
+
+def preserve_dev_pdb() -> Path:
+    """Keep the exact dev-wheel PDB before later Cargo lanes can replace it."""
+    from ci.env import host_target_triple
+
+    triple = host_target_triple()
+    source = ROOT / "target" / triple / "debug" / "_native.pdb"
+    if not source.is_file():
+        raise RuntimeError(f"dev native PDB missing after wheel build: {source}")
+    destination = ROOT / "target" / "probe-symbols" / triple / "_native.pdb"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return destination
 
 
 def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> list[str]:
@@ -47,7 +62,9 @@ def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> li
 
 
 def built_wheels() -> list[Path]:
-    return sorted(DIST.glob("running_process-*.whl"), key=lambda path: path.stat().st_mtime)
+    return sorted(
+        DIST.glob("running_process-*.whl"), key=lambda path: path.stat().st_mtime
+    )
 
 
 def latest_wheel() -> Path:
@@ -86,7 +103,6 @@ def install_wheel(wheel: Path, *, env: dict[str, str]) -> int:
 def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> int:
     """Build the daemon-trampoline binary and copy it into package assets."""
     import json as json_mod
-    import shutil
 
     profile_args = ["--release"] if mode == "release" else []
     # Wave 7 of #165: daemon-trampoline is now a [[bin]] inside the
@@ -129,7 +145,8 @@ def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> i
     if src is None or not src.exists():
         print(
             f"trampoline binary not found in cargo output (searched {src})",
-            file=sys.stderr, flush=True,
+            file=sys.stderr,
+            flush=True,
         )
         print(f"cargo stderr:\n{result.stderr}", file=sys.stderr, flush=True)
         return 1
@@ -151,7 +168,10 @@ def run_build(mode: BuildMode) -> int:
         final_crate_rustc_args,
         stripped_pdb_path,
     )
-    from ci.verify_release_symbols import format_release_artifact_report, verify_release_artifact
+    from ci.verify_release_symbols import (
+        format_release_artifact_report,
+        verify_release_artifact,
+    )
 
     env = build_env()
     rc = build_trampoline(mode, env=env)
@@ -171,6 +191,13 @@ def run_build(mode: BuildMode) -> int:
     result = subprocess.run(cmd, cwd=ROOT, check=False, env=env)
     if result.returncode != 0:
         return result.returncode
+    if mode == "dev" and platform.system() == "Windows":
+        preserved = preserve_dev_pdb()
+        print(
+            f"preserved exact dev-wheel PDB for probe tests: {preserved}",
+            file=sys.stderr,
+            flush=True,
+        )
     if mode == "release" and platform.system() == "Windows":
         tiny_pdb = filter_public_pdb(
             source_pdb=stripped_pdb_path(ROOT),
@@ -178,7 +205,7 @@ def run_build(mode: BuildMode) -> int:
             root=ROOT,
         )
         new_wheels = [path for path in built_wheels() if path.name not in before]
-        for wheel in (new_wheels or [latest_wheel()]):
+        for wheel in new_wheels or [latest_wheel()]:
             bundled = bundle_windows_tiny_pdb(wheel, tiny_pdb=tiny_pdb, root=ROOT)
             print(
                 f"bundled tiny PDB into {wheel.name}: {', '.join(bundled)}",
@@ -191,7 +218,11 @@ def run_build(mode: BuildMode) -> int:
         return 0
 
     wheel = latest_wheel()
-    action = "reinstalling existing dev wheel" if wheel.name in before else "installing dev wheel"
+    action = (
+        "reinstalling existing dev wheel"
+        if wheel.name in before
+        else "installing dev wheel"
+    )
     print(f"{action}: {wheel.name}", file=sys.stderr, flush=True)
     return install_wheel(wheel, env=env)
 
