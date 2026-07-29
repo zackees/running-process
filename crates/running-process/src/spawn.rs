@@ -539,7 +539,8 @@ fn spawn_daemon_inner(
 }
 
 /// Spawn `command` as a contained child with caller-controlled stdio.
-/// Sanitized handles, CREATE_NO_WINDOW. Child dies when the returned
+/// Sanitized handles, and no console (`DETACHED_PROCESS` on Windows). Child
+/// dies when the returned
 /// [`SpawnedChild`] is dropped.
 pub fn spawn(command: &mut Command, stdio: SpawnStdio<'_>) -> std::io::Result<SpawnedChild> {
     spawn_with_env_policy(command, stdio, EnvironmentPolicy::Auto)
