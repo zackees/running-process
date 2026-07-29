@@ -156,6 +156,27 @@ pub fn broker_v2_runtime_dir() -> std::path::PathBuf {
     }
 }
 
+/// Path of the identity file a daemon publishes for `service`.
+///
+/// # Why the service name is the key
+///
+/// The broker resolves a Hello by `service_name` and knows nothing else about
+/// the daemon behind it. The daemon, in turn, is parameterised by *scope* and
+/// has no inherent notion of which service it serves. Those two facts left no
+/// shared identifier between them, which is what blocked backend-pipe
+/// resolution (running-process#532 item 5) — not the choice of directory.
+///
+/// So the service name is supplied to the daemon explicitly (`--service`) and
+/// used as the key here. Both sides call this function rather than building
+/// the path themselves: a publisher and a reader that each derive it
+/// independently will eventually disagree, and the failure is silent — the
+/// broker simply reports the daemon as absent forever.
+///
+/// The file is not created here, and a missing file is a normal state
+/// meaning "no daemon has published for this service".
+pub fn daemon_identity_path(service: &str) -> std::path::PathBuf {
+    broker_v2_runtime_dir().join(format!("daemon-{service}.json"))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +210,23 @@ mod tests {
     }
 
     const VALID_SID: &str = "deadbeefcafef00d";
+
+    /// Publisher and reader must land on the same file. They call this from
+    /// different processes, so a difference here is invisible until the
+    /// broker reports a running daemon as absent.
+    #[test]
+    fn the_identity_path_is_stable_and_service_specific() {
+        let a = daemon_identity_path("zccache");
+        assert_eq!(a, daemon_identity_path("zccache"));
+        assert_ne!(a, daemon_identity_path("fbuild"));
+        assert!(a.is_absolute(), "{} is not absolute", a.display());
+        assert!(a.starts_with(broker_v2_runtime_dir()));
+        assert!(
+            a.to_string_lossy().contains("zccache"),
+            "{} does not name the service",
+            a.display()
+        );
+    }
 
     #[test]
     fn v2_program_pipe_happy_path() {

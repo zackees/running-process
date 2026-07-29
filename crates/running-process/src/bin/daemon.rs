@@ -31,6 +31,18 @@ enum Commands {
         /// Override the SQLite database path (skips scope-based derivation).
         #[arg(long)]
         db_path: Option<String>,
+        /// Name of the service this daemon backs.
+        ///
+        /// Supplied rather than derived: a daemon is parameterised by scope
+        /// and has no inherent notion of which service it serves, while the
+        /// broker only ever knows the service name. Passing it in is what
+        /// gives the two sides a shared key (running-process#532).
+        ///
+        /// When set, the daemon publishes an identity file naming its IPC
+        /// endpoint and removes it on exit. Omitted, nothing is published and
+        /// behaviour is unchanged.
+        #[arg(long)]
+        service: Option<String>,
     },
     /// Stop the running daemon
     Stop,
@@ -190,6 +202,7 @@ fn main() {
             scope,
             socket_path,
             db_path,
+            service,
         } => {
             // #222: the long-running supervisor identity is `runpm-daemon`,
             // not the launcher binary name. Rename the process so it shows
@@ -228,7 +241,35 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = srv.run().await {
+                // Publish this daemon's identity so a broker can resolve
+                // `service` to a connectable endpoint. Best effort: failing to
+                // publish must not stop a daemon from serving, since the IPC
+                // socket — the thing clients actually use — is already bound.
+                let identity =
+                    service.as_deref().and_then(|service| {
+                        match publish_service_identity(service, &socket) {
+                            Ok(path) => {
+                                println!("service identity: {}", path.display());
+                                Some(path)
+                            }
+                            Err(e) => {
+                                eprintln!("failed to publish service identity: {e}");
+                                None
+                            }
+                        }
+                    });
+
+                let outcome = srv.run().await;
+
+                // Retract the identity before exiting, on the error path too.
+                // A stale file points a broker at a socket nobody is bound to,
+                // which is worse than an absent one — absent already means
+                // "no daemon", and every reader handles it.
+                if let Some(path) = &identity {
+                    running_process::broker::backend_sdk::remove_daemon_identity_file(path);
+                }
+
+                if let Err(e) = outcome {
                     eprintln!("daemon error: {e}");
                     std::process::exit(1);
                 }
@@ -629,4 +670,37 @@ fn print_json(processes: &[TrackedProcess]) {
         Ok(s) => println!("{s}"),
         Err(e) => eprintln!("failed to serialize JSON: {e}"),
     }
+}
+
+/// Write this daemon's identity where a broker looking up `service` will find
+/// it, and return the path.
+///
+/// The path comes from `daemon_identity_path` rather than being built here:
+/// the reader derives it from the same function, so the two cannot drift.
+/// Drift would be silent — the broker would report a live daemon as absent.
+fn publish_service_identity(
+    service: &str,
+    socket: &str,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    use running_process::broker::backend_lifecycle::identity::DaemonProcess;
+    use running_process::broker::backend_sdk::write_daemon_identity_file;
+    use running_process::broker::lifecycle::names_v2::{
+        broker_v2_runtime_dir, daemon_identity_path,
+    };
+    use running_process::broker::protocol::Endpoint;
+    use running_process::broker::secure_dir::ensure_private_dir;
+
+    // The endpoint is recorded exactly as this daemon bound it, so a reader
+    // can dial it with the same helper rather than reconstructing it.
+    let endpoint = Endpoint {
+        namespace_id: String::new(),
+        path: socket.to_string(),
+    };
+    let daemon = DaemonProcess::current_process(endpoint, None)?;
+
+    let dir = broker_v2_runtime_dir();
+    ensure_private_dir(&dir)?;
+    let path = daemon_identity_path(service);
+    write_daemon_identity_file(&path, &daemon)?;
+    Ok(path)
 }
