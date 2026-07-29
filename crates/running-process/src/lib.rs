@@ -132,9 +132,12 @@ pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
     spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env,
-    spawn_daemon_with_env_policy, spawn_with_env_policy, DaemonChild, EnvironmentPolicy,
+    spawn_daemon_with_env_policy, spawn_daemon_with_stdio, spawn_daemon_with_stdio_and_env_policy,
+    spawn_with_env_policy, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy,
     SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR,
 };
+#[cfg(feature = "client-async")]
+pub use spawn::{spawn_tokio, TokioSpawnOptions};
 pub use terminal_graphics::{
     current_terminal_capabilities, current_terminal_capabilities_with_timeout,
     detect_terminal_capabilities, CapabilityStatus, EvidenceStrength, GraphicsCapability,

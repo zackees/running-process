@@ -343,6 +343,19 @@ fn resolve_slot(slot: &super::StdioSource<'_>, dir: SlotDir) -> io::Result<Resol
     }
 }
 
+fn resolve_daemon_slot(
+    slot: &super::DaemonStdioSource<'_>,
+    dir: SlotDir,
+) -> io::Result<OwnedHandle> {
+    match slot {
+        super::DaemonStdioSource::Null => open_nul(!matches!(dir, SlotDir::Stdin)),
+        super::DaemonStdioSource::Handle(borrowed) => {
+            dup_inheritable(borrowed.as_raw_handle() as HANDLE)
+        }
+        super::DaemonStdioSource::_Phantom(_) => unreachable!(),
+    }
+}
+
 pub struct SpawnedInner {
     process: Option<OwnedHandle>,
     job: Option<OwnedHandle>,
@@ -390,12 +403,13 @@ impl SpawnedInner {
 
 pub fn spawn_daemon(
     command: &mut Command,
+    stdio: super::DaemonStdio<'_>,
     policy: super::EnvironmentPolicy,
     breakaway: bool,
 ) -> io::Result<super::DaemonChild> {
     let stdin = open_nul(false)?;
-    let stdout = open_nul(true)?;
-    let stderr = open_nul(true)?;
+    let stdout = resolve_daemon_slot(&stdio.stdout, SlotDir::Stdout)?;
+    let stderr = resolve_daemon_slot(&stdio.stderr, SlotDir::Stderr)?;
     let (handle, _thread, pid) = create_process_inner(
         command,
         &stdin,

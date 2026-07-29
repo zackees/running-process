@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use running_process::{spawn, SpawnStdio, StdioSource};
+use running_process::{
+    spawn, spawn_daemon_with_stdio, DaemonStdio, DaemonStdioSource, SpawnStdio, StdioSource,
+};
 
 fn testbin_path(name: &str) -> PathBuf {
     // Fixtures are built once, before the suite runs (see `ci/test.py`).
@@ -437,4 +439,40 @@ fn test_spawn_child_exit_bounded_drain() {
     let mut more = [0u8; 16];
     let n2 = stdout.read(&mut more).expect("eof read");
     assert_eq!(n2, 0, "expected EOF on next read, got {n2} bytes");
+}
+
+/// Detached daemons may write to caller-owned files without inheriting parent
+/// streams or retaining the caller's handles.
+#[test]
+fn test_spawn_daemon_file_stdio_is_preserved() {
+    #[cfg(unix)]
+    use std::os::fd::AsFd;
+    #[cfg(windows)]
+    use std::os::windows::io::AsHandle;
+
+    let log = tempfile::NamedTempFile::new().expect("temp log");
+    let stdout = log.reopen().expect("open stdout log");
+    let stderr = log.reopen().expect("open stderr log");
+    let mut command = shell_echo_cmd("daemon-file-stdio");
+    let stdio = DaemonStdio {
+        #[cfg(windows)]
+        stdout: DaemonStdioSource::Handle(stdout.as_handle()),
+        #[cfg(unix)]
+        stdout: DaemonStdioSource::Fd(stdout.as_fd()),
+        #[cfg(windows)]
+        stderr: DaemonStdioSource::Handle(stderr.as_handle()),
+        #[cfg(unix)]
+        stderr: DaemonStdioSource::Fd(stderr.as_fd()),
+    };
+
+    let mut child = spawn_daemon_with_stdio(&mut command, stdio).expect("spawn daemon");
+    drop(stdout);
+    drop(stderr);
+    assert_eq!(child.wait().expect("wait for daemon"), 0);
+
+    let body = std::fs::read_to_string(log.path()).expect("read daemon log");
+    assert!(
+        body.contains("daemon-file-stdio"),
+        "daemon output did not reach its file: {body:?}"
+    );
 }
