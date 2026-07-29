@@ -62,7 +62,7 @@ pub struct LoadedModule {
     /// Actual mapped address ranges when they differ from `base..base+size`.
     pub(crate) mapped_ranges: Vec<Range<u64>>,
     /// Mapped ranges whose OS protection permits instruction execution.
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(any(windows, not(target_arch = "x86_64")), allow(dead_code))]
     pub(crate) executable_ranges: Vec<Range<u64>>,
     /// Full path of the module on disk, when the OS could report it.
     ///
@@ -96,7 +96,7 @@ impl LoadedModule {
     }
 
     /// Whether `address` falls inside an executable mapping for this module.
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(any(windows, not(target_arch = "x86_64")), allow(dead_code))]
     pub(crate) fn contains_executable(&self, address: u64) -> bool {
         self.executable_ranges
             .iter()
