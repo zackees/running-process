@@ -20,6 +20,8 @@ pub const MAX_EXE_PATH_BYTES: usize = 4096;
 pub const MAX_SHORT_FIELD_BYTES: usize = 256;
 /// Most `supported_ops` entries accepted.
 pub const MAX_SUPPORTED_OPS: usize = 64;
+/// Most explicit symbol paths accepted at registration.
+pub const MAX_SYMBOL_PATHS: usize = 64;
 /// Most `env_allowlist` entries accepted.
 pub const MAX_ENV_ALLOWLIST: usize = 256;
 /// Registration nonces retained for replay detection.
@@ -129,6 +131,12 @@ pub struct RegisterRequest {
     pub supported_ops: Vec<String>,
     /// Language runtime the registrant declared.
     pub runtime: Runtime,
+    /// Coarse symbol-source declaration from the wire.
+    pub symbol_source: i32,
+    /// Optional process-level manifest declaration.
+    pub symbol_manifest_path: Option<PathBuf>,
+    /// Explicit symbol files or directories declared by the registrant.
+    pub symbol_paths: Vec<PathBuf>,
 }
 
 /// One registration.
@@ -146,6 +154,12 @@ pub struct RegEntry {
     pub app_class: String,
     /// Language runtime the registrant declared.
     pub runtime: Runtime,
+    /// Coarse symbol-source declaration from the wire.
+    pub symbol_source: i32,
+    /// Optional process-level manifest declaration.
+    pub symbol_manifest_path: Option<PathBuf>,
+    /// Explicit symbol files or directories declared by the registrant.
+    pub symbol_paths: Vec<PathBuf>,
     /// What the registrant permits.
     pub allow_policy: AllowPolicy,
     /// Operations the target advertised.
@@ -183,6 +197,14 @@ pub enum RegisterError {
         len: usize,
         /// Permitted length.
         max: usize,
+    },
+    /// Symbol-source enum and declarations were inconsistent.
+    #[error("invalid symbol source {value}: {reason}")]
+    InvalidSymbolSource {
+        /// Raw wire enum value.
+        value: i32,
+        /// Consistency rule that was violated.
+        reason: &'static str,
     },
     /// The nonce was seen before, or the nonce table is full.
     #[error("registration nonce replayed or nonce table full")]
@@ -288,6 +310,56 @@ impl Registry {
         check_len("app_version", req.app_version.len(), MAX_SHORT_FIELD_BYTES)?;
         check_len("boot_id", req.key.boot_id.len(), MAX_SHORT_FIELD_BYTES)?;
         check_len("supported_ops", req.supported_ops.len(), MAX_SUPPORTED_OPS)?;
+        check_len("symbol_paths", req.symbol_paths.len(), MAX_SYMBOL_PATHS)?;
+        if let Some(path) = &req.symbol_manifest_path {
+            check_len(
+                "symbol_manifest_path",
+                path.as_os_str().len(),
+                MAX_EXE_PATH_BYTES,
+            )?;
+        }
+        for path in &req.symbol_paths {
+            check_len("symbol_path", path.as_os_str().len(), MAX_EXE_PATH_BYTES)?;
+        }
+        match req.symbol_source {
+            // Backward compatibility: registrations from before #638 carry
+            // the proto default and no declarations. They still get the
+            // ordinary adjacent/cache lookup.
+            0 if req.symbol_manifest_path.is_none() && req.symbol_paths.is_empty() => {}
+            1 if req.symbol_manifest_path.is_none() && req.symbol_paths.is_empty() => {}
+            2 if req.symbol_manifest_path.is_none() => {}
+            3 if req.symbol_manifest_path.is_some() => {}
+            0 => {
+                return Err(RegisterError::InvalidSymbolSource {
+                    value: 0,
+                    reason: "UNSPECIFIED cannot carry symbol declarations",
+                });
+            }
+            1 => {
+                return Err(RegisterError::InvalidSymbolSource {
+                    value: 1,
+                    reason: "NONE cannot carry symbol paths or a manifest",
+                });
+            }
+            2 => {
+                return Err(RegisterError::InvalidSymbolSource {
+                    value: 2,
+                    reason: "LOCAL cannot carry a manifest",
+                });
+            }
+            3 => {
+                return Err(RegisterError::InvalidSymbolSource {
+                    value: 3,
+                    reason: "MANIFEST requires a manifest path",
+                });
+            }
+            source => {
+                return Err(RegisterError::InvalidSymbolSource {
+                    value: source,
+                    reason: "unknown enum value",
+                });
+            }
+        }
         check_len(
             "env_allowlist",
             req.allow_policy.env_allowlist.len(),
@@ -322,9 +394,12 @@ impl Registry {
             exe_path: req.exe_path,
             app_class: req.app_class,
             runtime: req.runtime,
+            symbol_source: req.symbol_source,
             allow_policy: req.allow_policy,
             supported_ops: req.supported_ops,
             disclosure: req.disclosure,
+            symbol_manifest_path: req.symbol_manifest_path,
+            symbol_paths: req.symbol_paths,
             conn_id,
             identity_verified: false,
             connection_alive: true,
@@ -464,6 +539,9 @@ mod tests {
             nonce: [nonce; 32],
             supported_ops: vec![],
             runtime: Runtime::Native,
+            symbol_source: 2,
+            symbol_manifest_path: None,
+            symbol_paths: Vec::new(),
         }
     }
 
@@ -530,6 +608,19 @@ mod tests {
             Err(RegisterError::OversizeField { field, .. }) => assert_eq!(field, "app_class"),
             other => panic!("expected OversizeField, got {other:?}"),
         }
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn symbol_source_and_declarations_must_be_consistent() {
+        let reg = Registry::new(owner());
+        let mut r = req(key(17, 100), 9);
+        r.symbol_source = 1;
+        r.symbol_paths.push(PathBuf::from("/symbols"));
+        assert!(matches!(
+            reg.begin_register(r, peer(), 1),
+            Err(RegisterError::InvalidSymbolSource { value: 1, .. })
+        ));
         assert!(reg.is_empty());
     }
 

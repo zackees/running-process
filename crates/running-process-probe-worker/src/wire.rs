@@ -45,9 +45,31 @@ pub struct ModuleRef {
     /// Identity of the matching symbol file (PDB GUID+age, build id, UUID).
     #[serde(default)]
     pub debug_id: Option<String>,
+    /// Native symbol filename captured from the loaded module metadata.
+    #[serde(default)]
+    pub debug_file: Option<String>,
     /// Where the binary was on disk, if the capturing process knew.
     #[serde(default)]
     pub path_hint: Option<String>,
+    /// Extracted embedded-symbol payload selected inside the worker.
+    ///
+    /// The platform worker sets this to the module itself for native embedded
+    /// symbols or to worker-private `.gnu_debugdata` extraction output. It is
+    /// considered before external sources and still identity-checked.
+    #[serde(default)]
+    pub embedded_symbol_path: Option<String>,
+}
+
+/// Capture-level discovery declarations copied from the daemon-authoritative
+/// ARMED registration.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct DiscoveryConfig {
+    /// Optional process-level symbol manifest.
+    #[serde(default)]
+    pub registered_manifest: Option<String>,
+    /// Explicit symbol files or directories.
+    #[serde(default)]
+    pub registered_symbol_paths: Vec<String>,
 }
 
 /// One native frame: a module and an offset into it.
@@ -92,6 +114,9 @@ pub struct RawCapture {
     /// Which path the worker should take.
     #[serde(default)]
     pub format: CaptureFormat,
+    /// Registration-carried symbol discovery declarations.
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
     /// Modules the frames refer to.
     #[serde(default)]
     pub modules: Vec<ModuleRef>,
@@ -201,6 +226,9 @@ pub struct ModuleReport {
     /// Symbol file actually used, when one was.
     #[serde(default)]
     pub symbol_file: Option<String>,
+    /// Which deterministic discovery tier supplied `symbol_file`.
+    #[serde(default)]
+    pub symbol_source: Option<crate::discovery::DiscoverySource>,
     /// Candidates that existed but failed verification.
     ///
     /// One is a stale copy; several suggest a search path aimed at the wrong
@@ -238,6 +266,7 @@ mod tests {
     fn a_capture_round_trips_through_json() {
         let capture = RawCapture {
             format: CaptureFormat::CooperativeFrames,
+            discovery: Default::default(),
             modules: vec![ModuleRef {
                 name: "_native.pyd".into(),
                 base_avma: 0x7fff_0000,

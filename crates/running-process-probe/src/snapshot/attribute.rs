@@ -29,6 +29,10 @@ pub struct AttributedModule {
     pub name: String,
     /// Full path on disk, when known — the symbol file is found beside it.
     pub path: Option<String>,
+    /// Exact symbol identity captured from the loaded module.
+    pub debug_id: Option<String>,
+    /// Sanitized native symbol filename captured from the loaded module.
+    pub debug_file: Option<String>,
     /// Base the module was loaded at. Recorded for provenance only; the
     /// offsets below are already relative, so nothing downstream needs it.
     pub base: u64,
@@ -103,6 +107,8 @@ pub fn attribute(snapshot: &Snapshot, modules: &[LoadedModule]) -> AttributedCap
                         out.modules.push(AttributedModule {
                             name: module_name(module),
                             path: module.path.clone(),
+                            debug_id: module.debug_id.clone(),
+                            debug_file: module.debug_file.clone(),
                             base: module.base,
                         });
                         next
@@ -153,6 +159,8 @@ mod tests {
             mapped_ranges: Vec::new(),
             executable_ranges: Vec::new(),
             path: path.map(str::to_owned),
+            debug_id: None,
+            debug_file: None,
             sections: Vec::<Section>::new(),
         }
     }

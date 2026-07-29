@@ -22,6 +22,9 @@ use std::path::{Path, PathBuf};
 
 use pdb::FallibleIterator as _;
 
+use crate::discovery::{self, DiscoverySource, ResolveOutcome};
+use crate::wire::{DiscoveryConfig, ModuleRef};
+
 /// A module's symbols, ordered by address for containment lookup.
 pub struct SymbolTable {
     /// `(relative_virtual_address, name)`, sorted by address.
@@ -43,9 +46,10 @@ impl SymbolTable {
 
     /// Build a table from an explicit PDB file.
     pub fn from_pdb(pdb_path: &Path) -> Option<Self> {
-        let file = File::open(pdb_path).ok()?;
-        let mut pdb = pdb::PDB::open(file).ok()?;
+        load_pdb(pdb_path).map(|(_, table)| table)
+    }
 
+    fn from_open_pdb(mut pdb: pdb::PDB<'_, File>) -> Option<Self> {
         // The address map translates a symbol's internal section:offset into
         // the RVA the loader actually uses. Skipping it yields addresses that
         // look plausible and are wrong.
@@ -112,6 +116,28 @@ impl SymbolTable {
     }
 }
 
+/// Identity-gated discovery result for one capture module.
+pub enum ModuleSymbols {
+    /// A verified PDB and its parsed function table.
+    Found {
+        /// Parsed symbols.
+        table: SymbolTable,
+        /// Verified local path or server URL.
+        symbol_file: String,
+        /// Discovery tier that supplied it.
+        source: DiscoverySource,
+    },
+    /// No candidate existed.
+    NotFound,
+    /// Candidates existed but none had the exact build identity.
+    Mismatched {
+        /// Number of rejected candidates.
+        rejected: usize,
+    },
+    /// Neither the image nor the capture supplied a usable identity.
+    NoDebugDirectory,
+}
+
 /// The identity a PE records for the PDB it was built with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DebugId {
@@ -121,17 +147,81 @@ pub struct DebugId {
     pub age: u32,
 }
 
-/// Read the debug identity out of a PE image.
-pub fn image_debug_id(image: &Path) -> Option<DebugId> {
-    use object::Object as _;
+struct ImageDebugInfo {
+    identity: DebugId,
+    pdb_name: PathBuf,
+}
 
-    let bytes = std::fs::read(image).ok()?;
+fn image_debug_info(image: &Path) -> Option<ImageDebugInfo> {
+    use object::Object as _;
+    use std::io::Read as _;
+
+    let file = File::open(image).ok()?;
+    let mut bytes = Vec::new();
+    file.take(discovery::MAX_SYMBOL_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > discovery::MAX_SYMBOL_BYTES {
+        return None;
+    }
     let file = object::File::parse(&*bytes).ok()?;
     let cv = file.pdb_info().ok()??;
-    Some(DebugId {
-        guid: guid_pe_to_rfc4122(cv.guid()),
-        age: cv.age(),
+    let recorded = String::from_utf8_lossy(cv.path());
+    let pdb_name = recorded
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .filter(|name| {
+            *name != "."
+                && *name != ".."
+                && !name.chars().any(|character| {
+                    matches!(
+                        character,
+                        '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                    )
+                })
+        })
+        .map(PathBuf::from)?;
+    Some(ImageDebugInfo {
+        identity: DebugId {
+            guid: guid_pe_to_rfc4122(cv.guid()),
+            age: cv.age(),
+        },
+        pdb_name,
     })
+}
+
+/// Read the debug identity out of a PE image.
+pub fn image_debug_id(image: &Path) -> Option<DebugId> {
+    Some(image_debug_info(image)?.identity)
+}
+
+impl DebugId {
+    /// Stable manifest/wire spelling: 32 hexadecimal GUID digits, a dash, and
+    /// the decimal PDB age.
+    pub fn canonical(self) -> String {
+        let guid = self
+            .guid
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("pdb:{guid}-{}", self.age)
+    }
+
+    /// Parse the canonical manifest/wire spelling.
+    pub fn parse(text: &str) -> Option<Self> {
+        let (guid, age) = text.strip_prefix("pdb:")?.rsplit_once('-')?;
+        if guid.len() != 32 {
+            return None;
+        }
+        let mut bytes = [0_u8; 16];
+        for (index, slot) in bytes.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&guid[index * 2..index * 2 + 2], 16).ok()?;
+        }
+        Some(Self {
+            guid: bytes,
+            age: age.parse().ok()?,
+        })
+    }
 }
 
 /// Convert a PE CodeView GUID to RFC-4122 byte order.
@@ -159,6 +249,9 @@ fn guid_pe_to_rfc4122(mut raw: [u8; 16]) -> [u8; 16] {
 
 /// Read the debug identity out of a PDB.
 fn pdb_debug_id(pdb_path: &Path) -> Option<DebugId> {
+    if std::fs::metadata(pdb_path).ok()?.len() > discovery::MAX_SYMBOL_BYTES {
+        return None;
+    }
     let file = File::open(pdb_path).ok()?;
     let mut pdb = pdb::PDB::open(file).ok()?;
     let info = pdb.pdb_information().ok()?;
@@ -171,24 +264,126 @@ fn pdb_debug_id(pdb_path: &Path) -> Option<DebugId> {
     })
 }
 
-/// Whether `pdb` describes the build `image` recorded.
-///
-/// The GUID must match exactly. The age may be **higher** in the PDB: the
-/// linker bumps it every time the file is rewritten, so a PDB that has been
-/// updated since the image was linked still describes that image. A *lower*
-/// age means the PDB predates the link and is a different build.
-pub fn identity_matches(image: DebugId, pdb: DebugId) -> bool {
-    image.guid == pdb.guid && pdb.age >= image.age
+/// Open a PDB once, extract its identity, and parse symbols from that same
+/// handle so a pathname replacement cannot swap bytes between the two gates.
+fn load_pdb(pdb_path: &Path) -> Option<(DebugId, SymbolTable)> {
+    let file = File::open(pdb_path).ok()?;
+    if file.metadata().ok()?.len() > discovery::MAX_SYMBOL_BYTES {
+        return None;
+    }
+    let mut pdb = pdb::PDB::open(file).ok()?;
+    let identity = {
+        let info = pdb.pdb_information().ok()?;
+        DebugId {
+            guid: *info.guid.as_bytes(),
+            age: info.age,
+        }
+    };
+    let table = SymbolTable::from_open_pdb(pdb)?;
+    Some((identity, table))
 }
 
-/// Environment variable holding extra directories to search for symbol files.
+/// Resolve symbols for a capture module using all #638 discovery tiers.
+pub fn discover_module(module: &ModuleRef, config: &DiscoveryConfig) -> ModuleSymbols {
+    if module.path_hint.is_none() && module.debug_id.is_none() {
+        return ModuleSymbols::NotFound;
+    }
+    if !crate::discovery::captured_image_still_matches(module) {
+        return ModuleSymbols::Mismatched { rejected: 1 };
+    }
+    let image_info = module
+        .path_hint
+        .as_deref()
+        .and_then(|path| image_debug_info(Path::new(path)));
+    let declared_identity = module.debug_id.as_deref().and_then(DebugId::parse);
+    let Some(expected) =
+        declared_identity.or_else(|| image_info.as_ref().map(|info| info.identity))
+    else {
+        return ModuleSymbols::NoDebugDirectory;
+    };
+
+    let symbol_file_name = module
+        .debug_file
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| image_info.map(|info| info.pdb_name))
+        .unwrap_or_else(|| PathBuf::from(&module.name).with_extension("pdb"));
+    let Some(symbol_file_name) = symbol_file_name.file_name().map(PathBuf::from) else {
+        return ModuleSymbols::NotFound;
+    };
+    let mut verified_table = None;
+    let local = discovery::resolve_symbols(
+        module,
+        config,
+        &expected.canonical(),
+        crate::discovery::SymbolArtifactFormat::Pdb,
+        &symbol_file_name,
+        &search_dirs(),
+        |candidate| {
+            let Some((actual, table)) = load_pdb(candidate) else {
+                return false;
+            };
+            if !identity_matches(expected, actual) {
+                return false;
+            }
+            verified_table = Some(table);
+            true
+        },
+    );
+    match local {
+        ResolveOutcome::Found(resolved) => {
+            let Some(table) = verified_table.take() else {
+                return ModuleSymbols::Mismatched { rejected: 1 };
+            };
+            ModuleSymbols::Found {
+                table,
+                symbol_file: resolved.path.to_string_lossy().into_owned(),
+                source: resolved.source,
+            }
+        }
+        ResolveOutcome::NotFound => server_symbols(expected, &symbol_file_name, 0),
+        ResolveOutcome::Mismatched {
+            rejected: local_rejected,
+        } => server_symbols(expected, &symbol_file_name, local_rejected),
+    }
+}
+
+fn server_symbols(
+    expected: DebugId,
+    symbol_file_name: &Path,
+    local_rejected: usize,
+) -> ModuleSymbols {
+    match discovery::resolve_configured_server(&expected.canonical(), symbol_file_name, |path| {
+        let (actual, table) = load_pdb(path)?;
+        identity_matches(expected, actual).then_some(table)
+    }) {
+        discovery::ServerResolve::Found { url, value: table } => ModuleSymbols::Found {
+            table,
+            symbol_file: url,
+            source: DiscoverySource::ConfiguredServer,
+        },
+        discovery::ServerResolve::NotFound if local_rejected == 0 => ModuleSymbols::NotFound,
+        discovery::ServerResolve::NotFound => ModuleSymbols::Mismatched {
+            rejected: local_rejected,
+        },
+        discovery::ServerResolve::Mismatched { rejected } => ModuleSymbols::Mismatched {
+            rejected: local_rejected + rejected,
+        },
+    }
+}
+
+/// Whether `pdb` has the exact GUID and age recorded by `image`.
 ///
-/// Separated by the platform's path separator, like `PATH`.
-pub const SYMBOL_PATH_ENV: &str = "RUNNING_PROCESS_PROBE_SYMBOL_PATH";
+/// A higher age can be related to the same linker session, but it is not the
+/// exact symbol identity captured in the PE CodeView record and is therefore
+/// refused by the discovery security boundary.
+pub fn identity_matches(image: DebugId, pdb: DebugId) -> bool {
+    image == pdb
+}
 
 /// Directories to search beyond the image's own, from the environment.
 pub(crate) fn search_dirs() -> Vec<PathBuf> {
-    parse_search_dirs(std::env::var_os(SYMBOL_PATH_ENV))
+    parse_search_dirs(std::env::var_os(discovery::SYMBOL_PATH_ENV))
 }
 
 /// Split a `PATH`-style value into directories.
@@ -332,6 +527,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn debug_identity_canonical_form_round_trips() {
+        let identity = DebugId {
+            guid: [0xAB; 16],
+            age: 17,
+        };
+        assert_eq!(DebugId::parse(&identity.canonical()), Some(identity));
+        assert_eq!(
+            identity.canonical(),
+            "pdb:abababababababababababababababab-17"
+        );
+    }
+
     /// Every symbol RVA must land inside an executable section of the PE.
     ///
     /// This is the check that the PDB's address map is actually applied. The
@@ -446,11 +654,10 @@ mod tests {
         assert!(!identity_matches(id(0xAB, 3), id(0xCD, 99)));
     }
 
-    /// The linker bumps the age each time it rewrites the PDB, so a PDB
-    /// updated after the link still describes the image it was linked for.
+    /// A related but newer PDB is not the PE's exact recorded identity.
     #[test]
-    fn a_higher_pdb_age_still_matches() {
-        assert!(identity_matches(id(0xAB, 3), id(0xAB, 4)));
+    fn a_higher_pdb_age_does_not_match() {
+        assert!(!identity_matches(id(0xAB, 3), id(0xAB, 4)));
     }
 
     /// A lower age means the PDB predates the link: a different build.
@@ -590,6 +797,38 @@ mod tests {
         let found = pdb_path_for_with_search(&lonely_exe, &[store.path().to_path_buf()])
             .expect("the search directory should supply it");
         assert_eq!(found, store.path().join("lonely.pdb"));
+    }
+
+    #[test]
+    fn discovery_uses_the_codeview_pdb_basename_not_the_image_stem() {
+        let Some(real) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        let exe = std::env::current_exe().expect("current exe");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let renamed_exe = dir.path().join("renamed-image.exe");
+        std::fs::copy(&exe, &renamed_exe).expect("copy exe");
+        let store = tempfile::tempdir().expect("store");
+        let recorded_name = image_debug_info(&renamed_exe).expect("CodeView").pdb_name;
+        assert_ne!(recorded_name, PathBuf::from("renamed-image.pdb"));
+        std::fs::copy(&real, store.path().join(&recorded_name)).expect("copy recorded PDB");
+        let module = ModuleRef {
+            name: "renamed-image.exe".into(),
+            path_hint: Some(renamed_exe.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let config = DiscoveryConfig {
+            registered_symbol_paths: vec![store.path().to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        assert!(matches!(
+            discover_module(&module, &config),
+            ModuleSymbols::Found {
+                source: DiscoverySource::Registration,
+                ..
+            }
+        ));
     }
 
     /// A same-named PDB from a different build must be skipped, not accepted

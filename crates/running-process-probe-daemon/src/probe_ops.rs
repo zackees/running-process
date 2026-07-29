@@ -178,10 +178,24 @@ impl ProbeOps {
         match req {
             ProbeRequest::Register(request) => self.register(*request, peer, conn_id, verdict),
             ProbeRequest::Heartbeat(key) => match self.registry.heartbeat(&key, conn_id) {
-                Ok(()) => self
-                    .capture_jobs
-                    .lease(&key, conn_id)
-                    .map_or(ProbeReply::Ack, ProbeReply::CaptureRequested),
+                Ok(()) => {
+                    self.capture_jobs
+                        .lease(&key, conn_id)
+                        .map_or(ProbeReply::Ack, |mut request| {
+                            if let Some(entry) = self.registry.get(&key) {
+                                request.symbol_manifest_path = entry
+                                    .symbol_manifest_path
+                                    .map(|path| path.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
+                                request.symbol_paths = entry
+                                    .symbol_paths
+                                    .iter()
+                                    .map(|path| path.to_string_lossy().into_owned())
+                                    .collect();
+                            }
+                            ProbeReply::CaptureRequested(request)
+                        })
+                }
                 Err(e) => refuse(e),
             },
             ProbeRequest::CaptureStack {
@@ -304,6 +318,7 @@ impl ProbeOps {
 fn refuse(err: RegisterError) -> ProbeReply {
     let code = match &err {
         RegisterError::OversizeField { .. } => ProbeErrorCode::OversizeField,
+        RegisterError::InvalidSymbolSource { .. } => ProbeErrorCode::MalformedRequest,
         RegisterError::NonceReplay => ProbeErrorCode::NonceReplay,
         RegisterError::PeerRejected { .. } => ProbeErrorCode::PeerRejected,
         RegisterError::NotRegistered => ProbeErrorCode::NotRegistered,
@@ -361,6 +376,9 @@ mod tests {
             nonce: [nonce; 32],
             supported_ops: vec!["stack_capture".into()],
             runtime: crate::registry::Runtime::Native,
+            symbol_source: 2,
+            symbol_manifest_path: None,
+            symbol_paths: Vec::new(),
         })
     }
 
@@ -604,6 +622,37 @@ mod tests {
             ProbeReply::Ack,
             "a second job cannot be leased until the first upload arrives"
         );
+    }
+
+    /// #638: symbol paths come from the daemon's stored ARMED registration,
+    /// not from mutable target configuration at capture time.
+    #[test]
+    fn a_capture_lease_carries_the_authoritative_registration_symbol_sources() {
+        let ops = ops();
+        let mut registration = request(21, 11);
+        registration.symbol_source = 3;
+        registration.symbol_manifest_path =
+            Some(PathBuf::from("/symbols/app.rpprobe-symbols.json"));
+        registration.symbol_paths = vec![PathBuf::from("/symbols/private")];
+        let key = match ops.dispatch(ProbeRequest::Register(registration), &peer(), 41, good()) {
+            ProbeReply::Armed { key } => key,
+            other => panic!("expected Armed, got {other:?}"),
+        };
+        assert!(matches!(
+            ops.dispatch(capture_request(key.clone()), &peer(), 99, good()),
+            ProbeReply::CaptureAccepted(_)
+        ));
+
+        let ProbeReply::CaptureRequested(lease) =
+            ops.dispatch(ProbeRequest::Heartbeat(key), &peer(), 41, good())
+        else {
+            panic!("expected capture lease");
+        };
+        assert_eq!(
+            lease.symbol_manifest_path,
+            "/symbols/app.rpprobe-symbols.json"
+        );
+        assert_eq!(lease.symbol_paths, vec!["/symbols/private"]);
     }
 
     /// The grace window only exists for exits that send no close.

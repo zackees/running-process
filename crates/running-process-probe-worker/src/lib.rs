@@ -21,6 +21,9 @@
 
 #![deny(missing_docs)]
 
+pub mod discovery;
+#[cfg(not(target_os = "windows"))]
+pub mod object_symbols;
 #[cfg(target_os = "windows")]
 pub mod pdb_symbols;
 pub mod render;
