@@ -326,14 +326,14 @@ mod tests {
             stop.load(Ordering::Acquire)
         }
 
-        /// Keep every post-ready sample point inside this function on x86_64.
+        /// Keep every post-ready sample point inside this function on Windows.
         ///
-        /// In unoptimized or coverage-instrumented builds, `AtomicBool::load`
-        /// may be emitted as an out-of-line helper. Sampling in that helper
-        /// makes the fixture depend on unwinding compiler support code before
-        /// it can find the marker. The single-byte load is atomic on x86_64,
-        /// and x86 loads already have acquire ordering.
-        #[cfg(target_arch = "x86_64")]
+        /// In an unoptimized MSVC build, `AtomicBool::load` may be emitted as
+        /// an out-of-line helper. Sampling in that helper makes the fixture
+        /// depend on unwinding compiler support code before it can find the
+        /// marker. The single-byte load is atomic on x86_64, and x86 loads
+        /// already have acquire ordering.
+        #[cfg(all(target_arch = "x86_64", windows))]
         #[inline(never)]
         #[allow(unsafe_code)]
         fn blocked_leaf(ready: &AtomicBool, stop: &AtomicBool) -> bool {
@@ -351,6 +351,34 @@ mod tests {
                 );
             }
             observed != 0
+        }
+
+        /// A fixed SysV frame gives the unwinder a stable metadata and
+        /// frame-pointer fallback case.
+        ///
+        /// Coverage instrumentation can otherwise add CFI-sensitive wrapper
+        /// code around even a deterministic inline-assembly loop.
+        #[cfg(all(target_arch = "x86_64", not(windows)))]
+        #[unsafe(naked)]
+        #[allow(unsafe_code)]
+        extern "C" fn blocked_leaf(_ready: &AtomicBool, _stop: &AtomicBool) -> bool {
+            std::arch::naked_asm!(
+                ".cfi_startproc",
+                "push rbp",
+                ".cfi_def_cfa_offset 16",
+                ".cfi_offset rbp, -16",
+                "mov rbp, rsp",
+                ".cfi_def_cfa_register rbp",
+                "mov byte ptr [rdi], 1",
+                "2:",
+                "mov al, byte ptr [rsi]",
+                "test al, al",
+                "je 2b",
+                "pop rbp",
+                ".cfi_def_cfa rsp, 8",
+                "ret",
+                ".cfi_endproc",
+            );
         }
 
         #[inline(never)]
