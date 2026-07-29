@@ -302,13 +302,15 @@ mod tests {
             u64::from(unsafe { winapi::um::processthreadsapi::GetCurrentThreadId() })
         }
         #[cfg(target_os = "linux")]
+        #[allow(unsafe_code)]
         fn current_tid() -> u64 {
             unsafe { libc::syscall(libc::SYS_gettid) as u64 }
         }
         #[cfg(target_os = "macos")]
+        #[allow(unsafe_code)]
         fn current_tid() -> u64 {
             let mut tid = 0u64;
-            let result = unsafe { libc::pthread_threadid_np(std::ptr::null_mut(), &mut tid) };
+            let result = unsafe { libc::pthread_threadid_np(0, &mut tid) };
             assert_eq!(result, 0, "pthread_threadid_np");
             tid
         }
