@@ -503,9 +503,23 @@ fn has_pending_combined_reports_correctly() {
 
     process.start().unwrap();
     process.wait(Some(CHILD_EXIT_WAIT)).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
 
-    assert!(process.has_pending_combined());
+    // Wait for the reader thread to hand the child's output over, rather
+    // than assuming 50ms is enough. The child exiting does not mean the
+    // bytes have reached the combined buffer yet, and a fixed sleep made
+    // this racy under a loaded parallel run.
+    //
+    // This is a bound, not a blank cheque: if the output never arrives the
+    // loop expires and the assertion below still fails.
+    let deadline = Instant::now() + CHILD_EXIT_WAIT;
+    while !process.has_pending_combined() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert!(
+        process.has_pending_combined(),
+        "combined output never became pending"
+    );
     process.drain_combined();
     assert!(!process.has_pending_combined());
 }
