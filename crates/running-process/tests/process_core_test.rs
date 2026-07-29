@@ -193,12 +193,21 @@ fn bounded_std_command_preserves_non_utf8_process_inputs() {
     let mut command = Command::new(program);
     command
         .args(["-c", "printf %s \"$RP_BYTES\"; printf %s \"$1\"", "sh"])
-        .arg(OsString::from_vec(b"arg-\xfe".to_vec()))
-        .env("RP_BYTES", OsString::from_vec(b"environment-\xff".to_vec()));
+        .arg(OsString::from_vec(b"arg-\xfe".to_vec()));
+
+    // Darwin rejects non-UTF-8 environment values with EILSEQ before exec,
+    // while Linux accepts them. The non-UTF-8 executable path and argument
+    // still exercise the lossless std::process::Command delegation on every
+    // Unix platform.
+    #[cfg(target_os = "linux")]
+    command.env("RP_BYTES", OsString::from_vec(b"environment-\xff".to_vec()));
 
     let output =
         running_process::run_std_command_bounded(command, Some(CHILD_EXIT_WAIT), 4096).unwrap();
+    #[cfg(target_os = "linux")]
     assert_eq!(output.stdout, b"environment-\xffarg-\xfe");
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(output.stdout, b"arg-\xfe");
 }
 
 #[cfg(target_os = "linux")]
