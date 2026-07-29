@@ -74,14 +74,9 @@ fn boot_id() -> String {
     }
     #[cfg(windows)]
     {
-        use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-        let uptime = unsafe { winapi::um::sysinfoapi::GetTickCount64() };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| Duration::from_secs(0));
-        let boot = now.saturating_sub(Duration::from_millis(uptime));
-        format!("windows-boot-{}", boot.as_secs())
+        windows_boot_counter()
+            .map(|counter| format!("windows-boot-{counter}"))
+            .unwrap_or_else(windows_unavailable_boot_id)
     }
     #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
     {
@@ -158,6 +153,161 @@ fn macos_boot_time() -> String {
     } else {
         "unknown".to_string()
     }
+}
+
+#[cfg(windows)]
+fn windows_boot_counter() -> Option<u32> {
+    select_windows_boot_counter(
+        windows_registry_boot_counter(),
+        windows_process_boot_counter,
+    )
+}
+
+#[cfg(windows)]
+fn select_windows_boot_counter(
+    registry: Option<u32>,
+    process: impl FnOnce() -> Option<u32>,
+) -> Option<u32> {
+    registry.or_else(process)
+}
+
+#[cfg(windows)]
+fn windows_registry_boot_counter() -> Option<u32> {
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD,
+    };
+
+    let subkey = wide_str(
+        "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters",
+    );
+    let value = wide_str("BootId");
+    let mut ty = 0_u32;
+    let mut counter = 0_u32;
+    let mut bytes = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            &mut ty,
+            (&mut counter as *mut u32).cast(),
+            &mut bytes,
+        )
+    };
+    registry_dword(status, ty, bytes, counter)
+}
+
+#[cfg(windows)]
+fn registry_dword(status: u32, ty: u32, bytes: u32, value: u32) -> Option<u32> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::REG_DWORD;
+
+    (status == ERROR_SUCCESS && ty == REG_DWORD && bytes as usize == std::mem::size_of::<u32>())
+        .then_some(value)
+}
+
+/// Read a stable kernel boot counter through process telemetry when the
+/// registry value is missing, inaccessible, or has an unexpected type.
+#[cfg(windows)]
+fn windows_process_boot_counter() -> Option<u32> {
+    use windows_sys::Wdk::System::Threading::{
+        NtQueryInformationProcess, ProcessTelemetryIdInformation,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    #[repr(C)]
+    struct ProcessTelemetryInfo {
+        header_size: u32,
+        process_id: u32,
+        process_start_key: u64,
+        create_time: u64,
+        create_interrupt_time: u64,
+        create_unbiased_interrupt_time: u64,
+        process_sequence_number: u64,
+        session_create_time: u64,
+        session_id: u32,
+        boot_id: u32,
+        image_checksum: u32,
+        image_time_date_stamp: u32,
+        user_sid_offset: u32,
+        image_path_offset: u32,
+        package_name_offset: u32,
+        relative_app_name_offset: u32,
+        command_line_offset: u32,
+    }
+
+    let boot_id_offset = std::mem::offset_of!(ProcessTelemetryInfo, boot_id);
+    let boot_id_end = boot_id_offset + std::mem::size_of::<u32>();
+    let process = unsafe { GetCurrentProcess() };
+    let mut needed = 0_u32;
+    unsafe {
+        NtQueryInformationProcess(
+            process,
+            ProcessTelemetryIdInformation,
+            std::ptr::null_mut(),
+            0,
+            &mut needed,
+        );
+    };
+    if (needed as usize) < boot_id_end {
+        return None;
+    }
+
+    // The telemetry header is followed by variable-length strings. Size the
+    // buffer from the kernel's first response and retry once if it grows.
+    for _ in 0..2 {
+        let words = (needed as usize).div_ceil(std::mem::size_of::<u64>());
+        let mut buffer = vec![0_u64; words];
+        let capacity = buffer.len() * std::mem::size_of::<u64>();
+        let mut returned = needed;
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process,
+                ProcessTelemetryIdInformation,
+                buffer.as_mut_ptr().cast(),
+                capacity as u32,
+                &mut returned,
+            )
+        };
+        if status >= 0 && returned as usize >= boot_id_end {
+            let boot_id = unsafe {
+                std::ptr::read_unaligned(
+                    buffer
+                        .as_ptr()
+                        .cast::<u8>()
+                        .add(boot_id_offset)
+                        .cast::<u32>(),
+                )
+            };
+            return Some(boot_id);
+        }
+        if returned as usize <= capacity {
+            return None;
+        }
+        needed = returned;
+    }
+    None
+}
+
+/// Fail closed if both OS boot-counter sources are unavailable. The token is
+/// stable for this process, but deliberately differs between processes so an
+/// identity probe cannot accidentally accept a daemon from an unknown boot.
+#[cfg(windows)]
+fn windows_unavailable_boot_id() -> String {
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN
+        .get_or_init(|| {
+            let created = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            format!("windows-boot-unavailable-{}-{created}", std::process::id())
+        })
+        .clone()
 }
 
 #[cfg(windows)]
@@ -283,5 +433,80 @@ mod tests {
         let id = current_for_path(&cwd);
         assert_ne!(id.machine_id, id.hostname);
         assert_ne!(id.fs_dev_id, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_boot_id_is_the_stable_os_boot_counter() {
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::System::Registry::{
+            RegGetValueW, HKEY_LOCAL_MACHINE, REG_DWORD, RRF_RT_REG_DWORD,
+        };
+
+        let subkey = wide_str(
+            "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters",
+        );
+        let value = wide_str("BootId");
+        let mut ty = 0_u32;
+        let mut counter = 0_u32;
+        let mut bytes = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                subkey.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_DWORD,
+                &mut ty,
+                (&mut counter as *mut u32).cast(),
+                &mut bytes,
+            )
+        };
+        assert_eq!(status, ERROR_SUCCESS, "Windows must expose its BootId");
+        assert_eq!(ty, REG_DWORD);
+        assert_eq!(bytes as usize, std::mem::size_of::<u32>());
+
+        let expected = format!("windows-boot-{counter}");
+        for _ in 0..1_000 {
+            assert_eq!(boot_id(), expected);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_process_telemetry_boot_counter_is_stable() {
+        let expected = windows_process_boot_counter().expect("Windows process telemetry BootId");
+        assert_ne!(expected, 0);
+        for _ in 0..1_000 {
+            assert_eq!(windows_process_boot_counter(), Some(expected));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_boot_counter_falls_back_for_missing_or_wrong_registry_value() {
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::System::Registry::REG_SZ;
+
+        let process_counter = Some(42);
+        assert_eq!(
+            select_windows_boot_counter(registry_dword(2, 0, 0, 0), || process_counter),
+            process_counter
+        );
+        assert_eq!(
+            select_windows_boot_counter(
+                registry_dword(ERROR_SUCCESS, REG_SZ, std::mem::size_of::<u32>() as u32, 7),
+                || process_counter
+            ),
+            process_counter
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unavailable_windows_boot_id_is_stable_and_fail_closed() {
+        let first = windows_unavailable_boot_id();
+        assert_eq!(windows_unavailable_boot_id(), first);
+        assert!(first.starts_with(&format!("windows-boot-unavailable-{}-", std::process::id())));
+        assert_ne!(first, "unknown");
     }
 }
