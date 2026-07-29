@@ -232,7 +232,7 @@ fn run_as_daemon(
     // spool must still be consumed by the daemon that appears later.
     let _crash_watcher = running_process_probe_daemon::crash_store::spawn_watcher(
         running_process_probe::crash::spool::spool_dir(),
-        running_process_probe::crash::spool::report_dir(),
+        running_process_probe_daemon::crash_store::default_artifacts_dir(),
     )?;
 
     // Beacon accept loop: answer identity handshakes so clients can find us

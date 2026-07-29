@@ -287,7 +287,17 @@ impl Drop for Guard {
 /// handler, and starts the bounded sampler. That local readiness boundary is
 /// what makes a crash immediately after `install()` reportable.
 pub fn install(config: Config) -> Result<Guard, InstallError> {
-    let request = worker::build_register_request(&config).map_err(InstallError::CurrentExe)?;
+    let creation_time_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let cwd = std::env::current_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut request = worker::build_register_request(&config).map_err(InstallError::CurrentExe)?;
+    if let Some(key) = request.key.as_mut() {
+        key.start_time = Some(creation_time_ms);
+    }
     let crash = crash::install(
         config.crash_policy,
         CrashMetadata {
@@ -295,6 +305,8 @@ pub fn install(config: Config) -> Result<Guard, InstallError> {
             app_name: config.app_name.clone(),
             app_version: config.app_version.clone(),
             instance_name: config.instance.clone().unwrap_or_default(),
+            creation_time_ms,
+            cwd,
         },
     )
     .map_err(InstallError::Crash)?;

@@ -1086,6 +1086,8 @@ mod tests {
                 app_name: "a".into(),
                 app_version: "1".into(),
                 instance_name: String::new(),
+                creation_time_ms: 1,
+                cwd: "/test".into(),
             },
         )
         .unwrap();
@@ -1105,6 +1107,8 @@ mod tests {
             app_name: name.into(),
             app_version: "1".into(),
             instance_name: String::new(),
+            creation_time_ms: 1,
+            cwd: "/test".into(),
         }
     }
 
