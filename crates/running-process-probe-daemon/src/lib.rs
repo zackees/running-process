@@ -21,6 +21,7 @@
 #![warn(missing_docs)]
 
 pub mod bringup;
+pub mod crash_store;
 pub mod discovery;
 pub mod names;
 pub mod probe_ops;

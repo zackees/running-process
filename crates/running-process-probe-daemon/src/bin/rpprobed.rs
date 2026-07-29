@@ -227,6 +227,14 @@ fn run_as_daemon(
     let dir = discovery_dir(args.runtime_dir.as_deref());
     write_discovery_file(&dir, &info)?;
 
+    // Start before accepting registrations. A process can crash after calling
+    // install but before its background registration completes; its fixed
+    // spool must still be consumed by the daemon that appears later.
+    let _crash_watcher = running_process_probe_daemon::crash_store::spawn_watcher(
+        running_process_probe::crash::spool::spool_dir(),
+        running_process_probe::crash::spool::report_dir(),
+    )?;
+
     // Beacon accept loop: answer identity handshakes so clients can find us
     // without reading the filesystem.
     //

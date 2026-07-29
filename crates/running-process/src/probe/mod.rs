@@ -37,6 +37,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use running_process_probe::crash::{self, spool::CrashMetadata};
+pub use running_process_probe::crash::{spool::SPOOL_DIR_ENV, CrashPolicy};
 use running_process_probe::probe_diag::v1::{ProcessKey, Runtime as ProtoRuntime};
 
 /// How often the worker heartbeats. Matches the daemon's expectation; its
@@ -122,6 +124,8 @@ pub struct Config {
     /// Language runtime to report. Defaults to [`Runtime::Native`]; the Python
     /// client sets [`Runtime::Python`].
     pub runtime: Runtime,
+    /// Native crash interception. Defaults to [`CrashPolicy::On`].
+    pub crash_policy: CrashPolicy,
 }
 
 impl Config {
@@ -139,6 +143,7 @@ impl Config {
             socket_override: None,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             runtime: Runtime::Native,
+            crash_policy: CrashPolicy::On,
         }
     }
 
@@ -165,6 +170,12 @@ impl Config {
         self.runtime = runtime;
         self
     }
+
+    /// Select native crash interception policy.
+    pub fn crash_policy(mut self, policy: CrashPolicy) -> Self {
+        self.crash_policy = policy;
+        self
+    }
 }
 
 impl Default for Config {
@@ -186,6 +197,9 @@ pub enum InstallError {
     /// The worker thread could not be spawned.
     #[error("cannot spawn probe worker thread: {0}")]
     Spawn(#[source] std::io::Error),
+    /// Crash interception could not be prepared locally.
+    #[error("cannot arm crash capture: {0}")]
+    Crash(#[source] crash::InstallError),
 }
 
 /// Handle returned by [`install`]. Dropping it deregisters.
@@ -197,6 +211,7 @@ pub struct Guard {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     key: Arc<Mutex<Option<ProcessKey>>>,
+    crash: crash::CrashGuard,
 }
 
 impl Guard {
@@ -211,6 +226,21 @@ impl Guard {
     /// Whether the worker currently holds an armed registration.
     pub fn is_armed(&self) -> bool {
         self.armed_key().is_some()
+    }
+
+    /// Whether native crash interception is armed.
+    pub fn crash_handler_armed(&self) -> bool {
+        self.crash.is_armed()
+    }
+
+    /// Whether at least one bounded all-thread pre-crash sample is ready.
+    pub fn crash_sample_ready(&self) -> bool {
+        self.crash.sample_ready()
+    }
+
+    /// Thread count in the latest bounded pre-crash sample.
+    pub fn crash_sample_thread_count(&self) -> usize {
+        self.crash.sample_thread_count()
     }
 }
 
@@ -227,11 +257,24 @@ impl Drop for Guard {
 
 /// Enroll this process with the probe daemon.
 ///
-/// Returns in well under a millisecond. All I/O — discovery, connect,
-/// register, heartbeat, reconnect — happens on a background thread, so an
-/// absent or wedged daemon cannot slow application startup.
+/// Daemon I/O — discovery, connect, register, heartbeat, reconnect — happens
+/// on a background thread, so an absent or wedged daemon cannot slow startup.
+/// Native crash arming is deliberately synchronous: before this returns it
+/// creates and opens the owner-private local spool, attaches the platform
+/// handler, and starts the bounded sampler. That local readiness boundary is
+/// what makes a crash immediately after `install()` reportable.
 pub fn install(config: Config) -> Result<Guard, InstallError> {
     let request = worker::build_register_request(&config).map_err(InstallError::CurrentExe)?;
+    let crash = crash::install(
+        config.crash_policy,
+        CrashMetadata {
+            app_class: config.app_class.clone(),
+            app_name: config.app_name.clone(),
+            app_version: config.app_version.clone(),
+            instance_name: config.instance.clone().unwrap_or_default(),
+        },
+    )
+    .map_err(InstallError::Crash)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let key = Arc::new(Mutex::new(None));
@@ -243,6 +286,7 @@ pub fn install(config: Config) -> Result<Guard, InstallError> {
         stop,
         handle: Some(handle),
         key,
+        crash,
     })
 }
 
@@ -268,6 +312,7 @@ mod tests {
     #[test]
     fn ops_are_permitted_by_default() {
         assert!(Config::new("app").allow_policy.allow_all_ops);
+        assert_eq!(Config::new("app").crash_policy, CrashPolicy::On);
     }
 
     #[test]

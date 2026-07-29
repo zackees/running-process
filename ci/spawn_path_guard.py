@@ -95,6 +95,15 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
+    # #636 crash capture sampler: `thread::Builder::spawn` starts an
+    # in-process thread that refreshes the preallocated, bounded all-thread
+    # snapshot consumed by the native crash callback. It never starts a
+    # child process, and the callback itself performs no thread creation.
+    Path("crates/running-process-probe/src/crash/mod.rs"),
+    # #636 durable crash spool watcher: `thread::Builder::spawn` starts an
+    # in-process daemon worker that ingests already-written fixed-size crash
+    # records. It never starts a child process.
+    Path("crates/running-process-probe-daemon/src/crash_store.rs"),
     # #635 known-stack test: `thread::Builder::spawn` names the fixture
     # `blocked_marker`; this is an in-process thread, not a child process.
     Path("crates/running-process-probe/src/snapshot/mod.rs"),
