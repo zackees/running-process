@@ -54,6 +54,8 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Default-on crash interception and fixed-size pre-registration spool.
+pub mod crash;
 pub mod snapshot;
 
 /// The `running_process.probe_diag.v1` wire schema (#630).

@@ -34,7 +34,7 @@ default = []
 # actually-built helper binary; today the function is generic over
 # the blob bytes so the build-dep chain can be deferred without
 # changing the API.
-embed-helper = ["dep:dirs", "dep:blake3", "dep:windows-sys"]
+embed-helper = ["dep:dirs", "dep:blake3"]
 
 [dependencies]
 # Slice 2 adds the cache + extract machinery dependencies, both gated
@@ -56,6 +56,11 @@ prost = "0.14"
 # #635: typed snapshot errors.
 thiserror = { workspace = true }
 framehop = "0.13"
+# #636: cross-platform SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT/SEH
+# interception. The callback only copies into a fixed buffer and performs one
+# OS write; all allocation and stack capture happens on a sampler thread.
+crash-handler = "0.7"
+getrandom = "0.4"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # #635 cooperative capture uses realtime signals/ucontext on Linux and Mach
@@ -76,14 +81,19 @@ mach2 = "0.4"
 # `target_os = "windows"` so the rest of the workspace doesn't pull
 # `windows-sys` in on non-Windows hosts.
 [target.'cfg(target_os = "windows")'.dependencies]
+libc = "0.2"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_IO",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
-], optional = true }
+] }
 
 # #635: cooperative all-thread capture. `processthreadsapi` for
 # Suspend/Resume/GetThreadContext, `tlhelp32` to enumerate our own threads,

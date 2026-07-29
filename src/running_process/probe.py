@@ -14,17 +14,17 @@ matter to whoever wrote the program live in the interpreter, above the machine
 frames. The daemon cannot infer that, so this module declares ``runtime=python``
 at registration and the daemon records the claim.
 
-Enrolling never blocks
-----------------------
+Local crash readiness, asynchronous enrollment
+----------------------------------------------
 
-``install()`` returns without doing any I/O. Discovery, connect, register and
-heartbeat all run on the Rust worker thread, so a missing or wedged daemon
+``install()`` synchronously prepares the owner-private crash spool and native
+handler so an immediate fault is reportable. Discovery, connect, register and
+heartbeat then run on the Rust worker thread, so a missing or wedged daemon
 cannot slow interpreter startup — an absent daemon is a normal condition that
 the worker retries through, not an error.
 """
 
 import atexit
-import faulthandler
 import json
 import os
 import sys
@@ -53,6 +53,10 @@ class ProbeConfig:
     # faulthandler dumps Python stacks on a fatal signal. It is the interpreter
     # half of crash reporting and costs nothing until something crashes.
     enable_faulthandler: bool = True
+    # Native SIGSEGV/SEH interception is default-on once install() is called.
+    # Disable without affecting faulthandler when an application owns the
+    # native exception path entirely.
+    enable_crash_handler: bool = True
 
 
 class ProbeUnavailableError(RuntimeError):
@@ -293,8 +297,9 @@ def install(config: ProbeConfig, *, required: bool = False) -> ProbeGuard | None
     """Enroll this process with the probe daemon.
 
     Returns a guard, or ``None`` when the build lacks probe support and
-    ``required`` is false. Never blocks and never raises because a daemon is
-    absent — only because enrollment itself could not be set up locally.
+    ``required`` is false. Local crash setup completes before return; daemon
+    I/O remains asynchronous. A missing daemon never raises — only a local
+    enrollment/setup failure does.
 
     Set ``required=True`` to turn a probe-less build into an error rather than
     a silent no-op.
@@ -308,9 +313,11 @@ def install(config: ProbeConfig, *, required: bool = False) -> ProbeGuard | None
         return None
 
     if config.enable_faulthandler:
-        # O(1) and safe at import time; arms the interpreter half of crash
-        # reporting so a fatal native signal still yields Python stacks.
-        faulthandler.enable(all_threads=True)
+        # Arm the interpreter half beneath native interception. Usually no
+        # native runtime exists yet; if an earlier guard deliberately omitted
+        # faulthandler, the native helper briefly detaches and re-arms so this
+        # later installation becomes its predecessor and survives teardown.
+        native.native_probe_enable_faulthandler()
 
     handle = native.native_probe_install(
         config.app_class,
@@ -320,6 +327,7 @@ def install(config: ProbeConfig, *, required: bool = False) -> ProbeGuard | None
         config.socket_override,
         list(config.env_allowlist),
         config.disclose_cwd,
+        config.enable_crash_handler,
     )
 
     guard = ProbeGuard(handle)

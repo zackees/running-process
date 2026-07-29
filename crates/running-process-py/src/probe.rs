@@ -26,6 +26,7 @@ use std::sync::Mutex;
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyModule};
 use running_process::probe::{self, Config, Guard, Runtime};
 
 /// Live guards, keyed by the handle handed to Python.
@@ -50,6 +51,7 @@ fn with_guards<R>(f: impl FnOnce(&mut HashMap<u64, Guard>) -> R) -> R {
 /// asserted without a daemon: `runtime=python` is the whole reason this binding
 /// exists rather than callers using the native one, and it is otherwise only
 /// observable on the wire.
+#[allow(clippy::too_many_arguments)] // Mirrors the flat, keyword-only Python config surface.
 fn build_config(
     app_class: &str,
     app_name: Option<String>,
@@ -58,6 +60,7 @@ fn build_config(
     socket_override: Option<String>,
     env_allowlist: Option<Vec<String>>,
     disclose_cwd: bool,
+    enable_crash_handler: bool,
 ) -> Config {
     let mut config = Config::new(app_class).with_runtime(Runtime::Python);
 
@@ -78,15 +81,20 @@ fn build_config(
         config.disclosure.env_allowlist = names;
     }
     config.disclosure.disclose_cwd = disclose_cwd;
+    if !enable_crash_handler {
+        config = config.crash_policy(probe::CrashPolicy::Off);
+    }
     config
 }
 
 /// Enroll this process with the probe daemon, reporting `runtime=python`.
 ///
-/// Returns an opaque handle for [`native_probe_uninstall`]. Does not block: an
-/// absent daemon is normal and the worker keeps retrying in the background.
+/// Returns an opaque handle for [`native_probe_uninstall`]. Local crash-spool
+/// preparation and handler arming finish synchronously; daemon communication
+/// never blocks this call and retries on the background worker.
 #[pyfunction]
-#[pyo3(signature = (app_class, app_name=None, app_version=None, instance=None, socket_override=None, env_allowlist=None, disclose_cwd=false))]
+#[pyo3(signature = (app_class, app_name=None, app_version=None, instance=None, socket_override=None, env_allowlist=None, disclose_cwd=false, enable_crash_handler=true))]
+#[allow(clippy::too_many_arguments)] // PyO3 exposes these as named Python arguments.
 pub(crate) fn native_probe_install(
     app_class: &str,
     app_name: Option<String>,
@@ -95,6 +103,7 @@ pub(crate) fn native_probe_install(
     socket_override: Option<String>,
     env_allowlist: Option<Vec<String>>,
     disclose_cwd: bool,
+    enable_crash_handler: bool,
 ) -> PyResult<u64> {
     let config = build_config(
         app_class,
@@ -104,6 +113,7 @@ pub(crate) fn native_probe_install(
         socket_override,
         env_allowlist,
         disclose_cwd,
+        enable_crash_handler,
     );
 
     let guard = probe::install(config)
@@ -112,6 +122,29 @@ pub(crate) fn native_probe_install(
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     with_guards(|guards| guards.insert(handle, guard));
     Ok(handle)
+}
+
+/// Enable Python faulthandler beneath an already-armed native crash handler.
+///
+/// The first Python guard normally enables faulthandler before native
+/// interception. A later guard may opt in after a native-only guard already
+/// armed the process, though. In that case the native layer must briefly
+/// detach and re-arm so faulthandler becomes its predecessor and survives
+/// final native teardown.
+#[pyfunction]
+pub(crate) fn native_probe_enable_faulthandler(py: Python<'_>) -> PyResult<()> {
+    match running_process_probe::crash::with_handler_suspended(|| {
+        let module = PyModule::import(py, "faulthandler")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("all_threads", true)?;
+        module.call_method("enable", (), Some(&kwargs))?;
+        Ok(())
+    }) {
+        Ok(result) => result,
+        Err(error) => Err(PyRuntimeError::new_err(format!(
+            "cannot re-chain native crash handler around faulthandler: {error}"
+        ))),
+    }
 }
 
 /// Drop the guard for `handle`, deregistering this process.
@@ -264,6 +297,7 @@ mod tests {
             None,
             Some("\\\\.\\pipe\\rp-probe-nonexistent".into()),
             None,
+            true,
             false,
         )
         .expect("install must not fail merely because no daemon is running");
@@ -280,8 +314,8 @@ mod tests {
 
     #[test]
     fn handles_are_distinct_and_independent() {
-        let a = native_probe_install("a", None, None, None, None, None, false).unwrap();
-        let b = native_probe_install("b", None, None, None, None, None, false).unwrap();
+        let a = native_probe_install("a", None, None, None, None, None, false, true).unwrap();
+        let b = native_probe_install("b", None, None, None, None, None, false, true).unwrap();
         assert_ne!(a, b, "handles must not alias");
 
         assert!(native_probe_uninstall(a));
@@ -306,7 +340,7 @@ mod tests {
         use running_process::probe::worker::build_register_request;
         use running_process_probe::probe_diag::v1::Runtime as ProtoRuntime;
 
-        let config = build_config("app", None, None, None, None, None, false);
+        let config = build_config("app", None, None, None, None, None, false, true);
         assert_eq!(config.runtime, Runtime::Python);
 
         let request = build_register_request(&config).expect("build request");
@@ -320,7 +354,7 @@ mod tests {
     /// Env values stay deny-by-default unless a name is opted in.
     #[test]
     fn env_values_are_not_disclosed_by_default() {
-        let bare = build_config("app", None, None, None, None, None, false);
+        let bare = build_config("app", None, None, None, None, None, false, true);
         assert!(
             bare.disclosure.env_allowlist.is_empty(),
             "environments carry credentials; values must be opt-in"
@@ -335,6 +369,7 @@ mod tests {
             None,
             Some(vec!["PATH".into()]),
             true,
+            true,
         );
         assert_eq!(opted.disclosure.env_allowlist, vec!["PATH".to_string()]);
         assert!(opted.disclosure.disclose_cwd);
@@ -343,7 +378,7 @@ mod tests {
     /// Optional arguments override the defaults derived from `app_class`.
     #[test]
     fn optional_fields_override_the_defaults() {
-        let defaulted = build_config("myclass", None, None, None, None, None, false);
+        let defaulted = build_config("myclass", None, None, None, None, None, false, true);
         assert_eq!(defaulted.app_class, "myclass");
         assert_eq!(
             defaulted.app_name, "myclass",
@@ -359,6 +394,7 @@ mod tests {
             None,
             None,
             false,
+            true,
         );
         assert_eq!(explicit.app_name, "friendly");
         assert_eq!(explicit.app_version, "9.9.9");

@@ -44,8 +44,8 @@ pub(crate) use pid_tracking::{
 };
 pub(crate) use priority::native_apply_process_nice;
 pub(crate) use probe::{
-    native_probe_install, native_probe_is_armed, native_probe_snapshot,
-    native_probe_snapshot_supported, native_probe_uninstall,
+    native_probe_enable_faulthandler, native_probe_install, native_probe_is_armed,
+    native_probe_snapshot, native_probe_snapshot_supported, native_probe_uninstall,
 };
 pub(crate) use process::NativeRunningProcess;
 pub(crate) use process_tree::{
@@ -102,6 +102,7 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(windows)]
     module.add_function(wrap_pyfunction!(native_test_hang_in_rust, module)?)?;
     module.add_function(wrap_pyfunction!(native_probe_install, module)?)?;
+    module.add_function(wrap_pyfunction!(native_probe_enable_faulthandler, module)?)?;
     module.add_function(wrap_pyfunction!(native_probe_uninstall, module)?)?;
     module.add_function(wrap_pyfunction!(native_probe_is_armed, module)?)?;
     module.add_function(wrap_pyfunction!(native_probe_snapshot, module)?)?;
