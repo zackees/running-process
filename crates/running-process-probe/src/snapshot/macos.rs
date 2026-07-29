@@ -298,7 +298,7 @@ fn capture_thread(
             frame_pointer: regs.fp,
             link_register: regs.lr,
             stack_bytes: scratch[..copied].to_vec(),
-            truncated: copied == config.max_stack_bytes && available > copied,
+            truncated: copied < available,
             kind: CaptureKind::RawContext,
             frames: Vec::new(),
         },

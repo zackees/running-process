@@ -6,6 +6,15 @@
 //! while the sibling is stopped in that handler, then releases it immediately.
 //! No allocator, lock, stdio, or non-async-signal-safe libc call executes in
 //! the handler.
+//!
+//! # Signal ownership contract
+//!
+//! The first capture reserves one otherwise-unused realtime signal for the
+//! process lifetime. Application code must not replace that signal's
+//! disposition or consume it through `signalfd` afterward. Concurrent
+//! `sigaction` changes violate this backend's install-time ownership contract;
+//! the preflight checks diagnose stable conflicts but cannot make an
+//! application's unsynchronized disposition replacement safe.
 
 #![allow(unsafe_code)] // ucontext, sigaction, tgkill, and raw stack copies are FFI-only.
 
@@ -150,7 +159,10 @@ fn capture_signal() -> io::Result<i32> {
             let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
             action.sa_sigaction = capture_signal_handler as *const () as usize;
             action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
-            unsafe { libc::sigemptyset(&mut action.sa_mask) };
+            // Defer all maskable handlers while the target stack is frozen so
+            // no nested application handler mutates that stack during the VM
+            // read. The kernel restores the prior mask on handler return.
+            unsafe { libc::sigfillset(&mut action.sa_mask) };
             if unsafe { libc::sigaction(signal, &action, std::ptr::null_mut()) } == 0 {
                 return Ok(signal);
             }
@@ -162,6 +174,19 @@ fn capture_signal() -> io::Result<i32> {
         Ok(signal) => Ok(*signal),
         Err(errno) => Err(io::Error::from_raw_os_error(*errno)),
     }
+}
+
+/// Confirm the application has not claimed or reset the reserved signal.
+///
+/// Reinstalling our handler would overwrite application ownership. This is a
+/// diagnostic preflight for the lifetime contract documented above, not a
+/// synchronization primitive for concurrent `sigaction` replacement.
+fn signal_handler_is_ours(signal: i32) -> io::Result<bool> {
+    let mut current: libc::sigaction = unsafe { std::mem::zeroed() };
+    if unsafe { libc::sigaction(signal, std::ptr::null(), &mut current) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(current.sa_sigaction == capture_signal_handler as *const () as usize)
 }
 
 fn sibling_thread_ids() -> io::Result<Vec<i32>> {
@@ -255,6 +280,9 @@ fn capture_thread(
     maps: &[(u64, u64)],
     scratch: &mut [u8],
 ) -> Option<(ThreadSample, u64)> {
+    if !signal_handler_is_ours(signal).ok()? {
+        return None;
+    }
     if signal_is_blocked(tid, signal).ok()? {
         return None;
     }
@@ -320,7 +348,7 @@ fn capture_thread(
             frame_pointer: slot.frame_pointer.load(Ordering::Relaxed),
             link_register: (lr != 0).then_some(lr),
             stack_bytes: scratch[..copied].to_vec(),
-            truncated: copied == config.max_stack_bytes && available > copied,
+            truncated: copied < available,
             kind: CaptureKind::RawContext,
             frames: Vec::new(),
         },
@@ -337,6 +365,12 @@ pub fn capture(config: &SnapshotConfig) -> Result<Snapshot, SnapshotError> {
 
     let _capture = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let signal = capture_signal()?;
+    if !signal_handler_is_ours(signal)? {
+        return Err(SnapshotError::Os(io::Error::new(
+            io::ErrorKind::ResourceBusy,
+            "reserved snapshot signal disposition was replaced",
+        )));
+    }
     let tids = sibling_thread_ids()?;
     let maps = readable_mappings()?;
     let mut scratch = vec![0u8; config.max_stack_bytes];
@@ -451,5 +485,49 @@ mod tests {
         let ranges = [(0x1000, 0x2000), (0x4000, 0x5000)];
         assert_eq!(readable_mapping_top(0x1800, &ranges), Some(0x2000));
         assert_eq!(readable_mapping_top(0x3000, &ranges), None);
+    }
+
+    #[test]
+    fn replaced_signal_handler_is_detected_before_delivery() {
+        let _capture = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let signal = capture_signal().expect("reserve signal");
+        let mut ours: libc::sigaction = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::sigaction(signal, std::ptr::null(), &mut ours) },
+            0
+        );
+
+        let mut ignored: libc::sigaction = unsafe { std::mem::zeroed() };
+        ignored.sa_sigaction = libc::SIG_IGN;
+        unsafe { libc::sigemptyset(&mut ignored.sa_mask) };
+        assert_eq!(
+            unsafe { libc::sigaction(signal, &ignored, std::ptr::null_mut()) },
+            0
+        );
+        assert!(!signal_handler_is_ours(signal).expect("query disposition"));
+
+        assert_eq!(
+            unsafe { libc::sigaction(signal, &ours, std::ptr::null_mut()) },
+            0
+        );
+        assert!(signal_handler_is_ours(signal).expect("restored disposition"));
+    }
+
+    #[test]
+    fn reserved_signal_ownership_is_stable_under_concurrent_preflight() {
+        let _capture = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let signal = capture_signal().expect("reserve signal");
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    for _ in 0..256 {
+                        assert!(signal_handler_is_ours(signal).expect("query disposition"));
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
     }
 }

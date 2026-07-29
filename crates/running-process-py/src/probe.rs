@@ -167,7 +167,10 @@ pub(crate) fn native_probe_is_armed(handle: u64) -> bool {
 /// interpreter.
 #[pyfunction]
 pub(crate) fn native_probe_snapshot(py: Python<'_>) -> PyResult<Py<PyAny>> {
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    #[cfg(not(all(
+        any(windows, target_os = "linux", target_os = "macos"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
     {
         // No capture backend and therefore no module inventory (#635).
         // Refuse instead of stubbing types that would have no meaning.
@@ -177,7 +180,10 @@ pub(crate) fn native_probe_snapshot(py: Python<'_>) -> PyResult<Py<PyAny>> {
         ))
     }
 
-    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    #[cfg(all(
+        any(windows, target_os = "linux", target_os = "macos"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     {
         use running_process_probe::snapshot::{
             attribute::attribute, capture_and_resolve, modules::enumerate_modules, SnapshotConfig,
@@ -236,7 +242,10 @@ pub(crate) fn native_probe_snapshot(py: Python<'_>) -> PyResult<Py<PyAny>> {
 /// Lets callers branch without provoking and catching an exception.
 #[pyfunction]
 pub(crate) fn native_probe_snapshot_supported() -> bool {
-    cfg!(any(windows, target_os = "linux", target_os = "macos"))
+    cfg!(all(
+        any(windows, target_os = "linux", target_os = "macos"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))
 }
 
 #[cfg(test)]

@@ -148,6 +148,7 @@ mod tests {
         LoadedModule {
             base,
             size,
+            mapped_ranges: Vec::new(),
             path: path.map(str::to_owned),
             sections: Vec::<Section>::new(),
         }

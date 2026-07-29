@@ -59,6 +59,8 @@ pub struct LoadedModule {
     pub base: u64,
     /// Total mapped size.
     pub size: u64,
+    /// Actual mapped address ranges when they differ from `base..base+size`.
+    pub(crate) mapped_ranges: Vec<Range<u64>>,
     /// Full path of the module on disk, when the OS could report it.
     ///
     /// Needed downstream to find the symbol file, which lives beside the
@@ -73,12 +75,21 @@ pub struct LoadedModule {
 impl LoadedModule {
     /// Address range covered by the whole module.
     pub fn range(&self) -> Range<u64> {
-        self.base..self.base + self.size
+        match (self.mapped_ranges.first(), self.mapped_ranges.last()) {
+            (Some(first), Some(last)) => first.start..last.end,
+            _ => self.base..self.base + self.size,
+        }
     }
 
     /// Whether `address` falls inside this module.
     pub fn contains(&self, address: u64) -> bool {
-        self.range().contains(&address)
+        if self.mapped_ranges.is_empty() {
+            self.range().contains(&address)
+        } else {
+            self.mapped_ranges
+                .iter()
+                .any(|range| range.contains(&address))
+        }
     }
 
     /// Look up a section by name, e.g. `.text` or `.pdata`.
@@ -199,6 +210,7 @@ pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
         modules.push(LoadedModule {
             base,
             size: u64::from(info.SizeOfImage),
+            mapped_ranges: Vec::new(),
             path: unsafe { module_path(process, handle) },
             sections,
         });
@@ -228,27 +240,35 @@ pub fn module_for_address(modules: &[LoadedModule], address: u64) -> Option<&Loa
 }
 
 #[cfg(target_os = "linux")]
-fn linux_images() -> std::io::Result<Vec<(u64, u64, u64, String)>> {
+fn next_maps_field(input: &str) -> Option<(&str, &str)> {
+    let input = input.trim_start();
+    let end = input.find(char::is_whitespace).unwrap_or(input.len());
+    (!input.is_empty()).then_some((&input[..end], &input[end..]))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_images() -> std::io::Result<Vec<(Vec<Range<u64>>, u64, String)>> {
     use std::collections::BTreeMap;
 
-    // path -> (lowest mapping, highest mapping, lowest start-file_offset)
-    let mut images: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    // (path, device, inode, load instance) -> individual mapped ranges.
+    let mut images: BTreeMap<(String, String, String, u64), Vec<Range<u64>>> = BTreeMap::new();
     for line in std::fs::read_to_string("/proc/self/maps")?.lines() {
-        let mut fields = line.split_whitespace();
-        let Some(range) = fields.next() else {
+        let Some((range, rest)) = next_maps_field(line) else {
             continue;
         };
-        let Some(_perms) = fields.next() else {
+        let Some((_perms, rest)) = next_maps_field(rest) else {
             continue;
         };
-        let Some(offset) = fields.next() else {
+        let Some((offset, rest)) = next_maps_field(rest) else {
             continue;
         };
-        let _dev = fields.next();
-        let _inode = fields.next();
-        let Some(path) = fields.next() else {
+        let Some((dev, rest)) = next_maps_field(rest) else {
             continue;
         };
+        let Some((inode, rest)) = next_maps_field(rest) else {
+            continue;
+        };
+        let path = rest.trim_start();
         if !path.starts_with('/') {
             continue;
         }
@@ -271,18 +291,17 @@ fn linux_images() -> std::io::Result<Vec<(u64, u64, u64, String)>> {
         };
         let candidate_base = start.saturating_sub(offset);
         images
-            .entry(path)
-            .and_modify(|entry| {
-                entry.0 = entry.0.min(start);
-                entry.1 = entry.1.max(end);
-                entry.2 = entry.2.min(candidate_base);
-            })
-            .or_insert((start, end, candidate_base));
+            .entry((path, dev.to_owned(), inode.to_owned(), candidate_base))
+            .or_default()
+            .push(start..end);
     }
 
     Ok(images
         .into_iter()
-        .map(|(path, (start, end, load_bias))| (start, end, load_bias, path))
+        .map(|((path, _dev, _inode, load_bias), mut ranges)| {
+            ranges.sort_by_key(|range| range.start);
+            (ranges, load_bias, path)
+        })
         .collect())
 }
 
@@ -292,7 +311,13 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
     use object::{Object, ObjectKind, ObjectSection};
 
     let mut modules = Vec::new();
-    for (mapped_start, mapped_end, load_bias, path) in linux_images()? {
+    for (mapped_ranges, load_bias, path) in linux_images()? {
+        let Some(mapped_start) = mapped_ranges.first().map(|range| range.start) else {
+            continue;
+        };
+        let Some(mapped_end) = mapped_ranges.last().map(|range| range.end) else {
+            continue;
+        };
         let Ok(data) = std::fs::read(&path) else {
             // A deleted/replaced mapping remains valid for raw capture but
             // cannot safely provide unwind metadata from disk. Leave it out
@@ -320,16 +345,10 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
             })
             .collect();
 
-        // For ET_EXEC, `base_svma == base_avma == 0`; the stated addresses
-        // are already absolute. The broad range still ends at the real mapped
-        // end and begins at zero, which lets module-relative addresses remain
-        // the ELF SVMAs expected by offline tooling.
-        let range_end = mapped_end.max(base);
-        let size = range_end.saturating_sub(base);
-        let _ = mapped_start;
         modules.push(LoadedModule {
             base,
-            size,
+            size: mapped_end.saturating_sub(mapped_start),
+            mapped_ranges,
             path: Some(path),
             sections,
         });
@@ -420,6 +439,7 @@ pub fn enumerate_modules() -> std::io::Result<Vec<LoadedModule>> {
         modules.push(LoadedModule {
             base,
             size: mapped_end - base,
+            mapped_ranges: Vec::new(),
             path: Some(path),
             sections,
         });
@@ -528,5 +548,37 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+
+    #[test]
+    fn maps_path_preserves_spaces_and_deleted_suffix() {
+        let line = "1000-2000 r-xp 00000000 08:01 42 /tmp/a file (deleted)";
+        let (_, rest) = next_maps_field(line).unwrap();
+        let (_, rest) = next_maps_field(rest).unwrap();
+        let (_, rest) = next_maps_field(rest).unwrap();
+        let (_, rest) = next_maps_field(rest).unwrap();
+        let (_, rest) = next_maps_field(rest).unwrap();
+        assert_eq!(rest.trim_start(), "/tmp/a file (deleted)");
+        assert!(rest.trim_start().ends_with(" (deleted)"));
+    }
+
+    #[test]
+    fn elf_load_bias_does_not_expand_mapped_coverage_to_zero() {
+        let module = LoadedModule {
+            base: 0,
+            size: 0x2000,
+            mapped_ranges: vec![0x400000..0x401000, 0x402000..0x403000],
+            path: Some("/tmp/non-pie".into()),
+            sections: Vec::new(),
+        };
+        assert!(module.contains(0x400100));
+        assert!(module.contains(0x402100));
+        assert!(!module.contains(0x401100));
+        assert!(!module.contains(1));
     }
 }
