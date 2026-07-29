@@ -15,9 +15,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use running_process_probe::probe_diag::v1::{ProcessKey, RegisterProcess};
+use running_process_probe::probe_diag::v1::{
+    AllowPolicy as WireAllowPolicy, Disclosure as WireDisclosure, ProcessKey, RegisterProcess,
+};
 
-use super::client::{ProbeClient, SocketProbeClient};
+use super::client::{HeartbeatWork, ProbeClient, SocketProbeClient};
 use super::Config;
 
 /// First reconnect delay.
@@ -40,8 +42,7 @@ const STOP_POLL: Duration = Duration::from_millis(50);
 pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
     let exe = std::env::current_exe()?;
 
-    let mut nonce = [0u8; 32];
-    getrandom::fill(&mut nonce).map_err(|e| io::Error::other(format!("getrandom: {e}")))?;
+    let nonce = fresh_nonce()?;
 
     let started_at_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -69,6 +70,18 @@ pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
         // native executable — so leaving this at its default would report
         // every registrant as UNSPECIFIED.
         runtime: config.runtime.to_proto() as i32,
+        // SUPPORTED_OP_STACK_CAPTURE and SYMBOL_SOURCE_LOCAL.
+        supported_ops: vec![1],
+        symbol_source: 2,
+        allow_policy: Some(WireAllowPolicy {
+            allow_all_ops: config.allow_policy.allow_all_ops,
+            env_allowlist: config.disclosure.env_allowlist.clone(),
+        }),
+        disclosure: Some(WireDisclosure {
+            expose_exe_path: false,
+            expose_cmdline: false,
+            expose_env_names: !config.disclosure.env_allowlist.is_empty(),
+        }),
         registration_nonce: nonce.to_vec(),
         ..Default::default()
     })
@@ -87,14 +100,31 @@ pub fn spawn(
 }
 
 fn run(
-    request: RegisterProcess,
+    mut request: RegisterProcess,
     config: Config,
     stop: Arc<AtomicBool>,
     key_out: Arc<Mutex<Option<ProcessKey>>>,
 ) {
+    // Reading and hashing the executable can take hundreds of milliseconds on
+    // Windows. Keep it on this worker so `probe::install` never performs file
+    // I/O on the application's calling thread.
+    let Ok(exe_sha256) = crate::broker::backend_lifecycle::identity::sha256_file(
+        std::path::Path::new(&request.exe_path),
+    ) else {
+        return;
+    };
+    request.exe_sha256 = exe_sha256.to_vec();
+
     let mut backoff = BACKOFF_START;
 
     while !stop.load(Ordering::Relaxed) {
+        // Registration nonces are single-use at the daemon. Every reconnect
+        // attempt must carry a fresh one or a healthy target can never re-arm
+        // after any transport loss.
+        let Ok(nonce) = fresh_nonce() else {
+            return;
+        };
+        request.registration_nonce = nonce.to_vec();
         match connect_and_register(&request, &config) {
             Ok((mut client, key)) => {
                 backoff = BACKOFF_START;
@@ -121,6 +151,12 @@ fn run(
             }
         }
     }
+}
+
+fn fresh_nonce() -> io::Result<[u8; 32]> {
+    let mut nonce = [0u8; 32];
+    getrandom::fill(&mut nonce).map_err(|error| io::Error::other(format!("getrandom: {error}")))?;
+    Ok(nonce)
 }
 
 fn connect_and_register(
@@ -159,10 +195,20 @@ fn heartbeat_loop(
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        if client.heartbeat(key).is_err() {
-            // Connection is gone. Returning sends the worker back through the
-            // full register handshake, which is what a restarted daemon needs.
-            return;
+        match client.heartbeat(key) {
+            Ok(HeartbeatWork::Idle) => {}
+            Ok(HeartbeatWork::Capture(request)) => {
+                let reply = super::capture::capture(&request);
+                if client.submit_capture(reply).is_err() {
+                    return;
+                }
+            }
+            Err(_) => {
+                // Connection is gone. Returning sends the worker back through
+                // the full register handshake, which is what a restarted
+                // daemon needs.
+                return;
+            }
         }
     }
 }
@@ -232,6 +278,13 @@ mod tests {
             a.registration_nonce, b.registration_nonce,
             "a reused nonce would be rejected as a replay"
         );
+    }
+
+    #[test]
+    fn reconnect_nonce_generation_is_fresh() {
+        let first = fresh_nonce().unwrap();
+        let second = fresh_nonce().unwrap();
+        assert_ne!(first, second);
     }
 
     #[test]

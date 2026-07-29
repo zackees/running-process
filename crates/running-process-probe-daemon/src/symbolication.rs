@@ -109,12 +109,39 @@ pub fn symbolize_with_worker(
     timeout: Duration,
 ) -> Result<String, WorkerError> {
     let binary = worker_path().ok_or(WorkerError::NotFound)?;
-    symbolize_with_worker_at(&binary, capture_json, timeout)
+    symbolize_with_worker_at_args(&binary, &[], capture_json, timeout)
+}
+
+/// Hand a capture to the worker's human-readable renderer.
+pub fn symbolize_with_worker_text(
+    capture_json: &[u8],
+    timeout: Duration,
+) -> Result<String, WorkerError> {
+    let binary = worker_path().ok_or(WorkerError::NotFound)?;
+    symbolize_with_worker_at_args(&binary, &["--text"], capture_json, timeout)
 }
 
 /// Like [`symbolize_with_worker`] but against an explicit binary.
 pub fn symbolize_with_worker_at(
     binary: &Path,
+    capture_json: &[u8],
+    timeout: Duration,
+) -> Result<String, WorkerError> {
+    symbolize_with_worker_at_args(binary, &[], capture_json, timeout)
+}
+
+/// Like [`symbolize_with_worker_text`] but against an explicit binary.
+pub fn symbolize_with_worker_at_text(
+    binary: &Path,
+    capture_json: &[u8],
+    timeout: Duration,
+) -> Result<String, WorkerError> {
+    symbolize_with_worker_at_args(binary, &["--text"], capture_json, timeout)
+}
+
+fn symbolize_with_worker_at_args(
+    binary: &Path,
+    args: &[&str],
     capture_json: &[u8],
     timeout: Duration,
 ) -> Result<String, WorkerError> {
@@ -127,10 +154,14 @@ pub fn symbolize_with_worker_at(
     if !binary.is_file() {
         return Err(WorkerError::NotFound);
     }
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
 
     // Routed through the sanitized spawn layer so the child gets sanitized
     // handles and no visible console, like every other spawn in the workspace.
     let mut command = std::process::Command::new(binary);
+    command.args(args);
     let mut child = running_process::spawn::spawn(
         &mut command,
         SpawnStdio {
@@ -144,17 +175,18 @@ pub fn symbolize_with_worker_at(
 
     // Write the capture and close stdin. Closing is what tells the worker the
     // capture is complete; without it both sides wait for the other.
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| WorkerError::Io(std::io::Error::other("worker stdin was not piped")))?;
-        // A worker that dies before reading breaks the pipe. That is not an
-        // I/O bug on our side — the exit status below is the real diagnosis,
-        // so record the write failure and keep going.
-        let _ = stdin.write_all(capture_json);
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| WorkerError::Io(std::io::Error::other("worker stdin was not piped")))?;
+    // A worker that dies before reading breaks the pipe. That is not an
+    // I/O bug on our side — the exit status below is the real diagnosis,
+    // so record the write failure and keep going.
+    let input = capture_json.to_vec();
+    let stdin_writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
         let _ = stdin.flush();
-    }
+    });
 
     // Drain stdout and stderr on threads. Reading them in sequence would
     // deadlock as soon as the worker filled the pipe we were not reading.
@@ -177,22 +209,32 @@ pub fn symbolize_with_worker_at(
         buffer
     });
 
-    let deadline = Instant::now() + timeout;
     let code = loop {
         match child.try_wait() {
             Ok(Some(code)) => break code,
             Ok(None) => {}
-            Err(e) => return Err(WorkerError::Io(e)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdin_writer.join();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(WorkerError::Io(error));
+            }
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             // Reap so the killed child does not linger as a zombie.
             let _ = child.wait();
+            let _ = stdin_writer.join();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
             return Err(WorkerError::Timeout(timeout));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
 
+    let _ = stdin_writer.join();
     let stdout_bytes = stdout_reader.join().unwrap_or_default();
     let stderr_text = String::from_utf8_lossy(&stderr_reader.join().unwrap_or_default())
         .trim()
@@ -327,5 +369,71 @@ mod tests {
     fn an_override_naming_a_nonexistent_file_resolves_to_nothing() {
         let resolved = resolve_worker_path(Some("no-such-worker-binary-anywhere".into()));
         assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[ignore]
+    fn worker_timeout_helper() {
+        std::thread::sleep(Duration::from_secs(10));
+    }
+
+    #[test]
+    #[ignore]
+    fn worker_crash_helper() {
+        std::process::abort();
+    }
+
+    /// A parser that wedges is killed at the process boundary and reported;
+    /// it cannot pin the daemon thread indefinitely.
+    #[test]
+    fn a_hung_worker_is_killed_at_its_deadline() {
+        let current_test = std::env::current_exe().expect("test executable");
+        let started = Instant::now();
+        let capture = vec![b'x'; 8 * 1024 * 1024];
+        let error = symbolize_with_worker_at_args(
+            &current_test,
+            &[
+                "--exact",
+                "symbolication::tests::worker_timeout_helper",
+                "--ignored",
+                "--nocapture",
+            ],
+            &capture,
+            Duration::from_millis(100),
+        )
+        .expect_err("the helper must exceed the deadline");
+        assert!(matches!(error, WorkerError::Timeout(_)), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "deadline enforcement took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A hard process abort is contained exactly like a malformed native
+    /// parser: only the disposable child dies.
+    #[test]
+    fn an_aborting_worker_is_contained() {
+        let current_test = std::env::current_exe().expect("test executable");
+        let error = symbolize_with_worker_at_args(
+            &current_test,
+            &[
+                "--exact",
+                "symbolication::tests::worker_crash_helper",
+                "--ignored",
+                "--nocapture",
+            ],
+            CAPTURE.as_bytes(),
+            DEFAULT_WORKER_TIMEOUT,
+        )
+        .expect_err("the helper aborts");
+        assert!(matches!(error, WorkerError::WorkerDied { .. }), "{error}");
+
+        if let Some(binary) = worker_binary() {
+            let report =
+                symbolize_with_worker_at(&binary, CAPTURE.as_bytes(), DEFAULT_WORKER_TIMEOUT)
+                    .expect("daemon must remain usable after a worker crash");
+            assert!(report.contains("m.dll"));
+        }
     }
 }

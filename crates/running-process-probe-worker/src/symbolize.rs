@@ -92,7 +92,9 @@ fn build_symbol_cache(capture: &RawCapture) -> SymbolCache {
 /// Per-module account of the symbol lookup.
 #[cfg(target_os = "windows")]
 fn module_reports(capture: &RawCapture) -> Vec<ModuleReport> {
-    use crate::pdb_symbols::{locate, Located};
+    use crate::pdb_symbols::{locate, search_dirs, Located};
+
+    let search_dirs = search_dirs();
 
     capture
         .modules
@@ -107,18 +109,19 @@ fn module_reports(capture: &RawCapture) -> Vec<ModuleReport> {
                     ..Default::default()
                 };
             };
-            let (status, symbol_file, rejected) = match locate(std::path::Path::new(path), &[]) {
-                Located::Found(p) => (
-                    ModuleSymbolStatus::Resolved,
-                    Some(p.to_string_lossy().into_owned()),
-                    0,
-                ),
-                Located::NotFound => (ModuleSymbolStatus::NotFound, None, 0),
-                Located::Mismatched { rejected } => {
-                    (ModuleSymbolStatus::Mismatched, None, rejected)
-                }
-                Located::NoDebugDirectory => (ModuleSymbolStatus::NoDebugDirectory, None, 0),
-            };
+            let (status, symbol_file, rejected) =
+                match locate(std::path::Path::new(path), &search_dirs) {
+                    Located::Found(p) => (
+                        ModuleSymbolStatus::Resolved,
+                        Some(p.to_string_lossy().into_owned()),
+                        0,
+                    ),
+                    Located::NotFound => (ModuleSymbolStatus::NotFound, None, 0),
+                    Located::Mismatched { rejected } => {
+                        (ModuleSymbolStatus::Mismatched, None, rejected)
+                    }
+                    Located::NoDebugDirectory => (ModuleSymbolStatus::NoDebugDirectory, None, 0),
+                };
             ModuleReport {
                 name: module.name.clone(),
                 status,

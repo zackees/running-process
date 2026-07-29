@@ -148,6 +148,8 @@ pub struct RegEntry {
     pub runtime: Runtime,
     /// What the registrant permits.
     pub allow_policy: AllowPolicy,
+    /// Operations the target advertised.
+    pub supported_ops: Vec<String>,
     /// What the registrant discloses.
     pub disclosure: Disclosure,
     /// Connection that owns this registration.
@@ -321,6 +323,7 @@ impl Registry {
             app_class: req.app_class,
             runtime: req.runtime,
             allow_policy: req.allow_policy,
+            supported_ops: req.supported_ops,
             disclosure: req.disclosure,
             conn_id,
             identity_verified: false,
@@ -355,11 +358,11 @@ impl Registry {
         Ok(())
     }
 
-    /// Refresh liveness for `key`.
-    pub fn heartbeat(&self, key: &ProcessKey) -> Result<(), RegisterError> {
+    /// Refresh liveness for `key` on the connection that registered it.
+    pub fn heartbeat(&self, key: &ProcessKey, conn_id: u64) -> Result<(), RegisterError> {
         let mut entries = self.entries.lock().expect("registry poisoned");
         let entry = entries.get_mut(key).ok_or(RegisterError::NotRegistered)?;
-        if entry.state == RegState::Dropped {
+        if entry.state == RegState::Dropped || entry.conn_id != conn_id {
             return Err(RegisterError::NotRegistered);
         }
         entry.last_heartbeat = Instant::now();
@@ -604,15 +607,27 @@ mod tests {
         let k = reg
             .begin_register(req(key(41, 100), 15), peer(), 1)
             .unwrap();
-        reg.heartbeat(&k).unwrap();
+        reg.heartbeat(&k, 1).unwrap();
         assert_eq!(reg.reap_expired(Instant::now(), Duration::from_secs(15)), 0);
+    }
+
+    #[test]
+    fn heartbeat_from_another_connection_is_rejected() {
+        let reg = Registry::new(owner());
+        let k = reg
+            .begin_register(req(key(42, 100), 17), peer(), 1)
+            .unwrap();
+        assert!(matches!(
+            reg.heartbeat(&k, 2),
+            Err(RegisterError::NotRegistered)
+        ));
     }
 
     #[test]
     fn heartbeat_for_unknown_key_is_an_error() {
         let reg = Registry::new(owner());
         assert!(matches!(
-            reg.heartbeat(&key(99, 1)),
+            reg.heartbeat(&key(99, 1), 7),
             Err(RegisterError::NotRegistered)
         ));
     }

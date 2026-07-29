@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use prost::Message as _;
 use running_process_probe::probe_diag::v1::{
-    probe_envelope::Body, Heartbeat, ProbeEnvelope, ProcessKey, RegisterProcess,
-    RegistrationStatus, UnregisterProcess,
+    probe_envelope::Body, CaptureReply, CaptureStackRequest, Heartbeat, ProbeEnvelope, ProcessKey,
+    RegisterProcess, RegistrationStatus, UnregisterProcess,
 };
 
 use crate::broker::protocol::framing::{read_frame_with_cap, write_frame, MAX_FRAME_BYTES};
@@ -54,6 +54,15 @@ pub enum ClientError {
     },
 }
 
+/// Work returned by the daemon while the probe is heartbeating.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HeartbeatWork {
+    /// No operation is waiting.
+    Idle,
+    /// Capture this process cooperatively and return the raw artifact.
+    Capture(CaptureStackRequest),
+}
+
 /// The operations a probe client performs.
 ///
 /// A trait so tests can drive the worker with an in-memory fake, and so a
@@ -63,7 +72,9 @@ pub trait ProbeClient: Send {
     /// Enroll this process; returns the identity the daemon armed.
     fn register(&mut self, req: &RegisterProcess) -> Result<ProcessKey, ClientError>;
     /// Refresh liveness.
-    fn heartbeat(&mut self, key: &ProcessKey) -> Result<(), ClientError>;
+    fn heartbeat(&mut self, key: &ProcessKey) -> Result<HeartbeatWork, ClientError>;
+    /// Return the result of work leased on this connection.
+    fn submit_capture(&mut self, reply: CaptureReply) -> Result<(), ClientError>;
     /// Best-effort deregistration.
     fn unregister(&mut self, key: &ProcessKey) -> Result<(), ClientError>;
 }
@@ -177,11 +188,22 @@ impl ProbeClient for SocketProbeClient {
         }
     }
 
-    fn heartbeat(&mut self, key: &ProcessKey) -> Result<(), ClientError> {
-        self.round_trip(Body::Heartbeat(Heartbeat {
+    fn heartbeat(&mut self, key: &ProcessKey) -> Result<HeartbeatWork, ClientError> {
+        let reply = self.round_trip(Body::Heartbeat(Heartbeat {
             key: Some(key.clone()),
         }))?;
-        Ok(())
+        heartbeat_reply(reply)
+    }
+
+    fn submit_capture(&mut self, reply: CaptureReply) -> Result<(), ClientError> {
+        let reply = self.round_trip(Body::CaptureReply(reply))?;
+        match reply.body {
+            Some(Body::RegistrationStatus(RegistrationStatus { error: 0, .. })) => Ok(()),
+            Some(Body::RegistrationStatus(status)) => Err(ClientError::Refused {
+                reason: status.detail,
+            }),
+            _ => Err(ClientError::UnexpectedReply),
+        }
     }
 
     fn unregister(&mut self, key: &ProcessKey) -> Result<(), ClientError> {
@@ -189,6 +211,19 @@ impl ProbeClient for SocketProbeClient {
             key: Some(key.clone()),
         }))?;
         Ok(())
+    }
+}
+
+fn heartbeat_reply(reply: ProbeEnvelope) -> Result<HeartbeatWork, ClientError> {
+    match reply.body {
+        Some(Body::CaptureStack(request)) => Ok(HeartbeatWork::Capture(request)),
+        Some(Body::RegistrationStatus(RegistrationStatus { error: 0, .. })) => {
+            Ok(HeartbeatWork::Idle)
+        }
+        Some(Body::RegistrationStatus(status)) => Err(ClientError::Refused {
+            reason: status.detail,
+        }),
+        _ => Err(ClientError::UnexpectedReply),
     }
 }
 
@@ -216,8 +251,11 @@ mod tests {
             *self.registered.lock().unwrap() += 1;
             req.key.clone().ok_or(ClientError::UnexpectedReply)
         }
-        fn heartbeat(&mut self, _key: &ProcessKey) -> Result<(), ClientError> {
+        fn heartbeat(&mut self, _key: &ProcessKey) -> Result<HeartbeatWork, ClientError> {
             *self.heartbeats.lock().unwrap() += 1;
+            Ok(HeartbeatWork::Idle)
+        }
+        fn submit_capture(&mut self, _reply: CaptureReply) -> Result<(), ClientError> {
             Ok(())
         }
         fn unregister(&mut self, _key: &ProcessKey) -> Result<(), ClientError> {
@@ -253,7 +291,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(c.register(&req).unwrap(), key);
-        c.heartbeat(&key).unwrap();
+        assert_eq!(c.heartbeat(&key).unwrap(), HeartbeatWork::Idle);
         c.unregister(&key).unwrap();
         assert_eq!(*c.registered.lock().unwrap(), 1);
         assert_eq!(*c.heartbeats.lock().unwrap(), 1);
@@ -307,6 +345,28 @@ mod tests {
 
     fn heartbeat_body() -> Body {
         Body::Heartbeat(Heartbeat::default())
+    }
+
+    /// #637: a heartbeat reply may carry work pushed by the daemon. It must
+    /// reach the probe worker rather than being accepted as an ordinary ack.
+    #[test]
+    fn a_capture_push_is_returned_to_the_probe_worker() {
+        let capture = running_process_probe::probe_diag::v1::CaptureStackRequest {
+            max_depth: 64,
+            thread_filter: 0,
+            ..Default::default()
+        };
+        let reply = ProbeEnvelope {
+            wire_version: 1,
+            request_id: 7,
+            deadline_unix_ms: 0,
+            body: Some(Body::CaptureStack(capture.clone())),
+        };
+
+        assert_eq!(
+            heartbeat_reply(reply).expect("capture reply"),
+            HeartbeatWork::Capture(capture)
+        );
     }
 
     #[test]
