@@ -171,3 +171,47 @@ fn identity_sidecar_feeds_backend_handle_probe() {
     assert!(read_daemon_identity_file(&sidecar).is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The service-keyed identity file has to survive the round trip between two
+/// processes that never talk to each other: a daemon writes it, a broker
+/// reads it, and each derives the path from `daemon_identity_path` alone.
+///
+/// What this proves: an identity published under a service name is readable
+/// from that service name alone, and stops resolving once retracted.
+///
+/// What it does NOT prove — worth stating, because the wording is tempting —
+/// is that a publisher and reader deriving the path *independently* agree.
+/// It cannot: both sides call `daemon_identity_path`, so there is only one
+/// derivation and no drift to detect. Confirmed by changing that function's
+/// format string, which the test happily follows. Single-source-of-truth is
+/// the mechanism preventing drift here; this test only guards the round trip
+/// on top of it (running-process#532).
+#[test]
+fn a_service_identity_round_trips_through_its_derived_path() {
+    use running_process::broker::lifecycle::names_v2::daemon_identity_path;
+    use running_process::broker::protocol::Endpoint;
+    use running_process::broker::secure_dir::ensure_private_dir;
+
+    let service = format!("rt-test-{}", std::process::id());
+    let path = daemon_identity_path(&service);
+    ensure_private_dir(path.parent().expect("identity path has a parent")).expect("private dir");
+
+    let endpoint = Endpoint {
+        namespace_id: String::new(),
+        path: "test-endpoint-path".to_string(),
+    };
+    let daemon = DaemonProcess::current_process(endpoint, None).expect("identity for this process");
+    write_daemon_identity_file(&path, &daemon).expect("publish");
+
+    // Read it back the way a broker would: from the service name only.
+    let read_back = read_daemon_identity_file(&daemon_identity_path(&service))
+        .expect("a published identity is readable from its derived path");
+    assert_eq!(read_back.pid, std::process::id());
+    assert_eq!(read_back.ipc_endpoint.path, "test-endpoint-path");
+
+    remove_daemon_identity_file(&path);
+    assert!(
+        read_daemon_identity_file(&daemon_identity_path(&service)).is_none(),
+        "a retracted identity must not still resolve"
+    );
+}
