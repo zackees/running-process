@@ -22,6 +22,7 @@
 
 pub mod bringup;
 pub mod capture_jobs;
+pub mod crash_query;
 pub mod crash_store;
 pub mod discovery;
 pub mod names;
@@ -31,6 +32,7 @@ pub mod registry;
 pub mod serve;
 pub mod state;
 pub mod symbolication;
+pub mod wire_convert;
 
 /// Overrides the seeded beacon port, equivalent to `--beacon-port`.
 ///

@@ -12,6 +12,7 @@
 //! bounds, replay, and peer-rejection case below is driven by calling
 //! `dispatch` directly.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +22,8 @@ use running_process_probe::probe_diag::v1::{
 };
 
 use crate::capture_jobs::CaptureJobs;
+use crate::crash_query::{CrashFilter, CrashStats};
+use crate::crash_store::{CrashRecord, CrashStore, CrashStoreError};
 use crate::query::{ProcessQuery, QueryEngine};
 use crate::registry::{ProcessKey, RegisterError, RegisterRequest, Registry};
 use crate::state::{RegState, StateError};
@@ -85,6 +88,15 @@ pub enum ProbeRequest {
     GetJobStatus(String),
     /// Query live registrations and, when requested, the OS process table.
     Query(Box<ProcessQuery>),
+    /// Page through durable crash history.
+    QueryCrashes {
+        /// Which crashes to return.
+        filter: Box<CrashFilter>,
+        /// Maximum records. Mandatory, like the live query's.
+        limit: NonZeroU32,
+    },
+    /// Roll up durable crash history by signature.
+    CrashStats(Box<CrashFilter>),
 }
 
 /// The reply to a [`ProbeRequest`].
@@ -105,6 +117,24 @@ pub enum ProbeReply {
     JobStatus(JobStatus),
     /// Matching live processes.
     Processes(Vec<ProcessInfo>),
+    /// Matching crash records, newest first and already limit-truncated.
+    Crashes(Vec<CrashRecord>),
+    /// Crash rollups over the whole match set.
+    CrashStatistics(Box<CrashStats>),
+    /// A crash query was refused.
+    ///
+    /// Distinct from [`ProbeReply::Refused`] so the refusal travels on the
+    /// crash reply body. A caller that matched on `CrashQueryReply` would
+    /// otherwise see an unrelated `RegistrationStatus` and have to treat
+    /// "your limit was too large" as "unexpected message".
+    CrashRefused {
+        /// Machine-branchable classification.
+        code: ProbeErrorCode,
+        /// Human-readable detail.
+        reason: String,
+        /// Whether the refused request was a rollup rather than a page.
+        stats: bool,
+    },
     /// Request refused, with a stable code and a human-readable reason.
     Refused {
         /// Machine-branchable classification.
@@ -133,6 +163,14 @@ pub struct ProbeOps {
     owner_policy: PeerCredentialPolicy,
     capture_jobs: CaptureJobs,
     query_engine: QueryEngine,
+    /// Durable crash history, when this daemon opened one.
+    ///
+    /// Optional because the store is a filesystem resource that can fail to
+    /// open (a full or read-only home directory), and the live surfaces —
+    /// registration, capture, `ps` — must keep working when it does. Absent
+    /// means crash queries are refused with a reason, not that the daemon
+    /// declines to start.
+    crash_store: Option<Arc<CrashStore>>,
 }
 
 impl ProbeOps {
@@ -143,7 +181,19 @@ impl ProbeOps {
             owner_policy,
             capture_jobs: CaptureJobs::default(),
             query_engine: QueryEngine::default(),
+            crash_store: None,
         }
+    }
+
+    /// Attach durable crash history to this core.
+    pub fn with_crash_store(mut self, crash_store: Arc<CrashStore>) -> Self {
+        self.crash_store = Some(crash_store);
+        self
+    }
+
+    /// Borrow the crash store, if one is attached.
+    pub fn crash_store(&self) -> Option<&Arc<CrashStore>> {
+        self.crash_store.as_ref()
     }
 
     /// The owner policy, for tests that must confirm it agrees with the
@@ -227,6 +277,20 @@ impl ProbeOps {
             ProbeRequest::Query(query) => {
                 ProbeReply::Processes(self.query_engine.run(&query, &self.registry))
             }
+            ProbeRequest::QueryCrashes { filter, limit } => match self.crash_store.as_ref() {
+                Some(store) => match store.query(&filter, limit) {
+                    Ok(records) => ProbeReply::Crashes(records),
+                    Err(error) => crash_refusal(&error, false),
+                },
+                None => no_crash_store(false),
+            },
+            ProbeRequest::CrashStats(filter) => match self.crash_store.as_ref() {
+                Some(store) => match store.stats(&filter) {
+                    Ok(stats) => ProbeReply::CrashStatistics(Box::new(stats)),
+                    Err(error) => crash_refusal(&error, true),
+                },
+                None => no_crash_store(true),
+            },
             ProbeRequest::Unregister(key) => {
                 if let Some(entry) = self.registry.get(&key) {
                     if entry.conn_id == conn_id {
@@ -327,6 +391,32 @@ impl ProbeOps {
 }
 
 /// Map an internal error onto the stable wire taxonomy.
+/// Refuse a crash query when this daemon has no durable store.
+fn no_crash_store(stats: bool) -> ProbeReply {
+    ProbeReply::CrashRefused {
+        code: ProbeErrorCode::NotRegistered,
+        reason: "this daemon has no crash history store".into(),
+        stats,
+    }
+}
+
+/// Classify a crash-store failure.
+///
+/// A refused *query* (bad limit, inverted window, oversize filter) is the
+/// caller's mistake and says so; anything else is the daemon's problem and is
+/// reported as internal rather than blamed on the request.
+fn crash_refusal(error: &CrashStoreError, stats: bool) -> ProbeReply {
+    let code = match error {
+        CrashStoreError::Query(_) => ProbeErrorCode::MalformedRequest,
+        _ => ProbeErrorCode::PolicyDenied,
+    };
+    ProbeReply::CrashRefused {
+        code,
+        reason: error.to_string(),
+        stats,
+    }
+}
+
 fn refuse(err: RegisterError) -> ProbeReply {
     let code = match &err {
         RegisterError::OversizeField { .. } => ProbeErrorCode::OversizeField,

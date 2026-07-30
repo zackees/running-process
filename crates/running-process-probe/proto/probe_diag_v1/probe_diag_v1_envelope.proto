@@ -60,11 +60,16 @@ message ProbeEnvelope {
     // original reserved range left open.
     ProbeHello probe_hello = 35;
     ProbeHelloReply probe_hello_reply = 36;
+
+    // Crash rollups (#641). A distinct body from `crash_query` because the
+    // reply shape differs — counts, not a truncated page of rows.
+    CrashStatsQuery crash_stats_query = 37;
+    CrashStatsReply crash_stats_reply = 38;
   }
 
   // Headroom so hot-path header fields can still be added inside the 1-byte
   // tag range (fields 1-15 encode their tag in a single byte).
   reserved 4 to 15;
 
-  reserved 37 to 63;
+  reserved 39 to 63;
 }

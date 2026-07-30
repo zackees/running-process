@@ -85,7 +85,11 @@ fn sample_crash() -> ProbeEnvelope {
             key: Some(sample_key()),
             signature: "SIGSEGV@main+0x40".into(),
             crash_unix_ms: 1_700_000_000_123,
-            artifact_path: "/var/probe/crash-1.dmp".into(),
+            // An opaque id, not a path: the crash query surface returns
+            // redacted metadata, and a daemon-private path would disclose the
+            // owner's directory layout to every caller of it.
+            id: 42,
+            artifact_bytes: 4096,
             fault_kind: "SIGSEGV".into(),
             ..Default::default()
         }),
