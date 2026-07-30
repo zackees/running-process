@@ -22,6 +22,7 @@
 
 pub mod bringup;
 pub mod capture_jobs;
+pub mod cli;
 pub mod crash_query;
 pub mod crash_store;
 pub mod discovery;

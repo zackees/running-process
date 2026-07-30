@@ -13,6 +13,10 @@ publish = false
 name = "rpprobed"
 path = "src/bin/rpprobed.rs"
 
+[[bin]]
+name = "rpprobe"
+path = "src/bin/rpprobe.rs"
+
 [dependencies]
 # Broker primitives reused as libraries: framing codec, peer-cred/owner-only
 # ACL, privilege refusal, SID hashing, private-dir hardening. The probe daemon
@@ -46,6 +50,7 @@ tower-http = { version = "0.6", features = ["limit"] }
 # through timing, and the token is the only thing standing between a local
 # process and every artifact this daemon holds.
 subtle = "2"
+clap = { version = "4", features = ["derive"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
