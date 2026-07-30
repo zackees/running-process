@@ -27,12 +27,10 @@ use std::sync::Arc;
 use prost::Message as _;
 use running_process::broker::protocol::framing::{read_frame_with_cap, write_frame};
 use running_process::broker::server::PeerIdentity;
-use running_process_probe::probe_diag::v1::{
-    probe_envelope::Body, ProbeEnvelope, ProcessQueryReply, RegisterProcess, RegistrationStatus,
-};
+use running_process_probe::probe_diag::v1::ProbeEnvelope;
 
 use crate::probe_ops::{IdentityVerdict, ProbeErrorCode, ProbeOps, ProbeReply, ProbeRequest};
-use crate::registry::{AllowPolicy, Disclosure, ProcessKey, RegisterRequest, Runtime};
+use crate::registry::RegisterRequest;
 
 const MAX_CONCURRENT_SYMBOLIZATIONS: usize = 2;
 static ACTIVE_SYMBOLIZATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -63,126 +61,17 @@ impl Drop for SymbolizationPermit {
 /// enforced before the allocation, not after.
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
+// Wire translation lives in its own module; re-exported here because it is
+// part of this module's public surface historically and callers (and the HTTP
+// ingress) reach it through `serve::`.
+pub use crate::wire_convert::{envelope_from_reply, request_from_envelope};
+
 /// Hands out connection ids.
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Allocate an id for a new connection.
 pub fn next_conn_id() -> u64 {
     NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-/// Translate a wire `ProbeEnvelope` into a domain request.
-///
-/// Returns `None` for bodies this daemon does not serve, which the caller
-/// answers with a structured refusal rather than closing the connection — a
-/// client speaking a newer schema should get a reply it can interpret.
-pub fn request_from_envelope(envelope: ProbeEnvelope) -> Option<ProbeRequest> {
-    let deadline_unix_ms = envelope.deadline_unix_ms;
-    match envelope.body? {
-        Body::Register(req) => Some(ProbeRequest::Register(Box::new(register_from_proto(req)?))),
-        Body::Heartbeat(hb) => Some(ProbeRequest::Heartbeat(key_from_proto(hb.key?)?)),
-        Body::Unregister(un) => Some(ProbeRequest::Unregister(key_from_proto(un.key?)?)),
-        // Recognised even though forwarding is unimplemented, so the caller
-        // gets a reason about the *target* rather than "unsupported body",
-        // which would be indistinguishable from a message this daemon has
-        // never heard of.
-        Body::CaptureStack(req) => Some(ProbeRequest::CaptureStack {
-            key: key_from_proto(req.key?)?,
-            max_depth: req.max_depth,
-            thread_filter: req.thread_filter,
-            deadline_unix_ms,
-        }),
-        Body::CaptureReply(reply) => Some(ProbeRequest::CaptureResult(reply)),
-        Body::JobStatusReq(request) => Some(ProbeRequest::GetJobStatus(request.job_id)),
-        Body::ProcessQuery(query) => Some(ProbeRequest::Query(Box::new(
-            crate::query::ProcessQuery::from_proto(query).ok()?,
-        ))),
-        Body::ListProcesses(list) => Some(ProbeRequest::Query(Box::new(
-            crate::query::ProcessQuery::from_proto(
-                running_process_probe::probe_diag::v1::ProcessQuery {
-                    limit: list.limit,
-                    include_env: list.include_env,
-                    ..Default::default()
-                },
-            )
-            .ok()?,
-        ))),
-        _ => None,
-    }
-}
-
-fn key_from_proto(key: running_process_probe::probe_diag::v1::ProcessKey) -> Option<ProcessKey> {
-    Some(ProcessKey {
-        pid: u32::try_from(key.pid).ok()?,
-        // A key without a start time cannot survive PID reuse, so refuse it
-        // rather than register an identity that may silently alias.
-        started_at_unix_ms: key.start_time?,
-        boot_id: key.boot_id.unwrap_or_default(),
-    })
-}
-
-fn register_from_proto(req: RegisterProcess) -> Option<RegisterRequest> {
-    let mut sha = [0u8; 32];
-    if req.exe_sha256.len() == 32 {
-        sha.copy_from_slice(&req.exe_sha256);
-    }
-    let mut nonce = [0u8; 32];
-    if req.registration_nonce.len() == 32 {
-        nonce.copy_from_slice(&req.registration_nonce);
-    }
-
-    Some(RegisterRequest {
-        key: key_from_proto(req.key?)?,
-        exe_path: PathBuf::from(req.exe_path),
-        exe_sha256: sha,
-        app_class: req.app_class,
-        app_name: req.app_name,
-        app_version: req.app_version,
-        instance_name: req.instance_name,
-        allow_policy: AllowPolicy {
-            allow_all_ops: req
-                .allow_policy
-                .as_ref()
-                .map(|p| p.allow_all_ops)
-                .unwrap_or(true),
-            env_allowlist: req
-                .allow_policy
-                .map(|p| p.env_allowlist)
-                .unwrap_or_default(),
-        },
-        disclosure: Disclosure {
-            expose_exe_path: req
-                .disclosure
-                .as_ref()
-                .map(|d| d.expose_exe_path)
-                .unwrap_or(false),
-            expose_cmdline: req
-                .disclosure
-                .as_ref()
-                .map(|d| d.expose_cmdline)
-                .unwrap_or(false),
-            expose_env_names: req.disclosure.map(|d| d.expose_env_names).unwrap_or(false),
-        },
-        disclosed_cwd: (!req.disclosed_cwd.is_empty()).then(|| PathBuf::from(req.disclosed_cwd)),
-        disclosed_env: req.disclosed_env.into_iter().collect(),
-        nonce,
-        supported_ops: req
-            .supported_ops
-            .into_iter()
-            .filter_map(|op| match op {
-                1 => Some("stack_capture".to_string()),
-                2 => Some("cpu_profile".to_string()),
-                3 => Some("heap_profile".to_string()),
-                4 => Some("off_cpu_profile".to_string()),
-                _ => None,
-            })
-            .collect(),
-        runtime: Runtime::from_proto(req.runtime),
-        symbol_source: req.symbol_source,
-        symbol_manifest_path: (!req.symbol_manifest_path.is_empty())
-            .then(|| PathBuf::from(req.symbol_manifest_path)),
-        symbol_paths: req.symbol_paths.into_iter().map(PathBuf::from).collect(),
-    })
 }
 
 /// Verify a registrant's claimed identity.
@@ -209,60 +98,6 @@ pub fn verify_identity(request: &RegisterRequest, connection_alive: bool) -> Ide
     IdentityVerdict {
         verified: boot_matches && alive && hash_matches,
         connection_alive,
-    }
-}
-
-/// Encode a reply as a `ProbeEnvelope` for the wire.
-pub fn envelope_from_reply(request_id: u64, reply: &ProbeReply) -> ProbeEnvelope {
-    let body = match reply {
-        ProbeReply::Armed { .. } => Body::RegistrationStatus(RegistrationStatus {
-            // 2 == ARMED.
-            state: 2,
-            error: 0,
-            detail: String::new(),
-            ..Default::default()
-        }),
-        ProbeReply::Ack => Body::RegistrationStatus(RegistrationStatus {
-            state: 0,
-            error: 0,
-            detail: "ack".into(),
-            ..Default::default()
-        }),
-        ProbeReply::CaptureRequested(request) => Body::CaptureStack(request.clone()),
-        ProbeReply::CaptureAccepted(reply) => Body::CaptureReply(reply.clone()),
-        ProbeReply::JobStatus(status) => Body::JobStatus(status.clone()),
-        ProbeReply::Processes(processes) => Body::ProcessQueryReply(ProcessQueryReply {
-            processes: processes.clone(),
-            error: 0,
-            detail: String::new(),
-        }),
-        ProbeReply::Refused { code, reason } => Body::RegistrationStatus(RegistrationStatus {
-            // 3 == DROPPED: the request did not produce a live registration.
-            state: 3,
-            error: probe_error_to_proto(*code),
-            detail: reason.clone(),
-            ..Default::default()
-        }),
-    };
-    ProbeEnvelope {
-        wire_version: 1,
-        request_id,
-        deadline_unix_ms: 0,
-        body: Some(body),
-    }
-}
-
-/// Map the internal taxonomy onto `probe_diag.v1`'s `ProbeErrorCode`.
-fn probe_error_to_proto(code: ProbeErrorCode) -> i32 {
-    match code {
-        ProbeErrorCode::MalformedRequest => 5, // PROBE_ERROR_INTERNAL
-        ProbeErrorCode::OversizeField => 5,
-        ProbeErrorCode::NonceReplay => 3, // POLICY_DENIED
-        ProbeErrorCode::PeerRejected => 3,
-        ProbeErrorCode::PolicyDenied => 3,
-        ProbeErrorCode::NotArmed => 2, // NOT_REGISTERED
-        ProbeErrorCode::NotRegistered => 2,
-        ProbeErrorCode::IdentityMismatch => 1, // PID_REUSE / identity
     }
 }
 
@@ -693,10 +528,22 @@ pub fn build_ops() -> io::Result<Arc<ProbeOps>> {
         _ => return Err(io::Error::other("owner policy is not owner-scoped")),
     };
 
-    Ok(Arc::new(ProbeOps::new(
-        Arc::new(crate::registry::Registry::new(owner)),
-        policy,
-    )))
+    let mut ops = ProbeOps::new(Arc::new(crate::registry::Registry::new(owner)), policy);
+
+    // Best-effort. A crash store that will not open (full or read-only home,
+    // a stale database from a newer daemon) must not stop the daemon from
+    // serving registrations, captures, and `ps` — those are the surfaces
+    // processes depend on to stay observable at all. Crash queries then
+    // refuse with a reason instead of the daemon refusing to exist.
+    let artifacts_dir = crate::crash_store::default_artifacts_dir();
+    match crate::crash_store::CrashStore::open(&artifacts_dir.join("crashes.db"), &artifacts_dir) {
+        Ok(store) => ops = ops.with_crash_store(Arc::new(store)),
+        Err(error) => {
+            eprintln!("rpprobed: crash history unavailable: {error}");
+        }
+    }
+
+    Ok(Arc::new(ops))
 }
 
 #[cfg(test)]
@@ -704,6 +551,12 @@ mod tests {
     use super::*;
     use running_process::broker::server::PeerCredentialPolicy;
     use running_process_probe::probe_diag::v1 as wire;
+    use running_process_probe::probe_diag::v1::{
+        probe_envelope::Body, RegisterProcess, RegistrationStatus,
+    };
+
+    use crate::registry::{AllowPolicy, Disclosure, ProcessKey, Runtime};
+    use crate::wire_convert::key_from_proto;
 
     const OWNER: &str = "owner-uid";
 

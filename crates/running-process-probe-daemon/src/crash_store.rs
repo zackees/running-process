@@ -106,6 +106,9 @@ pub enum CrashStoreError {
         /// Configured single-artifact cap.
         maximum: u64,
     },
+    /// A query was refused before it reached the database.
+    #[error(transparent)]
+    Query(#[from] crate::crash_query::CrashQueryError),
     /// Database was created by a newer incompatible daemon.
     #[error("crash database schema {found} is newer than supported schema {supported}")]
     FutureSchema {
@@ -117,11 +120,24 @@ pub enum CrashStoreError {
 }
 
 /// Thread-safe durable crash database.
+///
+/// `Debug` is hand-written because `rusqlite::Connection` is not `Debug` and
+/// the connection is not the interesting part anyway — a panic message wants
+/// to know *which* store this is, which the artifacts directory answers.
 pub struct CrashStore {
     conn: Mutex<Connection>,
     artifacts_dir: PathBuf,
     policy: CleanupPolicy,
     session: StoreSession,
+}
+
+impl std::fmt::Debug for CrashStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrashStore")
+            .field("artifacts_dir", &self.artifacts_dir)
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CrashStore {
@@ -161,6 +177,29 @@ impl CrashStore {
         };
         store.reconcile_on_open()?;
         Ok(store)
+    }
+
+    /// The open connection, for integration tests that seed rows directly.
+    ///
+    /// Seeding through `record()` would need a real spool file per crash and
+    /// would stamp each row with whatever the clock said — which is the one
+    /// thing a time-window test cannot have.
+    #[doc(hidden)]
+    pub fn connection_for_test(&self) -> &Mutex<Connection> {
+        &self.conn
+    }
+
+    /// The open connection, for read-only query layers in this crate.
+    ///
+    /// Handing out the `Mutex` rather than a guard keeps the lock scope at the
+    /// caller: a rollup takes it for one statement, not for the whole call.
+    pub(crate) fn connection(&self) -> &Mutex<Connection> {
+        &self.conn
+    }
+
+    /// Where artifacts live, needed to rebuild absolute paths from stored rows.
+    pub(crate) fn artifacts_dir(&self) -> &Path {
+        &self.artifacts_dir
     }
 
     /// Persist one parsed crash report and its owner-private JSON artifact.
@@ -843,7 +882,10 @@ fn record_by_id(
     .optional()
 }
 
-fn row_to_record(row: &rusqlite::Row<'_>, artifacts_dir: &Path) -> rusqlite::Result<CrashRecord> {
+pub(crate) fn row_to_record(
+    row: &rusqlite::Row<'_>,
+    artifacts_dir: &Path,
+) -> rusqlite::Result<CrashRecord> {
     let pid = u32::try_from(row.get::<_, i64>(5)?).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
             5,
