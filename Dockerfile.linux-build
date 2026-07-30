@@ -29,30 +29,59 @@ ENV CARGO_TARGET_DIR=/work/target \
 
 FROM python-tools AS rust-manifests
 
-# Wave 7 of #165: cache-warmup stage simplified after the mono-crate
-# consolidation. Workspace now has only running-process (with three
-# bins inside it), running-process-py, test-watchdog, testbins.
+# Cache-warmup stage. Cargo loads the ENTIRE root workspace even though the
+# build below names a single package, so every member manifest listed in
+# `[workspace] members` has to be here — plus the build scripts and proto
+# inputs those manifests read, and a stub for every declared target.
+# `ci/docker_manifest_guard.py` (run by ./lint) fails if a member is missing,
+# which is how #772 caught this list going four members stale.
 COPY Cargo.toml Cargo.lock /work/
 COPY crates/running-process/Cargo.toml /work/crates/running-process/Cargo.toml
 COPY crates/running-process/build.rs /work/crates/running-process/build.rs
 COPY crates/running-process/proto /work/crates/running-process/proto
+COPY crates/running-process-probe/Cargo.toml /work/crates/running-process-probe/Cargo.toml
+COPY crates/running-process-probe/build.rs /work/crates/running-process-probe/build.rs
+COPY crates/running-process-probe/proto /work/crates/running-process-probe/proto
+COPY crates/running-process-probe-daemon/Cargo.toml /work/crates/running-process-probe-daemon/Cargo.toml
+COPY crates/running-process-probe-worker/Cargo.toml /work/crates/running-process-probe-worker/Cargo.toml
+COPY crates/running-process-probe-interposer-linux/Cargo.toml /work/crates/running-process-probe-interposer-linux/Cargo.toml
+COPY crates/running-process-probe-interposer-macos/Cargo.toml /work/crates/running-process-probe-interposer-macos/Cargo.toml
+COPY crates/running-process-probe-interposer-windows/Cargo.toml /work/crates/running-process-probe-interposer-windows/Cargo.toml
 COPY crates/running-process-py/Cargo.toml /work/crates/running-process-py/Cargo.toml
+COPY crates/running-process-win-gnu-bridge/Cargo.toml /work/crates/running-process-win-gnu-bridge/Cargo.toml
 COPY crates/test-watchdog/Cargo.toml /work/crates/test-watchdog/Cargo.toml
 COPY testbins/Cargo.toml /work/testbins/Cargo.toml
 
 RUN mkdir -p /work/crates/running-process/src/bin \
     /work/crates/running-process/examples \
+    /work/crates/running-process-probe/src/bin \
+    /work/crates/running-process-probe-daemon/src/bin \
+    /work/crates/running-process-probe-worker/src \
+    /work/crates/running-process-probe-interposer-linux/src \
+    /work/crates/running-process-probe-interposer-macos/src \
+    /work/crates/running-process-probe-interposer-windows/src \
     /work/crates/running-process-py/src \
+    /work/crates/running-process-win-gnu-bridge/src \
     /work/crates/test-watchdog/src \
     /work/testbins/src/bin \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process/src/lib.rs \
  && printf "fn main() {}\n" > /work/crates/running-process/examples/handoff_rollout_evidence.rs \
- && printf "fn main() {}\n" > /work/crates/running-process/src/bin/runpm.rs \
- && printf "fn main() {}\n" > /work/crates/running-process/src/bin/daemon.rs \
- && printf "fn main() {}\n" > /work/crates/running-process/src/bin/trampoline.rs \
+ && for b in runpm daemon trampoline running-process-broker-v1 running-process-broker-v2 running-process-cleanup; do \
+        printf "fn main() {}\n" > /work/crates/running-process/src/bin/$b.rs ; \
+    done \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe/src/lib.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process-probe/src/bin/helper.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-daemon/src/lib.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process-probe-daemon/src/bin/rpprobed.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-worker/src/lib.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process-probe-worker/src/main.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-interposer-linux/src/lib.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-interposer-macos/src/lib.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-interposer-windows/src/lib.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-win-gnu-bridge/src/lib.rs \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/test-watchdog/src/lib.rs \
  && printf "use pyo3::prelude::*;\n#[pymodule]\nfn _native(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> { Ok(()) }\n" > /work/crates/running-process-py/src/lib.rs \
- && for b in cwd_reporter dies_after_spawn emitter env_dump env_reporter sleeper spawner stubborn; do \
+ && for b in createfilew_probe cwd_reporter dies_after_spawn emitter env_dump env_reporter probe_crasher sleeper slow_stdin_reader spawner stdin_echoer stubborn tui_counter; do \
         printf "fn main() {}\n" > /work/testbins/src/bin/$b.rs ; \
     done
 
