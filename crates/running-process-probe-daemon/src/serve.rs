@@ -28,7 +28,7 @@ use prost::Message as _;
 use running_process::broker::protocol::framing::{read_frame_with_cap, write_frame};
 use running_process::broker::server::PeerIdentity;
 use running_process_probe::probe_diag::v1::{
-    probe_envelope::Body, ProbeEnvelope, RegisterProcess, RegistrationStatus,
+    probe_envelope::Body, ProbeEnvelope, ProcessQueryReply, RegisterProcess, RegistrationStatus,
 };
 
 use crate::probe_ops::{IdentityVerdict, ProbeErrorCode, ProbeOps, ProbeReply, ProbeRequest};
@@ -94,6 +94,19 @@ pub fn request_from_envelope(envelope: ProbeEnvelope) -> Option<ProbeRequest> {
         }),
         Body::CaptureReply(reply) => Some(ProbeRequest::CaptureResult(reply)),
         Body::JobStatusReq(request) => Some(ProbeRequest::GetJobStatus(request.job_id)),
+        Body::ProcessQuery(query) => Some(ProbeRequest::Query(Box::new(
+            crate::query::ProcessQuery::from_proto(query).ok()?,
+        ))),
+        Body::ListProcesses(list) => Some(ProbeRequest::Query(Box::new(
+            crate::query::ProcessQuery::from_proto(
+                running_process_probe::probe_diag::v1::ProcessQuery {
+                    limit: list.limit,
+                    include_env: list.include_env,
+                    ..Default::default()
+                },
+            )
+            .ok()?,
+        ))),
         _ => None,
     }
 }
@@ -125,6 +138,7 @@ fn register_from_proto(req: RegisterProcess) -> Option<RegisterRequest> {
         app_class: req.app_class,
         app_name: req.app_name,
         app_version: req.app_version,
+        instance_name: req.instance_name,
         allow_policy: AllowPolicy {
             allow_all_ops: req
                 .allow_policy
@@ -149,6 +163,8 @@ fn register_from_proto(req: RegisterProcess) -> Option<RegisterRequest> {
                 .unwrap_or(false),
             expose_env_names: req.disclosure.map(|d| d.expose_env_names).unwrap_or(false),
         },
+        disclosed_cwd: (!req.disclosed_cwd.is_empty()).then(|| PathBuf::from(req.disclosed_cwd)),
+        disclosed_env: req.disclosed_env.into_iter().collect(),
         nonce,
         supported_ops: req
             .supported_ops
@@ -215,6 +231,11 @@ pub fn envelope_from_reply(request_id: u64, reply: &ProbeReply) -> ProbeEnvelope
         ProbeReply::CaptureRequested(request) => Body::CaptureStack(request.clone()),
         ProbeReply::CaptureAccepted(reply) => Body::CaptureReply(reply.clone()),
         ProbeReply::JobStatus(status) => Body::JobStatus(status.clone()),
+        ProbeReply::Processes(processes) => Body::ProcessQueryReply(ProcessQueryReply {
+            processes: processes.clone(),
+            error: 0,
+            detail: String::new(),
+        }),
         ProbeReply::Refused { code, reason } => Body::RegistrationStatus(RegistrationStatus {
             // 3 == DROPPED: the request did not produce a live registration.
             state: 3,
@@ -801,6 +822,80 @@ mod tests {
         assert_eq!(status(&replies[0]).state, 2, "2 == ARMED");
     }
 
+    #[test]
+    fn live_query_round_trips_over_the_real_framed_ingress() {
+        let ops = ops();
+        let mut registration = self_register_envelope(0x64, 1);
+        let Some(Body::Register(register)) = registration.body.as_mut() else {
+            panic!("expected registration");
+        };
+        register.app_name = "query-fixture".into();
+        register.disclosed_cwd = "C:/query-fixture".into();
+        register.allow_policy = Some(wire::AllowPolicy {
+            allow_all_ops: true,
+            env_allowlist: vec!["VISIBLE".into()],
+        });
+        register.disclosure = Some(wire::Disclosure {
+            expose_exe_path: false,
+            expose_cmdline: false,
+            expose_env_names: true,
+        });
+        register
+            .disclosed_env
+            .insert("VISIBLE".into(), "yes".into());
+
+        let matching = ProbeEnvelope {
+            wire_version: 1,
+            request_id: 2,
+            deadline_unix_ms: 0,
+            body: Some(Body::ProcessQuery(wire::ProcessQuery {
+                name_glob: "*".into(),
+                cwd_regex: "query-fixture$".into(),
+                app_class: "test".into(),
+                include_env: true,
+                limit: 5,
+                env: vec![wire::EnvMatch {
+                    key: "VISIBLE".into(),
+                    value_exact: Some("yes".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })),
+        };
+        let hidden = ProbeEnvelope {
+            wire_version: 1,
+            request_id: 3,
+            deadline_unix_ms: 0,
+            body: Some(Body::ProcessQuery(wire::ProcessQuery {
+                limit: 5,
+                env: vec![wire::EnvMatch {
+                    key: "SECRET".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })),
+        };
+
+        let replies = serve_bytes(&ops, &[registration, matching, hidden], 64);
+        let Some(Body::ProcessQueryReply(matching)) = replies[1].body.as_ref() else {
+            panic!("expected process query reply");
+        };
+        assert_eq!(matching.processes.len(), 1);
+        let process = &matching.processes[0];
+        assert!(process.registered);
+        assert_eq!(process.cwd, "C:/query-fixture");
+        assert_eq!(process.env.get("VISIBLE").map(String::as_str), Some("yes"));
+        assert_eq!(process.env_names, ["VISIBLE"]);
+
+        let Some(Body::ProcessQueryReply(hidden)) = replies[2].body.as_ref() else {
+            panic!("expected process query reply");
+        };
+        assert!(
+            hidden.processes.is_empty(),
+            "a non-allowlisted key must be invisible to both filtering and results"
+        );
+    }
+
     /// Every reply to a decodable request must echo that request's id, across
     /// a whole connection and whether the request succeeded or was refused.
     ///
@@ -987,8 +1082,11 @@ mod tests {
             app_class: "x".into(),
             app_name: "x".into(),
             app_version: "1".into(),
+            instance_name: String::new(),
             allow_policy: AllowPolicy::default(),
             disclosure: Disclosure::default(),
+            disclosed_cwd: None,
+            disclosed_env: Default::default(),
             nonce: [1u8; 32],
             supported_ops: Vec::new(),
             runtime: Runtime::Native,

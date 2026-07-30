@@ -91,7 +91,12 @@ message RegisterProcess {
   string symbol_manifest_path = 18;
   repeated string symbol_paths = 19;
 
-  reserved 20 to 31;
+  // Query disclosures are copied by the registrant, never scraped by the
+  // daemon. Only env names present in AllowPolicy.env_allowlist are valid.
+  string disclosed_cwd = 20;
+  map<string, string> disclosed_env = 21;
+
+  reserved 22 to 31;
 }
 
 message RegistrationStatus {
@@ -127,7 +132,11 @@ message UnregisterProcess {
 }
 
 message ListProcesses {
-  reserved 1 to 7;
+  // Legacy unfiltered listing request. It shares the ProcessQueryReply shape
+  // and still requires the same explicit result bound.
+  uint32 limit = 1;
+  bool include_env = 2;
+  reserved 3 to 7;
 }
 
 // Beacon identity handshake (#631).

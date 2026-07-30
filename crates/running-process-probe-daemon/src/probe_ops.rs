@@ -16,9 +16,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use running_process::broker::server::{PeerCredentialPolicy, PeerIdentity};
-use running_process_probe::probe_diag::v1::{CaptureReply, CaptureStackRequest, JobStatus};
+use running_process_probe::probe_diag::v1::{
+    CaptureReply, CaptureStackRequest, JobStatus, ProcessInfo,
+};
 
 use crate::capture_jobs::CaptureJobs;
+use crate::query::{ProcessQuery, QueryEngine};
 use crate::registry::{ProcessKey, RegisterError, RegisterRequest, Registry};
 use crate::state::{RegState, StateError};
 
@@ -80,6 +83,8 @@ pub enum ProbeRequest {
     CaptureResult(CaptureReply),
     /// Query one asynchronous capture.
     GetJobStatus(String),
+    /// Query live registrations and, when requested, the OS process table.
+    Query(Box<ProcessQuery>),
 }
 
 /// The reply to a [`ProbeRequest`].
@@ -98,6 +103,8 @@ pub enum ProbeReply {
     CaptureAccepted(CaptureReply),
     /// Current asynchronous job state.
     JobStatus(JobStatus),
+    /// Matching live processes.
+    Processes(Vec<ProcessInfo>),
     /// Request refused, with a stable code and a human-readable reason.
     Refused {
         /// Machine-branchable classification.
@@ -125,6 +132,7 @@ pub struct ProbeOps {
     registry: Arc<Registry>,
     owner_policy: PeerCredentialPolicy,
     capture_jobs: CaptureJobs,
+    query_engine: QueryEngine,
 }
 
 impl ProbeOps {
@@ -134,6 +142,7 @@ impl ProbeOps {
             registry,
             owner_policy,
             capture_jobs: CaptureJobs::default(),
+            query_engine: QueryEngine::default(),
         }
     }
 
@@ -215,6 +224,9 @@ impl ProbeOps {
                 },
                 ProbeReply::JobStatus,
             ),
+            ProbeRequest::Query(query) => {
+                ProbeReply::Processes(self.query_engine.run(&query, &self.registry))
+            }
             ProbeRequest::Unregister(key) => {
                 if let Some(entry) = self.registry.get(&key) {
                     if entry.conn_id == conn_id {
@@ -319,6 +331,7 @@ fn refuse(err: RegisterError) -> ProbeReply {
     let code = match &err {
         RegisterError::OversizeField { .. } => ProbeErrorCode::OversizeField,
         RegisterError::InvalidSymbolSource { .. } => ProbeErrorCode::MalformedRequest,
+        RegisterError::UndeclaredEnvironment { .. } => ProbeErrorCode::PolicyDenied,
         RegisterError::NonceReplay => ProbeErrorCode::NonceReplay,
         RegisterError::PeerRejected { .. } => ProbeErrorCode::PeerRejected,
         RegisterError::NotRegistered => ProbeErrorCode::NotRegistered,
@@ -368,11 +381,14 @@ mod tests {
             app_class: "clud".into(),
             app_name: "clud".into(),
             app_version: "1.0".into(),
+            instance_name: String::new(),
             allow_policy: AllowPolicy {
                 allow_all_ops: true,
                 ..Default::default()
             },
             disclosure: Disclosure::default(),
+            disclosed_cwd: None,
+            disclosed_env: Default::default(),
             nonce: [nonce; 32],
             supported_ops: vec!["stack_capture".into()],
             runtime: crate::registry::Runtime::Native,
