@@ -35,12 +35,26 @@ sysinfo = "0.30"
 globset = "0.4"
 regex = "1"
 
+# HTTP surface (#642). Confined to THIS crate on purpose: the published
+# `running-process` crate must not grow an axum/hyper/tokio dependency tree
+# for a diagnostic UI that only the daemon serves.
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.6", features = ["limit"] }
+# Constant-time token comparison. A `==` on the bearer token leaks its prefix
+# through timing, and the token is the only thing standing between a local
+# process and every artifact this daemon holds.
+subtle = "2"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
+# `#[tokio::test]` for the async handler units.
+tokio = { version = "1", features = ["macros", "rt"] }
 
 [lints]
 workspace = true
