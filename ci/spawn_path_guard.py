@@ -116,6 +116,12 @@ ALLOWED_RUST_SPAWN = {
     # the main loop serves the control socket. Same rationale as the
     # broker-v2 binary entry below.
     Path("crates/running-process-probe-daemon/src/bin/rpprobed.rs"),
+    # rpprobed HTTP surface (#642): `thread::Builder::spawn` starts a THREAD
+    # hosting the tokio runtime that serves the browser UI and streams
+    # artifacts. No child process is created. It runs on its own runtime so an
+    # HTTP request storm cannot stall the blocking control-socket accept loop,
+    # and vice versa.
+    Path("crates/running-process-probe-daemon/src/http/mod.rs"),
     Path("crates/running-process/src/lib.rs"),
     Path("crates/running-process/src/containment.rs"),
     # Inline tests module for running-process lib root.

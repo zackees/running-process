@@ -189,6 +189,12 @@ impl CrashStore {
         &self.conn
     }
 
+    /// The artifacts directory, for tests that place files there directly.
+    #[doc(hidden)]
+    pub fn artifacts_dir_for_test(&self) -> &Path {
+        &self.artifacts_dir
+    }
+
     /// The open connection, for read-only query layers in this crate.
     ///
     /// Handing out the `Mutex` rather than a guard keeps the lock scope at the

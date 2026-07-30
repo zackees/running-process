@@ -216,11 +216,12 @@ fn run_as_daemon(
     let http = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     let http_port = http.local_addr()?.port();
 
+    let bearer_token = generate_bearer_token()?;
     let info = DiscoveryInfo {
         wire_version: 1,
         control_socket: socket_path.clone(),
         http_port,
-        bearer_token: generate_bearer_token()?,
+        bearer_token: bearer_token.clone(),
         daemon_pid: std::process::id(),
     };
 
@@ -277,6 +278,36 @@ fn run_as_daemon(
     // The registration brain. Shared across connections so every peer sees one
     // registry.
     let ops = running_process_probe_daemon::serve::build_ops()?;
+
+    // HTTP surface (#642). Serves the browser UI and streams artifacts too
+    // large for the control socket's 16 MiB frame cap, over the SAME
+    // `ProbeOps` core the socket dispatches to — one place where policy
+    // lives, so the two ingresses cannot drift apart.
+    //
+    // The probe listener above is dropped first: it exists only to reserve a
+    // port to publish, and the axum listener has to bind that same port.
+    drop(http);
+    let http_state = running_process_probe_daemon::http::HttpState::new(
+        std::sync::Arc::clone(&ops),
+        bearer_token,
+    );
+    let http_addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, http_port));
+    match running_process_probe_daemon::http::spawn(http_addr, http_state) {
+        Ok((bound, _handle)) => {
+            // Jupyter-style: the token is unguessable, so the URL is the
+            // credential. Printed once, on the daemon's own stdout, where the
+            // operator who started it can see it.
+            println!(
+                "http=http://127.0.0.1:{}/?token={}",
+                bound.port(),
+                info.bearer_token
+            );
+            let _ = std::io::stdout().flush();
+        }
+        // Not fatal. The control socket is the load-bearing ingress; losing
+        // the UI must not take registration and capture down with it.
+        Err(error) => eprintln!("rpprobed: HTTP surface unavailable: {error}"),
+    }
 
     for conn in control.incoming() {
         match conn {

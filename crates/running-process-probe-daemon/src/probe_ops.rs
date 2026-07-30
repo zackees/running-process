@@ -196,6 +196,22 @@ impl ProbeOps {
         self.crash_store.as_ref()
     }
 
+    /// The uid/SID this daemon serves.
+    ///
+    /// Needed by the HTTP ingress, which has no peer credentials to read: a
+    /// TCP connection carries no identity. The bearer token already answered
+    /// "is this the owner" — it could only have come from an owner-only
+    /// discovery file — so HTTP presents that owner and every policy below
+    /// (ARMED state, env allowlists, disclosure flags) still applies
+    /// unchanged.
+    pub fn owner(&self) -> String {
+        match &self.owner_policy {
+            PeerCredentialPolicy::OwnerOnly { uid_or_sid } => uid_or_sid.clone(),
+            #[allow(unreachable_patterns)]
+            _ => String::new(),
+        }
+    }
+
     /// The owner policy, for tests that must confirm it agrees with the
     /// registry's owner string.
     #[doc(hidden)]
