@@ -211,12 +211,39 @@ fn run_as_daemon(
         Err(e) => return Err(e),
     };
 
-    // Loopback HTTP listener on an ephemeral port; the real port is published
-    // in the discovery file.
-    let http = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
-    let http_port = http.local_addr()?.port();
+    // The registration brain. Shared across connections so every peer sees one
+    // registry, and shared with the HTTP surface so both ingresses enforce the
+    // same policy.
+    let ops = running_process_probe_daemon::serve::build_ops()?;
 
+    // HTTP surface (#642): the browser UI, and artifact downloads too large
+    // for the control socket's 16 MiB frame cap.
+    //
+    // Bound BEFORE the discovery file is written, and the file publishes the
+    // port this listener actually got. Reserving a port with one socket and
+    // rebinding it with another would leave a window where the published port
+    // is not the served one — and on a machine where something else grabs it
+    // in between, the daemon would advertise a stranger's listener.
     let bearer_token = generate_bearer_token()?;
+    let http_state = running_process_probe_daemon::http::HttpState::new(
+        std::sync::Arc::clone(&ops),
+        bearer_token.clone(),
+    );
+    let http_port = match running_process_probe_daemon::http::spawn(
+        running_process_probe_daemon::http::default_bind(),
+        http_state,
+    ) {
+        Ok((bound, _handle)) => bound.port(),
+        // Not fatal. The control socket is the load-bearing ingress; losing
+        // the UI must not take registration and capture down with it. Port 0
+        // in the discovery file says "there is no HTTP surface" rather than
+        // pointing a client at nothing.
+        Err(error) => {
+            eprintln!("rpprobed: HTTP surface unavailable: {error}");
+            0
+        }
+    };
+
     let info = DiscoveryInfo {
         wire_version: 1,
         control_socket: socket_path.clone(),
@@ -225,8 +252,15 @@ fn run_as_daemon(
         daemon_pid: std::process::id(),
     };
 
-    let dir = discovery_dir(args.runtime_dir.as_deref());
-    write_discovery_file(&dir, &info)?;
+    let discovery_target = discovery_dir(args.runtime_dir.as_deref());
+
+    if http_port != 0 {
+        // Jupyter-style: the token is unguessable, so the URL is the
+        // credential. Printed once, on the daemon's own stdout, where the
+        // operator who started it can see it.
+        println!("http=http://127.0.0.1:{http_port}/?token={bearer_token}");
+        let _ = std::io::stdout().flush();
+    }
 
     // Start before accepting registrations. A process can crash after calling
     // install but before its background registration completes; its fixed
@@ -261,6 +295,13 @@ fn run_as_daemon(
     let _ = std::io::stdout().flush();
 
     if args.elect_then_exit {
+        // Probe mode never reaches the accept loop, so publishing here is the
+        // whole observable outcome of the election: a peer (and the bring-up
+        // tests) needs to see that the winner published its endpoints. The
+        // "publish last" ordering below exists to stop a client racing the
+        // accept loop, and there is no accept loop on this path to race.
+        write_discovery_file(&discovery_target, &info)?;
+
         // Keep serving the beacon briefly before exiting.
         //
         // Without this, a winner in probe mode releases the port the instant
@@ -273,42 +314,15 @@ fn run_as_daemon(
         return Ok(());
     }
 
+    // Published last, immediately before the accept loop. The discovery file
+    // is this daemon's "I am ready" signal, and a client that reads it goes
+    // straight to the control socket — so writing it any earlier advertises a
+    // daemon that is still setting up, and the client's first request lands on
+    // a socket nobody is accepting on yet.
+    write_discovery_file(&discovery_target, &info)?;
+
     // Control socket: owner-only via peer credentials. Reaching the socket is
     // not authorization — the peer must also be this user.
-    // The registration brain. Shared across connections so every peer sees one
-    // registry.
-    let ops = running_process_probe_daemon::serve::build_ops()?;
-
-    // HTTP surface (#642). Serves the browser UI and streams artifacts too
-    // large for the control socket's 16 MiB frame cap, over the SAME
-    // `ProbeOps` core the socket dispatches to — one place where policy
-    // lives, so the two ingresses cannot drift apart.
-    //
-    // The probe listener above is dropped first: it exists only to reserve a
-    // port to publish, and the axum listener has to bind that same port.
-    drop(http);
-    let http_state = running_process_probe_daemon::http::HttpState::new(
-        std::sync::Arc::clone(&ops),
-        bearer_token,
-    );
-    let http_addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, http_port));
-    match running_process_probe_daemon::http::spawn(http_addr, http_state) {
-        Ok((bound, _handle)) => {
-            // Jupyter-style: the token is unguessable, so the URL is the
-            // credential. Printed once, on the daemon's own stdout, where the
-            // operator who started it can see it.
-            println!(
-                "http=http://127.0.0.1:{}/?token={}",
-                bound.port(),
-                info.bearer_token
-            );
-            let _ = std::io::stdout().flush();
-        }
-        // Not fatal. The control socket is the load-bearing ingress; losing
-        // the UI must not take registration and capture down with it.
-        Err(error) => eprintln!("rpprobed: HTTP surface unavailable: {error}"),
-    }
-
     for conn in control.incoming() {
         match conn {
             Ok(mut stream) => {

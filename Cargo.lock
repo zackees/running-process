@@ -1848,6 +1848,7 @@ version = "4.6.4"
 dependencies = [
  "axum",
  "blake3",
+ "clap",
  "getrandom 0.4.2",
  "globset",
  "interprocess",
