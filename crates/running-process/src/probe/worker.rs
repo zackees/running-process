@@ -21,6 +21,7 @@ use running_process_probe::probe_diag::v1::{
     AllowPolicy as WireAllowPolicy, Disclosure as WireDisclosure, ProcessKey, RegisterProcess,
 };
 use sha2::{Digest, Sha256};
+use sysinfo::{Pid, ProcessRefreshKind, System};
 
 use super::client::{HeartbeatWork, ProbeClient, SocketProbeClient};
 use super::Config;
@@ -44,6 +45,17 @@ const STOP_POLL: Duration = Duration::from_millis(50);
 /// a local condition, unrelated to whether a daemon exists.
 pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
     let exe = std::env::current_exe()?;
+    let disclosed_cwd = if config.disclosure.disclose_cwd {
+        std::env::current_dir()?.to_string_lossy().into_owned()
+    } else {
+        String::new()
+    };
+    let disclosed_env = config
+        .disclosure
+        .env_allowlist
+        .iter()
+        .filter_map(|name| std::env::var(name).ok().map(|value| (name.clone(), value)))
+        .collect();
     let manifest_path = config
         .symbol_manifest_path
         .as_deref()
@@ -57,17 +69,17 @@ pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
 
     let nonce = fresh_nonce()?;
 
-    let started_at_unix_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
+    let pid = Pid::from_u32(std::process::id());
+    let mut system = System::new();
+    system.refresh_pids_specifics(&[pid], ProcessRefreshKind::new());
+    let started_at_unix_ms = system
+        .process(pid)
+        .map(|process| process.start_time().saturating_mul(1000))
         .unwrap_or(0);
 
     Ok(RegisterProcess {
         key: Some(ProcessKey {
             pid: u64::from(std::process::id()),
-            // TODO(#628 S6): source the true OS process start time. Install
-            // time is close enough to distinguish instances today, but it is
-            // not the same value the daemon would read from the OS.
             start_time: Some(started_at_unix_ms),
             boot_id: Some(crate::broker::host_identity::current().boot_id),
         }),
@@ -104,6 +116,8 @@ pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
             expose_cmdline: false,
             expose_env_names: !config.disclosure.env_allowlist.is_empty(),
         }),
+        disclosed_cwd,
+        disclosed_env,
         registration_nonce: nonce.to_vec(),
         ..Default::default()
     })
@@ -304,10 +318,44 @@ mod tests {
         let req = build_register_request(&Config::new("test-app")).unwrap();
         let key = req.key.expect("key");
         assert_eq!(key.pid, u64::from(std::process::id()));
+        let pid = Pid::from_u32(std::process::id());
+        let mut system = System::new();
+        system.refresh_pids_specifics(&[pid], ProcessRefreshKind::new());
+        assert_eq!(
+            key.start_time,
+            system
+                .process(pid)
+                .map(|process| process.start_time().saturating_mul(1000)),
+            "wire identity and OS discovery must use the same millisecond unit"
+        );
         assert!(!req.exe_path.is_empty());
         assert_eq!(req.app_class, "test-app");
         assert_eq!(req.arch, std::env::consts::ARCH);
         assert_eq!(req.os, std::env::consts::OS);
+    }
+
+    #[test]
+    fn registration_copies_only_explicit_query_disclosures() {
+        let private = build_register_request(&Config::new("private")).unwrap();
+        assert!(private.disclosed_cwd.is_empty());
+        assert!(private.disclosed_env.is_empty());
+
+        let mut config = Config::new("disclosed").allow_env_value("PATH");
+        config.disclosure.disclose_cwd = true;
+        let disclosed = build_register_request(&config).unwrap();
+        assert_eq!(
+            disclosed.disclosed_cwd,
+            std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert_eq!(
+            disclosed.disclosed_env.get("PATH"),
+            std::env::var("PATH").ok().as_ref(),
+            "only the explicitly allowlisted value is copied"
+        );
+        assert_eq!(disclosed.disclosed_env.len(), 1);
     }
 
     /// The runtime must be declared on the wire, not left at the proto default.

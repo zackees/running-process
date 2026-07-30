@@ -26,6 +26,7 @@ pub mod crash_store;
 pub mod discovery;
 pub mod names;
 pub mod probe_ops;
+pub mod query;
 pub mod registry;
 pub mod serve;
 pub mod state;

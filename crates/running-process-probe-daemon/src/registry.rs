@@ -5,7 +5,7 @@
 //! persisting them would mean reloading claims that may already be false.
 //! (Crash records are durable; that is a later slice.)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -24,6 +24,10 @@ pub const MAX_SUPPORTED_OPS: usize = 64;
 pub const MAX_SYMBOL_PATHS: usize = 64;
 /// Most `env_allowlist` entries accepted.
 pub const MAX_ENV_ALLOWLIST: usize = 256;
+/// Maximum bytes in one disclosed env key or value.
+pub const MAX_ENV_FIELD_BYTES: usize = 4096;
+/// Maximum aggregate bytes in explicitly disclosed environment entries.
+pub const MAX_DISCLOSED_ENV_BYTES: usize = 64 * 1024;
 /// Registration nonces retained for replay detection.
 ///
 /// Bounded on purpose: an unbounded set is a memory-growth lever for anything
@@ -121,10 +125,16 @@ pub struct RegisterRequest {
     pub app_name: String,
     /// Application version string.
     pub app_version: String,
+    /// Optional instance discriminator.
+    pub instance_name: String,
     /// What the registrant permits.
     pub allow_policy: AllowPolicy,
     /// What the registrant discloses.
     pub disclosure: Disclosure,
+    /// Working directory copied only after the registrant opted in.
+    pub disclosed_cwd: Option<PathBuf>,
+    /// Environment values copied by the registrant after explicit opt-in.
+    pub disclosed_env: BTreeMap<String, String>,
     /// Single-use registration nonce.
     pub nonce: [u8; 32],
     /// Operations the registrant supports.
@@ -152,6 +162,12 @@ pub struct RegEntry {
     pub exe_path: PathBuf,
     /// Coarse grouping for cross-instance queries.
     pub app_class: String,
+    /// Human-readable application name.
+    pub app_name: String,
+    /// Application version.
+    pub app_version: String,
+    /// Optional instance discriminator.
+    pub instance_name: String,
     /// Language runtime the registrant declared.
     pub runtime: Runtime,
     /// Coarse symbol-source declaration from the wire.
@@ -166,6 +182,12 @@ pub struct RegEntry {
     pub supported_ops: Vec<String>,
     /// What the registrant discloses.
     pub disclosure: Disclosure,
+    /// Working directory disclosed at registration, if opted in.
+    pub disclosed_cwd: Option<PathBuf>,
+    /// Allowlisted environment values disclosed at registration.
+    pub disclosed_env: BTreeMap<String, String>,
+    /// Wall-clock registration time for query results.
+    pub registered_unix_ms: u64,
     /// Connection that owns this registration.
     pub conn_id: u64,
     /// Whether identity verification has succeeded.
@@ -205,6 +227,12 @@ pub enum RegisterError {
         value: i32,
         /// Consistency rule that was violated.
         reason: &'static str,
+    },
+    /// A disclosed value was not explicitly allowlisted by the registrant.
+    #[error("environment variable {name} was disclosed without being allowlisted")]
+    UndeclaredEnvironment {
+        /// Environment variable name.
+        name: String,
     },
     /// The nonce was seen before, or the nonce table is full.
     #[error("registration nonce replayed or nonce table full")]
@@ -272,6 +300,16 @@ impl Registry {
             .cloned()
     }
 
+    /// Snapshot all entries without holding the registry lock during a query.
+    pub fn snapshot(&self) -> Vec<RegEntry> {
+        self.entries
+            .lock()
+            .expect("registry poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
     /// Which key currently holds `pid`.
     pub fn holder_of_pid(&self, pid: u32) -> Option<ProcessKey> {
         self.by_pid
@@ -308,6 +346,11 @@ impl Registry {
         check_len("app_class", req.app_class.len(), MAX_SHORT_FIELD_BYTES)?;
         check_len("app_name", req.app_name.len(), MAX_SHORT_FIELD_BYTES)?;
         check_len("app_version", req.app_version.len(), MAX_SHORT_FIELD_BYTES)?;
+        check_len(
+            "instance_name",
+            req.instance_name.len(),
+            MAX_SHORT_FIELD_BYTES,
+        )?;
         check_len("boot_id", req.key.boot_id.len(), MAX_SHORT_FIELD_BYTES)?;
         check_len("supported_ops", req.supported_ops.len(), MAX_SUPPORTED_OPS)?;
         check_len("symbol_paths", req.symbol_paths.len(), MAX_SYMBOL_PATHS)?;
@@ -365,6 +408,28 @@ impl Registry {
             req.allow_policy.env_allowlist.len(),
             MAX_ENV_ALLOWLIST,
         )?;
+        if let Some(cwd) = &req.disclosed_cwd {
+            check_len("disclosed_cwd", cwd.as_os_str().len(), MAX_EXE_PATH_BYTES)?;
+        }
+        let mut disclosed_env_bytes = 0usize;
+        for (name, value) in &req.disclosed_env {
+            check_len("disclosed_env_key", name.len(), MAX_ENV_FIELD_BYTES)?;
+            check_len("disclosed_env_value", value.len(), MAX_ENV_FIELD_BYTES)?;
+            if !req
+                .allow_policy
+                .env_allowlist
+                .iter()
+                .any(|allowed| allowed == name)
+            {
+                return Err(RegisterError::UndeclaredEnvironment { name: name.clone() });
+            }
+            disclosed_env_bytes = disclosed_env_bytes.saturating_add(name.len() + value.len());
+        }
+        check_len(
+            "disclosed_env_bytes",
+            disclosed_env_bytes,
+            MAX_DISCLOSED_ENV_BYTES,
+        )?;
 
         {
             let mut nonces = self.seen_nonces.lock().expect("registry poisoned");
@@ -393,11 +458,20 @@ impl Registry {
             peer,
             exe_path: req.exe_path,
             app_class: req.app_class,
+            app_name: req.app_name,
+            app_version: req.app_version,
+            instance_name: req.instance_name,
             runtime: req.runtime,
             symbol_source: req.symbol_source,
             allow_policy: req.allow_policy,
             supported_ops: req.supported_ops,
             disclosure: req.disclosure,
+            disclosed_cwd: req.disclosed_cwd,
+            disclosed_env: req.disclosed_env,
+            registered_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0),
             symbol_manifest_path: req.symbol_manifest_path,
             symbol_paths: req.symbol_paths,
             conn_id,
@@ -534,8 +608,11 @@ mod tests {
             app_class: "clud".into(),
             app_name: "clud".into(),
             app_version: "1.0".into(),
+            instance_name: String::new(),
             allow_policy: AllowPolicy::default(),
             disclosure: Disclosure::default(),
+            disclosed_cwd: None,
+            disclosed_env: Default::default(),
             nonce: [nonce; 32],
             supported_ops: vec![],
             runtime: Runtime::Native,
@@ -543,6 +620,47 @@ mod tests {
             symbol_manifest_path: None,
             symbol_paths: Vec::new(),
         }
+    }
+
+    #[test]
+    fn disclosing_an_env_value_outside_the_allowlist_is_refused() {
+        // The allowlist is the consent record, and `disclosed_env` is the
+        // payload it authorizes. A registrant that ships a value it never
+        // allowlisted is refused outright rather than having the extra key
+        // quietly dropped: the query surface reads straight out of
+        // `disclosed_env`, so anything stored there is disclosable, and the
+        // only safe place to stop an unauthorized value is before it lands.
+        let reg = Registry::new(owner());
+        let mut request = req(key(20, 100), 20);
+        request.allow_policy.env_allowlist = vec!["FOO".into()];
+        request.disclosed_env.insert("SECRET".into(), "xyz".into());
+
+        let err = reg.begin_register(request, peer(), 1).unwrap_err();
+        assert_eq!(
+            err,
+            RegisterError::UndeclaredEnvironment {
+                name: "SECRET".into()
+            }
+        );
+        // And nothing was stored, so no later query can reach it.
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn disclosing_an_allowlisted_env_value_is_accepted() {
+        // Control for the test above: same shape, one allowlisted key. If this
+        // failed too, the refusal above would prove nothing about the gate.
+        let reg = Registry::new(owner());
+        let mut request = req(key(21, 100), 21);
+        request.allow_policy.env_allowlist = vec!["FOO".into()];
+        request.disclosed_env.insert("FOO".into(), "bar".into());
+
+        let k = reg.begin_register(request, peer(), 1).unwrap();
+        let entry = reg.get(&k).expect("registration should exist");
+        assert_eq!(
+            entry.disclosed_env.get("FOO").map(String::as_str),
+            Some("bar")
+        );
     }
 
     #[test]

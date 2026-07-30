@@ -12,6 +12,7 @@ import "probe_diag_v1/probe_diag_v1_registration.proto";
 // different retention and redaction rules.
 
 message ProcessQuery {
+  // Legacy selector fields retained for wire compatibility.
   string name_glob = 1;
   string exe_regex = 2;
 
@@ -20,6 +21,37 @@ message ProcessQuery {
   bool include_env = 3;
 
   string app_class = 4;
+
+  reserved 5 to 15;
+
+  // A query without an explicit, bounded limit is refused.
+  uint32 limit = 16;
+  bool include_unregistered = 17;
+
+  string name_regex = 18;
+  string exe_glob = 19;
+  string cwd_glob = 20;
+  string cwd_regex = 21;
+
+  optional uint64 pid = 22;
+  optional uint64 pid_min = 23;
+  optional uint64 pid_max = 24;
+  optional uint64 start_time_min_unix_ms = 25;
+  optional uint64 start_time_max_unix_ms = 26;
+
+  repeated EnvMatch env = 27;
+
+  reserved 28 to 39;
+}
+
+message EnvMatch {
+  string key = 1;
+
+  // No value selector means key presence. At most one value selector may be
+  // set. `value_exact` is optional so an explicitly empty value is expressible.
+  optional string value_exact = 2;
+  string value_glob = 3;
+  string value_regex = 4;
 
   reserved 5 to 15;
 }
@@ -38,7 +70,12 @@ message ProcessInfo {
   // Only variables the target allowlisted. Never the full environment.
   map<string, string> env = 10;
 
-  reserved 11 to 23;
+  string name = 11;
+  string cwd = 12;
+  bool registered = 13;
+  repeated string env_names = 14;
+
+  reserved 15 to 23;
 }
 
 message ProcessQueryReply {
