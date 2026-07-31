@@ -63,6 +63,21 @@ BANNED = [
         re.compile(r"cargo\s+install\s+[^\n]*\bcross\b(?!-)"),
         "installs `cross`, a competing cross-compile driver",
     ),
+    # maturin's zig integration. Easy to miss because it is a flag and a
+    # dependency extra rather than a separate tool, but it is the same thing:
+    # linking through zig cc to target a glibc older than the build host's.
+    #
+    # The replacement is to build where that glibc actually lives — the
+    # `quay.io/pypa/manylinux2014_*` image — so nothing has to fake a
+    # baseline. See ci/build_wheel.py.
+    (
+        re.compile(r"--zig\b"),
+        "builds wheels through zig; build in the manylinux container instead",
+    ),
+    (
+        re.compile(r"maturin\[zig\]"),
+        "pulls in maturin's zig extra",
+    ),
 ]
 
 # Files scanned: anything that can drive a build.

@@ -6,6 +6,17 @@ on:
       runs-on:
         required: true
         type: string
+      container:
+        # Build inside this image instead of directly on the runner.
+        #
+        # Used by the Linux release wheels so manylinux2014 is produced where
+        # glibc 2.17 actually lives, rather than by linking through zig to
+        # fake an older baseline than the host has. zig is a competing
+        # cross-compile toolchain and is banned by
+        # ci/cross_compiler_guard.py.
+        required: false
+        type: string
+        default: ""
       artifact-name:
         required: false
         type: string
@@ -47,6 +58,7 @@ on:
 jobs:
   build:
     runs-on: ${{ inputs.runs-on }}
+    container: ${{ inputs.container }}
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "full"

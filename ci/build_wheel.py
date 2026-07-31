@@ -52,7 +52,28 @@ def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> li
     else:
         cmd.append("--release")
         if platform.system() == "Linux":
-            cmd.extend(["--zig", "--compatibility", "manylinux2014"])
+            # An old-glibc manylinux tag, without zig.
+            #
+            # This used to pass maturin's zig flag, which links through zig cc to target
+            # an older glibc than the build host has. That is a second
+            # cross-compile toolchain competing with soldr's blessed one, so
+            # `ci/cross_compiler_guard.py` now forbids it.
+            #
+            # The zig-free way to get an old glibc is to build where that
+            # glibc actually lives: CI runs this job inside the
+            # `quay.io/pypa/manylinux_2_28_*` image, whose toolchain is
+            # glibc 2.28 natively. Nothing here has to ask for a lower
+            # baseline than the host provides.
+            #
+            # 2.28 rather than 2014/2.17 because GitHub's runner Node needs
+            # GLIBC_2.28 and cannot execute inside the 2.17 image — the JS
+            # actions this build depends on die before any build step.
+            #
+            # Dropping the flag without the container would have silently
+            # tagged wheels against the runner's glibc (2.39 on ubuntu-24.04),
+            # so anyone on an older distro would lose prebuilt wheels and fall
+            # back to a source build.
+            cmd.extend(["--compatibility", "manylinux_2_28"])
         else:
             cmd.extend(["--compatibility", "pypi"])
     if rustc_args:

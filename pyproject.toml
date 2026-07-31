@@ -24,7 +24,10 @@ Issues = "https://github.com/zackees/running-process/issues"
 
 [dependency-groups]
 dev = [
-    "maturin[zig]>=1.7,<2",
+    # No `[zig]` extra: zig is a competing cross-compile toolchain and is
+    # banned by ci/cross_compiler_guard.py. Old-glibc wheels come from the
+    # manylinux2014 container instead.
+    "maturin>=1.7,<2",
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
     # pytest-timeout enforces the per-test wall-clock kill configured in
