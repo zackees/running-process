@@ -59,16 +59,22 @@ def _relative(path: Path) -> str:
 
 
 def _iter_source_files() -> list[Path]:
-    """Git-tracked source files only.
+    """Source files git knows about: tracked, plus new files not yet ignored.
 
     Deliberately not a filesystem walk. This repo keeps a vendored toolchain
     and crate registry under `.cargo/` and `.rustup/` — both gitignored, both
     full of jemalloc's own source. Walking the tree found ~200 "violations" in
-    upstream crates that no purge could ever remove. What this guard governs is
-    committed source, and `git ls-files` is exactly that set.
+    upstream crates that no purge could ever remove.
+
+    `--others --exclude-standard` matters as much as `--cached`. With tracked
+    files alone, a brand-new file is invisible until it is committed — so the
+    guard reports a clean tree, the file lands, and lint only fails *after* the
+    merge. That is exactly how a jemalloc-discussing doc comment reached main
+    in #794: the fixture was new, therefore untracked, therefore unscanned.
+    Honouring .gitignore keeps the vendored toolchains out.
     """
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=ROOT,
         capture_output=True,
         check=False,

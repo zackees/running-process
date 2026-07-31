@@ -12,12 +12,12 @@
 //! Replaces the previous fixture. Two things changed with the allocator:
 //!
 //! 1. **No platform gate.** mimalloc-pprof is a Windows-first mimalloc fork,
-//!    so unlike jemalloc it builds and profiles everywhere. The old fixture
-//!    was linux-gnu only because jemalloc had no MSVC build and no usable
+//!    so it builds and profiles everywhere. The fixture this replaced was
+//!    linux-gnu only, because its allocator had no MSVC build and no usable
 //!    macOS profiler.
-//! 2. **The output is already pprof.** jemalloc emitted its own `heap_v2`
-//!    text, which the daemon had to parse and lower. `dump_proto_file` writes
-//!    the protobuf directly, so there is no text format anywhere in the path.
+//! 2. **The output is already pprof.** The previous allocator emitted a
+//!    bespoke text format the daemon had to parse and lower. `dump_proto_file`
+//!    writes the protobuf directly, so no text format is in the path at all.
 
 #[global_allocator]
 static ALLOC: mimalloc_pprof::MiMalloc = mimalloc_pprof::MiMalloc;
@@ -30,8 +30,8 @@ const BLOCKS: usize = 2000;
 
 /// Sample every Nth byte of allocation.
 ///
-/// This profiler is statistical, unlike jemalloc under `lg_prof_sample:0`
-/// which recorded every allocation. A small rate keeps the leaking frame
+/// This profiler is statistical, unlike the previous allocator's every-single-
+/// allocation mode. A small rate keeps the leaking frame
 /// unambiguous without making the test assert exact byte totals, which no
 /// sampling profiler can promise.
 const SAMPLE_RATE: usize = 4096;
