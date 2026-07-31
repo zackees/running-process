@@ -26,7 +26,13 @@ env:
   CARGO_TERM_COLOR: always
   # Pinned so a soldr release cannot silently change how release artifacts
   # are built (#561).
-  SOLDR_VERSION: "0.8.30"
+  #
+  # 0.8.29 rather than the newest: 0.8.30 was published minutes before this
+  # ran and pip on the runner still enumerated 0.8.29 as the maximum, so the
+  # install failed. Both have identical file sets and requires-python; the
+  # difference was index propagation. Pinning a version the index has settled
+  # on avoids a release that fails for a reason unrelated to this repo.
+  SOLDR_VERSION: "0.8.29"
 
 jobs:
   detect-bump:
