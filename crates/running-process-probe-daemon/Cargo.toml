@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 description = "rpprobed — probe daemon skeleton: bring-up, discovery, and control socket (#631)"
 publish = false
+build = "build.rs"
 
 [[bin]]
 name = "rpprobed"
@@ -51,9 +52,15 @@ tower-http = { version = "0.6", features = ["limit"] }
 # process and every artifact this daemon holds.
 subtle = "2"
 clap = { version = "4", features = ["derive"] }
+# Profile exports (#644): the .pprof convention is a gzipped protobuf.
+flate2 = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[build-dependencies]
+prost-build = "0.14"
+protox = "0.9"
 
 [dev-dependencies]
 tempfile = "3"

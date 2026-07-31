@@ -29,6 +29,7 @@ pub mod discovery;
 pub mod http;
 pub mod names;
 pub mod probe_ops;
+pub mod profile;
 pub mod query;
 pub mod registry;
 pub mod serve;
