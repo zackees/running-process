@@ -1,39 +1,28 @@
-//! A real jemalloc dump, parsed by the real parser (#788, follow-through on #646).
+//! A real heap profile, produced by a real allocator (#792).
 //!
-//! The unit tests in `src/profile/heap/tests.rs` drive the parser from a
-//! hand-authored sample. That proved the lowering and the exports, but not
-//! that the sample resembled anything jemalloc emits — and it did not: the
-//! parser read the gperftools one-line layout while every jemalloc it can be
-//! pointed at writes `heap_v2`, which splits counts from addresses and repeats
-//! each stack per thread. Against a real dump the parser returned zero stacks:
-//! precisely the "empty profile that looks like this program allocates
-//! nothing" the module documents as the outcome it will never produce.
+//! # Why this test no longer parses anything
 //!
-//! So this test runs a fixture that really allocates, really asks jemalloc for
-//! a dump, and parses the file jemalloc really wrote.
+//! The previous allocator emitted its own bespoke text format, so the daemon
+//! carried a parser and a pprof lowering stage, and this test existed largely
+//! to prove that parser could read what the allocator wrote. `mimalloc-pprof`
+//! writes pprof protobuf directly, so both stages are gone: the fixture's
+//! output *is* the wire format, and this test decodes it with `prost` the same
+//! way any pprof consumer would.
 //!
-//! # What it asserts, and why not function names
+//! # Why the assertions are about dominance, not byte totals
 //!
-//! The daemon's default resolver attributes an address to a module and an
-//! offset (`binary+0x1234`) and deliberately stops there — real names come
-//! from the out-of-process symbolizer, which is a separate tier this test does
-//! not reach into. So "the leaky call site dominates" is asserted as: one
-//! stack holds nearly all live bytes, and it attributes to the fixture binary.
-//! That is the strongest claim available without the symbol tier, and it still
-//! fails if the parser regresses.
+//! The old fixture could ask its allocator to sample every single allocation,
+//! which made an exact-bytes assertion sound. This profiler is statistical by
+//! design. Asserting a precise live-byte total against a sampler would be
+//! flaky for reasons that have nothing to do with the code under test, so the
+//! fixture seeds the sampler and the assertions are relative: the leaking call
+//! site should carry far more sampled bytes than anything else.
 
 use std::path::PathBuf;
 use std::process::Command;
 
-use running_process_probe_daemon::profile::heap;
-use running_process_probe_daemon::profile::symbolize::{Frame, FrameResolver};
-
-/// Blocks allocated by the fixture, and their size. Mirrors `BLOCKS` in
-/// `testbins/src/bin/jemalloc_leaker.rs`; the point of the test is that the
-/// bytes jemalloc reports match what the fixture actually held.
-const EXPECTED_BLOCKS: i64 = 2000;
-const BLOCK_BYTES: i64 = 4096;
-const EXPECTED_BYTES: i64 = EXPECTED_BLOCKS * BLOCK_BYTES;
+use prost::Message as _;
+use running_process_probe_daemon::profile::pprof::Profile;
 
 /// Locate a fixture binary built by `soldr cargo build -p testbins`.
 fn testbin_path(name: &str) -> PathBuf {
@@ -52,42 +41,28 @@ fn testbin_path(name: &str) -> PathBuf {
     path
 }
 
-/// Run the fixture with profiling on and return the dump it wrote.
+/// Run the fixture and return the pprof profile it wrote.
 ///
-/// `None` means this platform cannot host the fixture, which the callers
-/// report as a skip. A platform gap is not a regression in the parser.
-fn capture_dump(label: &str) -> Option<(String, PathBuf)> {
-    let fixture = testbin_path("testbin-jemalloc-leaker");
-    // Keyed by the calling test, not just the pid: these tests run as threads
-    // of one test binary, so a shared path has them overwriting each other's
-    // dump and reading half-written files. That is exactly how this first
-    // failed — one test read a dump another was still writing and reported a
-    // format mismatch.
+/// `label` keys the dump path: these tests run as threads of one binary, so a
+/// shared path would have them reading each other's half-written files.
+fn capture_profile(label: &str) -> Option<Profile> {
+    let fixture = testbin_path("testbin-mimalloc-leaker");
     let dir = std::env::temp_dir().join(format!("rp-heap-{}-{label}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let dump = dir.join("heap.dump");
+    let dump = dir.join("heap.pb");
 
-    // `MALLOC_CONF`, not `_RJEM_MALLOC_CONF`: the fixture enables
-    // `unprefixed_malloc_on_supported_platforms`, and a build with unprefixed
-    // symbols reads the unprefixed variable. Setting the other one is silently
-    // ignored — which is exactly the trap the `ProfilingDisabled` remediation
-    // text used to walk operators into.
-    //
-    // `lg_prof_sample:0` samples every allocation, so the fixture's blocks are
-    // all accounted for rather than statistically estimated.
     let output = Command::new(&fixture)
         .arg(&dump)
-        .env("MALLOC_CONF", "prof:true,lg_prof_sample:0")
         .output()
-        .expect("run jemalloc fixture");
+        .expect("run mimalloc fixture");
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if let Some(reason) = stdout.strip_prefix("NO_JEMALLOC ") {
+    if let Some(reason) = stdout.strip_prefix("NO_PROFILER ") {
         eprintln!("skipping: {reason}");
         return None;
     }
     if stdout == "PROFILING_OFF" {
-        eprintln!("skipping: jemalloc is linked but refused to enable profiling here");
+        eprintln!("skipping: the allocator refused to start its profiler here");
         return None;
     }
     assert!(
@@ -96,128 +71,96 @@ fn capture_dump(label: &str) -> Option<(String, PathBuf)> {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let text = std::fs::read_to_string(&dump)
-        .unwrap_or_else(|e| panic!("read dump at {}: {e}", dump.display()));
-    Some((text, fixture))
+    let bytes =
+        std::fs::read(&dump).unwrap_or_else(|e| panic!("read profile at {}: {e}", dump.display()));
+    Some(Profile::decode(bytes.as_slice()).expect("fixture output must be a pprof profile"))
 }
 
-/// Names every address for the module it falls in, so a test can ask which
-/// binary a stack belongs to without the symbol tier.
-struct MappingResolver {
-    mappings: Vec<heap::HeapMapping>,
-}
-
-impl FrameResolver for MappingResolver {
-    fn resolve(&mut self, address: u64) -> Frame {
-        let module = self
-            .mappings
-            .iter()
-            .find(|m| address >= m.start && address < m.end)
-            .map(|m| {
-                std::path::Path::new(&m.path)
-                    .file_name()
-                    .map(|leaf| leaf.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| m.path.clone())
-            })
-            .unwrap_or_default();
-        Frame {
-            function: if module.is_empty() {
-                format!("0x{address:x}")
-            } else {
-                module.clone()
-            },
-            module,
-            relative_address: address,
+/// Every module named by a sample's stack.
+///
+/// Modules, not function names: this profile is deliberately unsymbolized —
+/// it carries `location` and `mapping` tables but no `function` table at all,
+/// because symbolization happens later and off-process. Asking it for
+/// `leak_here` by name would be asking for something the format does not
+/// contain here, so a stack is identified by the binaries it runs through.
+fn stack_modules(profile: &Profile, location_ids: &[u64]) -> Vec<String> {
+    let mut modules = Vec::new();
+    for location_id in location_ids {
+        let Some(location) = profile.location.iter().find(|l| l.id == *location_id) else {
+            continue;
+        };
+        if let Some(mapping) = profile.mapping.iter().find(|m| m.id == location.mapping_id) {
+            modules.push(profile.string_table[mapping.filename as usize].clone());
         }
     }
+    modules
 }
 
 #[test]
-fn a_real_jemalloc_dump_parses_into_stacks() {
-    let Some((text, _fixture)) = capture_dump("parses") else {
+fn the_fixture_emits_a_decodable_pprof_profile() {
+    let Some(profile) = capture_profile("decodes") else {
         return;
     };
 
-    // Guard the premise: if jemalloc ever switches formats again, say so here
-    // rather than through a confusing count assertion below.
     assert!(
-        text.starts_with("heap_v2/"),
-        "expected a heap_v2 dump, got: {:?}",
-        text.lines().next()
-    );
-
-    let profile = heap::parse_jeprof(&text);
-    assert!(
-        !profile.stacks.is_empty(),
-        "a real dump parsed to zero stacks — the parser cannot read what \
-         jemalloc emits"
+        !profile.sample.is_empty(),
+        "a profile with no samples reads as `this program allocates nothing`"
     );
     assert!(
-        !profile.mappings.is_empty(),
-        "MAPPED_LIBRARIES did not parse, so nothing could be symbolized"
+        !profile.sample_type.is_empty(),
+        "pprof requires at least one sample type"
     );
+    // The spec invariant, and 0 is also how every optional string field says
+    // "unset".
+    assert_eq!(profile.string_table[0], "");
 }
 
 #[test]
-fn the_live_bytes_match_what_the_fixture_held_and_are_not_double_counted() {
-    let Some((text, _fixture)) = capture_dump("bytes") else {
+fn the_leaking_call_site_dominates_the_profile() {
+    let Some(profile) = capture_profile("dominates") else {
         return;
     };
-    let profile = heap::parse_jeprof(&text);
-    let live: i64 = profile.stacks.iter().map(|s| s.inuse_bytes).sum();
 
-    // The fixture's own blocks plus whatever the runtime holds — never less
-    // than what it allocated, and never near double it. Double is the specific
-    // failure this pins: `heap_v2` repeats every stack as `t*` (all threads)
-    // and `tN` (per thread), so summing both counts each byte twice.
+    // `inuse_space` — what is still held. The four types are
+    // alloc_objects / alloc_space / inuse_objects / inuse_space, and a leak
+    // hunt cares about the last.
+    let live = profile
+        .sample_type
+        .iter()
+        .position(|t| profile.string_table[t.r#type as usize] == "inuse_space")
+        .expect("a heap profile should report inuse_space");
+
+    let total: i64 = profile
+        .sample
+        .iter()
+        .map(|s| s.value.get(live).copied().unwrap_or(0))
+        .sum();
+    assert!(total > 0, "the profile carries no live bytes to compare");
+
+    let heaviest = profile
+        .sample
+        .iter()
+        .max_by_key(|s| s.value.get(live).copied().unwrap_or(0))
+        .expect("at least one sample");
+    let heaviest_bytes = heaviest.value.get(live).copied().unwrap_or(0);
+
+    // Dominance rather than an exact figure: the sampler is statistical, so
+    // asserting a precise byte total would be flaky by construction. The
+    // fixture holds ~8 MiB at one site against a few KiB of incidental
+    // runtime allocation, so the margin is wide.
     assert!(
-        live >= EXPECTED_BYTES,
-        "live bytes {live} is below the {EXPECTED_BYTES} the fixture held"
-    );
-    assert!(
-        live < EXPECTED_BYTES * 2,
-        "live bytes {live} is at least double the {EXPECTED_BYTES} the fixture \
-         held — per-thread `tN` lines are being summed alongside their `t*` total"
-    );
-}
-
-#[test]
-fn the_leaking_call_site_dominates_the_flame_graph() {
-    let Some((text, fixture)) = capture_dump("dominates") else {
-        return;
-    };
-    let profile = heap::parse_jeprof(&text);
-    let mut resolver = MappingResolver {
-        mappings: profile.mappings.clone(),
-    };
-    let collapsed = heap::to_collapsed(&profile, &mut resolver);
-
-    let top = collapsed
-        .lines()
-        .next()
-        .expect("collapsed output should have at least one row");
-    let (stack, bytes) = top
-        .rsplit_once(' ')
-        .expect("collapsed row is `stack bytes`");
-    let bytes: i64 = bytes.parse().expect("row weight is an integer");
-
-    // `to_collapsed` sorts by weight, so the first row is the heaviest stack.
-    // The fixture allocates one big thing and little else, so that row should
-    // be the fixture's own allocation and should carry essentially all of it.
-    assert!(
-        bytes >= EXPECTED_BYTES,
-        "the heaviest stack holds {bytes} bytes, less than the {EXPECTED_BYTES} \
-         the fixture allocated at one call site: {stack}"
+        heaviest_bytes * 2 > total,
+        "the heaviest stack holds {heaviest_bytes} of {total} live bytes — the \
+         fixture's own allocation should be the clear majority"
     );
 
-    let binary = fixture
-        .file_name()
-        .expect("fixture file name")
-        .to_string_lossy()
-        .into_owned();
+    // And that dominant allocation should be attributed to the fixture, not
+    // to a system library it happened to call through.
+    let modules = stack_modules(&profile, &heaviest.location_id);
     assert!(
-        stack.contains(&binary),
-        "the heaviest stack does not attribute to the fixture binary \
-         ({binary}): {stack}"
+        modules
+            .iter()
+            .any(|m| m.contains("testbin-mimalloc-leaker")),
+        "the heaviest stack does not run through the fixture binary: {modules:?}"
     );
 }

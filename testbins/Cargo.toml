@@ -74,11 +74,11 @@ name = "testbin-probe-crasher"
 path = "src/bin/probe_crasher.rs"
 
 [[bin]]
-# #788: allocates a known amount at a named frame, then asks jemalloc to write
-# a heap dump, so the daemon's jeprof parsing can be tested against a real
-# dump rather than a hand-written approximation of one.
-name = "testbin-jemalloc-leaker"
-path = "src/bin/jemalloc_leaker.rs"
+# #792: allocates a known amount at a named frame, then writes a pprof heap
+# profile, so the daemon's heap surface can be tested against a profile a real
+# allocator produced.
+name = "testbin-mimalloc-leaker"
+path = "src/bin/mimalloc_leaker.rs"
 
 # Unconditional because `dies_after_spawn` uses `running_process::{spawn, SpawnStdio}`
 # on every platform. `spawner` also uses it but only inside `#[cfg(windows)]` blocks.
@@ -86,29 +86,11 @@ path = "src/bin/jemalloc_leaker.rs"
 running-process = { path = "../crates/running-process", features = ["probe"] }
 libc = "0.2"
 
-# jemalloc for the heap fixture (#788). Scoped to linux-gnu deliberately:
-#
-# - Windows/MSVC has no tikv-jemallocator build at all.
-# - macOS builds it, but jemalloc's profiler is not usable there.
-# - musl is excluded because jemalloc is a C library compiled by its build
-#   script, and CI's aarch64-musl lane cross-compiles with no C cross-compiler
-#   for that target. Adding it would trade an untestable platform for a broken
-#   build on two lanes.
-#
-# Everywhere else the fixture still compiles and reports why it cannot run, and
-# the test skips with that reason rather than vanishing.
-[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
-tikv-jemallocator = { version = "0.6", features = [
-    "profiling",
-    "unprefixed_malloc_on_supported_platforms",
-] }
-# `mallctl` is called directly through the -sys crate rather than through
-# `tikv-jemalloc-ctl`. The ctl wrapper would be nicer to read, but it depends
-# on `paste`, which is unmaintained (RUSTSEC-2024-0436) and fails this repo's
-# `cargo audit --deny warnings`. Dropping the dependency removes the advisory;
-# muting it would have kept an unmaintained crate in the tree to save two
-# `unsafe` calls in a test fixture.
-tikv-jemalloc-sys = { version = "0.6", features = ["profiling"] }
+# mimalloc + its pprof-compatible sampling heap profiler (#792). Unconditional
+# on purpose: this is a Windows-first mimalloc fork, so it has no platform gap
+# to work around and needs no per-target gate. The `0.9` line is the v3 mimalloc
+# port and is what this project targets.
+mimalloc-pprof = "0.9"
 
 # Signal fixtures use libc on every platform.
 [target.'cfg(windows)'.dependencies]
