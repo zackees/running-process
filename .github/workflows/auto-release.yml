@@ -13,12 +13,26 @@ on:
         description: Optional tag to publish, for example 3.2.1 or v3.2.1. Leave empty to use the current pyproject version.
         required: false
         type: string
+      dry_run:
+        description: Build everything but publish nothing. Use this to validate a change to this workflow from a PR branch before merging it.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned so a soldr release cannot silently change how release artifacts
+  # are built (#561).
+  #
+  # 0.8.29 rather than the newest: 0.8.30 was published minutes before this
+  # ran and pip on the runner still enumerated 0.8.29 as the maximum, so the
+  # install failed. Both have identical file sets and requires-python; the
+  # difference was index propagation. Pinning a version the index has settled
+  # on avoids a release that fails for a reason unrelated to this repo.
+  SOLDR_VERSION: "0.8.29"
 
 jobs:
   detect-bump:
@@ -130,6 +144,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RAW_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           VERSION="$(python3 - <<'PY'
@@ -192,8 +207,19 @@ jobs:
           PY
             )"
             if [ -n "$PUBLISHED_AT" ]; then
-              echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
-              exit 1
+              # This guard exists to stop a second publish of a version that
+              # already shipped. A dry run publishes nothing, so the guard has
+              # nothing to protect — and enforcing it there makes the dry run
+              # useless: between version bumps (the normal state of main) it
+              # aborts before a single build job runs, which is exactly what
+              # happened on the first attempt at run 30667355874.
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
+                echo "dry run: continuing anyway so the build matrix is exercised" >&2
+              else
+                echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
+                exit 1
+              fi
             fi
           done
 
@@ -435,33 +461,30 @@ jobs:
   build-binaries:
     name: Build standalone binaries (${{ matrix.target }})
     needs: [preflight, build-sidecars]
-    runs-on: ${{ matrix.os }}
+    # One runner family for every target (#561). Previously this matrix used
+    # six native runners; cross-compiling from Linux removes five queues, and
+    # the macOS/Windows runner classes are the scarce ones.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
             archive_ext: tar.gz
             binary_ext: ""
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
             archive_ext: tar.gz
             binary_ext: ""
           - target: x86_64-apple-darwin
-            os: macos-15-intel
             archive_ext: tar.gz
             binary_ext: ""
           - target: aarch64-apple-darwin
-            os: macos-15
             archive_ext: tar.gz
             binary_ext: ""
           - target: x86_64-pc-windows-msvc
-            os: windows-2025
             archive_ext: zip
             binary_ext: ".exe"
           - target: aarch64-pc-windows-msvc
-            os: windows-11-arm
             archive_ext: zip
             binary_ext: ".exe"
     steps:
@@ -477,6 +500,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-binaries-${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # soldr resolves the rustup-managed toolchain rather than whatever shim
+      # happens to be first on PATH — the same reason the repo requires it
+      # locally. Pinned so a soldr release cannot silently change how release
+      # artifacts are built.
+      - name: Bootstrap soldr
+        run: pipx install "soldr==${{ env.SOLDR_VERSION }}"
 
       # #447: pull the sidecar manifest from build-sidecars so build.rs
       # bakes the per-arch SHAs into the daemon/runpm binaries we ship.
@@ -500,7 +534,13 @@ jobs:
           # Wave 7 of #165: both runpm and the daemon binary live inside
           # the mono `running-process` crate now. Building them needs the
           # right feature set per the [[bin]] required-features.
-          cargo build --release --target ${{ matrix.target }} \
+          # `soldr build`, not `soldr cargo build`: the former is soldr's
+          # blessed cross-compile surface. It prepares the target sysroot and
+          # the compiler/linker environment itself — including the managed
+          # xwin cache with clang/lld for the MSVC targets — so this workflow
+          # installs no cross-compiler of its own. Enforced by
+          # ci/cross_compiler_guard.py.
+          soldr build --release --target ${{ matrix.target }} \
             --features daemon \
             --bin runpm \
             --bin running-process-daemon
@@ -532,6 +572,30 @@ jobs:
           fi
           echo "archive=dist-binaries/${ARCHIVE_BASENAME}.${ARCHIVE_EXT}" >> "$GITHUB_OUTPUT"
 
+      # A cross-compiled artifact cannot be smoke-tested by running it, so the
+      # check is that it is the right machine type. Without this a
+      # misconfigured target silently ships six copies of the host binary.
+      - name: Verify the artifact is actually for the target architecture
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BINARY_EXT: ${{ matrix.binary_ext }}
+        run: |
+          set -euo pipefail
+          BIN="target/${TARGET}/release/runpm${BINARY_EXT}"
+          echo "file(1) says:"
+          file "$BIN"
+          case "$TARGET" in
+            x86_64-unknown-linux-*)   file "$BIN" | grep -q "x86-64" ;;
+            aarch64-unknown-linux-*)  file "$BIN" | grep -q "aarch64" ;;
+            x86_64-apple-darwin)      file "$BIN" | grep -qi "mach-o.*x86_64" ;;
+            aarch64-apple-darwin)     file "$BIN" | grep -qi "mach-o.*arm64" ;;
+            x86_64-pc-windows-msvc)   file "$BIN" | grep -qi "PE32+.*x86-64" ;;
+            aarch64-pc-windows-msvc)  file "$BIN" | grep -qi "PE32+.*Aarch64" ;;
+            *) echo "unhandled target $TARGET" >&2; exit 1 ;;
+          esac
+          echo "architecture OK for $TARGET"
+
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.target }}
@@ -549,7 +613,7 @@ jobs:
       - build-wheels-macos-arm
       - build-wheels-windows-x86
       - build-wheels-windows-arm
-    if: needs.preflight.outputs.pypi_complete != 'true'
+    if: inputs.dry_run != true && needs.preflight.outputs.pypi_complete != 'true'
     environment: pypi
     permissions:
       contents: read
@@ -583,6 +647,7 @@ jobs:
     # Skip the job entirely if every crate is already on crates.io.
     if: |
       always()
+      && inputs.dry_run != true
       && needs.preflight.result == 'success'
       && needs.preflight.outputs.crates_complete != 'true'
       && needs.build-sidecars.result == 'success'
@@ -679,6 +744,7 @@ jobs:
       - publish-crates
     if: |
       always()
+      && inputs.dry_run != true
       && needs.preflight.result == 'success'
       && needs.build-sidecars.result == 'success'
       && needs.build-binaries.result == 'success'
