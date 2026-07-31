@@ -483,7 +483,8 @@ pub struct OsProcess {
 }
 
 #[derive(Debug)]
-struct SysinfoProvider;
+/// The real OS process table, over `sysinfo`.
+pub struct SysinfoProvider;
 
 impl OsTableProvider for SysinfoProvider {
     fn enumerate(&self) -> Vec<OsProcess> {

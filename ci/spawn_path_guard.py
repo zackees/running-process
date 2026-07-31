@@ -17,6 +17,14 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # #648 `rpprobe dump --force`: invokes the external capture tools
+    # (py-spy, gdb/lldb, ProcDump, gcore) against an unenrolled target.
+    # These are the whole point of the subcommand — the cooperative path
+    # needs the target to have enrolled, and this is for the one that did
+    # not. Arguments are built by `crate::force` from a numeric pid and a
+    # fixed tool name; no user string reaches the command line, and the
+    # tool never elevates or changes ptrace_scope.
+    Path("crates/running-process-probe-daemon/src/cli/commands.rs"),
     Path("crates/running-process/src/lib.rs"),
     Path("crates/running-process/src/containment.rs"),
     # Inline tests module for running-process lib root.

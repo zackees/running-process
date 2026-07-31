@@ -96,6 +96,14 @@ pub enum Command {
         /// Maximum native frames per thread.
         #[arg(long, default_value_t = 128)]
         max_depth: u32,
+        /// Capture an unenrolled target with external tools.
+        ///
+        /// For the process that never called `probe::install()` — usually
+        /// the one you most need a stack from. Never elevates and never
+        /// changes `ptrace_scope`; where OS policy refuses, it says so and
+        /// explains why.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Capture an all-thread stack from exactly one process.

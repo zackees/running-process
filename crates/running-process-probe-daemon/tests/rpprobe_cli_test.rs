@@ -197,6 +197,7 @@ fn dumping_an_unregistered_pid_says_it_is_not_registered() {
             name: None,
             instance: None,
             all: false,
+            force: false,
             max_depth: 32,
         },
     )
@@ -220,6 +221,7 @@ fn dumping_a_name_that_matches_nothing_names_the_pattern() {
             name: Some("*nothing-matches-this*".into()),
             instance: None,
             all: false,
+            force: false,
             max_depth: 32,
         },
     )

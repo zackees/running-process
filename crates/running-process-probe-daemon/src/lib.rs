@@ -26,6 +26,7 @@ pub mod cli;
 pub mod crash_query;
 pub mod crash_store;
 pub mod discovery;
+pub mod force;
 pub mod http;
 pub mod names;
 pub mod probe_ops;

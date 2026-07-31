@@ -36,6 +36,7 @@ pub fn dispatch(cli: &Cli) -> Result<String, CliError> {
             instance,
             all,
             max_depth,
+            force,
         } => dump(
             cli,
             &info,
@@ -44,6 +45,7 @@ pub fn dispatch(cli: &Cli) -> Result<String, CliError> {
             instance.as_deref(),
             *all,
             *max_depth,
+            *force,
         ),
 
         Command::Snapshot { pid, max_depth } => {
@@ -190,7 +192,12 @@ fn dump(
     instance: Option<&str>,
     all: bool,
     max_depth: u32,
+    force: bool,
 ) -> Result<String, CliError> {
+    if force {
+        return force_dump(pid, name);
+    }
+
     let targets = if let Some(pid) = pid {
         vec![resolve_single_pid(info, pid)?]
     } else {
@@ -401,6 +408,133 @@ fn doctor(cli: &Cli, path: &std::path::Path, info: &DiscoveryInfo) -> Result<Str
     }
 }
 
+/// `dump --force` — capture an unenrolled target with external tools.
+///
+/// Runs entirely client-side. The daemon's whole model is enrolment, and
+/// asking it to reach into a process that never opted in would put that
+/// capability behind a long-lived service. Here it stays with the operator
+/// who invoked it and inherits exactly their rights — no more.
+fn force_dump(pid: Option<u32>, name: Option<&str>) -> Result<String, CliError> {
+    use crate::force;
+
+    let Some(pid) = pid else {
+        return Err(CliError::Refused(format!(
+            "--force needs an explicit pid; {} cannot be resolved without the daemon's \
+             registry, and guessing which unenrolled process you meant is not \
+             something this should do",
+            name.unwrap_or("a name glob")
+        )));
+    };
+
+    let started = process_start_time(pid)
+        .ok_or(force::ForceDenied::NotRunning { pid })
+        .map_err(|e| CliError::Refused(e.to_string()))?;
+
+    let runtime = if process_name(pid).is_some_and(|n| n.to_lowercase().contains("python")) {
+        force::Runtime::Python
+    } else {
+        force::Runtime::Native
+    };
+
+    let dir = force::owner_private_dir(&std::env::temp_dir())?;
+    let artifact = dir.join(format!("force-{pid}"));
+
+    let mut out = String::new();
+    use std::fmt::Write as _;
+    let _ = writeln!(out, "forced capture of pid {pid} ({runtime:?})");
+
+    for vehicle in force::vehicles(runtime, std::env::consts::OS) {
+        let _ = writeln!(
+            out,
+            "
+--- {vehicle:?} ---"
+        );
+        match run_vehicle(vehicle, pid, &artifact) {
+            Ok(text) => out.push_str(&text),
+            // Reported, not fatal: a Python target whose py-spy is missing
+            // should still get its native backtrace.
+            Err(denied) => {
+                let _ = writeln!(out, "{denied}");
+            }
+        }
+    }
+
+    // Re-check identity AFTER the capture. See `force`'s module docs: an
+    // unnoticed dump of a reused pid is worse than no dump.
+    force::verify_not_reused(pid, started, process_start_time(pid))
+        .map_err(|e| CliError::Refused(e.to_string()))?;
+
+    out.push_str(&force::attach_instructions(
+        pid,
+        std::env::consts::OS,
+        process_exe(pid).as_deref(),
+        artifact.exists().then_some(artifact.as_path()),
+    ));
+    Ok(out)
+}
+
+/// Run one capture vehicle and return whatever it printed.
+fn run_vehicle(
+    vehicle: crate::force::Vehicle,
+    pid: u32,
+    artifact: &std::path::Path,
+) -> Result<String, crate::force::ForceDenied> {
+    use crate::force::{self, Vehicle};
+    let os = std::env::consts::OS;
+    let (tool, args) = match vehicle {
+        Vehicle::PySpy => (
+            "py-spy".to_string(),
+            vec!["dump".to_string(), "--pid".to_string(), pid.to_string()],
+        ),
+        Vehicle::NativeDebugger => {
+            force::debugger_command(if os == "macos" { "lldb" } else { "gdb" }, pid)
+        }
+        Vehicle::ProcDump | Vehicle::Gcore => force::openable_artifact_command(pid, os, artifact)
+            .ok_or(force::ForceDenied::ToolMissing {
+            pid,
+            tool: "a core-dump tool",
+            remediation: "This platform has no packaged core-dump tool that works \
+                              without disabling system protections."
+                .to_string(),
+        })?,
+    };
+
+    let output = std::process::Command::new(&tool)
+        .args(&args)
+        .output()
+        .map_err(|error| force::classify_denial(pid, &error, os))?;
+
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        text.push_str(&stderr);
+    }
+    Ok(text)
+}
+
+/// Start time of `pid`, as the OS reports it.
+fn process_start_time(pid: u32) -> Option<u64> {
+    os_process(pid).map(|p| p.started_at_unix_ms)
+}
+
+/// Name of `pid`.
+fn process_name(pid: u32) -> Option<String> {
+    os_process(pid).map(|p| p.name)
+}
+
+/// Executable path of `pid`.
+fn process_exe(pid: u32) -> Option<std::path::PathBuf> {
+    os_process(pid).and_then(|p| p.exe)
+}
+
+/// One OS process row, or `None` when it is gone or opaque to us.
+fn os_process(pid: u32) -> Option<crate::query::OsProcess> {
+    use crate::query::OsTableProvider as _;
+    crate::query::SysinfoProvider
+        .enumerate()
+        .into_iter()
+        .find(|process| process.pid == pid)
+}
 /// Send one body, over the socket unless HTTP was forced.
 fn call(info: &DiscoveryInfo, body: Body) -> Result<Body, CliError> {
     Client::connect(info)?.call(body)
