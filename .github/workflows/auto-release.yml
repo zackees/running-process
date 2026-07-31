@@ -138,6 +138,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RAW_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           VERSION="$(python3 - <<'PY'
@@ -200,8 +201,19 @@ jobs:
           PY
             )"
             if [ -n "$PUBLISHED_AT" ]; then
-              echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
-              exit 1
+              # This guard exists to stop a second publish of a version that
+              # already shipped. A dry run publishes nothing, so the guard has
+              # nothing to protect — and enforcing it there makes the dry run
+              # useless: between version bumps (the normal state of main) it
+              # aborts before a single build job runs, which is exactly what
+              # happened on the first attempt at run 30667355874.
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
+                echo "dry run: continuing anyway so the build matrix is exercised" >&2
+              else
+                echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
+                exit 1
+              fi
             fi
           done
 
