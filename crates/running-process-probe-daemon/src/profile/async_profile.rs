@@ -198,20 +198,13 @@ impl AsyncAdapter for TokioAdapter {
         "tokio"
     }
 
-    fn collect(&mut self, _window: Duration) -> Result<Vec<TaskSample>, AsyncUnavailable> {
-        // The application has to have opted into exposing the endpoint, and
-        // saying so plainly is more useful than a connection error: a missing
-        // `console_subscriber::init()` is the overwhelmingly common cause and
-        // is not something a connection refusal makes obvious.
-        Err(AsyncUnavailable::SourceUnreachable {
-            adapter: "tokio",
-            endpoint: self.endpoint.clone(),
-            detail: "no console-api subscriber is listening".to_string(),
-            remediation: "Add `console-subscriber = \"0.4\"` to the application, call \
-                          `console_subscriber::init()` at startup, and build it with \
-                          `RUSTFLAGS=\"--cfg tokio_unstable\"`."
-                .to_string(),
-        })
+    fn collect(&mut self, window: Duration) -> Result<Vec<TaskSample>, AsyncUnavailable> {
+        // The subscription lives in `async_tokio` so this module stays free of
+        // gRPC vocabulary. On failure that call returns a `SourceUnreachable`
+        // naming the missing `console_subscriber::init()` rather than just the
+        // refused connection: a missing subscriber is the overwhelmingly
+        // common cause and a connection error does not make it obvious.
+        crate::profile::async_tokio::collect(&self.endpoint, window)
     }
 }
 

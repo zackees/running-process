@@ -32,6 +32,8 @@ running-process-probe = { path = "../running-process-probe", version = "4.6.4" }
 
 interprocess = "2"
 prost = "0.14"
+# Timestamp/Duration, for deriving idle time from console-api stats (#788).
+prost-types = "0.14"
 thiserror = { workspace = true }
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -49,6 +51,17 @@ axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tower-http = { version = "0.6", features = ["limit"] }
+# tokio console-api client for the off-CPU/async adapter (#788). Confined to
+# this crate like the rest of the HTTP surface. `console-api` 0.9 tracks prost
+# 0.14 and tonic 0.14, matching what this crate already uses, so it adds no
+# second copy of prost. Note this is the *client* half only: subscribing needs
+# no `tokio_unstable`, which is a property of the profiled application.
+console-api = "0.9"
+tonic = { version = "0.14", default-features = false, features = [
+    "codegen",
+    "transport",
+] }
+tokio-stream = "0.1"
 # Constant-time token comparison. A `==` on the bearer token leaks its prefix
 # through timing, and the token is the only thing standing between a local
 # process and every artifact this daemon holds.
