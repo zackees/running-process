@@ -2371,6 +2371,7 @@ name = "test-watchdog"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "running-process-probe",
 ]
 
 [[package]]

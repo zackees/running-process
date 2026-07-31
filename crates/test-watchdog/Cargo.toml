@@ -11,3 +11,9 @@ libc = "0.2"
 
 [lints]
 workspace = true
+
+[dependencies]
+# The cooperative in-process hang dump (#649). Preferred over an external
+# debugger, which needs an install and an attach permission that the hosts
+# most in need of a dump are the least likely to grant.
+running-process-probe = { path = "../running-process-probe", version = "4.6.4", default-features = false }
