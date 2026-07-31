@@ -230,8 +230,8 @@ pub(super) fn to_cardinals(image: &Rgba) -> Vec<u32> {
 }
 
 fn write_property(window: Window, image: &Rgba) -> Result<(), IconError> {
-    let (connection, _screen) = x11rb::connect(None)
-        .map_err(|e| IconError::Apply(std::io::Error::other(e.to_string())))?;
+    let (connection, _screen) =
+        x11rb::connect(None).map_err(|e| IconError::Apply(std::io::Error::other(e.to_string())))?;
 
     let cookie = connection
         .intern_atom(false, b"_NET_WM_ICON")
