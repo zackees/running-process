@@ -66,6 +66,8 @@ enum GuardInner {
 /// `dump_path` — explicit dump location: a minidump on Windows, a text
 /// file with all-thread backtraces on Unix. `None` auto-generates a path
 /// in `env::temp_dir()`.
+mod probe_dump;
+
 pub fn install(
     timeout: Duration,
     message: impl Into<String>,
@@ -192,8 +194,37 @@ fn find_debugger() -> Option<Debugger> {
     })
 }
 
-#[cfg(windows)]
+/// Dump every thread, then exit non-zero.
+///
+/// The probe is tried first (S19 / #649). It is cooperative and
+/// in-process, so it needs no debugger installed, no attach permission,
+/// and no second process — all three of which are routinely unavailable on
+/// exactly the hosts where a hang has to be diagnosed. See
+/// [`probe_dump`] for the specifics.
+///
+/// The external debugger stays as the fallback, because a cooperative
+/// capture cannot dump a process too wedged to run its own code.
+#[cfg(any(windows, unix))]
 fn fire(pid: u32, after: Duration, message: &str, dump_path: &std::path::Path) -> ! {
+    if let Some(report) = probe_dump::capture_self(after, message, dump_path) {
+        eprintln!(
+            "{message} — cooperative all-thread dump (no progress in {after:?}); \
+             written to {}",
+            dump_path.display()
+        );
+        eprintln!("{report}");
+        std::process::exit(1);
+    }
+
+    eprintln!(
+        "test-watchdog: cooperative capture unavailable here; \
+         falling back to an external debugger"
+    );
+    fire_external(pid, after, message, dump_path)
+}
+
+#[cfg(windows)]
+fn fire_external(pid: u32, after: Duration, message: &str, dump_path: &std::path::Path) -> ! {
     eprintln!(
         "{message} — stack dump because process appears to be hung \
          (no progress in {after:?}); invoking procdump on PID {pid}"
@@ -245,7 +276,7 @@ fn fire(pid: u32, after: Duration, message: &str, dump_path: &std::path::Path) -
 }
 
 #[cfg(unix)]
-fn fire(pid: u32, after: Duration, message: &str, dump_path: &std::path::Path) -> ! {
+fn fire_external(pid: u32, after: Duration, message: &str, dump_path: &std::path::Path) -> ! {
     eprintln!(
         "{message} — stack dump because process appears to be hung \
          (no progress in {after:?}); attaching debugger to PID {pid}"
