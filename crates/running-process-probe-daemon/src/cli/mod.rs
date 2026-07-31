@@ -138,6 +138,26 @@ pub enum Command {
         out: Option<PathBuf>,
     },
 
+    /// Capture a CPU profile of the daemon's host and save its exports.
+    ///
+    /// Always over HTTP: profiling is a daemon-side operation whose result is
+    /// an artifact, and artifacts are what the socket's frame cap keeps off
+    /// it.
+    Profile {
+        /// Seconds to sample for. Clamped by the daemon to its hard ceiling.
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        /// Sampling frequency in hertz.
+        #[arg(long)]
+        hz: Option<u32>,
+        /// Which export to save: pprof, json (Firefox), or collapsed.
+        #[arg(long, default_value = "collapsed")]
+        format: String,
+        /// Where to write it. Defaults to `profile-<id>.<format>`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
     /// Check that the probe stack is actually usable, and say what is not.
     Doctor,
 }

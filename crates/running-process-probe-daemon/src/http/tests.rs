@@ -353,7 +353,7 @@ fn the_landing_page_and_its_assets_are_served() {
 
 #[test]
 fn collapsed_stacks_fold_into_a_tree() {
-    let tree = handlers::collapsed_to_tree("main;a;b 3\nmain;a;c 2\nmain;d 5\n");
+    let tree = crate::profile::store::collapsed_to_tree("main;a;b 3\nmain;a;c 2\nmain;d 5\n");
     assert_eq!(tree.value, 10);
 
     let main = &tree.children[0];
@@ -372,14 +372,16 @@ fn collapsed_stacks_fold_into_a_tree() {
 fn a_malformed_profile_line_is_skipped_rather_than_failing_the_render() {
     // A profile is a sampled artifact. Losing one line of it is strictly
     // better than showing the operator nothing at all.
-    let tree = handlers::collapsed_to_tree("main;a 3\ngarbage-with-no-count\nmain;b notanumber\n");
+    let tree = crate::profile::store::collapsed_to_tree(
+        "main;a 3\ngarbage-with-no-count\nmain;b notanumber\n",
+    );
     assert_eq!(tree.value, 3);
     assert_eq!(tree.children.len(), 1);
 }
 
 #[test]
 fn an_empty_profile_is_an_empty_tree_not_an_error() {
-    let tree = handlers::collapsed_to_tree("");
+    let tree = crate::profile::store::collapsed_to_tree("");
     assert_eq!(tree.value, 0);
     assert!(tree.children.is_empty());
 }
@@ -409,4 +411,21 @@ fn the_shared_state_never_prints_its_token() {
         !rendered.contains(TOKEN),
         "the daemon's authentication secret must not reach a log line"
     );
+}
+
+#[test]
+fn the_router_is_constructible() {
+    // axum validates routes by panicking at construction, so a malformed one
+    // is a compile-clean, test-clean change that only fails at run time — and
+    // it did: "/v1/profiles/{id}.{format}" put two parameters in one path
+    // segment, panicked on the serving thread, and left the daemon running
+    // with no HTTP surface at all. Building the router in a test makes that
+    // class of mistake a test failure instead of a silent outage.
+    let ops = Arc::new(ProbeOps::new(
+        Arc::new(Registry::new(OWNER.to_string())),
+        PeerCredentialPolicy::OwnerOnly {
+            uid_or_sid: OWNER.to_string(),
+        },
+    ));
+    let _router = build_router(HttpState::new(ops, TOKEN.to_string()));
 }
