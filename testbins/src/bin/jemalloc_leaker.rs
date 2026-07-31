@@ -25,6 +25,57 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 const BLOCKS: usize = 2000;
 
+/// Read jemalloc's `opt.prof`: was profiling enabled at process start?
+///
+/// `Err` carries jemalloc's errno. `ENOENT` there means the allocator was
+/// built without profiling support at all, which is a different problem from
+/// profiling being off — hence the separate outcomes reported by `main`.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn profiling_enabled() -> Result<bool, i32> {
+    let mut value: bool = false;
+    let mut len = std::mem::size_of::<bool>();
+    // SAFETY: `opt.prof` is a bool-typed mallctl. `value` and `len` are a
+    // matching pair, and the name is NUL-terminated as mallctl requires.
+    let rc = unsafe {
+        tikv_jemalloc_sys::mallctl(
+            c"opt.prof".as_ptr(),
+            std::ptr::addr_of_mut!(value).cast(),
+            std::ptr::addr_of_mut!(len),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 {
+        Ok(value)
+    } else {
+        Err(rc)
+    }
+}
+
+/// Ask jemalloc to write a heap dump to `path`.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn dump_to(path: &str) -> Result<(), i32> {
+    let c_path = std::ffi::CString::new(path).expect("dump path has no interior NUL");
+    let mut arg = c_path.as_ptr();
+    // SAFETY: `prof.dump` is write-only and takes a `*const c_char` by value,
+    // so the argument is a pointer to that pointer with a matching length.
+    // jemalloc copies the path during the call, and `c_path` outlives it.
+    let rc = unsafe {
+        tikv_jemalloc_sys::mallctl(
+            c"prof.dump".as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::addr_of_mut!(arg).cast(),
+            std::mem::size_of::<*const std::os::raw::c_char>(),
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(rc)
+    }
+}
+
 /// The frame the test looks for. Never inlined: the whole point is that this
 /// name appears in the dump's stacks.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -47,14 +98,14 @@ fn main() {
         }
     };
 
-    match tikv_jemalloc_ctl::profiling::prof::read() {
+    match profiling_enabled() {
         Ok(true) => {}
         Ok(false) => {
             println!("PROFILING_OFF");
             return;
         }
-        Err(e) => {
-            println!("NO_JEMALLOC {e}");
+        Err(code) => {
+            println!("NO_JEMALLOC mallctl(opt.prof) failed with errno {code}");
             return;
         }
     }
@@ -63,13 +114,9 @@ fn main() {
     // first would produce a dump that correctly shows nothing leaking.
     let held = leak_here(BLOCKS);
 
-    // `write_str` requires a 'static NUL-terminated value because jemalloc may
-    // retain the pointer. Leaking one path in a fixture that exits moments
-    // later is cheaper than arranging a lifetime that outlives the allocator.
-    let with_nul: &'static [u8] = Box::leak(format!("{path}\0").into_bytes().into_boxed_slice());
-    match tikv_jemalloc_ctl::raw::write_str(b"prof.dump\0", with_nul) {
+    match dump_to(&path) {
         Ok(()) => println!("DUMPED {path}"),
-        Err(e) => println!("NO_JEMALLOC prof.dump failed: {e}"),
+        Err(code) => println!("NO_JEMALLOC mallctl(prof.dump) failed with errno {code}"),
     }
 
     std::mem::drop(held);

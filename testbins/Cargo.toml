@@ -102,7 +102,13 @@ tikv-jemallocator = { version = "0.6", features = [
     "profiling",
     "unprefixed_malloc_on_supported_platforms",
 ] }
-tikv-jemalloc-ctl = { version = "0.6", features = ["profiling"] }
+# `mallctl` is called directly through the -sys crate rather than through
+# `tikv-jemalloc-ctl`. The ctl wrapper would be nicer to read, but it depends
+# on `paste`, which is unmaintained (RUSTSEC-2024-0436) and fails this repo's
+# `cargo audit --deny warnings`. Dropping the dependency removes the advisory;
+# muting it would have kept an unmaintained crate in the tree to save two
+# `unsafe` calls in a test fixture.
+tikv-jemalloc-sys = { version = "0.6", features = ["profiling"] }
 
 # Signal fixtures use libc on every platform.
 [target.'cfg(windows)'.dependencies]

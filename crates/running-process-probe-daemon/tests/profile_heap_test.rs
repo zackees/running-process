@@ -56,9 +56,14 @@ fn testbin_path(name: &str) -> PathBuf {
 ///
 /// `None` means this platform cannot host the fixture, which the callers
 /// report as a skip. A platform gap is not a regression in the parser.
-fn capture_dump() -> Option<(String, PathBuf)> {
+fn capture_dump(label: &str) -> Option<(String, PathBuf)> {
     let fixture = testbin_path("testbin-jemalloc-leaker");
-    let dir = std::env::temp_dir().join(format!("rp-heap-{}", std::process::id()));
+    // Keyed by the calling test, not just the pid: these tests run as threads
+    // of one test binary, so a shared path has them overwriting each other's
+    // dump and reading half-written files. That is exactly how this first
+    // failed — one test read a dump another was still writing and reported a
+    // format mismatch.
+    let dir = std::env::temp_dir().join(format!("rp-heap-{}-{label}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let dump = dir.join("heap.dump");
 
@@ -129,7 +134,7 @@ impl FrameResolver for MappingResolver {
 
 #[test]
 fn a_real_jemalloc_dump_parses_into_stacks() {
-    let Some((text, _fixture)) = capture_dump() else {
+    let Some((text, _fixture)) = capture_dump("parses") else {
         return;
     };
 
@@ -155,7 +160,7 @@ fn a_real_jemalloc_dump_parses_into_stacks() {
 
 #[test]
 fn the_live_bytes_match_what_the_fixture_held_and_are_not_double_counted() {
-    let Some((text, _fixture)) = capture_dump() else {
+    let Some((text, _fixture)) = capture_dump("bytes") else {
         return;
     };
     let profile = heap::parse_jeprof(&text);
@@ -178,7 +183,7 @@ fn the_live_bytes_match_what_the_fixture_held_and_are_not_double_counted() {
 
 #[test]
 fn the_leaking_call_site_dominates_the_flame_graph() {
-    let Some((text, fixture)) = capture_dump() else {
+    let Some((text, fixture)) = capture_dump("dominates") else {
         return;
     };
     let profile = heap::parse_jeprof(&text);
