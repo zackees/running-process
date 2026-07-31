@@ -144,9 +144,12 @@ def skip_linux_docker_preflight() -> bool:
     }
 
 
-def run(cmd: list[str]) -> int:
+def run(cmd: list[str], extra_env: dict[str, str] | None = None) -> int:
     _, clean_env = load_env_helpers()
-    return subprocess.run(cmd, cwd=ROOT, env=clean_env()).returncode
+    env = clean_env()
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(cmd, cwd=ROOT, env=env).returncode
 
 
 def _find_llvm_profdata() -> Path | None:
@@ -483,7 +486,9 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] = "1"
     if live_only:
         os.environ["RUNNING_PROCESS_LIVE_TESTS"] = "1"
-    os.environ.setdefault("RUNNING_PROCESS_TEST_TIMEOUT_SECONDS", DEFAULT_TEST_TIMEOUT_SECONDS)
+    os.environ.setdefault(
+        "RUNNING_PROCESS_TEST_TIMEOUT_SECONDS", DEFAULT_TEST_TIMEOUT_SECONDS
+    )
     python = Path(sys.executable)
     if os.environ.get(IN_RUNNING_PROCESS_ENV) != IN_RUNNING_PROCESS_VALUE:
         try:
@@ -600,6 +605,35 @@ def main(argv: list[str] | None = None) -> int:
             if run(cargo_command("build", "-p", "testbins")) != 0:
                 return 1
 
+            # The tokio console fixture is a SEPARATE workspace, built with
+            # `--cfg tokio_unstable` (#788).
+            #
+            # `console-subscriber` only functions when the profiled application
+            # carries that cfg, and cargo has no per-crate RUSTFLAGS: setting it
+            # here for the main workspace would apply it to the published crate
+            # and invalidate every build cache. So the fixture is excluded from
+            # the workspace and built on its own with the flag set for just this
+            # invocation.
+            #
+            # A failure here is not fatal. The cfg makes tokio recompile from
+            # scratch, which is slow, and the tests that use the fixture skip
+            # with an explanatory message when it is absent — so a missing
+            # fixture costs coverage, not a red suite.
+            if (
+                run(
+                    cargo_command(
+                        "build", "--manifest-path", "testbins-tokio/Cargo.toml"
+                    ),
+                    extra_env={"RUSTFLAGS": "--cfg tokio_unstable"},
+                )
+                != 0
+            ):
+                print(
+                    "warning: could not build testbins-tokio; the tokio "
+                    "console-api tests will skip.",
+                    file=sys.stderr,
+                )
+
             # Step 1: compile all test binaries (no supervisor, no timeout)
             build_args = cargo_command("nextest", "run", "--workspace", "--no-run")
             if run(build_args) != 0:
@@ -659,7 +693,11 @@ def main(argv: list[str] | None = None) -> int:
         # -- Python non-live tests --
         cov_first = list(_COV_PYTEST_FIRST) if coverage else []
         if not _pytest_exit_is_acceptable(
-            run(_supervised_pytest_command(python, "-m", "not live", *cov_first, *pytest_args)),
+            run(
+                _supervised_pytest_command(
+                    python, "-m", "not live", *cov_first, *pytest_args
+                )
+            ),
             pytest_args,
         ):
             return 1
@@ -674,7 +712,11 @@ def main(argv: list[str] | None = None) -> int:
     if live_tests_enabled():
         cov_append = list(_COV_PYTEST_APPEND) if coverage else []
         if not _pytest_exit_is_acceptable(
-            run_live(_supervised_pytest_command(python, "-m", "live", *cov_append, *pytest_args)),
+            run_live(
+                _supervised_pytest_command(
+                    python, "-m", "live", *cov_append, *pytest_args
+                )
+            ),
             pytest_args,
         ):
             return 1

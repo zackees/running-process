@@ -140,5 +140,13 @@ jobs:
       # or the binaries land in the host tree and the tests miss them.
       - name: Build test fixtures
         run: cargo build -p testbins --target ${{ inputs.target }}
+      # NOT built here: `testbins-tokio`, the console-subscriber fixture
+      # (#788). It needs `--cfg tokio_unstable`, which forces a full tokio
+      # rebuild, and it would have to be cross-compiled for this lane's
+      # target. The tokio console-api tests skip with an explanatory message
+      # when the fixture is absent, so this lane loses that one test's
+      # coverage rather than failing. The six `ci-preflight.yml` lanes go
+      # through `ci.test`, which does build it — so the subscription is
+      # exercised on every host platform, just not on the musl cross targets.
       - name: cargo nextest run --target ${{ inputs.target }}
         run: cargo nextest run --workspace --exclude running-process-py --features client --target ${{ inputs.target }}

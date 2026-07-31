@@ -13,6 +13,10 @@ members = [
     "crates/test-watchdog",
     "testbins",
 ]
+# Built separately with RUSTFLAGS="--cfg tokio_unstable" (#788). Cargo has no
+# per-crate RUSTFLAGS, so a fixture needing that cfg cannot live in this
+# workspace without applying it to the published crate too.
+exclude = ["testbins-tokio"]
 
 [workspace.package]
 version = "4.6.4"

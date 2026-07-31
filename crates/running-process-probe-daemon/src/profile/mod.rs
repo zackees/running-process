@@ -31,6 +31,7 @@
 use std::time::Duration;
 
 pub mod async_profile;
+pub mod async_tokio;
 pub mod export;
 pub mod ingest;
 pub mod session;
