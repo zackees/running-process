@@ -26,7 +26,7 @@ env:
   CARGO_TERM_COLOR: always
   # Pinned so a soldr release cannot silently change how release artifacts
   # are built (#561).
-  SOLDR_VERSION: "1.12.17"
+  SOLDR_VERSION: "0.8.30"
 
 jobs:
   detect-bump:
