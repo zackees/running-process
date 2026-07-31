@@ -402,9 +402,14 @@ jobs:
     with:
       runs-on: ubuntu-24.04
       artifact-name: wheels-linux-x86
-      # manylinux2014 is produced where glibc 2.17 actually lives, rather
-      # than by linking through zig to fake a baseline older than the host.
-      container: quay.io/pypa/manylinux2014_x86_64
+      # Built where an old glibc actually lives, rather than by linking
+      # through zig to fake a baseline older than the host.
+      #
+      # manylinux_2_28, not manylinux2014: GitHub's runner Node needs
+      # GLIBC_2.28, so it cannot execute inside the 2.17 image at all —
+      # `actions/checkout` dies before any build step. 2.28 is the oldest
+      # baseline that still runs the JS actions this template depends on.
+      container: quay.io/pypa/manylinux_2_28_x86_64
       build-mode: release
       include-sdist: true
       sidecar-manifest-artifact: conpty-sidecars
@@ -420,9 +425,14 @@ jobs:
     with:
       runs-on: ubuntu-24.04-arm
       artifact-name: wheels-linux-arm
-      # manylinux2014 is produced where glibc 2.17 actually lives, rather
-      # than by linking through zig to fake a baseline older than the host.
-      container: quay.io/pypa/manylinux2014_aarch64
+      # Built where an old glibc actually lives, rather than by linking
+      # through zig to fake a baseline older than the host.
+      #
+      # manylinux_2_28, not manylinux2014: GitHub's runner Node needs
+      # GLIBC_2.28, so it cannot execute inside the 2.17 image at all —
+      # `actions/checkout` dies before any build step. 2.28 is the oldest
+      # baseline that still runs the JS actions this template depends on.
+      container: quay.io/pypa/manylinux_2_28_aarch64
       build-mode: release
       sidecar-manifest-artifact: conpty-sidecars
 
