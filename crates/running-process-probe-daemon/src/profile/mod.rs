@@ -32,7 +32,6 @@ use std::time::Duration;
 
 pub mod async_profile;
 pub mod export;
-pub mod heap;
 pub mod ingest;
 pub mod session;
 pub mod store;

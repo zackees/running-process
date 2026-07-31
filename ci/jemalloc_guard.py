@@ -1,21 +1,13 @@
-"""Guard: jemalloc is being removed, so no NEW references may appear.
+"""Guard: jemalloc is gone, and may not come back.
 
-The project is migrating heap profiling off jemalloc and onto
-`mimalloc-pprof`, which emits pprof directly and so removes the need for the
-jeprof text parser entirely. Until that migration lands there is a window
-where jemalloc is still present and someone could reasonably add more of it
-without knowing it is on its way out.
+Heap profiling runs on `mimalloc-pprof`, which emits pprof directly. The
+jeprof text parser and its pprof lowering stage were deleted rather than
+ported, because the allocator now produces the wire format itself.
 
-This is a ratchet, not a ban. It pins the sites that exist today with their
-occurrence counts and fails if a new file appears or an existing count grows.
-Deleting references is always allowed — the counts here are ceilings, not
-targets. As the purge proceeds, entries come out of `KNOWN_SITES`; when the
-table is empty the guard becomes an absolute prohibition and the tracking
-issue can close.
-
-A plain "grep for jemalloc and fail" could not be committed until the very
-last reference was gone, which is exactly the period when the guard is most
-useful.
+This began as a ratchet over the sites that still existed (#792). They are all
+gone, so `KNOWN_SITES` is empty and the check is now absolute: any jemalloc
+reference in tracked source fails lint. Re-introducing it would mean
+re-introducing a text format the daemon no longer speaks.
 
 Run alone with:
     uv run --no-project python -m ci.jemalloc_guard
@@ -59,18 +51,7 @@ EXEMPT = {"ci/jemalloc_guard.py"}
 # Every entry is a thing the purge has to delete. Shrinking a number is fine
 # and needs no edit here (the check is `>`), but removing the last reference in
 # a file should also remove its row, so the remaining work stays readable.
-KNOWN_SITES: dict[str, int] = {
-    # The jeprof text parser and its pprof lowering. `mimalloc-pprof` emits
-    # pprof directly, so this module is expected to be deleted outright rather
-    # than ported.
-    "crates/running-process-probe-daemon/src/profile/heap.rs": 42,
-    "crates/running-process-probe-daemon/src/profile/heap/tests.rs": 52,
-    # End-to-end coverage driving the jemalloc fixture.
-    "crates/running-process-probe-daemon/tests/profile_heap_test.rs": 25,
-    # The fixture application and its allocator dependency.
-    "testbins/src/bin/jemalloc_leaker.rs": 23,
-    "testbins/Cargo.toml": 11,
-}
+KNOWN_SITES: dict[str, int] = {}
 
 
 def _relative(path: Path) -> str:
@@ -136,11 +117,10 @@ def check() -> list[str]:
         allowed = KNOWN_SITES.get(rel)
         if allowed is None:
             failures.append(
-                f"{rel}: {found} jemalloc reference(s) in a file that had none.\n"
-                "    jemalloc is being removed in favour of `mimalloc-pprof`; "
-                "do not add more.\n"
-                "    If this is part of the migration itself, add the path to "
-                "KNOWN_SITES in ci/jemalloc_guard.py with a comment saying why."
+                f"{rel}: {found} jemalloc reference(s).\n"
+                "    jemalloc was removed in favour of `mimalloc-pprof` (#792) "
+                "and may not return:\n"
+                "    the daemon no longer has a jeprof parser for it to feed."
             )
         elif found > allowed:
             failures.append(
