@@ -67,6 +67,8 @@ def main() -> int:
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.docker_manifest_guard")) != 0:
         return 1
+    if run(supervised_command(python, str(python), "-m", "ci.jemalloc_guard")) != 0:
+        return 1
     # `--check`, not write mode. Plain `cargo fmt --all` reformats the tree
     # and exits 0 whether or not it changed anything, so it can essentially
     # never fail: CI would reformat its checkout, throw it away, and report
