@@ -6,7 +6,13 @@ use super::*;
 use crate::profile::pprof::Profile;
 use crate::profile::symbolize::TableResolver;
 
-/// A jeprof dump in jemalloc's real output shape.
+/// A dump in the gperftools one-line layout.
+///
+/// This was once described here as "jemalloc's real output shape". It is not —
+/// jemalloc writes [`HEAP_V2`], and the difference is why a real dump parsed to
+/// zero stacks until #788. It is kept because the layout is a real one and
+/// costs nothing to accept, but the end-to-end coverage lives in
+/// `tests/profile_heap_test.rs`, against a dump jemalloc actually wrote.
 ///
 /// Two stacks with different alloc/inuse splits, so a test can tell the four
 /// value columns apart — one that churned and freed, one that is still live.
@@ -14,6 +20,31 @@ const DUMP: &str = "\
 heap profile:     12:     3072 [    40:    10240] @ heapprofile
      10:     2048 [    10:     2048] @ 0x7f1a0100 0x7f1a0200
       2:     1024 [    30:     8192] @ 0x7f1b0100 0x7f1a0200
+
+MAPPED_LIBRARIES:
+7f1a0000-7f1a1000 r-xp 00000000 08:01 100    /usr/lib/libleaky.so
+7f1b0000-7f1b1000 r-xp 00001000 08:01 101    /usr/lib/libchurny.so
+7ffd0000-7ffd1000 rw-p 00000000 00:00 0
+";
+
+/// The same two stacks as [`DUMP`], in the `heap_v2` layout jemalloc emits.
+///
+/// Trimmed from a dump written by `testbin-jemalloc-leaker` under
+/// `MALLOC_CONF=prof:true`, with the addresses swapped for the ones
+/// [`resolver`] knows so both layouts can be asserted to parse identically.
+///
+/// Note the shape: counts follow their `@` line rather than sharing it, the
+/// leading `t*` is a process-wide total belonging to no stack, and each stack
+/// appears twice — once as `t*` (all threads) and once per thread as `tN`.
+const HEAP_V2: &str = "\
+heap_v2/1
+  t*: 12: 3072 [40: 10240]
+@ 0x7f1a0100 0x7f1a0200
+  t*: 10: 2048 [10: 2048]
+  t0: 10: 2048 [10: 2048]
+@ 0x7f1b0100 0x7f1a0200
+  t*: 2: 1024 [30: 8192]
+  t0: 2: 1024 [30: 8192]
 
 MAPPED_LIBRARIES:
 7f1a0000-7f1a1000 r-xp 00000000 08:01 100    /usr/lib/libleaky.so
@@ -242,8 +273,19 @@ fn every_unavailable_reason_says_what_to_do_about_it() {
     // Profiling can only be enabled at process start, so the remedy is a
     // restart — saying so avoids an operator hunting for a runtime toggle.
     let disabled = HeapUnavailable::ProfilingDisabled.to_string();
-    assert!(disabled.contains("_RJEM_MALLOC_CONF=prof:true"));
     assert!(disabled.contains("Restart"));
+    // The unprefixed variable comes first because `NotJemalloc` above tells
+    // the operator to build with `unprefixed_malloc_on_supported_platforms`,
+    // and such a build ignores `_RJEM_MALLOC_CONF` entirely. Naming only the
+    // prefixed form — as this did until #788 — sends them to set a variable
+    // that does nothing and hit the identical error again.
+    assert!(disabled.contains("MALLOC_CONF=prof:true"));
+    assert!(disabled.contains("_RJEM_MALLOC_CONF=prof:true"));
+    assert!(
+        disabled.find("MALLOC_CONF=prof:true") < disabled.find("_RJEM_MALLOC_CONF=prof:true"),
+        "the variable that works with the recommended build should be named \
+         first: {disabled}"
+    );
 }
 
 #[test]
@@ -262,4 +304,54 @@ fn an_unsupported_platform_is_reported_before_a_build_problem() {
     } else {
         assert!(result.is_ok());
     }
+}
+
+#[test]
+fn the_layout_jemalloc_actually_emits_parses_into_the_same_stacks() {
+    // This is the regression #788 exists for: against a real dump the parser
+    // returned an empty profile, which reads as "this program allocates
+    // nothing" rather than as a parse failure.
+    let v2 = parse_jeprof(HEAP_V2);
+    let legacy = parse_jeprof(DUMP);
+    assert_eq!(
+        v2, legacy,
+        "the two layouts describe the same profile and should parse alike"
+    );
+    assert_eq!(v2.stacks.len(), 2);
+}
+
+#[test]
+fn a_per_thread_line_is_not_counted_alongside_its_all_thread_total() {
+    // `t*` is the sum over threads and `tN` are its parts. Counting both is
+    // the easy mistake, and it silently doubles every byte in the profile.
+    //
+    // Verified by sabotage: accepting `t0:` alongside `t*:` and holding the
+    // addresses instead of consuming them makes this fail, along with the
+    // matching end-to-end assertion against a real dump.
+    let profile = parse_jeprof(HEAP_V2);
+    let live: i64 = profile.stacks.iter().map(|s| s.inuse_bytes).sum();
+    assert_eq!(live, 2048 + 1024);
+}
+
+#[test]
+fn the_heap_v2_process_totals_are_not_folded_in_as_a_stack() {
+    // The `t*` line before the first `@` is the process-wide total, the same
+    // role `heap profile:` plays in the other layout.
+    let profile = parse_jeprof(HEAP_V2);
+    assert!(profile.stacks.iter().all(|s| s.inuse_bytes != 3072));
+}
+
+#[test]
+fn a_thread_count_line_with_no_stack_before_it_is_ignored_not_misattributed() {
+    // A truncated dump can begin mid-record. Attaching those counts to
+    // whatever stack came later would invent a profile, so they are dropped.
+    let profile = parse_jeprof("heap_v2/1\n  t*: 9: 99 [9: 99]\n");
+    assert!(profile.stacks.is_empty());
+}
+
+#[test]
+fn an_address_line_with_no_counts_contributes_nothing() {
+    // The other truncation: a dump cut off after its `@` line.
+    let profile = parse_jeprof("heap_v2/1\n@ 0x7f1a0100 0x7f1a0200\n");
+    assert!(profile.stacks.is_empty());
 }

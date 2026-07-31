@@ -24,17 +24,40 @@
 //! jemalloc itself. Parsing and symbolization happen here, afterwards — the
 //! same division as CPU profiling, for the same reason.
 //!
-//! # The format
+//! # The formats — there are two, and jemalloc emits the second
+//!
+//! The gperftools-style layout puts a stack's counts and its addresses on one
+//! line:
 //!
 //! ```text
 //! heap profile:    <inuse_objs>: <inuse_bytes> [<alloc_objs>: <alloc_bytes>] @ heapprofile
 //!   <objs>: <bytes> [<objs>: <bytes>] @ 0x7f1a 0x7f2b ...
+//! ```
+//!
+//! Every jemalloc this crate can actually be pointed at writes `heap_v2`
+//! instead, which splits them across lines and repeats each stack once per
+//! thread:
+//!
+//! ```text
+//! heap_v2/<sample_interval>
+//!   t*: <objs>: <bytes> [<objs>: <bytes>]      <- process-wide totals
+//! @ 0x7f1a 0x7f2b ...
+//!   t*: <objs>: <bytes> [<objs>: <bytes>]      <- this stack, all threads
+//!   t0: <objs>: <bytes> [<objs>: <bytes>]      <- this stack, thread 0
 //! MAPPED_LIBRARIES:
 //!   7f1a0000-7f1b0000 r-xp 00000000 08:01 1234  /usr/lib/libfoo.so
 //! ```
 //!
-//! Each stack line carries four counts and a leaf-first address list. The
-//! `MAPPED_LIBRARIES` block is `/proc/self/maps`, which is what lets the
+//! Both are parsed. Two properties of `heap_v2` matter and are easy to get
+//! wrong:
+//!
+//! - The `t*` line is the sum over threads and the `tN` lines are its parts,
+//!   so counting both double-counts every byte. Only `t*` is taken.
+//! - The leading `t*` before the first `@` is the process-wide total, the same
+//!   role the `heap profile:` header plays above, so it is skipped for the
+//!   same reason.
+//!
+//! The `MAPPED_LIBRARIES` block is `/proc/self/maps`, which is what lets the
 //! addresses be symbolized later against the right binaries.
 
 use std::path::PathBuf;
@@ -55,10 +78,22 @@ pub enum HeapUnavailable {
     )]
     NotJemalloc,
     /// jemalloc is present but profiling was not enabled at startup.
+    ///
+    /// The variable to set depends on whether the build prefixes jemalloc's
+    /// symbols. With `unprefixed_malloc_on_supported_platforms` — which
+    /// [`NotJemalloc`] tells you to enable — it is plain `MALLOC_CONF`;
+    /// `_RJEM_MALLOC_CONF` is silently ignored by such a build, so naming only
+    /// the prefixed form sends the operator to set a variable that does
+    /// nothing and read the same error again.
+    ///
+    /// [`NotJemalloc`]: HeapUnavailable::NotJemalloc
     #[error(
         "jemalloc is present but profiling is off. It can only be enabled at \
          process start, not from here.\n\
-         Restart the target with:\n  _RJEM_MALLOC_CONF=prof:true"
+         Restart the target with:\n  MALLOC_CONF=prof:true\n\
+         (or _RJEM_MALLOC_CONF=prof:true if the build keeps jemalloc's \
+         `_rjem_` symbol prefix — i.e. without the \
+         `unprefixed_malloc_on_supported_platforms` feature.)"
     )]
     ProfilingDisabled,
     /// This platform has no jemalloc build.
@@ -126,6 +161,10 @@ pub struct HeapProfile {
 pub fn parse_jeprof(text: &str) -> HeapProfile {
     let mut profile = HeapProfile::default();
     let mut in_mappings = false;
+    // Addresses from the most recent `@` line, waiting for the `t*` counts
+    // that belong to them. `None` means we are before the first `@`, where a
+    // `t*` line is the process-wide total rather than any one stack's.
+    let mut pending: Option<Vec<u64>> = None;
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -141,9 +180,47 @@ pub fn parse_jeprof(text: &str) -> HeapProfile {
         }
         // The header carries process-wide totals that are the sum of the
         // stacks below it, so folding it in as well would double every number.
-        if trimmed.starts_with("heap profile:") || trimmed.is_empty() {
+        if trimmed.starts_with("heap profile:") || trimmed.starts_with("heap_v2") {
             continue;
         }
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // `heap_v2`: an address-only line opens a stack whose counts follow.
+        if let Some(addresses) = trimmed.strip_prefix('@') {
+            let addresses = parse_addresses(addresses);
+            pending = (!addresses.is_empty()).then_some(addresses);
+            continue;
+        }
+        // `heap_v2`: the counts for the stack opened above. Only `t*` — the
+        // per-thread `tN` lines are its components, and adding them too would
+        // double every number in the profile.
+        //
+        // Two things enforce that, and it is worth being precise about which:
+        // matching `t*` exactly keeps `tN` out of here, and `take()` (not
+        // `clone()`) means even a repeated `t*` cannot be attributed twice.
+        // The `tN` arm below is for clarity, not protection — a `tN` line that
+        // reached the bottom of this loop would be rejected anyway for having
+        // no `@`.
+        if let Some(counts) = trimmed.strip_prefix("t*:") {
+            let Some(addresses) = pending.take() else {
+                // Before the first `@`: process-wide totals, not a stack.
+                continue;
+            };
+            if let Some(stack) = parse_counts(counts, addresses) {
+                profile.stacks.push(stack);
+            }
+            continue;
+        }
+        if trimmed.starts_with('t') {
+            // A per-thread `tN` line: accounted for by the `t*` above it.
+            // Explicit rather than left to fall through, so the intent does
+            // not depend on how strict `parse_stack` happens to be.
+            continue;
+        }
+
+        // gperftools-style: counts and addresses share one line.
         if let Some(stack) = parse_stack(trimmed) {
             profile.stacks.push(stack);
         }
@@ -151,22 +228,18 @@ pub fn parse_jeprof(text: &str) -> HeapProfile {
     profile
 }
 
-/// Parse `<objs>: <bytes> [<objs>: <bytes>] @ 0xa 0xb`.
-fn parse_stack(line: &str) -> Option<HeapStack> {
-    let (counts, addresses) = line.split_once('@')?;
-    let (inuse, alloc) = counts.split_once('[')?;
+/// Parse a whitespace-separated list of `0x`-prefixed return addresses.
+fn parse_addresses(text: &str) -> Vec<u64> {
+    text.split_whitespace()
+        .filter_map(|token| u64::from_str_radix(token.trim_start_matches("0x"), 16).ok())
+        .collect()
+}
 
+/// Parse ` <objs>: <bytes> [<objs>: <bytes>]` against an already-read stack.
+fn parse_counts(counts: &str, addresses: Vec<u64>) -> Option<HeapStack> {
+    let (inuse, alloc) = counts.split_once('[')?;
     let (inuse_objects, inuse_bytes) = parse_pair(inuse)?;
     let (alloc_objects, alloc_bytes) = parse_pair(alloc.trim_end_matches([']', ' ']))?;
-
-    let addresses: Vec<u64> = addresses
-        .split_whitespace()
-        .filter_map(|token| u64::from_str_radix(token.trim_start_matches("0x"), 16).ok())
-        .collect();
-    if addresses.is_empty() {
-        return None;
-    }
-
     Some(HeapStack {
         alloc_objects,
         alloc_bytes,
@@ -174,6 +247,16 @@ fn parse_stack(line: &str) -> Option<HeapStack> {
         inuse_bytes,
         addresses,
     })
+}
+
+/// Parse `<objs>: <bytes> [<objs>: <bytes>] @ 0xa 0xb`.
+fn parse_stack(line: &str) -> Option<HeapStack> {
+    let (counts, addresses) = line.split_once('@')?;
+    let addresses = parse_addresses(addresses);
+    if addresses.is_empty() {
+        return None;
+    }
+    parse_counts(counts, addresses)
 }
 
 /// Parse `<objs>: <bytes>`.
