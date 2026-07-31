@@ -11,7 +11,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use prost::Message as _;
 
-use crate::profile::pprof::{Function, Line, Location, Profile, Sample, ValueType};
+use crate::profile::pprof::{Function, Line, Location, Mapping, Profile, Sample, ValueType};
 use crate::profile::SessionResult;
 
 /// Interns strings into a pprof string table.
@@ -139,5 +139,139 @@ pub fn build(result: &SessionResult) -> Profile {
         period,
         comment: Vec::new(),
         default_sample_type: 0,
+    }
+}
+
+/// Builds a heap pprof: four sample types, and a mapping table.
+///
+/// Separate from the CPU builder because the two profiles answer different
+/// questions with different units, and a shared builder parameterised over
+/// both would be harder to read than two that each say what they emit.
+#[derive(Debug, Default)]
+pub struct HeapProfileBuilder {
+    strings: StringTable,
+    mappings: Vec<Mapping>,
+    functions: Vec<Function>,
+    function_ids: HashMap<String, u64>,
+    locations: Vec<Location>,
+    location_ids: HashMap<String, u64>,
+    samples: Vec<Sample>,
+}
+
+impl HeapProfileBuilder {
+    /// An empty builder with the spec-mandated empty string interned at 0.
+    pub fn new() -> Self {
+        Self {
+            strings: StringTable::new(),
+            ..Self::default()
+        }
+    }
+
+    /// Record a mapped module, so its addresses can be symbolized later.
+    pub fn add_mapping(&mut self, start: u64, end: u64, offset: u64, path: &str) {
+        let filename = self.strings.intern(path);
+        self.mappings.push(Mapping {
+            id: self.mappings.len() as u64 + 1,
+            memory_start: start,
+            memory_limit: end,
+            file_offset: offset,
+            filename,
+            ..Default::default()
+        });
+    }
+
+    /// Add one stack. `frames` is leaf-first; `values` is
+    /// `[alloc_objects, alloc_space, inuse_objects, inuse_space]`.
+    pub fn add_sample(&mut self, frames: &[String], values: [i64; 4]) {
+        let mut location_id = Vec::with_capacity(frames.len());
+        for frame in frames {
+            let function_id = match self.function_ids.get(frame) {
+                Some(id) => *id,
+                None => {
+                    let id = self.functions.len() as u64 + 1;
+                    let name = self.strings.intern(frame);
+                    self.functions.push(Function {
+                        id,
+                        name,
+                        system_name: name,
+                        filename: 0,
+                        start_line: 0,
+                    });
+                    self.function_ids.insert(frame.clone(), id);
+                    id
+                }
+            };
+            let id = match self.location_ids.get(frame) {
+                Some(id) => *id,
+                None => {
+                    let id = self.locations.len() as u64 + 1;
+                    self.locations.push(Location {
+                        id,
+                        mapping_id: 0,
+                        address: 0,
+                        line: vec![Line {
+                            function_id,
+                            line: 0,
+                        }],
+                        is_folded: false,
+                    });
+                    self.location_ids.insert(frame.clone(), id);
+                    id
+                }
+            };
+            location_id.push(id);
+        }
+        self.samples.push(Sample {
+            location_id,
+            value: values.to_vec(),
+            label: Vec::new(),
+        });
+    }
+
+    /// Finish, returning the encoded protobuf.
+    pub fn finish(mut self) -> Vec<u8> {
+        // Four types, because "what is leaking" and "what is churning" are
+        // different questions and one number answers neither well.
+        let count = self.strings.intern("count");
+        let bytes = self.strings.intern("bytes");
+        let sample_type = vec![
+            ValueType {
+                r#type: self.strings.intern("alloc_objects"),
+                unit: count,
+            },
+            ValueType {
+                r#type: self.strings.intern("alloc_space"),
+                unit: bytes,
+            },
+            ValueType {
+                r#type: self.strings.intern("inuse_objects"),
+                unit: count,
+            },
+            ValueType {
+                r#type: self.strings.intern("inuse_space"),
+                unit: bytes,
+            },
+        ];
+        // Index 3 == inuse_space, so a viewer opens on live bytes — what
+        // someone chasing a leak came for.
+        let default_sample_type = sample_type[3].r#type;
+
+        Profile {
+            sample_type,
+            sample: self.samples,
+            mapping: self.mappings,
+            location: self.locations,
+            function: self.functions,
+            string_table: self.strings.strings,
+            drop_frames: 0,
+            keep_frames: 0,
+            time_nanos: 0,
+            duration_nanos: 0,
+            period_type: None,
+            period: 0,
+            comment: Vec::new(),
+            default_sample_type,
+        }
+        .encode_to_vec()
     }
 }
