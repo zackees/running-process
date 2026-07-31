@@ -219,6 +219,15 @@ trybuild = "1"
 # call sites are on winapi and migrating them is out of scope.
 # windows-sys 0.59 exposes CreatePseudoConsole / ResizePseudoConsole /
 # ClosePseudoConsole + PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE directly.
+# X11 window-icon backend (#577). Linux-only and pure Rust: x11rb speaks
+# the X protocol directly over the socket, so this adds no libxcb/libX11
+# system dependency to a crate that has to build in minimal containers.
+# `png` decodes the icon to the RGBA that _NET_WM_ICON requires — Windows
+# lets the OS decode, X11 does not.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
+png = "0.17"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Wdk_System_Threading",
@@ -247,5 +256,11 @@ tar = { version = "0.4", default-features = false, optional = true }
 
 # Wave 5 of #165: extra dev-deps absorbed from `running-process-daemon`
 # for its windows-only and unix-only integration tests.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The X11 round-trip test creates its own window and reads the property back,
+# so it needs the same client library the backend uses.
+x11rb = "0.13"
+png = "0.17"
+
 [target.'cfg(windows)'.dev-dependencies]
 winapi = { version = "0.3", features = ["handleapi", "processthreadsapi", "winnt"] }

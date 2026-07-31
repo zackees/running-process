@@ -15,6 +15,8 @@ here in the same change.
 |---|---|---|---|
 | `libc` | `[dependencies]` | Always compiled | Unix process, file, and credential APIs. Platform boundary is security-sensitive. |
 | `portable-pty` | `[dependencies]` | `pty` feature | Unix PTY implementation for the process API. Not part of broker wire parsing. |
+| `x11rb` | `[dependencies]` | Linux only | Speaks the X11 protocol directly over the display socket to set `_NET_WM_ICON` (#577). Pure Rust, so it adds no `libxcb`/`libX11` system dependency to a crate that must build in minimal containers. Talks only to the local display server named by `DISPLAY`; no network transport purpose. |
+| `png` | `[dependencies]` | Linux only | Decodes an icon to the RGBA that `_NET_WM_ICON` requires — Windows lets the OS decode, X11 does not. **Untrusted-input parser**: the icon bytes come from the caller. Decoded output is bounded to 512x512 before it reaches the socket. |
 | `sysinfo` | `[dependencies]` | Always compiled | Process inspection for local runtime behavior. No network transport purpose. |
 | `thiserror` | `[dependencies]` | Always compiled | Error types only. Workspace version source. |
 | `winapi` | `[dependencies]` | Always compiled; used by Windows paths | Windows process, pipe, handle, and security APIs. Platform boundary is security-sensitive. |

@@ -148,7 +148,10 @@ pub use types::{
     CommandSpec, ProcessConfig, ProcessError, ReadStatus, RunOutput, StderrMode, StdinMode,
     StreamEvent, StreamKind,
 };
-pub use window_icon::{host_icon_support, set_host_icon, IconError, IconSource, IconSupport};
+pub use window_icon::{
+    host_icon_support, icon_support, set_host_icon, set_icon, IconError, IconScope, IconSource,
+    IconSupport, StockIcon,
+};
 
 #[cfg(unix)]
 pub(crate) use helpers::{

@@ -25,6 +25,12 @@ use std::path::PathBuf;
 
 pub mod ico;
 mod osc;
+#[cfg(target_os = "linux")]
+mod x11;
+// Gated to match `x11`, its only consumer: the PNG encoder it wraps is a
+// Linux-only dependency, so compiling this elsewhere fails to find `png`.
+#[cfg(all(test, target_os = "linux"))]
+mod tests_support;
 
 /// Where an icon comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -506,25 +512,34 @@ mod imp {
                 reason: "on macOS the window belongs to Terminal.app or iTerm2, not to this                          process; set the icon on the terminal application's own bundle",
             };
         }
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            return IconSupport::Unsupported {
-                reason: "Wayland compositors do not let a client change another window's icon;                          set it in the terminal emulator's .desktop file",
-            };
+        #[cfg(target_os = "linux")]
+        {
+            super::x11::support(_scope)
         }
-        if std::env::var_os("DISPLAY").is_some() {
-            return IconSupport::Degraded {
-                reason: "the X11 _NET_WM_ICON backend is not implemented yet; a stock name can                          still be sent via OSC 1",
-            };
-        }
-        IconSupport::Unsupported {
-            reason: "no display server is attached (no DISPLAY or WAYLAND_DISPLAY), so there is                      no window to set an icon on",
+        #[cfg(not(target_os = "linux"))]
+        {
+            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                return IconSupport::Unsupported {
+                    reason: "Wayland compositors do not let a client change another window's                              icon; set it in the terminal emulator's .desktop file",
+                };
+            }
+            IconSupport::Unsupported {
+                reason: "no window-icon backend exists for this platform",
+            }
         }
     }
 
     pub(super) fn set_icon(_scope: IconScope, _source: &IconSource) -> Result<(), IconError> {
-        Err(IconError::Unsupported {
-            reason: "setting a window icon is implemented on Windows conhost only",
-        })
+        #[cfg(target_os = "linux")]
+        {
+            super::x11::set_icon(_scope, _source)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(IconError::Unsupported {
+                reason: "no window-icon backend exists for this platform",
+            })
+        }
     }
 }
 
