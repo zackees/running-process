@@ -19,6 +19,22 @@ SOURCES: list[tuple[str, str]] = [
         "crates/running-process-py/Cargo.toml",
         r'^running-process\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"',
     ),
+    # Same hazard, added with the probe crates (#651). Every path dependency
+    # of a published crate needs a version -- optional ones behind a feature
+    # included -- and a stale one is not caught until `cargo publish` refuses
+    # the package, which is after the tag is cut.
+    (
+        "crates/running-process/Cargo.toml",
+        r'^running-process-probe\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"',
+    ),
+    (
+        "crates/running-process-probe-daemon/Cargo.toml",
+        r'^running-process\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"',
+    ),
+    (
+        "crates/running-process-probe-daemon/Cargo.toml",
+        r'^running-process-probe\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"',
+    ),
 ]
 
 

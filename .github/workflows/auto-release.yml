@@ -234,8 +234,15 @@ jobs:
           # ----- crates.io -----
           # Keep this in sync with PUBLISH_ORDER in the publish-crates job.
           # Wave 7 of #165: post-consolidation crate set.
+          # Keep in dependency order, and in sync with PUBLISH_ORDER below.
+          # `running-process`'s `probe` feature depends on
+          # `running-process-probe`, and `running-process-probe-daemon`
+          # depends on both — so the probe crate must exist on crates.io
+          # before `running-process` can even resolve.
           rust_crates = (
+              "running-process-probe",
               "running-process",
+              "running-process-probe-daemon",
               "running-process-py",
           )
 
@@ -622,8 +629,14 @@ jobs:
           # is the only Rust crate; `running-process-py` depends on it.
           # Keep in sync with the rust_crates tuple in preflight's
           # registry-check step.
+          # Dependency order, not preference. `running-process` has a versioned
+          # dependency on `running-process-probe` (behind its `probe` feature),
+          # and `running-process-probe-daemon` depends on both, so publishing
+          # out of this order fails to resolve rather than merely being untidy.
           PUBLISH_ORDER=(
+            running-process-probe
             running-process
+            running-process-probe-daemon
             running-process-py
           )
 

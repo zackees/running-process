@@ -47,6 +47,13 @@ These need to exist on the repo *before* the first real release runs:
    - `src/running_process/__init__.py` — `__version__` literal
    - `crates/running-process-py/Cargo.toml` internal path-dep version pin
      (`{ path = "../running-process", version = "X.Y.Z" }`)
+   - `crates/running-process/Cargo.toml` pin on `running-process-probe`
+   - `crates/running-process-probe-daemon/Cargo.toml` pins on
+     `running-process` and `running-process-probe`
+
+   Every path dependency of a *published* crate needs a version, including
+   optional ones behind a feature. Missing one is not caught until
+   `cargo publish` refuses the package.
    - `Cargo.lock` (regenerate via `soldr cargo check --workspace`)
    - `uv.lock` (regenerate via `uv lock`)
 2. Open a PR with just the bump. Once it merges to `main`, the
@@ -68,9 +75,20 @@ These need to exist on the repo *before* the first real release runs:
   Windows x86/arm, plus the sdist (built on the linux-x86 runner).
   Published via `pypa/gh-action-pypi-publish@release/v1` with
   `skip-existing: true` (OIDC, no static token).
-- **crates.io**, in dep order (post-consolidation per #165):
-  1. `running-process`
-  2. `running-process-py` (depends on the previous one)
+- **crates.io**, in dep order (probe crates added per #651):
+  1. `running-process-probe` — the probe protocol types and the
+     all-thread snapshot. `running-process`'s `probe` feature depends on
+     it, so it has to exist on the index first or `running-process`
+     cannot resolve at all.
+  2. `running-process` (depends on the previous one)
+  3. `running-process-probe-daemon` — `rpprobed` and `rpprobe`. Depends
+     on both of the above.
+  4. `running-process-py` (depends on `running-process`)
+
+  This order is a dependency constraint, not a preference: publishing out
+  of it fails to resolve rather than merely being untidy. Keep it in sync
+  with **both** lists in `auto-release.yml` — `rust_crates` in the
+  preflight job and `PUBLISH_ORDER` in `publish-crates`.
   `cargo publish` already blocks on the sparse-index appearance before
   returning — the index is what the next `cargo publish` reads to
   resolve internal path-deps — so the loop trusts cargo's own wait and
