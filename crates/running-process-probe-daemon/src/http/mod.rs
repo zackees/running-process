@@ -235,7 +235,44 @@ pub fn spawn(
     // synchronously and can publish it before anything is served.
     let listener = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
     let bound = listener.local_addr()?;
+    serve_on(runtime, listener, bound, router)
+}
 
+/// Adopt an already-bound listener and serve on it.
+///
+/// Lets the daemon learn its HTTP port *before* it does any slow startup work,
+/// without the reserve-then-rebind window that would open if the port were
+/// discovered with one socket and served with another. The listener that
+/// reported the port is the listener that serves it.
+pub fn spawn_with_listener(
+    listener: std::net::TcpListener,
+    state: HttpState,
+) -> Result<(SocketAddr, std::thread::JoinHandle<()>), HttpError> {
+    let bound = listener.local_addr()?;
+    check_bind(bound)?;
+    // tokio requires a non-blocking socket; a blocking one silently stalls the
+    // whole reactor on the first accept.
+    listener.set_nonblocking(true)?;
+
+    let router = build_router(state);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let listener = {
+        let _guard = runtime.enter();
+        tokio::net::TcpListener::from_std(listener)?
+    };
+    serve_on(runtime, listener, bound, router)
+}
+
+/// Hand a bound listener to a serving thread.
+fn serve_on(
+    runtime: tokio::runtime::Runtime,
+    listener: tokio::net::TcpListener,
+    bound: SocketAddr,
+    router: Router,
+) -> Result<(SocketAddr, std::thread::JoinHandle<()>), HttpError> {
     let handle = std::thread::Builder::new()
         .name("rpprobed-http".into())
         .spawn(move || {
