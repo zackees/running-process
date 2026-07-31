@@ -394,7 +394,10 @@ jobs:
   build-wheels-linux-x86:
     name: Build wheels (linux x86)
     needs: [preflight, build-sidecars]
-    if: needs.preflight.outputs.pypi_complete != 'true'
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
     uses: ./.github/workflows/_build.yml
     with:
       runs-on: ubuntu-24.04
@@ -409,7 +412,10 @@ jobs:
   build-wheels-linux-arm:
     name: Build wheels (linux arm)
     needs: [preflight, build-sidecars]
-    if: needs.preflight.outputs.pypi_complete != 'true'
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
     uses: ./.github/workflows/_build.yml
     with:
       runs-on: ubuntu-24.04-arm
@@ -423,7 +429,10 @@ jobs:
   build-wheels-macos-x86:
     name: Build wheels (macos x86)
     needs: [preflight, build-sidecars]
-    if: needs.preflight.outputs.pypi_complete != 'true'
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
     uses: ./.github/workflows/_build.yml
     with:
       runs-on: macos-15-intel
@@ -434,7 +443,10 @@ jobs:
   build-wheels-macos-arm:
     name: Build wheels (macos arm)
     needs: [preflight, build-sidecars]
-    if: needs.preflight.outputs.pypi_complete != 'true'
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
     uses: ./.github/workflows/_build.yml
     with:
       runs-on: macos-15
@@ -445,7 +457,10 @@ jobs:
   build-wheels-windows-x86:
     name: Build wheels (windows x86)
     needs: [preflight, build-sidecars]
-    if: needs.preflight.outputs.pypi_complete != 'true'
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
     uses: ./.github/workflows/_build.yml
     with:
       runs-on: windows-2025
@@ -456,7 +471,10 @@ jobs:
   build-wheels-windows-arm:
     name: Build wheels (windows arm)
     needs: [preflight, build-sidecars]
-    if: needs.preflight.outputs.pypi_complete != 'true'
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
     uses: ./.github/workflows/_build.yml
     with:
       runs-on: windows-11-arm
