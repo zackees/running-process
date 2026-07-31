@@ -24,6 +24,7 @@
 use std::path::PathBuf;
 
 pub mod ico;
+mod osc;
 
 /// Where an icon comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,11 +65,56 @@ pub enum StockIcon {
     Shield,
 }
 
+impl StockIcon {
+    /// The symbolic name sent by the OSC 1 fallback.
+    ///
+    /// freedesktop icon-naming-spec names rather than this crate's variant
+    /// spelling: a terminal or window manager that does anything at all with
+    /// OSC 1 looks the name up in the desktop icon theme, so a bespoke name
+    /// would resolve to nothing on every host.
+    pub fn osc_name(self) -> &'static str {
+        match self {
+            Self::Application => "application-x-executable",
+            Self::Warning => "dialog-warning",
+            Self::Error => "dialog-error",
+            Self::Information => "dialog-information",
+            Self::Shield => "security-high",
+        }
+    }
+}
+
 /// Whether this process can set its host window's icon.
+///
+/// # Capability matrix
+///
+/// | Host | Verdict | Backend |
+/// |---|---|---|
+/// | Windows conhost | `Available` | `WM_SETICON` |
+/// | Windows Terminal | `Degraded` | OSC 1 name only; set the profile's `icon` field for a real image |
+/// | Other Windows emulators | `Degraded` | OSC 1 name only |
+/// | Linux X11 | `Degraded` | OSC 1 name only (`_NET_WM_ICON` not yet implemented) |
+/// | Linux Wayland | `Unsupported` | compositors do not let a client set another window's icon |
+/// | macOS | `Unsupported` | the window belongs to Terminal.app / iTerm2, not to this process |
+/// | No terminal | `Unsupported` | nothing to set an icon on |
+///
+/// An out-of-date row here is a documentation regression: callers decide
+/// whether to ship an icon at all based on this table.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum IconSupport {
     /// The host window accepts an icon.
     Available,
+    /// The host accepts only a symbolic *name*, not an image.
+    ///
+    /// Reported rather than folded into `Available` because the difference is
+    /// visible to the user: an OSC 1 name may be shown, ignored, or applied
+    /// to something other than the window icon, and a caller told "yes" that
+    /// then sees nothing change cannot tell a failure from a terminal that
+    /// simply does not do icons.
+    Degraded {
+        /// What will actually happen, and why it is less than asked for.
+        reason: &'static str,
+    },
     /// It does not, and this is why.
     ///
     /// The reason is carried so a caller can log something an operator can
@@ -80,16 +126,30 @@ pub enum IconSupport {
 }
 
 impl IconSupport {
-    /// Whether the icon can actually be set.
+    /// Whether a real image icon can be set.
+    ///
+    /// False for [`IconSupport::Degraded`]: a caller choosing whether to embed
+    /// and ship an icon file wants to know whether the file will be used, and
+    /// on a degraded host it will not be.
     pub fn is_available(&self) -> bool {
         matches!(self, Self::Available)
     }
 
-    /// The reason support is absent, if it is.
+    /// Whether an attempt will do *something*, image or not.
+    ///
+    /// True for both [`IconSupport::Available`] and
+    /// [`IconSupport::Degraded`] — the distinction a caller wants when
+    /// deciding whether to bother calling at all, as opposed to whether to
+    /// ship an image.
+    pub fn is_attemptable(&self) -> bool {
+        !matches!(self, Self::Unsupported { .. })
+    }
+
+    /// The reason support is absent or reduced, if it is.
     pub fn reason(&self) -> Option<&'static str> {
         match self {
             Self::Available => None,
-            Self::Unsupported { reason } => Some(reason),
+            Self::Degraded { reason } | Self::Unsupported { reason } => Some(reason),
         }
     }
 }
@@ -123,6 +183,15 @@ pub enum IconError {
     /// something the OS will not decode.
     #[error("the system refused the icon data: {0}")]
     Apply(#[source] std::io::Error),
+    /// The host accepts only a symbolic name, and this source is not one.
+    ///
+    /// Distinct from [`IconError::Unsupported`]: the host *would* accept a
+    /// stock icon, so the remedy is to pass one rather than to give up.
+    #[error("this host accepts only a stock icon name, not an image file or bytes: {reason}")]
+    DegradedSourceUnsupported {
+        /// What the host will and will not accept.
+        reason: &'static str,
+    },
     /// The supplied bytes are not a usable icon.
     ///
     /// Separate from [`IconError::Load`] because the remedy differs: a bad
@@ -197,6 +266,13 @@ fn set_icon_given(
 ) -> Result<(), IconError> {
     match support {
         IconSupport::Available => imp::set_icon(scope, source),
+        // Only a stock name has anything to send. A file or a byte blob would
+        // mean inventing a name the caller never chose, and OSC 1 carries a
+        // name rather than an image.
+        IconSupport::Degraded { reason } => match source {
+            IconSource::Stock(icon) => osc::emit(icon.osc_name()).map_err(IconError::Apply),
+            _ => Err(IconError::DegradedSourceUnsupported { reason }),
+        },
         IconSupport::Unsupported { reason } => Err(IconError::Unsupported { reason }),
     }
 }
@@ -291,6 +367,15 @@ mod imp {
                 },
             };
         }
+        // Checked before the window class because it yields a remedy the
+        // class check cannot: Windows Terminal *does* support a per-profile
+        // icon, just not one set at runtime. "Set the profile's icon field"
+        // is actionable; "your host owns its decoration" is not.
+        if std::env::var_os("WT_SESSION").is_some() {
+            return IconSupport::Degraded {
+                reason: "Windows Terminal owns its window decoration and ignores WM_SETICON.                          Set the `icon` field on the WT profile for a real image; a stock name                          can still be sent via OSC 1",
+            };
+        }
         let Some(hwnd) = console_window() else {
             return IconSupport::Unsupported {
                 reason: "this process has no console window (detached, or output is redirected \
@@ -300,10 +385,10 @@ mod imp {
         if class_name(hwnd) == CONHOST_CLASS {
             return IconSupport::Available;
         }
-        IconSupport::Unsupported {
-            reason: "the host is not the classic console (conhost). Windows Terminal and other \
-                     modern emulators own their window decoration; setting an icon would \
-                     silently do nothing",
+        IconSupport::Degraded {
+            reason: "the host is not the classic console (conhost). Modern emulators own \
+                     their window decoration and ignore WM_SETICON; a stock name can still \
+                     be sent via OSC 1",
         }
     }
 
@@ -413,8 +498,26 @@ mod imp {
     use super::{IconError, IconScope, IconSource, IconSupport};
 
     pub(super) fn icon_support(_scope: IconScope) -> IconSupport {
+        // Per-platform verdicts rather than one blanket string. A caller
+        // logging "unsupported" on macOS and on headless Linux is logging two
+        // different problems, and only one of them has a remedy.
+        if cfg!(target_os = "macos") {
+            return IconSupport::Unsupported {
+                reason: "on macOS the window belongs to Terminal.app or iTerm2, not to this                          process; set the icon on the terminal application's own bundle",
+            };
+        }
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            return IconSupport::Unsupported {
+                reason: "Wayland compositors do not let a client change another window's icon;                          set it in the terminal emulator's .desktop file",
+            };
+        }
+        if std::env::var_os("DISPLAY").is_some() {
+            return IconSupport::Degraded {
+                reason: "the X11 _NET_WM_ICON backend is not implemented yet; a stock name can                          still be sent via OSC 1",
+            };
+        }
         IconSupport::Unsupported {
-            reason: "setting a window icon is implemented on Windows conhost only",
+            reason: "no display server is attached (no DISPLAY or WAYLAND_DISPLAY), so there is                      no window to set an icon on",
         }
     }
 
@@ -438,13 +541,123 @@ mod tests {
         // without a reason would leave a caller with nothing to log.
         match &support {
             IconSupport::Available => assert_eq!(support.reason(), None),
-            IconSupport::Unsupported { reason } => {
-                assert!(!reason.is_empty(), "unsupported must explain itself");
+            IconSupport::Degraded { reason } | IconSupport::Unsupported { reason } => {
+                assert!(!reason.is_empty(), "a reduced verdict must explain itself");
                 assert_eq!(support.reason(), Some(*reason));
             }
         }
     }
 
+    /// Windows Terminal must be detected by env, not only by window class.
+    ///
+    /// The class check cannot distinguish WT from any other non-conhost
+    /// host, and only WT has the specific remedy of a per-profile `icon`
+    /// field. This runs the real detection with the env var set, so the
+    /// branch is exercised rather than assumed.
+    #[test]
+    #[cfg(windows)]
+    fn windows_terminal_is_detected_by_env_and_names_its_remedy() {
+        // SAFETY: single-threaded test process; the var is restored below.
+        let previous = std::env::var_os("WT_SESSION");
+        unsafe { std::env::set_var("WT_SESSION", "test-session") };
+        let support = host_icon_support();
+        match previous {
+            Some(value) => unsafe { std::env::set_var("WT_SESSION", value) },
+            None => unsafe { std::env::remove_var("WT_SESSION") },
+        }
+
+        match support {
+            IconSupport::Degraded { reason } => {
+                assert!(
+                    reason.contains("profile"),
+                    "WT's verdict must point at the profile icon field; got {reason:?}"
+                );
+            }
+            other => panic!("WT_SESSION must yield Degraded, got {other:?}"),
+        }
+    }
+    #[test]
+    fn a_degraded_host_is_attemptable_but_not_available() {
+        // The distinction a caller acts on: `is_available` decides whether
+        // to embed and ship an icon file, `is_attemptable` decides whether
+        // to bother calling at all.
+        let degraded = IconSupport::Degraded {
+            reason: "name only",
+        };
+        assert!(!degraded.is_available());
+        assert!(degraded.is_attemptable());
+        assert_eq!(degraded.reason(), Some("name only"));
+
+        assert!(IconSupport::Available.is_attemptable());
+        assert!(!IconSupport::Unsupported { reason: "no" }.is_attemptable());
+    }
+
+    #[test]
+    fn a_degraded_host_accepts_a_stock_name_and_refuses_an_image() {
+        // OSC 1 carries a name, not an image. Accepting a file here would
+        // mean inventing a name the caller never chose.
+        let degraded = IconSupport::Degraded {
+            reason: "name only",
+        };
+        let refused = set_host_icon_given(
+            degraded.clone(),
+            &IconSource::Path(PathBuf::from("some.ico")),
+        )
+        .expect_err("an image must be refused on a name-only host");
+        match refused {
+            IconError::DegradedSourceUnsupported { reason } => {
+                assert_eq!(reason, "name only");
+            }
+            other => panic!("expected DegradedSourceUnsupported, got {other:?}"),
+        }
+
+        // And it is distinct from Unsupported, because the remedy differs:
+        // pass a stock icon rather than give up.
+        let unsupported = set_host_icon_given(
+            IconSupport::Unsupported {
+                reason: "none at all",
+            },
+            &IconSource::Stock(StockIcon::Shield),
+        )
+        .expect_err("an unsupported host refuses everything");
+        assert!(matches!(unsupported, IconError::Unsupported { .. }));
+    }
+
+    #[test]
+    fn every_stock_icon_maps_to_a_freedesktop_name() {
+        // A bespoke name would resolve to nothing in any desktop icon
+        // theme, which is the only place an OSC 1 name gets looked up.
+        for icon in [
+            StockIcon::Application,
+            StockIcon::Warning,
+            StockIcon::Error,
+            StockIcon::Information,
+            StockIcon::Shield,
+        ] {
+            let name = icon.osc_name();
+            assert!(!name.is_empty(), "{icon:?} has no OSC name");
+            assert!(
+                name.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "{icon:?} -> {name:?} is not a freedesktop-style name"
+            );
+        }
+    }
+
+    #[test]
+    fn stock_names_are_distinct() {
+        // Two icons sharing a name would silently show the wrong one.
+        let names: std::collections::BTreeSet<&str> = [
+            StockIcon::Application,
+            StockIcon::Warning,
+            StockIcon::Error,
+            StockIcon::Information,
+            StockIcon::Shield,
+        ]
+        .into_iter()
+        .map(StockIcon::osc_name)
+        .collect();
+        assert_eq!(names.len(), 5);
+    }
     #[test]
     fn availability_and_reason_are_consistent() {
         assert!(IconSupport::Available.is_available());
