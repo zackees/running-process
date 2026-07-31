@@ -28,6 +28,15 @@ def _expected_build_testbins_cmd() -> list[str]:
     return ["cargo", "build", "-p", "testbins"]
 
 
+def _expected_build_tokio_fixture_cmd() -> list[str]:
+    """The console-subscriber fixture is a separate workspace (#788).
+
+    Built with `--cfg tokio_unstable` via `extra_env`, which cargo cannot
+    scope to one crate inside a workspace.
+    """
+    return ["cargo", "build", "--manifest-path", "testbins-tokio/Cargo.toml"]
+
+
 def _expected_cargo_build_tests_cmd() -> list[str]:
     """Build the expected unsupervised nextest --no-run command."""
     return ["cargo", "nextest", "run", "--workspace", "--no-run"]
@@ -139,9 +148,11 @@ def test_prune_invalid_profraw_preserves_evidence_before_removal(
         {
             "filename": "invalid.profraw",
             "original_path": str(invalid),
-            "preserved_path": "nested\\invalid.profraw"
-            if sys.platform == "win32"
-            else "nested/invalid.profraw",
+            "preserved_path": (
+                "nested\\invalid.profraw"
+                if sys.platform == "win32"
+                else "nested/invalid.profraw"
+            ),
             "probe_command": [
                 sys.executable,
                 str(fake_profdata),
@@ -171,12 +182,12 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     monkeypatch.setattr(
         ci_test,
         "run",
-        lambda cmd: commands.append(list(cmd)) or 0,
+        lambda cmd, extra_env=None: commands.append(list(cmd)) or 0,
     )
     monkeypatch.setattr(
         ci_test,
         "run_live",
-        lambda cmd: commands.append(list(cmd)) or 0,
+        lambda cmd, extra_env=None: commands.append(list(cmd)) or 0,
     )
 
     result = ci_test.main([])
@@ -187,6 +198,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
     assert result == 0
     assert commands == [
         _expected_build_testbins_cmd(),
+        _expected_build_tokio_fixture_cmd(),
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
@@ -235,7 +247,7 @@ def test_main_skips_dev_wheel_reinstall_when_running_under_cli(monkeypatch) -> N
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", fake_ensure_dev_wheel)
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(ci_test, "run", lambda cmd: 0)
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: 0)
     monkeypatch.setattr(ci_test, "run_live", lambda cmd: 0)
 
     result = ci_test.main([])
@@ -255,8 +267,12 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
-    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(
+        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
+    )
+    monkeypatch.setattr(
+        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
+    )
 
     result = ci_test.main([])
 
@@ -265,6 +281,7 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     assert result == 0
     assert commands == [
         _expected_build_testbins_cmd(),
+        _expected_build_tokio_fixture_cmd(),
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
@@ -297,8 +314,12 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
-    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(
+        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
+    )
+    monkeypatch.setattr(
+        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
+    )
 
     result = ci_test.main([])
 
@@ -307,6 +328,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     assert result == 0
     assert commands == [
         _expected_build_testbins_cmd(),
+        _expected_build_tokio_fixture_cmd(),
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
@@ -391,7 +413,9 @@ def test_pytest_exit_is_acceptable_only_allows_no_tests_for_targeted_runs() -> N
     assert ci_test._pytest_exit_is_acceptable(5, ["tests/test_pty_support.py"]) is True
 
 
-def test_main_allows_targeted_live_selection_with_no_matching_tests(monkeypatch) -> None:
+def test_main_allows_targeted_live_selection_with_no_matching_tests(
+    monkeypatch,
+) -> None:
     fake_python = Path("/tmp/fake-venv/bin/python")
 
     monkeypatch.setenv(ci_test.SKIP_LINUX_DOCKER_ENV, "1")
@@ -402,7 +426,7 @@ def test_main_allows_targeted_live_selection_with_no_matching_tests(monkeypatch)
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(ci_test, "run", lambda cmd: 0)
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: 0)
     monkeypatch.setattr(ci_test, "run_live", lambda cmd: 5)
 
     result = ci_test.main(["tests/test_pty_support.py"])
@@ -422,8 +446,12 @@ def test_main_live_only_runs_only_live_pytest_through_cli(monkeypatch) -> None:
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
-    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(
+        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
+    )
+    monkeypatch.setattr(
+        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
+    )
 
     result = ci_test.main(["--live-only", "tests/test_pty_support.py"])
 
@@ -450,7 +478,9 @@ def test_main_live_only_runs_only_live_pytest_through_cli(monkeypatch) -> None:
     ]
 
 
-def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monkeypatch) -> None:
+def test_main_builds_release_wheel_before_live_tests_when_symbols_required(
+    monkeypatch,
+) -> None:
     commands: list[list[str]] = []
     fake_python = Path("/tmp/fake-venv/bin/python")
 
@@ -464,8 +494,12 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(ci_test, "run", lambda cmd: commands.append(list(cmd)) or 0)
-    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(
+        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
+    )
+    monkeypatch.setattr(
+        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
+    )
 
     result = ci_test.main(["--no-skip"])
 
@@ -477,6 +511,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(monke
     assert os.environ["RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS"] == "1"
     assert commands == [
         _expected_build_testbins_cmd(),
+        _expected_build_tokio_fixture_cmd(),
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
@@ -649,7 +684,7 @@ def test_main_aborts_coverage_before_running_tests_when_profdata_faults(
     monkeypatch.setattr(
         ci_test,
         "run",
-        lambda cmd: commands.append(list(cmd)) or 0,
+        lambda cmd, extra_env=None: commands.append(list(cmd)) or 0,
     )
     monkeypatch.setattr(
         ci_test,
@@ -683,12 +718,12 @@ def test_main_runs_coverage_when_the_preflight_passes(
     monkeypatch.setattr(
         ci_test,
         "run",
-        lambda cmd: commands.append(list(cmd)) or 0,
+        lambda cmd, extra_env=None: commands.append(list(cmd)) or 0,
     )
 
     result = ci_test.main(["--coverage"])
 
     assert result == 0
-    assert any("llvm-cov" in " ".join(cmd) for cmd in commands), (
-        f"coverage should have run; issued {commands}"
-    )
+    assert any(
+        "llvm-cov" in " ".join(cmd) for cmd in commands
+    ), f"coverage should have run; issued {commands}"
