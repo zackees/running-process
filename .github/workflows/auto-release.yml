@@ -399,6 +399,9 @@ jobs:
     with:
       runs-on: ubuntu-24.04
       artifact-name: wheels-linux-x86
+      # manylinux2014 is produced where glibc 2.17 actually lives, rather
+      # than by linking through zig to fake a baseline older than the host.
+      container: quay.io/pypa/manylinux2014_x86_64
       build-mode: release
       include-sdist: true
       sidecar-manifest-artifact: conpty-sidecars
@@ -411,6 +414,9 @@ jobs:
     with:
       runs-on: ubuntu-24.04-arm
       artifact-name: wheels-linux-arm
+      # manylinux2014 is produced where glibc 2.17 actually lives, rather
+      # than by linking through zig to fake a baseline older than the host.
+      container: quay.io/pypa/manylinux2014_aarch64
       build-mode: release
       sidecar-manifest-artifact: conpty-sidecars
 
