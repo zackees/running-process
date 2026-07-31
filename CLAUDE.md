@@ -88,6 +88,35 @@ The lint pass also runs `ci/spawn_path_guard.py`, which forbids raw `Command::ne
 
 **Wrong toolchain?** Invoke build commands as `soldr cargo …`, `soldr rustc …`, `soldr rustfmt …`. The globally installed [soldr](https://github.com/zackees/soldr) binary resolves the rustup-managed toolchain via `rustup which` — handy on Windows where chocolatey cargo or other stale shims can take precedence on PATH. Install soldr globally (it is no longer pulled in as a uv dev dep) — e.g. `pipx install soldr` or `cargo install soldr`. CI Python (`ci/soldr.py:cargo_command`) detects soldr on PATH and routes through it automatically, falling back to raw `cargo` on CI runners where soldr isn't installed.
 
+**Cross-compiling? Use `soldr build --target <triple>`, not `soldr cargo build --target`.**
+`soldr build` is soldr's blessed cross-compile surface: it prepares the target
+sysroot and the compiler/linker environment, including the managed xwin cache
+with clang/lld for `*-pc-windows-msvc`. This is how `auto-release.yml` builds all
+six binary targets from one Linux runner family, and `ci/cross_compiler_guard.py`
+fails lint if anyone reintroduces `cargo-zigbuild`, `cargo-xwin`, `cross`, the
+`ziglang` package, maturin's zig flag, or the `maturin[zig]` extra.
+
+**Known hazard — `soldr build` cannot build `testbins` right now.** soldr ships a
+prebuilt *upstream* mimalloc in its syslib catalogue and injects it for any crate
+declaring `links = "mimalloc"`. `mimalloc-pprof` is a fork with extra symbols
+(`mi_prof_*`, `mi_unwrapped_*`), so the substitution drops them and the link dies
+with `LNK2019: unresolved external symbol mi_prof_start_ex`:
+
+```
+soldr build -p testbins --target x86_64-pc-windows-msvc   # fails
+soldr cargo build -p testbins --target x86_64-pc-windows-msvc   # works
+```
+
+Use `soldr cargo build` for anything pulling in `mimalloc-pprof` until
+[zackees/soldr#2142](https://github.com/zackees/soldr/issues/2142) is fixed. The
+release workflow is unaffected because it builds only `runpm` and
+`running-process-daemon`, neither of which links that crate — but that stops being
+true the moment heap profiling ships in a released binary.
+
+Only forks are affected: `zstd-sys` (`links = "zstd"`) and `libsqlite3-sys`
+(`links = "sqlite3"`) also hit the catalogue and substitute cleanly, because they
+are stock upstream.
+
 **Environment:**
 ```bash
 . ./activate.sh              # Activate dev environment (git-bash on Windows)
