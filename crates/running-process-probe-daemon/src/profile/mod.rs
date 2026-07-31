@@ -33,6 +33,7 @@ use std::time::Duration;
 pub mod export;
 pub mod ingest;
 pub mod session;
+pub mod store;
 pub mod symbolize;
 
 #[cfg(test)]

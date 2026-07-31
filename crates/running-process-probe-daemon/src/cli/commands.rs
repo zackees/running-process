@@ -4,7 +4,7 @@ use running_process_probe::probe_diag::v1 as wire;
 use running_process_probe::probe_diag::v1::probe_envelope::Body;
 
 use crate::cli::render;
-use crate::cli::transport::{http_get, load_discovery, CliError, Client};
+use crate::cli::transport::{http_get, http_post, load_discovery, CliError, Client};
 use crate::cli::{Cli, Command, DEFAULT_LIMIT};
 use crate::discovery::DiscoveryInfo;
 
@@ -104,6 +104,52 @@ pub fn dispatch(cli: &Cli) -> Result<String, CliError> {
                 bytes.len(),
                 destination.display()
             ))
+        }
+
+        Command::Profile {
+            seconds,
+            hz,
+            format,
+            out,
+        } => {
+            let mut url = format!("/v1/profile?seconds={seconds}");
+            if let Some(hz) = hz {
+                url.push_str(&format!("&hz={hz}"));
+            }
+            // The daemon runs the session, so this request takes as long as
+            // the profile does.
+            let response = http_post(&info, &url)?;
+            let parsed: serde_json::Value = serde_json::from_slice(&response)
+                .map_err(|error| CliError::UnexpectedReply(error.to_string()))?;
+            let id = parsed["id"]
+                .as_u64()
+                .ok_or_else(|| CliError::UnexpectedReply("profile reply carried no id".into()))?;
+
+            let bytes = http_get(&info, &format!("/v1/profiles/{id}/export/{format}"))?;
+            let destination = out
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(format!("profile-{id}.{format}")));
+            std::fs::write(&destination, &bytes)?;
+
+            if cli.json {
+                Ok(format!(
+                    "{parsed}
+"
+                ))
+            } else {
+                Ok(format!(
+                    "captured {} sample(s) across {} thread(s), {:.1}% overhead
+                     wrote {} bytes to {}
+                     flame graph: http://127.0.0.1:{}/v1/profiles/{id}/flamegraph
+",
+                    parsed["samples_captured"].as_u64().unwrap_or(0),
+                    parsed["threads_seen"].as_u64().unwrap_or(0),
+                    parsed["overhead_ratio"].as_f64().unwrap_or(0.0) * 100.0,
+                    bytes.len(),
+                    destination.display(),
+                    info.http_port,
+                ))
+            }
         }
 
         Command::Doctor => doctor(cli, &path, &info),

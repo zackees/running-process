@@ -168,13 +168,28 @@ fn deadline_from_now(timeout: Duration) -> u64 {
 /// HTTP stack to talk to `127.0.0.1` would be the largest dependency in the
 /// binary for the least of its work.
 pub fn http_get(info: &DiscoveryInfo, path: &str) -> Result<Vec<u8>, CliError> {
+    request(info, "GET", path, Duration::from_secs(30))
+}
+
+/// Send one request and return its body, failing on a non-200 status.
+fn request(
+    info: &DiscoveryInfo,
+    method: &str,
+    path: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>, CliError> {
     use std::io::{BufRead, BufReader, Read, Write};
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", info.http_port))
         .map_err(CliError::Unreachable)?;
+    // Bounded, so a wedged daemon fails the command instead of hanging a
+    // terminal indefinitely.
+    stream.set_read_timeout(Some(timeout))?;
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+         Authorization: Bearer {}\r\nContent-Length: 0\r\n\
+         Connection: close\r\n\r\n",
         info.bearer_token
     )?;
     stream.flush()?;
@@ -215,6 +230,19 @@ pub fn http_get(info: &DiscoveryInfo, path: &str) -> Result<Vec<u8>, CliError> {
         )));
     }
     Ok(body)
+}
+
+/// POST one URL on the daemon's HTTP surface.
+///
+/// Shares `http_get`'s hand-rolled request for the same reason: the CLI
+/// already links a socket transport, and adding a TLS-capable HTTP stack to
+/// talk to `127.0.0.1` would be the largest dependency in the binary for the
+/// least of its work.
+///
+/// The read timeout is generous because a profile request blocks for the whole
+/// session — up to the daemon's sixty-second ceiling plus symbolization.
+pub fn http_post(info: &DiscoveryInfo, path: &str) -> Result<Vec<u8>, CliError> {
+    request(info, "POST", path, Duration::from_secs(180))
 }
 
 /// Undo `Transfer-Encoding: chunked`.

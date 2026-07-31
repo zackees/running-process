@@ -350,82 +350,89 @@ pub async fn snapshot(
     }
 }
 
-/// `GET /v1/flame` — a collapsed-stack artifact as a tree the UI can draw.
+/// `POST /v1/profile` — capture a CPU profile of this daemon's host process.
 #[derive(Debug, Deserialize)]
-pub struct FlameParams {
-    /// Artifact id to render.
-    pub artifact: i64,
+pub struct ProfileParams {
+    /// Sampling frequency in hertz. Clamped by the profiler.
+    pub hz: Option<u32>,
+    /// Duration in seconds. Clamped by the profiler to its hard ceiling.
+    pub seconds: Option<u64>,
 }
 
-/// One node of the flame tree.
-#[derive(Debug, Default, Serialize)]
-pub struct FlameNode {
-    /// Frame name.
-    pub name: String,
-    /// Samples in this subtree.
-    pub value: u64,
-    /// Callees.
-    pub children: Vec<FlameNode>,
+/// A captured profile and what it cost.
+#[derive(Debug, Serialize)]
+pub struct ProfileResponse {
+    /// Id to render or download it by.
+    pub id: u64,
+    /// Samples that reached the ring.
+    pub samples_captured: u64,
+    /// Samples discarded because the ring was full.
+    pub samples_dropped: u64,
+    /// Distinct threads observed.
+    pub threads_seen: u64,
+    /// Fraction of live threads the profile covered.
+    pub thread_coverage: f64,
+    /// Fraction of the session the target spent suspended.
+    pub overhead_ratio: f64,
+    /// Effective frequency after clamping.
+    pub hz: u32,
+    /// Whether the request was reduced to fit the enforced bounds.
+    pub clamped: bool,
+    /// Where to see it.
+    pub flamegraph_url: String,
 }
 
-/// Render one collapsed-stack artifact as a tree the UI can draw.
-pub async fn flame(
-    State(state): State<HttpState>,
-    Query(params): Query<FlameParams>,
-) -> ApiResult<FlameNode> {
-    let store = state
-        .ops()
-        .crash_store()
-        .ok_or_else(|| ApiError::new("unavailable", "this daemon has no artifact store"))?;
-    let guard = store
-        .begin_fetch(params.artifact)
-        .map_err(|error| ApiError::new("unavailable", error.to_string()))?
-        .ok_or_else(|| ApiError::new("not_found", "no artifact with that id"))?;
-
-    let text = std::fs::read_to_string(guard.path())
-        .map_err(|error| ApiError::new("unreadable", error.to_string()))?;
-    Ok(Json(collapsed_to_tree(&text)))
-}
-
-/// Fold collapsed-stack lines (`a;b;c 42`) into a tree.
+/// Capture a CPU profile.
 ///
-/// The collapsed format is one line per unique stack with a sample count, so
-/// folding is a prefix merge. Malformed lines are skipped rather than failing
-/// the request: a profile is a sampled artifact, and losing one line of it is
-/// strictly better than showing the operator nothing.
-pub fn collapsed_to_tree(text: &str) -> FlameNode {
-    let mut root = FlameNode {
-        name: "root".to_string(),
-        ..FlameNode::default()
+/// Runs on a blocking thread: sampling suspends sibling threads for the whole
+/// session, and doing that on an async worker would stall every other request
+/// the runtime is serving for as long as the profile lasts.
+pub async fn profile(
+    State(state): State<HttpState>,
+    Query(params): Query<ProfileParams>,
+) -> ApiResult<ProfileResponse> {
+    use crate::profile::{ModuleResolver, ProfileRequest, ProfileSession};
+
+    let requested = ProfileRequest {
+        hz: params.hz.unwrap_or(crate::profile::DEFAULT_HZ),
+        duration: std::time::Duration::from_secs(params.seconds.unwrap_or(5)),
     };
 
-    for line in text.lines() {
-        let line = line.trim();
-        let Some((stack, count)) = line.rsplit_once(' ') else {
-            continue;
-        };
-        let Ok(count) = count.parse::<u64>() else {
-            continue;
-        };
-        root.value += count;
+    let profiles = std::sync::Arc::clone(state.profiles());
+    let captured = tokio::task::spawn_blocking(move || {
+        let session = ProfileSession::new(requested);
+        let metrics = session.run();
+        let mut resolver = ModuleResolver::for_current_process().ok()?;
+        let result = session.resolve(&mut resolver, metrics);
+        let id = profiles.insert(result.clone());
+        Some((id, result))
+    })
+    .await
+    .map_err(|error| ApiError::new("profile_failed", error.to_string()))?;
 
-        let mut node = &mut root;
-        for frame in stack.split(';').filter(|f| !f.is_empty()) {
-            let index = match node.children.iter().position(|c| c.name == frame) {
-                Some(index) => index,
-                None => {
-                    node.children.push(FlameNode {
-                        name: frame.to_string(),
-                        ..FlameNode::default()
-                    });
-                    node.children.len() - 1
-                }
-            };
-            node = &mut node.children[index];
-            node.value += count;
-        }
-    }
-    root
+    let Some((id, result)) = captured else {
+        return Err(ApiError::new(
+            "unsupported",
+            "this platform has no cooperative capture backend",
+        ));
+    };
+
+    Ok(Json(ProfileResponse {
+        id,
+        samples_captured: result.metrics.samples_captured,
+        samples_dropped: result.metrics.samples_dropped,
+        threads_seen: result.metrics.threads_seen,
+        thread_coverage: result.metrics.thread_coverage(),
+        overhead_ratio: result.metrics.overhead_ratio(),
+        hz: result.metrics.hz,
+        clamped: requested.was_clamped(),
+        flamegraph_url: format!("/v1/profiles/{id}/flamegraph"),
+    }))
+}
+
+/// `GET /v1/profiles` — ids currently retained, newest first.
+pub async fn profiles(State(state): State<HttpState>) -> ApiResult<Vec<u64>> {
+    Ok(Json(state.profiles().ids()))
 }
 
 /// Run a request through the shared core as the daemon's own owner.

@@ -33,6 +33,7 @@ use crate::probe_ops::ProbeOps;
 
 pub mod artifacts;
 pub mod auth;
+pub mod flamegraph;
 pub mod handlers;
 pub mod ui;
 
@@ -77,6 +78,7 @@ pub enum HttpError {
 pub struct HttpState {
     ops: Arc<ProbeOps>,
     token: Arc<String>,
+    profiles: Arc<crate::profile::store::ProfileStore>,
 }
 
 impl std::fmt::Debug for HttpState {
@@ -99,7 +101,14 @@ impl HttpState {
         Self {
             ops,
             token: Arc::new(token),
+            profiles: Arc::new(crate::profile::store::ProfileStore::new()),
         }
+    }
+
+    /// Finished profiles, retained briefly so the UI can render and download
+    /// them. Ephemeral on purpose — see [`crate::profile::store`].
+    pub fn profiles(&self) -> &Arc<crate::profile::store::ProfileStore> {
+        &self.profiles
     }
 
     /// The shared request core. The same one the control socket dispatches to.
@@ -127,7 +136,14 @@ pub fn build_router(state: HttpState) -> Router {
         .route("/v1/crashes", get(handlers::crashes))
         .route("/v1/crashes/stats", get(handlers::crash_stats))
         .route("/v1/snapshot", post(handlers::snapshot))
-        .route("/v1/flame", get(handlers::flame))
+        .route("/v1/profile", post(handlers::profile))
+        .route("/v1/profiles", get(handlers::profiles))
+        .route("/v1/profiles/{id}/flamegraph", get(flamegraph::page))
+        .route(
+            "/v1/profiles/{id}/export/{format}",
+            get(flamegraph::download),
+        )
+        .route("/v1/flame", get(flamegraph::tree))
         .route("/v1/artifacts/{id}", get(artifacts::download))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -175,11 +191,20 @@ pub fn default_bind() -> SocketAddr {
 /// daemon has to publish it in the discovery file *before* it starts serving,
 /// or a client that read the file would race the listener.
 pub async fn serve(listener: tokio::net::TcpListener, state: HttpState) -> Result<(), HttpError> {
+    let router = build_router(state);
+    serve_router(listener, router).await
+}
+
+/// Serve an already-built router.
+///
+/// Split out so [`spawn`] can construct the router on the *calling* thread:
+/// axum validates routes by panicking, and a panic on the serving thread
+/// leaves the daemon up with no HTTP surface and only a stray stderr line to
+/// say so.
+async fn serve_router(listener: tokio::net::TcpListener, router: Router) -> Result<(), HttpError> {
     let addr = listener.local_addr()?;
     check_bind(addr)?;
-    axum::serve(listener, build_router(state))
-        .await
-        .map_err(HttpError::from)
+    axum::serve(listener, router).await.map_err(HttpError::from)
 }
 
 /// Start the HTTP surface on its own runtime thread.
@@ -200,15 +225,21 @@ pub fn spawn(
         .enable_all()
         .build()?;
 
-    // Bind on this thread so the caller gets the resolved port synchronously
-    // and can publish it before anything is served.
+    // Build the router here, not on the serving thread. axum validates routes
+    // by panicking, and a panic over there would leave the daemon running with
+    // no HTTP surface and nothing but a stray line on stderr to say so — which
+    // is how a malformed route slipped past a full test run once already.
+    let router = build_router(state);
+
+    // Bind on this thread too, so the caller gets the resolved port
+    // synchronously and can publish it before anything is served.
     let listener = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
     let bound = listener.local_addr()?;
 
     let handle = std::thread::Builder::new()
         .name("rpprobed-http".into())
         .spawn(move || {
-            if let Err(error) = runtime.block_on(serve(listener, state)) {
+            if let Err(error) = runtime.block_on(serve_router(listener, router)) {
                 eprintln!("rpprobed: HTTP surface stopped: {error}");
             }
         })?;
