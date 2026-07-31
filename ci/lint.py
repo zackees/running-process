@@ -65,9 +65,17 @@ def main() -> int:
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.spawn_path_guard")) != 0:
         return 1
-    if run(supervised_command(python, str(python), "-m", "ci.docker_manifest_guard")) != 0:
+    if (
+        run(supervised_command(python, str(python), "-m", "ci.docker_manifest_guard"))
+        != 0
+    ):
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.jemalloc_guard")) != 0:
+        return 1
+    if (
+        run(supervised_command(python, str(python), "-m", "ci.cross_compiler_guard"))
+        != 0
+    ):
         return 1
     # `--check`, not write mode. Plain `cargo fmt --all` reformats the tree
     # and exits 0 whether or not it changed anything, so it can essentially
@@ -75,7 +83,10 @@ def main() -> int:
     # green while the committed tree drifted. It also silently rewrote
     # contributors' working trees, sweeping unrelated files into their
     # commits. Verifying instead of mutating fixes both. See #694.
-    if run(supervised_command(python, *cargo_command("fmt", "--all", "--", "--check"))) != 0:
+    if (
+        run(supervised_command(python, *cargo_command("fmt", "--all", "--", "--check")))
+        != 0
+    ):
         print(
             "lint: formatting drift detected. Run `soldr cargo fmt --all` and "
             "commit the result.",
@@ -83,52 +94,61 @@ def main() -> int:
             flush=True,
         )
         return 1
-    if run(
-        supervised_command(
-            python,
-            *cargo_command(
-                "clippy",
-                "--workspace",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ),
+    if (
+        run(
+            supervised_command(
+                python,
+                *cargo_command(
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ),
+            )
         )
-    ) != 0:
+        != 0
+    ):
         return 1
-    if run(
-        supervised_command(
-            python,
-            str(python),
-            "-m",
-            "ruff",
-            "check",
-            "--fix",
-            "src",
-            "tests",
-            "ci",
+    if (
+        run(
+            supervised_command(
+                python,
+                str(python),
+                "-m",
+                "ruff",
+                "check",
+                "--fix",
+                "src",
+                "tests",
+                "ci",
+            )
         )
-    ) != 0:
+        != 0
+    ):
         return 1
     # KeyboardInterrupt discipline (KBI001/KBI002). Scoped to `src`: the rule
     # is about library code, where an interrupt on a worker thread has to
     # reach the main thread to be seen at all. Test helpers that swallow
     # exceptions in an availability probe are not that.
-    if run(
-        supervised_command(
-            python,
-            str(python),
-            "-m",
-            "ci.lint_python.keyboard_interrupt_checker",
-            "src",
-            "--exclude",
-            ".venv",
-            "venv",
-            "dist",
-            ".build",
+    if (
+        run(
+            supervised_command(
+                python,
+                str(python),
+                "-m",
+                "ci.lint_python.keyboard_interrupt_checker",
+                "src",
+                "--exclude",
+                ".venv",
+                "venv",
+                "dist",
+                ".build",
+            )
         )
-    ) != 0:
+        != 0
+    ):
         print(
             "lint: KeyboardInterrupt handling violations. See CLAUDE.md "
             "'Keyboard interrupts'; suppress a deliberate exception with "

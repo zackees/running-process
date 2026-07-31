@@ -470,27 +470,21 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            builder: zigbuild
             archive_ext: tar.gz
             binary_ext: ""
           - target: aarch64-unknown-linux-gnu
-            builder: zigbuild
             archive_ext: tar.gz
             binary_ext: ""
           - target: x86_64-apple-darwin
-            builder: zigbuild
             archive_ext: tar.gz
             binary_ext: ""
           - target: aarch64-apple-darwin
-            builder: zigbuild
             archive_ext: tar.gz
             binary_ext: ""
           - target: x86_64-pc-windows-msvc
-            builder: xwin
             archive_ext: zip
             binary_ext: ".exe"
           - target: aarch64-pc-windows-msvc
-            builder: xwin
             archive_ext: zip
             binary_ext: ".exe"
     steps:
@@ -518,20 +512,6 @@ jobs:
       - name: Bootstrap soldr
         run: pipx install "soldr==${{ env.SOLDR_VERSION }}"
 
-      # zigbuild supplies a C cross-compiler (zig cc) for the Linux and macOS
-      # targets, which this build needs because the `daemon` feature compiles
-      # bundled sqlite. xwin fetches the MSVC headers/libs for the Windows
-      # targets. Both are cargo subcommands; soldr wraps the cargo invocation.
-      - name: Install cross-compilation backends
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.builder }}" = "zigbuild" ]; then
-            pip install ziglang
-            cargo install cargo-zigbuild --locked
-          else
-            cargo install cargo-xwin --locked
-          fi
-
       # #447: pull the sidecar manifest from build-sidecars so build.rs
       # bakes the per-arch SHAs into the daemon/runpm binaries we ship.
       - uses: actions/download-artifact@v4
@@ -554,7 +534,16 @@ jobs:
           # Wave 7 of #165: both runpm and the daemon binary live inside
           # the mono `running-process` crate now. Building them needs the
           # right feature set per the [[bin]] required-features.
-          soldr cargo ${{ matrix.builder }} --release --target ${{ matrix.target }}             --features daemon             --bin runpm             --bin running-process-daemon
+          # `soldr build`, not `soldr cargo build`: the former is soldr's
+          # blessed cross-compile surface. It prepares the target sysroot and
+          # the compiler/linker environment itself — including the managed
+          # xwin cache with clang/lld for the MSVC targets — so this workflow
+          # installs no cross-compiler of its own. Enforced by
+          # ci/cross_compiler_guard.py.
+          soldr build --release --target ${{ matrix.target }} \
+            --features daemon \
+            --bin runpm \
+            --bin running-process-daemon
 
       - name: Stage release artifacts
         id: stage
