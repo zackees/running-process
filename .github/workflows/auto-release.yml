@@ -13,12 +13,20 @@ on:
         description: Optional tag to publish, for example 3.2.1 or v3.2.1. Leave empty to use the current pyproject version.
         required: false
         type: string
+      dry_run:
+        description: Build everything but publish nothing. Use this to validate a change to this workflow from a PR branch before merging it.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned so a soldr release cannot silently change how release artifacts
+  # are built (#561).
+  SOLDR_VERSION: "1.12.17"
 
 jobs:
   detect-bump:
@@ -435,33 +443,36 @@ jobs:
   build-binaries:
     name: Build standalone binaries (${{ matrix.target }})
     needs: [preflight, build-sidecars]
-    runs-on: ${{ matrix.os }}
+    # One runner family for every target (#561). Previously this matrix used
+    # six native runners; cross-compiling from Linux removes five queues, and
+    # the macOS/Windows runner classes are the scarce ones.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
+            builder: zigbuild
             archive_ext: tar.gz
             binary_ext: ""
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+            builder: zigbuild
             archive_ext: tar.gz
             binary_ext: ""
           - target: x86_64-apple-darwin
-            os: macos-15-intel
+            builder: zigbuild
             archive_ext: tar.gz
             binary_ext: ""
           - target: aarch64-apple-darwin
-            os: macos-15
+            builder: zigbuild
             archive_ext: tar.gz
             binary_ext: ""
           - target: x86_64-pc-windows-msvc
-            os: windows-2025
+            builder: xwin
             archive_ext: zip
             binary_ext: ".exe"
           - target: aarch64-pc-windows-msvc
-            os: windows-11-arm
+            builder: xwin
             archive_ext: zip
             binary_ext: ".exe"
     steps:
@@ -477,6 +488,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-binaries-${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # soldr resolves the rustup-managed toolchain rather than whatever shim
+      # happens to be first on PATH — the same reason the repo requires it
+      # locally. Pinned so a soldr release cannot silently change how release
+      # artifacts are built.
+      - name: Bootstrap soldr
+        run: pipx install "soldr==${{ env.SOLDR_VERSION }}"
+
+      # zigbuild supplies a C cross-compiler (zig cc) for the Linux and macOS
+      # targets, which this build needs because the `daemon` feature compiles
+      # bundled sqlite. xwin fetches the MSVC headers/libs for the Windows
+      # targets. Both are cargo subcommands; soldr wraps the cargo invocation.
+      - name: Install cross-compilation backends
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.builder }}" = "zigbuild" ]; then
+            pip install ziglang
+            cargo install cargo-zigbuild --locked
+          else
+            cargo install cargo-xwin --locked
+          fi
 
       # #447: pull the sidecar manifest from build-sidecars so build.rs
       # bakes the per-arch SHAs into the daemon/runpm binaries we ship.
@@ -500,10 +536,7 @@ jobs:
           # Wave 7 of #165: both runpm and the daemon binary live inside
           # the mono `running-process` crate now. Building them needs the
           # right feature set per the [[bin]] required-features.
-          cargo build --release --target ${{ matrix.target }} \
-            --features daemon \
-            --bin runpm \
-            --bin running-process-daemon
+          soldr cargo ${{ matrix.builder }} --release --target ${{ matrix.target }}             --features daemon             --bin runpm             --bin running-process-daemon
 
       - name: Stage release artifacts
         id: stage
@@ -532,6 +565,30 @@ jobs:
           fi
           echo "archive=dist-binaries/${ARCHIVE_BASENAME}.${ARCHIVE_EXT}" >> "$GITHUB_OUTPUT"
 
+      # A cross-compiled artifact cannot be smoke-tested by running it, so the
+      # check is that it is the right machine type. Without this a
+      # misconfigured target silently ships six copies of the host binary.
+      - name: Verify the artifact is actually for the target architecture
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BINARY_EXT: ${{ matrix.binary_ext }}
+        run: |
+          set -euo pipefail
+          BIN="target/${TARGET}/release/runpm${BINARY_EXT}"
+          echo "file(1) says:"
+          file "$BIN"
+          case "$TARGET" in
+            x86_64-unknown-linux-*)   file "$BIN" | grep -q "x86-64" ;;
+            aarch64-unknown-linux-*)  file "$BIN" | grep -q "aarch64" ;;
+            x86_64-apple-darwin)      file "$BIN" | grep -qi "mach-o.*x86_64" ;;
+            aarch64-apple-darwin)     file "$BIN" | grep -qi "mach-o.*arm64" ;;
+            x86_64-pc-windows-msvc)   file "$BIN" | grep -qi "PE32+.*x86-64" ;;
+            aarch64-pc-windows-msvc)  file "$BIN" | grep -qi "PE32+.*Aarch64" ;;
+            *) echo "unhandled target $TARGET" >&2; exit 1 ;;
+          esac
+          echo "architecture OK for $TARGET"
+
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.target }}
@@ -549,7 +606,7 @@ jobs:
       - build-wheels-macos-arm
       - build-wheels-windows-x86
       - build-wheels-windows-arm
-    if: needs.preflight.outputs.pypi_complete != 'true'
+    if: inputs.dry_run != true && needs.preflight.outputs.pypi_complete != 'true'
     environment: pypi
     permissions:
       contents: read
@@ -583,6 +640,7 @@ jobs:
     # Skip the job entirely if every crate is already on crates.io.
     if: |
       always()
+      && inputs.dry_run != true
       && needs.preflight.result == 'success'
       && needs.preflight.outputs.crates_complete != 'true'
       && needs.build-sidecars.result == 'success'
@@ -679,6 +737,7 @@ jobs:
       - publish-crates
     if: |
       always()
+      && inputs.dry_run != true
       && needs.preflight.result == 'success'
       && needs.build-sidecars.result == 'success'
       && needs.build-binaries.result == 'success'
