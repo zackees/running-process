@@ -104,6 +104,12 @@ ALLOWED_RUST_SPAWN = {
     # in-process daemon worker that ingests already-written fixed-size crash
     # records. It never starts a child process.
     Path("crates/running-process-probe-daemon/src/crash_store.rs"),
+    # Same crate, same reason: the crash-store tests use `thread::scope`
+    # + `scope.spawn` to prove SQLite serializes concurrent writers. These
+    # are in-process threads, not child processes. Listed separately
+    # because the test module moved into its own file to satisfy the
+    # per-file size guard, and this allowlist matches on path.
+    Path("crates/running-process-probe-daemon/src/crash_store/tests.rs"),
     # #635 known-stack test: `thread::Builder::spawn` names the fixture
     # `blocked_marker`; this is an in-process thread, not a child process.
     Path("crates/running-process-probe/src/snapshot/mod.rs"),
