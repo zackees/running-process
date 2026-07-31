@@ -7,7 +7,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Sidecar / file-hook tier for running-process (#539 follow-up #551)"
-publish = false
+# Published, because `running-process`'s `probe` feature depends on it and
+# cargo requires every dependency of a published crate to resolve from the
+# registry. Leaving this false is why `cargo publish -p running-process`
+# fails today with "dependency `running-process-probe` does not specify a
+# version".
+publish = true
 
 # Slice 1 scaffold: the helper binary is an inert placeholder that prints
 # its version banner. Real injection vehicles (DLL/dylib + retour-rs /
