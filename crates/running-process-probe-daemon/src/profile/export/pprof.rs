@@ -11,7 +11,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use prost::Message as _;
 
-use crate::profile::pprof::{Function, Line, Location, Mapping, Profile, Sample, ValueType};
+use crate::profile::pprof::{Function, Label, Line, Location, Mapping, Profile, Sample, ValueType};
 use crate::profile::SessionResult;
 
 /// Interns strings into a pprof string table.
@@ -260,6 +260,144 @@ impl HeapProfileBuilder {
             sample_type,
             sample: self.samples,
             mapping: self.mappings,
+            location: self.locations,
+            function: self.functions,
+            string_table: self.strings.strings,
+            drop_frames: 0,
+            keep_frames: 0,
+            time_nanos: 0,
+            duration_nanos: 0,
+            period_type: None,
+            period: 0,
+            comment: Vec::new(),
+            default_sample_type,
+        }
+        .encode_to_vec()
+    }
+}
+
+/// Builds an off-CPU / async pprof: five value types, plus task labels.
+///
+/// Five, because "why is this slow" has several answers and a viewer
+/// should be able to weight the same graph by whichever is being asked.
+#[derive(Debug, Default)]
+pub struct AsyncProfileBuilder {
+    strings: StringTable,
+    functions: Vec<Function>,
+    function_ids: HashMap<String, u64>,
+    locations: Vec<Location>,
+    location_ids: HashMap<String, u64>,
+    samples: Vec<Sample>,
+}
+
+impl AsyncProfileBuilder {
+    /// An empty builder with the spec-mandated empty string interned at 0.
+    pub fn new() -> Self {
+        Self {
+            strings: StringTable::new(),
+            ..Self::default()
+        }
+    }
+
+    /// Add one task. `stack` is root-first; `values` is
+    /// `[idle_ns, busy_ns, scheduled_ns, polls, wakes]`.
+    pub fn add_sample(&mut self, stack: &[String], values: [i64; 5], task_name: &str) {
+        // pprof wants leaf-first; a spawn chain is naturally root-first.
+        let mut location_id = Vec::with_capacity(stack.len());
+        for frame in stack.iter().rev() {
+            let function_id = match self.function_ids.get(frame) {
+                Some(id) => *id,
+                None => {
+                    let id = self.functions.len() as u64 + 1;
+                    let name = self.strings.intern(frame);
+                    self.functions.push(Function {
+                        id,
+                        name,
+                        system_name: name,
+                        filename: 0,
+                        start_line: 0,
+                    });
+                    self.function_ids.insert(frame.clone(), id);
+                    id
+                }
+            };
+            let id = match self.location_ids.get(frame) {
+                Some(id) => *id,
+                None => {
+                    let id = self.locations.len() as u64 + 1;
+                    self.locations.push(Location {
+                        id,
+                        mapping_id: 0,
+                        address: 0,
+                        line: vec![Line {
+                            function_id,
+                            line: 0,
+                        }],
+                        is_folded: false,
+                    });
+                    self.location_ids.insert(frame.clone(), id);
+                    id
+                }
+            };
+            location_id.push(id);
+        }
+
+        // The task name rides as a label rather than a frame: it identifies
+        // an instance, and folding it into the stack would give every task
+        // its own column and defeat the grouping the graph exists for.
+        let label = if task_name.is_empty() {
+            Vec::new()
+        } else {
+            vec![Label {
+                key: self.strings.intern("task"),
+                str: self.strings.intern(task_name),
+                num: 0,
+                num_unit: 0,
+            }]
+        };
+
+        self.samples.push(Sample {
+            location_id,
+            value: values.to_vec(),
+            label,
+        });
+    }
+
+    /// Finish, returning the encoded protobuf.
+    pub fn finish(mut self) -> Vec<u8> {
+        let nanoseconds = self.strings.intern("nanoseconds");
+        let count = self.strings.intern("count");
+        let sample_type = vec![
+            ValueType {
+                r#type: self.strings.intern("idle"),
+                unit: nanoseconds,
+            },
+            ValueType {
+                r#type: self.strings.intern("busy"),
+                unit: nanoseconds,
+            },
+            ValueType {
+                r#type: self.strings.intern("scheduled"),
+                unit: nanoseconds,
+            },
+            ValueType {
+                r#type: self.strings.intern("polls"),
+                unit: count,
+            },
+            ValueType {
+                r#type: self.strings.intern("wakes"),
+                unit: count,
+            },
+        ];
+        // Index 0 == idle: someone reaching for an off-CPU profile is asking
+        // what is *waiting*, and opening on busy time would show them the CPU
+        // profile they already had.
+        let default_sample_type = sample_type[0].r#type;
+
+        Profile {
+            sample_type,
+            sample: self.samples,
+            mapping: Vec::new(),
             location: self.locations,
             function: self.functions,
             string_table: self.strings.strings,
