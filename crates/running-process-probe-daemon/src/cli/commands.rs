@@ -132,23 +132,33 @@ pub fn dispatch(cli: &Cli) -> Result<String, CliError> {
             std::fs::write(&destination, &bytes)?;
 
             if cli.json {
-                Ok(format!(
-                    "{parsed}
-"
-                ))
+                Ok(format!("{parsed}\n"))
             } else {
-                Ok(format!(
-                    "captured {} sample(s) across {} thread(s), {:.1}% overhead
-                     wrote {} bytes to {}
-                     flame graph: http://127.0.0.1:{}/v1/profiles/{id}/flamegraph
-",
+                // Built line by line rather than with one multi-line format
+                // string: a `\` continuation carries the source's own
+                // indentation into the output, which is exactly how this
+                // printed a ragged block the first time.
+                use std::fmt::Write as _;
+                let mut report = String::new();
+                let _ = writeln!(
+                    report,
+                    "captured {} sample(s) across {} thread(s), {:.1}% overhead",
                     parsed["samples_captured"].as_u64().unwrap_or(0),
                     parsed["threads_seen"].as_u64().unwrap_or(0),
                     parsed["overhead_ratio"].as_f64().unwrap_or(0.0) * 100.0,
+                );
+                let _ = writeln!(
+                    report,
+                    "wrote {} bytes to {}",
                     bytes.len(),
                     destination.display(),
+                );
+                let _ = writeln!(
+                    report,
+                    "flame graph: http://127.0.0.1:{}/v1/profiles/{id}/flamegraph",
                     info.http_port,
-                ))
+                );
+                Ok(report)
             }
         }
 
