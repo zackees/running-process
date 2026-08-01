@@ -49,6 +49,36 @@ use std::process::Command;
 /// handed one over.
 pub const INHERITED_LISTENER_FD_ENV: &str = "RUNNING_PROCESS_BROKER_LISTENER_FD";
 
+/// Opt-in for the launcher to bind the endpoint itself (#500 slice 32).
+///
+/// Off by default, and deliberately so. Turning it on changes how every
+/// backend starts, and two contract questions on #500 are still open: whether
+/// Windows eventually gets a pre-created first pipe instance, and who unlinks
+/// the socket at backend teardown. Until the second is answered a broker-owned
+/// endpoint is never unlinked, so enabling this by default would leak a socket
+/// file per backend launch.
+///
+/// A const rather than a literal because the repo's env-literal lint requires
+/// it, and so a rename cannot leave one spelling in the launcher and another
+/// in a test.
+pub const LAUNCHER_OPT_IN_ENV: &str = "RUNNING_PROCESS_BROKER_OWNED_BIND";
+
+/// Whether the caller asked the launcher to bind the endpoint itself.
+pub fn launcher_opt_in() -> bool {
+    opted_in(std::env::var_os(LAUNCHER_OPT_IN_ENV))
+}
+
+/// The decision, separated from reading the environment.
+///
+/// Split so it can be tested without `set_var`: env-mutating tests race under
+/// a parallel runner, and this crate has been bitten by exactly that. The same
+/// split already exists for the probe's line-number opt-in.
+fn opted_in(value: Option<std::ffi::OsString>) -> bool {
+    // Present-and-not-"0". Treating any set value as yes would make `=0`
+    // enable the thing it names.
+    value.is_some_and(|value| value != "0")
+}
+
 /// Whether this platform can hand a bound listener to a spawned daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Support {
