@@ -8,35 +8,8 @@ use std::path::{Path, PathBuf};
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
 use crate::discovery::{self, DiscoverySource, ResolveOutcome};
+use crate::line_numbers::line_numbers_requested;
 use crate::wire::{DiscoveryConfig, ModuleRef};
-
-/// Opt-in for `file:line` resolution (#803).
-///
-/// Off by default because it is not free: names come from a symbol-table
-/// walk, while line numbers parse `.debug_line` for every module in the
-/// capture. A caller that only wants "which function" should not pay for it.
-///
-/// Declared as a const rather than spelled inline — the repo's env-literal
-/// lint requires it, so a rename cannot leave a stale string behind.
-pub const LINE_NUMBERS_ENV: &str = "RUNNING_PROCESS_PROBE_LINE_NUMBERS";
-
-/// Whether the caller asked for line numbers.
-fn line_numbers_requested() -> bool {
-    requested_from(std::env::var_os(LINE_NUMBERS_ENV))
-}
-
-/// The decision, separated from reading the environment.
-///
-/// Split so it can be tested without `set_var`. Env-mutating tests race under
-/// a parallel runner — one test's variable leaks into another's read — and
-/// this repo has already been bitten by exactly that. A pure function takes
-/// the value as an argument and cannot.
-fn requested_from(value: Option<std::ffi::OsString>) -> bool {
-    // Present-and-not-"0": `=1`, `=true`, or a bare set all mean yes, and an
-    // explicit `=0` means no. Treating any set value as yes would make
-    // `LINE_NUMBERS=0` enable the thing it names.
-    value.is_some_and(|value| value != "0")
-}
 
 /// A verified ELF or Mach-O symbol source.
 pub enum ModuleSymbols {
@@ -505,23 +478,6 @@ mod line_table_tests {
     /// could keep passing while real builds emitted nothing.
     fn self_image() -> std::path::PathBuf {
         std::env::current_exe().expect("current exe")
-    }
-
-    #[test]
-    fn the_opt_in_is_off_by_default_and_respects_an_explicit_zero() {
-        use std::ffi::OsString;
-        // Unset: off. Line resolution costs a `.debug_line` parse per module,
-        // so a caller that never asked must not pay for it.
-        assert!(!requested_from(None));
-        // Set to anything meaningful: on.
-        assert!(requested_from(Some(OsString::from("1"))));
-        assert!(requested_from(Some(OsString::from("true"))));
-        // Bare set, no value: on. Matches how the other probe env vars behave.
-        assert!(requested_from(Some(OsString::from(""))));
-        // Explicitly zero: off. Without this branch, `LINE_NUMBERS=0` would
-        // enable the feature it names — the sort of thing nobody reports
-        // because they assume they set it wrong.
-        assert!(!requested_from(Some(OsString::from("0"))));
     }
 
     #[test]
