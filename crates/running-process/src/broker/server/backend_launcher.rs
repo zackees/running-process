@@ -117,7 +117,44 @@ impl BackendLauncher for CommandBackendLauncher {
         let mut command = Command::new(&binary_path);
         configure_backend_command(&mut command, request, &endpoint);
 
+        // Broker-owned bind (#500 slice 32), opt-in and off by default.
+        //
+        // When enabled and supported, the broker binds the endpoint before
+        // spawning, so it is listening — and clients queue in the accept
+        // backlog — before the daemon's `main` runs. The daemon adopts it in
+        // `bootstrap` rather than binding a second listener.
+        //
+        // Unix-only, and cfg'd rather than stubbed: there is no Windows
+        // listener object to hand over, so there is nothing for this block to
+        // do there. See `broker_owned_bind`'s module docs.
+        //
+        // A bind failure is not fatal. The endpoint is freshly allocated, so
+        // failing to claim it is unexpected rather than a conflict worth
+        // aborting a launch over — falling back gives the spawn-then-probe
+        // behaviour this launcher has always had, and the probe below still
+        // gates success either way.
+        #[cfg(unix)]
+        let mut inherited = broker_owned_listener(&endpoint);
+        #[cfg(unix)]
+        if let Some(listener) = inherited.as_ref() {
+            // Publishing the descriptor must happen before the spawn. Failing
+            // here would leave the child inheriting nothing while the broker
+            // holds a listener nobody serves, so drop ours and let the daemon
+            // bind for itself.
+            if listener.prepare(&mut command).is_err() {
+                inherited = None;
+            }
+        }
+
         let mut child = spawn_daemon(&mut command).map_err(BackendLaunchError::Spawn)?;
+
+        // The child owns the endpoint now. Without this, dropping our listener
+        // unlinks the socket the daemon is serving.
+        #[cfg(unix)]
+        if let Some(listener) = inherited.as_mut() {
+            listener.disown_endpoint();
+        }
+
         let daemon = daemon_identity_for_spawned_process(
             child.id(),
             binary_path,
@@ -138,6 +175,22 @@ impl BackendLauncher for CommandBackendLauncher {
             }
         }
     }
+}
+
+/// Bind the endpoint in the broker, when opted in and supported.
+///
+/// `None` means the daemon binds for itself — the path this launcher has
+/// always taken, and the default.
+#[cfg(unix)]
+fn broker_owned_listener(
+    endpoint: &Endpoint,
+) -> Option<crate::broker::broker_owned_bind::InheritableListener> {
+    use crate::broker::broker_owned_bind::{launcher_opt_in, support, InheritableListener};
+
+    if !launcher_opt_in() || !support().is_supported() {
+        return None;
+    }
+    InheritableListener::bind(&endpoint.path).ok()
 }
 
 fn configure_backend_command(

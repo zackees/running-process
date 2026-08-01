@@ -27,6 +27,28 @@ fn support_is_reported_honestly_for_this_platform() {
 }
 
 #[test]
+fn the_launcher_opt_in_is_off_by_default_and_respects_an_explicit_zero() {
+    use std::ffi::OsString;
+    // Off unless asked. Enabling it changes how every backend starts, and a
+    // broker-owned endpoint is never unlinked until #500 settles who owns
+    // teardown — so a default-on would leak a socket file per launch.
+    assert!(!opted_in(None));
+    assert!(opted_in(Some(OsString::from("1"))));
+    assert!(opted_in(Some(OsString::from("true"))));
+    // Bare set, no value: on. Matches the probe's line-number opt-in.
+    assert!(opted_in(Some(OsString::from(""))));
+    // Explicitly zero: off. Without this branch, `=0` would enable the thing
+    // it names — the sort of bug nobody reports because they assume they set
+    // it wrong.
+    assert!(!opted_in(Some(OsString::from("0"))));
+}
+
+#[test]
+fn the_launcher_opt_in_is_namespaced_to_this_project() {
+    assert!(LAUNCHER_OPT_IN_ENV.starts_with("RUNNING_PROCESS_"));
+}
+
+#[test]
 fn the_env_var_name_is_namespaced_to_this_project() {
     // It lands in the environment of every daemon the broker spawns, so a
     // generic name would be a collision waiting to happen.
