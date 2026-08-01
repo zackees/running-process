@@ -381,8 +381,20 @@ mod tests {
         let guard = install(cfg).expect("install must succeed even with no daemon");
         let elapsed = start.elapsed();
 
+        // Budget deliberately loose. What this asserts is that `install` does
+        // no blocking I/O on the calling thread — a daemon connect that waited
+        // on a timeout would take seconds, and this catches that with room to
+        // spare.
+        //
+        // It was 50ms, which failed under a full `--workspace` run (47 test
+        // binaries in parallel) and passed in isolation, both nextest retries
+        // included. At that tightness the number measures how promptly the OS
+        // scheduled this thread, not the property under test, so a loaded CI
+        // runner turns a correct implementation red. A flaky assertion about
+        // the right thing is worse than a loose one: it trains people to
+        // re-run rather than read.
         assert!(
-            elapsed < Duration::from_millis(50),
+            elapsed < Duration::from_millis(500),
             "install took {elapsed:?}; it must not perform I/O on the calling thread"
         );
         // Not armed — but that is the worker's problem, not the caller's.
