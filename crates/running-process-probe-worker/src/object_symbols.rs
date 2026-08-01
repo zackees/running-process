@@ -72,8 +72,12 @@ pub struct SymbolTable {
 }
 
 impl SymbolTable {
-    #[cfg(test)]
-    fn from_object(path: &Path) -> Option<Self> {
+    /// Parse the symbol table straight out of an object file.
+    ///
+    /// Public so tests outside this module can build one — the discovery path
+    /// verifies build identity, which a synthesised capture cannot satisfy,
+    /// and that verification is not what a resolution test is checking.
+    pub fn from_object_path(path: &Path) -> Option<Self> {
         let bytes = read_bounded(path)?;
         let file = object::File::parse(&*bytes).ok()?;
         Self::from_file(&file)
@@ -539,7 +543,7 @@ mod line_table_tests {
             eprintln!("skipping: no DWARF line program (see sibling test)");
             return;
         };
-        let Some(symbols) = SymbolTable::from_object(&self_image()) else {
+        let Some(symbols) = SymbolTable::from_object_path(&self_image()) else {
             eprintln!("skipping: no symbol table");
             return;
         };
