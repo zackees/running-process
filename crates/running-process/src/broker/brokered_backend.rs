@@ -183,7 +183,25 @@ pub trait BrokeredBackend {
 // `#[allow]` for the case.
 #[allow(unreachable_code)]
 pub fn bootstrap<B: BrokeredBackend>(endpoint: &Endpoint) -> Result<(), BindError> {
-    let listener = B::bind(endpoint)?;
+    // Broker-owned bind (#500 slice 32): when the broker bound the endpoint
+    // and handed the listener over, adopt it instead of binding a second
+    // one. Binding again would fail with `AlreadyBound` against the broker's
+    // own listener — the two paths cannot both claim the endpoint.
+    //
+    // Today nothing sets that variable, so this is `Ok(None)` and the daemon
+    // binds for itself exactly as before. The launcher half lands separately;
+    // this side has to exist first, or enabling it there would break every
+    // launch at once.
+    let listener = match crate::broker::broker_owned_bind::recover_from_env() {
+        Ok(Some(inherited)) => inherited,
+        Ok(None) => B::bind(endpoint)?,
+        // A descriptor was advertised and could not be adopted. Falling back
+        // to `B::bind` here would leave the broker holding a listener nobody
+        // serves while this process binds a second endpoint — a daemon that
+        // looks healthy and is unreachable. Failing closed is the honest
+        // outcome.
+        Err(error) => return Err(BindError::Io(error)),
+    };
     // Lockfile write lands in the v2 broker baseline; once it does,
     // it goes here, between `bind` and `serve`.
     match B::serve(listener) {}
@@ -260,6 +278,36 @@ mod tests {
         // verify the listener was constructed by the daemon-side code
         // path without any state allocation.
         drop(listener);
+    }
+
+    /// With nothing handed over, `bootstrap` binds for itself — the
+    /// behaviour every daemon has today, asserted so the adoption path
+    /// added for #500 cannot silently change it.
+    ///
+    /// Reads the ambient environment rather than setting it: env-mutating
+    /// tests race under a parallel runner, and this crate has been bitten by
+    /// that. The variable is unset in a normal test process, which is exactly
+    /// the case being asserted.
+    #[test]
+    fn without_a_handover_bootstrap_still_binds_for_itself() {
+        if std::env::var_os(crate::broker::broker_owned_bind::INHERITED_LISTENER_FD_ENV).is_some() {
+            eprintln!("skipping: a listener descriptor is set in this environment");
+            return;
+        }
+        // Reaching `serve` proves a listener was obtained. With no handover
+        // the only way to get one is `B::bind`, and `StubBackend::serve`
+        // panics — so the panic is the evidence.
+        let result = std::panic::catch_unwind(|| bootstrap::<StubBackend>("no-handover"));
+        let payload = result.expect_err("bootstrap should reach the serve panic");
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("");
+        assert!(
+            message.contains("StubBackend::serve called"),
+            "expected the self-bind path to reach serve, got: {message:?}"
+        );
     }
 
     /// `bootstrap` orchestration calls `bind` first; only if `bind`
