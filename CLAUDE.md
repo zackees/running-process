@@ -149,15 +149,18 @@ running-process-daemon start|stop|status|list|kill-zombies
 - `RUST_LOG=debug` — daemon log level
 - `RUNNING_PROCESS_FAKE_BACKEND=<path>` — TEST-ONLY broker seam: `connect_to_backend` dials `<path>` directly, skipping broker negotiation entirely (never set in production; `RUNNING_PROCESS_DISABLE=1` takes precedence)
 - `RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED=1` — opt out of the broker-v2 "refuse privileged startup" guard (test-only; defaults to refusing root)
-- `RUNNING_PROCESS_BROKER_OWNED_BIND=1` — the launcher binds the backend endpoint
-  itself and hands the listener to the daemon, instead of spawning and then
-  probing until the daemon binds (#500 slice 32). **Off by default, and Unix-only**
-  — `broker_owned_bind::support()` reports the Windows gap with a reason and the
-  spawn-then-probe path applies there. Off because it is not yet decided who
-  unlinks the socket when a successfully-launched daemon later exits, so a
-  broker-owned endpoint outlives its daemon; leaving it on would accumulate one
-  dead socket per backend that has exited. A *failed* launch already cleans up
-  after itself (#826).
+- `RUNNING_PROCESS_BROKER_OWNED_BIND=0` — fall back to spawn-then-probe. **On
+  by default** (#500 slice 32): the broker binds the backend endpoint itself
+  and hands the listener to the daemon, so the endpoint is listening — and
+  clients queue in the accept backlog — before the daemon's `main` runs.
+  Unix-only; `broker_owned_bind::support()` reports the Windows gap with a
+  reason and the spawn-then-probe path applies there regardless of this
+  variable. Socket cleanup: a failed launch is cleaned up by the broker
+  (#826), a broker-initiated teardown after the exit is confirmed (#828), and
+  a daemon that exits on its own leaves its endpoint behind — accepted rather
+  than swept, because the allocator issues a fresh path per launch so a stale
+  entry is never reused, and a sweep would have to decide a socket is dead
+  while a daemon might still hold it.
 - `RUNNING_PROCESS_BROKER_LISTENER_FD=<fd>` — set by the broker, read by the
   daemon. Not for hand-setting: it names the descriptor the broker passed, and
   `bootstrap` adopts it instead of binding. A value naming anything but a
