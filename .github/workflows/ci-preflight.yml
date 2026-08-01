@@ -201,9 +201,22 @@ jobs:
           RUNNING_PROCESS_GH_PTY_TESTS: "1"
         run: uv run --no-sync --module ci.run_logged logs/integration-test.log -- uv run --no-sync --module ci.test --live-only -ra --strict-markers
 
-      - name: Build broker CLI for servicedef proof
+      # Every binary, not just the one the next step needs.
+      #
+      # `bin/daemon.rs` compiles only when `running-process-daemon` is built,
+      # and nothing here built it: the workspace build above uses `--features
+      # client`, and this step named a single binary. So #760 moved a value
+      # that `bin/daemon.rs` still borrowed and main stopped producing a
+      # daemon binary — undetected until the 4.7.0 release tried, where it
+      # failed all six standalone-binary targets at once.
+      #
+      # `--bins` closes that: cargo builds every binary whose required-features
+      # are satisfied, so a binary cannot go unbuilt just because no step
+      # happened to name it. Verified by restoring the #760 break, which fails
+      # this step with the same E0382 the release hit.
+      - name: Build all binaries (daemon feature)
         if: ${{ inputs.integration-test }}
-        run: cargo build -p running-process --features daemon --bin running-process-broker-v1
+        run: cargo build -p running-process --features daemon --bins
 
       # ci.servicedef_proof refuses to run if the platform-default
       # service-definition directory already exists. The Integration
