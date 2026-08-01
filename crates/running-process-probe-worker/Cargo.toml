@@ -39,3 +39,17 @@ object = { version = "0.36", default-features = false, features = ["read", "std"
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 lzma-rs = "0.3"
 object = { version = "0.36", default-features = false, features = ["read", "std"] }
+# DWARF line programs, for resolving a frame to file:line (#803).
+#
+# The `loader` feature is what provides `addr2line::Loader`, which owns its
+# mapped bytes. That matters: `addr2line::Context` borrows from the parsed
+# object, so anything holding a bare Context must also own the file — a
+# self-referential borrow this side-steps entirely.
+#
+# Unix-only, alongside the rest of the ELF/Mach-O parsing. The Windows half is
+# blocked separately: `pdb` 0.8 panics iterating line programs on PDBs rustc
+# produces, so that side needs a different crate (see #803).
+addr2line = { version = "0.24", default-features = false, features = [
+    "std",
+    "loader",
+] }
