@@ -22,6 +22,7 @@
 #![deny(missing_docs)]
 
 pub mod discovery;
+pub mod line_numbers;
 #[cfg(not(target_os = "windows"))]
 pub mod object_symbols;
 #[cfg(target_os = "windows")]
