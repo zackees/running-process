@@ -76,6 +76,14 @@ suite has to build the fixtures first, with a matching `--target` /
 - Rust tests that opt into `test_watchdog::install(timeout, message, dump_path)` (e.g. `tests/containment_test.rs`) additionally get an out-of-process dump *before* nextest's kill: on Windows a full minidump via `procdump -ma`; on Linux/macOS all-thread backtraces via `gdb -p <pid> -batch -ex 'thread apply all bt'` (or `lldb --batch -o 'thread backtrace all'`), printed to stderr and written to `dump_path`. Works for non-cooperative hangs (thread blocked in a syscall); on Linux the watchdog sets `PR_SET_PTRACER_ANY` so the child debugger may attach even under Yama `ptrace_scope=1`. Missing debugger → one-line note, never an extra failure.
 Override per-invocation when needed: `cargo nextest run -- --slow-timeout 30s --terminate-after 1` or `pytest --timeout=300`.
 
+**Individual CI stages** (same modules the workflows invoke, so a failing job
+can be reproduced locally instead of reassembled from workflow YAML):
+```bash
+uv run --no-sync python -m ci --help          # list the stages
+uv run --no-sync python -m ci guard-jemalloc  # run one guard
+uv run --no-sync python -m ci lint            # what `./lint` wraps
+```
+
 **Linting:**
 ```bash
 ./lint                           # Full suite: ruff + black + isort + pyright + KBI checker + spawn-path-guard
@@ -137,6 +145,26 @@ running-process-daemon start|stop|status|list|kill-zombies
 - `RUST_LOG=debug` — daemon log level
 - `RUNNING_PROCESS_FAKE_BACKEND=<path>` — TEST-ONLY broker seam: `connect_to_backend` dials `<path>` directly, skipping broker negotiation entirely (never set in production; `RUNNING_PROCESS_DISABLE=1` takes precedence)
 - `RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED=1` — opt out of the broker-v2 "refuse privileged startup" guard (test-only; defaults to refusing root)
+- `RUNNING_PROCESS_BROKER_OWNED_BIND=1` — the launcher binds the backend endpoint
+  itself and hands the listener to the daemon, instead of spawning and then
+  probing until the daemon binds (#500 slice 32). **Off by default, and Unix-only**
+  — `broker_owned_bind::support()` reports the Windows gap with a reason and the
+  spawn-then-probe path applies there. Off because it is not yet decided who
+  unlinks the socket when a successfully-launched daemon later exits, so a
+  broker-owned endpoint outlives its daemon; leaving it on would accumulate one
+  dead socket per backend that has exited. A *failed* launch already cleans up
+  after itself (#826).
+- `RUNNING_PROCESS_BROKER_LISTENER_FD=<fd>` — set by the broker, read by the
+  daemon. Not for hand-setting: it names the descriptor the broker passed, and
+  `bootstrap` adopts it instead of binding. A value naming anything but a
+  listening socket is refused rather than adopted, so a stray setting fails the
+  daemon's start rather than silently aliasing a descriptor it already owns.
+- `RUNNING_PROCESS_PROBE_LINE_NUMBERS=1` — resolve `file:line` for probe stack
+  frames as well as function names (#803). Off by default because line numbers
+  parse a line program per module, and a caller who only wants "which function"
+  should not pay for it. Works on all three platforms and both discovery tiers;
+  on Windows a *local* build needs its PDB, which soldr's cached build currently
+  drops (zackees/soldr#2148).
 
 ## Broker
 
