@@ -54,6 +54,10 @@ fn no_env_var_means_no_inherited_listener() {
 #[cfg(unix)]
 mod unix {
     use super::*;
+    // Explicit rather than relying on the parent module: nothing in
+    // `broker_owned_bind` itself needs `Path`, and this module is cfg'd out on
+    // Windows, so a missing import here would only surface on a Unix CI run.
+    use std::path::Path;
 
     /// A socket path inside a fresh temp dir, short enough for `sun_path`.
     ///
@@ -101,6 +105,48 @@ mod unix {
             .into_owned();
         let fd: i32 = published.parse().expect("descriptor must be a number");
         assert!(fd >= 0, "descriptor {fd} is not valid");
+    }
+
+    #[test]
+    fn dropping_an_undisowned_listener_removes_the_socket_file() {
+        // The default has to stay this way: a bind that never reaches a child
+        // must not leave a socket behind. This is the control for the test
+        // below — without it, that one would pass even if `disown_endpoint`
+        // did nothing and reclaim had simply never been armed.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = socket_path(&dir);
+
+        let listener = InheritableListener::bind(&path).expect("bind");
+        assert!(Path::new(&path).exists(), "bind should create the socket");
+        drop(listener);
+
+        assert!(
+            !Path::new(&path).exists(),
+            "an un-handed-over socket should be cleaned up on drop"
+        );
+    }
+
+    #[test]
+    fn a_disowned_endpoint_outlives_the_brokers_listener() {
+        // The bug this prevents: the broker binds, hands the descriptor to a
+        // child, drops its own listener — and the socket file disappears
+        // while the child is serving the endpoint perfectly well. Connections
+        // already queued survive; anything connecting by path afterwards gets
+        // ENOENT against a daemon that looks entirely healthy.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = socket_path(&dir);
+
+        let mut listener = InheritableListener::bind(&path).expect("bind");
+        let mut command = std::process::Command::new("/bin/true");
+        listener.prepare(&mut command).expect("prepare");
+        // Stands in for "the child was spawned successfully".
+        listener.disown_endpoint();
+        drop(listener);
+
+        assert!(
+            Path::new(&path).exists(),
+            "the endpoint must survive the broker releasing its listener"
+        );
     }
 
     #[test]

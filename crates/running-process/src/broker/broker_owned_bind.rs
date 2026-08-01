@@ -140,6 +140,42 @@ impl InheritableListener {
     }
 }
 
+/// Give up responsibility for removing the socket file.
+///
+/// # Why this is a separate step from [`prepare`]
+///
+/// `interprocess` attaches a reclaim guard to a listener it binds, so
+/// dropping it unlinks the socket path. That is the right default — a bind
+/// that is never handed to anyone should not leave a socket behind — and it
+/// is the wrong behaviour the moment a child is serving that endpoint.
+///
+/// The naive sequence (bind, `prepare`, spawn, drop) deletes the socket file
+/// out from under a daemon that is happily serving the inherited descriptor.
+/// Clients already queued are unaffected; anything connecting by path
+/// afterwards gets `ENOENT`. The daemon is healthy, its handle verifies, and
+/// the endpoint is unreachable — the same shape of failure as an unset
+/// `FD_CLOEXEC`, and just as invisible from the broker's side.
+///
+/// So the guard stays armed while the handover is still in progress, and is
+/// released only once a child actually exists to own the endpoint. A spawn
+/// that fails between `prepare` and here still cleans up after itself.
+///
+/// This is deliberately not folded into `prepare`: at that point the command
+/// has been configured but nothing has been spawned, and dropping the
+/// listener then *should* remove the socket.
+///
+/// [`prepare`]: InheritableListener::prepare
+#[cfg(unix)]
+impl InheritableListener {
+    /// Release the socket file to the spawned child.
+    ///
+    /// Call after the child is spawned, never before.
+    pub fn disown_endpoint(&mut self) {
+        use interprocess::local_socket::traits::Listener as _;
+        self.listener.do_not_reclaim_name_on_drop();
+    }
+}
+
 /// Clear `FD_CLOEXEC` so the descriptor survives `exec`.
 ///
 /// Rust sets `CLOEXEC` on everything it opens, which is the right default —
