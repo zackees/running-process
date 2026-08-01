@@ -148,13 +148,6 @@ impl BackendLauncher for CommandBackendLauncher {
 
         let mut child = spawn_daemon(&mut command).map_err(BackendLaunchError::Spawn)?;
 
-        // The child owns the endpoint now. Without this, dropping our listener
-        // unlinks the socket the daemon is serving.
-        #[cfg(unix)]
-        if let Some(listener) = inherited.as_mut() {
-            listener.disown_endpoint();
-        }
-
         let daemon = daemon_identity_for_spawned_process(
             child.id(),
             binary_path,
@@ -168,9 +161,24 @@ impl BackendLauncher for CommandBackendLauncher {
             &endpoint,
             &daemon,
         ) {
-            Ok(handle) => Ok(handle),
+            Ok(handle) => {
+                // Only now does a child genuinely own the endpoint. Disowning
+                // any earlier — right after `spawn`, as the first revision of
+                // this did — leaks the socket file on every failed launch:
+                // the probe fails, the child is killed, and the listener drops
+                // with its reclaim guard already released. Dead daemon,
+                // orphaned socket.
+                #[cfg(unix)]
+                if let Some(listener) = inherited.as_mut() {
+                    listener.disown_endpoint();
+                }
+                Ok(handle)
+            }
             Err(err) => {
                 let _ = child.kill();
+                // `inherited` drops here with its reclaim guard still armed,
+                // so the socket file goes with it. Nothing is serving that
+                // endpoint — the child we just killed was the only candidate.
                 Err(BackendLaunchError::BackendHandle(err))
             }
         }
