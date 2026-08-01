@@ -218,4 +218,10 @@ uv run --no-sync python -m ci.lint_python.keyboard_interrupt_checker src --exclu
 
 - Rust edition 2021, version 1.85+, shared workspace dependencies: `pyo3 0.29`, `rusqlite 0.32` (bundled), `thiserror 2`
 - Python requires >= 3.10, uses ABI3 stable API (`abi3-py310`)
-- Release profile: line-tables-only debug info, packed split-debuginfo, no stripping
+- Release profile: line-tables-only debug info for workspace members, no debug
+  info for dependencies (`[profile.release.package."*"] debug = false`), no
+  stripping. The line tables are what let a release-mode stack resolve to
+  `file:line` in this crate's own frames (#803); dependencies are excluded
+  because nobody reads their DWARF and it costs build time and disk.
+  (This line previously claimed "packed split-debuginfo", which was never in
+  the manifest.)
