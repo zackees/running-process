@@ -15,6 +15,7 @@ pub mod backend_sdk;
 pub mod broker_http_discovery;
 pub mod broker_http_port;
 pub mod broker_http_server;
+pub mod broker_owned_bind;
 pub mod brokered_backend;
 pub mod builders;
 pub mod capabilities;
