@@ -229,7 +229,12 @@ fn main() {
                     .to_string_lossy()
                     .into_owned();
                 let srv = match server::DaemonServer::new(
-                    socket,
+                    // Cloned because `publish_service_identity` below needs the
+                    // path after the server has taken ownership. #760 added that
+                    // call without this, which made the daemon binary stop
+                    // compiling — invisible to CI, which builds `--features
+                    // client` and never links this binary.
+                    socket.clone(),
                     db,
                     scope_name,
                     scope.unwrap_or_default(),
