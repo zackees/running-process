@@ -220,6 +220,53 @@ fn a_backend_that_has_not_reported_a_port_renders_as_starting() {
 }
 
 #[test]
+fn a_backend_that_never_declared_http_is_absent_rather_than_disabled() {
+    // #483 draws a distinction the "starting" test above does not cover, and
+    // the two are easy to conflate:
+    //
+    //   declared `http_server`, no port yet -> shown, disabled, "starting…"
+    //   never declared `http_server`        -> not in the UI at all
+    //
+    // The second must not render as a permanently-disabled button. A backend
+    // that will never serve HTTP showing as "starting…" forever is worse than
+    // absent: it reads as a broken backend rather than one that simply has no
+    // status page.
+    //
+    // Today this holds because the broker only calls `track` for backends
+    // whose service definition declares `http_server`. That is a caller-side
+    // discipline rather than a property of the registry, so it is exactly the
+    // kind of thing a later refactor can quietly undo — hence asserting the
+    // rendered page, not the registry.
+    let ready = StubBackend::start("READY-BACKEND");
+
+    let registry = Arc::new(HttpEndpointRegistry::new());
+    registry.track("ready".to_string());
+    registry.register_backend_http_endpoint("ready".to_string(), ready.port);
+    // "silent" is deliberately never tracked — it stands in for a backend
+    // whose service definition omits `http_server`.
+
+    let server = Arc::new(
+        BrokerHttpServer::bind(BrokerHttpPort::Dynamic, Arc::clone(&registry))
+            .expect("bind broker http"),
+    );
+    let addr = server.local_addr();
+    let serving = serve_one(Arc::clone(&server));
+    let page = http_get(addr, "/");
+    serving.join().expect("serve thread");
+
+    assert!(
+        !page.contains("silent"),
+        "a backend that never declared http_server appears in the UI: {page}"
+    );
+    // And the page is otherwise working, so the assertion above cannot pass
+    // by the page having failed to render at all.
+    assert!(
+        page.contains(&format!("http://127.0.0.1:{}/", ready.port)),
+        "the declared backend is missing, so the absence check proves nothing: {page}"
+    );
+}
+
+#[test]
 fn a_late_backend_http_ready_turns_starting_into_a_live_target() {
     // The daemon-crash / respawn cycle in #483's test list, reduced to its
     // observable core: the registry slot goes None -> Some(port) and the next
