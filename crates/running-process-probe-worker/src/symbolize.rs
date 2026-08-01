@@ -187,6 +187,37 @@ fn lookup(cache: &SymbolCache, module_index: usize, relative_address: u64) -> Op
     table.lookup(relative_address).map(str::to_owned)
 }
 
+/// The `(file, line)` for a frame, when line resolution was asked for (#803).
+///
+/// Always `None` on Windows: the `pdb` crate panics iterating line programs on
+/// PDBs rustc produces, so that side needs a different crate before it can
+/// answer this. Returning `None` keeps the frame honest — module + offset —
+/// rather than pretending the information is unavailable for a different
+/// reason.
+#[cfg(not(target_os = "windows"))]
+fn lookup_line(
+    cache: &SymbolCache,
+    module_index: usize,
+    relative_address: u64,
+) -> Option<(String, u32)> {
+    let crate::object_symbols::ModuleSymbols::Found { lines, .. } = cache.get(module_index)? else {
+        return None;
+    };
+    lines
+        .as_ref()?
+        .lookup(relative_address)
+        .map(|(file, line)| (file.to_owned(), line))
+}
+
+#[cfg(target_os = "windows")]
+fn lookup_line(
+    _cache: &SymbolCache,
+    _module_index: usize,
+    _relative_address: u64,
+) -> Option<(String, u32)> {
+    None
+}
+
 fn symbolize_thread(capture: &RawCapture, cache: &SymbolCache, thread: &RawThread) -> SymThread {
     let frames = thread
         .frames
@@ -196,6 +227,14 @@ fn symbolize_thread(capture: &RawCapture, cache: &SymbolCache, thread: &RawThrea
                 Some(module) => {
                     let function =
                         lookup(cache, frame.module_index as usize, frame.relative_address);
+                    let (file, line) = match lookup_line(
+                        cache,
+                        frame.module_index as usize,
+                        frame.relative_address,
+                    ) {
+                        Some((file, line)) => (Some(file), Some(line)),
+                        None => (None, None),
+                    };
                     SymFrame {
                         module: module.name.clone(),
                         relative_address: frame.relative_address,
@@ -208,8 +247,8 @@ fn symbolize_thread(capture: &RawCapture, cache: &SymbolCache, thread: &RawThrea
                             FrameStatus::RawOnly
                         },
                         function,
-                        file: None,
-                        line: None,
+                        file,
+                        line,
                         inline_frames: Vec::new(),
                     }
                 }
