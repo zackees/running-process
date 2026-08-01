@@ -309,6 +309,16 @@ impl BackendHandle {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if !self.is_alive() {
+                // The broker asked for this daemon to stop and watched it
+                // stop, so the endpoint it was serving is now a dead name.
+                // Nothing else will remove it: a daemon that is signalled
+                // does not run its own cleanup, and under broker-owned bind
+                // the adopted listener carries no reclaim guard at all.
+                //
+                // Stale sockets are not inert here — #519 recorded them
+                // masking real failures as `EADDRINUSE` on bind or
+                // `ECONNREFUSED` on connect.
+                remove_endpoint_socket(&self.daemon_process.ipc_endpoint);
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -434,5 +444,80 @@ fn endpoint_name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>>
     {
         use interprocess::local_socket::GenericNamespaced;
         path.to_ns_name::<GenericNamespaced>()
+    }
+}
+
+/// Remove the socket file backing `endpoint`, if there is one.
+///
+/// Absence is success: a daemon that exited cleanly on its own may already
+/// have reclaimed the name, and racing it is not an error.
+///
+/// Deliberately not called from [`BackendHandle::force_kill`]. That path
+/// signals and returns without confirming the process is gone, so removing
+/// the name there could unlink the socket of a daemon that is still serving —
+/// turning a failed kill into an unreachable-but-live backend, which is worse
+/// than a stale file.
+#[cfg(unix)]
+fn remove_endpoint_socket(endpoint: &Endpoint) {
+    let _ = std::fs::remove_file(&endpoint.path);
+}
+
+/// A Windows named pipe has no directory entry — it disappears with its last
+/// handle — so there is nothing to remove.
+#[cfg(not(unix))]
+fn remove_endpoint_socket(_endpoint: &Endpoint) {}
+
+#[cfg(all(test, unix))]
+mod endpoint_socket_tests {
+    use super::*;
+
+    fn endpoint_at(path: &std::path::Path) -> Endpoint {
+        Endpoint {
+            namespace_id: "shared".into(),
+            path: path.display().to_string(),
+        }
+    }
+
+    #[test]
+    fn the_socket_file_is_removed() {
+        // The property `shutdown` depends on: once the daemon is confirmed
+        // gone, its endpoint name goes too. Stale sockets are not inert —
+        // #519 recorded them masking real failures as EADDRINUSE on bind and
+        // ECONNREFUSED on connect.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.sock");
+        std::fs::write(&path, b"").expect("create the stand-in socket");
+        assert!(path.exists(), "precondition: the file exists");
+
+        remove_endpoint_socket(&endpoint_at(&path));
+
+        assert!(!path.exists(), "the endpoint name outlived its daemon");
+    }
+
+    #[test]
+    fn an_already_removed_socket_is_not_an_error() {
+        // A daemon that exited cleanly may have reclaimed the name first.
+        // Racing it is normal, not a failure — and this function has no way
+        // to report one, so the test exists to pin that it does not panic.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("never-existed.sock");
+        assert!(!path.exists(), "precondition: nothing to remove");
+
+        remove_endpoint_socket(&endpoint_at(&path));
+    }
+
+    #[test]
+    fn a_directory_at_the_endpoint_path_is_left_alone() {
+        // `remove_file` will not remove a directory, which is the behaviour
+        // wanted: an endpoint path that is somehow a directory is a broken
+        // assumption elsewhere, and quietly deleting a tree to satisfy
+        // cleanup would turn that into data loss.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("surprise-directory");
+        std::fs::create_dir(&path).expect("create the directory");
+
+        remove_endpoint_socket(&endpoint_at(&path));
+
+        assert!(path.is_dir(), "cleanup removed a directory");
     }
 }
