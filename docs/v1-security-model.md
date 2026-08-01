@@ -185,6 +185,29 @@ size, caps allocation at 1 MiB, retries once if the size grows, and reads
 is a process-stable unique token, so loss of both OS sources fails closed
 instead of accepting an identity with a cross-boot constant.
 
+The `broker_owned_bind.rs` inventory covers the Unix listener handover (#500,
+slice 32). Two sites call `fcntl` to read and clear `FD_CLOEXEC` on the one
+descriptor being handed to a spawned daemon; both operate on a live
+`BorrowedFd` held by the caller, and clearing the flag on exactly that
+descriptor is what makes the handover deliberate rather than incidental
+inheritance.
+
+The remaining two sites are the adoption path on the daemon side, and they are
+reviewed together. The descriptor number arrives as text in
+`RUNNING_PROCESS_BROKER_LISTENER_FD`, so `from_raw_fd` is preceded by a
+`getsockopt(SO_ACCEPTCONN)` check that the number names an open socket in the
+listening state. Without it, a value naming a descriptor the process already
+owns — `1` being the obvious case — would create a second owner of stdout and
+close it on drop. Only a listening socket is adopted: a connected socket
+answers `false`, a plain file or pipe is rejected by `getsockopt` itself with
+`ENOTSOCK`, and a closed descriptor with `EBADF`. The errno is preserved rather
+than flattened into a generic refusal, because it tells an operator whether the
+handover named the wrong descriptor or none at all. This is a soundness
+guard rather than a trust boundary: anything able to set that variable already
+controls the daemon's execution, and the daemon's own peer authentication is
+unchanged by it. The corresponding `tests.rs` site reads the flag back and
+takes no ownership.
+
 The `server/handoff/unix.rs` inventory covers the Unix `SCM_RIGHTS` boundary:
 constructing and inspecting `msghdr` control messages, calling `sendmsg` and
 `recvmsg`, and closing the duplicated descriptor received by the compatibility

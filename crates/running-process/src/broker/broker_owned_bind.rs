@@ -35,6 +35,9 @@
 //! `ObserverCapabilities` and `IconSupport`): an honest "no, because" beats a
 //! silent degradation a caller cannot distinguish from success.
 
+// Only the Unix half hands a listener to a child; on Windows `support()`
+// reports the gap and nothing here touches a `Command`.
+#[cfg(unix)]
 use std::process::Command;
 
 /// Environment variable naming the inherited listener's descriptor.
@@ -161,6 +164,68 @@ fn clear_cloexec(fd: &std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether `fd` is open and is a socket in the listening state.
+///
+/// Used to refuse a descriptor number that names something else before taking
+/// ownership of it. `SO_ACCEPTCONN` is the narrowest question that answers
+/// "is this the thing the broker bound": a connected socket answers `false`,
+/// while a plain file or pipe is rejected by the call itself with `ENOTSOCK`
+/// and a closed descriptor with `EBADF`. All three outcomes refuse the
+/// handover; only a listening socket is adopted.
+#[cfg(unix)]
+fn is_listening_socket(fd: i32) -> std::io::Result<bool> {
+    let mut listening: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `listening` and `len` are stack locals of exactly the type and
+    // size `getsockopt` is told to expect; the call only reads `fd` and writes
+    // through those two pointers. An invalid `fd` returns EBADF rather than
+    // touching memory.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_ACCEPTCONN,
+            std::ptr::addr_of_mut!(listening).cast(),
+            std::ptr::addr_of_mut!(len),
+        )
+    };
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(listening != 0)
+}
+
+/// Take ownership of `fd` as an inherited listener, or refuse it.
+///
+/// Split out from [`recover_from_env`] so the refusal path is reachable from a
+/// test without setting an environment variable — env-mutating tests race
+/// under a parallel runner. Keeping the check here rather than at the call
+/// site also means there is exactly one route to `from_raw_fd`.
+#[cfg(unix)]
+fn adopt_descriptor(fd: i32) -> std::io::Result<crate::broker::brokered_backend::IpcListener> {
+    use interprocess::os::unix::uds_local_socket::Listener as UdsListener;
+    use std::os::fd::{FromRawFd as _, OwnedFd};
+
+    // Adopting a descriptor means taking ownership of it, and the number
+    // arrived as text. An unchecked `from_raw_fd` on a value naming something
+    // this process already owns — `1` is the obvious one — would create a
+    // second owner of stdout and close it on drop. So the number must name a
+    // listening socket before it is adopted; anything else fails closed. This
+    // is a soundness guard, not a trust boundary: whoever sets that variable
+    // already controls the daemon's execution.
+    if !is_listening_socket(fd)? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{INHERITED_LISTENER_FD_ENV}={fd} does not name a listening socket"),
+        ));
+    }
+    // SAFETY: `fd` is open and is a listening socket, both just verified via
+    // `getsockopt`, and nothing else in this process owns it — it was created
+    // in the broker and inherited across `exec` into a fresh descriptor table.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    Ok(UdsListener::from(owned).into())
+}
+
 /// Recover a listener the broker bound and passed to this process.
 ///
 /// `Ok(None)` means no listener was passed — an ordinary outcome for a daemon
@@ -170,9 +235,6 @@ fn clear_cloexec(fd: &std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
 /// the same endpoint would leave the broker holding one nobody serves.
 #[cfg(unix)]
 pub fn recover_from_env() -> std::io::Result<Option<crate::broker::brokered_backend::IpcListener>> {
-    use interprocess::os::unix::uds_local_socket::Listener as UdsListener;
-    use std::os::fd::{FromRawFd as _, OwnedFd};
-
     let Some(raw) = std::env::var_os(INHERITED_LISTENER_FD_ENV) else {
         return Ok(None);
     };
@@ -189,12 +251,7 @@ pub fn recover_from_env() -> std::io::Result<Option<crate::broker::brokered_back
             format!("{INHERITED_LISTENER_FD_ENV}={fd} is not a valid descriptor"),
         ));
     }
-    // SAFETY: the broker cleared CLOEXEC on this descriptor and passed its
-    // number; taking ownership here is the handover. A wrong number yields a
-    // listener that fails on first use rather than undefined behaviour,
-    // because the descriptor table is checked by the kernel.
-    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-    Ok(Some(UdsListener::from(owned).into()))
+    adopt_descriptor(fd).map(Some)
 }
 
 /// Windows has no listener to recover; see the module docs.

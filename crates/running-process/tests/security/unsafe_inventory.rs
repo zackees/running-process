@@ -8,6 +8,21 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
         unsafe_count: 19,
     },
     UnsafeInventoryEntry {
+        // Slice 32 of #500: broker-owned bind. Two `fcntl` sites clear
+        // FD_CLOEXEC on the listener being handed over, one `getsockopt`
+        // site checks a descriptor is a listening socket, and one
+        // `from_raw_fd` adopts it. The adoption is gated on that check —
+        // see docs/v1-security-model.md.
+        path: "src/broker/broker_owned_bind.rs",
+        unsafe_count: 4,
+    },
+    UnsafeInventoryEntry {
+        // The CLOEXEC test reads the flag back with `fcntl(F_GETFD)` on the
+        // listener it just created; no ownership is taken.
+        path: "src/broker/broker_owned_bind/tests.rs",
+        unsafe_count: 1,
+    },
+    UnsafeInventoryEntry {
         // Slice 4 of #488 (PR #491): `unsafe { libc::getuid() }` in
         // `resolve_socket_path` for the unix bind dir. Same pattern v1
         // uses in `lifecycle/names.rs::unix_broker_socket_dir`.

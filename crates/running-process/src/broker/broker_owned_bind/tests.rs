@@ -8,15 +8,21 @@ fn support_is_reported_honestly_for_this_platform() {
     // arms must carry something actionable: `Supported` needs no words, and
     // `Unsupported` must explain itself well enough that an operator reading a
     // log does not go looking for a misconfiguration.
-    match support() {
-        Support::Supported => assert!(cfg!(unix), "only Unix can pass a bound listener"),
-        Support::Unsupported { reason } => {
-            assert!(!cfg!(unix), "Unix should support broker-owned bind");
-            assert!(
-                reason.len() > 40,
-                "an unsupported reason of {reason:?} tells an operator nothing"
-            );
-        }
+    let support = support();
+    // `assert_eq!` against `cfg!` rather than `assert!(cfg!(..))`: the latter
+    // asserts a compile-time constant, which clippy denies under
+    // `assertions_on_constants` — and denies per target, so it fires on the
+    // musl lanes even when the host lane is clean.
+    assert_eq!(
+        support.is_supported(),
+        cfg!(unix),
+        "broker-owned bind should be supported exactly on Unix, got {support:?}"
+    );
+    if let Support::Unsupported { reason } = support {
+        assert!(
+            reason.len() > 40,
+            "an unsupported reason of {reason:?} tells an operator nothing"
+        );
     }
 }
 
@@ -136,6 +142,63 @@ mod unix {
     fn a_negative_descriptor_is_rejected() {
         let err = parse_descriptor("-1").expect_err("must reject");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn a_bound_listener_is_recognised_as_a_listening_socket() {
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let listener = InheritableListener::bind(&socket_path(&dir)).expect("bind");
+        let raw = listener.listener.as_fd().as_raw_fd();
+
+        assert!(
+            is_listening_socket(raw).expect("getsockopt on a live socket"),
+            "the descriptor the broker just bound must pass the adoption check"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_file_is_refused_rather_than_adopted() {
+        // The check exists to stop `from_raw_fd` taking ownership of something
+        // this process already owns — stdout being the memorable case. A plain
+        // file stands in for "any descriptor that is not the bound listener".
+        //
+        // The refusal arrives as ENOTSOCK rather than `Ok(false)`: `getsockopt`
+        // rejects a non-socket outright. Either way `recover_from_env` fails
+        // closed, which is the property that matters — but asserting the real
+        // errno keeps this test honest about which path runs.
+        use std::os::fd::AsRawFd as _;
+
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        let err = is_listening_socket(file.as_raw_fd()).expect_err("a file is not a socket");
+        assert_eq!(err.raw_os_error(), Some(libc::ENOTSOCK));
+    }
+
+    #[test]
+    fn a_closed_descriptor_is_an_error_not_a_false() {
+        // Distinguishing "open, but not a listener" from "not open at all"
+        // matters: the second means the handover already went wrong, and the
+        // operator should see that rather than a generic refusal.
+        let err = is_listening_socket(i32::MAX).expect_err("a closed fd must error");
+        assert_eq!(err.raw_os_error(), Some(libc::EBADF));
+    }
+
+    #[test]
+    fn adoption_refuses_a_descriptor_that_is_not_a_listener() {
+        // Distinct from `an_ordinary_file_is_refused_rather_than_adopted`:
+        // that one proves the check can tell a file from a listener, this one
+        // proves the adoption path actually consults it. Without this, the
+        // guard could be deleted from `adopt_descriptor` and every other test
+        // here would still pass.
+        //
+        // Only the rejection path is exercised: on success `adopt_descriptor`
+        // takes ownership, which would close a descriptor this test does not
+        // own.
+        use std::os::fd::AsRawFd as _;
+
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        adopt_descriptor(file.as_raw_fd()).expect_err("a file must never be adopted as a listener");
     }
 
     /// The parsing half of `recover_from_env`, without touching the
