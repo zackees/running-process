@@ -2653,6 +2653,7 @@ dependencies = [
 name = "testbins"
 version = "0.0.0"
 dependencies = [
+ "interprocess",
  "libc",
  "mimalloc-pprof",
  "running-process",

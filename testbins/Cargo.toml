@@ -28,6 +28,10 @@ name = "testbin-env-reporter"
 path = "src/bin/env_reporter.rs"
 
 [[bin]]
+name = "testbin-inherited-listener-daemon"
+path = "src/bin/inherited_listener_daemon.rs"
+
+[[bin]]
 name = "testbin-sleeper"
 path = "src/bin/sleeper.rs"
 
@@ -85,6 +89,9 @@ path = "src/bin/mimalloc_leaker.rs"
 [dependencies]
 running-process = { path = "../crates/running-process", features = ["probe"] }
 libc = "0.2"
+# The inherited-listener fixture accepts on a listener the broker passed it,
+# and `accept` comes from this crate's `Listener` trait.
+interprocess = "2"
 
 # mimalloc + its pprof-compatible sampling heap profiler (#792). Unconditional
 # on purpose: this is a Windows-first mimalloc fork, so it has no platform gap
