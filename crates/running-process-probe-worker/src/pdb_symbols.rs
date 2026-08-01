@@ -142,6 +142,14 @@ pub enum ModuleSymbols {
         symbol_file: String,
         /// Discovery tier that supplied it.
         source: DiscoverySource,
+        /// A server-fetched PDB, kept on disk so lines can be read from it
+        /// later (#818).
+        ///
+        /// `None` for the local tier, where `symbol_file` is already an
+        /// openable path. Unlike the DWARF side, this backend resolves lines
+        /// in a pre-pass *after* discovery, so the file has to outlive this
+        /// value rather than the match arm that produced it.
+        retained: Option<tempfile::TempPath>,
     },
     /// No candidate existed.
     NotFound,
@@ -355,6 +363,8 @@ pub fn discover_module(module: &ModuleRef, config: &DiscoveryConfig) -> ModuleSy
                 table,
                 symbol_file: resolved.path.to_string_lossy().into_owned(),
                 source: resolved.source,
+                // Local tier: `symbol_file` is already an openable path.
+                retained: None,
             }
         }
         ResolveOutcome::NotFound => server_symbols(expected, &symbol_file_name, 0),
@@ -373,10 +383,15 @@ fn server_symbols(
         let (actual, table) = load_pdb(path)?;
         identity_matches(expected, actual).then_some(table)
     }) {
-        discovery::ServerResolve::Found { url, value: table } => ModuleSymbols::Found {
+        discovery::ServerResolve::Found {
+            url,
+            value: table,
+            retained,
+        } => ModuleSymbols::Found {
             table,
             symbol_file: url,
             source: DiscoverySource::ConfiguredServer,
+            retained: Some(retained),
         },
         discovery::ServerResolve::NotFound if local_rejected == 0 => ModuleSymbols::NotFound,
         discovery::ServerResolve::NotFound => ModuleSymbols::Mismatched {
