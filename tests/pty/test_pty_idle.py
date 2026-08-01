@@ -721,7 +721,17 @@ def test_pseudo_terminal_wait_for_idle_condition_can_arm_on_explicit_input_submi
                     pty=PtyIdleDetection(start_trigger=IdleStartTrigger.INPUT_SUBMIT),
                 )
             ),
-            timeout=0.35,
+            # Generous outer ceiling on purpose. This test asks whether
+            # arming on INPUT_SUBMIT works, not whether the runner is fast:
+            # the correctness claim is guarded by `elapsed >= 0.15` below,
+            # which still proves the wait honoured the submit trigger and the
+            # stability window rather than returning early.
+            #
+            # A 0.35 s ceiling made the two claims share one assertion, so a
+            # loaded macos-arm runner reported `idle_detected=False` and
+            # failed PRs that could not affect PTY behaviour (#723, seen again
+            # on #815 where a re-run of identical code passed).
+            timeout=5.0,
         )
         elapsed = time.time() - started
         worker.join(timeout=1.0)
