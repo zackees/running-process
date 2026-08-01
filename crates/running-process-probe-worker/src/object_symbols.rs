@@ -85,6 +85,90 @@ impl SymbolTable {
     }
 }
 
+/// A module's DWARF line records, for resolving a frame to `file:line` (#803).
+///
+/// Built separately from [`SymbolTable`] on purpose. Function names come from
+/// a symbol-table walk; line numbers require parsing `.debug_line`, which
+/// costs materially more. #803 wants that behind an opt-in, so the two cannot
+/// share a constructor.
+pub struct LineTable {
+    /// `(start, end_exclusive, file, line)`, sorted by start.
+    ///
+    /// Ranges, not points. DWARF tells us how far each record extends, and
+    /// keeping that is what lets an address past the last line resolve to
+    /// nothing instead of being attributed to whatever came before it.
+    entries: Vec<(u64, u64, String, u32)>,
+}
+
+impl LineTable {
+    /// Build a line table from an object file on disk.
+    ///
+    /// `None` when the image carries no usable DWARF line program — a
+    /// dependency built with `debug = false`, or a stripped binary. That is an
+    /// ordinary outcome and degrades to name-only resolution.
+    pub fn from_path(path: &Path) -> Option<Self> {
+        // `Loader` rather than a bare `Context`: it owns the mapped bytes, so
+        // there is no self-referential borrow to arrange.
+        let loader = addr2line::Loader::new(path).ok()?;
+        // Records come back in the object's own address space. A capture
+        // carries `(module, offset)` pairs, so everything is normalised
+        // against the same base the module inventory uses. Skipping this
+        // yields line numbers that look plausible and are silently shifted —
+        // the worst failure available in a diagnostic tool.
+        let base = loader.relative_address_base();
+
+        let mut entries: Vec<(u64, u64, String, u32)> = Vec::new();
+        // Walk the ranges DWARF declares rather than probing on a stride: any
+        // stride either misses short lines or wastes work on long ones.
+        let mut ranges = loader.find_location_range(base, u64::MAX).ok()?;
+        for (start, length, location) in ranges.by_ref() {
+            let (Some(file), Some(line)) = (location.file, location.line) else {
+                continue;
+            };
+            let relative = start.saturating_sub(base);
+            entries.push((relative, relative + length.max(1), file.to_string(), line));
+        }
+
+        if entries.is_empty() {
+            return None;
+        }
+        entries.sort_unstable_by_key(|(start, _, _, _)| *start);
+        entries.dedup_by_key(|(start, _, _, _)| *start);
+        Some(Self { entries })
+    }
+
+    /// The `(file, line)` for a module-relative address.
+    ///
+    /// Containment, not nearest-preceding. A return address lands inside the
+    /// range a record opened, so the preceding record is the right answer —
+    /// but only if the address is actually within it. Unlike
+    /// [`SymbolTable::lookup`], which has no end addresses to work with, this
+    /// can tell "past the end of all code" from "inside the last function",
+    /// and says so.
+    pub fn lookup(&self, relative_address: u64) -> Option<(&str, u32)> {
+        let index = match self
+            .entries
+            .binary_search_by_key(&relative_address, |(start, _, _, _)| *start)
+        {
+            Ok(exact) => exact,
+            Err(0) => return None,
+            Err(next) => next - 1,
+        };
+        let (start, end, file, line) = &self.entries[index];
+        (relative_address >= *start && relative_address < *end).then_some((file.as_str(), *line))
+    }
+
+    /// How many line records were loaded.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the table carries no records.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Discover and parse exact-build symbols for one ELF or Mach-O module.
 pub fn discover_module(module: &ModuleRef, config: &DiscoveryConfig) -> ModuleSymbols {
     if module.path_hint.is_none() && module.debug_id.is_none() {
@@ -360,5 +444,119 @@ mod tests {
         lzma_rs::xz_compress(&mut Cursor::new(payload), &mut compressed).unwrap();
         let extracted = decompress_xz_to_temp(&compressed).expect("extract xz payload");
         assert_eq!(std::fs::read(extracted.path()).unwrap(), payload);
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod line_table_tests {
+    use super::*;
+
+    /// This test binary itself — an ELF built by the same toolchain and
+    /// profile as everything else, so whatever DWARF the workspace actually
+    /// emits is what gets exercised.
+    ///
+    /// Not a committed fixture: a checked-in ELF drifts from the toolchain and
+    /// could keep passing while real builds emitted nothing.
+    fn self_image() -> std::path::PathBuf {
+        std::env::current_exe().expect("current exe")
+    }
+
+    #[test]
+    fn the_test_binarys_own_dwarf_yields_line_records() {
+        let Some(table) = LineTable::from_path(&self_image()) else {
+            eprintln!("skipping: this binary carries no DWARF line program");
+            return;
+        };
+        assert!(
+            table.len() > 50,
+            "only {} line records — line tables look absent",
+            table.len()
+        );
+    }
+
+    #[test]
+    fn a_symbol_from_this_module_resolves_to_a_rust_source_file() {
+        let Some(lines) = LineTable::from_path(&self_image()) else {
+            eprintln!("skipping: no DWARF line program (see sibling test)");
+            return;
+        };
+        let Some(symbols) = SymbolTable::from_object(&self_image()) else {
+            eprintln!("skipping: no symbol table");
+            return;
+        };
+
+        // A symbol this file defines, so a correct answer must name this
+        // crate's own source rather than std or a dependency. That is what
+        // makes the assertion falsifiable: an address-space mix-up would
+        // resolve to some other file, not to nothing.
+        let Some((address, name)) = symbols
+            .entries
+            .iter()
+            .find(|(_, name)| name.contains("object_symbols"))
+            .cloned()
+        else {
+            eprintln!("skipping: no object_symbols symbol in this build");
+            return;
+        };
+
+        let Some((file, line)) = lines.lookup(address) else {
+            panic!("no line record covers {name} at {address:#x}");
+        };
+        assert!(
+            file.ends_with(".rs"),
+            "expected a Rust source path for {name}, got {file:?}"
+        );
+        assert!(line > 0, "line number is zero for {name}: {file}:{line}");
+    }
+
+    /// Records what `relative_address_base()` is here, and says plainly that
+    /// the normalisation is therefore untested on this platform.
+    ///
+    /// Verified by sabotage: deleting the `- base` subtraction leaves all
+    /// three tests above passing, because ELF images here report a base of 0
+    /// and `x - 0 == x`. The arithmetic only bites on images with a non-zero
+    /// base (Mach-O dyld images, and PIE layouts that report one), which this
+    /// suite cannot produce.
+    ///
+    /// So this is a known blind spot, not a covered case. A wrong base does
+    /// not produce an error — it produces plausible line numbers that are
+    /// uniformly shifted, which is the worst outcome available in a
+    /// diagnostic tool. Anyone extending this to Mach-O should add a fixture
+    /// with a non-zero base before trusting the output.
+    #[test]
+    fn the_address_base_on_this_platform_is_recorded_not_assumed() {
+        let loader = match addr2line::Loader::new(self_image()) {
+            Ok(loader) => loader,
+            Err(_) => {
+                eprintln!("skipping: image not loadable");
+                return;
+            }
+        };
+        let base = loader.relative_address_base();
+        eprintln!("relative_address_base() = {base:#x}");
+        if base == 0 {
+            eprintln!(
+                "note: base is 0, so the `- base` normalisation is a no-op                  here and this suite does not exercise it"
+            );
+        }
+        // No assertion on the value itself: it is a property of the platform,
+        // not of this code. The point is that it is reported rather than
+        // silently assumed.
+    }
+
+    #[test]
+    fn an_address_past_every_record_resolves_to_nothing() {
+        let Some(lines) = LineTable::from_path(&self_image()) else {
+            eprintln!("skipping: no DWARF line program (see sibling test)");
+            return;
+        };
+        // Far past any real code. A nearest-preceding lookup would cheerfully
+        // return the last line in the binary; containment must not. This is
+        // the assertion that makes the range bookkeeping load-bearing.
+        //
+        // Note relative address 0 is NOT a good probe for this: 0 is the image
+        // base, which legitimately carries a record. An earlier draft asserted
+        // that and failed for a correct reason.
+        assert_eq!(lines.lookup(u64::MAX / 2), None);
     }
 }
