@@ -106,6 +106,21 @@ impl SymbolTable {
             .cloned()
     }
 
+    /// Up to `limit` addresses whose symbol names contain `needle`.
+    ///
+    /// Exists for tests that need several real addresses rather than one:
+    /// any individual function may have been built without line info, so a
+    /// test asserting "lines resolve" has to sample rather than bet on a
+    /// single symbol.
+    pub fn addresses_for_names_containing(&self, needle: &str, limit: usize) -> Vec<u64> {
+        self.entries
+            .iter()
+            .filter(|(_, name)| name.contains(needle))
+            .map(|(rva, _)| u64::from(*rva))
+            .take(limit)
+            .collect()
+    }
+
     /// Number of symbols in the table.
     pub fn len(&self) -> usize {
         self.entries.len()
