@@ -185,6 +185,25 @@ mod unix {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn a_connected_socket_is_refused_where_the_platform_can_tell() {
+        // Linux implements SO_ACCEPTCONN for AF_UNIX, so a connected socket is
+        // distinguishable from a listening one and must be refused.
+        //
+        // Deliberately Linux-only: macOS answers ENOPROTOOPT and cannot make
+        // this distinction, which is why `is_listening_socket` documents the
+        // SO_TYPE result as the guarantee that holds everywhere. Asserting
+        // this cross-platform would encode a promise macOS does not keep.
+        use std::os::fd::AsRawFd as _;
+
+        let (a, _b) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+        assert!(
+            !is_listening_socket(a.as_raw_fd()).expect("getsockopt on a connected socket"),
+            "a connected socket is not the listener the broker bound"
+        );
+    }
+
+    #[test]
     fn adoption_refuses_a_descriptor_that_is_not_a_listener() {
         // Distinct from `an_ordinary_file_is_refused_rather_than_adopted`:
         // that one proves the check can tell a file from a listener, this one

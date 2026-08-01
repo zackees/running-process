@@ -195,14 +195,25 @@ inheritance.
 The remaining two sites are the adoption path on the daemon side, and they are
 reviewed together. The descriptor number arrives as text in
 `RUNNING_PROCESS_BROKER_LISTENER_FD`, so `from_raw_fd` is preceded by a
-`getsockopt(SO_ACCEPTCONN)` check that the number names an open socket in the
-listening state. Without it, a value naming a descriptor the process already
-owns — `1` being the obvious case — would create a second owner of stdout and
-close it on drop. Only a listening socket is adopted: a connected socket
-answers `false`, a plain file or pipe is rejected by `getsockopt` itself with
-`ENOTSOCK`, and a closed descriptor with `EBADF`. The errno is preserved rather
-than flattened into a generic refusal, because it tells an operator whether the
-handover named the wrong descriptor or none at all. This is a soundness
+`getsockopt` check on what that number actually names. Without it, a value
+naming a descriptor the process already owns — `1` being the obvious case —
+would create a second owner of stdout and close it on drop.
+
+The portable half of that check is `SO_TYPE`: the descriptor must be a stream
+socket, so a plain file, a pipe, or a tty is rejected with `ENOTSOCK` and a
+closed descriptor with `EBADF`, in both cases before any ownership is taken.
+The errno is preserved rather than flattened into a generic refusal, because it
+tells an operator whether the handover named the wrong descriptor or none at
+all.
+
+`SO_ACCEPTCONN` additionally distinguishes a listening socket from a connected
+one. Linux implements it for `AF_UNIX`; macOS returns `ENOPROTOOPT`, which is
+treated as "cannot determine" rather than failing the handover on a platform
+that cannot answer. The residual difference is stated plainly because it is
+part of the reviewed surface: on macOS a connected stream socket would be
+accepted where Linux refuses it. It still cannot be a file, a pipe, or a closed
+descriptor, so the ownership hazard the check exists for is covered on both.
+This is a soundness
 guard rather than a trust boundary: anything able to set that variable already
 controls the daemon's execution, and the daemon's own peer authentication is
 unchanged by it. The corresponding `tests.rs` site reads the flag back and

@@ -164,35 +164,63 @@ fn clear_cloexec(fd: &std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Whether `fd` is open and is a socket in the listening state.
+/// Read one `SOL_SOCKET` integer option off `fd`.
 ///
-/// Used to refuse a descriptor number that names something else before taking
-/// ownership of it. `SO_ACCEPTCONN` is the narrowest question that answers
-/// "is this the thing the broker bound": a connected socket answers `false`,
-/// while a plain file or pipe is rejected by the call itself with `ENOTSOCK`
-/// and a closed descriptor with `EBADF`. All three outcomes refuse the
-/// handover; only a listening socket is adopted.
+/// Errors are returned verbatim so callers can tell the cases apart: `ENOTSOCK`
+/// for a descriptor that is not a socket at all, `EBADF` for one that is not
+/// open, `ENOPROTOOPT` for an option this platform does not implement.
 #[cfg(unix)]
-fn is_listening_socket(fd: i32) -> std::io::Result<bool> {
-    let mut listening: libc::c_int = 0;
+fn socket_option(fd: i32, option: libc::c_int) -> std::io::Result<libc::c_int> {
+    let mut value: libc::c_int = 0;
     let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-    // SAFETY: `listening` and `len` are stack locals of exactly the type and
-    // size `getsockopt` is told to expect; the call only reads `fd` and writes
+    // SAFETY: `value` and `len` are stack locals of exactly the type and size
+    // `getsockopt` is told to expect; the call only reads `fd` and writes
     // through those two pointers. An invalid `fd` returns EBADF rather than
     // touching memory.
     let rc = unsafe {
         libc::getsockopt(
             fd,
             libc::SOL_SOCKET,
-            libc::SO_ACCEPTCONN,
-            std::ptr::addr_of_mut!(listening).cast(),
+            option,
+            std::ptr::addr_of_mut!(value).cast(),
             std::ptr::addr_of_mut!(len),
         )
     };
     if rc < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(listening != 0)
+    Ok(value)
+}
+
+/// Whether `fd` may be adopted as the inherited listener.
+///
+/// Two questions, and they are not equally portable.
+///
+/// The one that carries the soundness guarantee is `SO_TYPE`: it establishes
+/// that the descriptor is a stream socket, so a plain file, a pipe, or a tty —
+/// stdout being the case worth naming — is rejected with `ENOTSOCK` before any
+/// ownership is taken. That check works everywhere.
+///
+/// The refinement is `SO_ACCEPTCONN`, which additionally distinguishes a
+/// *listening* socket from a connected one. Linux implements it for `AF_UNIX`;
+/// macOS does not, and answers `ENOPROTOOPT`. Rather than fail the handover on
+/// a platform that cannot answer, that outcome is treated as "cannot
+/// determine" and the `SO_TYPE` guarantee stands alone. The consequence is
+/// narrow and worth stating plainly: on macOS a *connected* stream socket
+/// would be accepted here, where on Linux it is refused. It still cannot be a
+/// file, a pipe, or a closed descriptor.
+#[cfg(unix)]
+fn is_listening_socket(fd: i32) -> std::io::Result<bool> {
+    if socket_option(fd, libc::SO_TYPE)? != libc::SOCK_STREAM {
+        return Ok(false);
+    }
+    match socket_option(fd, libc::SO_ACCEPTCONN) {
+        Ok(listening) => Ok(listening != 0),
+        // The platform cannot answer the refinement; the SO_TYPE result above
+        // is the guarantee that remains.
+        Err(err) if err.raw_os_error() == Some(libc::ENOPROTOOPT) => Ok(true),
+        Err(err) => Err(err),
+    }
 }
 
 /// Take ownership of `fd` as an inherited listener, or refuse it.
