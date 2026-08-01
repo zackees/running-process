@@ -479,7 +479,7 @@ mod tests {
                     })
             })
             .expect("this test function must be present in the object symbol table");
-        let table = SymbolTable::from_object(&exe).unwrap();
+        let table = SymbolTable::from_object_path(&exe).unwrap();
         assert_eq!(table.lookup(expected_offset), Some(expected_name.as_str()));
     }
 
