@@ -38,8 +38,18 @@ thiserror = "2"
 disallowed_methods = "deny"
 
 [profile.release]
-debug = true
+# Line tables for OUR crates, so a release-mode stack can be resolved to
+# file:line all the way into the Rust frames (#803). Full `debug = true` is
+# not needed for that and costs build time and disk.
+debug = "line-tables-only"
 strip = "none"
+
+# ...and nothing for dependencies. `package."*"` matches every non-workspace
+# package, so this is the "do not turn on debugging for external packages"
+# half of #803. Before this, `debug = true` applied to the entire graph —
+# every third-party crate carried full DWARF/PDB nobody reads.
+[profile.release.package."*"]
+debug = false
 
 [profile.dev]
 debug = true
