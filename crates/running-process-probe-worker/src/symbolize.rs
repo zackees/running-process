@@ -50,10 +50,15 @@ pub fn symbolize(capture: &RawCapture) -> Result<SymbolReport, SymbolizeError> {
     }
 
     let cache = build_symbol_cache(capture);
+    let lines = build_line_cache(
+        capture,
+        &cache,
+        crate::line_numbers::line_numbers_requested(),
+    );
     let threads = capture
         .threads
         .iter()
-        .map(|thread| symbolize_thread(capture, &cache, thread))
+        .map(|thread| symbolize_thread(capture, &cache, &lines, thread))
         .collect();
     let modules = module_reports(capture, &cache);
 
@@ -187,16 +192,102 @@ fn lookup(cache: &SymbolCache, module_index: usize, relative_address: u64) -> Op
     table.lookup(relative_address).map(str::to_owned)
 }
 
-/// The `(file, line)` for a frame, when line resolution was asked for (#803).
+/// Resolved `file:line` per module, keyed by module-relative address (#803).
 ///
-/// Always `None` on Windows: the `pdb` crate panics iterating line programs on
-/// PDBs rustc produces, so that side needs a different crate before it can
-/// answer this. Returning `None` keeps the frame honest — module + offset —
-/// rather than pretending the information is unavailable for a different
-/// reason.
+/// Built once per capture, alongside the symbol cache and for the same
+/// reason: a PDB is expensive to open and every frame in a module would
+/// otherwise reopen it.
+#[cfg(target_os = "windows")]
+type LineCache = Vec<std::collections::HashMap<u64, (String, u32)>>;
+
+/// The DWARF side resolves through a range table held in the symbol cache, so
+/// it needs no second cache.
+///
+/// A named zero-sized type rather than `()`: binding a unit value trips
+/// clippy's `let_unit_value` at the call site, and that fires only on the
+/// non-Windows lanes, so the host build would not have shown it.
+#[cfg(not(target_os = "windows"))]
+struct LineCache;
+
+/// Resolve every frame's line in one pass per module.
+///
+/// # Why this is a pre-pass rather than a lookup
+///
+/// `pdb_addr2line` answers one address at a time and its query borrows the
+/// parsed PDB, so nothing queryable can be handed back to a caller. Gathering
+/// the addresses first turns that constraint into an advantage: each PDB is
+/// opened exactly once, and the borrow stays inside `resolve_lines`.
+///
+/// # What is deliberately not resolved
+///
+/// Only modules whose symbols came from a local file. The server tier reports
+/// a URL in `symbol_file` and does not retain the download, so there is no
+/// file left to read line programs from. Those frames keep their function
+/// name and lose only the line — and `ModuleReport::symbol_source` says
+/// `ConfiguredServer`, so a reader can tell why. Retaining server downloads
+/// for the worker's lifetime would close that gap; it changes the discovery
+/// contract, so it is written up on #803 rather than decided here.
+#[cfg(target_os = "windows")]
+fn build_line_cache(capture: &RawCapture, cache: &SymbolCache, requested: bool) -> LineCache {
+    use crate::pdb_symbols::ModuleSymbols;
+    use std::collections::HashMap;
+
+    let mut per_module: Vec<HashMap<u64, (String, u32)>> =
+        vec![HashMap::new(); capture.modules.len()];
+    // Off by default: line programs cost a parse per module, and a caller who
+    // only asked "which function" must not pay for it.
+    //
+    // Taken as an argument rather than read here, so this is testable without
+    // `set_var` — env-mutating tests race under a parallel runner and this
+    // repo has been bitten by that.
+    if !requested {
+        return per_module;
+    }
+
+    // Gather first, resolve second — the whole point of the bulk API.
+    let mut wanted: Vec<Vec<u64>> = vec![Vec::new(); capture.modules.len()];
+    for thread in &capture.threads {
+        for frame in &thread.frames {
+            if let Some(addresses) = wanted.get_mut(frame.module_index as usize) {
+                addresses.push(frame.relative_address);
+            }
+        }
+    }
+
+    for (index, addresses) in wanted.iter_mut().enumerate() {
+        if addresses.is_empty() {
+            continue;
+        }
+        // One entry per address; duplicates across frames are common in a
+        // recursive stack and would re-ask the same question.
+        addresses.sort_unstable();
+        addresses.dedup();
+
+        let Some(ModuleSymbols::Found { symbol_file, .. }) = cache.get(index) else {
+            continue;
+        };
+        let path = std::path::Path::new(symbol_file);
+        // A URL from the server tier is not openable; see the note above.
+        if !path.is_file() {
+            continue;
+        }
+        per_module[index] = crate::pdb_symbols::resolve_lines(path, addresses);
+    }
+
+    per_module
+}
+
+/// No pre-pass needed off Windows; see [`LineCache`].
+#[cfg(not(target_os = "windows"))]
+fn build_line_cache(_capture: &RawCapture, _cache: &SymbolCache, _requested: bool) -> LineCache {
+    LineCache
+}
+
+/// The `(file, line)` for a frame, when line resolution was asked for (#803).
 #[cfg(not(target_os = "windows"))]
 fn lookup_line(
     cache: &SymbolCache,
+    _lines: &LineCache,
     module_index: usize,
     relative_address: u64,
 ) -> Option<(String, u32)> {
@@ -209,16 +300,23 @@ fn lookup_line(
         .map(|(file, line)| (file.to_owned(), line))
 }
 
+/// The `(file, line)` for a frame, read out of the pre-pass.
 #[cfg(target_os = "windows")]
 fn lookup_line(
     _cache: &SymbolCache,
-    _module_index: usize,
-    _relative_address: u64,
+    lines: &LineCache,
+    module_index: usize,
+    relative_address: u64,
 ) -> Option<(String, u32)> {
-    None
+    lines.get(module_index)?.get(&relative_address).cloned()
 }
 
-fn symbolize_thread(capture: &RawCapture, cache: &SymbolCache, thread: &RawThread) -> SymThread {
+fn symbolize_thread(
+    capture: &RawCapture,
+    cache: &SymbolCache,
+    lines: &LineCache,
+    thread: &RawThread,
+) -> SymThread {
     let frames = thread
         .frames
         .iter()
@@ -229,6 +327,7 @@ fn symbolize_thread(capture: &RawCapture, cache: &SymbolCache, thread: &RawThrea
                         lookup(cache, frame.module_index as usize, frame.relative_address);
                     let (file, line) = match lookup_line(
                         cache,
+                        lines,
                         frame.module_index as usize,
                         frame.relative_address,
                     ) {
@@ -565,6 +664,113 @@ mod tests {
             u64::from(rva),
             "the offset must survive symbolization"
         );
+    }
+
+    /// The opt-in reaches the frame: real addresses get real `file:line`.
+    ///
+    /// Samples many of this crate's symbols and requires at least one to
+    /// resolve, rather than betting on a single function carrying line info.
+    /// Anchored on this crate and asserting a Rust source file, so it cannot
+    /// pass by resolving an unrelated runtime internal.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn real_addresses_resolve_to_files_and_lines_when_asked() {
+        use crate::pdb_symbols::SymbolTable;
+
+        let exe = std::env::current_exe().expect("current exe");
+        let pdb = exe.with_extension("pdb");
+        if !pdb.is_file() {
+            // The cached build drops the linker's PDB (zackees/soldr#2148),
+            // so this skips on a local box. CI must not skip silently.
+            assert!(
+                std::env::var_os("GITHUB_ACTIONS").is_none(),
+                "no PDB at {} during a CI run; this test would assert nothing",
+                pdb.display()
+            );
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        }
+        let Some(table) = SymbolTable::from_pdb(&pdb) else {
+            eprintln!("skipping: PDB had no public function symbols");
+            return;
+        };
+        let addresses = table.addresses_for_names_containing("running_process_probe_worker", 64);
+        assert!(
+            !addresses.is_empty(),
+            "no symbol named this crate; the anchor is wrong, not the wiring"
+        );
+
+        let capture = capture_for_self(&exe, &addresses);
+        let cache = build_symbol_cache(&capture);
+        let lines = build_line_cache(&capture, &cache, true);
+
+        let resolved: Vec<(String, u32)> = addresses
+            .iter()
+            .filter_map(|address| lookup_line(&cache, &lines, 0, *address))
+            .collect();
+
+        if resolved.is_empty() {
+            // Every sampled symbol lacking line info is possible with a
+            // mismatched local PDB, but on CI it means the wiring is dead.
+            assert!(
+                std::env::var_os("GITHUB_ACTIONS").is_none(),
+                "none of {} sampled symbols resolved to a line during a CI run",
+                addresses.len()
+            );
+            eprintln!("skipping: no sampled symbol carried a line record");
+            return;
+        }
+
+        for (file, line) in &resolved {
+            assert!(
+                file.to_ascii_lowercase().ends_with(".rs"),
+                "resolved to {file}, which is not a Rust source file"
+            );
+            assert!(*line > 0, "line numbers are 1-based; got {line}");
+        }
+    }
+
+    /// Not asking costs nothing and yields nothing.
+    ///
+    /// The gate is the reason line resolution is affordable by default; a
+    /// regression here would make every capture parse line programs.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn lines_are_absent_unless_the_caller_opts_in() {
+        let exe = std::env::current_exe().expect("current exe");
+        let capture = capture_for_self(&exe, &[0x1000]);
+        let cache = build_symbol_cache(&capture);
+
+        let lines = build_line_cache(&capture, &cache, false);
+        assert!(
+            lines.iter().all(|module| module.is_empty()),
+            "the opt-in was off, so no line program should have been parsed"
+        );
+    }
+
+    /// A one-module capture with a frame per supplied address.
+    #[cfg(target_os = "windows")]
+    fn capture_for_self(exe: &std::path::Path, addresses: &[u64]) -> RawCapture {
+        RawCapture {
+            format: CaptureFormat::CooperativeFrames,
+            discovery: Default::default(),
+            modules: vec![ModuleRef {
+                name: "self".into(),
+                path_hint: Some(exe.to_string_lossy().into_owned()),
+                ..Default::default()
+            }],
+            threads: vec![RawThread {
+                os_tid: 1,
+                frames: addresses
+                    .iter()
+                    .map(|address| RawFrame {
+                        module_index: 0,
+                        relative_address: *address,
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+        }
     }
 
     /// A module with no symbol file must degrade, not fail.
