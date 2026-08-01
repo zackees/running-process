@@ -49,21 +49,32 @@ use std::process::Command;
 /// handed one over.
 pub const INHERITED_LISTENER_FD_ENV: &str = "RUNNING_PROCESS_BROKER_LISTENER_FD";
 
-/// Opt-in for the launcher to bind the endpoint itself (#500 slice 32).
+/// Escape hatch for the launcher binding the endpoint itself (#500 slice 32).
 ///
-/// Off by default, and deliberately so. Turning it on changes how every
-/// backend starts, and two contract questions on #500 are still open: whether
-/// Windows eventually gets a pre-created first pipe instance, and who unlinks
-/// the socket at backend teardown. Until the second is answered a broker-owned
-/// endpoint is never unlinked, so enabling this by default would leak a socket
-/// file per backend launch.
+/// **On by default.** Set to `0` to fall back to spawn-then-probe.
+///
+/// It shipped opt-in while one question was open: who removes the socket when
+/// a daemon exits. That is now settled in three parts. A failed launch is
+/// cleaned up by the broker (#826). A broker-initiated teardown is cleaned up
+/// after the exit is confirmed (#828). A daemon that exits *on its own* —
+/// idle timeout, crash — leaves its endpoint behind, and that is accepted
+/// rather than swept.
+///
+/// Accepted because sweeping is worse than the untidiness. The allocator
+/// generates a fresh random path per launch, so a stale entry is never
+/// *reused*; it only accumulates, in a directory that is already ephemeral
+/// (`$XDG_RUNTIME_DIR` is tmpfs cleared at logout, macOS `$TMPDIR` is
+/// per-user and periodically swept). A broker-side sweep would have to decide
+/// a socket is dead while a daemon might still hold it — the same hazard that
+/// made `force_kill` skip cleanup in #828, traded for tidiness nobody asked
+/// for.
 ///
 /// A const rather than a literal because the repo's env-literal lint requires
 /// it, and so a rename cannot leave one spelling in the launcher and another
 /// in a test.
 pub const LAUNCHER_OPT_IN_ENV: &str = "RUNNING_PROCESS_BROKER_OWNED_BIND";
 
-/// Whether the caller asked the launcher to bind the endpoint itself.
+/// Whether the launcher should bind the endpoint itself.
 pub fn launcher_opt_in() -> bool {
     opted_in(std::env::var_os(LAUNCHER_OPT_IN_ENV))
 }
@@ -74,9 +85,10 @@ pub fn launcher_opt_in() -> bool {
 /// a parallel runner, and this crate has been bitten by exactly that. The same
 /// split already exists for the probe's line-number opt-in.
 fn opted_in(value: Option<std::ffi::OsString>) -> bool {
-    // Present-and-not-"0". Treating any set value as yes would make `=0`
-    // enable the thing it names.
-    value.is_some_and(|value| value != "0")
+    // Unset means on. Only an explicit `0` opts out — anything else set is
+    // read as "yes", so `=1` and `=true` keep working for anyone who enabled
+    // it while it was opt-in.
+    value.is_none_or(|value| value != "0")
 }
 
 /// Whether this platform can hand a bound listener to a spawned daemon.

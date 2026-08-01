@@ -27,19 +27,20 @@ fn support_is_reported_honestly_for_this_platform() {
 }
 
 #[test]
-fn the_launcher_opt_in_is_off_by_default_and_respects_an_explicit_zero() {
+fn the_launcher_binds_by_default_and_only_an_explicit_zero_opts_out() {
     use std::ffi::OsString;
-    // Off unless asked. Enabling it changes how every backend starts, and a
-    // broker-owned endpoint is never unlinked until #500 settles who owns
-    // teardown — so a default-on would leak a socket file per launch.
-    assert!(!opted_in(None));
+    // On unless explicitly disabled. The endpoint is listening before the
+    // daemon's `main` runs, which is the whole point of the slice — a caller
+    // should get that without having to know it exists.
+    assert!(opted_in(None));
     assert!(opted_in(Some(OsString::from("1"))));
     assert!(opted_in(Some(OsString::from("true"))));
-    // Bare set, no value: on. Matches the probe's line-number opt-in.
+    // Bare set, no value: still on. Matches the probe's line-number opt-in
+    // and keeps `=1` working for anyone who enabled it while it was opt-in.
     assert!(opted_in(Some(OsString::from(""))));
-    // Explicitly zero: off. Without this branch, `=0` would enable the thing
-    // it names — the sort of bug nobody reports because they assume they set
-    // it wrong.
+    // The escape hatch, and the only one. If this stops working the fallback
+    // to spawn-then-probe becomes unreachable, which is the thing an operator
+    // would need in a hurry.
     assert!(!opted_in(Some(OsString::from("0"))));
 }
 
