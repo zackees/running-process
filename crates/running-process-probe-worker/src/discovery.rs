@@ -220,6 +220,18 @@ pub enum ServerResolve<T> {
         url: String,
         /// Caller-produced parsed value.
         value: T,
+        /// The verified download, kept on disk (#818).
+        ///
+        /// Symbol *names* are parsed during verification and need nothing
+        /// further. Line programs are read later, in a pre-pass over the
+        /// addresses a capture actually contains, and that needs the file to
+        /// still exist. Dropping this removes it, so it is held for as long as
+        /// the symbols it describes.
+        ///
+        /// The worker is one-shot and handles a single capture, so the
+        /// lifetime is bounded by the process — no cache, no eviction, no
+        /// cleanup path to get wrong.
+        retained: tempfile::TempPath,
     },
     /// No origin yielded a candidate response.
     NotFound,
@@ -729,9 +741,13 @@ fn resolve_from_servers<T>(
             continue;
         }
         if let Some(value) = verify(file.path()) {
+            // `into_temp_path` transfers deletion to the returned handle, so
+            // the file survives this function instead of being unlinked when
+            // `file` drops.
             return ServerResolve::Found {
                 url: url.into(),
                 value,
+                retained: file.into_temp_path(),
             };
         }
         rejected += 1;
@@ -1329,6 +1345,36 @@ mod tests {
             request.starts_with("GET /buildid/abcdef/debuginfo HTTP/1.1"),
             "{request}"
         );
+    }
+
+    #[test]
+    fn a_verified_server_download_survives_the_call_that_fetched_it() {
+        // The whole point of retaining it (#818): line programs are read in a
+        // later pre-pass, long after `resolve_from_servers` has returned. An
+        // earlier revision dropped the `NamedTempFile` on return, so the file
+        // was already gone and server-sourced modules silently resolved to
+        // names only.
+        let (base, server) = serve_once("200 OK", b"symbols".to_vec(), "");
+        let outcome =
+            resolve_from_servers(&[base], "elf:abcdef", Path::new("ignored.debug"), |path| {
+                std::fs::read(path).ok()
+            });
+        let ServerResolve::Found { retained, .. } = outcome else {
+            panic!("expected a verified server response");
+        };
+        let path = retained.to_path_buf();
+        assert!(
+            path.is_file(),
+            "the verified download must still exist at {}",
+            path.display()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"symbols");
+
+        // And it is still temporary: dropping the handle removes it, so a
+        // long-lived process would not accumulate symbol files.
+        drop(retained);
+        assert!(!path.exists(), "dropping the handle must remove the file");
+        let _ = server.join();
     }
 
     #[test]

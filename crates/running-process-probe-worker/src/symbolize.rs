@@ -218,15 +218,13 @@ struct LineCache;
 /// the addresses first turns that constraint into an advantage: each PDB is
 /// opened exactly once, and the borrow stays inside `resolve_lines`.
 ///
-/// # What is deliberately not resolved
+/// # Both discovery tiers, not just the local one
 ///
-/// Only modules whose symbols came from a local file. The server tier reports
-/// a URL in `symbol_file` and does not retain the download, so there is no
-/// file left to read line programs from. Those frames keep their function
-/// name and lose only the line — and `ModuleReport::symbol_source` says
-/// `ConfiguredServer`, so a reader can tell why. Retaining server downloads
-/// for the worker's lifetime would close that gap; it changes the discovery
-/// contract, so it is written up on #803 rather than decided here.
+/// The local tier's `symbol_file` is an openable path. The server tier
+/// reports a URL and hands over the verified download itself, retained for
+/// the worker's lifetime (#818) — so a server-sourced module resolves lines
+/// exactly like a local one, rather than silently degrading to name-only for
+/// a reason that has nothing to do with the build being diagnosed.
 #[cfg(target_os = "windows")]
 fn build_line_cache(capture: &RawCapture, cache: &SymbolCache, requested: bool) -> LineCache {
     use crate::pdb_symbols::ModuleSymbols;
@@ -263,11 +261,21 @@ fn build_line_cache(capture: &RawCapture, cache: &SymbolCache, requested: bool) 
         addresses.sort_unstable();
         addresses.dedup();
 
-        let Some(ModuleSymbols::Found { symbol_file, .. }) = cache.get(index) else {
+        let Some(ModuleSymbols::Found {
+            symbol_file,
+            retained,
+            ..
+        }) = cache.get(index)
+        else {
             continue;
         };
-        let path = std::path::Path::new(symbol_file);
-        // A URL from the server tier is not openable; see the note above.
+        // The server tier reports a URL, which is not openable, and hands the
+        // verified download over instead (#818). The local tier's
+        // `symbol_file` is already a path.
+        let path = match retained {
+            Some(retained) => retained.as_ref(),
+            None => std::path::Path::new(symbol_file.as_str()),
+        };
         if !path.is_file() {
             continue;
         }

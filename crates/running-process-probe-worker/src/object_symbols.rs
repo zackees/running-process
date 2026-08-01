@@ -263,12 +263,20 @@ fn server_symbols(expected: &str, native_name: &Path, local_rejected: usize) -> 
     match discovery::resolve_configured_server(expected, native_name, |path| {
         load_object_for_identity(path, expected)
     }) {
-        // No line table for a server-fetched symbol file: the fetch returns a
-        // symbol table, not a path this can re-open. Server-sourced modules
-        // resolve to names only until that path carries the file through.
-        discovery::ServerResolve::Found { url, value: table } => ModuleSymbols::Found {
+        // The verified download is retained (#818), so a server-fetched
+        // symbol file gets a line table exactly like a local one. Built here,
+        // while the file is still on disk, because this side's table is eager
+        // — nothing needs the file afterwards, so the handle drops with the
+        // match arm.
+        discovery::ServerResolve::Found {
+            url,
+            value: table,
+            retained,
+        } => ModuleSymbols::Found {
             table,
-            lines: None,
+            lines: line_numbers_requested()
+                .then(|| LineTable::from_path(&retained))
+                .flatten(),
             symbol_file: url,
             source: DiscoverySource::ConfiguredServer,
         },
