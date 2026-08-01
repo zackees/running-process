@@ -42,6 +42,15 @@ const STRESS_BUDGET: Duration = Duration::from_secs(5);
 struct Broker {
     child: Child,
     path: String,
+    /// The `--program` this broker was started with.
+    ///
+    /// Carried from construction rather than parsed back out of the socket
+    /// path. An earlier version recovered it from the path leaf, which works
+    /// on Linux and Windows (`rpb-v2-<program>-<sid>-<idx>`) and fails on
+    /// macOS, where the leaf is hashed to fit `sun_path` — the parse returned
+    /// hash fragments and every Hello was refused with "service name is
+    /// invalid". Windows CI was green throughout.
+    program: String,
     _svc_dir: tempfile::TempDir,
 }
 
@@ -117,6 +126,7 @@ fn start_broker(prefix: &str) -> Broker {
     Broker {
         child,
         path,
+        program,
         _svc_dir: svc_dir,
     }
 }
@@ -151,20 +161,6 @@ fn hello_for(program: &str) -> Hello {
     }
 }
 
-/// The program name a broker was started with, recovered from its pipe path.
-///
-/// The service definition is installed under the program name, so a Hello has
-/// to name the same string for the loader to resolve it.
-fn program_of(path: &str) -> String {
-    let leaf = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    // `rpb-v2-<program>-<sid_hash>-<idx>`
-    let rest = leaf.trim_start_matches("rpb-v2-");
-    let mut parts: Vec<&str> = rest.split('-').collect();
-    parts.pop(); // pipe index
-    parts.pop(); // sid hash
-    parts.join("-")
-}
-
 fn read_reply(stream: &mut Stream) -> HelloReply {
     let bytes = read_frame(stream).expect("read HelloReply");
     HelloReply::decode(bytes.as_slice()).expect("decode HelloReply")
@@ -173,7 +169,7 @@ fn read_reply(stream: &mut Stream) -> HelloReply {
 #[test]
 fn a_hundred_concurrent_hellos_all_succeed_within_budget() {
     let broker = start_broker("v2acc-stress");
-    let program = program_of(&broker.path);
+    let program = broker.program.clone();
     let path = broker.path.clone();
 
     let start = Instant::now();
@@ -281,7 +277,7 @@ fn a_nul_byte_in_the_service_name_is_refused_rather_than_crashing() {
 #[test]
 fn an_unsupported_protocol_version_is_refused_with_a_reason() {
     let broker = start_broker("v2acc-version");
-    let program = program_of(&broker.path);
+    let program = broker.program.clone();
     let mut stream = connect(&broker.path);
 
     let mut hello = hello_for(&program);
@@ -326,7 +322,7 @@ fn a_garbage_frame_does_not_take_the_broker_down() {
 
     // The point of the test: a subsequent well-formed Hello still works, so
     // one hostile client cannot deny service to everyone else.
-    let program = program_of(&broker.path);
+    let program = broker.program.clone();
     let mut stream = connect(&broker.path);
     let hello = hello_for(&program);
     write_frame(&mut stream, &hello.encode_to_vec()).expect("write Hello");
@@ -354,7 +350,7 @@ fn an_oversized_frame_is_rejected_without_allocating_it() {
     }
 
     // Still serving.
-    let program = program_of(&broker.path);
+    let program = broker.program.clone();
     let mut stream = connect(&broker.path);
     let hello = hello_for(&program);
     write_frame(&mut stream, &hello.encode_to_vec()).expect("write Hello");
