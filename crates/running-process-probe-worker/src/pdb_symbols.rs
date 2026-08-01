@@ -17,6 +17,7 @@
 //! reads the report somewhere else entirely, and nothing in the output would
 //! contradict them.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -486,6 +487,83 @@ pub fn pdb_path_for_with_search(image: &Path, extra: &[PathBuf]) -> Option<PathB
     }
 }
 
+/// Resolve `file:line` for a set of module-relative addresses, in one pass
+/// over the PDB (#803).
+///
+/// # Why this takes every address at once
+///
+/// The DWARF side builds a sorted range table and binary-searches it, because
+/// `.debug_line` can be enumerated. A PDB cannot be, at least not through a
+/// crate that survives the line programs rustc emits: `pdb` 0.8 panics
+/// iterating them (`modi/mod.rs:200`), and `pdb-addr2line` — which does
+/// survive them — exposes only a per-address query.
+///
+/// A per-address query needs a live `Context`, which borrows from the parsed
+/// PDB data. Handing one back to a caller would mean storing a value and a
+/// borrow of it in the same struct. Taking every address up front avoids that
+/// entirely: the `Context` lives inside this call, and the PDB is opened once
+/// per module instead of once per frame.
+///
+/// # What is returned
+///
+/// Only addresses that resolved appear in the map. A missing entry means the
+/// PDB had no line for that address, and the caller should leave the frame at
+/// module + offset — the same degradation the rest of this module applies. An
+/// unreadable or malformed PDB yields an empty map rather than an error,
+/// because no line information is a normal outcome (a dependency built
+/// without debug info) and not a failure of the capture.
+pub fn resolve_lines(pdb_path: &Path, addresses: &[u64]) -> HashMap<u64, (String, u32)> {
+    let mut resolved = HashMap::new();
+    // Opening and parsing a PDB is the expensive part; skip it when there is
+    // nothing to ask.
+    if addresses.is_empty() {
+        return resolved;
+    }
+
+    let Ok(file) = File::open(pdb_path) else {
+        return resolved;
+    };
+    // `pdb_addr2line::pdb` rather than this crate's own `pdb`: 0.12 parses
+    // through a different (newer) PDB crate, and the handle types are not
+    // interchangeable. Going through the re-export means the versions cannot
+    // drift apart behind our back.
+    let Ok(pdb) = pdb_addr2line::pdb::PDB::open(file) else {
+        return resolved;
+    };
+    let Ok(data) = pdb_addr2line::ContextPdbData::try_from_pdb(pdb) else {
+        return resolved;
+    };
+    let Ok(context) = data.make_context() else {
+        return resolved;
+    };
+
+    for &address in addresses {
+        // RVAs in a PDB are 32-bit. An address that does not fit is not a
+        // valid relative address for this module, so it resolves to nothing
+        // rather than being truncated into a plausible-looking wrong answer.
+        let Ok(probe) = u32::try_from(address) else {
+            continue;
+        };
+        let Ok(Some(frames)) = context.find_frames(probe) else {
+            continue;
+        };
+        // The inline stack is ordered inside-out, so the first entry is the
+        // innermost — the source location of the instruction itself. That
+        // matches what the DWARF side reports for an inlined address, and it
+        // is the location a reader wants: the line that actually ran, not the
+        // line of the outer function it was folded into.
+        let Some(frame) = frames.frames.first() else {
+            continue;
+        };
+        let (Some(file), Some(line)) = (frame.file.as_ref(), frame.line) else {
+            continue;
+        };
+        resolved.insert(address, (file.to_string(), line));
+    }
+
+    resolved
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +590,61 @@ mod tests {
             candidate.display()
         );
         None
+    }
+
+    #[test]
+    fn a_real_pdb_yields_file_and_line_for_a_known_function() {
+        // Anchored on a function this file defines, so the assertion cannot
+        // pass by resolving something unrelated: the answer must name this
+        // source file.
+        let Some(pdb_path) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        let table = SymbolTable::from_pdb(&pdb_path).expect("symbols from own PDB");
+        let Some((rva, name)) = table.symbol_containing_name("resolve_lines") else {
+            panic!("own PDB has no symbol for resolve_lines; the anchor is wrong");
+        };
+
+        let resolved = resolve_lines(&pdb_path, &[u64::from(rva)]);
+        let Some((file, line)) = resolved.get(&u64::from(rva)) else {
+            panic!("no line for {name} at rva {rva:#x}");
+        };
+        assert!(
+            file.replace('\\', "/").ends_with("pdb_symbols.rs"),
+            "{name} resolved to {file}, which is not the file that defines it"
+        );
+        assert!(*line > 0, "line numbers are 1-based; got {line}");
+    }
+
+    #[test]
+    fn no_addresses_means_no_work_and_no_answers() {
+        let Some(pdb_path) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        assert!(resolve_lines(&pdb_path, &[]).is_empty());
+    }
+
+    #[test]
+    fn an_address_too_large_for_an_rva_has_no_line() {
+        // Truncating into 32 bits would produce a plausible-looking line for
+        // an address that is not in this module at all.
+        let Some(pdb_path) = own_pdb() else {
+            eprintln!("skipping: no PDB beside the test binary");
+            return;
+        };
+        let huge = u64::from(u32::MAX) + 1;
+        assert!(resolve_lines(&pdb_path, &[huge]).is_empty());
+    }
+
+    #[test]
+    fn a_missing_pdb_yields_no_lines_rather_than_failing() {
+        // No line information is an ordinary outcome — a dependency built
+        // without debug info — and must degrade, not error.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let absent = dir.path().join("nothing.pdb");
+        assert!(resolve_lines(&absent, &[0x1000]).is_empty());
     }
 
     #[test]

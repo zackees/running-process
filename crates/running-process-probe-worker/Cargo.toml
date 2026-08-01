@@ -34,6 +34,12 @@ url = "2"
 # Windows and ELF/DWARF plus Mach-O/dSYM identity and symbols on Unix.
 [target.'cfg(target_os = "windows")'.dependencies]
 pdb = "0.8"
+# Line programs only. `pdb` 0.8 resolves names fine but panics
+# (`modi/mod.rs:200`) iterating the line programs rustc emits, so the
+# file:line half goes through this crate instead of a second parser of our
+# own. Same isolation argument as every other parser here: it lives in the
+# disposable worker, never in the daemon.
+pdb-addr2line = "0.12"
 object = { version = "0.36", default-features = false, features = ["read", "std"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
