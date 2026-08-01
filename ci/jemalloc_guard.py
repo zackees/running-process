@@ -34,13 +34,19 @@ PATTERN = re.compile(
 # asking for the crates.
 SUFFIXES = {".rs", ".toml", ".md", ".py", ".yml", ".yaml", ".json", ".sh"}
 
-# This guard's own module name, which its callers must spell out.
+# This guard's own module name, which its callers must spell out, plus the
+# `python -m ci` stage name that runs it (#516).
 #
-# Stripped before counting rather than exempting `ci/lint.py` and
-# `tests/test_ci_lint.py` wholesale: those files should still be caught if they
-# ever gain a *real* jemalloc reference. Only the name of the machinery that
-# removes jemalloc is ignored, not every mention in the files that invoke it.
-SELF_REFERENCE = re.compile(r"jemalloc_guard")
+# Stripped before counting rather than exempting `ci/lint.py`,
+# `tests/test_ci_lint.py`, or `ci/__main__.py` wholesale: those files should
+# still be caught if they ever gain a *real* jemalloc reference. Only the name
+# of the machinery that removes jemalloc is ignored, not every mention in the
+# files that invoke it.
+#
+# `guard-jemalloc` is listed separately because it is not spelled
+# `jemalloc_guard` — the stage name reads better hyphen-first, and the shorter
+# pattern would not cover it.
+SELF_REFERENCE = re.compile(r"jemalloc_guard|guard-jemalloc")
 
 # The guard itself is exempt outright — it has to spell out every token it
 # forbids in order to search for them.
