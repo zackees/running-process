@@ -28,4 +28,4 @@ interprocess = "2"
 # Supplies the probe_diag.v1 prost enums and the all-thread snapshot API.
 # default-features = false keeps the crate's injection vehicles (gated on its
 # embed-helper feature) out of the extension module entirely.
-running-process-probe = { path = "../running-process-probe", default-features = false }
+running-process-probe = { path = "../running-process-probe", version = "4.7.0", default-features = false }
