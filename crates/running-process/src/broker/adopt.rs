@@ -146,7 +146,7 @@ pub struct OwnedBackendIo {
 
 impl OwnedBackendIo {
     #[cfg(unix)]
-    fn from_local_socket_stream(
+    pub(crate) fn from_local_socket_stream(
         stream: interprocess::local_socket::Stream,
     ) -> Result<Self, IntoBackendIoError> {
         match stream {
@@ -157,7 +157,7 @@ impl OwnedBackendIo {
     }
 
     #[cfg(windows)]
-    fn from_local_socket_stream(
+    pub(crate) fn from_local_socket_stream(
         _stream: interprocess::local_socket::Stream,
     ) -> Result<Self, IntoBackendIoError> {
         Err(IntoBackendIoError::WindowsUnsupported)
