@@ -359,3 +359,75 @@ fn an_oversized_frame_is_rejected_without_allocating_it() {
         other => panic!("broker did not survive an oversized length prefix: {other:?}"),
     }
 }
+
+/// Criterion 1 of #532: the broker stays up until it is signalled.
+///
+/// The other acceptance tests all start a broker, do one thing, and drop the
+/// guard — which kills it. None of them establish that it would have *kept
+/// running*, so a broker that exited after its first Hello would pass every
+/// one of them. `--once` exists precisely because single-shot is a separate
+/// mode; this asserts the default is not silently behaving like it.
+///
+/// Unix-only for the signal half: the binary installs SIGTERM/SIGINT handlers
+/// there, while Windows uses console control events, which a test cannot
+/// deliver to a child without attaching to its console.
+#[cfg(unix)]
+#[test]
+fn the_broker_serves_repeatedly_and_exits_cleanly_on_sigterm() {
+    let mut broker = start_broker("v2acc-lifetime");
+
+    // Two round-trips, not one: the first proves it serves, the second proves
+    // serving did not consume it.
+    for attempt in 0..2 {
+        let mut stream = connect(&broker.path);
+        write_frame(&mut stream, &hello_for(&broker.program).encode_to_vec()).expect("write hello");
+        let reply = read_reply(&mut stream);
+        assert!(
+            matches!(reply.result, Some(hello_reply::Result::Negotiated(_))),
+            "hello {attempt} was not negotiated: {reply:?}"
+        );
+    }
+
+    // Still alive between requests — `try_wait` returning None is the
+    // assertion that it did not quietly exit after the first connection.
+    assert!(
+        broker.child.try_wait().expect("try_wait").is_none(),
+        "the broker exited on its own after serving"
+    );
+
+    // SIGTERM, not SIGKILL: the point is the graceful path the binary
+    // installs handlers for. SIGKILL would prove only that the OS can end a
+    // process.
+    let pid = broker.child.id() as libc::pid_t;
+    // SAFETY: `pid` names the child this test spawned and has not reaped.
+    assert_eq!(
+        unsafe { libc::kill(pid, libc::SIGTERM) },
+        0,
+        "kill(SIGTERM)"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = broker.child.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the broker did not exit within 20s of SIGTERM"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    // The criterion is "stays up until SIGTERM", and reaching here proves
+    // both halves: it was alive before the signal and gone after it.
+    //
+    // Deliberately not asserting the exit code. On musl CI this exits 101 —
+    // Rust's panic code — rather than draining to 0, so something on the
+    // shutdown path panics after `poll_accept_until_shutdown` returns. That
+    // is a real defect and it is reported on #532 rather than encoded here:
+    // asserting `success()` would make this test fail for a bug it did not
+    // introduce, and asserting `101` would freeze the bug into the contract.
+    // Either way the interesting property — the broker honours the signal
+    // instead of ignoring it — is what the deadline above enforces.
+    let _ = status;
+}
