@@ -106,6 +106,14 @@ fn start_broker(prefix: &str) -> Broker {
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        // Keeps reading after the bound-path line rather than breaking.
+        //
+        // Breaking dropped the `BufReader`, which closed the read end of the
+        // pipe. The broker prints again on shutdown, and `println!` panics on
+        // EPIPE — so every SIGTERM test saw the broker exit 101 and it looked
+        // like a shutdown-path defect. Draining to EOF keeps the reader alive
+        // for the process's whole life, which is what a supervisor would do.
+        let mut sender = Some(tx);
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             if let Some(rest) = line.strip_prefix("running-process-broker-v2 bound at ") {
                 let path = rest
@@ -114,8 +122,9 @@ fn start_broker(prefix: &str) -> Broker {
                     .map(|(path, _)| path)
                     .unwrap_or(rest.trim_end())
                     .to_string();
-                let _ = tx.send(path);
-                break;
+                if let Some(tx) = sender.take() {
+                    let _ = tx.send(path);
+                }
             }
         }
     });
@@ -418,16 +427,15 @@ fn the_broker_serves_repeatedly_and_exits_cleanly_on_sigterm() {
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    // The criterion is "stays up until SIGTERM", and reaching here proves
-    // both halves: it was alive before the signal and gone after it.
+    // Now that stdout stays drained, the shutdown message no longer hits
+    // EPIPE, and the graceful path is observable: `Ok(None)` from the accept
+    // poll, drain the handlers, `ExitCode::SUCCESS`.
     //
-    // Deliberately not asserting the exit code. On musl CI this exits 101 —
-    // Rust's panic code — rather than draining to 0, so something on the
-    // shutdown path panics after `poll_accept_until_shutdown` returns. That
-    // is a real defect and it is reported on #532 rather than encoded here:
-    // asserting `success()` would make this test fail for a bug it did not
-    // introduce, and asserting `101` would freeze the bug into the contract.
-    // Either way the interesting property — the broker honours the signal
-    // instead of ignoring it — is what the deadline above enforces.
-    let _ = status;
+    // Asserting it is what keeps the earlier misdiagnosis from recurring — if
+    // this starts failing with 101 again, the cause is a closed stdout, not a
+    // broken shutdown.
+    assert!(
+        status.success(),
+        "the broker did not shut down cleanly: {status:?}"
+    );
 }
