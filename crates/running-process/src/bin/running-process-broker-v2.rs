@@ -149,7 +149,9 @@ fn install_shutdown_signal_handlers() -> std::io::Result<()> {
 
 /// Set when Windows delivers a console control event.
 ///
-/// The Windows counterpart of [`SIGNAL_SHUTDOWN_REQUESTED`]. Without it the
+/// The Windows counterpart of `SIGNAL_SHUTDOWN_REQUESTED` (backticks, not a
+/// link: that static is `#[cfg(unix)]`, so the link cannot resolve in a
+/// Windows doc build). Without it the
 /// accept loop on Windows polled a flag nothing ever set, so the broker never
 /// drained or unbound — it only ever died when killed.
 #[cfg(windows)]

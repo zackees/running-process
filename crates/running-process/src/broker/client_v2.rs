@@ -160,7 +160,11 @@ impl ClientSession {
     /// receives is the same kind of socket either way.
     ///
     /// Unix-only, matching v1: the Windows `OwnedHandle` path is deferred
-    /// (#720) and returns [`IntoBackendIoError::WindowsUnsupported`]. zccache
+    /// (#720) and returns `IntoBackendIoError::WindowsUnsupported`. Plain
+    /// backticks, not an intra-doc link: that variant is `#[cfg(windows)]`,
+    /// so a link to it is unresolvable on the platform CI documents. The
+    /// neighbouring reference in `adopt.rs` is written the same way for the
+    /// same reason. zccache
     /// already re-dials with its own transport on Windows for that reason, so
     /// this parity is what keeps its two platform lanes unchanged.
     pub fn into_backend_io(self) -> Result<OwnedBackendIo, BackendDialError> {
