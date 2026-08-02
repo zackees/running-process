@@ -71,6 +71,41 @@ use running_process::broker::protocol_v2::ServiceDefinitionLoader;
 use running_process::broker::server::deadline_stream::{hello_read_deadline, DeadlineStream};
 use running_process::broker::server::service_def_loader::ServiceDefinitionError;
 
+/// Write a line to stdout, tolerating a reader that has gone away.
+///
+/// `println!` panics if the underlying write fails, and the failure it
+/// hits in practice is `EPIPE` — someone was reading the broker's stdout
+/// and stopped. That is not a broker fault and it is not a reason to
+/// abort: the broker's job is brokering, and its progress chatter is
+/// diagnostic. Panicking there turns "nobody is reading the log" into a
+/// process exit with status 101 and a backtrace that points at the
+/// logging line rather than at the closed pipe, which is a genuinely
+/// misleading thing to hand an operator.
+///
+/// This surfaced during the #532 acceptance work: a test whose reader
+/// thread dropped its end of the pipe made the broker exit 101 on
+/// SIGTERM, and the shutdown path looked defective for as long as it took
+/// to notice the panic came from the `println!` announcing the shutdown.
+///
+/// Errors are dropped rather than reported: the reporting channel for a
+/// failed stdout write would be stderr, which in the case that matters
+/// (a supervisor closing both) has failed too.
+macro_rules! say {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+
+/// [`say!`] for stderr. Same reasoning: a diagnostic that kills the
+/// process when it cannot be delivered is worse than a lost diagnostic.
+macro_rules! say_err {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 /// Default program name when `--program` is not passed. Matches the
 /// slice-3c scaffold so existing integration tests keep working.
 const DEFAULT_PROGRAM: &str = "broker-v2-scaffold";
@@ -302,18 +337,18 @@ fn main() -> ExitCode {
     let opts = match parse_cli(&args) {
         Ok(o) => o,
         Err(msg) => {
-            eprintln!("{msg}");
+            say_err!("{msg}");
             return ExitCode::from(2);
         }
     };
 
-    println!(
+    say!(
         "running-process-broker-v2 {} (slice 1 of running-process#532)",
         env!("CARGO_PKG_VERSION")
     );
 
     if opts.no_bind {
-        println!("running-process-broker-v2 --no-bind: skipping listener bind");
+        say!("running-process-broker-v2 --no-bind: skipping listener bind");
         return ExitCode::SUCCESS;
     }
 
@@ -326,7 +361,7 @@ fn main() -> ExitCode {
     // env var is honored for isolated test environments that
     // intentionally exercise privileged startup behavior.
     if let Err(err) = refuse_privileged_run() {
-        eprintln!(
+        say_err!(
             "running-process-broker-v2: refusing privileged startup: {err}. \
              Run as an unprivileged user, or set \
              RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED=1 for isolated test environments only."
@@ -337,7 +372,7 @@ fn main() -> ExitCode {
     let sid = match user_sid_hash() {
         Ok(s) => s,
         Err(err) => {
-            eprintln!("running-process-broker-v2: user_sid_hash failed: {err}");
+            say_err!("running-process-broker-v2: user_sid_hash failed: {err}");
             return ExitCode::from(1);
         }
     };
@@ -345,7 +380,7 @@ fn main() -> ExitCode {
     let pipe_name = match v2_program_pipe(&opts.program, &sid, SCAFFOLD_PIPE_IDX) {
         Ok(n) => n,
         Err(err) => {
-            eprintln!("running-process-broker-v2: v2_program_pipe failed: {err}");
+            say_err!("running-process-broker-v2: v2_program_pipe failed: {err}");
             return ExitCode::from(1);
         }
     };
@@ -353,7 +388,7 @@ fn main() -> ExitCode {
     let socket_path = match resolve_socket_path(&pipe_name) {
         Ok(p) => p,
         Err(err) => {
-            eprintln!("running-process-broker-v2: resolve_socket_path failed: {err}");
+            say_err!("running-process-broker-v2: resolve_socket_path failed: {err}");
             return ExitCode::from(1);
         }
     };
@@ -366,7 +401,7 @@ fn main() -> ExitCode {
         let path = std::path::Path::new(&socket_path);
         if let Some(parent) = path.parent() {
             if let Err(err) = std::fs::create_dir_all(parent) {
-                eprintln!(
+                say_err!(
                     "running-process-broker-v2: create_dir_all({}) failed: {err}",
                     parent.display()
                 );
@@ -379,7 +414,7 @@ fn main() -> ExitCode {
     let name = match wrap_socket_name(&socket_path) {
         Ok(n) => n,
         Err(err) => {
-            eprintln!("running-process-broker-v2: wrap_socket_name failed: {err}");
+            say_err!("running-process-broker-v2: wrap_socket_name failed: {err}");
             return ExitCode::from(1);
         }
     };
@@ -393,7 +428,7 @@ fn main() -> ExitCode {
             // socket. Surface a directly-actionable message instead of
             // a raw OS error string.
             if is_already_bound_error(&err) {
-                eprintln!(
+                say_err!(
                     "running-process-broker-v2: another broker is already \
                      bound at {socket_path} (program={}). Refusing to \
                      start to avoid double-bind. Stop the other broker \
@@ -403,18 +438,18 @@ fn main() -> ExitCode {
                 );
                 return ExitCode::from(75); // EX_TEMPFAIL — supervisor can retry after the other broker exits
             }
-            eprintln!("running-process-broker-v2: bind failed at {socket_path}: {err}");
+            say_err!("running-process-broker-v2: bind failed at {socket_path}: {err}");
             return ExitCode::from(1);
         }
     };
 
-    println!(
+    say!(
         "running-process-broker-v2 bound at {socket_path} (program={}, mode={})",
         opts.program,
         if opts.once { "once" } else { "loop" }
     );
     if let Err(err) = std::io::stdout().flush() {
-        eprintln!("running-process-broker-v2: stdout flush failed: {err}");
+        say_err!("running-process-broker-v2: stdout flush failed: {err}");
     }
 
     let loader = Arc::new(ServiceDefinitionLoader::default_root());
@@ -431,7 +466,7 @@ fn main() -> ExitCode {
                 // HTTP page is an optional view onto it. Exiting here would
                 // take out working brokering because a diagnostic page could
                 // not bind.
-                eprintln!("running-process-broker-v2: HTTP surface disabled: {err}");
+                say_err!("running-process-broker-v2: HTTP surface disabled: {err}");
                 None
             }
         }
@@ -446,13 +481,13 @@ fn main() -> ExitCode {
     } else {
         #[cfg(unix)]
         if let Err(err) = install_shutdown_signal_handlers() {
-            eprintln!("running-process-broker-v2: install shutdown signal handlers failed: {err}");
+            say_err!("running-process-broker-v2: install shutdown signal handlers failed: {err}");
             return ExitCode::from(1);
         }
 
         #[cfg(windows)]
         if let Err(err) = install_shutdown_console_handler() {
-            eprintln!("running-process-broker-v2: install console control handler failed: {err}");
+            say_err!("running-process-broker-v2: install console control handler failed: {err}");
             return ExitCode::from(1);
         }
 
@@ -486,12 +521,12 @@ fn main() -> ExitCode {
         if let Err(err) =
             broker_http_discovery::unpublish_http_port(&broker_v2_runtime_dir(), &started.program)
         {
-            eprintln!("running-process-broker-v2: could not unpublish HTTP endpoint: {err}");
+            say_err!("running-process-broker-v2: could not unpublish HTTP endpoint: {err}");
         }
     }
 
     if let Err(err) = flush_coverage_profile() {
-        eprintln!("running-process-broker-v2: coverage profile flush failed: {err}");
+        say_err!("running-process-broker-v2: coverage profile flush failed: {err}");
         return ExitCode::from(1);
     }
 
@@ -534,12 +569,12 @@ fn start_http_surface(
         broker_http_discovery::publish_http_port(runtime_dir, program, local.ip(), local.port())
             .map_err(|e| format!("publishing {local} to {}: {e}", runtime_dir.display()))?;
 
-    println!(
+    say!(
         "running-process-broker-v2 http at http://{local} (published to {})",
         path.display()
     );
     if let Err(err) = std::io::stdout().flush() {
-        eprintln!("running-process-broker-v2: stdout flush failed: {err}");
+        say_err!("running-process-broker-v2: stdout flush failed: {err}");
     }
 
     // Detached: the surface is read-only and stateless, so there is nothing
@@ -552,7 +587,7 @@ fn start_http_surface(
                 // One failed accept says nothing about the next. Logging and
                 // continuing keeps a transient error from silently taking the
                 // page down for the life of the broker.
-                eprintln!("running-process-broker-v2: http accept failed: {err}");
+                say_err!("running-process-broker-v2: http accept failed: {err}");
             }
         })
         .map_err(|e| format!("spawning the http thread: {e}"))?;
@@ -574,7 +609,7 @@ fn accept_loop(
     http: Option<Arc<HttpEndpointRegistry>>,
 ) -> ExitCode {
     if let Err(err) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
-        eprintln!("running-process-broker-v2: set listener nonblocking failed: {err}");
+        say_err!("running-process-broker-v2: set listener nonblocking failed: {err}");
         return ExitCode::from(1);
     }
 
@@ -590,7 +625,7 @@ fn accept_loop(
                 let n = inflight.fetch_add(1, Ordering::SeqCst);
                 if n >= max_inflight {
                     inflight.fetch_sub(1, Ordering::SeqCst);
-                    eprintln!(
+                    say_err!(
                         "running-process-broker-v2: at MAX_INFLIGHT_HANDLERS ({max_inflight}); dropping connection",
                     );
                     drop(stream);
@@ -615,19 +650,17 @@ fn accept_loop(
                                 if let Some(reg) = &http_handler {
                                     reg.track(svc.clone());
                                 }
-                                println!(
-                                    "running-process-broker-v2 Hello service={svc:?} negotiated",
-                                )
+                                say!("running-process-broker-v2 Hello service={svc:?} negotiated",)
                             }
                             Err(err) => {
-                                eprintln!("running-process-broker-v2 Hello handler failed: {err}")
+                                say_err!("running-process-broker-v2 Hello handler failed: {err}")
                             }
                         }
                     });
                 match spawn_result {
                     Ok(handler) => handlers.push(handler),
                     Err(err) => {
-                        eprintln!(
+                        say_err!(
                             "running-process-broker-v2: thread spawn failed: {err}; \
                              dropping connection"
                         );
@@ -637,14 +670,14 @@ fn accept_loop(
                 }
             }
             Ok(None) => {
-                println!("running-process-broker-v2: shutdown requested; draining handlers");
+                say!("running-process-broker-v2: shutdown requested; draining handlers");
                 drain_handlers(&mut handlers, HANDLER_DRAIN_TIMEOUT);
                 return ExitCode::SUCCESS;
             }
             Err(err) => {
                 // accept() errors are typically fatal (listener died);
                 // exit so a supervisor can restart us.
-                eprintln!("running-process-broker-v2: accept failed: {err}");
+                say_err!("running-process-broker-v2: accept failed: {err}");
                 return ExitCode::from(1);
             }
         }
@@ -674,7 +707,7 @@ fn reap_finished_handlers(handlers: &mut Vec<thread::JoinHandle<()>>) {
         if handlers[index].is_finished() {
             let handler = handlers.swap_remove(index);
             if handler.join().is_err() {
-                eprintln!("running-process-broker-v2: handler thread panicked");
+                say_err!("running-process-broker-v2: handler thread panicked");
             }
         } else {
             index += 1;
@@ -692,7 +725,7 @@ fn drain_handlers(handlers: &mut Vec<thread::JoinHandle<()>>, timeout: Duration)
     }
     reap_finished_handlers(handlers);
     if !handlers.is_empty() {
-        eprintln!(
+        say_err!(
             "running-process-broker-v2: handler drain timed out after {timeout:?}; \
              detaching {} handler(s)",
             handlers.len()
@@ -709,25 +742,23 @@ fn accept_one(
 ) -> ExitCode {
     match listener.accept() {
         Ok(mut stream) => {
-            println!("running-process-broker-v2 peer connected (--once)");
+            say!("running-process-broker-v2 peer connected (--once)");
             match handle_hello_with_deadline(&mut stream, &loader) {
                 Ok(svc) => {
                     if let Some(reg) = &http {
                         reg.track(svc.clone());
                     }
-                    println!(
-                        "running-process-broker-v2 Hello for service {svc:?} negotiated; exiting"
-                    );
+                    say!("running-process-broker-v2 Hello for service {svc:?} negotiated; exiting");
                     ExitCode::SUCCESS
                 }
                 Err(err) => {
-                    eprintln!("running-process-broker-v2: Hello handler failed: {err}");
+                    say_err!("running-process-broker-v2: Hello handler failed: {err}");
                     ExitCode::from(1)
                 }
             }
         }
         Err(err) => {
-            eprintln!("running-process-broker-v2: accept failed: {err}");
+            say_err!("running-process-broker-v2: accept failed: {err}");
             ExitCode::from(1)
         }
     }

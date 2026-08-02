@@ -69,8 +69,41 @@ fn unique_program(prefix: &str) -> String {
     format!("{prefix}-{:010x}", nonce & 0xFF_FFFF_FFFF)
 }
 
+/// The bound socket path from one line of broker stdout, if that is what the
+/// line is. Shared by both [`StdoutPolicy`] arms so the two readers cannot
+/// drift on the format.
+fn bound_path_of(line: &str) -> Option<String> {
+    let rest = line
+        .strip_prefix("running-process-broker-v2 bound at ")?
+        .trim_end();
+    Some(
+        rest.rsplit_once(" (")
+            .map(|(path, _)| path)
+            .unwrap_or(rest)
+            .to_string(),
+    )
+}
+
+/// What the test does with the broker's stdout after it has bound.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StdoutPolicy {
+    /// Keep reading to EOF, the way a supervisor would.
+    Drain,
+    /// Close the read end once the bound path has been observed.
+    ///
+    /// Models a reader that takes what it needs from startup and goes away —
+    /// a shell pipeline ending in `head`, a launcher that captures the bound
+    /// path and closes the pipe, a log collector that exits. Every subsequent
+    /// write from the broker then fails with `EPIPE`.
+    CloseAfterBound,
+}
+
 /// Start a broker in persistent mode with a stub service definition installed.
 fn start_broker(prefix: &str) -> Broker {
+    start_broker_with_stdout(prefix, StdoutPolicy::Drain)
+}
+
+fn start_broker_with_stdout(prefix: &str, policy: StdoutPolicy) -> Broker {
     let svc_dir = tempfile::tempdir().expect("tempdir for servicedef");
     let stub_binary = if cfg!(windows) {
         svc_dir.path().join("stub.exe")
@@ -104,6 +137,31 @@ fn start_broker(prefix: &str) -> Broker {
         .expect("spawn broker");
 
     let stdout = child.stdout.take().expect("piped stdout");
+
+    if policy == StdoutPolicy::CloseAfterBound {
+        let mut reader = BufReader::new(stdout);
+        let mut path = None;
+        let mut line = String::new();
+        while path.is_none() {
+            line.clear();
+            let read = std::io::BufRead::read_line(&mut reader, &mut line).expect("read stdout");
+            assert_ne!(
+                read, 0,
+                "broker stdout hit EOF before printing its bound path"
+            );
+            path = bound_path_of(&line);
+        }
+        // The close under test. Dropping the reader closes this end of the
+        // pipe, so from here on every write the broker makes gets EPIPE.
+        drop(reader);
+        return Broker {
+            child,
+            path: path.expect("loop exits only with a path"),
+            program,
+            _svc_dir: svc_dir,
+        };
+    }
+
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         // Keeps reading after the bound-path line rather than breaking.
@@ -115,13 +173,7 @@ fn start_broker(prefix: &str) -> Broker {
         // for the process's whole life, which is what a supervisor would do.
         let mut sender = Some(tx);
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(rest) = line.strip_prefix("running-process-broker-v2 bound at ") {
-                let path = rest
-                    .trim_end()
-                    .rsplit_once(" (")
-                    .map(|(path, _)| path)
-                    .unwrap_or(rest.trim_end())
-                    .to_string();
+            if let Some(path) = bound_path_of(&line) {
                 if let Some(tx) = sender.take() {
                     let _ = tx.send(path);
                 }
@@ -427,15 +479,86 @@ fn the_broker_serves_repeatedly_and_exits_cleanly_on_sigterm() {
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    // Now that stdout stays drained, the shutdown message no longer hits
-    // EPIPE, and the graceful path is observable: `Ok(None)` from the accept
-    // poll, drain the handlers, `ExitCode::SUCCESS`.
+    // The graceful path, observable: `Ok(None)` from the accept poll, drain
+    // the handlers, `ExitCode::SUCCESS`.
     //
-    // Asserting it is what keeps the earlier misdiagnosis from recurring — if
-    // this starts failing with 101 again, the cause is a closed stdout, not a
-    // broken shutdown.
+    // This comment used to say the draining reader is what keeps the shutdown
+    // message from hitting EPIPE. That was true when it was written and is not
+    // any more — the broker no longer panics on an undeliverable diagnostic,
+    // and `a_closed_stdout_does_not_take_the_broker_down` is what holds that
+    // property. Draining here now just models the ordinary case.
+    //
+    // So a 101 from *this* test is no longer "someone closed stdout". It means
+    // the shutdown path itself panicked, which is what the test was always
+    // meant to be about.
     assert!(
         status.success(),
         "the broker did not shut down cleanly: {status:?}"
+    );
+}
+
+/// A closed stdout does not take the broker down.
+///
+/// The regression this guards is one I created and then misdiagnosed. A test
+/// reader broke out of its loop after the bound-path line, which closed the
+/// pipe; the broker's next `println!` hit `EPIPE` and panicked; the process
+/// exited 101 on SIGTERM and I attributed it to a defect in the shutdown
+/// path. It was a defect in the *logging* path, and the reason it took a
+/// while to see is that the panic's location is the log statement, which
+/// looks like an innocent bystander.
+///
+/// The fix was to stop panicking on undeliverable diagnostics, and this is
+/// the test that says so. It closes stdout deliberately and then requires the
+/// broker to do its whole job anyway: serve a Hello, and shut down cleanly on
+/// SIGTERM. Both of those write to stdout, so on the pre-fix binary this
+/// fails — the Hello handler panics, and so does the shutdown announcement.
+///
+/// Unix-only for the SIGTERM half, matching the sibling lifetime test.
+#[cfg(unix)]
+#[test]
+fn a_closed_stdout_does_not_take_the_broker_down() {
+    let mut broker = start_broker_with_stdout("v2acc-closedout", StdoutPolicy::CloseAfterBound);
+
+    // Serving after the close. The Hello handler logs, so this is the first
+    // write that meets the closed pipe.
+    let mut stream = connect(&broker.path);
+    write_frame(&mut stream, &hello_for(&broker.program).encode_to_vec()).expect("write hello");
+    let reply = read_reply(&mut stream);
+    assert!(
+        matches!(reply.result, Some(hello_reply::Result::Negotiated(_))),
+        "a Hello arriving after stdout closed was not negotiated: {reply:?}"
+    );
+
+    assert!(
+        broker.child.try_wait().expect("try_wait").is_none(),
+        "the broker died from writing to a closed stdout"
+    );
+
+    let pid = broker.child.id() as libc::pid_t;
+    // SAFETY: `pid` names the child this test spawned and has not reaped.
+    assert_eq!(
+        unsafe { libc::kill(pid, libc::SIGTERM) },
+        0,
+        "kill(SIGTERM)"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = broker.child.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the broker did not exit within 20s of SIGTERM"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    // The specific number matters. 101 is a Rust panic, and a panic here
+    // means the undeliverable-diagnostic path came back.
+    assert!(
+        status.success(),
+        "the broker did not shut down cleanly with stdout closed: {status:?} \
+         (101 means it panicked writing a diagnostic)"
     );
 }
