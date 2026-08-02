@@ -30,6 +30,8 @@ use prost::Message;
 /// #517.
 pub const DEFAULT_HELLO_DEADLINE: Duration = Duration::from_secs(3);
 
+use crate::broker::adopt::{IntoBackendIoError, OwnedBackendIo};
+use crate::broker::client::connect_local_socket;
 use crate::broker::lifecycle::names::PipePathError;
 use crate::broker::lifecycle::names_v2::v2_program_pipe;
 use crate::broker::lifecycle::sid::{user_sid_hash, SidError};
@@ -125,6 +127,73 @@ impl ClientSession {
     pub fn into_inner(self) -> (Stream, Negotiated) {
         (self.stream, self.negotiated)
     }
+
+    /// Dial the backend the broker named, and hand back that connection.
+    ///
+    /// The stream inside a [`ClientSession`] is connected to the **broker**,
+    /// not to the backend — it exists to carry the Hello. The data connection
+    /// is a second dial, to `Negotiated.backend_pipe`, and this performs it.
+    ///
+    /// This is v1's `BrokerNegotiated` route, step for step: `client.rs`
+    /// reads the `HelloReply`, refuses an empty `backend_pipe`, then calls
+    /// [`connect_local_socket`] on it and treats *that* socket as the
+    /// connection. Keeping the sequence identical is the point — a consumer
+    /// moving from v1's `client_compat` re-exports to `client_v2` must not be
+    /// able to tell, and the way to guarantee that is to do the same thing
+    /// rather than something equivalent-looking.
+    ///
+    /// The broker stream is dropped here, as v1 drops it: its job ended with
+    /// the reply.
+    pub fn connect_backend(self) -> Result<Stream, BackendDialError> {
+        if self.negotiated.backend_pipe.is_empty() {
+            return Err(BackendDialError::EmptyBackendPipe);
+        }
+        connect_local_socket(&self.negotiated.backend_pipe).map_err(BackendDialError::Connect)
+    }
+
+    /// [`connect_backend`](Self::connect_backend), handed back as an owned OS
+    /// handle for a consumer that wants to run its own protocol over it.
+    ///
+    /// The v2 counterpart of v1's `into_backend_io`. v1 can hand back the
+    /// session's own stream because by then it is already the backend
+    /// connection; here the dial happens first, so the handle a caller
+    /// receives is the same kind of socket either way.
+    ///
+    /// Unix-only, matching v1: the Windows `OwnedHandle` path is deferred
+    /// (#720) and returns [`IntoBackendIoError::WindowsUnsupported`]. zccache
+    /// already re-dials with its own transport on Windows for that reason, so
+    /// this parity is what keeps its two platform lanes unchanged.
+    pub fn into_backend_io(self) -> Result<OwnedBackendIo, BackendDialError> {
+        let stream = self.connect_backend()?;
+        OwnedBackendIo::from_local_socket_stream(stream).map_err(BackendDialError::IntoBackendIo)
+    }
+}
+
+/// Why dialing the negotiated backend failed.
+///
+/// Mirrors the v1 distinctions rather than collapsing them: "the broker named
+/// no backend" and "the backend would not accept" call for different consumer
+/// behaviour, and v1 already separates them (`EmptyBackendPipe` vs
+/// `BackendConnect`).
+#[derive(Debug, thiserror::Error)]
+pub enum BackendDialError {
+    /// The broker negotiated successfully but named no backend.
+    ///
+    /// Not a refusal: the v2 broker replies with an empty `backend_pipe` when
+    /// a service is registered and version-compatible but its daemon has not
+    /// published yet. Retrying later can succeed, which is why this is not
+    /// folded into the connect error.
+    #[error("broker negotiated but named no backend pipe")]
+    EmptyBackendPipe,
+
+    /// The backend pipe was named but would not accept a connection.
+    #[error("could not connect to the negotiated backend: {0}")]
+    Connect(#[source] std::io::Error),
+
+    /// The connection was made but could not be handed back as an owned
+    /// handle — on Windows, always (#720).
+    #[error("could not take ownership of the backend socket: {0}")]
+    IntoBackendIo(#[source] IntoBackendIoError),
 }
 
 /// Dial the v2 broker for `program` and exchange Hello / Negotiated.
@@ -812,5 +881,155 @@ mod tests {
             }
             other => panic!("expected Refused, got: {other:?}"),
         }
+    }
+}
+
+/// Coverage for the backend dial (#532).
+///
+/// The dial is the step that makes a v2 session reach a backend at all, and
+/// it is the step a consumer swapping off v1's `client_compat` re-exports
+/// inherits silently — every signature still compiles whether or not the
+/// second connection is made correctly.
+#[cfg(test)]
+mod backend_dial_tests {
+    use super::*;
+    // `Stream as _` is not repeated here: `use super::*` already brings the
+    // module's own import of it into scope, and naming it twice is a
+    // `-D warnings` failure.
+    use interprocess::local_socket::traits::Listener as _;
+    use interprocess::local_socket::{ListenerOptions, Stream};
+
+    /// Build a session with a chosen `backend_pipe`.
+    ///
+    /// `stream` stands in for the broker connection. Its contents are
+    /// irrelevant — `connect_backend` drops it — but it must be a real
+    /// `Stream`, which is the point: the field being occupied is what proves
+    /// the dial does not reuse it.
+    fn session_with(stream: Stream, backend_pipe: &str) -> ClientSession {
+        ClientSession {
+            stream,
+            negotiated: Negotiated {
+                backend_pipe: backend_pipe.to_string(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Resolve a name the same way the code under test does.
+    ///
+    /// Deliberately delegates to production's `local_socket_name` rather than
+    /// re-deriving it. An earlier version of this helper stripped the
+    /// `\.\pipe\` prefix before `to_ns_name` while production passes the whole
+    /// string, so the test bound one name and dialed another, and failed on
+    /// Windows with `NotFound` — a bug in the test that reads exactly like a
+    /// bug in the dial.
+    fn socket_name(path: &str) -> interprocess::local_socket::Name<'_> {
+        crate::broker::server::connection::local_socket_name(path).expect("socket name")
+    }
+
+    fn temp_endpoint(tag: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = if cfg!(windows) {
+            format!(r"\.\pipe\rp-v2-dial-{tag}-{}", std::process::id())
+        } else {
+            dir.path().join(format!("{tag}.sock")).display().to_string()
+        };
+        (dir, path)
+    }
+
+    /// A negotiated reply naming no backend is not a connection failure.
+    ///
+    /// The v2 broker returns an empty `backend_pipe` when a service is
+    /// registered and version-compatible but its daemon has not published
+    /// yet. Collapsing that into the connect error would tell a caller the
+    /// backend refused it, when nothing was ever dialed — and the two call
+    /// for different retry behaviour, which is why v1 separates them too.
+    #[test]
+    fn a_negotiated_reply_with_no_backend_pipe_is_its_own_error() {
+        let (_dir, path) = temp_endpoint("empty");
+        let listener = ListenerOptions::new()
+            .name(socket_name(&path))
+            .create_sync()
+            .expect("bind");
+        let broker_side = Stream::connect(socket_name(&path)).expect("dial");
+        let _accepted = listener.accept().expect("accept");
+
+        let err = session_with(broker_side, "")
+            .connect_backend()
+            .expect_err("an empty backend pipe must not be dialed");
+        assert!(
+            matches!(err, BackendDialError::EmptyBackendPipe),
+            "expected EmptyBackendPipe, got {err:?}"
+        );
+    }
+
+    /// The dial reaches the backend, and the returned socket is live.
+    ///
+    /// Asserting a byte round-trip rather than just `is_ok()`: a function
+    /// that returned the *broker* stream — the mistake this whole change is
+    /// about — would also return `Ok`, and would also look connected. Only
+    /// traffic arriving at the backend's listener distinguishes them.
+    #[test]
+    fn the_dial_connects_to_the_backend_and_carries_traffic() {
+        let (_bdir, broker_path) = temp_endpoint("broker");
+        let broker_listener = ListenerOptions::new()
+            .name(socket_name(&broker_path))
+            .create_sync()
+            .expect("bind broker");
+        let broker_side = Stream::connect(socket_name(&broker_path)).expect("dial broker");
+        let _broker_accepted = broker_listener.accept().expect("accept broker");
+
+        let (_kdir, backend_path) = temp_endpoint("backend");
+        let backend_listener = ListenerOptions::new()
+            .name(socket_name(&backend_path))
+            .create_sync()
+            .expect("bind backend");
+
+        // Accept on a helper thread with a deadline. A bare `accept()` blocks
+        // forever when nothing dials, so a regression that skips the dial
+        // would hang this test rather than fail it — and a hang is only
+        // caught by nextest's 2-minute killer, which reports a timeout rather
+        // than the reason. Verified: with the dial removed, this now fails in
+        // seconds saying nothing reached the backend.
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = accepted_tx.send(backend_listener.accept());
+        });
+
+        let mut data = session_with(broker_side, &backend_path)
+            .connect_backend()
+            .expect("dial the negotiated backend");
+
+        // Arrives at the backend's listener, not the broker's.
+        let mut served = accepted_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("nothing connected to the backend within 10s")
+            .expect("backend accept");
+        data.write_all(b"ping").expect("write to backend");
+        data.flush().expect("flush");
+        let mut got = [0u8; 4];
+        served.read_exact(&mut got).expect("backend read");
+        assert_eq!(&got, b"ping", "bytes did not reach the backend");
+    }
+
+    /// A named-but-dead backend is a connect error, not a panic.
+    #[test]
+    fn a_backend_that_is_not_listening_reports_a_connect_error() {
+        let (_bdir, broker_path) = temp_endpoint("broker2");
+        let broker_listener = ListenerOptions::new()
+            .name(socket_name(&broker_path))
+            .create_sync()
+            .expect("bind broker");
+        let broker_side = Stream::connect(socket_name(&broker_path)).expect("dial broker");
+        let _broker_accepted = broker_listener.accept().expect("accept broker");
+
+        let (_kdir, dead_path) = temp_endpoint("nobody-home");
+        let err = session_with(broker_side, &dead_path)
+            .connect_backend()
+            .expect_err("nothing is listening there");
+        assert!(
+            matches!(err, BackendDialError::Connect(_)),
+            "expected Connect, got {err:?}"
+        );
     }
 }
