@@ -115,28 +115,29 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Validate version consistency between pyproject.toml and Cargo.toml
+      # Every version string, not just the two that tend to move together.
+      #
+      # This step used to compare pyproject.toml against Cargo.toml inline. It
+      # let 4.8.1 out inconsistent: 359b4e3 bumped exactly those two files and
+      # left the other five at 4.8.0, so the check compared the pair that
+      # agreed and shipped the ones that did not. The published
+      # running-process-py 4.8.1 requires running-process ^4.8.0, and the
+      # 4.8.1 wheel reports __version__ == "4.8.0".
+      #
+      # `ci/version_check.py` already knew about all seven sources — #833 had
+      # widened it to cover uv.lock after a similar drift. That widening never
+      # protected a release, because the release path did not call it. So call
+      # it, rather than keeping a second, weaker copy of the same idea here:
+      # a checker that the release does not run is a checker that cannot stop
+      # a bad release.
+      #
+      # Stdlib only and reads files relative to the repo root, so it needs no
+      # venv and no install step.
+      - name: Validate version consistency across every manifest
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import sys
-          import tomllib
-          from pathlib import Path
-
-          py = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-          cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))
-          py_version = py["project"]["version"]
-          cargo_version = cargo["workspace"]["package"]["version"]
-          if py_version != cargo_version:
-              print(
-                  f"pyproject.toml version ({py_version}) does not match "
-                  f"Cargo.toml workspace version ({cargo_version})",
-                  file=sys.stderr,
-              )
-              sys.exit(1)
-          print(f"version consistency OK: {py_version}")
-          PY
+          python3 -m ci.version_check
 
       - name: Resolve release version and fail on already-published release
         id: meta
