@@ -102,6 +102,111 @@ pub enum BrokerV2Error {
     Encode(#[from] prost::EncodeError),
 }
 
+/// Async counterpart of [`ClientSession`] for tokio callers.
+///
+/// Both v2 client operations block: `connect_with_deadline` bounds the Hello
+/// with a helper thread and `recv_timeout`, and the backend dial is a blocking
+/// `connect`. Neither may run on a runtime worker, so each is wrapped in
+/// `spawn_blocking` here — the same approach v1's `AsyncBrokerSession` takes,
+/// and for the same reason: the v2 wire is defined against blocking I/O, and
+/// duplicating it against `AsyncRead`/`AsyncWrite` would mean two wire
+/// implementations to keep in step.
+///
+/// The pair this exists for is v1's `AsyncBrokerSession::adopt` ->
+/// `into_backend_io`, which is what `client_compat` re-exports today (#532
+/// criterion 5). Matching that shape is what lets those re-exports point at
+/// `client_v2` without the consumer changing.
+#[cfg(feature = "client-async")]
+#[derive(Debug)]
+pub struct AsyncClientSession {
+    inner: ClientSession,
+}
+
+#[cfg(feature = "client-async")]
+impl AsyncClientSession {
+    /// Negotiate with the v2 broker on a blocking worker.
+    ///
+    /// Bounded by [`DEFAULT_HELLO_DEADLINE`]; for a custom bound use
+    /// [`connect_with_deadline`](Self::connect_with_deadline).
+    pub async fn connect(program: &str, version_hint: &str) -> Result<Self, AsyncConnectError> {
+        Self::connect_with_deadline(program, version_hint, DEFAULT_HELLO_DEADLINE).await
+    }
+
+    /// [`connect`](Self::connect) with a caller-supplied Hello deadline.
+    pub async fn connect_with_deadline(
+        program: &str,
+        version_hint: &str,
+        deadline: Duration,
+    ) -> Result<Self, AsyncConnectError> {
+        let program = program.to_owned();
+        let version_hint = version_hint.to_owned();
+        let joined = tokio::task::spawn_blocking(move || {
+            super::client_v2::connect_with_deadline(&program, &version_hint, deadline)
+        })
+        .await
+        .map_err(|err| AsyncConnectError::Join(err.to_string()))?;
+        Ok(Self { inner: joined? })
+    }
+
+    /// The broker's negotiated reply to our `Hello`.
+    pub fn negotiated(&self) -> &Negotiated {
+        self.inner.negotiated()
+    }
+
+    /// Dial the negotiated backend on a blocking worker.
+    ///
+    /// `async` rather than a plain delegate because the dial is a blocking
+    /// `connect` on a local socket: calling it directly from a task would
+    /// stall a runtime worker for as long as the backend takes to accept,
+    /// which for an unresponsive backend is the whole connect timeout.
+    pub async fn connect_backend(self) -> Result<Stream, AsyncConnectError> {
+        let inner = self.inner;
+        tokio::task::spawn_blocking(move || inner.connect_backend())
+            .await
+            .map_err(|err| AsyncConnectError::Join(err.to_string()))?
+            .map_err(AsyncConnectError::Dial)
+    }
+
+    /// [`connect_backend`](Self::connect_backend), handed back as an owned OS
+    /// handle. The v2 counterpart of v1's `AsyncBrokerSession::into_backend_io`.
+    pub async fn into_backend_io(self) -> Result<OwnedBackendIo, AsyncConnectError> {
+        let inner = self.inner;
+        tokio::task::spawn_blocking(move || inner.into_backend_io())
+            .await
+            .map_err(|err| AsyncConnectError::Join(err.to_string()))?
+            .map_err(AsyncConnectError::Dial)
+    }
+
+    /// Drop to the blocking session.
+    pub fn into_blocking(self) -> ClientSession {
+        self.inner
+    }
+}
+
+/// Failure from an [`AsyncClientSession`] operation.
+///
+/// Keeps the blocking errors intact rather than flattening them: a caller
+/// distinguishing a refusal from a dial failure must still be able to, and a
+/// runtime-level join failure is neither of those things and should not be
+/// disguised as one.
+#[cfg(feature = "client-async")]
+#[derive(Debug, thiserror::Error)]
+pub enum AsyncConnectError {
+    /// The broker exchange itself failed.
+    #[error(transparent)]
+    Broker(#[from] BrokerV2Error),
+
+    /// The negotiated backend could not be dialed.
+    #[error(transparent)]
+    Dial(#[from] BackendDialError),
+
+    /// The blocking worker did not report back — the task panicked or the
+    /// runtime shut down under it. Distinct from both of the above: nothing
+    /// was learned about the broker or the backend.
+    #[error("the blocking worker did not complete: {0}")]
+    Join(String),
+}
+
 /// A live session with the v2 broker.
 ///
 /// Wraps the underlying [`Stream`] plus the broker's [`Negotiated`]
@@ -886,6 +991,58 @@ mod tests {
             other => panic!("expected Refused, got: {other:?}"),
         }
     }
+
+    /// The blocking Hello does not occupy the runtime worker.
+    ///
+    /// This is the property the async type exists for, and nothing else here
+    /// tests it — verified by removing `spawn_blocking` and watching every
+    /// other async test still pass. Correctness of the result is identical
+    /// either way; what differs is whether the runtime can do anything else
+    /// meanwhile.
+    ///
+    /// Uses the stalling broker so the call reliably takes its full deadline.
+    /// On a current-thread runtime a spawned task only runs when the current
+    /// task yields, so if the Hello ran inline the flag would still be unset
+    /// when the assert executes.
+    #[cfg(feature = "client-async")]
+    #[test]
+    fn the_hello_does_not_occupy_the_runtime_worker() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let program = "client-v2-async-nonblocking";
+        let sid = user_sid_hash().expect("user_sid_hash");
+        let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
+        let socket_path = resolve_socket_path(&pipe_name);
+        let ready = spawn_stall_broker(socket_path);
+        ready
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stall broker listening");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime");
+        rt.block_on(async {
+            let progressed = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&progressed);
+            let other = tokio::spawn(async move {
+                flag.store(true, Ordering::SeqCst);
+            });
+
+            let _ = AsyncClientSession::connect_with_deadline(
+                program,
+                "0.0.0",
+                Duration::from_millis(200),
+            )
+            .await;
+
+            assert!(
+                progressed.load(Ordering::SeqCst),
+                "the runtime made no progress during the Hello — it ran on the worker"
+            );
+            let _ = other.await;
+        });
+    }
 }
 
 /// Coverage for the backend dial (#532).
@@ -1034,6 +1191,120 @@ mod backend_dial_tests {
         assert!(
             matches!(err, BackendDialError::Connect(_)),
             "expected Connect, got {err:?}"
+        );
+    }
+
+    /// A current-thread runtime is enough: `spawn_blocking` uses the separate
+    /// blocking pool, and this crate's tokio is built without `macros` or
+    /// `rt-multi-thread`, so `#[tokio::test]` is not available.
+    #[cfg(feature = "client-async")]
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime")
+    }
+
+    /// The async path dials the backend and the socket it yields is live.
+    ///
+    /// Same assertion as the blocking test and for the same reason: returning
+    /// the broker stream would also be `Ok`. This additionally proves the
+    /// `spawn_blocking` hop preserves the connection — a socket that did not
+    /// survive being moved across threads would fail here and nowhere else.
+    #[cfg(feature = "client-async")]
+    #[test]
+    fn the_async_dial_reaches_the_backend() {
+        let (_bdir, broker_path) = temp_endpoint("abroker");
+        let broker_listener = ListenerOptions::new()
+            .name(socket_name(&broker_path))
+            .create_sync()
+            .expect("bind broker");
+        let broker_side = Stream::connect(socket_name(&broker_path)).expect("dial broker");
+        let _broker_accepted = broker_listener.accept().expect("accept broker");
+
+        let (_kdir, backend_path) = temp_endpoint("abackend");
+        let backend_listener = ListenerOptions::new()
+            .name(socket_name(&backend_path))
+            .create_sync()
+            .expect("bind backend");
+
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = accepted_tx.send(backend_listener.accept());
+        });
+
+        let session = AsyncClientSession {
+            inner: session_with(broker_side, &backend_path),
+        };
+        let mut data = runtime()
+            .block_on(session.connect_backend())
+            .expect("async dial");
+
+        let mut served = accepted_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("nothing connected to the backend within 10s")
+            .expect("backend accept");
+        data.write_all(b"pong").expect("write");
+        data.flush().expect("flush");
+        let mut got = [0u8; 4];
+        served.read_exact(&mut got).expect("read");
+        assert_eq!(&got, b"pong", "bytes did not reach the backend");
+    }
+
+    /// A dial failure stays a dial failure across the runtime hop.
+    ///
+    /// The hazard the error type exists for: wrapping the blocking call in
+    /// `spawn_blocking` introduces a second failure mode (the worker not
+    /// reporting back), and it would be easy to collapse both into one
+    /// variant. A caller that cannot tell "the backend refused" from "the
+    /// runtime went away" cannot decide whether retrying is meaningful.
+    #[cfg(feature = "client-async")]
+    #[test]
+    fn a_dial_failure_is_not_reported_as_a_runtime_failure() {
+        let (_bdir, broker_path) = temp_endpoint("abroker2");
+        let broker_listener = ListenerOptions::new()
+            .name(socket_name(&broker_path))
+            .create_sync()
+            .expect("bind broker");
+        let broker_side = Stream::connect(socket_name(&broker_path)).expect("dial broker");
+        let _broker_accepted = broker_listener.accept().expect("accept broker");
+
+        let (_kdir, dead_path) = temp_endpoint("anobody");
+        let session = AsyncClientSession {
+            inner: session_with(broker_side, &dead_path),
+        };
+        let err = runtime()
+            .block_on(session.connect_backend())
+            .expect_err("nothing is listening there");
+        assert!(
+            matches!(err, AsyncConnectError::Dial(BackendDialError::Connect(_))),
+            "expected Dial(Connect), got {err:?}"
+        );
+    }
+
+    /// An empty backend pipe keeps its identity through the async path too.
+    #[cfg(feature = "client-async")]
+    #[test]
+    fn an_empty_backend_pipe_survives_the_async_hop() {
+        let (_dir, path) = temp_endpoint("aempty");
+        let listener = ListenerOptions::new()
+            .name(socket_name(&path))
+            .create_sync()
+            .expect("bind");
+        let broker_side = Stream::connect(socket_name(&path)).expect("dial");
+        let _accepted = listener.accept().expect("accept");
+
+        let session = AsyncClientSession {
+            inner: session_with(broker_side, ""),
+        };
+        let err = runtime()
+            .block_on(session.connect_backend())
+            .expect_err("an empty pipe must not be dialed");
+        assert!(
+            matches!(
+                err,
+                AsyncConnectError::Dial(BackendDialError::EmptyBackendPipe)
+            ),
+            "expected Dial(EmptyBackendPipe), got {err:?}"
         );
     }
 }
