@@ -118,9 +118,11 @@ jobs:
       # from the build above, so this is mostly maturin packaging cost —
       # and it happens once, not once per sub-worker.
       - name: Dev wheel build
+        id: build
         run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
 
       - name: Lint
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS: "300"
         run: uv run --no-sync --module ci.run_logged logs/lint.log -- uv run --no-sync --module ci.lint
@@ -185,6 +187,7 @@ jobs:
         run: uv run --no-sync --module ci.terminal_capability_report ${{ github.workspace }}/logs/terminal-capabilities/${{ inputs.label }}
 
       - name: Unit Tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test
 
       - name: Broker Hello perf guard
@@ -195,7 +198,7 @@ jobs:
           cargo test -p running-process --test broker --features client real_socket_hello_roundtrip_perf_gate -- --nocapture
 
       - name: Integration Tests
-        if: ${{ inputs.integration-test }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.integration-test }}
         env:
           RUNNING_PROCESS_LIVE_TESTS: "1"
           RUNNING_PROCESS_GH_PTY_TESTS: "1"
@@ -247,7 +250,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Check Rust API docs
-        if: ${{ inputs.rustdoc }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.rustdoc }}
         env:
           RUSTDOCFLAGS: "-Dwarnings"
         run: cargo doc -p running-process --features daemon --no-deps
