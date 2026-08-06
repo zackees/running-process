@@ -116,6 +116,13 @@ impl AsyncProcess {
         Ok(run_output(output))
     }
 
+    /// Wait for completion and capture stdout/stderr within an aggregate byte limit.
+    pub async fn output_bounded(&mut self, limit: usize) -> Result<RunOutput, ProcessError> {
+        let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
+        let output = child.output_bounded(limit).await?;
+        Ok(run_output(output))
+    }
+
     /// Spawn, wait, and capture a process in one asynchronous operation.
     pub async fn run(
         program: impl Into<OsString>,
@@ -195,6 +202,22 @@ mod tests {
             Err(crate::ProcessError::AlreadyStarted)
         ));
         process.kill().await.ok();
+    }
+
+    #[tokio::test]
+    async fn async_process_bounded_output_drains_and_reports_overflow() {
+        #[cfg(windows)]
+        let mut process = AsyncProcess::new("cmd.exe").arg("/C").arg("echo 123456789");
+        #[cfg(not(windows))]
+        let mut process = AsyncProcess::new("/bin/sh")
+            .arg("-c")
+            .arg("printf 123456789");
+
+        process.start().await.expect("async process starts");
+        assert!(matches!(
+            process.output_bounded(4).await,
+            Err(crate::ProcessError::OutputLimitExceeded { limit: 4 })
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
