@@ -46,6 +46,7 @@ where
 /// by all handles. Dropping an async future stops waiting for its result, but
 /// cannot interrupt an OS PTY call already executing; the bounded worker
 /// remains responsible for releasing its permit and completing teardown.
+#[derive(Clone)]
 pub struct AsyncPtyProcess {
     process: Arc<NativePtyProcess>,
 }

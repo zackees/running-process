@@ -257,11 +257,11 @@ fn run_output(output: Output) -> RunOutput {
     RunOutput {
         stdout: output.stdout,
         stderr: output.stderr,
-        exit_code: output.status.code().unwrap_or_else(|| {
+        exit_code: output.status.code().unwrap_or({
             #[cfg(unix)]
             {
                 use std::os::unix::process::ExitStatusExt;
-                return -output.status.signal().unwrap_or(1);
+                -output.status.signal().unwrap_or(1)
             }
             #[cfg(not(unix))]
             {
@@ -309,7 +309,7 @@ mod tests {
         #[cfg(windows)]
         let mut process = AsyncProcess::new("cmd.exe").arg("/C").arg("exit 0");
         #[cfg(not(windows))]
-        let mut process = AsyncProcess::new("/bin/true");
+        let mut process = AsyncProcess::new("/bin/sh").arg("-c").arg("exit 0");
         process.start().await.expect("first start");
         assert!(matches!(
             process.start().await,
@@ -446,7 +446,7 @@ mod tests {
         #[cfg(not(windows))]
         let mut process = AsyncProcess::new("/bin/sh")
             .arg("-c")
-            .arg("IFS= read -r input; printf got:%s \\\"$input\\\"");
+            .arg("IFS= read -r input; printf 'got:%s' \"$input\"");
 
         process.start().await.expect("async process starts");
         process
