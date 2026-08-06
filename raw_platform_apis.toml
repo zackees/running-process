@@ -15,3 +15,23 @@ owner = "running-process-platform-internal"
 path = "std::process::Stdio"
 kind = "stdio-policy"
 owner = "running-process-platform-internal"
+
+[[api]]
+path = "libc::kill"
+kind = "process-emergency-signal"
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "windows_sys::Win32::System::Threading::TerminateProcess"
+kind = "process-emergency-signal"
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "windows_sys::Win32::System::Threading::OpenProcess"
+kind = "process-emergency-signal"
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "windows_sys::Win32::Foundation::CloseHandle"
+kind = "process-emergency-signal"
+owner = "running-process-platform-internal"

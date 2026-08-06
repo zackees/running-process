@@ -10,8 +10,8 @@ use std::io;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Output, Stdio};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 /// Stdio policy for one child stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,11 +128,22 @@ impl SpawnSpec {
 /// Owned child handle returned by [`SpawnSpec::spawn`].
 pub struct PlatformChild {
     child: Child,
+    stdin: Option<ChildStdin>,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+    signal: PlatformEmergencySignal,
 }
 
 impl PlatformChild {
-    fn new(child: Child) -> Self {
-        Self { child }
+    fn new(mut child: Child) -> Self {
+        let signal = PlatformEmergencySignal { pid: child.id() };
+        Self {
+            stdin: child.stdin.take(),
+            stdout: child.stdout.take(),
+            stderr: child.stderr.take(),
+            child,
+            signal,
+        }
     }
 
     /// Return the operating-system process identifier, if available.
@@ -152,15 +163,31 @@ impl PlatformChild {
 
     /// Capture piped stdout and stderr while waiting for the child.
     pub async fn wait_with_output(self) -> io::Result<Output> {
-        self.child.wait_with_output().await
+        let Self {
+            mut child,
+            stdin,
+            stdout,
+            stderr,
+            ..
+        } = self;
+        // Match Tokio's `Child::wait_with_output` contract: one-shot output
+        // closes an owned stdin pipe so a child waiting for EOF can finish.
+        drop(stdin);
+        let (status, stdout, stderr) = tokio::try_join!(
+            child.wait(),
+            read_owned_to_end(stdout),
+            read_owned_to_end(stderr),
+        )?;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
     }
 
     /// Write bytes to piped stdin and flush them.
     pub async fn write_stdin(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let stdin =
-            self.child.stdin.as_mut().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "child stdin is not piped")
-            })?;
+        let stdin = self.stdin.as_mut().ok_or_else(stdin_not_piped)?;
         stdin.write_all(bytes).await?;
         stdin.flush().await
     }
@@ -170,14 +197,12 @@ impl PlatformChild {
     /// This operation is idempotent. Closing an inherited or null stdin is
     /// also a no-op because there is no owned pipe to close.
     pub fn close_stdin(&mut self) {
-        drop(self.child.stdin.take());
+        drop(self.stdin.take());
     }
 
     /// Read all bytes from piped stdout without waiting for process exit.
     pub async fn read_stdout_to_end(&mut self) -> io::Result<Vec<u8>> {
-        let stdout = self.child.stdout.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "child stdout is not piped")
-        })?;
+        let stdout = self.stdout.as_mut().ok_or_else(stdout_not_piped)?;
         let mut bytes = Vec::new();
         stdout.read_to_end(&mut bytes).await?;
         Ok(bytes)
@@ -185,13 +210,174 @@ impl PlatformChild {
 
     /// Read all bytes from piped stderr without waiting for process exit.
     pub async fn read_stderr_to_end(&mut self) -> io::Result<Vec<u8>> {
-        let stderr = self.child.stderr.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "child stderr is not piped")
-        })?;
+        let stderr = self.stderr.as_mut().ok_or_else(stderr_not_piped)?;
         let mut bytes = Vec::new();
         stderr.read_to_end(&mut bytes).await?;
         Ok(bytes)
     }
+
+    /// Split this child into sealed actor capabilities.
+    ///
+    /// The lifecycle wait handle, emergency termination handle, input pipe,
+    /// and output readers are deliberately separate so the actor can keep
+    /// accepting control commands while an asynchronous exit wait is pending.
+    pub fn into_actor_parts(
+        self,
+    ) -> (
+        PlatformLifecycle,
+        PlatformEmergencySignal,
+        Option<PlatformStdin>,
+        Option<PlatformOutput>,
+        Option<PlatformOutput>,
+    ) {
+        (
+            PlatformLifecycle { child: self.child },
+            self.signal,
+            self.stdin.map(|stdin| PlatformStdin { stdin }),
+            self.stdout.map(PlatformOutput::stdout),
+            self.stderr.map(PlatformOutput::stderr),
+        )
+    }
+}
+
+/// Opaque exit-wait capability owned by a process actor.
+pub struct PlatformLifecycle {
+    child: Child,
+}
+
+impl PlatformLifecycle {
+    /// Wait asynchronously for the child to exit.
+    pub async fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.child.wait().await
+    }
+}
+
+/// Opaque, non-reap-capable emergency termination capability.
+///
+/// It can be used while the actor has a pending wait on
+/// [`PlatformLifecycle`], but it cannot observe or consume the exit result.
+pub struct PlatformEmergencySignal {
+    pid: Option<u32>,
+}
+
+impl PlatformEmergencySignal {
+    /// Request immediate termination without waiting for process reaping.
+    pub fn kill(&self) -> io::Result<()> {
+        let pid = self.pid.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "child process no longer has an emergency signal target",
+            )
+        })?;
+        signal_process(pid)
+    }
+}
+
+/// Opaque piped stdin capability owned by a process actor.
+pub struct PlatformStdin {
+    stdin: ChildStdin,
+}
+
+impl PlatformStdin {
+    /// Write and flush bytes to the child stdin pipe.
+    pub async fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.stdin.write_all(bytes).await?;
+        self.stdin.flush().await
+    }
+}
+
+/// Opaque stdout or stderr reader owned by a process actor.
+pub struct PlatformOutput {
+    reader: OutputReader,
+}
+
+enum OutputReader {
+    Stdout(ChildStdout),
+    Stderr(ChildStderr),
+}
+
+impl PlatformOutput {
+    fn stdout(stdout: ChildStdout) -> Self {
+        Self {
+            reader: OutputReader::Stdout(stdout),
+        }
+    }
+
+    fn stderr(stderr: ChildStderr) -> Self {
+        Self {
+            reader: OutputReader::Stderr(stderr),
+        }
+    }
+
+    /// Drain this output endpoint to EOF without blocking a runtime worker.
+    pub async fn read_to_end(self) -> io::Result<Vec<u8>> {
+        match self.reader {
+            OutputReader::Stdout(stdout) => read_owned_to_end(Some(stdout)).await,
+            OutputReader::Stderr(stderr) => read_owned_to_end(Some(stderr)).await,
+        }
+    }
+}
+
+fn stdin_not_piped() -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, "child stdin is not piped")
+}
+
+fn stdout_not_piped() -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, "child stdout is not piped")
+}
+
+fn stderr_not_piped() -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, "child stderr is not piped")
+}
+
+async fn read_owned_to_end<R>(reader: Option<R>) -> io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let Some(mut reader) = reader else {
+        return Ok(Vec::new());
+    };
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).await?;
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn signal_process(pid: u32) -> io::Result<()> {
+    let result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(windows)]
+fn signal_process(pid: u32) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            Ok(())
+        } else {
+            Err(error)
+        };
+    }
+    let terminated = unsafe { TerminateProcess(handle, 1) };
+    let termination_error = if terminated == 0 {
+        Some(io::Error::last_os_error())
+    } else {
+        None
+    };
+    unsafe { CloseHandle(handle) };
+    termination_error.map_or(Ok(()), Err)
 }
 
 /// Build a shell command using the host platform's supported shell.
@@ -249,5 +435,34 @@ mod tests {
             .spawn()
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn one_shot_output_closes_owned_stdin() {
+        #[cfg(windows)]
+        let spec = shell_spec("more > nul & echo done");
+        #[cfg(not(windows))]
+        let spec = shell_spec("cat > /dev/null; printf done");
+
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            spec.stdin(StreamMode::Piped)
+                .stdout(StreamMode::Piped)
+                .stderr(StreamMode::Piped)
+                .spawn()
+                .await
+                .expect("spawn")
+                .wait_with_output(),
+        )
+        .await
+        .expect("stdin is closed for one-shot output")
+        .expect("output succeeds");
+
+        let expected = if cfg!(windows) {
+            b"done\r\n".as_slice()
+        } else {
+            b"done".as_slice()
+        };
+        assert_eq!(output.stdout, expected);
     }
 }
