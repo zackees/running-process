@@ -324,6 +324,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn async_output_cursor_reaches_terminal_eof_without_polling() {
+        #[cfg(windows)]
+        let mut process = AsyncProcess::new("cmd.exe").arg("/C").arg("echo cursor");
+        #[cfg(not(windows))]
+        let mut process = AsyncProcess::new("/bin/sh").arg("-c").arg("printf cursor");
+
+        process.start().await.expect("async process starts");
+        let mut cursor = process.output_cursor().expect("output cursor");
+        process.output().await.expect("capture output");
+        while !matches!(cursor.read_next_async().await, crate::CursorRead::Eof) {}
+        assert!(cursor.is_closed());
+    }
+
+    #[tokio::test]
     async fn async_process_timeout_is_explicit_and_kill_remains_available() {
         #[cfg(windows)]
         let mut process = AsyncProcess::new("ping.exe")

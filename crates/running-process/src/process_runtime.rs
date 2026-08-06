@@ -305,19 +305,20 @@ async fn serve_child(
                 let stderr = stderr.take();
                 let known_exit_status = exit_status;
                 let capture_log = output_log.clone();
+                let completion_log = output_log.clone();
                 let (capture_tx, capture_rx) = oneshot::channel();
                 runtime().spawn(async move {
-                    let _ = capture_tx.send(
-                        capture_output(
-                            lifecycle,
-                            stdout,
-                            stderr,
-                            known_exit_status,
-                            limit,
-                            capture_log,
-                        )
-                        .await,
-                    );
+                    let result = capture_output(
+                        lifecycle,
+                        stdout,
+                        stderr,
+                        known_exit_status,
+                        limit,
+                        capture_log,
+                    )
+                    .await;
+                    completion_log.close();
+                    let _ = capture_tx.send(result);
                 });
                 capture_completion = Some(capture_rx);
                 capture_reply = Some(reply);
