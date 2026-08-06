@@ -36,6 +36,7 @@ pub mod window_icon;
 pub mod observer;
 #[cfg(feature = "originator-scan")]
 pub mod originator;
+pub mod output_log;
 // Wave 3+4 of #165: proto module + IPC client absorbed from the
 // former `running-process-proto` and `running-process-client` crates.
 // Both gated behind `feature = "client"`. The protobuf package
@@ -134,6 +135,7 @@ pub use observer::{
 pub use originator::{
     find_declared_daemon_pids, find_processes_by_originator, OriginatorProcessInfo,
 };
+pub use output_log::{CursorRead, OutputCursor, OutputLog, OutputRecord};
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
