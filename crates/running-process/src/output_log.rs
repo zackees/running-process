@@ -6,6 +6,7 @@
 //! explicit [`CursorRead::Gap`] when retention has moved past it.
 
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use crate::StreamKind;
 
@@ -132,6 +133,70 @@ pub struct OutputCursor {
     next_sequence: u64,
 }
 
+/// Thread-safe output-log handle suitable for sharing with actor consumers.
+#[derive(Debug, Clone)]
+pub struct SharedOutputLog {
+    inner: Arc<Mutex<OutputLog>>,
+}
+
+impl SharedOutputLog {
+    /// Create a shared log with a fixed aggregate byte capacity.
+    pub fn new(capacity_bytes: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(OutputLog::new(capacity_bytes))),
+        }
+    }
+
+    /// Append an observation without exposing the log's synchronization primitive.
+    pub fn append(&self, stream: StreamKind, bytes: impl Into<Vec<u8>>) -> u64 {
+        self.inner
+            .lock()
+            .expect("output log lock is not poisoned")
+            .append(stream, bytes)
+    }
+
+    /// Create a cursor at the current retention boundary.
+    pub fn cursor(&self) -> SharedOutputCursor {
+        let cursor = self
+            .inner
+            .lock()
+            .expect("output log lock is not poisoned")
+            .cursor();
+        SharedOutputCursor {
+            inner: Arc::clone(&self.inner),
+            cursor,
+        }
+    }
+
+    /// Return the number of bytes currently retained.
+    pub fn retained_bytes(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("output log lock is not poisoned")
+            .retained_bytes()
+    }
+}
+
+/// Independent cursor over a [`SharedOutputLog`].
+#[derive(Debug, Clone)]
+pub struct SharedOutputCursor {
+    inner: Arc<Mutex<OutputLog>>,
+    cursor: OutputCursor,
+}
+
+impl SharedOutputCursor {
+    /// Read the next record or explicit gap from the shared log.
+    pub fn read_next(&mut self) -> CursorRead {
+        self.cursor
+            .read_next(&self.inner.lock().expect("output log lock is not poisoned"))
+    }
+
+    /// Return the next sequence this cursor will request.
+    pub fn position(&self) -> u64 {
+        self.cursor.position()
+    }
+}
+
 impl OutputCursor {
     /// Return the next sequence this cursor will request.
     pub fn position(&self) -> u64 {
@@ -163,7 +228,7 @@ impl OutputCursor {
 
 #[cfg(test)]
 mod tests {
-    use super::{CursorRead, OutputLog};
+    use super::{CursorRead, OutputLog, SharedOutputLog};
     use crate::StreamKind;
 
     #[test]
@@ -205,5 +270,17 @@ mod tests {
             matches!(second.read_next(&log), CursorRead::Record(record) if record.bytes == b"ok")
         );
         assert_eq!(log.retained_bytes(), 2);
+    }
+
+    #[test]
+    fn shared_log_keeps_cursor_positions_independent() {
+        let log = SharedOutputLog::new(8);
+        let mut first = log.cursor();
+        let mut second = log.cursor();
+        log.append(StreamKind::Stdout, b"one");
+        assert!(matches!(first.read_next(), CursorRead::Record(_)));
+        assert!(matches!(second.read_next(), CursorRead::Record(_)));
+        assert_eq!(first.position(), second.position());
+        assert_eq!(log.retained_bytes(), 3);
     }
 }

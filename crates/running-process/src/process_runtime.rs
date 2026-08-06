@@ -15,9 +15,10 @@ use running_process_platform_internal::{
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::ProcessError;
+use crate::{ProcessError, SharedOutputCursor, SharedOutputLog, StreamKind};
 
 static PROCESS_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+const DEFAULT_OUTPUT_LOG_CAPACITY: usize = 16 * 1024 * 1024;
 
 /// Return the library-owned runtime used by process actors.
 pub(crate) fn runtime() -> &'static Runtime {
@@ -42,6 +43,7 @@ fn runtime_worker_threads() -> usize {
 /// Command handle for one actor-owned process.
 pub(crate) struct ActorProcess {
     commands: mpsc::Sender<Command>,
+    output_log: SharedOutputLog,
 }
 
 impl ActorProcess {
@@ -49,13 +51,21 @@ impl ActorProcess {
     pub(crate) async fn start(spec: SpawnSpec) -> Result<Self, ProcessError> {
         let (commands, receiver) = mpsc::channel(16);
         let (started_tx, started_rx) = oneshot::channel();
-        runtime().spawn(run_actor(spec, receiver, started_tx));
+        let output_log = SharedOutputLog::new(DEFAULT_OUTPUT_LOG_CAPACITY);
+        runtime().spawn(run_actor(spec, receiver, started_tx, output_log.clone()));
 
         started_rx
             .await
             .map_err(|_| ProcessError::NotRunning)?
             .map_err(ProcessError::Spawn)?;
-        Ok(Self { commands })
+        Ok(Self {
+            commands,
+            output_log,
+        })
+    }
+
+    pub(crate) fn output_cursor(&self) -> SharedOutputCursor {
+        self.output_log.cursor()
     }
 
     pub(crate) async fn pid(&self) -> Result<u32, ProcessError> {
@@ -151,6 +161,7 @@ async fn run_actor(
     spec: SpawnSpec,
     mut commands: mpsc::Receiver<Command>,
     started: oneshot::Sender<io::Result<()>>,
+    output_log: SharedOutputLog,
 ) {
     let child = match spec.spawn().await {
         Ok(child) => {
@@ -163,13 +174,14 @@ async fn run_actor(
         }
     };
     let pid = child.id();
-    serve_child(child, pid, &mut commands).await;
+    serve_child(child, pid, &mut commands, output_log).await;
 }
 
 async fn serve_child(
     child: PlatformChild,
     pid: Option<u32>,
     commands: &mut mpsc::Receiver<Command>,
+    output_log: SharedOutputLog,
 ) {
     let (lifecycle, signal, mut stdin, mut stdout, mut stderr) = child.into_actor_parts();
     let mut lifecycle = Some(lifecycle);
@@ -292,10 +304,19 @@ async fn serve_child(
                 let stdout = stdout.take();
                 let stderr = stderr.take();
                 let known_exit_status = exit_status;
+                let capture_log = output_log.clone();
                 let (capture_tx, capture_rx) = oneshot::channel();
                 runtime().spawn(async move {
                     let _ = capture_tx.send(
-                        capture_output(lifecycle, stdout, stderr, known_exit_status, limit).await,
+                        capture_output(
+                            lifecycle,
+                            stdout,
+                            stderr,
+                            known_exit_status,
+                            limit,
+                            capture_log,
+                        )
+                        .await,
                     );
                 });
                 capture_completion = Some(capture_rx);
@@ -342,10 +363,16 @@ async fn capture_output(
     stderr: Option<PlatformOutput>,
     exit_status: Option<ExitStatus>,
     limit: Option<usize>,
+    output_log: SharedOutputLog,
 ) -> Result<Output, CaptureError> {
     let budget = limit.map(|limit| Arc::new(CaptureBudget::new(limit)));
-    let stdout = read_output(stdout, budget.clone());
-    let stderr = read_output(stderr, budget);
+    let stdout = read_output(
+        stdout,
+        budget.clone(),
+        output_log.clone(),
+        StreamKind::Stdout,
+    );
+    let stderr = read_output(stderr, budget, output_log, StreamKind::Stderr);
     let (status, stdout, stderr) = match exit_status {
         Some(status) => {
             let (stdout, stderr) = tokio::join!(stdout, stderr);
@@ -380,40 +407,40 @@ impl CaptureBudget {
 async fn read_output(
     output: Option<PlatformOutput>,
     budget: Option<Arc<CaptureBudget>>,
+    output_log: SharedOutputLog,
+    stream: StreamKind,
 ) -> Result<Vec<u8>, CaptureError> {
-    match output {
-        Some(mut output) => match budget {
-            None => output.read_to_end().await.map_err(CaptureError::Io),
-            Some(budget) => {
-                let mut bytes = Vec::new();
-                let mut chunk = [0_u8; 8192];
-                let mut overflowed = false;
-                loop {
-                    let size = output
-                        .read_chunk(&mut chunk)
-                        .await
-                        .map_err(CaptureError::Io)?;
-                    if size == 0 {
-                        break;
-                    }
-                    if overflowed {
-                        continue;
-                    }
-                    let used = budget.used.fetch_add(size, Ordering::AcqRel);
-                    if used.saturating_add(size) > budget.limit {
-                        overflowed = true;
-                    } else {
-                        bytes.extend_from_slice(&chunk[..size]);
-                    }
-                }
-                if overflowed {
-                    Err(CaptureError::Limit(budget.limit))
-                } else {
-                    Ok(bytes)
-                }
+    let Some(mut output) = output else {
+        return Ok(Vec::new());
+    };
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    let mut overflowed = false;
+    loop {
+        let size = output
+            .read_chunk(&mut chunk)
+            .await
+            .map_err(CaptureError::Io)?;
+        if size == 0 {
+            break;
+        }
+        output_log.append(stream, chunk[..size].to_vec());
+        if overflowed {
+            continue;
+        }
+        if let Some(budget) = &budget {
+            let used = budget.used.fetch_add(size, Ordering::AcqRel);
+            if used.saturating_add(size) > budget.limit {
+                overflowed = true;
+                continue;
             }
-        },
-        None => Ok(Vec::new()),
+        }
+        bytes.extend_from_slice(&chunk[..size]);
+    }
+    if let Some(budget) = budget.filter(|_| overflowed) {
+        Err(CaptureError::Limit(budget.limit))
+    } else {
+        Ok(bytes)
     }
 }
 
