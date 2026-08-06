@@ -22,13 +22,20 @@ static PROCESS_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 pub(crate) fn runtime() -> &'static Runtime {
     PROCESS_RUNTIME.get_or_init(|| {
         Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(runtime_worker_threads())
             .enable_io()
             .enable_time()
             .thread_name("running-process-actor")
             .build()
             .expect("process runtime must initialize")
     })
+}
+
+fn runtime_worker_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(2)
+        .clamp(2, 4)
 }
 
 /// Command handle for one actor-owned process.
@@ -277,9 +284,14 @@ fn not_running_error() -> io::Error {
 mod tests {
     use std::time::Duration;
 
-    use super::{runtime, ActorProcess, Command};
+    use super::{runtime, runtime_worker_threads, ActorProcess, Command};
     use running_process_platform_internal::{shell_spec, StreamMode};
     use tokio::sync::oneshot;
+
+    #[test]
+    fn process_runtime_worker_count_is_bounded() {
+        assert!((2..=4).contains(&runtime_worker_threads()));
+    }
 
     #[tokio::test]
     async fn actors_share_the_process_global_runtime() {
