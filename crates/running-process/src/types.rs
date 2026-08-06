@@ -50,6 +50,9 @@ pub enum ProcessError {
     /// The operation requires a running child process.
     #[error("process is not running")]
     NotRunning,
+    /// A blocking compatibility adapter was called from a Tokio runtime.
+    #[error("blocking process adapter cannot run inside a Tokio runtime")]
+    RuntimeContext,
     /// The process was not configured with piped stdin.
     #[error("process stdin is not available")]
     StdinUnavailable,

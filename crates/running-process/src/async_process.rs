@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use running_process_platform_internal::{SpawnSpec, StreamMode};
 
-use crate::process_runtime::ActorProcess;
+use crate::process_runtime::{block_on, ActorProcess};
 use crate::{ProcessError, RunOutput, SharedOutputCursor};
 
 /// A process configured for asynchronous execution.
@@ -58,6 +58,15 @@ impl AsyncProcess {
         Ok(())
     }
 
+    /// Start the process through the canonical actor, for blocking callers.
+    ///
+    /// This is a compatibility adapter over [`Self::start`], not a second
+    /// process engine. It returns [`ProcessError::RuntimeContext`] when called
+    /// from a Tokio runtime; use the async method in that context.
+    pub fn start_blocking(&mut self) -> Result<(), ProcessError> {
+        block_on(self.start())?
+    }
+
     /// Return the child process identifier after [`Self::start`].
     pub async fn pid(&self) -> Result<u32, ProcessError> {
         self.child
@@ -65,6 +74,11 @@ impl AsyncProcess {
             .ok_or(ProcessError::NotRunning)?
             .pid()
             .await
+    }
+
+    /// Return the child pid through the blocking compatibility adapter.
+    pub fn pid_blocking(&self) -> Result<u32, ProcessError> {
+        block_on(self.pid())?
     }
 
     /// Create an independent cursor over output retained by the actor.
@@ -90,6 +104,11 @@ impl AsyncProcess {
             .await
     }
 
+    /// Wait through the blocking compatibility adapter.
+    pub fn wait_blocking(&mut self) -> Result<ExitStatus, ProcessError> {
+        block_on(self.wait())?
+    }
+
     /// Wait for completion, returning [`ProcessError::Timeout`] if the deadline elapses.
     pub async fn wait_timeout(&mut self, deadline: Duration) -> Result<ExitStatus, ProcessError> {
         tokio::time::timeout(deadline, self.wait())
@@ -106,6 +125,11 @@ impl AsyncProcess {
             .await
     }
 
+    /// Kill through the blocking compatibility adapter.
+    pub fn kill_blocking(&mut self) -> Result<(), ProcessError> {
+        block_on(self.kill())?
+    }
+
     /// Write bytes to the child's piped stdin without closing it.
     ///
     /// The actor owns the pipe for the complete operation. Cancelling this
@@ -120,6 +144,12 @@ impl AsyncProcess {
             .await
     }
 
+    /// Write stdin through the blocking compatibility adapter.
+    pub fn write_stdin_blocking(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), ProcessError> {
+        let bytes = bytes.as_ref().to_vec();
+        block_on(self.write_stdin(bytes))?
+    }
+
     /// Close the child's piped stdin and deliver EOF.
     ///
     /// The operation is idempotent after a successful start.
@@ -131,11 +161,21 @@ impl AsyncProcess {
             .await
     }
 
+    /// Close stdin through the blocking compatibility adapter.
+    pub fn close_stdin_blocking(&mut self) -> Result<(), ProcessError> {
+        block_on(self.close_stdin())?
+    }
+
     /// Wait for completion and return captured stdout/stderr.
     pub async fn output(&mut self) -> Result<RunOutput, ProcessError> {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
         let output = child.output().await?;
         Ok(run_output(output))
+    }
+
+    /// Capture output through the blocking compatibility adapter.
+    pub fn output_blocking(&mut self) -> Result<RunOutput, ProcessError> {
+        block_on(self.output())?
     }
 
     /// Wait for completion and capture output, returning [`ProcessError::Timeout`] if the deadline elapses.
@@ -150,6 +190,11 @@ impl AsyncProcess {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
         let output = child.output_bounded(limit).await?;
         Ok(run_output(output))
+    }
+
+    /// Capture bounded output through the blocking compatibility adapter.
+    pub fn output_bounded_blocking(&mut self, limit: usize) -> Result<RunOutput, ProcessError> {
+        block_on(self.output_bounded(limit))?
     }
 
     /// Spawn, wait, and capture a process in one asynchronous operation.
@@ -190,6 +235,16 @@ impl AsyncProcess {
         }
         process.start().await?;
         process.output_timeout(deadline).await
+    }
+
+    /// Spawn, wait, and capture through the blocking compatibility adapter.
+    pub fn run_blocking(
+        program: impl Into<OsString>,
+        args: &[OsString],
+    ) -> Result<RunOutput, ProcessError> {
+        let program = program.into();
+        let args = args.to_vec();
+        block_on(Self::run(program, &args))?
     }
 
     async fn output_after_start(mut self) -> Result<RunOutput, ProcessError> {
@@ -335,6 +390,32 @@ mod tests {
         process.output().await.expect("capture output");
         while !matches!(cursor.read_next_async().await, crate::CursorRead::Eof) {}
         assert!(cursor.is_closed());
+    }
+
+    #[test]
+    fn blocking_adapter_uses_the_actor_engine() {
+        #[cfg(windows)]
+        let args = vec!["/C".into(), "echo blocking".into()];
+        #[cfg(not(windows))]
+        let args = vec!["-c".into(), "printf blocking".into()];
+        let program = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
+
+        let output = AsyncProcess::run_blocking(program, &args).expect("blocking actor adapter");
+        assert_eq!(output.exit_code, 0);
+        assert!(output.stdout.starts_with(b"blocking"));
+    }
+
+    #[tokio::test]
+    async fn blocking_adapter_rejects_tokio_context_without_deadlocking() {
+        let mut process = if cfg!(windows) {
+            AsyncProcess::new("cmd.exe").arg("/C").arg("exit 0")
+        } else {
+            AsyncProcess::new("/bin/true")
+        };
+        assert!(matches!(
+            process.start_blocking(),
+            Err(crate::ProcessError::RuntimeContext)
+        ));
     }
 
     #[tokio::test]
