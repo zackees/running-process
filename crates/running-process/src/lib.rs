@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 
 use crate::observer::ObserverEmitter;
 
+#[cfg(feature = "async-process")]
+mod async_process;
 pub mod console_detect;
 pub mod containment;
 pub mod environment;
@@ -118,6 +120,8 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(feature = "async-process")]
+pub use async_process::AsyncProcess;
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
 pub use observer::{

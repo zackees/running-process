@@ -1,0 +1,19 @@
+[package]
+name = "running-process-platform-internal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Blessed platform process operations for running-process (implementation detail)"
+publish = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { version = "1", default-features = false, features = ["io-util", "process", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }

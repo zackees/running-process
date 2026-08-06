@@ -99,6 +99,14 @@ These need to exist on the repo *before* the first real release runs:
   `running-process-daemon` archives (`.tar.gz` for unix, `.zip` for
   Windows), `install.sh`, `install.ps1`, and `SHA256SUMS`.
 
+## Async platform implementation crate
+
+`running-process-platform-internal` is a published implementation-detail
+crate. Release automation publishes it immediately before `running-process`,
+because the optional `async-process` feature resolves it from the registry.
+Keep its version aligned with the workspace and do not document it as a
+consumer-facing API surface.
+
 ## Reproducible builds
 
 Set `RUNNING_PROCESS_REPRODUCIBLE=1` to normalize timestamps, absolute

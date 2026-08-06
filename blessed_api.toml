@@ -1,0 +1,27 @@
+# Blessed public capability inventory for #850. This file is intentionally
+# explicit: adding a platform operation requires a typed wrapper, tests, and
+# a Dylint fixture before it can be used by higher layers.
+
+[[api]]
+path = "running_process_platform_internal::SpawnSpec::spawn"
+kind = "async-process-spawn"
+blocking = false
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformChild::wait"
+kind = "async-process-wait"
+blocking = false
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformChild::wait_with_output"
+kind = "async-process-capture"
+blocking = false
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformChild::kill"
+kind = "async-process-kill"
+blocking = false
+owner = "running-process-platform-internal"

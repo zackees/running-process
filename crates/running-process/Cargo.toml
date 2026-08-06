@@ -75,6 +75,7 @@ required-features = ["client"]
 # the `runpm` binary out of the box (per Q1 resolution in #165:
 # `required-features` are not auto-activated by cargo install).
 default = ["client", "pty", "conpty-sidecar"]
+async-process = ["dep:running-process-platform-internal", "dep:tokio"]
 core = []
 telemetry = []
 pty = ["dep:portable-pty"]
@@ -167,13 +168,14 @@ getrandom = { version = "0.4", optional = true }
 # #633: schema-only dependency for the probe client facade. default-features
 # off keeps the interposer/injection machinery out — see the `probe` feature.
 running-process-probe = { path = "../running-process-probe", version = "4.8.2", default-features = false, optional = true }
+running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.8.2", optional = true }
 # Wave 5 of #165: daemon-feature deps. All optional.
 # tokio: `client-async` (#414) only needs the `rt` (spawn_blocking)
 # and `time` (`tokio::time::timeout`) features; the `daemon` feature
 # layers `tokio/full` on top below. Cargo unifies feature sets, so
 # any consumer enabling both ends up with the daemon footprint
 # exactly as before.
-tokio = { version = "1", default-features = false, features = ["process", "rt", "time"], optional = true }
+tokio = { version = "1", default-features = false, features = ["io-util", "process", "rt", "time"], optional = true }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 bytes = { version = "1", optional = true }
 futures-util = { version = "0.3", features = ["sink"], optional = true }
@@ -212,6 +214,7 @@ test-watchdog = { path = "../test-watchdog" }
 # `BrokeredBackend` trait (#497) — every documented misuse pattern
 # gets its own compile-fail case under `tests/ui/`.
 trybuild = "1"
+tokio = { version = "1", default-features = false, features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 
 # #150: ConPTY passthrough rewrite uses windows-sys directly for the
 # new conpty_passthrough module. Kept alongside (not replacing) the
