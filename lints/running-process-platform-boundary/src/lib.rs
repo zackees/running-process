@@ -3,7 +3,7 @@
 extern crate rustc_hir;
 
 use dylint_linting::declare_late_lint;
-use rustc_hir::{def::Res, def_id::LOCAL_CRATE, Expr, ExprKind};
+use rustc_hir::{def::Res, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 
 declare_late_lint! {
@@ -22,13 +22,8 @@ declare_late_lint! {
     "process and PTY platform APIs must be reached through the blessed internal crate"
 }
 
-const INTERNAL_CRATE: &str = "running_process_platform_internal";
-
 impl<'tcx> LateLintPass<'tcx> for RunningProcessPlatformBoundary {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &Expr<'tcx>) {
-        if cx.tcx.crate_name(LOCAL_CRATE).as_str() == INTERNAL_CRATE {
-            return;
-        }
         let ExprKind::Path(ref qpath) = expr.kind else {
             return;
         };
