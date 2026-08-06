@@ -20,7 +20,7 @@ crate-type = ["cdylib", "lib"]
 libc = "0.2"
 pyo3 = { workspace = true }
 regex = "1"
-running-process = { path = "../running-process", version = "4.8.2", features = ["client", "originator-scan", "probe"] }
+running-process = { path = "../running-process", version = "4.8.3", features = ["client", "originator-scan", "probe"] }
 sysinfo = "0.30"
 winapi = { version = "0.3", features = ["consoleapi", "handleapi", "jobapi2", "processenv", "processthreadsapi", "synchapi", "winbase", "wincon", "winnt", "winuser"] }
 prost = "0.14"
@@ -28,4 +28,4 @@ interprocess = "2"
 # Supplies the probe_diag.v1 prost enums and the all-thread snapshot API.
 # default-features = false keeps the crate's injection vehicles (gated on its
 # embed-helper feature) out of the extension module entirely.
-running-process-probe = { path = "../running-process-probe", version = "4.8.2", default-features = false }
+running-process-probe = { path = "../running-process-probe", version = "4.8.3", default-features = false }
