@@ -158,14 +158,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/running-process-dylint-target
-          key: dylint-target-v1-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'Cargo.lock') }}
+          key: dylint-target-v2-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
 
       - name: Dylint negative fixture
         if: ${{ inputs.dylint }}
         working-directory: lints/running-process-env-literal
         env:
           CARGO_BIN: cargo
-          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/env-literal
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
 
       - name: Dylint platform-boundary fixture
@@ -173,14 +173,14 @@ jobs:
         working-directory: lints/running-process-platform-boundary
         env:
           CARGO_BIN: cargo
-          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/platform-boundary
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
 
       - name: Dylint workspace gate
         if: ${{ inputs.dylint }}
         env:
           CARGO_BIN: cargo
-          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/workspace
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --all --workspace
 
       - name: Terminal graphics capability matrix
