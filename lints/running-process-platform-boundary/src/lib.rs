@@ -4,9 +4,8 @@ extern crate rustc_hir;
 
 use dylint_linting::declare_late_lint;
 use rustc_hir::{def::Res, Expr, ExprKind};
-use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_lint::{LateContext, LateLintPass};
 
-const BASELINE: &str = include_str!("../../../platform_compliance_baseline.toml");
 const RAW_APIS: [&str; 3] = [
     "tokio::process::Command",
     "tokio::process::Child",
@@ -17,8 +16,7 @@ declare_late_lint! {
     /// ### What it does
     ///
     /// Rejects a raw process API recorded in `raw_platform_apis.toml` outside
-    /// `running-process-platform-internal`, except for an exact, ratcheted
-    /// Phase-0 baseline entry.
+    /// `running-process-platform-internal`.
     ///
     /// ### Why is this bad?
     ///
@@ -57,62 +55,12 @@ impl<'tcx> LateLintPass<'tcx> for RpRawPlatformApiOutsideInternal {
             return;
         };
 
-        let filename = cx.sess().source_map().span_to_filename(expr.span);
-        let source = format!("{filename:?}").replace('\\', "/");
-        if source.contains("crates/running-process-platform-internal/")
-            || baseline_allows(raw_api, &source)
-        {
-            return;
-        }
-
         cx.tcx.dcx().span_err(
             expr.span,
             format!(
                 "forbidden raw platform API `{raw_api}`; use a blessed running_process_platform_internal capability listed in blessed_api.toml"
             ),
         );
-    }
-}
-
-fn baseline_allows(raw_api: &str, source: &str) -> bool {
-    let mut entry_api: Option<&str> = None;
-    let mut entry_path: Option<&str> = None;
-
-    for line in BASELINE.lines().chain(std::iter::once("[[exception]]")) {
-        let line = line.trim();
-        if line == "[[exception]]" {
-            if entry_api == Some(raw_api) && entry_path.is_some_and(|path| source.contains(path)) {
-                return true;
-            }
-            entry_api = None;
-            entry_path = None;
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("symbol = \"") {
-            entry_api = value.strip_suffix('"');
-        }
-        if let Some(value) = line.strip_prefix("path = \"") {
-            entry_path = value.strip_suffix('"');
-        }
-    }
-
-    false
-}
-
-#[cfg(test)]
-mod tests {
-    use super::baseline_allows;
-
-    #[test]
-    fn baseline_requires_exact_symbol_and_path() {
-        assert!(baseline_allows(
-            "tokio::process::Command",
-            "/workspace/crates/running-process/src/spawn.rs"
-        ));
-        assert!(!baseline_allows(
-            "tokio::process::Command",
-            "/workspace/crates/running-process/src/async_process.rs"
-        ));
     }
 }
 

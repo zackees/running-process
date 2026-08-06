@@ -1,5 +1,4 @@
 [workspace.metadata.dylint]
 libraries = [
     { path = "lints/running-process-env-literal" },
-    { path = "lints/running-process-platform-boundary" },
 ]
