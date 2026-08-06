@@ -6,6 +6,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Output};
+use std::time::Duration;
 
 use running_process_platform_internal::{SpawnSpec, StreamMode};
 
@@ -75,6 +76,13 @@ impl AsyncProcess {
             .await
     }
 
+    /// Wait for completion, returning [`ProcessError::Timeout`] if the deadline elapses.
+    pub async fn wait_timeout(&mut self, deadline: Duration) -> Result<ExitStatus, ProcessError> {
+        tokio::time::timeout(deadline, self.wait())
+            .await
+            .map_err(|_| ProcessError::Timeout)?
+    }
+
     /// Kill the started process.
     pub async fn kill(&mut self) -> Result<(), ProcessError> {
         self.child
@@ -116,6 +124,13 @@ impl AsyncProcess {
         Ok(run_output(output))
     }
 
+    /// Wait for completion and capture output, returning [`ProcessError::Timeout`] if the deadline elapses.
+    pub async fn output_timeout(&mut self, deadline: Duration) -> Result<RunOutput, ProcessError> {
+        tokio::time::timeout(deadline, self.output())
+            .await
+            .map_err(|_| ProcessError::Timeout)?
+    }
+
     /// Wait for completion and capture stdout/stderr within an aggregate byte limit.
     pub async fn output_bounded(&mut self, limit: usize) -> Result<RunOutput, ProcessError> {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
@@ -149,6 +164,20 @@ impl AsyncProcess {
         process.output_bounded(limit).await
     }
 
+    /// Spawn, wait, and capture a process with an execution deadline.
+    pub async fn run_timeout(
+        program: impl Into<OsString>,
+        args: &[OsString],
+        deadline: Duration,
+    ) -> Result<RunOutput, ProcessError> {
+        let mut process = Self::new(program);
+        for arg in args {
+            process = process.arg(arg.clone());
+        }
+        process.start().await?;
+        process.output_timeout(deadline).await
+    }
+
     async fn output_after_start(mut self) -> Result<RunOutput, ProcessError> {
         self.start().await?;
         self.output().await
@@ -175,6 +204,8 @@ fn run_output(output: Output) -> RunOutput {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::AsyncProcess;
 
     #[tokio::test]
@@ -247,6 +278,24 @@ mod tests {
             .expect("bounded run");
         assert_eq!(output.exit_code, 0);
         assert!(!output.stdout.is_empty());
+    }
+
+    #[tokio::test]
+    async fn async_process_timeout_is_explicit_and_kill_remains_available() {
+        #[cfg(windows)]
+        let mut process = AsyncProcess::new("ping.exe")
+            .arg("-n")
+            .arg("30")
+            .arg("127.0.0.1");
+        #[cfg(not(windows))]
+        let mut process = AsyncProcess::new("/bin/sh").arg("-c").arg("sleep 30");
+
+        process.start().await.expect("async process starts");
+        assert!(matches!(
+            process.wait_timeout(Duration::from_millis(20)).await,
+            Err(crate::ProcessError::Timeout)
+        ));
+        process.kill().await.expect("kill after timeout");
     }
 
     #[tokio::test(flavor = "current_thread")]
