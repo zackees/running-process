@@ -25,3 +25,15 @@ path = "running_process_platform_internal::PlatformChild::kill"
 kind = "async-process-kill"
 blocking = false
 owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformChild::write_stdin"
+kind = "async-process-stdin-write"
+blocking = false
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformChild::close_stdin"
+kind = "async-process-stdin-close"
+blocking = false
+owner = "running-process-platform-internal"

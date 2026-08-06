@@ -165,6 +165,14 @@ impl PlatformChild {
         stdin.flush().await
     }
 
+    /// Close the piped stdin handle, delivering EOF to the child.
+    ///
+    /// This operation is idempotent. Closing an inherited or null stdin is
+    /// also a no-op because there is no owned pipe to close.
+    pub fn close_stdin(&mut self) {
+        drop(self.child.stdin.take());
+    }
+
     /// Read all bytes from piped stdout without waiting for process exit.
     pub async fn read_stdout_to_end(&mut self) -> io::Result<Vec<u8>> {
         let stdout = self.child.stdout.as_mut().ok_or_else(|| {

@@ -84,6 +84,31 @@ impl AsyncProcess {
             .await
     }
 
+    /// Write bytes to the child's piped stdin without closing it.
+    ///
+    /// The actor owns the pipe for the complete operation. Cancelling this
+    /// future before actor acknowledgement leaves no guarantee whether a
+    /// dispatched write reached the child; callers that need an EOF must call
+    /// [`Self::close_stdin`] explicitly after a successful write.
+    pub async fn write_stdin(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), ProcessError> {
+        self.child
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .write_stdin(bytes.as_ref().to_vec())
+            .await
+    }
+
+    /// Close the child's piped stdin and deliver EOF.
+    ///
+    /// The operation is idempotent after a successful start.
+    pub async fn close_stdin(&mut self) -> Result<(), ProcessError> {
+        self.child
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .close_stdin()
+            .await
+    }
+
     /// Wait for completion and return captured stdout/stderr.
     pub async fn output(&mut self) -> Result<RunOutput, ProcessError> {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
@@ -170,5 +195,38 @@ mod tests {
             Err(crate::ProcessError::AlreadyStarted)
         ));
         process.kill().await.ok();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_process_writes_then_closes_stdin_through_the_actor() {
+        #[cfg(windows)]
+        let mut process = AsyncProcess::new("cmd.exe")
+            .arg("/V:ON")
+            .arg("/C")
+            .arg("set /p input= & echo got:!input!");
+        #[cfg(not(windows))]
+        let mut process = AsyncProcess::new("/bin/sh")
+            .arg("-c")
+            .arg("IFS= read -r input; printf got:%s \\\"$input\\\"");
+
+        process.start().await.expect("async process starts");
+        process
+            .write_stdin(b"actor-input")
+            .await
+            .expect("actor writes stdin");
+        process.close_stdin().await.expect("actor closes stdin");
+        process
+            .close_stdin()
+            .await
+            .expect("stdin close is idempotent");
+
+        let output = process.output().await.expect("actor captures output");
+        let expected = if cfg!(windows) {
+            b"got:actor-input\r\n".as_slice()
+        } else {
+            b"got:actor-input".as_slice()
+        };
+        assert_eq!(output.stdout, expected);
+        assert_eq!(output.exit_code, 0);
     }
 }
