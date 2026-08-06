@@ -6,7 +6,11 @@
 //! explicit [`CursorRead::Gap`] when retention has moved past it.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[cfg(feature = "async-process")]
+use tokio::sync::Notify;
 
 use crate::StreamKind;
 
@@ -136,29 +140,55 @@ pub struct OutputCursor {
 /// Thread-safe output-log handle suitable for sharing with actor consumers.
 #[derive(Debug, Clone)]
 pub struct SharedOutputLog {
-    inner: Arc<Mutex<OutputLog>>,
+    inner: Arc<SharedOutputState>,
+}
+
+#[derive(Debug)]
+struct SharedOutputState {
+    log: Mutex<OutputLog>,
+    #[cfg(feature = "async-process")]
+    notify: Notify,
+    closed: AtomicBool,
 }
 
 impl SharedOutputLog {
     /// Create a shared log with a fixed aggregate byte capacity.
     pub fn new(capacity_bytes: usize) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(OutputLog::new(capacity_bytes))),
+            inner: Arc::new(SharedOutputState {
+                log: Mutex::new(OutputLog::new(capacity_bytes)),
+                #[cfg(feature = "async-process")]
+                notify: Notify::new(),
+                closed: AtomicBool::new(false),
+            }),
         }
     }
 
     /// Append an observation without exposing the log's synchronization primitive.
     pub fn append(&self, stream: StreamKind, bytes: impl Into<Vec<u8>>) -> u64 {
-        self.inner
+        let sequence = self
+            .inner
+            .log
             .lock()
             .expect("output log lock is not poisoned")
-            .append(stream, bytes)
+            .append(stream, bytes);
+        #[cfg(feature = "async-process")]
+        self.inner.notify.notify_waiters();
+        sequence
+    }
+
+    /// Mark the producer closed and wake all waiting cursors.
+    pub fn close(&self) {
+        self.inner.closed.store(true, Ordering::Release);
+        #[cfg(feature = "async-process")]
+        self.inner.notify.notify_waiters();
     }
 
     /// Create a cursor at the current retention boundary.
     pub fn cursor(&self) -> SharedOutputCursor {
         let cursor = self
             .inner
+            .log
             .lock()
             .expect("output log lock is not poisoned")
             .cursor();
@@ -171,6 +201,7 @@ impl SharedOutputLog {
     /// Return the number of bytes currently retained.
     pub fn retained_bytes(&self) -> usize {
         self.inner
+            .log
             .lock()
             .expect("output log lock is not poisoned")
             .retained_bytes()
@@ -180,20 +211,46 @@ impl SharedOutputLog {
 /// Independent cursor over a [`SharedOutputLog`].
 #[derive(Debug, Clone)]
 pub struct SharedOutputCursor {
-    inner: Arc<Mutex<OutputLog>>,
+    inner: Arc<SharedOutputState>,
     cursor: OutputCursor,
 }
 
 impl SharedOutputCursor {
     /// Read the next record or explicit gap from the shared log.
     pub fn read_next(&mut self) -> CursorRead {
-        self.cursor
-            .read_next(&self.inner.lock().expect("output log lock is not poisoned"))
+        self.cursor.read_next(
+            &self
+                .inner
+                .log
+                .lock()
+                .expect("output log lock is not poisoned"),
+        )
+    }
+
+    /// Await the next record, gap, or terminal EOF without polling.
+    #[cfg(feature = "async-process")]
+    pub async fn read_next_async(&mut self) -> CursorRead {
+        loop {
+            let state = Arc::clone(&self.inner);
+            let notified = state.notify.notified();
+            match self.read_next() {
+                CursorRead::Eof if self.inner.closed.load(Ordering::Acquire) => {
+                    return CursorRead::Eof;
+                }
+                CursorRead::Eof => notified.await,
+                result => return result,
+            }
+        }
     }
 
     /// Return the next sequence this cursor will request.
     pub fn position(&self) -> u64 {
         self.cursor.position()
+    }
+
+    /// Whether the producer has closed the shared log.
+    pub fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
     }
 }
 
@@ -282,5 +339,15 @@ mod tests {
         assert!(matches!(second.read_next(), CursorRead::Record(_)));
         assert_eq!(first.position(), second.position());
         assert_eq!(log.retained_bytes(), 3);
+    }
+
+    #[cfg(feature = "async-process")]
+    #[tokio::test]
+    async fn async_cursor_returns_terminal_eof_after_close() {
+        let log = SharedOutputLog::new(8);
+        let mut cursor = log.cursor();
+        log.close();
+        assert_eq!(cursor.read_next_async().await, CursorRead::Eof);
+        assert!(cursor.is_closed());
     }
 }
