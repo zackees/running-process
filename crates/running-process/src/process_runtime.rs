@@ -33,6 +33,21 @@ pub(crate) fn runtime() -> &'static Runtime {
     })
 }
 
+/// Run one sync compatibility operation on the process-global actor runtime.
+///
+/// Blocking adapters deliberately reject calls made from an existing Tokio
+/// runtime. Blocking that worker would deadlock actor progress, so callers in
+/// async code must use the native async method instead.
+pub(crate) fn block_on<F>(future: F) -> Result<F::Output, ProcessError>
+where
+    F: std::future::Future,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(ProcessError::RuntimeContext);
+    }
+    Ok(runtime().block_on(future))
+}
+
 fn runtime_worker_threads() -> usize {
     std::thread::available_parallelism()
         .map(usize::from)
