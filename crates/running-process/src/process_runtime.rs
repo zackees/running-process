@@ -9,7 +9,7 @@ use std::process::{ExitStatus, Output};
 use std::sync::OnceLock;
 
 use running_process_platform_internal::{
-    PlatformChild, PlatformLifecycle, PlatformOutput, PlatformStdin, SpawnSpec,
+    PlatformChild, PlatformLifecycle, PlatformOutput, SpawnSpec,
 };
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{mpsc, oneshot};
@@ -156,15 +156,26 @@ async fn serve_child(
     pid: Option<u32>,
     commands: &mut mpsc::Receiver<Command>,
 ) {
-    let (mut lifecycle, signal, mut stdin, mut stdout, mut stderr) = child.into_actor_parts();
+    let (lifecycle, signal, mut stdin, mut stdout, mut stderr) = child.into_actor_parts();
+    let mut lifecycle = Some(lifecycle);
     let mut exit_status = None;
     let mut waiters: Vec<oneshot::Sender<io::Result<ExitStatus>>> = Vec::new();
     let mut kill_waiters: Vec<oneshot::Sender<io::Result<()>>> = Vec::new();
+    let mut capture_completion: Option<oneshot::Receiver<io::Result<Output>>> = None;
+    let mut capture_reply: Option<oneshot::Sender<io::Result<Output>>> = None;
 
     loop {
-        let event = if exit_status.is_some() {
+        let event = if let Some(completion) = capture_completion.as_mut() {
+            tokio::select! {
+                result = completion => ActorEvent::Capture(result),
+                command = commands.recv() => ActorEvent::Command(command),
+            }
+        } else if exit_status.is_some() {
             ActorEvent::Command(commands.recv().await)
         } else {
+            let lifecycle = lifecycle
+                .as_mut()
+                .expect("live actor retains its lifecycle capability");
             tokio::select! {
                 result = lifecycle.wait() => ActorEvent::Exit(result),
                 command = commands.recv() => ActorEvent::Command(command),
@@ -190,6 +201,43 @@ async fn serve_child(
                 }
                 return;
             }
+            ActorEvent::Capture(Ok(Ok(output))) => {
+                let status = output.status;
+                if let Some(reply) = capture_reply.take() {
+                    let _ = reply.send(Ok(output));
+                }
+                for waiter in waiters.drain(..) {
+                    let _ = waiter.send(Ok(status));
+                }
+                for waiter in kill_waiters.drain(..) {
+                    let _ = waiter.send(Ok(()));
+                }
+                return;
+            }
+            ActorEvent::Capture(Ok(Err(error))) => {
+                if let Some(reply) = capture_reply.take() {
+                    let _ = reply.send(Err(io::Error::new(error.kind(), error.to_string())));
+                }
+                for waiter in waiters.drain(..) {
+                    let _ = waiter.send(Err(io::Error::new(error.kind(), error.to_string())));
+                }
+                for waiter in kill_waiters.drain(..) {
+                    let _ = waiter.send(Err(io::Error::new(error.kind(), error.to_string())));
+                }
+                return;
+            }
+            ActorEvent::Capture(Err(_)) => {
+                if let Some(reply) = capture_reply.take() {
+                    let _ = reply.send(Err(not_running_error()));
+                }
+                for waiter in waiters.drain(..) {
+                    let _ = waiter.send(Err(not_running_error()));
+                }
+                for waiter in kill_waiters.drain(..) {
+                    let _ = waiter.send(Err(not_running_error()));
+                }
+                return;
+            }
             ActorEvent::Command(None) => return,
             ActorEvent::Command(Some(Command::Pid(reply))) => {
                 let _ = reply.send(pid.ok_or(ProcessError::NotRunning));
@@ -211,16 +259,29 @@ async fn serve_child(
                 }
             }
             ActorEvent::Command(Some(Command::Output(reply))) => {
-                let result = capture_output(
-                    &mut lifecycle,
-                    &mut stdin,
-                    &mut stdout,
-                    &mut stderr,
-                    exit_status,
-                )
-                .await;
-                let _ = reply.send(result);
-                return;
+                if capture_completion.is_some() {
+                    let _ = reply.send(Err(not_running_error()));
+                    continue;
+                }
+
+                // Capture owns the lifecycle and both output endpoints in a
+                // task on the process-global runtime. The actor retains the
+                // emergency signal and command receiver, so kill and queued
+                // waits remain responsive while pipes drain.
+                drop(stdin.take());
+                let lifecycle = lifecycle
+                    .take()
+                    .expect("capture starts with the lifecycle capability");
+                let stdout = stdout.take();
+                let stderr = stderr.take();
+                let known_exit_status = exit_status;
+                let (capture_tx, capture_rx) = oneshot::channel();
+                runtime().spawn(async move {
+                    let _ = capture_tx
+                        .send(capture_output(lifecycle, stdout, stderr, known_exit_status).await);
+                });
+                capture_completion = Some(capture_rx);
+                capture_reply = Some(reply);
             }
             ActorEvent::Command(Some(Command::WriteStdin { bytes, reply })) => {
                 let result = match stdin.as_mut() {
@@ -239,19 +300,18 @@ async fn serve_child(
 
 enum ActorEvent {
     Exit(io::Result<ExitStatus>),
+    Capture(Result<io::Result<Output>, oneshot::error::RecvError>),
     Command(Option<Command>),
 }
 
 async fn capture_output(
-    lifecycle: &mut PlatformLifecycle,
-    stdin: &mut Option<PlatformStdin>,
-    stdout: &mut Option<PlatformOutput>,
-    stderr: &mut Option<PlatformOutput>,
+    mut lifecycle: PlatformLifecycle,
+    stdout: Option<PlatformOutput>,
+    stderr: Option<PlatformOutput>,
     exit_status: Option<ExitStatus>,
 ) -> io::Result<Output> {
-    drop(stdin.take());
-    let stdout = read_output(stdout.take());
-    let stderr = read_output(stderr.take());
+    let stdout = read_output(stdout);
+    let stderr = read_output(stderr);
     let (status, stdout, stderr) = match exit_status {
         Some(status) => {
             let (stdout, stderr) = tokio::try_join!(stdout, stderr)?;
@@ -340,5 +400,38 @@ mod tests {
             .expect("actor replies")
             .expect("wait succeeds");
         assert!(!status.success());
+    }
+
+    #[tokio::test]
+    async fn kill_is_delivered_while_output_is_draining() {
+        #[cfg(windows)]
+        let spec = shell_spec("ping -n 30 127.0.0.1 > nul")
+            .stdin(StreamMode::Piped)
+            .stdout(StreamMode::Piped)
+            .stderr(StreamMode::Piped);
+        #[cfg(not(windows))]
+        let spec = shell_spec("sleep 30")
+            .stdin(StreamMode::Piped)
+            .stdout(StreamMode::Piped)
+            .stderr(StreamMode::Piped);
+
+        let process = ActorProcess::start(spec).await.expect("actor starts");
+        let (output_tx, output_rx) = oneshot::channel();
+        process
+            .commands
+            .send(Command::Output(output_tx))
+            .await
+            .expect("output command is accepted");
+
+        tokio::time::timeout(Duration::from_secs(2), process.kill())
+            .await
+            .expect("kill is not blocked by output capture")
+            .expect("kill succeeds");
+        let output = tokio::time::timeout(Duration::from_secs(2), output_rx)
+            .await
+            .expect("output capture completes")
+            .expect("actor replies")
+            .expect("capture succeeds");
+        assert!(!output.status.success());
     }
 }
