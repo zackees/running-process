@@ -261,7 +261,7 @@ async fn serve_child(
                 if let Some(reply) = capture_reply.take() {
                     let _ = reply.send(Err(process_error));
                 }
-                let error = io::Error::new(io::ErrorKind::Other, "async output capture failed");
+                let error = io::Error::other("async output capture failed");
                 for waiter in waiters.drain(..) {
                     let _ = waiter.send(Err(io::Error::new(error.kind(), error.to_string())));
                 }
