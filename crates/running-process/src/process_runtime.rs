@@ -6,7 +6,8 @@
 
 use std::io;
 use std::process::{ExitStatus, Output};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use running_process_platform_internal::{
     PlatformChild, PlatformLifecycle, PlatformOutput, SpawnSpec,
@@ -83,11 +84,22 @@ impl ActorProcess {
 
     pub(crate) async fn output(&self) -> Result<Output, ProcessError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.send(Command::Output(reply_tx)).await?;
-        reply_rx
-            .await
-            .map_err(|_| ProcessError::NotRunning)?
-            .map_err(ProcessError::Io)
+        self.send(Command::Output {
+            limit: None,
+            reply: reply_tx,
+        })
+        .await?;
+        reply_rx.await.map_err(|_| ProcessError::NotRunning)?
+    }
+
+    pub(crate) async fn output_bounded(&self, limit: usize) -> Result<Output, ProcessError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send(Command::Output {
+            limit: Some(limit),
+            reply: reply_tx,
+        })
+        .await?;
+        reply_rx.await.map_err(|_| ProcessError::NotRunning)?
     }
 
     pub(crate) async fn write_stdin(&self, bytes: Vec<u8>) -> Result<(), ProcessError> {
@@ -124,7 +136,10 @@ enum Command {
     Pid(oneshot::Sender<Result<u32, ProcessError>>),
     Wait(oneshot::Sender<io::Result<ExitStatus>>),
     Kill(oneshot::Sender<io::Result<()>>),
-    Output(oneshot::Sender<io::Result<Output>>),
+    Output {
+        limit: Option<usize>,
+        reply: oneshot::Sender<Result<Output, ProcessError>>,
+    },
     WriteStdin {
         bytes: Vec<u8>,
         reply: oneshot::Sender<io::Result<()>>,
@@ -161,8 +176,8 @@ async fn serve_child(
     let mut exit_status = None;
     let mut waiters: Vec<oneshot::Sender<io::Result<ExitStatus>>> = Vec::new();
     let mut kill_waiters: Vec<oneshot::Sender<io::Result<()>>> = Vec::new();
-    let mut capture_completion: Option<oneshot::Receiver<io::Result<Output>>> = None;
-    let mut capture_reply: Option<oneshot::Sender<io::Result<Output>>> = None;
+    let mut capture_completion: Option<oneshot::Receiver<Result<Output, CaptureError>>> = None;
+    let mut capture_reply: Option<oneshot::Sender<Result<Output, ProcessError>>> = None;
 
     loop {
         let event = if let Some(completion) = capture_completion.as_mut() {
@@ -215,9 +230,11 @@ async fn serve_child(
                 return;
             }
             ActorEvent::Capture(Ok(Err(error))) => {
+                let process_error = error.into_process_error();
                 if let Some(reply) = capture_reply.take() {
-                    let _ = reply.send(Err(io::Error::new(error.kind(), error.to_string())));
+                    let _ = reply.send(Err(process_error));
                 }
+                let error = io::Error::new(io::ErrorKind::Other, "async output capture failed");
                 for waiter in waiters.drain(..) {
                     let _ = waiter.send(Err(io::Error::new(error.kind(), error.to_string())));
                 }
@@ -228,7 +245,7 @@ async fn serve_child(
             }
             ActorEvent::Capture(Err(_)) => {
                 if let Some(reply) = capture_reply.take() {
-                    let _ = reply.send(Err(not_running_error()));
+                    let _ = reply.send(Err(ProcessError::NotRunning));
                 }
                 for waiter in waiters.drain(..) {
                     let _ = waiter.send(Err(not_running_error()));
@@ -258,9 +275,9 @@ async fn serve_child(
                     kill_waiters.push(reply);
                 }
             }
-            ActorEvent::Command(Some(Command::Output(reply))) => {
+            ActorEvent::Command(Some(Command::Output { limit, reply })) => {
                 if capture_completion.is_some() {
-                    let _ = reply.send(Err(not_running_error()));
+                    let _ = reply.send(Err(ProcessError::NotRunning));
                     continue;
                 }
 
@@ -277,8 +294,9 @@ async fn serve_child(
                 let known_exit_status = exit_status;
                 let (capture_tx, capture_rx) = oneshot::channel();
                 runtime().spawn(async move {
-                    let _ = capture_tx
-                        .send(capture_output(lifecycle, stdout, stderr, known_exit_status).await);
+                    let _ = capture_tx.send(
+                        capture_output(lifecycle, stdout, stderr, known_exit_status, limit).await,
+                    );
                 });
                 capture_completion = Some(capture_rx);
                 capture_reply = Some(reply);
@@ -300,8 +318,22 @@ async fn serve_child(
 
 enum ActorEvent {
     Exit(io::Result<ExitStatus>),
-    Capture(Result<io::Result<Output>, oneshot::error::RecvError>),
+    Capture(Result<Result<Output, CaptureError>, oneshot::error::RecvError>),
     Command(Option<Command>),
+}
+
+enum CaptureError {
+    Io(io::Error),
+    Limit(usize),
+}
+
+impl CaptureError {
+    fn into_process_error(self) -> ProcessError {
+        match self {
+            Self::Io(error) => ProcessError::Io(error),
+            Self::Limit(limit) => ProcessError::OutputLimitExceeded { limit },
+        }
+    }
 }
 
 async fn capture_output(
@@ -309,16 +341,21 @@ async fn capture_output(
     stdout: Option<PlatformOutput>,
     stderr: Option<PlatformOutput>,
     exit_status: Option<ExitStatus>,
-) -> io::Result<Output> {
-    let stdout = read_output(stdout);
-    let stderr = read_output(stderr);
+    limit: Option<usize>,
+) -> Result<Output, CaptureError> {
+    let budget = limit.map(|limit| Arc::new(CaptureBudget::new(limit)));
+    let stdout = read_output(stdout, budget.clone());
+    let stderr = read_output(stderr, budget);
     let (status, stdout, stderr) = match exit_status {
         Some(status) => {
-            let (stdout, stderr) = tokio::try_join!(stdout, stderr)?;
-            (status, stdout, stderr)
+            let (stdout, stderr) = tokio::join!(stdout, stderr);
+            (Ok(status), stdout, stderr)
         }
-        None => tokio::try_join!(lifecycle.wait(), stdout, stderr)?,
+        None => tokio::join!(lifecycle.wait(), stdout, stderr),
     };
+    let status = status.map_err(CaptureError::Io)?;
+    let stdout = stdout?;
+    let stderr = stderr?;
     Ok(Output {
         status,
         stdout,
@@ -326,9 +363,56 @@ async fn capture_output(
     })
 }
 
-async fn read_output(output: Option<PlatformOutput>) -> io::Result<Vec<u8>> {
+struct CaptureBudget {
+    limit: usize,
+    used: AtomicUsize,
+}
+
+impl CaptureBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            used: AtomicUsize::new(0),
+        }
+    }
+}
+
+async fn read_output(
+    output: Option<PlatformOutput>,
+    budget: Option<Arc<CaptureBudget>>,
+) -> Result<Vec<u8>, CaptureError> {
     match output {
-        Some(output) => output.read_to_end().await,
+        Some(mut output) => match budget {
+            None => output.read_to_end().await.map_err(CaptureError::Io),
+            Some(budget) => {
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 8192];
+                let mut overflowed = false;
+                loop {
+                    let size = output
+                        .read_chunk(&mut chunk)
+                        .await
+                        .map_err(CaptureError::Io)?;
+                    if size == 0 {
+                        break;
+                    }
+                    if overflowed {
+                        continue;
+                    }
+                    let used = budget.used.fetch_add(size, Ordering::AcqRel);
+                    if used.saturating_add(size) > budget.limit {
+                        overflowed = true;
+                    } else {
+                        bytes.extend_from_slice(&chunk[..size]);
+                    }
+                }
+                if overflowed {
+                    Err(CaptureError::Limit(budget.limit))
+                } else {
+                    Ok(bytes)
+                }
+            }
+        },
         None => Ok(Vec::new()),
     }
 }
@@ -419,7 +503,10 @@ mod tests {
         let (output_tx, output_rx) = oneshot::channel();
         process
             .commands
-            .send(Command::Output(output_tx))
+            .send(Command::Output {
+                limit: None,
+                reply: output_tx,
+            })
             .await
             .expect("output command is accepted");
 

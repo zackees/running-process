@@ -316,6 +316,17 @@ impl PlatformOutput {
             OutputReader::Stderr(stderr) => read_owned_to_end(Some(stderr)).await,
         }
     }
+
+    /// Read the next asynchronous chunk from this output endpoint.
+    ///
+    /// The caller owns the buffer and therefore controls the amount of data
+    /// retained at each read. EOF is reported as `Ok(0)`.
+    pub async fn read_chunk(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match &mut self.reader {
+            OutputReader::Stdout(stdout) => stdout.read(buffer).await,
+            OutputReader::Stderr(stderr) => stderr.read(buffer).await,
+        }
+    }
 }
 
 fn stdin_not_piped() -> io::Error {
