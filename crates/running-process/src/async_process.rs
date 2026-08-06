@@ -309,7 +309,7 @@ mod tests {
         #[cfg(windows)]
         let mut process = AsyncProcess::new("cmd.exe").arg("/C").arg("exit 0");
         #[cfg(not(windows))]
-        let mut process = AsyncProcess::new("/bin/true");
+        let mut process = AsyncProcess::new("/bin/sh").arg("-c").arg("exit 0");
         process.start().await.expect("first start");
         assert!(matches!(
             process.start().await,
