@@ -3,7 +3,7 @@
 extern crate rustc_hir;
 
 use dylint_linting::declare_late_lint;
-use rustc_hir::{def::Res, Expr, ExprKind};
+use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 
 declare_late_lint! {
@@ -24,13 +24,13 @@ declare_late_lint! {
 
 impl<'tcx> LateLintPass<'tcx> for RunningProcessPlatformBoundary {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &Expr<'tcx>) {
-        let ExprKind::Path(ref qpath) = expr.kind else {
+        let ExprKind::Path(_) = expr.kind else {
             return;
         };
-        let Res::Def(_, def_id) = cx.qpath_res(qpath, expr.hir_id) else {
+        let Ok(snippet) = cx.tcx.sess.source_map().span_to_snippet(expr.span) else {
             return;
         };
-        if cx.tcx.def_path_str(def_id) != "std::process::Command" {
+        if snippet != "std::process::Command" {
             return;
         }
         cx.tcx.dcx().span_err(
