@@ -81,6 +81,28 @@ impl ActorProcess {
             .map_err(ProcessError::Io)
     }
 
+    pub(crate) async fn write_stdin(&self, bytes: Vec<u8>) -> Result<(), ProcessError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send(Command::WriteStdin {
+            bytes,
+            reply: reply_tx,
+        })
+        .await?;
+        reply_rx
+            .await
+            .map_err(|_| ProcessError::NotRunning)?
+            .map_err(ProcessError::Io)
+    }
+
+    pub(crate) async fn close_stdin(&self) -> Result<(), ProcessError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send(Command::CloseStdin(reply_tx)).await?;
+        reply_rx
+            .await
+            .map_err(|_| ProcessError::NotRunning)?
+            .map_err(ProcessError::Io)
+    }
+
     async fn send(&self, command: Command) -> Result<(), ProcessError> {
         self.commands
             .send(command)
@@ -94,6 +116,11 @@ enum Command {
     Wait(oneshot::Sender<io::Result<ExitStatus>>),
     Kill(oneshot::Sender<io::Result<()>>),
     Output(oneshot::Sender<io::Result<Output>>),
+    WriteStdin {
+        bytes: Vec<u8>,
+        reply: oneshot::Sender<io::Result<()>>,
+    },
+    CloseStdin(oneshot::Sender<io::Result<()>>),
 }
 
 async fn run_actor(
@@ -143,6 +170,23 @@ async fn serve_child(child: PlatformChild, commands: &mut mpsc::Receiver<Command
             Command::Output(reply) => {
                 let result = match child.take() {
                     Some(child) => child.wait_with_output().await,
+                    None => Err(not_running_error()),
+                };
+                let _ = reply.send(result);
+            }
+            Command::WriteStdin { bytes, reply } => {
+                let result = match child.as_mut() {
+                    Some(child) => child.write_stdin(&bytes).await,
+                    None => Err(not_running_error()),
+                };
+                let _ = reply.send(result);
+            }
+            Command::CloseStdin(reply) => {
+                let result = match child.as_mut() {
+                    Some(child) => {
+                        child.close_stdin();
+                        Ok(())
+                    }
                     None => Err(not_running_error()),
                 };
                 let _ = reply.send(result);
