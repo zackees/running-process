@@ -11,7 +11,7 @@ use std::time::Duration;
 use running_process_platform_internal::{SpawnSpec, StreamMode};
 
 use crate::process_runtime::ActorProcess;
-use crate::{ProcessError, RunOutput};
+use crate::{ProcessError, RunOutput, SharedOutputCursor};
 
 /// A process configured for asynchronous execution.
 pub struct AsyncProcess {
@@ -65,6 +65,20 @@ impl AsyncProcess {
             .ok_or(ProcessError::NotRunning)?
             .pid()
             .await
+    }
+
+    /// Create an independent cursor over output retained by the actor.
+    ///
+    /// Output is drained when [`Self::output`] or a related capture operation
+    /// is requested. A cursor created before capture can therefore observe
+    /// records as the capture task appends them, or receive an explicit gap
+    /// if the bounded retention window advances past it.
+    pub fn output_cursor(&self) -> Result<SharedOutputCursor, ProcessError> {
+        Ok(self
+            .child
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .output_cursor())
     }
 
     /// Wait for the started process without capturing output.
@@ -278,6 +292,35 @@ mod tests {
             .expect("bounded run");
         assert_eq!(output.exit_code, 0);
         assert!(!output.stdout.is_empty());
+    }
+
+    #[tokio::test]
+    async fn async_process_output_cursor_observes_actor_capture() {
+        #[cfg(windows)]
+        let mut process = AsyncProcess::new("cmd.exe")
+            .arg("/C")
+            .arg("echo cursor-out && echo cursor-err 1>&2");
+        #[cfg(not(windows))]
+        let mut process = AsyncProcess::new("/bin/sh")
+            .arg("-c")
+            .arg("printf cursor-out; printf cursor-err >&2");
+
+        process.start().await.expect("async process starts");
+        let mut cursor = process.output_cursor().expect("output cursor");
+        process.output().await.expect("capture output");
+        let mut records = Vec::new();
+        while let crate::CursorRead::Record(record) = cursor.read_next() {
+            records.push(record);
+        }
+        assert!(records
+            .iter()
+            .any(|record| record.bytes.windows(6).any(|w| w == b"cursor")));
+        assert!(records
+            .iter()
+            .any(|record| record.stream == crate::StreamKind::Stdout));
+        assert!(records
+            .iter()
+            .any(|record| record.stream == crate::StreamKind::Stderr));
     }
 
     #[tokio::test]

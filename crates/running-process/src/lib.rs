@@ -135,7 +135,9 @@ pub use observer::{
 pub use originator::{
     find_declared_daemon_pids, find_processes_by_originator, OriginatorProcessInfo,
 };
-pub use output_log::{CursorRead, OutputCursor, OutputLog, OutputRecord};
+pub use output_log::{
+    CursorRead, OutputCursor, OutputLog, OutputRecord, SharedOutputCursor, SharedOutputLog,
+};
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
