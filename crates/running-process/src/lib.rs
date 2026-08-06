@@ -26,6 +26,8 @@ pub mod console_detect;
 pub mod containment;
 pub mod environment;
 mod helpers;
+#[cfg(feature = "async-process")]
+mod process_runtime;
 pub mod window_icon;
 // Phase 1 of #221: process-observation capability model + portable
 // lifecycle baseline. Core-feature-clean (std-only: mpsc + SystemTime),

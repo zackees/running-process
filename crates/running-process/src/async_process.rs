@@ -7,14 +7,15 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Output};
 
-use running_process_platform_internal::{PlatformChild, SpawnSpec, StreamMode};
+use running_process_platform_internal::{SpawnSpec, StreamMode};
 
+use crate::process_runtime::ActorProcess;
 use crate::{ProcessError, RunOutput};
 
 /// A process configured for asynchronous execution.
 pub struct AsyncProcess {
     spec: SpawnSpec,
-    child: Option<PlatformChild>,
+    child: Option<ActorProcess>,
 }
 
 impl AsyncProcess {
@@ -52,22 +53,17 @@ impl AsyncProcess {
         if self.child.is_some() {
             return Err(ProcessError::AlreadyStarted);
         }
-        self.child = Some(
-            self.spec
-                .clone()
-                .spawn()
-                .await
-                .map_err(ProcessError::Spawn)?,
-        );
+        self.child = Some(ActorProcess::start(self.spec.clone()).await?);
         Ok(())
     }
 
     /// Return the child process identifier after [`Self::start`].
-    pub fn pid(&self) -> Result<u32, ProcessError> {
+    pub async fn pid(&self) -> Result<u32, ProcessError> {
         self.child
             .as_ref()
-            .and_then(PlatformChild::id)
-            .ok_or(ProcessError::NotRunning)
+            .ok_or(ProcessError::NotRunning)?
+            .pid()
+            .await
     }
 
     /// Wait for the started process without capturing output.
@@ -77,7 +73,6 @@ impl AsyncProcess {
             .ok_or(ProcessError::NotRunning)?
             .wait()
             .await
-            .map_err(ProcessError::Io)
     }
 
     /// Kill the started process.
@@ -87,13 +82,12 @@ impl AsyncProcess {
             .ok_or(ProcessError::NotRunning)?
             .kill()
             .await
-            .map_err(ProcessError::Io)
     }
 
     /// Wait for completion and return captured stdout/stderr.
     pub async fn output(&mut self) -> Result<RunOutput, ProcessError> {
-        let child = self.child.take().ok_or(ProcessError::NotRunning)?;
-        let output = child.wait_with_output().await.map_err(ProcessError::Io)?;
+        let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
+        let output = child.output().await?;
         Ok(run_output(output))
     }
 

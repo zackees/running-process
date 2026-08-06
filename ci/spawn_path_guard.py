@@ -117,6 +117,11 @@ ALLOWED_RUST_SPAWN = {
     # Phase 0 of #850: the internal platform crate is the canonical async
     # process boundary; its spawn call is the reviewed blessed operation.
     Path("crates/running-process-platform-internal/src/lib.rs"),
+    # #850 Phase 2: the process-global runtime starts one Tokio actor task
+    # per child. The actor owns the blessed PlatformChild and exposes only
+    # typed lifecycle commands; this is the canonical async engine, not a
+    # second raw process-spawn layer.
+    Path("crates/running-process/src/process_runtime.rs"),
     # Public async process construction delegates only to the blessed typed
     # operation above and does not own a second platform spawn path.
     Path("crates/running-process/src/async_process.rs"),
