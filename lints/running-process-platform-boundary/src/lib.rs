@@ -6,12 +6,6 @@ use dylint_linting::declare_late_lint;
 use rustc_hir::{def::Res, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 
-const RAW_APIS: [&str; 3] = [
-    "tokio::process::Command",
-    "tokio::process::Child",
-    "std::process::Stdio",
-];
-
 declare_late_lint! {
     /// ### What it does
     ///
@@ -45,14 +39,11 @@ impl<'tcx> LateLintPass<'tcx> for RpRawPlatformApiOutsideInternal {
         let Res::Def(_, def_id) = cx.qpath_res(qpath, expr.hir_id) else {
             return;
         };
-        let definition = cx.tcx.def_path_str(def_id);
-        let Some(raw_api) = RAW_APIS.iter().copied().find(|api| {
-            definition == *api
-                || definition
-                    .strip_prefix(api)
-                    .is_some_and(|suffix| suffix.starts_with("::"))
-        }) else {
-            return;
+        let raw_api = match cx.tcx.def_path_str(def_id).as_str() {
+            "tokio::process::Command" | "tokio::process::Command::new" => "tokio::process::Command",
+            "tokio::process::Child" => "tokio::process::Child",
+            path if path.starts_with("std::process::Stdio::") => "std::process::Stdio",
+            _ => return,
         };
 
         cx.tcx.dcx().span_err(
