@@ -123,6 +123,57 @@ def test_parse_args_accepts_find_leaks_flag() -> None:
     assert args.command == ["--", "python", "-m", "ci.test"]
 
 
+def test_wall_clock_timeout_is_distinct_from_activity_timeout(monkeypatch) -> None:
+    fake_process = _FakeProcess(returncode=0)
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        cli.subprocess,
+        "Popen",
+        lambda command, env, stdout, stderr: fake_process,
+    )
+
+    def fake_wait(child, *, timeout, wall_clock_timeout):
+        seen["child"] = child
+        seen["timeout"] = timeout
+        seen["wall_clock_timeout"] = wall_clock_timeout
+        return 0, False
+
+    monkeypatch.setattr(cli, "_wait_for_child_with_activity_timeout", fake_wait)
+
+    assert cli.run_command(
+        ["python", "-m", "ci.test"], timeout=2.0, wall_clock_timeout=1.0
+    ) == 0
+    assert seen == {
+        "child": fake_process,
+        "timeout": 2.0,
+        "wall_clock_timeout": 1.0,
+    }
+
+
+def test_parse_args_accepts_wall_clock_timeout() -> None:
+    args = cli._parse_args(
+        ["--timeout", "2", "--wall-clock-timeout", "1", "--", "python", "worker.py"]
+    )
+
+    assert args.timeout == 2
+    assert args.wall_clock_timeout == 1
+    assert args.command == ["--", "python", "worker.py"]
+
+
+def test_terminate_tree_uses_blessed_cross_platform_cleanup(monkeypatch) -> None:
+    seen: dict[str, int] = {}
+
+    def terminate(pid: int) -> bool:
+        seen["pid"] = pid
+        return True
+
+    monkeypatch.setattr(cli, "terminate_process_tree", terminate)
+
+    assert cli.main(["--terminate-tree", "5432"]) == 0
+    assert seen == {"pid": 5432}
+
+
 def test_bounded_tail_buffer_truncates_old_bytes() -> None:
     buffer = cli._BoundedTailBuffer(5)
 

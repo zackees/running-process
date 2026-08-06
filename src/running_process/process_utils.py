@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from running_process._native import native_get_process_tree_info, native_kill_process_tree
+from running_process._native import (
+    native_get_process_tree_info,
+    native_kill_process_tree,
+    native_terminate_process_tree,
+)
 
 
 def get_process_tree_info(pid: int) -> str:
@@ -9,3 +13,8 @@ def get_process_tree_info(pid: int) -> str:
 
 def kill_process_tree(pid: int, timeout_seconds: float = 3.0) -> None:
     native_kill_process_tree(int(pid), float(timeout_seconds))
+
+
+def terminate_process_tree(pid: int, timeout_seconds: float = 3.0) -> bool:
+    """Kill and verify a process tree within a bounded cross-platform wait."""
+    return native_terminate_process_tree(int(pid), float(timeout_seconds))

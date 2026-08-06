@@ -29,7 +29,11 @@ from running_process.output_formatter import (
     TimeDeltaFormatter,
 )
 from running_process.priority import CpuPriority
-from running_process.process_utils import get_process_tree_info, kill_process_tree
+from running_process.process_utils import (
+    get_process_tree_info,
+    kill_process_tree,
+    terminate_process_tree,
+)
 from running_process.pty import (
     Callback,
     Expect,
@@ -130,4 +134,5 @@ __all__ = [
     "kill_process_tree",
     "launch_detached",
     "subprocess_run",
+    "terminate_process_tree",
 ]

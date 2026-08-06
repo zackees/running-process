@@ -140,8 +140,18 @@ The package installs a `running-process` wrapper CLI for supervised command exec
 
 ```bash
 running-process --timeout 30 -- python -m pytest tests/test_cli.py
+running-process --wall-clock-timeout 30 -- python worker.py
+running-process --terminate-tree 12345
 running-process --find-leaks -- python worker.py
 ```
+
+`--timeout` is an inactivity deadline: continuous stdout/stderr resets it. Use
+`--wall-clock-timeout` when a command must be terminated after a fixed elapsed
+budget even while it emits output. On either timeout, `running-process` kills
+and reaps the supervised process tree through its cross-platform native layer.
+Use `--terminate-tree PID` for an already-running tree; it returns non-zero
+when the bounded native cleanup cannot verify the tree is gone. Consumers must
+not invoke platform-specific tree-kill commands themselves.
 
 `--find-leaks` tags the wrapped process tree with a unique originator marker and reports any
 descendants still alive after the direct child exits.
