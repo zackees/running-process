@@ -1,0 +1,7 @@
+error: forbidden raw platform API `std::process::Stdio`; use a blessed running_process_platform_internal capability listed in blessed_api.toml
+  --> $DIR/main.rs:4:13
+   |
+LL |     let _ = Stdio::piped();
+   |             ^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

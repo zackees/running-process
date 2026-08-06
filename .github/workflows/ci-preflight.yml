@@ -168,6 +168,14 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
 
+      - name: Dylint platform-boundary fixture
+        if: ${{ inputs.dylint }}
+        working-directory: lints/running-process-platform-boundary
+        env:
+          CARGO_BIN: cargo
+          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
+        run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
+
       - name: Dylint workspace gate
         if: ${{ inputs.dylint }}
         env:

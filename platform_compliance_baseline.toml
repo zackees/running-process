@@ -1,0 +1,222 @@
+# Temporary, source-specific raw-platform debt for #850.
+#
+# The Dylint boundary rule consumes this file directly. Each exception has an
+# exact source path, an exact resolved API, a maximum token count enforced by
+# `ci.async_compliance_guard`, an owner, and the phase that must delete it.
+# Wildcards and inline #[allow] attributes are intentionally unsupported.
+
+[[exception]]
+id = "RP-RAW-TOKIO-001"
+symbol = "tokio::process::Command"
+path = "crates/running-process/src/spawn.rs"
+max_occurrences = 1
+owner = "running-process"
+justification = "Retained client-async compatibility function; Phase 2 moves it behind the typed actor protocol."
+expires_phase = 2
+
+[[exception]]
+id = "RP-RAW-TOKIO-002"
+symbol = "tokio::process::Child"
+path = "crates/running-process/src/spawn.rs"
+max_occurrences = 1
+owner = "running-process"
+justification = "Retained client-async compatibility function; Phase 2 replaces its raw child return type."
+expires_phase = 2
+
+[[exception]]
+id = "RP-RAW-STDIO-001"
+symbol = "std::process::Stdio"
+path = "testbins/src/bin/spawner.rs"
+max_occurrences = 4
+owner = "testbins"
+justification = "Legacy containment fixture; Phase 4 moves fixture process construction to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-002"
+symbol = "std::process::Stdio"
+path = "crates/test-watchdog/src/lib.rs"
+max_occurrences = 2
+owner = "test-watchdog"
+justification = "Watchdog external-tool fixture path; Phase 4 moves it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-003"
+symbol = "std::process::Stdio"
+path = "crates/running-process-probe-worker/tests/worker_process_test.rs"
+max_occurrences = 4
+owner = "probe-worker"
+justification = "Legacy worker integration fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-004"
+symbol = "std::process::Stdio"
+path = "crates/running-process-probe-daemon/tests/bringup_race.rs"
+max_occurrences = 3
+owner = "probe-daemon"
+justification = "Legacy daemon integration fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-005"
+symbol = "std::process::Stdio"
+path = "crates/running-process-probe-daemon/tests/rpprobe_cli_test.rs"
+max_occurrences = 3
+owner = "probe-daemon"
+justification = "Legacy CLI integration fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-006"
+symbol = "std::process::Stdio"
+path = "crates/running-process-probe-daemon/tests/profile_async_tokio_test.rs"
+max_occurrences = 3
+owner = "probe-daemon"
+justification = "Legacy profile integration fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-007"
+symbol = "std::process::Stdio"
+path = "crates/running-process-py/src/tests/pty_process.rs"
+max_occurrences = 1
+owner = "running-process-py"
+justification = "Legacy native PTY test fixture; Phase 5 migrates it to internal test support."
+expires_phase = 5
+
+[[exception]]
+id = "RP-RAW-STDIO-008"
+symbol = "std::process::Stdio"
+path = "crates/running-process/src/lib.rs"
+max_occurrences = 5
+owner = "running-process"
+justification = "Legacy synchronous pipe engine; Phase 4 deletes this implementation."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-009"
+symbol = "std::process::Stdio"
+path = "crates/running-process/src/spawn_imp_unix.rs"
+max_occurrences = 10
+owner = "running-process"
+justification = "Legacy synchronous Unix spawn boundary; Phase 4 moves it to the internal crate."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-010"
+symbol = "std::process::Stdio"
+path = "crates/running-process/tests/broker/handoff_windows_duplicate_handle.rs"
+max_occurrences = 4
+owner = "running-process"
+justification = "Legacy broker handoff fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-011"
+symbol = "std::process::Stdio"
+path = "crates/running-process/tests/broker/handoff_latency_e2e.rs"
+max_occurrences = 4
+owner = "running-process"
+justification = "Legacy broker handoff fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-012"
+symbol = "std::process::Stdio"
+path = "crates/running-process/tests/broker/handoff_windows_orchestrate.rs"
+max_occurrences = 4
+owner = "running-process"
+justification = "Legacy broker handoff fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-013"
+symbol = "std::process::Stdio"
+path = "crates/running-process/tests/broker_v2_acceptance_test.rs"
+max_occurrences = 3
+owner = "running-process"
+justification = "Legacy broker fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-014"
+symbol = "std::process::Stdio"
+path = "crates/running-process/tests/broker_v2_scaffold_accepts_connection.rs"
+max_occurrences = 9
+owner = "running-process"
+justification = "Legacy broker fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-015"
+symbol = "std::process::Stdio"
+path = "crates/running-process/tests/containment_test.rs"
+max_occurrences = 1
+owner = "running-process"
+justification = "Legacy containment fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-016"
+symbol = "std::process::Stdio"
+path = "crates/running-process/tests/daemon_cross_process_pty_attach_test.rs"
+max_occurrences = 5
+owner = "running-process"
+justification = "Legacy daemon PTY fixture; Phase 5 migrates it to internal test support."
+expires_phase = 5
+
+[[exception]]
+id = "RP-RAW-STDIO-017"
+symbol = "std::process::Stdio"
+path = "crates/running-process/tests/daemon_integration/env_replace_test.rs"
+max_occurrences = 1
+owner = "running-process"
+justification = "Legacy daemon fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-018"
+symbol = "std::process::Stdio"
+path = "crates/running-process/tests/process_core_test.rs"
+max_occurrences = 11
+owner = "running-process"
+justification = "Legacy synchronous process test suite; Phase 4 migrates it to actor-backed public contracts."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-019"
+symbol = "std::process::Stdio"
+path = "crates/running-process-probe/tests/interposer_diagnostic_windows.rs"
+max_occurrences = 3
+owner = "probe"
+justification = "Legacy interposer fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-020"
+symbol = "std::process::Stdio"
+path = "crates/running-process-probe/tests/interposer_integration_linux.rs"
+max_occurrences = 7
+owner = "probe"
+justification = "Legacy interposer fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-021"
+symbol = "std::process::Stdio"
+path = "crates/running-process-probe/tests/interposer_integration_macos.rs"
+max_occurrences = 5
+owner = "probe"
+justification = "Legacy interposer fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-STDIO-022"
+symbol = "std::process::Stdio"
+path = "crates/running-process-probe/tests/interposer_integration_windows.rs"
+max_occurrences = 3
+owner = "probe"
+justification = "Legacy interposer fixture; Phase 4 migrates it to internal test support."
+expires_phase = 4
