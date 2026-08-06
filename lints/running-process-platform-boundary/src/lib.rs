@@ -30,7 +30,7 @@ impl<'tcx> LateLintPass<'tcx> for RunningProcessPlatformBoundary {
         let Ok(snippet) = cx.tcx.sess.source_map().span_to_snippet(expr.span) else {
             return;
         };
-        if snippet != "std::process::Command" {
+        if !snippet.contains("Command") {
             return;
         }
         cx.tcx.dcx().span_err(
