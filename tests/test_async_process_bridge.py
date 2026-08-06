@@ -6,7 +6,11 @@ import asyncio
 import sys
 import unittest
 
-from running_process.asyncio import AsyncPseudoTerminalProcess, AsyncRunningProcess
+from running_process.asyncio import (
+    AsyncInteractiveProcess,
+    AsyncPseudoTerminalProcess,
+    AsyncRunningProcess,
+)
 
 
 class TestAsyncProcessBridge(unittest.IsolatedAsyncioTestCase):
@@ -61,3 +65,14 @@ class TestAsyncProcessBridge(unittest.IsolatedAsyncioTestCase):
         await process.resize(30, 100)
         await process.read(timeout=2.0)
         await process.close()
+
+    async def test_interactive_facade_dispatches_to_pipe_actor(self) -> None:
+        if sys.platform == "win32":
+            command = ["cmd.exe", "/C", "echo async-interactive"]
+        else:
+            command = ["/bin/sh", "-c", "printf async-interactive"]
+        process = AsyncInteractiveProcess(command)
+        await process.start()
+        exit_code, stdout, _stderr = await process.output()
+        self.assertEqual(exit_code, 0)
+        self.assertIn(b"async-interactive", stdout)
