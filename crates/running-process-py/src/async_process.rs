@@ -1,6 +1,8 @@
 //! Native Python awaitables backed by the Rust async process and PTY APIs.
 
 use std::ffi::OsString;
+use std::process::ExitStatus;
+use std::sync::Arc;
 use std::time::Duration;
 
 use pyo3::exceptions::PyRuntimeError;
@@ -9,6 +11,7 @@ use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 use running_process::pty::AsyncPtyProcess;
 use running_process::{AsyncProcess, RunOutput};
+use tokio::sync::Mutex;
 
 fn process_error(error: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
@@ -17,29 +20,140 @@ fn process_error(error: impl std::fmt::Display) -> PyErr {
 /// Python awaitable process facade backed by native Rust futures.
 #[pyclass(module = "running_process._native")]
 pub(crate) struct AsyncRunningProcess {
-    program: OsString,
-    args: Vec<OsString>,
+    process: Arc<Mutex<AsyncProcess>>,
 }
 
 #[pymethods]
 impl AsyncRunningProcess {
     #[new]
     fn new(program: String, args: Vec<String>) -> Self {
+        let mut process = AsyncProcess::new(OsString::from(program));
+        for arg in args {
+            process = process.arg(OsString::from(arg));
+        }
         Self {
-            program: OsString::from(program),
-            args: args.into_iter().map(OsString::from).collect(),
+            process: Arc::new(Mutex::new(process)),
         }
     }
 
-    /// Return an awaitable yielding `(exit_code, stdout_bytes, stderr_bytes)`.
-    fn run<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let program = self.program.clone();
-        let args = self.args.clone();
+    /// Start the configured child and return when the actor owns it.
+    fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
         future_into_py(py, async move {
-            let output = AsyncProcess::run(program, &args)
+            process.lock().await.start().await.map_err(process_error)
+        })
+    }
+
+    /// Return the child pid.
+    fn pid<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process.lock().await.pid().await.map_err(process_error)
+        })
+    }
+
+    /// Wait for exit and return the platform-normalized exit code.
+    fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
                 .await
-                .map_err(process_error)?;
-            Ok(output_tuple(output))
+                .wait()
+                .await
+                .map(exit_code)
+                .map_err(process_error)
+        })
+    }
+
+    /// Wait for exit up to `timeout` seconds.
+    #[pyo3(signature = (timeout))]
+    fn wait_timeout<'py>(&self, py: Python<'py>, timeout: f64) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .wait_timeout(Duration::from_secs_f64(timeout))
+                .await
+                .map(exit_code)
+                .map_err(process_error)
+        })
+    }
+
+    /// Terminate the child.
+    fn kill<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process.lock().await.kill().await.map_err(process_error)
+        })
+    }
+
+    /// Write bytes to stdin.
+    fn write_stdin<'py>(&self, py: Python<'py>, bytes: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .write_stdin(bytes)
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    /// Close stdin and deliver EOF.
+    fn close_stdin<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .close_stdin()
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    /// Capture output after starting the child.
+    fn output<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .output()
+                .await
+                .map(output_tuple)
+                .map_err(process_error)
+        })
+    }
+
+    /// Capture output with an aggregate byte bound.
+    fn output_bounded<'py>(&self, py: Python<'py>, limit: usize) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .output_bounded(limit)
+                .await
+                .map(output_tuple)
+                .map_err(process_error)
+        })
+    }
+
+    /// Spawn, wait, and return `(exit_code, stdout_bytes, stderr_bytes)`.
+    fn run<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            let mut process = process.lock().await;
+            process.start().await.map_err(process_error)?;
+            process
+                .output()
+                .await
+                .map(output_tuple)
+                .map_err(process_error)
         })
     }
 }
@@ -104,8 +218,75 @@ impl AsyncPseudoTerminalProcess {
             async move { process.close().await.map_err(process_error) },
         )
     }
+
+    fn write<'py>(
+        &self,
+        py: Python<'py>,
+        bytes: Vec<u8>,
+        submit: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process.write(bytes, submit).await.map_err(process_error)
+        })
+    }
+
+    fn resize<'py>(&self, py: Python<'py>, rows: u16, cols: u16) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process.resize(rows, cols).await.map_err(process_error)
+        })
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn wait<'py>(&self, py: Python<'py>, timeout: Option<f64>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process
+                .wait(timeout.map(Duration::from_secs_f64))
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    fn terminate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process.terminate().await.map_err(process_error)
+        })
+    }
+
+    fn kill<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(
+            py,
+            async move { process.kill().await.map_err(process_error) },
+        )
+    }
+
+    fn pid<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(
+            py,
+            async move { process.pid().await.map_err(process_error) },
+        )
+    }
 }
 
 fn output_tuple(output: RunOutput) -> (i32, Vec<u8>, Vec<u8>) {
     (output.exit_code, output.stdout, output.stderr)
+}
+
+fn exit_code(status: ExitStatus) -> i32 {
+    status.code().unwrap_or({
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            -status.signal().unwrap_or(1)
+        }
+        #[cfg(not(unix))]
+        {
+            -1
+        }
+    })
 }

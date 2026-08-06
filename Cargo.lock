@@ -2225,6 +2225,7 @@ dependencies = [
  "running-process",
  "running-process-probe",
  "sysinfo",
+ "tokio",
  "winapi",
 ]
 
