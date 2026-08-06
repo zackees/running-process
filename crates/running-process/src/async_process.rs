@@ -135,20 +135,6 @@ impl AsyncProcess {
         process.output_after_start().await
     }
 
-    /// Spawn, wait, and capture a process with an aggregate stdout/stderr limit.
-    pub async fn run_bounded(
-        program: impl Into<OsString>,
-        args: &[OsString],
-        limit: usize,
-    ) -> Result<RunOutput, ProcessError> {
-        let mut process = Self::new(program);
-        for arg in args {
-            process = process.arg(arg.clone());
-        }
-        process.start().await?;
-        process.output_bounded(limit).await
-    }
-
     async fn output_after_start(mut self) -> Result<RunOutput, ProcessError> {
         self.start().await?;
         self.output().await
@@ -232,21 +218,6 @@ mod tests {
             process.output_bounded(4).await,
             Err(crate::ProcessError::OutputLimitExceeded { limit: 4 })
         ));
-    }
-
-    #[tokio::test]
-    async fn async_process_run_bounded_captures_within_limit() {
-        #[cfg(windows)]
-        let args = vec!["/C".into(), "echo ok".into()];
-        #[cfg(not(windows))]
-        let args = vec!["-c".into(), "printf ok".into()];
-        let program = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
-
-        let output = AsyncProcess::run_bounded(program, &args, 16)
-            .await
-            .expect("bounded run");
-        assert_eq!(output.exit_code, 0);
-        assert!(!output.stdout.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
