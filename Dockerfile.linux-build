@@ -53,8 +53,10 @@ COPY crates/running-process-py/Cargo.toml /work/crates/running-process-py/Cargo.
 COPY crates/running-process-win-gnu-bridge/Cargo.toml /work/crates/running-process-win-gnu-bridge/Cargo.toml
 COPY crates/test-watchdog/Cargo.toml /work/crates/test-watchdog/Cargo.toml
 COPY testbins/Cargo.toml /work/testbins/Cargo.toml
+COPY crates/running-process-platform-internal/Cargo.toml /work/crates/running-process-platform-internal/Cargo.toml
 
 RUN mkdir -p /work/crates/running-process/src/bin \
+    /work/crates/running-process-platform-internal/src \
     /work/crates/running-process/examples \
     /work/crates/running-process-probe/src/bin \
     /work/crates/running-process-probe-daemon/src/bin \
@@ -67,6 +69,7 @@ RUN mkdir -p /work/crates/running-process/src/bin \
     /work/crates/test-watchdog/src \
     /work/testbins/src/bin \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process/src/lib.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-platform-internal/src/lib.rs \
  && printf "fn main() {}\n" > /work/crates/running-process/examples/handoff_rollout_evidence.rs \
  && for b in runpm daemon trampoline running-process-broker-v1 running-process-broker-v2 running-process-cleanup; do \
         printf "fn main() {}\n" > /work/crates/running-process/src/bin/$b.rs ; \

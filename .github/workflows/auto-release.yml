@@ -268,6 +268,7 @@ jobs:
           # before `running-process` can even resolve.
           rust_crates = (
               "running-process-probe",
+              "running-process-platform-internal",
               "running-process",
               "running-process-probe-daemon",
               "running-process-py",
@@ -735,6 +736,7 @@ jobs:
           # out of this order fails to resolve rather than merely being untidy.
           PUBLISH_ORDER=(
             running-process-probe
+            running-process-platform-internal
             running-process
             running-process-probe-daemon
             running-process-py

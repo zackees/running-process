@@ -1,0 +1,17 @@
+# Initial Phase 0 inventory for #850. Entries are resolved by the Dylint
+# boundary lint as it grows; additions require a fixture and owner.
+
+[[api]]
+path = "tokio::process::Command"
+kind = "process-spawn"
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "tokio::process::Child"
+kind = "process-child"
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "std::process::Stdio"
+kind = "stdio-policy"
+owner = "running-process-platform-internal"

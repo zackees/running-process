@@ -2068,6 +2068,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "protox",
+ "running-process-platform-internal",
  "running-process-probe",
  "rusqlite",
  "serde",
@@ -2089,6 +2090,13 @@ dependencies = [
  "windows-sys 0.59.0",
  "x11rb",
  "zstd",
+]
+
+[[package]]
+name = "running-process-platform-internal"
+version = "4.8.2"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]

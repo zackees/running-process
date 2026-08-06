@@ -17,6 +17,10 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # Phase 0 of #850: this is the sole blessed owner of the asynchronous
+    # process primitive. Higher layers may call its typed operations but may
+    # not construct a platform command themselves.
+    Path("crates/running-process-platform-internal/src/lib.rs"),
     # #648 `rpprobe dump --force`: invokes the external capture tools
     # (py-spy, gdb/lldb, ProcDump, gcore) against an unenrolled target.
     # These are the whole point of the subcommand — the cooperative path
@@ -110,6 +114,12 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
+    # Phase 0 of #850: the internal platform crate is the canonical async
+    # process boundary; its spawn call is the reviewed blessed operation.
+    Path("crates/running-process-platform-internal/src/lib.rs"),
+    # Public async process construction delegates only to the blessed typed
+    # operation above and does not own a second platform spawn path.
+    Path("crates/running-process/src/async_process.rs"),
     # #636 crash capture sampler: `thread::Builder::spawn` starts an
     # in-process thread that refreshes the preallocated, bounded all-thread
     # snapshot consumed by the native crash callback. It never starts a
