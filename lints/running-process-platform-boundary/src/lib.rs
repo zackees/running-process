@@ -3,7 +3,7 @@
 extern crate rustc_hir;
 
 use dylint_linting::declare_late_lint;
-use rustc_hir::{def::Res, Expr, ExprKind, QPath, Ty, TyKind};
+use rustc_hir::{def::Res, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 
 const BASELINE: &str = include_str!("../../../platform_compliance_baseline.toml");
@@ -44,26 +44,7 @@ impl<'tcx> LateLintPass<'tcx> for RpRawPlatformApiOutsideInternal {
         let ExprKind::Path(ref qpath) = expr.kind else {
             return;
         };
-        self.check_raw_path(cx, qpath, expr.hir_id, expr.span);
-    }
-
-    fn check_ty(&mut self, cx: &LateContext<'tcx>, ty: &'tcx Ty<'tcx, rustc_hir::AmbigArg>) {
-        let TyKind::Path(ref qpath) = ty.kind else {
-            return;
-        };
-        self.check_raw_path(cx, qpath, ty.hir_id, ty.span);
-    }
-}
-
-impl RpRawPlatformApiOutsideInternal {
-    fn check_raw_path<'tcx>(
-        &self,
-        cx: &LateContext<'tcx>,
-        qpath: &QPath<'tcx>,
-        hir_id: rustc_hir::HirId,
-        span: rustc_span::Span,
-    ) {
-        let Res::Def(_, def_id) = cx.qpath_res(qpath, hir_id) else {
+        let Res::Def(_, def_id) = cx.qpath_res(qpath, expr.hir_id) else {
             return;
         };
         let definition = cx.tcx.def_path_str(def_id);
@@ -76,7 +57,7 @@ impl RpRawPlatformApiOutsideInternal {
             return;
         };
 
-        let filename = cx.sess().source_map().span_to_filename(span);
+        let filename = cx.sess().source_map().span_to_filename(expr.span);
         let source = format!("{filename:?}").replace('\\', "/");
         if source.contains("crates/running-process-platform-internal/")
             || baseline_allows(raw_api, &source)
@@ -85,7 +66,7 @@ impl RpRawPlatformApiOutsideInternal {
         }
 
         cx.tcx.dcx().span_err(
-            span,
+            expr.span,
             format!(
                 "forbidden raw platform API `{raw_api}`; use a blessed running_process_platform_internal capability listed in blessed_api.toml"
             ),
