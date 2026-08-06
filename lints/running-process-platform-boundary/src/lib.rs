@@ -1,7 +1,6 @@
 #![feature(rustc_private)]
 
 extern crate rustc_hir;
-extern crate rustc_span;
 
 use dylint_linting::declare_late_lint;
 use rustc_hir::{def::Res, Expr, ExprKind, QPath, Ty, TyKind};
