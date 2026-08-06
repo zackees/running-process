@@ -8,7 +8,9 @@ use std::io;
 use std::process::{ExitStatus, Output};
 use std::sync::OnceLock;
 
-use running_process_platform_internal::{PlatformChild, SpawnSpec};
+use running_process_platform_internal::{
+    PlatformChild, PlatformLifecycle, PlatformOutput, PlatformStdin, SpawnSpec,
+};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{mpsc, oneshot};
 
@@ -138,60 +140,129 @@ async fn run_actor(
             return;
         }
     };
-    serve_child(child, &mut commands).await;
+    let pid = child.id();
+    serve_child(child, pid, &mut commands).await;
 }
 
-async fn serve_child(child: PlatformChild, commands: &mut mpsc::Receiver<Command>) {
-    let mut child = Some(child);
-    while let Some(command) = commands.recv().await {
-        match command {
-            Command::Pid(reply) => {
-                let _ = reply.send(
-                    child
-                        .as_ref()
-                        .and_then(PlatformChild::id)
-                        .ok_or(ProcessError::NotRunning),
-                );
+async fn serve_child(
+    child: PlatformChild,
+    pid: Option<u32>,
+    commands: &mut mpsc::Receiver<Command>,
+) {
+    let (mut lifecycle, signal, mut stdin, mut stdout, mut stderr) = child.into_actor_parts();
+    let mut exit_status = None;
+    let mut waiters: Vec<oneshot::Sender<io::Result<ExitStatus>>> = Vec::new();
+    let mut kill_waiters: Vec<oneshot::Sender<io::Result<()>>> = Vec::new();
+
+    loop {
+        let event = if exit_status.is_some() {
+            ActorEvent::Command(commands.recv().await)
+        } else {
+            tokio::select! {
+                result = lifecycle.wait() => ActorEvent::Exit(result),
+                command = commands.recv() => ActorEvent::Command(command),
             }
-            Command::Wait(reply) => {
-                let result = match child.as_mut() {
-                    Some(child) => child.wait().await,
+        };
+
+        match event {
+            ActorEvent::Exit(Ok(status)) => {
+                for waiter in waiters.drain(..) {
+                    let _ = waiter.send(Ok(status));
+                }
+                for waiter in kill_waiters.drain(..) {
+                    let _ = waiter.send(Ok(()));
+                }
+                exit_status = Some(status);
+            }
+            ActorEvent::Exit(Err(error)) => {
+                for waiter in waiters.drain(..) {
+                    let _ = waiter.send(Err(io::Error::new(error.kind(), error.to_string())));
+                }
+                for waiter in kill_waiters.drain(..) {
+                    let _ = waiter.send(Err(io::Error::new(error.kind(), error.to_string())));
+                }
+                return;
+            }
+            ActorEvent::Command(None) => return,
+            ActorEvent::Command(Some(Command::Pid(reply))) => {
+                let _ = reply.send(pid.ok_or(ProcessError::NotRunning));
+            }
+            ActorEvent::Command(Some(Command::Wait(reply))) => {
+                if let Some(status) = exit_status {
+                    let _ = reply.send(Ok(status));
+                } else {
+                    waiters.push(reply);
+                }
+            }
+            ActorEvent::Command(Some(Command::Kill(reply))) => {
+                if exit_status.is_some() {
+                    let _ = reply.send(Ok(()));
+                } else if let Err(error) = signal.kill() {
+                    let _ = reply.send(Err(error));
+                } else {
+                    kill_waiters.push(reply);
+                }
+            }
+            ActorEvent::Command(Some(Command::Output(reply))) => {
+                let result = capture_output(
+                    &mut lifecycle,
+                    &mut stdin,
+                    &mut stdout,
+                    &mut stderr,
+                    exit_status,
+                )
+                .await;
+                let _ = reply.send(result);
+                return;
+            }
+            ActorEvent::Command(Some(Command::WriteStdin { bytes, reply })) => {
+                let result = match stdin.as_mut() {
+                    Some(stdin) => stdin.write(&bytes).await,
                     None => Err(not_running_error()),
                 };
                 let _ = reply.send(result);
             }
-            Command::Kill(reply) => {
-                let result = match child.as_mut() {
-                    Some(child) => child.kill().await,
-                    None => Err(not_running_error()),
-                };
-                let _ = reply.send(result);
-            }
-            Command::Output(reply) => {
-                let result = match child.take() {
-                    Some(child) => child.wait_with_output().await,
-                    None => Err(not_running_error()),
-                };
-                let _ = reply.send(result);
-            }
-            Command::WriteStdin { bytes, reply } => {
-                let result = match child.as_mut() {
-                    Some(child) => child.write_stdin(&bytes).await,
-                    None => Err(not_running_error()),
-                };
-                let _ = reply.send(result);
-            }
-            Command::CloseStdin(reply) => {
-                let result = match child.as_mut() {
-                    Some(child) => {
-                        child.close_stdin();
-                        Ok(())
-                    }
-                    None => Err(not_running_error()),
-                };
-                let _ = reply.send(result);
+            ActorEvent::Command(Some(Command::CloseStdin(reply))) => {
+                drop(stdin.take());
+                let _ = reply.send(Ok(()));
             }
         }
+    }
+}
+
+enum ActorEvent {
+    Exit(io::Result<ExitStatus>),
+    Command(Option<Command>),
+}
+
+async fn capture_output(
+    lifecycle: &mut PlatformLifecycle,
+    stdin: &mut Option<PlatformStdin>,
+    stdout: &mut Option<PlatformOutput>,
+    stderr: &mut Option<PlatformOutput>,
+    exit_status: Option<ExitStatus>,
+) -> io::Result<Output> {
+    drop(stdin.take());
+    let stdout = read_output(stdout.take());
+    let stderr = read_output(stderr.take());
+    let (status, stdout, stderr) = match exit_status {
+        Some(status) => {
+            let (stdout, stderr) = tokio::try_join!(stdout, stderr)?;
+            (status, stdout, stderr)
+        }
+        None => tokio::try_join!(lifecycle.wait(), stdout, stderr)?,
+    };
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+async fn read_output(output: Option<PlatformOutput>) -> io::Result<Vec<u8>> {
+    match output {
+        Some(output) => output.read_to_end().await,
+        None => Ok(Vec::new()),
     }
 }
 
@@ -204,8 +275,11 @@ fn not_running_error() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{runtime, ActorProcess};
+    use std::time::Duration;
+
+    use super::{runtime, ActorProcess, Command};
     use running_process_platform_internal::{shell_spec, StreamMode};
+    use tokio::sync::oneshot;
 
     #[tokio::test]
     async fn actors_share_the_process_global_runtime() {
@@ -221,5 +295,38 @@ mod tests {
             .expect("actor output")
             .status
             .success());
+    }
+
+    #[tokio::test]
+    async fn kill_is_delivered_while_an_actor_wait_is_pending() {
+        #[cfg(windows)]
+        let spec = shell_spec("ping -n 30 127.0.0.1 > nul")
+            .stdin(StreamMode::Null)
+            .stdout(StreamMode::Piped)
+            .stderr(StreamMode::Piped);
+        #[cfg(not(windows))]
+        let spec = shell_spec("sleep 30")
+            .stdin(StreamMode::Null)
+            .stdout(StreamMode::Piped)
+            .stderr(StreamMode::Piped);
+
+        let process = ActorProcess::start(spec).await.expect("actor starts");
+        let (wait_tx, wait_rx) = oneshot::channel();
+        process
+            .commands
+            .send(Command::Wait(wait_tx))
+            .await
+            .expect("wait command is accepted");
+
+        tokio::time::timeout(Duration::from_secs(2), process.kill())
+            .await
+            .expect("kill is not blocked by wait")
+            .expect("kill succeeds");
+        let status = tokio::time::timeout(Duration::from_secs(2), wait_rx)
+            .await
+            .expect("waiter is released")
+            .expect("actor replies")
+            .expect("wait succeeds");
+        assert!(!status.success());
     }
 }

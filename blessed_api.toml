@@ -37,3 +37,33 @@ path = "running_process_platform_internal::PlatformChild::close_stdin"
 kind = "async-process-stdin-close"
 blocking = false
 owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformChild::into_actor_parts"
+kind = "async-process-actor-parts"
+blocking = false
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformLifecycle::wait"
+kind = "async-process-exit-wait"
+blocking = false
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformEmergencySignal::kill"
+kind = "async-process-emergency-kill"
+blocking = false
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformStdin::write"
+kind = "async-process-stdin-write"
+blocking = false
+owner = "running-process-platform-internal"
+
+[[api]]
+path = "running_process_platform_internal::PlatformOutput::read_to_end"
+kind = "async-process-output-drain"
+blocking = false
+owner = "running-process-platform-internal"
