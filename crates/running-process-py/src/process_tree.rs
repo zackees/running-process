@@ -10,11 +10,18 @@ use crate::helpers::{descendant_pids, system_pid, to_py_err};
 use crate::registry::{process_created_at, same_process_identity, DetachedLaunchEntry};
 
 pub(crate) fn kill_process_tree_impl(pid: u32, timeout_seconds: f64) {
+    let _ = terminate_process_tree_impl(pid, timeout_seconds);
+}
+
+/// Terminate a process and every discovered descendant, then verify the tree
+/// is gone before the bounded cleanup deadline expires. `true` also covers an
+/// already-exited root PID, which is the desired idempotent cleanup result.
+pub(crate) fn terminate_process_tree_impl(pid: u32, timeout_seconds: f64) -> bool {
     let mut system = System::new();
     system.refresh_processes();
     let pid = system_pid(pid);
     let Some(_) = system.process(pid) else {
-        return;
+        return true;
     };
 
     let mut kill_order = descendant_pids(&system, pid);
@@ -38,10 +45,10 @@ pub(crate) fn kill_process_tree_impl(pid: u32, timeout_seconds: f64) {
             .iter()
             .all(|target| system.process(*target).is_none())
         {
-            break;
+            return true;
         }
         if Instant::now() >= deadline {
-            break;
+            return false;
         }
         thread::sleep(Duration::from_millis(25));
     }
@@ -76,6 +83,12 @@ pub(crate) fn native_get_process_tree_info(pid: u32) -> String {
 #[pyo3(signature = (pid, timeout_seconds=3.0))]
 pub(crate) fn native_kill_process_tree(pid: u32, timeout_seconds: f64) {
     kill_process_tree_impl(pid, timeout_seconds);
+}
+
+#[pyfunction]
+#[pyo3(signature = (pid, timeout_seconds=3.0))]
+pub(crate) fn native_terminate_process_tree(pid: u32, timeout_seconds: f64) -> bool {
+    terminate_process_tree_impl(pid, timeout_seconds)
 }
 
 #[pyfunction]

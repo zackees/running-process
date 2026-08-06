@@ -22,7 +22,7 @@ from running_process.dump_paths import (
     stack_dump_dir,
     utc_now_iso,
 )
-from running_process.process_utils import kill_process_tree
+from running_process.process_utils import kill_process_tree, terminate_process_tree
 
 IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
 IN_RUNNING_PROCESS_VALUE = "running-process-cli"
@@ -50,6 +50,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--wall-clock-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Kill and reap the supervised child tree after this many total "
+            "seconds, even while it continuously emits output."
+        ),
+    )
+    parser.add_argument(
         "--no-auto-stack-dumping",
         action="store_true",
         help="Disable timeout and abnormal-exit diagnostic dump collection.",
@@ -66,6 +75,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Tag the wrapped process tree and report descendants still alive "
             "after the direct child exits."
+        ),
+    )
+    parser.add_argument(
+        "--terminate-tree",
+        type=int,
+        metavar="PID",
+        help=(
+            "Cross-platform terminate and reap of an existing process tree; "
+            "returns non-zero if the bounded cleanup cannot verify it is gone."
         ),
     )
     parser.add_argument(
@@ -555,8 +573,14 @@ def _wait_for_child_with_activity_timeout(
     child: object,
     *,
     timeout: float | None,
+    wall_clock_timeout: float | None = None,
 ) -> tuple[int | None, bool]:
     last_output_at = time.monotonic()
+    wall_clock_deadline = (
+        last_output_at + max(0.0, wall_clock_timeout)
+        if wall_clock_timeout is not None
+        else None
+    )
     activity_lock = threading.Lock()
     diagnostics = _attach_child_output_diagnostics(child)
 
@@ -600,6 +624,9 @@ def _wait_for_child_with_activity_timeout(
                     returncode = int(polled)
                     if not stdout_thread.is_alive() and not stderr_thread.is_alive():
                         break
+            if wall_clock_deadline is not None and time.monotonic() >= wall_clock_deadline:
+                timed_out = True
+                break
             if timeout is not None:
                 with activity_lock:
                     idle_for = time.monotonic() - last_output_at
@@ -642,6 +669,7 @@ def run_command(
     command: Sequence[str],
     *,
     timeout: float | None = None,
+    wall_clock_timeout: float | None = None,
     auto_stack_dumping: bool = True,
     stack_dump_dir: Path | None = None,
     find_leaks: bool = False,
@@ -654,7 +682,14 @@ def run_command(
         stderr=subprocess.PIPE,
     )
     dump_dir = _stack_dump_dir(stack_dump_dir)
-    returncode, timed_out = _wait_for_child_with_activity_timeout(child, timeout=timeout)
+    if wall_clock_timeout is None:
+        returncode, timed_out = _wait_for_child_with_activity_timeout(child, timeout=timeout)
+    else:
+        returncode, timed_out = _wait_for_child_with_activity_timeout(
+            child,
+            timeout=timeout,
+            wall_clock_timeout=wall_clock_timeout,
+        )
     extra_metadata = _build_child_output_extra_metadata(child)
     if timed_out:
         if auto_stack_dumping:
@@ -699,10 +734,22 @@ def run_command(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.terminate_tree is not None:
+        if args.command:
+            raise SystemExit("--terminate-tree cannot be combined with a command")
+        if terminate_process_tree(args.terminate_tree):
+            return 0
+        _safe_write(
+            sys.stderr,
+            f"[running-process] could not verify process tree {args.terminate_tree} exited\n",
+        )
+        return 1
+
     command = _normalize_command(args.command)
     return run_command(
         command,
         timeout=args.timeout,
+        wall_clock_timeout=args.wall_clock_timeout,
         auto_stack_dumping=not args.no_auto_stack_dumping,
         stack_dump_dir=args.stack_dump_dir,
         find_leaks=args.find_leaks,

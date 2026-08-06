@@ -3,6 +3,7 @@ use sysinfo::System;
 use crate::helpers::{descendant_pids, system_pid};
 use crate::process_tree::{
     kill_process_tree_impl, native_get_process_tree_info, native_launch_detached,
+    terminate_process_tree_impl,
 };
 use crate::registry::{process_created_at, same_process_identity};
 
@@ -36,6 +37,11 @@ fn same_process_identity_nonexistent_pid() {
 #[test]
 fn kill_process_tree_nonexistent_pid_is_noop() {
     kill_process_tree_impl(999999, 0.5);
+}
+
+#[test]
+fn terminate_process_tree_nonexistent_pid_is_verified() {
+    assert!(terminate_process_tree_impl(999999, 0.5));
 }
 
 #[test]
