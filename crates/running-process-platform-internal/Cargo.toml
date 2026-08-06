@@ -13,7 +13,7 @@ publish = true
 workspace = true
 
 [dependencies]
-tokio = { version = "1", default-features = false, features = ["io-util", "process", "rt"] }
+tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt"] }
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }

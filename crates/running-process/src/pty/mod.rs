@@ -58,6 +58,12 @@ pub use native_pty_process::{
     InteractivePtyOptions, InteractivePtyPumpResult, InteractivePtySession, NativePtyProcess,
 };
 
+/// Async PTY facade using the bounded synchronous platform island.
+#[cfg(feature = "async-process")]
+pub mod async_pty;
+#[cfg(feature = "async-process")]
+pub use async_pty::AsyncPtyProcess;
+
 #[cfg(unix)]
 use pty_posix as pty_platform;
 
