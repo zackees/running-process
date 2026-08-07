@@ -6,6 +6,7 @@
 ## running_process re-exports
 
     pub use async_process::AsyncProcess;
+    pub use blocking_island::dispatch_blocking as blocking_island_dispatch;
     pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
     pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
     pub use observer::{ CapabilitySupport, CategoryCapability, EventCategory, ObserverCapabilities, ObserverConfig, ObserverEvent, ObserverEventKind, ObserverSubscriber, };

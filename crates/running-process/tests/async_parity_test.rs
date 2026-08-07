@@ -132,7 +132,7 @@ async fn async_process_returncode_is_none_while_the_child_is_running() {
 
 #[tokio::test]
 async fn async_process_poll_before_start_reports_not_running() {
-    let mut process = exit_with(0);
+    let process = exit_with(0);
     assert!(process.poll().await.is_err());
     assert!(process.returncode().await.is_err());
 }
@@ -238,7 +238,7 @@ async fn terminate_group_soft_after_exit_reports_no_group_signalled() {
 
 #[tokio::test]
 async fn terminate_group_soft_before_start_reports_not_running() {
-    let mut process = long_running().create_process_group(true);
+    let process = long_running().create_process_group(true);
     assert!(process.terminate_group_soft().await.is_err());
 }
 
@@ -263,7 +263,7 @@ async fn async_kill_tree_terminates_the_started_child() {
 
 #[tokio::test]
 async fn async_kill_tree_before_start_reports_not_running() {
-    let mut process = long_running();
+    let process = long_running();
     assert!(process.kill_tree(Duration::from_secs(1)).await.is_err());
 }
 

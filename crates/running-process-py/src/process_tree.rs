@@ -91,6 +91,40 @@ pub(crate) fn native_terminate_process_tree(pid: u32, timeout_seconds: f64) -> b
     terminate_process_tree_impl(pid, timeout_seconds)
 }
 
+/// Awaitable counterpart of [`native_terminate_process_tree`].
+///
+/// Same bounded-island rationale as the kill form: walking the OS process
+/// table is a blocking snapshot with no async equivalent, so it runs on the
+/// library's fixed-ceiling island rather than behind a thread-pool bridge.
+#[pyfunction]
+#[pyo3(signature = (pid, timeout_seconds=3.0))]
+pub(crate) fn native_terminate_process_tree_async(
+    py: Python<'_>,
+    pid: u32,
+    timeout_seconds: f64,
+) -> PyResult<Bound<'_, PyAny>> {
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        running_process::blocking_island_dispatch(move || {
+            terminate_process_tree_impl(pid, timeout_seconds)
+        })
+        .await
+        .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))
+    })
+}
+
+/// Awaitable counterpart of [`native_get_process_tree_info`].
+#[pyfunction]
+pub(crate) fn native_get_process_tree_info_async(
+    py: Python<'_>,
+    pid: u32,
+) -> PyResult<Bound<'_, PyAny>> {
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        running_process::blocking_island_dispatch(move || native_get_process_tree_info(pid))
+            .await
+            .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))
+    })
+}
+
 /// Awaitable counterpart of [`native_kill_process_tree`].
 ///
 /// Returns the number of process instances the OS accepted a kill for, which
@@ -112,6 +146,64 @@ pub(crate) fn native_kill_process_tree_async(
         )
         .await
         .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))
+    })
+}
+
+/// Awaitable counterpart of [`native_launch_detached`].
+///
+/// The environment mapping is flattened while the GIL is held, then the spawn
+/// itself -- which is the only blocking part, and already GIL-free in the sync
+/// form -- runs on the bounded island.
+#[pyfunction]
+#[pyo3(signature = (command, cwd=None, env=None, originator=None))]
+pub(crate) fn native_launch_detached_async<'py>(
+    py: Python<'py>,
+    command: String,
+    cwd: Option<String>,
+    env: Option<Bound<'_, PyDict>>,
+    originator: Option<String>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let command = command.trim().to_string();
+    if command.is_empty() {
+        return Err(PyValueError::new_err("command must not be empty"));
+    }
+    let env_pairs = env
+        .map(|mapping| {
+            mapping
+                .iter()
+                .map(|(key, value)| Ok((key.extract::<String>()?, value.extract::<String>()?)))
+                .collect::<PyResult<Vec<(String, String)>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let spawned = running_process::blocking_island_dispatch(move || {
+            let mut request = running_process::client::SpawnCommandRequest::shell(command);
+            if let Some(cwd) = cwd {
+                request = request.with_cwd(cwd);
+            }
+            for (key, value) in env_pairs {
+                request = request.with_env(key, value);
+            }
+            if let Some(originator) = originator {
+                request = request.with_originator(originator);
+            }
+            let mut client = running_process::client::connect_or_start(None)?;
+            client.spawn_command(&request)
+        })
+        .await
+        .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))?
+        .map_err(to_py_err)?;
+
+        Ok((
+            spawned.pid,
+            spawned.created_at,
+            spawned.command,
+            spawned.cwd,
+            spawned.originator,
+            spawned.containment,
+        ))
     })
 }
 

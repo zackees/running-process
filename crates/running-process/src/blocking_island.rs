@@ -70,6 +70,22 @@ where
     .map_err(|error| IslandFailure(format!("blocking operation failed: {error}")))
 }
 
+/// Run a blocking operation on the shared island, for callers outside this crate.
+///
+/// Exposed for the PyO3 layer, which needs the async counterparts of the
+/// process-tree helpers to land on the *same* ceiling as everything else. A
+/// second island in the bindings would defeat the point of having one.
+///
+/// The operation must not itself block on a future; it runs on a blocking
+/// worker where awaiting is not possible.
+pub async fn dispatch_blocking<T, F>(operation: F) -> std::io::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    dispatch(operation).await.map_err(std::io::Error::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{dispatch, island, ISLAND_CAPACITY};

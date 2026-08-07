@@ -40,7 +40,9 @@ pub(crate) use debug_traces::{
 };
 pub(crate) use idle_detector::NativeIdleDetector;
 pub(crate) use metrics::NativeProcessMetrics;
-pub(crate) use originator::{py_find_processes_by_originator, PyOriginatorProcessInfo};
+pub(crate) use originator::{
+    py_find_processes_by_originator, py_find_processes_by_originator_async, PyOriginatorProcessInfo,
+};
 pub(crate) use pid_tracking::{
     list_tracked_processes, native_cleanup_tracked_processes, native_list_active_processes,
     native_register_process, native_unregister_process, track_process_pid, tracked_pid_db_path_py,
@@ -53,9 +55,10 @@ pub(crate) use probe::{
 };
 pub(crate) use process::NativeRunningProcess;
 pub(crate) use process_tree::{
-    native_get_process_tree_info, native_is_same_process, native_kill_process_tree,
-    native_kill_process_tree_async, native_launch_detached, native_process_created_at,
-    native_terminate_process_tree,
+    native_get_process_tree_info, native_get_process_tree_info_async, native_is_same_process,
+    native_kill_process_tree, native_kill_process_tree_async, native_launch_detached,
+    native_launch_detached_async, native_process_created_at, native_terminate_process_tree,
+    native_terminate_process_tree_async,
 };
 pub(crate) use pty_buffer::NativePtyBuffer;
 pub(crate) use pty_process::NativePtyProcess;
@@ -77,6 +80,10 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyContainedProcessGroup>()?;
     module.add_class::<PyOriginatorProcessInfo>()?;
     module.add_function(wrap_pyfunction!(py_find_processes_by_originator, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        py_find_processes_by_originator_async,
+        module
+    )?)?;
     module.add_class::<NativePtyProcess>()?;
     module.add_class::<NativeProcessMetrics>()?;
     module.add_class::<NativeSignalBool>()?;
@@ -92,9 +99,18 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(list_tracked_processes, module)?)?;
     module.add_function(wrap_pyfunction!(native_list_active_processes, module)?)?;
     module.add_function(wrap_pyfunction!(native_launch_detached, module)?)?;
+    module.add_function(wrap_pyfunction!(native_launch_detached_async, module)?)?;
     module.add_function(wrap_pyfunction!(native_get_process_tree_info, module)?)?;
     module.add_function(wrap_pyfunction!(native_kill_process_tree, module)?)?;
     module.add_function(wrap_pyfunction!(native_kill_process_tree_async, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        native_terminate_process_tree_async,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        native_get_process_tree_info_async,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(native_terminate_process_tree, module)?)?;
     module.add_function(wrap_pyfunction!(native_process_created_at, module)?)?;
     module.add_function(wrap_pyfunction!(native_is_same_process, module)?)?;
