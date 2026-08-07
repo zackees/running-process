@@ -227,7 +227,12 @@ impl SpawnSpec {
 fn macos_owner_death_supervisor(owner_pid: libc::pid_t) -> ! {
     let target_pid = unsafe { libc::getppid() };
     unsafe {
-        libc::closefrom(3);
+        // `closefrom` is not exposed by every libc target supported by the
+        // `libc` crate. The supervisor has no descriptors to preserve, so a
+        // bounded close sweep is the portable equivalent here.
+        for fd in 3..1024 {
+            libc::close(fd);
+        }
     }
 
     let queue = unsafe { libc::kqueue() };
