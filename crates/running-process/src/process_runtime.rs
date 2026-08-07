@@ -591,11 +591,19 @@ mod tests {
             .await
             .expect("output command is accepted");
 
-        tokio::time::timeout(Duration::from_secs(2), process.kill())
+        // The child lives 30s if nothing kills it, so any bound well under
+        // that still proves kill was delivered rather than waited out. The
+        // original 2s measured the runner instead of the property: this
+        // completes in ~7ms in the normal test job but timed out every time
+        // under coverage instrumentation, where the profiling writes make
+        // everything hundreds of times slower.
+        const NOT_BLOCKED: Duration = Duration::from_secs(10);
+
+        tokio::time::timeout(NOT_BLOCKED, process.kill())
             .await
             .expect("kill is not blocked by output capture")
             .expect("kill succeeds");
-        let output = tokio::time::timeout(Duration::from_secs(2), output_rx)
+        let output = tokio::time::timeout(NOT_BLOCKED, output_rx)
             .await
             .expect("output capture completes")
             .expect("actor replies")
