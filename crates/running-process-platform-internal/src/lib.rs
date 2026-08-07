@@ -13,6 +13,11 @@ use std::process::{ExitStatus, Output, Stdio};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
+/// `CREATE_NEW_PROCESS_GROUP`. Spelled out rather than pulled from
+/// `windows-sys` so the constant sits next to the one place that applies it.
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
 /// Stdio policy for one child stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamMode {
@@ -45,6 +50,7 @@ pub struct SpawnSpec {
     stdin: StreamMode,
     stdout: StreamMode,
     stderr: StreamMode,
+    create_process_group: bool,
 }
 
 impl SpawnSpec {
@@ -59,6 +65,7 @@ impl SpawnSpec {
             stdin: StreamMode::Inherit,
             stdout: StreamMode::Inherit,
             stderr: StreamMode::Inherit,
+            create_process_group: false,
         }
     }
 
@@ -104,6 +111,19 @@ impl SpawnSpec {
         self
     }
 
+    /// Put the child in its own process group.
+    ///
+    /// This is what makes a group-wide soft signal addressable at all:
+    /// [`PlatformEmergencySignal::terminate_group_soft`] is a no-op without
+    /// it, because on POSIX the negative-PID signal would otherwise reach the
+    /// caller's own group, and on Windows `GenerateConsoleCtrlEvent` only
+    /// routes to children spawned with `CREATE_NEW_PROCESS_GROUP`. It also
+    /// detaches the child from the parent's console Ctrl+C, so it is opt-in.
+    pub fn create_process_group(mut self, create: bool) -> Self {
+        self.create_process_group = create;
+        self
+    }
+
     /// Spawn using the canonical asynchronous platform operation.
     pub async fn spawn(self) -> io::Result<PlatformChild> {
         let mut command = Command::new(&self.program);
@@ -121,7 +141,15 @@ impl SpawnSpec {
             .stdin(self.stdin.apply())
             .stdout(self.stdout.apply())
             .stderr(self.stderr.apply());
-        command.spawn().map(PlatformChild::new)
+        if self.create_process_group {
+            #[cfg(unix)]
+            command.process_group(0);
+            #[cfg(windows)]
+            command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
+        command
+            .spawn()
+            .map(|child| PlatformChild::new(child, self.create_process_group))
     }
 }
 
@@ -135,8 +163,11 @@ pub struct PlatformChild {
 }
 
 impl PlatformChild {
-    fn new(mut child: Child) -> Self {
-        let signal = PlatformEmergencySignal { pid: child.id() };
+    fn new(mut child: Child, own_process_group: bool) -> Self {
+        let signal = PlatformEmergencySignal {
+            pid: child.id(),
+            own_process_group,
+        };
         Self {
             stdin: child.stdin.take(),
             stdout: child.stdout.take(),
@@ -258,18 +289,37 @@ impl PlatformLifecycle {
 /// [`PlatformLifecycle`], but it cannot observe or consume the exit result.
 pub struct PlatformEmergencySignal {
     pid: Option<u32>,
+    own_process_group: bool,
 }
 
 impl PlatformEmergencySignal {
     /// Request immediate termination without waiting for process reaping.
     pub fn kill(&self) -> io::Result<()> {
-        let pid = self.pid.ok_or_else(|| {
+        signal_process(self.target()?)
+    }
+
+    /// Ask the child's whole process group to shut down gracefully.
+    ///
+    /// Returns `Ok(false)` when the child was not spawned with
+    /// [`SpawnSpec::create_process_group`]: there is no group to address, and
+    /// signalling anyway would hit the caller's own group on POSIX or the
+    /// caller's console on Windows. A child that has already exited is also
+    /// `Ok` -- the soft step's only job is to give a live child a chance to
+    /// clean up before a hard kill, so a dead target is a success.
+    pub fn terminate_group_soft(&self) -> io::Result<bool> {
+        if !self.own_process_group {
+            return Ok(false);
+        }
+        signal_process_group(self.target()?).map(|()| true)
+    }
+
+    fn target(&self) -> io::Result<u32> {
+        self.pid.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "child process no longer has an emergency signal target",
             )
-        })?;
-        signal_process(pid)
+        })
     }
 }
 
@@ -355,7 +405,20 @@ where
 
 #[cfg(unix)]
 fn signal_process(pid: u32) -> io::Result<()> {
-    let result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    unix_kill(pid as i32, libc::SIGKILL)
+}
+
+/// SIGTERM the whole group. The negative PID is the group selector, which is
+/// only safe because the child was spawned into a group of its own.
+#[cfg(unix)]
+fn signal_process_group(pid: u32) -> io::Result<()> {
+    unix_kill(-(pid as i32), libc::SIGTERM)
+}
+
+#[cfg(unix)]
+fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
+    // SAFETY: `kill` takes plain integers and borrows no Rust state.
+    let result = unsafe { libc::kill(target, signal) };
     if result == 0 {
         return Ok(());
     }
@@ -389,6 +452,29 @@ fn signal_process(pid: u32) -> io::Result<()> {
     };
     unsafe { CloseHandle(handle) };
     termination_error.map_or(Ok(()), Err)
+}
+
+/// Deliver Ctrl+Break to the child's process group.
+///
+/// `GenerateConsoleCtrlEvent` addresses a group id, and the child's group id
+/// is its own pid because it was spawned with `CREATE_NEW_PROCESS_GROUP`.
+#[cfg(windows)]
+fn signal_process_group(pid: u32) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+    use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+
+    // SAFETY: the FFI call takes plain integers and borrows no Rust state.
+    if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) } != 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    // The child already exited or detached from the console. The soft step
+    // only exists to offer a live child a graceful exit, so this is success.
+    if error.raw_os_error() == Some(ERROR_INVALID_HANDLE as i32) {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 /// Build a shell command using the host platform's supported shell.

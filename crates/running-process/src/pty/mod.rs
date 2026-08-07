@@ -62,7 +62,7 @@ pub use native_pty_process::{
 #[cfg(feature = "async-process")]
 pub mod async_pty;
 #[cfg(feature = "async-process")]
-pub use async_pty::AsyncPtyProcess;
+pub use async_pty::{AsyncPtyProcess, IdleWaitOutcome};
 
 #[cfg(unix)]
 use pty_posix as pty_platform;

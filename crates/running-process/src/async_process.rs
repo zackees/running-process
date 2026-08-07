@@ -10,8 +10,18 @@ use std::time::Duration;
 
 use running_process_platform_internal::{SpawnSpec, StreamMode};
 
+use crate::blocking_island::dispatch;
 use crate::process_runtime::{block_on, ActorProcess};
 use crate::{ProcessError, RunOutput, SharedOutputCursor};
+
+/// Run a blocking OS call on the shared bounded island and flatten the result.
+async fn bounded_blocking<T, F>(operation: F) -> std::io::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::io::Result<T> + Send + 'static,
+{
+    dispatch(operation).await.map_err(std::io::Error::from)?
+}
 
 /// A process configured for asynchronous execution.
 pub struct AsyncProcess {
@@ -46,6 +56,16 @@ impl AsyncProcess {
     /// Add an environment override.
     pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.spec = self.spec.env(key, value);
+        self
+    }
+
+    /// Spawn the child into a process group of its own.
+    ///
+    /// Required for [`Self::terminate_group_soft`] to have anything to
+    /// address. It also detaches the child from the parent's console Ctrl+C,
+    /// so it is opt-in rather than the default.
+    pub fn create_process_group(mut self, create: bool) -> Self {
+        self.spec = self.spec.create_process_group(create);
         self
     }
 
@@ -128,6 +148,87 @@ impl AsyncProcess {
     /// Kill through the blocking compatibility adapter.
     pub fn kill_blocking(&mut self) -> Result<(), ProcessError> {
         block_on(self.kill())?
+    }
+
+    /// Request immediate termination.
+    ///
+    /// The sync `NativeProcess::terminate` is an alias of `kill`; this keeps
+    /// that spelling available on the async surface so a caller porting from
+    /// the sync API does not have to rename the call.
+    pub async fn terminate(&mut self) -> Result<(), ProcessError> {
+        self.kill().await
+    }
+
+    /// Ask the child's process group to shut down gracefully.
+    ///
+    /// Returns `false` when the process was not configured with
+    /// [`Self::create_process_group`], mirroring the sync
+    /// `NativeProcess::terminate_group_soft` no-op: there is no group to
+    /// address, and the hard-kill schedule is expected to win instead. An
+    /// already-exited child is also `false`.
+    ///
+    /// This is a *request*, not a wait. Follow it with [`Self::wait_timeout`]
+    /// and then [`Self::kill`] to bound how long the graceful step is given.
+    pub async fn terminate_group_soft(&mut self) -> Result<bool, ProcessError> {
+        self.child
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .terminate_group_soft()
+            .await
+    }
+
+    /// Kill the process and every descendant it has at this moment.
+    ///
+    /// The tree is a point-in-time snapshot taken by
+    /// [`crate::process_tree::kill_tree`], and enumerating it is a blocking OS
+    /// operation with no async equivalent on any supported platform. It runs
+    /// on the same bounded island the async PTY surface uses, so it can never
+    /// occupy more than a fixed number of blocking workers no matter how many
+    /// callers request a tree kill at once.
+    ///
+    /// Returns the number of process instances the OS accepted a kill for.
+    pub async fn kill_tree(&mut self, timeout: Duration) -> Result<u32, ProcessError> {
+        let pid = self.pid().await?;
+        bounded_blocking(move || crate::process_tree::kill_tree(pid, timeout))
+            .await
+            .map_err(ProcessError::Io)
+    }
+
+    /// Report the exit status if it has already been observed, without waiting.
+    ///
+    /// This is the async counterpart of `NativeProcess::poll`.
+    pub async fn poll(&mut self) -> Result<Option<ExitStatus>, ProcessError> {
+        self.child
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .poll()
+            .await
+    }
+
+    /// Report the exit code if the process has already exited.
+    ///
+    /// The async counterpart of `NativeProcess::returncode`. Like the sync
+    /// method it never blocks; a still-running process reports `None`.
+    pub async fn returncode(&mut self) -> Result<Option<i32>, ProcessError> {
+        Ok(self.poll().await?.and_then(|status| status.code()))
+    }
+
+    /// Release the actor and its child handles.
+    ///
+    /// Closes stdin first so a child blocked on input can observe EOF, then
+    /// drops the command channel, which ends the actor. Idempotent: closing an
+    /// already-closed process succeeds. The child is *not* killed -- this
+    /// mirrors `NativeProcess::close`, which releases handles rather than
+    /// terminating. Call [`Self::kill`] first if you need the child gone.
+    pub async fn close(&mut self) -> Result<(), ProcessError> {
+        let Some(child) = self.child.take() else {
+            return Ok(());
+        };
+        // A closed stdin is best-effort: the child may already have exited,
+        // which is not a failure of close.
+        let _ = child.close_stdin().await;
+        drop(child);
+        Ok(())
     }
 
     /// Write bytes to the child's piped stdin without closing it.
