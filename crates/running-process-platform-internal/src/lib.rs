@@ -162,7 +162,6 @@ impl SpawnSpec {
         }
         #[cfg(target_os = "linux")]
         if self.kill_when_owner_dies {
-            use std::os::unix::process::CommandExt;
             let owner_pid = unsafe { libc::getpid() };
             // SAFETY: the closure invokes only async-signal-safe libc calls.
             unsafe {
@@ -186,7 +185,27 @@ impl SpawnSpec {
                 });
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        if self.kill_when_owner_dies {
+            use std::os::unix::process::CommandExt;
+            let owner_pid = unsafe { libc::getpid() };
+            // SAFETY: the closure only installs the async-signal-safe fork
+            // supervisor before exec. The supervisor owns all kqueue work in
+            // its independent process.
+            unsafe {
+                command.pre_exec(move || {
+                    let supervisor = libc::fork();
+                    if supervisor < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if supervisor == 0 {
+                        macos_owner_death_supervisor(owner_pid);
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = self.kill_when_owner_dies;
 
         let child = command.spawn()?;
@@ -195,6 +214,103 @@ impl SpawnSpec {
             windows_owner_death_job::assign(child.raw_handle());
         }
         Ok(PlatformChild::new(child, self.create_process_group))
+    }
+}
+
+/// Watch the spawning process and the exec child from a short-lived helper.
+///
+/// macOS has no Linux-style parent-death signal. A helper process can register
+/// both PIDs with `EVFILT_PROC` before the target execs: if the owner exits it
+/// sends `SIGTERM` to the target; if the target exits first the helper exits.
+/// This is the concrete implementation of the kqueue supervisor contract in
+/// `broker::lifecycle::process_tree`.
+#[cfg(target_os = "macos")]
+fn macos_owner_death_supervisor(owner_pid: libc::pid_t) -> ! {
+    let target_pid = unsafe { libc::getppid() };
+    unsafe {
+        libc::closefrom(3);
+    }
+
+    let queue = unsafe { libc::kqueue() };
+    if queue < 0 {
+        unsafe { libc::_exit(127) };
+    }
+
+    let mut watches = [
+        libc::kevent {
+            ident: owner_pid as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD | libc::EV_ONESHOT,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        },
+        libc::kevent {
+            ident: target_pid as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD | libc::EV_ONESHOT,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        },
+    ];
+    let registered = unsafe {
+        libc::kevent(
+            queue,
+            watches.as_mut_ptr(),
+            watches.len() as i32,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if registered < 0 {
+        unsafe {
+            libc::close(queue);
+            libc::_exit(127);
+        }
+    }
+
+    // Close the fork/registration race: if the owner died before the watch
+    // was installed, do not leave the target orphaned.
+    if unsafe { libc::kill(owner_pid, 0) } < 0
+        && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    {
+        unsafe {
+            libc::kill(target_pid, libc::SIGTERM);
+            libc::close(queue);
+            libc::_exit(0);
+        }
+    }
+
+    let mut events = [unsafe { std::mem::zeroed::<libc::kevent>() }];
+    loop {
+        let count = unsafe {
+            libc::kevent(
+                queue,
+                std::ptr::null(),
+                0,
+                events.as_mut_ptr(),
+                1,
+                std::ptr::null(),
+            )
+        };
+        if count <= 0 {
+            if count < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            break;
+        }
+        if events[0].ident == owner_pid as libc::uintptr_t {
+            unsafe {
+                libc::kill(target_pid, libc::SIGTERM);
+            }
+        }
+        break;
+    }
+    unsafe {
+        libc::close(queue);
+        libc::_exit(0);
     }
 }
 
