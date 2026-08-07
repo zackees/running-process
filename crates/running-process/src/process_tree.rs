@@ -191,6 +191,19 @@ fn process_start_key(pid: Pid, _process: &Process) -> io::Result<u64> {
     Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 
+/// Await [`kill_tree`] without blocking a Tokio worker.
+///
+/// Enumerating the OS process table is a blocking snapshot with no async form
+/// on any supported platform, so this runs on the shared bounded island rather
+/// than pretending otherwise. The island's fixed permit ceiling means a burst
+/// of concurrent tree kills cannot grow the process's blocking footprint.
+#[cfg(feature = "async-process")]
+pub async fn kill_tree_async(pid: u32, timeout: Duration) -> io::Result<u32> {
+    crate::blocking_island::dispatch(move || kill_tree(pid, timeout))
+        .await
+        .map_err(io::Error::from)?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +211,15 @@ mod tests {
     #[test]
     fn missing_pid_is_a_successful_noop() {
         assert_eq!(kill_tree(u32::MAX, Duration::ZERO).unwrap(), 0);
+    }
+
+    #[cfg(feature = "async-process")]
+    #[tokio::test]
+    async fn missing_pid_is_a_successful_noop_on_the_async_form() {
+        assert_eq!(
+            kill_tree_async(u32::MAX, Duration::ZERO).await.unwrap(),
+            0,
+            "the async form must agree with the sync form on a missing pid"
+        );
     }
 }

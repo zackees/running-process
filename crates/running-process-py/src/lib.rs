@@ -52,7 +52,8 @@ pub(crate) use probe::{
 pub(crate) use process::NativeRunningProcess;
 pub(crate) use process_tree::{
     native_get_process_tree_info, native_is_same_process, native_kill_process_tree,
-    native_launch_detached, native_process_created_at, native_terminate_process_tree,
+    native_kill_process_tree_async, native_launch_detached, native_process_created_at,
+    native_terminate_process_tree,
 };
 pub(crate) use pty_buffer::NativePtyBuffer;
 pub(crate) use pty_process::NativePtyProcess;
@@ -90,6 +91,7 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(native_launch_detached, module)?)?;
     module.add_function(wrap_pyfunction!(native_get_process_tree_info, module)?)?;
     module.add_function(wrap_pyfunction!(native_kill_process_tree, module)?)?;
+    module.add_function(wrap_pyfunction!(native_kill_process_tree_async, module)?)?;
     module.add_function(wrap_pyfunction!(native_terminate_process_tree, module)?)?;
     module.add_function(wrap_pyfunction!(native_process_created_at, module)?)?;
     module.add_function(wrap_pyfunction!(native_is_same_process, module)?)?;
