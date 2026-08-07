@@ -16,6 +16,10 @@ name = "testbin-dies-after-spawn"
 path = "src/bin/dies_after_spawn.rs"
 
 [[bin]]
+name = "testbin-async-dies-after-spawn"
+path = "src/bin/async_dies_after_spawn.rs"
+
+[[bin]]
 name = "testbin-emitter"
 path = "src/bin/emitter.rs"
 
@@ -87,7 +91,8 @@ path = "src/bin/mimalloc_leaker.rs"
 # Unconditional because `dies_after_spawn` uses `running_process::{spawn, SpawnStdio}`
 # on every platform. `spawner` also uses it but only inside `#[cfg(windows)]` blocks.
 [dependencies]
-running-process = { path = "../crates/running-process", features = ["probe"] }
+running-process = { path = "../crates/running-process", features = ["async-process", "probe"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt"] }
 libc = "0.2"
 # The inherited-listener fixture accepts on a listener the broker passed it,
 # and `accept` comes from this crate's `Listener` trait.

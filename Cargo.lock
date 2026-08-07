@@ -2683,6 +2683,7 @@ dependencies = [
  "libc",
  "mimalloc-pprof",
  "running-process",
+ "tokio",
  "windows-sys 0.59.0",
 ]
 

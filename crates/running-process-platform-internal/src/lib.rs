@@ -187,7 +187,6 @@ impl SpawnSpec {
         }
         #[cfg(target_os = "macos")]
         if self.kill_when_owner_dies {
-            use std::os::unix::process::CommandExt;
             let owner_pid = unsafe { libc::getpid() };
             // SAFETY: the closure only installs the async-signal-safe fork
             // supervisor before exec. The supervisor owns all kqueue work in
