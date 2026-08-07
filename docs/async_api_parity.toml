@@ -356,7 +356,7 @@ status = "implemented"
 rust_sync = "sync_pty_tree_termination_is_accepted_after_start"
 rust_async = "async_pty_tree_termination_dispatches_through_the_island"
 python_sync = "test_terminate_and_kill_are_idempotent_after_exit"
-python_async = "test_terminate_ends_the_child_and_kill_after_it_is_rejected"
+python_async = "test_terminate_ends_the_child_and_a_following_kill_is_safe"
 
 [[row]]
 id = "rust-pty.kill_tree_impl"
@@ -576,7 +576,7 @@ status = "implemented"
 rust_sync = "sync_pty_tree_termination_is_accepted_after_start"
 rust_async = "async_pty_tree_termination_dispatches_through_the_island"
 python_sync = "test_terminate_and_kill_are_idempotent_after_exit"
-python_async = "test_terminate_ends_the_child_and_kill_after_it_is_rejected"
+python_async = "test_terminate_ends_the_child_and_a_following_kill_is_safe"
 
 [[row]]
 id = "rust-pty.terminate_tree_impl"
@@ -1280,7 +1280,7 @@ status = "implemented"
 rust_sync = "sync_pty_tree_termination_is_accepted_after_start"
 rust_async = "async_pty_tree_termination_dispatches_through_the_island"
 python_sync = "test_terminate_and_kill_are_idempotent_after_exit"
-python_async = "test_terminate_ends_the_child_and_kill_after_it_is_rejected"
+python_async = "test_terminate_ends_the_child_and_a_following_kill_is_safe"
 
 [[row]]
 id = "python-pty.output"
@@ -1440,7 +1440,7 @@ status = "implemented"
 rust_sync = "sync_pty_tree_termination_is_accepted_after_start"
 rust_async = "async_pty_tree_termination_dispatches_through_the_island"
 python_sync = "test_terminate_and_kill_are_idempotent_after_exit"
-python_async = "test_terminate_ends_the_child_and_kill_after_it_is_rejected"
+python_async = "test_terminate_ends_the_child_and_a_following_kill_is_safe"
 
 [[row]]
 id = "python-pty.wait"
