@@ -60,11 +60,25 @@ class AsyncOutputCursor:
         return OutputRecord(sequence=first, stream=stream, data=data)
 
     def position(self) -> int:
-        """The next sequence this cursor will request."""
+        """The next sequence this cursor will request.
+
+        Raises ``RuntimeError`` if a :meth:`read_next` on this same cursor is
+        still in flight. Reading blocks until a record arrives, so answering
+        during one would mean either blocking the calling thread or reporting a
+        position that is about to change; refusing is the honest option. Query
+        between reads, or give each task its own cursor.
+
+        Deliberately not pinned by a test: reproducing it needs a read that
+        stays blocked, and a test that parks on an indefinite read is a hang
+        waiting to happen in CI.
+        """
         return self._native.position()  # type: ignore[attr-defined]
 
     def is_closed(self) -> bool:
-        """Whether the producer has closed the log."""
+        """Whether the producer has closed the log.
+
+        Same in-flight-read caveat as :meth:`position`.
+        """
         return self._native.is_closed()  # type: ignore[attr-defined]
 
     def __aiter__(self) -> AsyncOutputCursor:
