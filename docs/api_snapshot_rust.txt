@@ -9,6 +9,7 @@
     pub use blocking_island::dispatch_blocking as blocking_island_dispatch;
     pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
     pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
+    pub use content_hash::blake3_file;
     pub use observer::{ CapabilitySupport, CategoryCapability, EventCategory, ObserverCapabilities, ObserverConfig, ObserverEvent, ObserverEventKind, ObserverSubscriber, };
     pub use originator::{ find_declared_daemon_pids, find_processes_by_originator, OriginatorProcessInfo, };
     pub use output_log::{ CursorRead, OutputCursor, OutputLog, OutputRecord, SharedOutputCursor, SharedOutputLog, };

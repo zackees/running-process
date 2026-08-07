@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — `content_hash::blake3_file` primitive for dev daemon-identity isolation
+
+Adds [`running_process::blake3_file`](crates/running-process/src/content_hash.rs) (feature `client`), the shared content-hash primitive requested in [#891](https://github.com/zackees/running-process/issues/891). soldr-daemon, `FastLED/fbuild`, and standalone zccache all obtain their daemon identity through running-process and all three hit the same dev failure: two builds sharing one home root rendezvous on the same daemon pipe + pid file and displace each other on every invocation (`displace-stale` war — root-cause in [zackees/soldr#2352](https://github.com/zackees/soldr/issues/2352)). Rather than reimplement isolation in each consumer, the primitive lives here once.
+
+- `blake3_file(&Path) -> io::Result<Hash>` hashes the file's **bytes** via `blake3::Hasher::update_mmap_rayon` (page-cache-warm mmap + multi-core). It hashes contents, not the path string (path-hashing gives no per-build isolation) and not the in-memory mapped image (ASLR/IAT/`.data` mutations make that a per-run nonce).
+- blake3 now enables its `mmap` + `rayon` features (required by `update_mmap_rayon`).
+- Consumers stamp their dev daemon identity as `"<version>-<first-16-hex of blake3_file(current_exe)>"`, computed once and propagated as a value down the process tree.
+
 ## 4.6.1 — user baseline env: restore USERNAME on Windows, real login env on Unix
 
 Root-caused live on a dev box where soldr's daemon became permanently unreachable: `user_baseline_environment_block()` opened the process token with `TOKEN_QUERY` only, so `CreateEnvironmentBlock` **silently omitted the per-user dynamic variables** (`USERNAME`, `USERDOMAIN`). Consumers that key behavior on `USERNAME` (soldr derives its daemon pipe name from it) diverged from processes holding the real login environment — the daemon bound `soldr-daemon-soldr-<hash>` while every client dialed `soldr-daemon-<user>-<hash>`, forcing a permanent uncached-fallback loop.
