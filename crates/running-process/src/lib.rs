@@ -22,6 +22,8 @@ use crate::observer::ObserverEmitter;
 
 #[cfg(feature = "async-process")]
 mod async_process;
+#[cfg(feature = "async-process")]
+mod blocking_island;
 pub mod console_detect;
 pub mod containment;
 pub mod environment;

@@ -98,6 +98,30 @@ impl ActorProcess {
             .map_err(ProcessError::Io)
     }
 
+    /// Report the exit status if the actor has already observed it.
+    ///
+    /// This never waits. While an output capture is in flight the actor is
+    /// selecting on capture completion rather than the lifecycle handle, so
+    /// exit is reported once that capture finishes.
+    pub(crate) async fn poll(&self) -> Result<Option<ExitStatus>, ProcessError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send(Command::Poll(reply_tx)).await?;
+        reply_rx.await.map_err(|_| ProcessError::NotRunning)
+    }
+
+    /// Signal the child's process group to shut down gracefully.
+    ///
+    /// `Ok(false)` means the child has no group of its own, so there was
+    /// nothing addressable to signal.
+    pub(crate) async fn terminate_group_soft(&self) -> Result<bool, ProcessError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send(Command::TerminateGroupSoft(reply_tx)).await?;
+        reply_rx
+            .await
+            .map_err(|_| ProcessError::NotRunning)?
+            .map_err(ProcessError::Io)
+    }
+
     pub(crate) async fn kill(&self) -> Result<(), ProcessError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.send(Command::Kill(reply_tx)).await?;
@@ -160,7 +184,9 @@ impl ActorProcess {
 enum Command {
     Pid(oneshot::Sender<Result<u32, ProcessError>>),
     Wait(oneshot::Sender<io::Result<ExitStatus>>),
+    Poll(oneshot::Sender<Option<ExitStatus>>),
     Kill(oneshot::Sender<io::Result<()>>),
+    TerminateGroupSoft(oneshot::Sender<io::Result<bool>>),
     Output {
         limit: Option<usize>,
         reply: oneshot::Sender<Result<Output, ProcessError>>,
@@ -291,6 +317,18 @@ async fn serve_child(
                     let _ = reply.send(Ok(status));
                 } else {
                     waiters.push(reply);
+                }
+            }
+            ActorEvent::Command(Some(Command::Poll(reply))) => {
+                let _ = reply.send(exit_status);
+            }
+            ActorEvent::Command(Some(Command::TerminateGroupSoft(reply))) => {
+                if exit_status.is_some() {
+                    // Nothing left to ask nicely. Report "no group signalled"
+                    // rather than an error: the child is already gone.
+                    let _ = reply.send(Ok(false));
+                } else {
+                    let _ = reply.send(signal.terminate_group_soft());
                 }
             }
             ActorEvent::Command(Some(Command::Kill(reply))) => {
