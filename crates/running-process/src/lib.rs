@@ -65,6 +65,12 @@ pub mod client;
 #[cfg(feature = "client")]
 pub mod broker;
 
+// #891: content-hash primitive (`blake3_file`) for dev daemon-identity
+// isolation. Gated on `client` because it uses `blake3`, which is optional
+// under that feature (soldr/zccache/fbuild all consume `client`).
+#[cfg(feature = "client")]
+pub mod content_hash;
+
 /// Probe client facade (#633). Gated on the `probe` feature so a build
 /// without it contains none of this code.
 #[cfg(feature = "probe")]
@@ -131,6 +137,9 @@ mod windows;
 pub use async_process::AsyncProcess;
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
+// #891: content-hash primitive for dev daemon-identity isolation.
+#[cfg(feature = "client")]
+pub use content_hash::blake3_file;
 pub use observer::{
     CapabilitySupport, CategoryCapability, EventCategory, ObserverCapabilities, ObserverConfig,
     ObserverEvent, ObserverEventKind, ObserverSubscriber,
