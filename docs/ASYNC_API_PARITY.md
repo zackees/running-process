@@ -41,6 +41,54 @@ After editing the manifest, regenerate this page:
 uv run --no-sync python -m ci.parity_manifest --write
 ```
 
+## The compatibility gates
+
+The parity manifest answers "does async have this yet?". Three sibling gates
+answer the question #875 cares about more — "did adding async break the sync
+API?" — and all four run in `./lint` and the preflight lint job.
+
+| Gate | Artefact | Fails when |
+| --- | --- | --- |
+| `ci.parity_manifest` | `docs/async_api_parity.toml` | a public member has no row, a row names a member that no longer exists, or a cited test does not exist |
+| `ci.api_snapshot` | `docs/api_snapshot_python.txt`, `docs/api_snapshot_rust.txt` | the public sync surface changes — a renamed method, a reordered or renamed parameter, a changed default, a dropped export |
+| `ci.sync_test_audit` | `docs/sync_test_baseline.txt` | a baselined synchronous test disappears |
+| `ci.async_compliance_guard` | `platform_compliance_baseline.toml` | a raw platform API is used outside the blessed capability layer |
+
+Regenerating any of them is one command, so an intentional change costs one
+reviewable diff:
+
+```bash
+uv run --no-sync python -m ci.api_snapshot --write
+uv run --no-sync python -m ci.sync_test_audit --write
+uv run --no-sync python -m ci.parity_manifest --write
+```
+
+### Why a test baseline as well as an API snapshot
+
+The API snapshot catches a changed signature. It cannot catch the quieter
+failure: the signature stays, the behaviour regresses, and the test that would
+have noticed was deleted along the way. `ci.sync_test_audit` is a one-way
+ratchet on removal — adding tests never requires an update, so the baseline
+stays a record of coverage rather than churn nobody reads.
+
+The audit counts `#[test]` and `def test_*` only. `#[tokio::test]` and
+`async def` are excluded on purpose: an audit that counted async tests as sync
+coverage would report health while sync tests were being replaced by them,
+which is precisely the substitution #875 asks us to rule out.
+
+### Downstream fixtures
+
+`tests/test_downstream_fixtures.py` runs FastLED-shaped consumer code in a
+*fresh* interpreter: legacy imports, synchronous calls, and an event-loop policy
+that raises if anything constructs a loop. A second fixture exercises sync and
+async in one process in both orders, plus sync work from inside a running loop.
+
+That file also carries a control test that splices a deliberate loop creation
+into the fixture and requires it to fail. The first version of the loop
+assertion inspected the policy's stored loop after the fact and never fired at
+all — `new_event_loop()` builds a loop without installing it. Without the
+control, "no loop was created" and "the check is broken" look identical.
+
 ## Compatibility rules
 
 - Existing sync names, signatures, defaults, and import paths remain supported.

@@ -76,6 +76,25 @@ def main() -> int:
             flush=True,
         )
         return 1
+    if run(supervised_command(python, str(python), "-m", "ci.api_snapshot")) != 0:
+        print(
+            "lint: the public sync API changed. Run "
+            "`python -m ci.api_snapshot --write` and explain the diff; a "
+            "rename, removal, or reordered parameter needs the justification "
+            "#849 governs.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+    if run(supervised_command(python, str(python), "-m", "ci.sync_test_audit")) != 0:
+        print(
+            "lint: a baselined synchronous test disappeared. Deleting the test "
+            "that would notice a sync regression is how one ships; if the "
+            "removal is intended, run `python -m ci.sync_test_audit --write`.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     if (
         run(supervised_command(python, str(python), "-m", "ci.docker_manifest_guard"))
         != 0
