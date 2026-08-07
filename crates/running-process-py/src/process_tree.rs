@@ -91,6 +91,30 @@ pub(crate) fn native_terminate_process_tree(pid: u32, timeout_seconds: f64) -> b
     terminate_process_tree_impl(pid, timeout_seconds)
 }
 
+/// Awaitable counterpart of [`native_kill_process_tree`].
+///
+/// Returns the number of process instances the OS accepted a kill for, which
+/// the sync helper discards. It runs on the library's bounded blocking island
+/// rather than an executor: enumerating the process table has no async form,
+/// and `asyncio.to_thread` here would put an unbounded Python thread pool
+/// between the caller and the OS.
+#[pyfunction]
+#[pyo3(signature = (pid, timeout_seconds=3.0))]
+pub(crate) fn native_kill_process_tree_async(
+    py: Python<'_>,
+    pid: u32,
+    timeout_seconds: f64,
+) -> PyResult<Bound<'_, PyAny>> {
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        running_process::process_tree::kill_tree_async(
+            pid,
+            Duration::from_secs_f64(timeout_seconds.max(0.0)),
+        )
+        .await
+        .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))
+    })
+}
+
 #[pyfunction]
 pub(crate) fn native_process_created_at(pid: u32) -> Option<f64> {
     process_created_at(pid)

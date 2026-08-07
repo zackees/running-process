@@ -15,6 +15,9 @@ from running_process._native import (
 from running_process._native import (
     AsyncRunningProcess as _NativeAsyncRunningProcess,
 )
+from running_process._native import (
+    native_kill_process_tree_async as _native_kill_process_tree_async,
+)
 
 
 class AsyncRunningProcess:
@@ -24,8 +27,16 @@ class AsyncRunningProcess:
     Every lifecycle operation is delegated to the same actor-owned process.
     """
 
-    def __init__(self, program: str, args: Sequence[str] = ()) -> None:
-        self._native = _NativeAsyncRunningProcess(program, list(args))
+    def __init__(
+        self,
+        program: str,
+        args: Sequence[str] = (),
+        *,
+        create_process_group: bool = False,
+    ) -> None:
+        self._native = _NativeAsyncRunningProcess(
+            program, list(args), create_process_group
+        )
 
     async def run(self) -> tuple[int, bytes, bytes]:
         return await self._native.run()
@@ -56,6 +67,44 @@ class AsyncRunningProcess:
 
     async def output_bounded(self, limit: int) -> tuple[int, bytes, bytes]:
         return await self._native.output_bounded(limit)
+
+    async def poll(self) -> int | None:
+        """Exit code if the child has already exited, else ``None``.
+
+        Never waits, matching ``RunningProcess.poll``.
+        """
+        return await self._native.poll()
+
+    async def returncode(self) -> int | None:
+        """Exit code if the child has already exited, else ``None``."""
+        return await self._native.returncode()
+
+    async def terminate(self) -> None:
+        await self._native.terminate()
+
+    async def close(self) -> None:
+        """Release the child handles without killing the child.
+
+        Idempotent, and it does *not* terminate the child -- matching
+        ``RunningProcess.close``. Call :meth:`kill` first if you need it gone.
+        """
+        await self._native.close()
+
+    async def terminate_group_soft(self) -> bool:
+        """Ask the child's process group to shut down gracefully.
+
+        Returns ``False`` when the process was not constructed with
+        ``create_process_group=True``: there is no group to address, so
+        nothing was signalled. An already-exited child is also ``False``.
+        """
+        return await self._native.terminate_group_soft()
+
+    async def kill_tree(self, timeout: float = 5.0) -> int:
+        """Kill the child and every descendant it has at this moment.
+
+        Returns how many process instances the OS accepted a kill for.
+        """
+        return await self._native.kill_tree(timeout)
 
 
 class AsyncPseudoTerminalProcess:
@@ -100,6 +149,85 @@ class AsyncPseudoTerminalProcess:
 
     async def pid(self) -> int | None:
         return await self._native.pid()
+
+    async def send_interrupt(self) -> None:
+        """Deliver Ctrl+C / SIGINT to the PTY child."""
+        await self._native.send_interrupt()
+
+    async def terminate_tree(self) -> None:
+        await self._native.terminate_tree()
+
+    async def kill_tree(self) -> None:
+        await self._native.kill_tree()
+
+    async def respond_to_queries(self, data: bytes) -> None:
+        """Answer terminal capability queries found in a PTY output chunk."""
+        await self._native.respond_to_queries(data)
+
+    async def wait_and_drain(
+        self, timeout: float | None = None, drain_timeout: float = 1.0
+    ) -> int:
+        """Wait for exit, then drain output still in flight.
+
+        Exit and EOF are separate events on a PTY: a child can exit while the
+        master still holds buffered output, so a plain :meth:`wait` can leave
+        bytes unread.
+        """
+        return await self._native.wait_and_drain(timeout, drain_timeout)
+
+    async def wait_for_reader_closed(self, timeout: float | None = None) -> bool:
+        """Wait until the PTY reader closes. ``False`` means it timed out."""
+        return await self._native.wait_for_reader_closed(timeout)
+
+    async def start_terminal_input_relay(self) -> None:
+        await self._native.start_terminal_input_relay()
+
+    async def stop_terminal_input_relay(self) -> None:
+        await self._native.stop_terminal_input_relay()
+
+    # Below here the calls are synchronous, not awaitable. They touch only
+    # atomics, so an await would add scheduling cost for no gain -- and it
+    # would make them unusable from the teardown paths (signal handlers,
+    # __del__) that need them most, because those cannot await.
+
+    def request_terminal_input_relay_stop(self) -> None:
+        self._native.request_terminal_input_relay_stop()
+
+    def terminal_input_relay_active(self) -> bool:
+        return self._native.terminal_input_relay_active()
+
+    def set_echo(self, enabled: bool) -> None:
+        self._native.set_echo(enabled)
+
+    def echo_enabled(self) -> bool:
+        return self._native.echo_enabled()
+
+    def close_nonblocking(self) -> None:
+        self._native.close_nonblocking()
+
+    def mark_reader_closed(self) -> None:
+        self._native.mark_reader_closed()
+
+    def store_returncode(self, code: int) -> None:
+        self._native.store_returncode(code)
+
+    def record_input_metrics(self, data: bytes, submit: bool) -> None:
+        self._native.record_input_metrics(data, submit)
+
+    def pty_input_bytes_total(self) -> int:
+        return self._native.pty_input_bytes_total()
+
+    def pty_newline_events_total(self) -> int:
+        return self._native.pty_newline_events_total()
+
+    def pty_submit_events_total(self) -> int:
+        return self._native.pty_submit_events_total()
+
+    def pty_output_bytes_total(self) -> int:
+        return self._native.pty_output_bytes_total()
+
+    def pty_control_churn_bytes_total(self) -> int:
+        return self._native.pty_control_churn_bytes_total()
 
 
 class AsyncInteractiveProcess:
@@ -180,9 +308,43 @@ class AsyncInteractiveProcess:
     async def pid(self) -> int | None:
         return await self._backend.pid()
 
+    async def send_interrupt(self) -> None:
+        if not isinstance(self._backend, AsyncPseudoTerminalProcess):
+            raise RuntimeError("send_interrupt() is only applicable to PTY sessions")
+        await self._backend.send_interrupt()
+
+    async def kill_tree(self, timeout: float = 5.0) -> int | None:
+        """Kill the session's process tree.
+
+        The pipe backend reports how many instances were killed; the PTY
+        backend's tree kill has no count to report and returns ``None``.
+        """
+        if isinstance(self._backend, AsyncPseudoTerminalProcess):
+            await self._backend.kill_tree()
+            return None
+        return await self._backend.kill_tree(timeout)
+
+
+async def kill_process_tree(pid: int, timeout_seconds: float = 3.0) -> int:
+    """Async counterpart of :func:`running_process.kill_process_tree`.
+
+    The parameter name and default match the sync helper exactly; a caller
+    porting a call should only have to add ``await``.
+
+    Returns the number of process instances the OS accepted a kill for, which
+    the synchronous helper discards.
+
+    This runs on the library's bounded native blocking island, not
+    ``asyncio.to_thread``: enumerating the OS process table has no async form,
+    and a thread-pool bridge would put an unbounded pool between the caller and
+    the OS while claiming to be async.
+    """
+    return await _native_kill_process_tree_async(int(pid), float(timeout_seconds))
+
 
 __all__ = [
     "AsyncInteractiveProcess",
     "AsyncPseudoTerminalProcess",
     "AsyncRunningProcess",
+    "kill_process_tree",
 ]

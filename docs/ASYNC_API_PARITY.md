@@ -74,7 +74,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `captured_stream_bytes` | planned | - | - | - | - |
 | `clear_captured_combined` | planned | - | - | - | - |
 | `clear_captured_stream` | planned | - | - | - | - |
-| `close` | planned | `sync_process_close_is_idempotent` | `async_process_close_releases_the_actor_and_is_idempotent` | - | - |
+| `close` | implemented | `sync_process_close_is_idempotent` | `async_process_close_releases_the_actor_and_is_idempotent` | `test_sync_close_is_idempotent` | `test_async_close_is_idempotent_and_releases_the_handle` |
 | `close_stdin` | planned | - | - | - | - |
 | `drain_combined` | planned | - | - | - | - |
 | `drain_stream` | planned | - | - | - | - |
@@ -83,13 +83,13 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `kill` | planned | - | - | - | - |
 | `new` | planned | - | - | - | - |
 | `pid` | planned | - | - | - | - |
-| `poll` | planned | `sync_process_poll_reports_none_before_exit_and_a_code_after` | `async_process_poll_reports_none_before_exit_and_a_status_after` | - | - |
+| `poll` | implemented | `sync_process_poll_reports_none_before_exit_and_a_code_after` | `async_process_poll_reports_none_before_exit_and_a_status_after` | `test_sync_poll_reports_none_while_running_and_a_code_after_exit` | `test_async_poll_reports_none_while_running_and_a_code_after_exit` |
 | `read_combined` | planned | - | - | - | - |
 | `read_stream` | planned | - | - | - | - |
-| `returncode` | planned | `sync_process_returncode_is_none_until_the_child_exits` | `async_process_returncode_matches_the_exit_code_the_child_chose` | - | - |
+| `returncode` | implemented | `sync_process_returncode_is_none_until_the_child_exits` | `async_process_returncode_matches_the_exit_code_the_child_chose` | `test_sync_returncode_is_none_while_the_child_runs` | `test_async_returncode_matches_the_code_the_child_chose` |
 | `start` | planned | - | - | - | - |
-| `terminate` | planned | `sync_process_terminate_ends_the_child_like_kill` | `async_process_terminate_ends_the_child_like_kill` | - | - |
-| `terminate_group_soft` | planned | `sync_terminate_group_soft_signals_a_group_the_child_owns` | `terminate_group_soft_signals_a_group_the_child_owns` | - | - |
+| `terminate` | implemented | `sync_process_terminate_ends_the_child_like_kill` | `async_process_terminate_ends_the_child_like_kill` | `test_sync_terminate_ends_the_child_like_kill` | `test_async_terminate_ends_the_child_like_kill` |
+| `terminate_group_soft` | implemented | `sync_terminate_group_soft_signals_a_group_the_child_owns` | `terminate_group_soft_signals_a_group_the_child_owns` | n/a: RunningProcess exposes no process-group terminate; the sync Python surface has never had one and #849 governs adding to it | `test_async_terminate_group_soft_signals_an_owned_group` |
 | `wait` | planned | - | - | - | - |
 | `with_observer` | planned | - | - | - | - |
 | `write_stdin` | planned | - | - | - | - |
@@ -101,35 +101,35 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | --- | --- | --- | --- | --- | --- |
 | `attach_idle_detector` | planned | `sync_pty_idle_detector_attaches_and_detaches` | `async_pty_idle_detector_attaches_detaches_and_reports_an_outcome` | - | - |
 | `close_impl` | planned | - | - | - | - |
-| `close_nonblocking` | planned | `sync_pty_close_nonblocking_is_safe_before_start` | `async_pty_close_nonblocking_is_safe_before_start` | - | - |
+| `close_nonblocking` | implemented | `sync_pty_close_nonblocking_is_safe_before_start` | `async_pty_close_nonblocking_is_safe_before_start` | n/a: not exposed on PseudoTerminalProcess; the sync facade owns this bookkeeping internally rather than publishing it | `test_async_pty_close_nonblocking_is_safe_before_start` |
 | `detach_idle_detector` | planned | `sync_pty_idle_detector_attaches_and_detaches` | `async_pty_idle_detector_attaches_detaches_and_reports_an_outcome` | - | - |
-| `echo_enabled` | planned | `sync_pty_echo_state_round_trips` | `async_pty_echo_state_round_trips` | - | - |
+| `echo_enabled` | implemented | `sync_pty_echo_state_round_trips` | `async_pty_echo_state_round_trips` | n/a: not exposed on PseudoTerminalProcess; the sync facade owns this bookkeeping internally rather than publishing it | `test_async_pty_echo_state_round_trips` |
 | `kill_impl` | planned | - | - | - | - |
-| `kill_tree_impl` | planned | `sync_pty_tree_termination_is_accepted_after_start` | `async_pty_tree_termination_dispatches_through_the_island` | - | - |
-| `mark_reader_closed` | planned | `sync_pty_store_returncode_and_mark_reader_closed_are_observable` | `async_pty_store_returncode_and_mark_reader_closed_are_observable` | - | - |
+| `kill_tree_impl` | implemented | `sync_pty_tree_termination_is_accepted_after_start` | `async_pty_tree_termination_dispatches_through_the_island` | n/a: PseudoTerminalProcess does not expose this PTY primitive; it is an internal detail of the sync facade's own read/wait loop | `test_async_pty_tree_termination_is_accepted_after_start` |
+| `mark_reader_closed` | implemented | `sync_pty_store_returncode_and_mark_reader_closed_are_observable` | `async_pty_store_returncode_and_mark_reader_closed_are_observable` | n/a: not exposed on PseudoTerminalProcess; the sync facade owns this bookkeeping internally rather than publishing it | `test_async_pty_store_returncode_and_mark_reader_closed` |
 | `new` | planned | - | - | - | - |
 | `pid` | planned | - | - | - | - |
-| `pty_control_churn_bytes_total` | planned | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | - | - |
-| `pty_input_bytes_total` | planned | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | - | - |
-| `pty_newline_events_total` | planned | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | - | - |
-| `pty_output_bytes_total` | planned | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | - | - |
-| `pty_submit_events_total` | planned | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | - | - |
+| `pty_control_churn_bytes_total` | implemented | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | n/a: not exposed on PseudoTerminalProcess; the sync facade owns this bookkeeping internally rather than publishing it | `test_async_pty_metrics_track_recorded_input` |
+| `pty_input_bytes_total` | implemented | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | `test_sync_pty_output_bytes_start_at_zero` | `test_async_pty_metrics_track_recorded_input` |
+| `pty_newline_events_total` | implemented | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | n/a: not exposed on PseudoTerminalProcess; the sync facade owns this bookkeeping internally rather than publishing it | `test_async_pty_metrics_track_recorded_input` |
+| `pty_output_bytes_total` | implemented | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | `test_sync_pty_output_bytes_start_at_zero` | `test_async_pty_metrics_track_recorded_input` |
+| `pty_submit_events_total` | implemented | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | n/a: not exposed on PseudoTerminalProcess; the sync facade owns this bookkeeping internally rather than publishing it | `test_async_pty_metrics_track_recorded_input` |
 | `read_chunk_impl` | planned | - | - | - | - |
-| `record_input_metrics` | planned | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | - | - |
-| `request_terminal_input_relay_stop` | planned | `sync_pty_relay_is_inactive_until_started_and_stops_cleanly` | `async_pty_relay_is_inactive_until_started_and_stops_cleanly` | - | - |
+| `record_input_metrics` | implemented | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | `test_sync_pty_output_bytes_start_at_zero` | `test_async_pty_metrics_track_recorded_input` |
+| `request_terminal_input_relay_stop` | implemented | `sync_pty_relay_is_inactive_until_started_and_stops_cleanly` | `async_pty_relay_is_inactive_until_started_and_stops_cleanly` | `test_sync_pty_terminal_input_relay_is_inactive_until_started` | `test_async_pty_relay_is_inactive_until_started` |
 | `resize_impl` | planned | - | - | - | - |
-| `respond_to_queries_impl` | planned | `sync_pty_respond_to_queries_without_a_query_is_a_noop` | `async_pty_respond_to_queries_without_a_query_is_a_noop` | - | - |
-| `send_interrupt_impl` | planned | `sync_pty_send_interrupt_before_start_errors` | `async_pty_send_interrupt_before_start_errors` | - | - |
-| `set_echo` | planned | `sync_pty_echo_state_round_trips` | `async_pty_echo_state_round_trips` | - | - |
+| `respond_to_queries_impl` | implemented | `sync_pty_respond_to_queries_without_a_query_is_a_noop` | `async_pty_respond_to_queries_without_a_query_is_a_noop` | n/a: PseudoTerminalProcess does not expose this PTY primitive; it is an internal detail of the sync facade's own read/wait loop | `test_async_pty_respond_to_queries_without_a_query_is_a_noop` |
+| `send_interrupt_impl` | implemented | `sync_pty_send_interrupt_before_start_errors` | `async_pty_send_interrupt_before_start_errors` | `test_sync_pty_send_interrupt_before_start_is_rejected` | `test_async_pty_send_interrupt_before_start_raises` |
+| `set_echo` | implemented | `sync_pty_echo_state_round_trips` | `async_pty_echo_state_round_trips` | n/a: not exposed on PseudoTerminalProcess; the sync facade owns this bookkeeping internally rather than publishing it | `test_async_pty_echo_state_round_trips` |
 | `start_impl` | planned | - | - | - | - |
-| `start_terminal_input_relay_impl` | planned | `sync_pty_start_terminal_input_relay_requires_a_running_pty` | `async_pty_start_terminal_input_relay_requires_a_running_pty` | - | - |
-| `stop_terminal_input_relay_impl` | planned | `sync_pty_relay_is_inactive_until_started_and_stops_cleanly` | `async_pty_relay_is_inactive_until_started_and_stops_cleanly` | - | - |
-| `store_returncode` | planned | `sync_pty_store_returncode_and_mark_reader_closed_are_observable` | `async_pty_store_returncode_and_mark_reader_closed_are_observable` | - | - |
-| `terminal_input_relay_active` | planned | `sync_pty_relay_is_inactive_until_started_and_stops_cleanly` | `async_pty_relay_is_inactive_until_started_and_stops_cleanly` | - | - |
+| `start_terminal_input_relay_impl` | implemented | `sync_pty_start_terminal_input_relay_requires_a_running_pty` | `async_pty_start_terminal_input_relay_requires_a_running_pty` | n/a: PseudoTerminalProcess does not expose this PTY primitive; it is an internal detail of the sync facade's own read/wait loop | `test_async_pty_start_relay_requires_a_running_pty` |
+| `stop_terminal_input_relay_impl` | implemented | `sync_pty_relay_is_inactive_until_started_and_stops_cleanly` | `async_pty_relay_is_inactive_until_started_and_stops_cleanly` | `test_sync_pty_terminal_input_relay_is_inactive_until_started` | `test_async_pty_relay_is_inactive_until_started` |
+| `store_returncode` | implemented | `sync_pty_store_returncode_and_mark_reader_closed_are_observable` | `async_pty_store_returncode_and_mark_reader_closed_are_observable` | n/a: not exposed on PseudoTerminalProcess; the sync facade owns this bookkeeping internally rather than publishing it | `test_async_pty_store_returncode_and_mark_reader_closed` |
+| `terminal_input_relay_active` | implemented | `sync_pty_relay_is_inactive_until_started_and_stops_cleanly` | `async_pty_relay_is_inactive_until_started_and_stops_cleanly` | `test_sync_pty_terminal_input_relay_is_inactive_until_started` | `test_async_pty_relay_is_inactive_until_started` |
 | `terminate_impl` | planned | - | - | - | - |
-| `terminate_tree_impl` | planned | `sync_pty_tree_termination_is_accepted_after_start` | `async_pty_tree_termination_dispatches_through_the_island` | - | - |
-| `wait_and_drain_impl` | planned | `sync_pty_wait_and_drain_agrees_with_wait_on_an_exited_child` | `async_pty_wait_and_drain_agrees_with_wait_on_an_exited_child` | - | - |
-| `wait_for_reader_closed_impl` | planned | `sync_pty_wait_for_reader_closed_reports_a_bounded_timeout` | `async_pty_wait_for_reader_closed_reports_a_bounded_timeout` | - | - |
+| `terminate_tree_impl` | implemented | `sync_pty_tree_termination_is_accepted_after_start` | `async_pty_tree_termination_dispatches_through_the_island` | n/a: PseudoTerminalProcess does not expose this PTY primitive; it is an internal detail of the sync facade's own read/wait loop | `test_async_pty_tree_termination_is_accepted_after_start` |
+| `wait_and_drain_impl` | implemented | `sync_pty_wait_and_drain_agrees_with_wait_on_an_exited_child` | `async_pty_wait_and_drain_agrees_with_wait_on_an_exited_child` | n/a: PseudoTerminalProcess does not expose this PTY primitive; it is an internal detail of the sync facade's own read/wait loop | `test_async_pty_wait_and_drain_agrees_with_wait` |
+| `wait_for_reader_closed_impl` | implemented | `sync_pty_wait_for_reader_closed_reports_a_bounded_timeout` | `async_pty_wait_for_reader_closed_reports_a_bounded_timeout` | n/a: PseudoTerminalProcess does not expose this PTY primitive; it is an internal detail of the sync facade's own read/wait loop | `test_async_pty_wait_for_reader_closed_is_bounded` |
 | `wait_impl` | planned | - | - | - | - |
 | `write_impl` | planned | - | - | - | - |
 
@@ -139,7 +139,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | --- | --- | --- | --- | --- | --- |
 | `captured_output_bytes` | planned | - | - | - | - |
 | `checkpoint` | planned | - | - | - | - |
-| `close` | planned | - | - | - | - |
+| `close` | implemented | `sync_process_close_is_idempotent` | `async_process_close_releases_the_actor_and_is_idempotent` | `test_sync_close_is_idempotent` | `test_async_close_is_idempotent_and_releases_the_handle` |
 | `combined_output` | planned | - | - | - | - |
 | `combined_stream` | planned | - | - | - | - |
 | `discard_captured_output` | planned | - | - | - | - |
@@ -169,10 +169,10 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `kill` | planned | - | - | - | - |
 | `line_iter` | planned | - | - | - | - |
 | `pid` | planned | - | - | - | - |
-| `poll` | planned | - | - | - | - |
+| `poll` | implemented | `sync_process_poll_reports_none_before_exit_and_a_code_after` | `async_process_poll_reports_none_before_exit_and_a_status_after` | `test_sync_poll_reports_none_while_running_and_a_code_after_exit` | `test_async_poll_reports_none_while_running_and_a_code_after_exit` |
 | `proc` | planned | - | - | - | - |
 | `pseudo_terminal` | planned | - | - | - | - |
-| `returncode` | planned | - | - | - | - |
+| `returncode` | implemented | `sync_process_returncode_is_none_until_the_child_exits` | `async_process_returncode_matches_the_exit_code_the_child_chose` | `test_sync_returncode_is_none_while_the_child_runs` | `test_async_returncode_matches_the_code_the_child_chose` |
 | `run` | planned | - | - | - | - |
 | `run_streaming` | planned | - | - | - | - |
 | `send_interrupt` | planned | - | - | - | - |
@@ -184,7 +184,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `stdout_stream` | planned | - | - | - | - |
 | `stream_iter` | planned | - | - | - | - |
 | `submit` | planned | - | - | - | - |
-| `terminate` | planned | - | - | - | - |
+| `terminate` | implemented | `sync_process_terminate_ends_the_child_like_kill` | `async_process_terminate_ends_the_child_like_kill` | `test_sync_terminate_ends_the_child_like_kill` | `test_async_terminate_ends_the_child_like_kill` |
 | `wait` | planned | - | - | - | - |
 | `wait_for` | planned | - | - | - | - |
 | `wait_for_expect` | planned | - | - | - | - |
@@ -208,7 +208,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `is_running` | planned | - | - | - | - |
 | `kill` | planned | - | - | - | - |
 | `output` | planned | - | - | - | - |
-| `output_bytes` | planned | - | - | - | - |
+| `output_bytes` | implemented | `sync_pty_metrics_track_recorded_input` | `async_pty_metrics_track_recorded_input_like_the_sync_counters` | `test_sync_pty_output_bytes_start_at_zero` | `test_async_pty_metrics_track_recorded_input` |
 | `output_text` | planned | - | - | - | - |
 | `pid` | planned | - | - | - | - |
 | `poll` | planned | - | - | - | - |
@@ -216,12 +216,12 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `read_non_blocking` | planned | - | - | - | - |
 | `read_text` | planned | - | - | - | - |
 | `resize` | planned | - | - | - | - |
-| `send_interrupt` | planned | - | - | - | - |
+| `send_interrupt` | implemented | `sync_pty_send_interrupt_before_start_errors` | `async_pty_send_interrupt_before_start_errors` | `test_sync_pty_send_interrupt_before_start_is_rejected` | `test_async_pty_send_interrupt_before_start_raises` |
 | `start` | planned | - | - | - | - |
 | `start_terminal_input_relay` | planned | - | - | - | - |
-| `stop_terminal_input_relay` | planned | - | - | - | - |
+| `stop_terminal_input_relay` | implemented | `sync_pty_relay_is_inactive_until_started_and_stops_cleanly` | `async_pty_relay_is_inactive_until_started_and_stops_cleanly` | `test_sync_pty_terminal_input_relay_is_inactive_until_started` | `test_async_pty_relay_is_inactive_until_started` |
 | `submit` | planned | - | - | - | - |
-| `terminal_input_relay_active` | planned | - | - | - | - |
+| `terminal_input_relay_active` | implemented | `sync_pty_relay_is_inactive_until_started_and_stops_cleanly` | `async_pty_relay_is_inactive_until_started_and_stops_cleanly` | `test_sync_pty_terminal_input_relay_is_inactive_until_started` | `test_async_pty_relay_is_inactive_until_started` |
 | `terminate` | planned | - | - | - | - |
 | `wait` | planned | - | - | - | - |
 | `wait_for` | planned | - | - | - | - |
@@ -249,7 +249,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | --- | --- | --- | --- | --- | --- |
 | `find_processes_by_originator` | planned | - | - | - | - |
 | `get_process_tree_info` | planned | - | - | - | - |
-| `kill_process_tree` | planned | - | - | - | - |
+| `kill_process_tree` | implemented | `sync_kill_tree_terminates_the_started_child` | `missing_pid_is_a_successful_noop_on_the_async_form` | `test_kill_process_tree_kills_parent_and_child` | `test_module_level_kill_process_tree_kills_a_real_child` |
 | `launch_detached` | planned | - | - | - | - |
 | `subprocess_run` | planned | - | - | - | - |
 | `terminate_process_tree` | planned | - | - | - | - |

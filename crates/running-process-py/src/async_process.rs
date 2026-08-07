@@ -26,11 +26,15 @@ pub(crate) struct AsyncRunningProcess {
 #[pymethods]
 impl AsyncRunningProcess {
     #[new]
-    fn new(program: String, args: Vec<String>) -> Self {
+    #[pyo3(signature = (program, args, create_process_group=false))]
+    fn new(program: String, args: Vec<String>, create_process_group: bool) -> Self {
         let mut process = AsyncProcess::new(OsString::from(program));
         for arg in args {
             process = process.arg(OsString::from(arg));
         }
+        // Defaults to off: an owned group also detaches the child from the
+        // parent's console Ctrl+C, which is not what most callers want.
+        process = process.create_process_group(create_process_group);
         Self {
             process: Arc::new(Mutex::new(process)),
         }
@@ -139,6 +143,85 @@ impl AsyncRunningProcess {
                 .output_bounded(limit)
                 .await
                 .map(output_tuple)
+                .map_err(process_error)
+        })
+    }
+
+    /// Report the exit code if the child has already exited, without waiting.
+    fn poll<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .poll()
+                .await
+                .map(|status| status.map(exit_code))
+                .map_err(process_error)
+        })
+    }
+
+    /// Report the exit code if the child has already exited.
+    fn returncode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .returncode()
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    /// Terminate the child. The sync surface spells this `terminate`; keeping
+    /// both spellings means a caller porting from it does not have to rename.
+    fn terminate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .terminate()
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    /// Release the actor and its child handles without killing the child.
+    fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process.lock().await.close().await.map_err(process_error)
+        })
+    }
+
+    /// Ask the child's process group to shut down gracefully.
+    ///
+    /// Returns `False` when the child owns no group, so there was nothing
+    /// addressable to signal.
+    fn terminate_group_soft<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .terminate_group_soft()
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    /// Kill the child and every descendant it has right now.
+    #[pyo3(signature = (timeout=5.0))]
+    fn kill_tree<'py>(&self, py: Python<'py>, timeout: f64) -> PyResult<Bound<'py, PyAny>> {
+        let process = Arc::clone(&self.process);
+        future_into_py(py, async move {
+            process
+                .lock()
+                .await
+                .kill_tree(Duration::from_secs_f64(timeout))
+                .await
                 .map_err(process_error)
         })
     }
@@ -270,6 +353,173 @@ impl AsyncPseudoTerminalProcess {
             py,
             async move { process.pid().await.map_err(process_error) },
         )
+    }
+    /// Deliver an interrupt (Ctrl+C / SIGINT) to the PTY child.
+    fn send_interrupt<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process.send_interrupt().await.map_err(process_error)
+        })
+    }
+
+    /// Gracefully terminate the PTY child and its descendants.
+    fn terminate_tree<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process.terminate_tree().await.map_err(process_error)
+        })
+    }
+
+    /// Forcefully kill the PTY child and its descendants.
+    fn kill_tree<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process.kill_tree().await.map_err(process_error)
+        })
+    }
+
+    /// Reply to any terminal capability queries present in a PTY output chunk.
+    fn respond_to_queries<'py>(
+        &self,
+        py: Python<'py>,
+        data: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process
+                .respond_to_queries(data)
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    /// Wait for exit, then drain output still in flight.
+    #[pyo3(signature = (timeout=None, drain_timeout=1.0))]
+    fn wait_and_drain<'py>(
+        &self,
+        py: Python<'py>,
+        timeout: Option<f64>,
+        drain_timeout: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process
+                .wait_and_drain(
+                    timeout.map(Duration::from_secs_f64),
+                    Duration::from_secs_f64(drain_timeout),
+                )
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    /// Wait until the PTY reader closes. `False` means the wait timed out.
+    #[pyo3(signature = (timeout=None))]
+    fn wait_for_reader_closed<'py>(
+        &self,
+        py: Python<'py>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process
+                .wait_for_reader_closed(timeout.map(Duration::from_secs_f64))
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    /// Start relaying host terminal input into the PTY.
+    fn start_terminal_input_relay<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process
+                .start_terminal_input_relay()
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    /// Stop the terminal input relay and wait for its worker to finish.
+    fn stop_terminal_input_relay<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.process.clone();
+        future_into_py(py, async move {
+            process
+                .stop_terminal_input_relay()
+                .await
+                .map_err(process_error)
+        })
+    }
+
+    // The remainder are plain synchronous methods, not awaitables. They touch
+    // only atomics, so wrapping them in a future would add scheduling cost and
+    // an await to every call site for no gain -- and it would make them
+    // unusable from the teardown paths (signal handlers, __del__) that need
+    // them most, because those cannot await.
+
+    /// Ask the terminal input relay to stop without waiting for it.
+    fn request_terminal_input_relay_stop(&self) {
+        self.process.request_terminal_input_relay_stop();
+    }
+
+    /// Whether the terminal input relay is currently running.
+    fn terminal_input_relay_active(&self) -> bool {
+        self.process.terminal_input_relay_active()
+    }
+
+    /// Set whether PTY input is echoed back to the host.
+    fn set_echo(&self, enabled: bool) {
+        self.process.set_echo(enabled);
+    }
+
+    /// Whether PTY input echo is enabled.
+    fn echo_enabled(&self) -> bool {
+        self.process.echo_enabled()
+    }
+
+    /// Close the PTY without waiting for bounded teardown to finish.
+    fn close_nonblocking(&self) {
+        self.process.close_nonblocking();
+    }
+
+    /// Record that the PTY reader has closed.
+    fn mark_reader_closed(&self) {
+        self.process.mark_reader_closed();
+    }
+
+    /// Record a child exit code observed out of band.
+    fn store_returncode(&self, code: i32) {
+        self.process.store_returncode(code);
+    }
+
+    /// Account for bytes written to the PTY by a path outside this handle.
+    fn record_input_metrics(&self, data: Vec<u8>, submit: bool) {
+        self.process.record_input_metrics(&data, submit);
+    }
+
+    /// Total bytes written to the PTY input stream.
+    fn pty_input_bytes_total(&self) -> usize {
+        self.process.pty_input_bytes_total()
+    }
+
+    /// Total newline events observed on PTY input.
+    fn pty_newline_events_total(&self) -> usize {
+        self.process.pty_newline_events_total()
+    }
+
+    /// Total submit events observed on PTY input.
+    fn pty_submit_events_total(&self) -> usize {
+        self.process.pty_submit_events_total()
+    }
+
+    /// Total bytes read from the PTY output stream.
+    fn pty_output_bytes_total(&self) -> usize {
+        self.process.pty_output_bytes_total()
+    }
+
+    /// Total terminal-control bytes seen in PTY output.
+    fn pty_control_churn_bytes_total(&self) -> usize {
+        self.process.pty_control_churn_bytes_total()
     }
 }
 
