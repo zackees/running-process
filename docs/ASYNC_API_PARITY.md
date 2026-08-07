@@ -193,7 +193,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `discard_captured_output` | planned | - | - | - | - |
 | `drain_combined` | planned | - | - | - | - |
 | `drain_stderr` | planned | - | - | - | - |
-| `drain_stdout` | planned | - | - | - | - |
+| `drain_stdout` | implemented | n/a: the Rust sync counterpart is NativeProcess::read_stream / drain_stream, tracked on their own rows | `async_cursor_returns_terminal_eof_after_close` | `test_sync_drain_stdout_consumes_what_it_returns` | `test_two_cursors_read_the_same_records_independently` |
 | `duration` | planned | - | - | - | - |
 | `end_time` | planned | - | - | - | - |
 | `exec_script` | planned | - | - | - | - |
@@ -215,7 +215,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `is_runninng` | planned | - | - | - | - |
 | `is_started` | planned | - | - | - | - |
 | `kill` | planned | - | - | - | - |
-| `line_iter` | planned | - | - | - | - |
+| `line_iter` | implemented | n/a: the Rust sync counterpart is NativeProcess::read_stream / drain_stream, tracked on their own rows | `async_cursor_returns_terminal_eof_after_close` | `test_sync_stream_iter_yields_the_emitted_lines` | `test_cursor_streams_records_until_eof` |
 | `pid` | planned | - | - | - | - |
 | `poll` | implemented | `sync_process_poll_reports_none_before_exit_and_a_code_after` | `async_process_poll_reports_none_before_exit_and_a_status_after` | `test_sync_poll_reports_none_while_running_and_a_code_after_exit` | `test_async_poll_reports_none_while_running_and_a_code_after_exit` |
 | `proc` | planned | - | - | - | - |
@@ -230,7 +230,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `stderr_stream` | planned | - | - | - | - |
 | `stdout` | planned | - | - | - | - |
 | `stdout_stream` | planned | - | - | - | - |
-| `stream_iter` | planned | - | - | - | - |
+| `stream_iter` | implemented | n/a: the Rust sync counterpart is NativeProcess::read_stream / drain_stream, tracked on their own rows | `async_cursor_returns_terminal_eof_after_close` | `test_sync_stream_iter_yields_the_emitted_lines` | `test_cursor_is_an_async_iterator` |
 | `submit` | planned | - | - | - | - |
 | `terminate` | implemented | `sync_process_terminate_ends_the_child_like_kill` | `async_process_terminate_ends_the_child_like_kill` | `test_sync_terminate_ends_the_child_like_kill` | `test_async_terminate_ends_the_child_like_kill` |
 | `wait` | planned | - | - | - | - |

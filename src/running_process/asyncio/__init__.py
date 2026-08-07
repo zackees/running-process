@@ -7,6 +7,7 @@ do not delegate process work to ``asyncio.to_thread`` or an executor.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from shlex import split as split_command
 
 from running_process._native import (
@@ -18,6 +19,62 @@ from running_process._native import (
 from running_process._native import (
     native_kill_process_tree_async as _native_kill_process_tree_async,
 )
+
+
+@dataclass(frozen=True)
+class OutputRecord:
+    """One sequenced chunk of output observed on a stream."""
+
+    sequence: int
+    stream: str
+    data: bytes
+
+
+@dataclass(frozen=True)
+class OutputGap:
+    """Records this reader missed because the retention window moved past it.
+
+    Reported rather than skipped. The log is byte-bounded, so a slow consumer
+    genuinely can lose records; a cursor that hid that would let the consumer
+    believe it had seen everything.
+    """
+
+    first_missing: int
+    last_missing: int
+
+
+class AsyncOutputCursor:
+    """An independent reader position over one process's retained output."""
+
+    def __init__(self, native: object) -> None:
+        self._native = native
+
+    async def read_next(self) -> OutputRecord | OutputGap | None:
+        """Await the next record or gap. ``None`` means terminal EOF."""
+        read = await self._native.read_next()  # type: ignore[attr-defined]
+        if read is None:
+            return None
+        kind, first, second, stream, data = read
+        if kind == "gap":
+            return OutputGap(first_missing=first, last_missing=second)
+        return OutputRecord(sequence=first, stream=stream, data=data)
+
+    def position(self) -> int:
+        """The next sequence this cursor will request."""
+        return self._native.position()  # type: ignore[attr-defined]
+
+    def is_closed(self) -> bool:
+        """Whether the producer has closed the log."""
+        return self._native.is_closed()  # type: ignore[attr-defined]
+
+    def __aiter__(self) -> AsyncOutputCursor:
+        return self
+
+    async def __anext__(self) -> OutputRecord | OutputGap:
+        read = await self.read_next()
+        if read is None:
+            raise StopAsyncIteration
+        return read
 
 
 class AsyncRunningProcess:
@@ -105,6 +162,19 @@ class AsyncRunningProcess:
         Returns how many process instances the OS accepted a kill for.
         """
         return await self._native.kill_tree(timeout)
+
+    def output_cursor(self) -> AsyncOutputCursor:
+        """Open an independent cursor over the output the actor has retained.
+
+        The async counterpart of the sync drain/read family. Those hand a
+        caller whatever has accumulated; a cursor gives each reader its own
+        position in one shared bounded log, so two consumers cannot steal
+        records from each other and a reader that falls behind is *told* so.
+
+        Synchronous by design -- opening a cursor only clones a handle. The
+        awaiting happens on :meth:`AsyncOutputCursor.read_next`.
+        """
+        return AsyncOutputCursor(self._native.output_cursor())
 
 
 class AsyncPseudoTerminalProcess:
@@ -344,7 +414,10 @@ async def kill_process_tree(pid: int, timeout_seconds: float = 3.0) -> int:
 
 __all__ = [
     "AsyncInteractiveProcess",
+    "AsyncOutputCursor",
     "AsyncPseudoTerminalProcess",
     "AsyncRunningProcess",
+    "OutputGap",
+    "OutputRecord",
     "kill_process_tree",
 ]
