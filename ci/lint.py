@@ -67,6 +67,15 @@ def main() -> int:
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.async_compliance_guard")) != 0:
         return 1
+    if run(supervised_command(python, str(python), "-m", "ci.parity_manifest")) != 0:
+        print(
+            "lint: sync/async parity manifest is out of date. See "
+            "docs/ASYNC_API_PARITY.md; a new public member needs a row in "
+            "docs/async_api_parity.toml.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     if (
         run(supervised_command(python, str(python), "-m", "ci.docker_manifest_guard"))
         != 0

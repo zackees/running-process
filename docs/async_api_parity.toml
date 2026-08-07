@@ -1,0 +1,1163 @@
+# Sync/async parity manifest -- the machine-readable inventory behind #875.
+#
+# One `[[row]]` per public member of every tracked surface. `ci.parity_manifest`
+# discovers those members straight from the source, so a public method without a
+# row here fails lint: the manifest cannot silently fall behind the API.
+#
+# Columns
+#   rust_sync / rust_async / python_sync / python_async
+#     Either the name of a test function that exists in this tree, or
+#     `n/a: <rationale>` when the column genuinely does not apply.
+#
+# Status
+#   implemented  every applicable column names a real test; the gate verifies it.
+#   planned      outstanding work. Must cite `issue`. Reported on every run, and
+#                a hard failure once `require_no_planned` is set.
+#
+# Show the RED state for the remaining rows with:
+#   uv run --no-sync python -m ci.parity_manifest --strict
+# Regenerate the human-readable table in docs/ASYNC_API_PARITY.md with:
+#   uv run --no-sync python -m ci.parity_manifest --write
+
+[settings]
+# Flipped to true by the final #875 slice, once no planned row remains.
+require_no_planned = false
+
+# ---- Rust `NativeProcess` ----
+
+[[row]]
+id = "rust-process.captured_combined"
+surface = "rust-process"
+member = "captured_combined"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.captured_combined_bytes"
+surface = "rust-process"
+member = "captured_combined_bytes"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.captured_stderr"
+surface = "rust-process"
+member = "captured_stderr"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.captured_stdout"
+surface = "rust-process"
+member = "captured_stdout"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.captured_stream_bytes"
+surface = "rust-process"
+member = "captured_stream_bytes"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.clear_captured_combined"
+surface = "rust-process"
+member = "clear_captured_combined"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.clear_captured_stream"
+surface = "rust-process"
+member = "clear_captured_stream"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.close"
+surface = "rust-process"
+member = "close"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.close_stdin"
+surface = "rust-process"
+member = "close_stdin"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.drain_combined"
+surface = "rust-process"
+member = "drain_combined"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.drain_stream"
+surface = "rust-process"
+member = "drain_stream"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.has_pending_combined"
+surface = "rust-process"
+member = "has_pending_combined"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.has_pending_stream"
+surface = "rust-process"
+member = "has_pending_stream"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.kill"
+surface = "rust-process"
+member = "kill"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.new"
+surface = "rust-process"
+member = "new"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.pid"
+surface = "rust-process"
+member = "pid"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.poll"
+surface = "rust-process"
+member = "poll"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.read_combined"
+surface = "rust-process"
+member = "read_combined"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.read_stream"
+surface = "rust-process"
+member = "read_stream"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.returncode"
+surface = "rust-process"
+member = "returncode"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.start"
+surface = "rust-process"
+member = "start"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.terminate"
+surface = "rust-process"
+member = "terminate"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.terminate_group_soft"
+surface = "rust-process"
+member = "terminate_group_soft"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.wait"
+surface = "rust-process"
+member = "wait"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.with_observer"
+surface = "rust-process"
+member = "with_observer"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.write_stdin"
+surface = "rust-process"
+member = "write_stdin"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-process.write_stdin_streaming"
+surface = "rust-process"
+member = "write_stdin_streaming"
+status = "planned"
+issue = "875"
+
+# ---- Rust `NativePtyProcess` ----
+
+[[row]]
+id = "rust-pty.attach_idle_detector"
+surface = "rust-pty"
+member = "attach_idle_detector"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.close_impl"
+surface = "rust-pty"
+member = "close_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.close_nonblocking"
+surface = "rust-pty"
+member = "close_nonblocking"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.detach_idle_detector"
+surface = "rust-pty"
+member = "detach_idle_detector"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.echo_enabled"
+surface = "rust-pty"
+member = "echo_enabled"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.kill_impl"
+surface = "rust-pty"
+member = "kill_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.kill_tree_impl"
+surface = "rust-pty"
+member = "kill_tree_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.mark_reader_closed"
+surface = "rust-pty"
+member = "mark_reader_closed"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.new"
+surface = "rust-pty"
+member = "new"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.pid"
+surface = "rust-pty"
+member = "pid"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.pty_control_churn_bytes_total"
+surface = "rust-pty"
+member = "pty_control_churn_bytes_total"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.pty_input_bytes_total"
+surface = "rust-pty"
+member = "pty_input_bytes_total"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.pty_newline_events_total"
+surface = "rust-pty"
+member = "pty_newline_events_total"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.pty_output_bytes_total"
+surface = "rust-pty"
+member = "pty_output_bytes_total"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.pty_submit_events_total"
+surface = "rust-pty"
+member = "pty_submit_events_total"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.read_chunk_impl"
+surface = "rust-pty"
+member = "read_chunk_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.record_input_metrics"
+surface = "rust-pty"
+member = "record_input_metrics"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.request_terminal_input_relay_stop"
+surface = "rust-pty"
+member = "request_terminal_input_relay_stop"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.resize_impl"
+surface = "rust-pty"
+member = "resize_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.respond_to_queries_impl"
+surface = "rust-pty"
+member = "respond_to_queries_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.send_interrupt_impl"
+surface = "rust-pty"
+member = "send_interrupt_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.set_echo"
+surface = "rust-pty"
+member = "set_echo"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.start_impl"
+surface = "rust-pty"
+member = "start_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.start_terminal_input_relay_impl"
+surface = "rust-pty"
+member = "start_terminal_input_relay_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.stop_terminal_input_relay_impl"
+surface = "rust-pty"
+member = "stop_terminal_input_relay_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.store_returncode"
+surface = "rust-pty"
+member = "store_returncode"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.terminal_input_relay_active"
+surface = "rust-pty"
+member = "terminal_input_relay_active"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.terminate_impl"
+surface = "rust-pty"
+member = "terminate_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.terminate_tree_impl"
+surface = "rust-pty"
+member = "terminate_tree_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.wait_and_drain_impl"
+surface = "rust-pty"
+member = "wait_and_drain_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.wait_for_reader_closed_impl"
+surface = "rust-pty"
+member = "wait_for_reader_closed_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.wait_impl"
+surface = "rust-pty"
+member = "wait_impl"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "rust-pty.write_impl"
+surface = "rust-pty"
+member = "write_impl"
+status = "planned"
+issue = "875"
+
+# ---- Python `RunningProcess` ----
+
+[[row]]
+id = "python-process.captured_output_bytes"
+surface = "python-process"
+member = "captured_output_bytes"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.checkpoint"
+surface = "python-process"
+member = "checkpoint"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.close"
+surface = "python-process"
+member = "close"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.combined_output"
+surface = "python-process"
+member = "combined_output"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.combined_stream"
+surface = "python-process"
+member = "combined_stream"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.discard_captured_output"
+surface = "python-process"
+member = "discard_captured_output"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.drain_combined"
+surface = "python-process"
+member = "drain_combined"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.drain_stderr"
+surface = "python-process"
+member = "drain_stderr"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.drain_stdout"
+surface = "python-process"
+member = "drain_stdout"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.duration"
+surface = "python-process"
+member = "duration"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.end_time"
+surface = "python-process"
+member = "end_time"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.exec_script"
+surface = "python-process"
+member = "exec_script"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.exit_status"
+surface = "python-process"
+member = "exit_status"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.expect"
+surface = "python-process"
+member = "expect"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.finished"
+surface = "python-process"
+member = "finished"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.get_command_str"
+surface = "python-process"
+member = "get_command_str"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.get_next_line"
+surface = "python-process"
+member = "get_next_line"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.get_next_line_non_blocking"
+surface = "python-process"
+member = "get_next_line_non_blocking"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.get_next_stderr_line"
+surface = "python-process"
+member = "get_next_stderr_line"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.get_next_stdout_line"
+surface = "python-process"
+member = "get_next_stdout_line"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.has_pending_output"
+surface = "python-process"
+member = "has_pending_output"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.has_pending_stderr"
+surface = "python-process"
+member = "has_pending_stderr"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.has_pending_stdout"
+surface = "python-process"
+member = "has_pending_stdout"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.idle_timeout_enabled"
+surface = "python-process"
+member = "idle_timeout_enabled"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.interactive"
+surface = "python-process"
+member = "interactive"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.interactive_launch_spec"
+surface = "python-process"
+member = "interactive_launch_spec"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.is_running"
+surface = "python-process"
+member = "is_running"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.is_runninng"
+surface = "python-process"
+member = "is_runninng"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.is_started"
+surface = "python-process"
+member = "is_started"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.kill"
+surface = "python-process"
+member = "kill"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.line_iter"
+surface = "python-process"
+member = "line_iter"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.pid"
+surface = "python-process"
+member = "pid"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.poll"
+surface = "python-process"
+member = "poll"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.proc"
+surface = "python-process"
+member = "proc"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.pseudo_terminal"
+surface = "python-process"
+member = "pseudo_terminal"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.returncode"
+surface = "python-process"
+member = "returncode"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.run"
+surface = "python-process"
+member = "run"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.run_streaming"
+surface = "python-process"
+member = "run_streaming"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.send_interrupt"
+surface = "python-process"
+member = "send_interrupt"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.start"
+surface = "python-process"
+member = "start"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.start_time"
+surface = "python-process"
+member = "start_time"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.stderr"
+surface = "python-process"
+member = "stderr"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.stderr_stream"
+surface = "python-process"
+member = "stderr_stream"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.stdout"
+surface = "python-process"
+member = "stdout"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.stdout_stream"
+surface = "python-process"
+member = "stdout_stream"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.stream_iter"
+surface = "python-process"
+member = "stream_iter"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.submit"
+surface = "python-process"
+member = "submit"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.terminate"
+surface = "python-process"
+member = "terminate"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.wait"
+surface = "python-process"
+member = "wait"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.wait_for"
+surface = "python-process"
+member = "wait_for"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.wait_for_expect"
+surface = "python-process"
+member = "wait_for_expect"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.wait_for_idle"
+surface = "python-process"
+member = "wait_for_idle"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-process.write"
+surface = "python-process"
+member = "write"
+status = "planned"
+issue = "875"
+
+# ---- Python `PseudoTerminalProcess` ----
+
+[[row]]
+id = "python-pty.available"
+surface = "python-pty"
+member = "available"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.checkpoint"
+surface = "python-pty"
+member = "checkpoint"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.close"
+surface = "python-pty"
+member = "close"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.discard_output"
+surface = "python-pty"
+member = "discard_output"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.drain"
+surface = "python-pty"
+member = "drain"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.drain_echo"
+surface = "python-pty"
+member = "drain_echo"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.exit_status"
+surface = "python-pty"
+member = "exit_status"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.expect"
+surface = "python-pty"
+member = "expect"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.idle_timeout_enabled"
+surface = "python-pty"
+member = "idle_timeout_enabled"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.interrupt_and_wait"
+surface = "python-pty"
+member = "interrupt_and_wait"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.is_running"
+surface = "python-pty"
+member = "is_running"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.kill"
+surface = "python-pty"
+member = "kill"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.output"
+surface = "python-pty"
+member = "output"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.output_bytes"
+surface = "python-pty"
+member = "output_bytes"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.output_text"
+surface = "python-pty"
+member = "output_text"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.pid"
+surface = "python-pty"
+member = "pid"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.poll"
+surface = "python-pty"
+member = "poll"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.read"
+surface = "python-pty"
+member = "read"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.read_non_blocking"
+surface = "python-pty"
+member = "read_non_blocking"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.read_text"
+surface = "python-pty"
+member = "read_text"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.resize"
+surface = "python-pty"
+member = "resize"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.send_interrupt"
+surface = "python-pty"
+member = "send_interrupt"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.start"
+surface = "python-pty"
+member = "start"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.start_terminal_input_relay"
+surface = "python-pty"
+member = "start_terminal_input_relay"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.stop_terminal_input_relay"
+surface = "python-pty"
+member = "stop_terminal_input_relay"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.submit"
+surface = "python-pty"
+member = "submit"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.terminal_input_relay_active"
+surface = "python-pty"
+member = "terminal_input_relay_active"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.terminate"
+surface = "python-pty"
+member = "terminate"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.wait"
+surface = "python-pty"
+member = "wait"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.wait_for"
+surface = "python-pty"
+member = "wait_for"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.wait_for_expect"
+surface = "python-pty"
+member = "wait_for_expect"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.wait_for_idle"
+surface = "python-pty"
+member = "wait_for_idle"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-pty.write"
+surface = "python-pty"
+member = "write"
+status = "planned"
+issue = "875"
+
+# ---- Python `InteractiveProcess` ----
+
+[[row]]
+id = "python-interactive.close"
+surface = "python-interactive"
+member = "close"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-interactive.exit_status"
+surface = "python-interactive"
+member = "exit_status"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-interactive.kill"
+surface = "python-interactive"
+member = "kill"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-interactive.pid"
+surface = "python-interactive"
+member = "pid"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-interactive.poll"
+surface = "python-interactive"
+member = "poll"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-interactive.send_interrupt"
+surface = "python-interactive"
+member = "send_interrupt"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-interactive.start"
+surface = "python-interactive"
+member = "start"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-interactive.terminate"
+surface = "python-interactive"
+member = "terminate"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-interactive.wait"
+surface = "python-interactive"
+member = "wait"
+status = "planned"
+issue = "875"
+
+# ---- Python module-level helpers ----
+
+[[row]]
+id = "python-helpers.find_processes_by_originator"
+surface = "python-helpers"
+member = "find_processes_by_originator"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-helpers.get_process_tree_info"
+surface = "python-helpers"
+member = "get_process_tree_info"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-helpers.kill_process_tree"
+surface = "python-helpers"
+member = "kill_process_tree"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-helpers.launch_detached"
+surface = "python-helpers"
+member = "launch_detached"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-helpers.subprocess_run"
+surface = "python-helpers"
+member = "subprocess_run"
+status = "planned"
+issue = "875"
+
+[[row]]
+id = "python-helpers.terminate_process_tree"
+surface = "python-helpers"
+member = "terminate_process_tree"
+status = "planned"
+issue = "875"
