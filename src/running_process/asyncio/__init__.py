@@ -193,6 +193,11 @@ class AsyncRunningProcess:
         flight raises ``RuntimeError`` rather than blocking the event loop
         waiting for it. Opening first is also what you want semantically: a
         cursor created after capture began has already missed records.
+
+        Not pinned by a test: observing the refusal needs a capture that is
+        reliably still in flight, and a short-lived child finishes first on
+        a fast runner. An attempt at one passed on Windows and failed on
+        macOS and Linux, which is a race, not a contract.
         """
         return AsyncOutputCursor(self._native.output_cursor())
 

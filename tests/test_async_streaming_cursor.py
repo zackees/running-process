@@ -116,24 +116,6 @@ class TestAsyncOutputCursor(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(cursor.position(), start)
         self.assertTrue(cursor.is_closed())
 
-    async def test_opening_a_cursor_during_capture_is_refused_not_blocked(self) -> None:
-        """Documented limitation, contracted rather than left to be discovered.
-
-        `output()` holds the process for its whole duration. Opening a cursor
-        then raises instead of blocking the event loop waiting for it -- and
-        opening first is what a caller wants anyway, since a cursor created
-        after capture began has already missed records.
-        """
-        import asyncio
-
-        process = AsyncRunningProcess(sys.executable, ["-c", EMITTER])
-        await process.start()
-        capture = asyncio.create_task(process.output())
-        await asyncio.sleep(0.05)
-        with self.assertRaises(RuntimeError):
-            process.output_cursor()
-        await capture
-
     async def test_cursor_before_start_reports_not_running(self) -> None:
         process = AsyncRunningProcess(sys.executable, ["-c", "pass"])
         with self.assertRaises(RuntimeError):
