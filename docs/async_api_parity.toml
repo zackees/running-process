@@ -252,13 +252,6 @@ status = "planned"
 issue = "875"
 
 [[row]]
-id = "rust-pty.finish_unix_teardown"
-surface = "rust-pty"
-member = "finish_unix_teardown"
-status = "planned"
-issue = "875"
-
-[[row]]
 id = "rust-pty.kill_impl"
 surface = "rust-pty"
 member = "kill_impl"

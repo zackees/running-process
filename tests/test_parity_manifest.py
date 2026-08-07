@@ -51,16 +51,18 @@ class TestSurfaceDiscovery(unittest.TestCase):
         source = "impl Thing {\n    pub fn kept(&self) {}\n    fn private(&self) {}\n}\n"
         self.assertEqual(parity_manifest._rust_members(source, "Thing"), {"kept"})
 
-    def test_rust_scanner_sees_async_and_restricted_visibility(self) -> None:
+    def test_rust_scanner_sees_async_but_not_restricted_visibility(self) -> None:
+        # `pub(crate)`/`pub(super)` are internal plumbing. Counting them would
+        # demand parity rows for things no consumer can call -- `pub(super) fn
+        # finish_unix_teardown` on the PTY surface was exactly that.
         source = (
             "impl Thing {\n"
             "    pub async fn awaited(&self) {}\n"
             "    pub(crate) fn scoped(&self) {}\n"
+            "    pub(super) fn nested(&self) {}\n"
             "}\n"
         )
-        self.assertEqual(
-            parity_manifest._rust_members(source, "Thing"), {"awaited", "scoped"}
-        )
+        self.assertEqual(parity_manifest._rust_members(source, "Thing"), {"awaited"})
 
     def test_rust_scanner_ignores_functions_after_the_impl_block(self) -> None:
         source = "impl Thing {\n    pub fn inside(&self) {}\n}\npub fn outside() {}\n"

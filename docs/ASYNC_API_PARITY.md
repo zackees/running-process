@@ -104,7 +104,6 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `close_nonblocking` | planned | - | - | - | - |
 | `detach_idle_detector` | planned | - | - | - | - |
 | `echo_enabled` | planned | - | - | - | - |
-| `finish_unix_teardown` | planned | - | - | - | - |
 | `kill_impl` | planned | - | - | - | - |
 | `kill_tree_impl` | planned | - | - | - | - |
 | `mark_reader_closed` | planned | - | - | - | - |

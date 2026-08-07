@@ -221,9 +221,9 @@ def _rust_members(source: str, symbol: str) -> set[str]:
     for line in body:
         if line == "}":
             break
-        found = re.match(
-            r"    pub(?:\([^)]*\))?\s+(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)", line
-        )
+        # Bare `pub` only. `pub(crate)` and `pub(super)` are internal plumbing,
+        # not surface a downstream consumer can call, so they owe no parity row.
+        found = re.match(r"    pub\s+(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)", line)
         if found is not None and not found.group(1).startswith("_"):
             members.add(found.group(1))
     else:
