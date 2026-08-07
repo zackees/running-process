@@ -143,7 +143,10 @@ async fn async_process_terminate_ends_the_child_like_kill() {
     process.start().await.expect("start");
     process.terminate().await.expect("terminate");
     let status = process.wait().await.expect("wait");
-    assert!(!status.success(), "a terminated child must not report success");
+    assert!(
+        !status.success(),
+        "a terminated child must not report success"
+    );
 }
 
 #[tokio::test]
@@ -160,7 +163,10 @@ async fn async_process_close_releases_the_actor_and_is_idempotent() {
 #[tokio::test]
 async fn async_process_close_before_start_succeeds() {
     let mut process = exit_with(0);
-    process.close().await.expect("close on an unstarted process");
+    process
+        .close()
+        .await
+        .expect("close on an unstarted process");
 }
 
 // ---------------------------------------------------------------------------

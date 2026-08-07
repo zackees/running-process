@@ -180,7 +180,10 @@ impl AsyncPtyProcess {
     }
 
     /// Wait until the PTY reader side has closed. `false` means it timed out.
-    pub async fn wait_for_reader_closed(&self, timeout: Option<Duration>) -> Result<bool, PtyError> {
+    pub async fn wait_for_reader_closed(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<bool, PtyError> {
         let process = Arc::clone(&self.process);
         let timeout = timeout.map(|value| value.as_secs_f64());
         infallible(move || process.wait_for_reader_closed_impl(timeout)).await
