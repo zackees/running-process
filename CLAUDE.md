@@ -98,6 +98,19 @@ uv run pyright src tests
 
 The lint pass also runs `ci/spawn_path_guard.py`, which forbids raw `Command::new` / `.spawn()` / `portable_pty` / `CreatePipe` / `ChildStd*::from` outside the sanitized spawn layer. New call sites need an explicit allowlist entry with a justification comment — see existing entries for the shape.
 
+**Sync/async compatibility gates** (#875). Three more gates run in `./lint`, all
+regenerable with `--write` so an intentional change costs one reviewable diff:
+
+| Gate | Artefact | Fails when |
+| --- | --- | --- |
+| `ci.parity_manifest` | `docs/async_api_parity.toml` | a public member of `NativeProcess` / `NativePtyProcess` / `RunningProcess` / `PseudoTerminalProcess` / `InteractiveProcess` (or a module-level process helper) has no parity row, a row names a member that no longer exists, or a row cites a test that does not |
+| `ci.api_snapshot` | `docs/api_snapshot_{python,rust}.txt` | the public **sync** surface changes — renamed method, renamed/reordered parameter, changed default, dropped export |
+| `ci.sync_test_audit` | `docs/sync_test_baseline.txt` | a baselined synchronous test disappears |
+
+Adding a public method therefore requires a manifest row and a snapshot
+refresh. `ci.parity_manifest --strict` prints the outstanding async work at any
+time. See [docs/ASYNC_API_PARITY.md](docs/ASYNC_API_PARITY.md).
+
 **Wrong toolchain?** Invoke build commands as `soldr cargo …`, `soldr rustc …`, `soldr rustfmt …`. The globally installed [soldr](https://github.com/zackees/soldr) binary resolves the rustup-managed toolchain via `rustup which` — handy on Windows where chocolatey cargo or other stale shims can take precedence on PATH. Install soldr globally (it is no longer pulled in as a uv dev dep) — e.g. `pipx install soldr` or `cargo install soldr`. CI Python (`ci/soldr.py:cargo_command`) detects soldr on PATH and routes through it automatically, falling back to raw `cargo` on CI runners where soldr isn't installed.
 
 **Cross-compiling? Use `soldr build --target <triple>`, not `soldr cargo build --target`.**

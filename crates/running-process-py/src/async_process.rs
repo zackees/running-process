@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 use running_process::pty::AsyncPtyProcess;
-use running_process::{AsyncProcess, RunOutput};
+use running_process::{AsyncProcess, CursorRead, RunOutput, SharedOutputCursor, StreamKind};
 use tokio::sync::Mutex;
 
 fn process_error(error: impl std::fmt::Display) -> PyErr {
@@ -223,6 +223,24 @@ impl AsyncRunningProcess {
                 .kill_tree(Duration::from_secs_f64(timeout))
                 .await
                 .map_err(process_error)
+        })
+    }
+
+    /// Open an independent cursor over the output the actor has retained.
+    ///
+    /// Synchronous on purpose: opening a cursor only clones a handle. The
+    /// awaiting happens on the cursor's own `read_next`.
+    fn output_cursor(&self) -> PyResult<AsyncOutputCursor> {
+        // `try_lock` rather than a blocking lock: this is called from the
+        // Python thread while the GIL is held, and blocking there on a lock an
+        // actor future owns would deadlock the interpreter.
+        let process = self
+            .process
+            .try_lock()
+            .map_err(|_| PyRuntimeError::new_err("process is busy in another operation"))?;
+        let cursor = process.output_cursor().map_err(process_error)?;
+        Ok(AsyncOutputCursor {
+            cursor: Arc::new(Mutex::new(cursor)),
         })
     }
 
@@ -539,4 +557,76 @@ fn exit_code(status: ExitStatus) -> i32 {
             -1
         }
     })
+}
+
+/// Python awaitable cursor over the output an actor has retained.
+///
+/// The async counterpart of the sync drain/read family. Those methods hand a
+/// caller whatever has accumulated; a cursor instead gives each reader an
+/// independent position in one shared bounded log, so two consumers cannot
+/// steal records from each other and a slow one is told it fell behind rather
+/// than silently skipping.
+#[pyclass(module = "running_process._native")]
+pub(crate) struct AsyncOutputCursor {
+    cursor: Arc<Mutex<SharedOutputCursor>>,
+}
+
+#[pymethods]
+impl AsyncOutputCursor {
+    /// Await the next record, gap, or terminal EOF.
+    ///
+    /// Returns `("record", sequence, stream, data)`, `("gap", from, to, b"")`,
+    /// or `None` at EOF. A gap is reported rather than skipped: the retention
+    /// window advancing past a reader is data loss, and a cursor that hid it
+    /// would let a consumer believe it had seen everything.
+    fn read_next<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let cursor = Arc::clone(&self.cursor);
+        future_into_py(py, async move {
+            let read = cursor.lock().await.read_next_async().await;
+            Ok(cursor_read_tuple(read))
+        })
+    }
+
+    /// The next sequence this cursor will request. Synchronous: a counter read.
+    fn position(&self) -> PyResult<u64> {
+        Ok(self
+            .cursor
+            .try_lock()
+            .map_err(|_| PyRuntimeError::new_err("cursor is busy in another read"))?
+            .position())
+    }
+
+    /// Whether the producer has closed the log. Synchronous: an atomic load.
+    fn is_closed(&self) -> PyResult<bool> {
+        Ok(self
+            .cursor
+            .try_lock()
+            .map_err(|_| PyRuntimeError::new_err("cursor is busy in another read"))?
+            .is_closed())
+    }
+}
+
+/// Flatten a `CursorRead` into one fixed tuple shape.
+///
+/// `("record", sequence, 0, stream, bytes)` or `("gap", from, to, "", b"")`,
+/// with `None` for EOF. One shape rather than three keeps the PyO3 return type
+/// concrete; the Python wrapper turns it straight back into typed objects, so
+/// no caller ever sees this encoding.
+fn cursor_read_tuple(read: CursorRead) -> Option<(String, u64, u64, String, Vec<u8>)> {
+    match read {
+        CursorRead::Record(record) => Some((
+            "record".to_string(),
+            record.sequence,
+            0,
+            match record.stream {
+                StreamKind::Stdout => "stdout".to_string(),
+                StreamKind::Stderr => "stderr".to_string(),
+            },
+            record.bytes,
+        )),
+        CursorRead::Gap { from, to } => {
+            Some(("gap".to_string(), from, to, String::new(), Vec::new()))
+        }
+        CursorRead::Eof => None,
+    }
 }

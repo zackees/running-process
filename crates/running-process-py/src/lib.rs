@@ -28,7 +28,9 @@ mod window_icon;
 mod tests;
 
 // Re-exports for cross-module access (used by public_symbols.rs and tests).
-pub(crate) use async_process::{AsyncPseudoTerminalProcess, AsyncRunningProcess};
+pub(crate) use async_process::{
+    AsyncOutputCursor, AsyncPseudoTerminalProcess, AsyncRunningProcess,
+};
 pub(crate) use containment::PyContainedProcessGroup;
 #[cfg(windows)]
 pub(crate) use debug_traces::native_test_hang_in_rust;
@@ -68,6 +70,7 @@ pub(crate) use window_icon::{
 #[pymodule]
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<AsyncRunningProcess>()?;
+    module.add_class::<AsyncOutputCursor>()?;
     module.add_class::<AsyncPseudoTerminalProcess>()?;
     module.add_class::<PyNativeProcess>()?;
     module.add_class::<NativeRunningProcess>()?;
