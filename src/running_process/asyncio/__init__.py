@@ -113,6 +113,20 @@ class AsyncOutputCursor:
         return read
 
 
+#: Native PTY messages that mean "this stream has ended", per platform.
+_STREAM_ENDED_MARKERS = (
+    "closed",  # Windows / ConPTY
+    "operation not permitted",  # macOS, once the child is reaped
+    "input/output error",  # Linux, once the slave side closes
+    "bad file descriptor",
+)
+
+
+def _is_stream_ended(error: BaseException) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in _STREAM_ENDED_MARKERS)
+
+
 class _CursorChunkReader:
     """Adapt a cursor to the chunk reader the matchers expect.
 
@@ -365,12 +379,15 @@ class AsyncPseudoTerminalProcess:
             try:
                 chunk = await self.read(timeout)
             except RuntimeError as error:
-                # A closed PTY stream surfaces as a RuntimeError from the
-                # native layer, not as an empty read. To a matcher that is EOF,
-                # and the difference matters: "nothing yet" means keep waiting,
-                # "nothing ever" means stop. Translating here keeps that
-                # decision in one place.
-                if "closed" in str(error).lower():
+                # The end of a PTY stream surfaces as a RuntimeError from the
+                # native layer, not as an empty read, and each platform spells
+                # it differently: a closed stream on Windows, EPERM on macOS,
+                # EIO on Linux. To a matcher they all mean the same thing --
+                # and the difference from "nothing yet" is what stops it
+                # spinning against a finished child. Matching on the message is
+                # unlovely, but the errno is already flattened into text by the
+                # time it reaches Python.
+                if _is_stream_ended(error):
                     raise EOFError(str(error)) from error
                 raise
             if chunk:

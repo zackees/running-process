@@ -44,6 +44,9 @@ from running_process.running_process import RunningProcess
 
 GREETER = "print('hello-parity')"
 SLEEPER = "import time; time.sleep(60)"
+LIVE_GREETER = (
+    "import sys, time; print('hello-parity'); sys.stdout.flush(); time.sleep(30)"
+)
 
 
 def _emitting(process: AsyncRunningProcess) -> asyncio.Task:
@@ -270,12 +273,20 @@ class TestAsyncPtyExpect(unittest.IsolatedAsyncioTestCase):
 
     async def test_pty_expect_matches_child_output(self) -> None:
         async def body() -> None:
-            process = AsyncPseudoTerminalProcess([sys.executable, "-c", GREETER])
+            # A child that stays alive after printing. The async facade reads
+            # the PTY on demand rather than draining it from a reader thread
+            # the way the sync facade does, so output from a child that exits
+            # immediately can be gone before the first read -- macOS reports
+            # EPERM on the master once the child is reaped. Expect against a
+            # live child is the case this contract is about; the exited-child
+            # case is covered by the EOF test below.
+            process = AsyncPseudoTerminalProcess([sys.executable, "-c", LIVE_GREETER])
             await process.start()
             try:
                 match = await process.expect("hello-parity", timeout=15)
                 self.assertEqual(match.matched, "hello-parity")
             finally:
+                await process.kill()
                 await process.close()
 
         await asyncio.wait_for(body(), self.BOUND)
@@ -323,11 +334,12 @@ class TestAsyncPtyExpect(unittest.IsolatedAsyncioTestCase):
 
     async def test_pty_wait_for_output_idle_reports_true_once_quiet(self) -> None:
         async def body() -> None:
-            process = AsyncPseudoTerminalProcess([sys.executable, "-c", GREETER])
+            process = AsyncPseudoTerminalProcess([sys.executable, "-c", LIVE_GREETER])
             await process.start()
             try:
                 self.assertTrue(await process.wait_for_output_idle(0.2, timeout=15))
             finally:
+                await process.kill()
                 await process.close()
 
         await asyncio.wait_for(body(), self.BOUND)

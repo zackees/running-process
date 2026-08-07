@@ -29,6 +29,9 @@ os.environ.setdefault("RUNNING_PROCESS_NO_PTY_TEXT_WARNING", "1")
 
 ECHO = "print('lifecycle')"
 SLEEPER = "import time; time.sleep(60)"
+LIVE_ECHO = (
+    "import sys, time; print('lifecycle'); sys.stdout.flush(); time.sleep(30)"
+)
 STDIN_ECHO = "import sys; sys.stdout.write(sys.stdin.read())"
 
 
@@ -184,13 +187,16 @@ class TestPipeLifecycleSync(unittest.TestCase):
 @unittest.skipUnless(Pty.is_available(), "PTY backend unavailable on this host")
 class TestPtyLifecycleAsync(unittest.IsolatedAsyncioTestCase):
     async def test_start_pid_read_wait_close_form_a_lifecycle(self) -> None:
-        process = AsyncPseudoTerminalProcess([sys.executable, "-c", ECHO])
+        # See the note in tests/test_async_expect_and_helpers.py: the async PTY
+        # reads on demand, so the child must still be alive to be read.
+        process = AsyncPseudoTerminalProcess([sys.executable, "-c", LIVE_ECHO])
         await process.start()
         try:
             self.assertIsNotNone(await process.pid())
             match = await process.expect("lifecycle", timeout=20)
             self.assertEqual(match.matched, "lifecycle")
         finally:
+            await process.kill()
             await process.close()
 
     async def test_resize_is_accepted_on_a_running_pty(self) -> None:
@@ -212,6 +218,7 @@ class TestPtyLifecycleAsync(unittest.IsolatedAsyncioTestCase):
             match = await process.expect("pty-input", timeout=20)
             self.assertEqual(match.matched, "pty-input")
         finally:
+            await process.kill()
             await process.close()
 
     async def test_terminate_ends_the_child_and_a_following_kill_is_safe(
