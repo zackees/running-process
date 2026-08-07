@@ -51,6 +51,7 @@ pub struct SpawnSpec {
     stdout: StreamMode,
     stderr: StreamMode,
     create_process_group: bool,
+    kill_when_owner_dies: bool,
 }
 
 impl SpawnSpec {
@@ -66,6 +67,7 @@ impl SpawnSpec {
             stdout: StreamMode::Inherit,
             stderr: StreamMode::Inherit,
             create_process_group: false,
+            kill_when_owner_dies: false,
         }
     }
 
@@ -124,6 +126,17 @@ impl SpawnSpec {
         self
     }
 
+    /// Kill this child when the spawning process exits unexpectedly.
+    ///
+    /// Linux uses `PR_SET_PDEATHSIG(SIGTERM)`. Windows assigns the child to a
+    /// process-wide kill-on-close Job Object. macOS retains the modeled
+    /// kqueue-supervisor contract; its concrete supervisor is not part of the
+    /// async platform spawn seam yet.
+    pub fn kill_when_owner_dies(mut self, kill: bool) -> Self {
+        self.kill_when_owner_dies = kill;
+        self
+    }
+
     /// Spawn using the canonical asynchronous platform operation.
     pub async fn spawn(self) -> io::Result<PlatformChild> {
         let mut command = Command::new(&self.program);
@@ -147,9 +160,89 @@ impl SpawnSpec {
             #[cfg(windows)]
             command.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
-        command
-            .spawn()
-            .map(|child| PlatformChild::new(child, self.create_process_group))
+        #[cfg(target_os = "linux")]
+        if self.kill_when_owner_dies {
+            use std::os::unix::process::CommandExt;
+            let owner_pid = unsafe { libc::getpid() };
+            // SAFETY: the closure invokes only async-signal-safe libc calls.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(
+                        libc::PR_SET_PDEATHSIG,
+                        libc::SIGTERM as libc::c_ulong,
+                        0,
+                        0,
+                        0,
+                    ) == -1
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    // Close the fork/exec race: if the owner died before the
+                    // child installed the death signal, terminate ourselves.
+                    if libc::getppid() != owner_pid {
+                        libc::kill(libc::getpid(), libc::SIGTERM);
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = self.kill_when_owner_dies;
+
+        let child = command.spawn()?;
+        #[cfg(windows)]
+        if self.kill_when_owner_dies {
+            windows_owner_death_job::assign(child.raw_handle());
+        }
+        Ok(PlatformChild::new(child, self.create_process_group))
+    }
+}
+
+#[cfg(windows)]
+mod windows_owner_death_job {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    struct Job(HANDLE);
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    fn create() -> Option<Job> {
+        unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                return None;
+            }
+            Some(Job(handle))
+        }
+    }
+
+    pub(super) fn assign(child: Option<HANDLE>) {
+        let Some(child) = child else { return };
+        let Some(job) = JOB.get_or_init(create).as_ref() else {
+            return;
+        };
+        unsafe {
+            AssignProcessToJobObject(job.0, child);
+        }
     }
 }
 

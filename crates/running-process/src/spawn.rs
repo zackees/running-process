@@ -644,7 +644,9 @@ mod owner_death_job {
     use std::os::windows::io::RawHandle;
     use std::sync::OnceLock;
     use winapi::shared::minwindef::DWORD;
-    use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
+    use winapi::um::jobapi2::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+    };
     use winapi::um::winnt::{
         JobObjectExtendedLimitInformation, HANDLE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
