@@ -17,6 +17,7 @@ from running_process._native import (
 from running_process._native import (
     AsyncRunningProcess as _NativeAsyncRunningProcess,
 )
+from running_process._native import OriginatorProcessInfo
 from running_process._native import (
     native_get_process_tree_info_async as _native_get_process_tree_info_async,
 )
@@ -24,7 +25,13 @@ from running_process._native import (
     native_kill_process_tree_async as _native_kill_process_tree_async,
 )
 from running_process._native import (
+    native_launch_detached_async as _native_launch_detached_async,
+)
+from running_process._native import (
     native_terminate_process_tree_async as _native_terminate_process_tree_async,
+)
+from running_process._native import (
+    py_find_processes_by_originator_async as _native_find_processes_by_originator_async,
 )
 from running_process.asyncio._expect import (
     ExpectTimeoutError,
@@ -33,6 +40,7 @@ from running_process.asyncio._expect import (
 )
 from running_process.compat import CalledProcessError, CompletedProcess, TimeoutExpired
 from running_process.expect import ExpectMatch, ExpectPattern
+from running_process.launch import DetachedProcess
 
 
 @dataclass(frozen=True)
@@ -354,7 +362,17 @@ class AsyncPseudoTerminalProcess:
         """
 
         async def read(timeout: float | None) -> bytes | None:
-            chunk = await self.read(timeout)
+            try:
+                chunk = await self.read(timeout)
+            except RuntimeError as error:
+                # A closed PTY stream surfaces as a RuntimeError from the
+                # native layer, not as an empty read. To a matcher that is EOF,
+                # and the difference matters: "nothing yet" means keep waiting,
+                # "nothing ever" means stop. Translating here keeps that
+                # decision in one place.
+                if "closed" in str(error).lower():
+                    raise EOFError(str(error)) from error
+                raise
             if chunk:
                 await self.respond_to_queries(chunk)
             return chunk
@@ -653,6 +671,40 @@ async def subprocess_run(
     return CompletedProcess(argv, code, decoded_out, decoded_err)
 
 
+async def launch_detached(
+    command: str,
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    originator: str | None = None,
+) -> DetachedProcess:
+    """Async counterpart of :func:`running_process.launch_detached`.
+
+    Keyword-only after ``command``, matching the sync helper exactly, and
+    returning the same `DetachedProcess`. The spawn is the only blocking part
+    and runs on the bounded island; the child is detached, so there is
+    deliberately no lifecycle handle to await afterwards.
+    """
+    if not isinstance(command, str):
+        raise TypeError("command must be a string")
+    command = command.strip()
+    if not command:
+        raise ValueError("command must not be empty")
+    entry = await _native_launch_detached_async(
+        command, str(cwd) if cwd is not None else None, env, originator
+    )
+    return DetachedProcess(*entry)
+
+
+async def find_processes_by_originator(tool: str) -> list[OriginatorProcessInfo]:
+    """Async counterpart of :func:`running_process.find_processes_by_originator`.
+
+    The scan walks the OS process table and reads each process's environment,
+    which has no async form, so it runs on the bounded island.
+    """
+    return await _native_find_processes_by_originator_async(tool)
+
+
 __all__ = [
     "AsyncInteractiveProcess",
     "AsyncOutputCursor",
@@ -661,8 +713,10 @@ __all__ = [
     "ExpectTimeoutError",
     "OutputGap",
     "OutputRecord",
+    "find_processes_by_originator",
     "get_process_tree_info",
     "kill_process_tree",
+    "launch_detached",
     "subprocess_run",
     "terminate_process_tree",
 ]

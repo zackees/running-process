@@ -13,7 +13,13 @@ import sys
 import unittest
 
 from running_process import (
+    find_processes_by_originator as sync_find_processes_by_originator,
+)
+from running_process import (
     get_process_tree_info as sync_get_process_tree_info,
+)
+from running_process import (
+    launch_detached as sync_launch_detached,
 )
 from running_process import (
     subprocess_run as sync_subprocess_run,
@@ -26,7 +32,9 @@ from running_process.asyncio import (
     AsyncPseudoTerminalProcess,
     AsyncRunningProcess,
     ExpectTimeoutError,
+    find_processes_by_originator,
     get_process_tree_info,
+    launch_detached,
     subprocess_run,
     terminate_process_tree,
 )
@@ -202,6 +210,28 @@ class TestModuleHelperParity(unittest.IsolatedAsyncioTestCase):
             await subprocess_run([])
 
 
+    async def test_launch_detached_matches_the_sync_helper_validation(self) -> None:
+        """Only the validation contract is exercised without a daemon.
+
+        The spawn needs the running-process daemon, which a unit test has no
+        business starting; what is contracted here is that the async form
+        rejects the same inputs the sync one does, with the same types.
+        """
+        with self.assertRaises(ValueError):
+            await launch_detached("")
+        with self.assertRaises(ValueError):
+            sync_launch_detached("")
+        with self.assertRaises(TypeError):
+            await launch_detached(None)  # type: ignore[arg-type]
+
+    async def test_find_processes_by_originator_matches_the_sync_helper(self) -> None:
+        tool = "running-process-parity-probe-that-cannot-exist"
+        self.assertEqual(
+            [entry.pid for entry in await find_processes_by_originator(tool)],
+            [entry.pid for entry in sync_find_processes_by_originator(tool)],
+        )
+
+
 class TestAsyncInteractiveLifecycle(unittest.IsolatedAsyncioTestCase):
     async def test_poll_reports_none_while_running_and_a_code_after_exit(self) -> None:
         session = AsyncInteractiveProcess([sys.executable, "-c", SLEEPER])
@@ -252,11 +282,40 @@ class TestAsyncPtyExpect(unittest.IsolatedAsyncioTestCase):
 
     async def test_pty_expect_times_out_without_a_match(self) -> None:
         async def body() -> None:
-            process = AsyncPseudoTerminalProcess([sys.executable, "-c", GREETER])
+            # A *live* child: a short-lived one closes the stream first and the
+            # contract there is EOFError, not a timeout. Both outcomes are
+            # real; this test is about the timeout one.
+            process = AsyncPseudoTerminalProcess([sys.executable, "-c", SLEEPER])
             await process.start()
             try:
                 with self.assertRaises(TimeoutError):
                     await process.expect("never-appears", timeout=1.0)
+            finally:
+                await process.kill()
+                await process.close()
+
+        await asyncio.wait_for(body(), self.BOUND)
+
+    async def test_pty_expect_terminates_when_the_child_exits_first(self) -> None:
+        """It must *stop*, by one of the two documented terminal outcomes.
+
+        Which one depends on the platform's PTY: POSIX reports the closed
+        stream (EOFError), while ConPTY reports a quiet read that never ends
+        (the timeout). Both are terminal and both are correct; asserting one
+        would just encode whichever host wrote the test.
+
+        What this does catch is the bug it was written for: the native layer
+        signals a closed stream as a `RuntimeError`, and before that was
+        translated to EOF the matcher kept asking a finished child for more
+        output. An untranslated RuntimeError still fails here.
+        """
+
+        async def body() -> None:
+            process = AsyncPseudoTerminalProcess([sys.executable, "-c", GREETER])
+            await process.start()
+            try:
+                with self.assertRaises((EOFError, TimeoutError)):
+                    await process.expect("never-appears", timeout=3)
             finally:
                 await process.close()
 

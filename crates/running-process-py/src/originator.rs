@@ -44,6 +44,27 @@ impl From<OriginatorProcessInfo> for PyOriginatorProcessInfo {
     }
 }
 
+/// Awaitable counterpart of [`py_find_processes_by_originator`].
+///
+/// The scan walks the OS process table and reads each process's environment,
+/// which has no async form, so it runs on the library's bounded island.
+#[pyfunction]
+pub(crate) fn py_find_processes_by_originator_async(
+    py: Python<'_>,
+    tool: String,
+) -> PyResult<Bound<'_, PyAny>> {
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        running_process::blocking_island_dispatch(move || {
+            find_processes_by_originator(&tool)
+                .into_iter()
+                .map(PyOriginatorProcessInfo::from)
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))
+    })
+}
+
 /// Find all processes whose RUNNING_PROCESS_ORIGINATOR env var starts
 /// with the given tool prefix.
 #[pyfunction]
