@@ -51,6 +51,7 @@ pub struct SpawnSpec {
     stdout: StreamMode,
     stderr: StreamMode,
     create_process_group: bool,
+    kill_when_owner_dies: bool,
 }
 
 impl SpawnSpec {
@@ -66,6 +67,7 @@ impl SpawnSpec {
             stdout: StreamMode::Inherit,
             stderr: StreamMode::Inherit,
             create_process_group: false,
+            kill_when_owner_dies: false,
         }
     }
 
@@ -124,6 +126,17 @@ impl SpawnSpec {
         self
     }
 
+    /// Kill this child when the spawning process exits unexpectedly.
+    ///
+    /// Linux uses `PR_SET_PDEATHSIG(SIGTERM)`. Windows assigns the child to a
+    /// process-wide kill-on-close Job Object. macOS retains the modeled
+    /// kqueue-supervisor contract; its concrete supervisor is not part of the
+    /// async platform spawn seam yet.
+    pub fn kill_when_owner_dies(mut self, kill: bool) -> Self {
+        self.kill_when_owner_dies = kill;
+        self
+    }
+
     /// Spawn using the canonical asynchronous platform operation.
     pub async fn spawn(self) -> io::Result<PlatformChild> {
         let mut command = Command::new(&self.program);
@@ -147,9 +160,209 @@ impl SpawnSpec {
             #[cfg(windows)]
             command.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
-        command
-            .spawn()
-            .map(|child| PlatformChild::new(child, self.create_process_group))
+        #[cfg(target_os = "linux")]
+        if self.kill_when_owner_dies {
+            let owner_pid = unsafe { libc::getpid() };
+            // SAFETY: the closure invokes only async-signal-safe libc calls.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(
+                        libc::PR_SET_PDEATHSIG,
+                        libc::SIGTERM as libc::c_ulong,
+                        0,
+                        0,
+                        0,
+                    ) == -1
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    // Close the fork/exec race: if the owner died before the
+                    // child installed the death signal, terminate ourselves.
+                    if libc::getppid() != owner_pid {
+                        libc::kill(libc::getpid(), libc::SIGTERM);
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if self.kill_when_owner_dies {
+            let owner_pid = unsafe { libc::getpid() };
+            // SAFETY: the closure only installs the async-signal-safe fork
+            // supervisor before exec. The supervisor owns all kqueue work in
+            // its independent process.
+            unsafe {
+                command.pre_exec(move || {
+                    let supervisor = libc::fork();
+                    if supervisor < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if supervisor == 0 {
+                        macos_owner_death_supervisor(owner_pid);
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = self.kill_when_owner_dies;
+
+        let child = command.spawn()?;
+        #[cfg(windows)]
+        if self.kill_when_owner_dies {
+            windows_owner_death_job::assign(child.raw_handle());
+        }
+        Ok(PlatformChild::new(child, self.create_process_group))
+    }
+}
+
+/// Watch the spawning process and the exec child from a short-lived helper.
+///
+/// macOS has no Linux-style parent-death signal. A helper process can register
+/// both PIDs with `EVFILT_PROC` before the target execs: if the owner exits it
+/// sends `SIGTERM` to the target; if the target exits first the helper exits.
+/// This is the concrete implementation of the kqueue supervisor contract in
+/// `broker::lifecycle::process_tree`.
+#[cfg(target_os = "macos")]
+fn macos_owner_death_supervisor(owner_pid: libc::pid_t) -> ! {
+    let target_pid = unsafe { libc::getppid() };
+    unsafe {
+        // `closefrom` is not exposed by every libc target supported by the
+        // `libc` crate. The supervisor has no descriptors to preserve, so a
+        // bounded close sweep is the portable equivalent here.
+        for fd in 3..1024 {
+            libc::close(fd);
+        }
+    }
+
+    let queue = unsafe { libc::kqueue() };
+    if queue < 0 {
+        unsafe { libc::_exit(127) };
+    }
+
+    let mut watches = [
+        libc::kevent {
+            ident: owner_pid as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD | libc::EV_ONESHOT,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        },
+        libc::kevent {
+            ident: target_pid as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD | libc::EV_ONESHOT,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        },
+    ];
+    let registered = unsafe {
+        libc::kevent(
+            queue,
+            watches.as_mut_ptr(),
+            watches.len() as i32,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if registered < 0 {
+        unsafe {
+            libc::close(queue);
+            libc::_exit(127);
+        }
+    }
+
+    // Close the fork/registration race: if the owner died before the watch
+    // was installed, do not leave the target orphaned.
+    if unsafe { libc::kill(owner_pid, 0) } < 0
+        && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    {
+        unsafe {
+            libc::kill(target_pid, libc::SIGTERM);
+            libc::close(queue);
+            libc::_exit(0);
+        }
+    }
+
+    let mut events = [unsafe { std::mem::zeroed::<libc::kevent>() }];
+    loop {
+        let count = unsafe {
+            libc::kevent(
+                queue,
+                std::ptr::null(),
+                0,
+                events.as_mut_ptr(),
+                1,
+                std::ptr::null(),
+            )
+        };
+        if count <= 0 {
+            if count < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            break;
+        }
+        if events[0].ident == owner_pid as libc::uintptr_t {
+            unsafe {
+                libc::kill(target_pid, libc::SIGTERM);
+            }
+        }
+        break;
+    }
+    unsafe {
+        libc::close(queue);
+        libc::_exit(0);
+    }
+}
+
+#[cfg(windows)]
+mod windows_owner_death_job {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    struct Job(HANDLE);
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    fn create() -> Option<Job> {
+        unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                return None;
+            }
+            Some(Job(handle))
+        }
+    }
+
+    pub(super) fn assign(child: Option<HANDLE>) {
+        let Some(child) = child else { return };
+        let Some(job) = JOB.get_or_init(create).as_ref() else {
+            return;
+        };
+        unsafe {
+            AssignProcessToJobObject(job.0, child);
+        }
     }
 }
 

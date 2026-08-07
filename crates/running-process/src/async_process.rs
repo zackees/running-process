@@ -69,6 +69,12 @@ impl AsyncProcess {
         self
     }
 
+    /// Kill this child if the spawning process dies unexpectedly.
+    pub fn kill_when_owner_dies(mut self, kill: bool) -> Self {
+        self.spec = self.spec.kill_when_owner_dies(kill);
+        self
+    }
+
     /// Start the configured process.
     pub async fn start(&mut self) -> Result<(), ProcessError> {
         if self.child.is_some() {
@@ -377,6 +383,11 @@ mod tests {
     use std::time::Duration;
 
     use super::AsyncProcess;
+
+    #[test]
+    fn async_process_owner_death_is_opt_in() {
+        let _process = AsyncProcess::new("unused").kill_when_owner_dies(true);
+    }
 
     #[tokio::test]
     async fn async_process_captures_stdout_and_stderr() {
