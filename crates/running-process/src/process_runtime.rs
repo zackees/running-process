@@ -534,15 +534,29 @@ mod tests {
             .success());
     }
 
+    /// How long a kill may take before the test calls it blocked.
+    ///
+    /// The bound has to sit between "kill was delivered" and "the child just
+    /// exited on its own", or the test proves nothing either way. These
+    /// complete in ~7ms in the normal test job, but under coverage
+    /// instrumentation the capture task -- whose completion is what
+    /// acknowledges a kill -- competes for the same small shared runtime as
+    /// every other test in the binary, and 2s was not enough headroom.
+    /// Widening alone was not either: a 10s bound still timed out. So the
+    /// children now live 300s instead of 30s, which buys this 30s bound a 10x
+    /// margin while keeping "the child exited by itself" far out of reach. A
+    /// failure here is now a real hang, not a slow runner.
+    const NOT_BLOCKED: Duration = Duration::from_secs(30);
+
     #[tokio::test]
     async fn kill_is_delivered_while_an_actor_wait_is_pending() {
         #[cfg(windows)]
-        let spec = shell_spec("ping -n 30 127.0.0.1 > nul")
+        let spec = shell_spec("ping -n 300 127.0.0.1 > nul")
             .stdin(StreamMode::Null)
             .stdout(StreamMode::Piped)
             .stderr(StreamMode::Piped);
         #[cfg(not(windows))]
-        let spec = shell_spec("sleep 30")
+        let spec = shell_spec("sleep 300")
             .stdin(StreamMode::Null)
             .stdout(StreamMode::Piped)
             .stderr(StreamMode::Piped);
@@ -555,11 +569,11 @@ mod tests {
             .await
             .expect("wait command is accepted");
 
-        tokio::time::timeout(Duration::from_secs(2), process.kill())
+        tokio::time::timeout(NOT_BLOCKED, process.kill())
             .await
             .expect("kill is not blocked by wait")
             .expect("kill succeeds");
-        let status = tokio::time::timeout(Duration::from_secs(2), wait_rx)
+        let status = tokio::time::timeout(NOT_BLOCKED, wait_rx)
             .await
             .expect("waiter is released")
             .expect("actor replies")
@@ -570,12 +584,12 @@ mod tests {
     #[tokio::test]
     async fn kill_is_delivered_while_output_is_draining() {
         #[cfg(windows)]
-        let spec = shell_spec("ping -n 30 127.0.0.1 > nul")
+        let spec = shell_spec("ping -n 300 127.0.0.1 > nul")
             .stdin(StreamMode::Piped)
             .stdout(StreamMode::Piped)
             .stderr(StreamMode::Piped);
         #[cfg(not(windows))]
-        let spec = shell_spec("sleep 30")
+        let spec = shell_spec("sleep 300")
             .stdin(StreamMode::Piped)
             .stdout(StreamMode::Piped)
             .stderr(StreamMode::Piped);
@@ -590,14 +604,6 @@ mod tests {
             })
             .await
             .expect("output command is accepted");
-
-        // The child lives 30s if nothing kills it, so any bound well under
-        // that still proves kill was delivered rather than waited out. The
-        // original 2s measured the runner instead of the property: this
-        // completes in ~7ms in the normal test job but timed out every time
-        // under coverage instrumentation, where the profiling writes make
-        // everything hundreds of times slower.
-        const NOT_BLOCKED: Duration = Duration::from_secs(10);
 
         tokio::time::timeout(NOT_BLOCKED, process.kill())
             .await
