@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — `content_hash::blake3_file` primitive for dev daemon-identity isolation
+## 4.10.0 — `content_hash::blake3_file` primitive for dev daemon-identity isolation
 
 Adds [`running_process::blake3_file`](crates/running-process/src/content_hash.rs) (feature `client`), the shared content-hash primitive requested in [#891](https://github.com/zackees/running-process/issues/891). soldr-daemon, `FastLED/fbuild`, and standalone zccache all obtain their daemon identity through running-process and all three hit the same dev failure: two builds sharing one home root rendezvous on the same daemon pipe + pid file and displace each other on every invocation (`displace-stale` war — root-cause in [zackees/soldr#2352](https://github.com/zackees/soldr/issues/2352)). Rather than reimplement isolation in each consumer, the primitive lives here once.
 
