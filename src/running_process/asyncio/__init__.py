@@ -173,6 +173,12 @@ class AsyncRunningProcess:
 
         Synchronous by design -- opening a cursor only clones a handle. The
         awaiting happens on :meth:`AsyncOutputCursor.read_next`.
+
+        Open the cursor **before** starting a capture. :meth:`output` holds the
+        process for its whole duration, so a cursor opened while one is in
+        flight raises ``RuntimeError`` rather than blocking the event loop
+        waiting for it. Opening first is also what you want semantically: a
+        cursor created after capture began has already missed records.
         """
         return AsyncOutputCursor(self._native.output_cursor())
 
