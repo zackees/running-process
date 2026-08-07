@@ -510,7 +510,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{runtime, runtime_worker_threads, ActorProcess, Command};
-    use running_process_platform_internal::{shell_spec, StreamMode};
+    use running_process_platform_internal::{shell_spec, SpawnSpec, StreamMode};
     use tokio::sync::oneshot;
 
     #[test]
@@ -534,6 +534,27 @@ mod tests {
             .success());
     }
 
+    /// A long-lived child spawned *without* a shell.
+    ///
+    /// `shell_spec` was the obvious choice and the wrong one: whether
+    /// `/bin/sh -c "sleep 300"` execs `sleep` or forks it is shell- and
+    /// image-dependent. When it forks, killing the shell leaves the grandchild
+    /// holding the inherited stdout/stderr pipes, capture never sees EOF, and
+    /// the kill acknowledgement -- which waits on capture -- never arrives.
+    /// That is a hang the test would report as its own timeout. Exec'ing the
+    /// sleeper directly removes the ambiguity.
+    ///
+    /// 300s rather than 30s so the bound below has an order of magnitude of
+    /// headroom before "the child exited by itself" could be mistaken for
+    /// "the kill worked".
+    fn long_lived_piped_child() -> SpawnSpec {
+        #[cfg(windows)]
+        let spec = SpawnSpec::new("ping").arg("-n").arg("300").arg("127.0.0.1");
+        #[cfg(not(windows))]
+        let spec = SpawnSpec::new("sleep").arg("300");
+        spec.stdout(StreamMode::Piped).stderr(StreamMode::Piped)
+    }
+
     /// How long a kill may take before the test calls it blocked.
     ///
     /// The bound has to sit between "kill was delivered" and "the child just
@@ -550,16 +571,7 @@ mod tests {
 
     #[tokio::test]
     async fn kill_is_delivered_while_an_actor_wait_is_pending() {
-        #[cfg(windows)]
-        let spec = shell_spec("ping -n 300 127.0.0.1 > nul")
-            .stdin(StreamMode::Null)
-            .stdout(StreamMode::Piped)
-            .stderr(StreamMode::Piped);
-        #[cfg(not(windows))]
-        let spec = shell_spec("sleep 300")
-            .stdin(StreamMode::Null)
-            .stdout(StreamMode::Piped)
-            .stderr(StreamMode::Piped);
+        let spec = long_lived_piped_child().stdin(StreamMode::Null);
 
         let process = ActorProcess::start(spec).await.expect("actor starts");
         let (wait_tx, wait_rx) = oneshot::channel();
@@ -583,16 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn kill_is_delivered_while_output_is_draining() {
-        #[cfg(windows)]
-        let spec = shell_spec("ping -n 300 127.0.0.1 > nul")
-            .stdin(StreamMode::Piped)
-            .stdout(StreamMode::Piped)
-            .stderr(StreamMode::Piped);
-        #[cfg(not(windows))]
-        let spec = shell_spec("sleep 300")
-            .stdin(StreamMode::Piped)
-            .stdout(StreamMode::Piped)
-            .stderr(StreamMode::Piped);
+        let spec = long_lived_piped_child().stdin(StreamMode::Piped);
 
         let process = ActorProcess::start(spec).await.expect("actor starts");
         let (output_tx, output_rx) = oneshot::channel();
