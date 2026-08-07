@@ -2,6 +2,7 @@ error: direct process creation is forbidden; use the blessed platform-internal c
   --> $DIR/main.rs:2:13
    |
 LL |     let _ = std::process::Command::new("echo");
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error
+

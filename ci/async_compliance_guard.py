@@ -11,6 +11,12 @@ ROOT = Path(__file__).resolve().parent.parent
 RAW_MANIFEST = ROOT / "raw_platform_apis.toml"
 BASELINE = ROOT / "platform_compliance_baseline.toml"
 INTERNAL_ROOT = ROOT / "crates" / "running-process-platform-internal"
+PYTHON_ASYNC_ROOT = ROOT / "src" / "running_process" / "asyncio"
+FORBIDDEN_PYTHON_ASYNC_PATTERNS = {
+    r"asyncio\.to_thread\s*\(": "native async bridge instead of asyncio.to_thread",
+    r"run_in_executor\s*\(": "native async bridge instead of an executor wrapper",
+    r"threading\.Thread\s*\(": "actor-backed async lifecycle instead of a Python reader thread",
+}
 
 
 @dataclass(frozen=True)
@@ -144,6 +150,15 @@ def check() -> list[str]:
                         f"unbaselined raw platform API {raw_symbol} in {rel}; use a blessed "
                         "capability or add an exact ratchet entry"
                     )
+
+    for source in PYTHON_ASYNC_ROOT.rglob("*.py"):
+        text = source.read_text(encoding="utf-8")
+        rel = source.relative_to(ROOT)
+        for pattern, replacement in FORBIDDEN_PYTHON_ASYNC_PATTERNS.items():
+            if re.search(pattern, text):
+                failures.append(
+                    f"forbidden async Python pattern {pattern} in {rel}; use the {replacement}"
+                )
     return failures
 
 
