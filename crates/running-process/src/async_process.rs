@@ -116,9 +116,9 @@ impl AsyncProcess {
     }
 
     /// Wait for the started process without capturing output.
-    pub async fn wait(&mut self) -> Result<ExitStatus, ProcessError> {
+    pub async fn wait(&self) -> Result<ExitStatus, ProcessError> {
         self.child
-            .as_mut()
+            .as_ref()
             .ok_or(ProcessError::NotRunning)?
             .wait()
             .await
@@ -130,16 +130,16 @@ impl AsyncProcess {
     }
 
     /// Wait for completion, returning [`ProcessError::Timeout`] if the deadline elapses.
-    pub async fn wait_timeout(&mut self, deadline: Duration) -> Result<ExitStatus, ProcessError> {
+    pub async fn wait_timeout(&self, deadline: Duration) -> Result<ExitStatus, ProcessError> {
         tokio::time::timeout(deadline, self.wait())
             .await
             .map_err(|_| ProcessError::Timeout)?
     }
 
     /// Kill the started process.
-    pub async fn kill(&mut self) -> Result<(), ProcessError> {
+    pub async fn kill(&self) -> Result<(), ProcessError> {
         self.child
-            .as_mut()
+            .as_ref()
             .ok_or(ProcessError::NotRunning)?
             .kill()
             .await
@@ -155,7 +155,7 @@ impl AsyncProcess {
     /// The sync `NativeProcess::terminate` is an alias of `kill`; this keeps
     /// that spelling available on the async surface so a caller porting from
     /// the sync API does not have to rename the call.
-    pub async fn terminate(&mut self) -> Result<(), ProcessError> {
+    pub async fn terminate(&self) -> Result<(), ProcessError> {
         self.kill().await
     }
 
@@ -169,7 +169,7 @@ impl AsyncProcess {
     ///
     /// This is a *request*, not a wait. Follow it with [`Self::wait_timeout`]
     /// and then [`Self::kill`] to bound how long the graceful step is given.
-    pub async fn terminate_group_soft(&mut self) -> Result<bool, ProcessError> {
+    pub async fn terminate_group_soft(&self) -> Result<bool, ProcessError> {
         self.child
             .as_ref()
             .ok_or(ProcessError::NotRunning)?
@@ -187,7 +187,7 @@ impl AsyncProcess {
     /// callers request a tree kill at once.
     ///
     /// Returns the number of process instances the OS accepted a kill for.
-    pub async fn kill_tree(&mut self, timeout: Duration) -> Result<u32, ProcessError> {
+    pub async fn kill_tree(&self, timeout: Duration) -> Result<u32, ProcessError> {
         let pid = self.pid().await?;
         bounded_blocking(move || crate::process_tree::kill_tree(pid, timeout))
             .await
@@ -197,7 +197,7 @@ impl AsyncProcess {
     /// Report the exit status if it has already been observed, without waiting.
     ///
     /// This is the async counterpart of `NativeProcess::poll`.
-    pub async fn poll(&mut self) -> Result<Option<ExitStatus>, ProcessError> {
+    pub async fn poll(&self) -> Result<Option<ExitStatus>, ProcessError> {
         self.child
             .as_ref()
             .ok_or(ProcessError::NotRunning)?
@@ -209,7 +209,7 @@ impl AsyncProcess {
     ///
     /// The async counterpart of `NativeProcess::returncode`. Like the sync
     /// method it never blocks; a still-running process reports `None`.
-    pub async fn returncode(&mut self) -> Result<Option<i32>, ProcessError> {
+    pub async fn returncode(&self) -> Result<Option<i32>, ProcessError> {
         Ok(self.poll().await?.and_then(|status| status.code()))
     }
 
@@ -237,7 +237,7 @@ impl AsyncProcess {
     /// future before actor acknowledgement leaves no guarantee whether a
     /// dispatched write reached the child; callers that need an EOF must call
     /// [`Self::close_stdin`] explicitly after a successful write.
-    pub async fn write_stdin(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), ProcessError> {
+    pub async fn write_stdin(&self, bytes: impl AsRef<[u8]>) -> Result<(), ProcessError> {
         self.child
             .as_ref()
             .ok_or(ProcessError::NotRunning)?
@@ -254,7 +254,7 @@ impl AsyncProcess {
     /// Close the child's piped stdin and deliver EOF.
     ///
     /// The operation is idempotent after a successful start.
-    pub async fn close_stdin(&mut self) -> Result<(), ProcessError> {
+    pub async fn close_stdin(&self) -> Result<(), ProcessError> {
         self.child
             .as_ref()
             .ok_or(ProcessError::NotRunning)?
@@ -268,7 +268,7 @@ impl AsyncProcess {
     }
 
     /// Wait for completion and return captured stdout/stderr.
-    pub async fn output(&mut self) -> Result<RunOutput, ProcessError> {
+    pub async fn output(&self) -> Result<RunOutput, ProcessError> {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
         let output = child.output().await?;
         Ok(run_output(output))
@@ -280,14 +280,14 @@ impl AsyncProcess {
     }
 
     /// Wait for completion and capture output, returning [`ProcessError::Timeout`] if the deadline elapses.
-    pub async fn output_timeout(&mut self, deadline: Duration) -> Result<RunOutput, ProcessError> {
+    pub async fn output_timeout(&self, deadline: Duration) -> Result<RunOutput, ProcessError> {
         tokio::time::timeout(deadline, self.output())
             .await
             .map_err(|_| ProcessError::Timeout)?
     }
 
     /// Wait for completion and capture stdout/stderr within an aggregate byte limit.
-    pub async fn output_bounded(&mut self, limit: usize) -> Result<RunOutput, ProcessError> {
+    pub async fn output_bounded(&self, limit: usize) -> Result<RunOutput, ProcessError> {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
         let output = child.output_bounded(limit).await?;
         Ok(run_output(output))

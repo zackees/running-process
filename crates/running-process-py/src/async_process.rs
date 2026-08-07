@@ -11,16 +11,23 @@ use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 use running_process::pty::AsyncPtyProcess;
 use running_process::{AsyncProcess, CursorRead, RunOutput, SharedOutputCursor, StreamKind};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 fn process_error(error: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
 }
 
 /// Python awaitable process facade backed by native Rust futures.
+///
+/// An `RwLock`, not a `Mutex`. Only `start` and `close` mutate the handle;
+/// everything else forwards a command to the actor and needs shared access
+/// only. Under a `Mutex` an in-flight `output()` held the handle for its whole
+/// duration, so `kill()` could never run during a capture -- which is exactly
+/// the concurrency the actor exists to provide, and the sync surface has
+/// always had. It deadlocked in practice, not just in theory.
 #[pyclass(module = "running_process._native")]
 pub(crate) struct AsyncRunningProcess {
-    process: Arc<Mutex<AsyncProcess>>,
+    process: Arc<RwLock<AsyncProcess>>,
 }
 
 #[pymethods]
@@ -36,7 +43,7 @@ impl AsyncRunningProcess {
         // parent's console Ctrl+C, which is not what most callers want.
         process = process.create_process_group(create_process_group);
         Self {
-            process: Arc::new(Mutex::new(process)),
+            process: Arc::new(RwLock::new(process)),
         }
     }
 
@@ -44,7 +51,7 @@ impl AsyncRunningProcess {
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
-            process.lock().await.start().await.map_err(process_error)
+            process.write().await.start().await.map_err(process_error)
         })
     }
 
@@ -52,7 +59,7 @@ impl AsyncRunningProcess {
     fn pid<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
-            process.lock().await.pid().await.map_err(process_error)
+            process.read().await.pid().await.map_err(process_error)
         })
     }
 
@@ -61,7 +68,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .wait()
                 .await
@@ -76,7 +83,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .wait_timeout(Duration::from_secs_f64(timeout))
                 .await
@@ -89,7 +96,7 @@ impl AsyncRunningProcess {
     fn kill<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
-            process.lock().await.kill().await.map_err(process_error)
+            process.read().await.kill().await.map_err(process_error)
         })
     }
 
@@ -98,7 +105,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .write_stdin(bytes)
                 .await
@@ -111,7 +118,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .close_stdin()
                 .await
@@ -124,7 +131,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .output()
                 .await
@@ -138,7 +145,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .output_bounded(limit)
                 .await
@@ -152,7 +159,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .poll()
                 .await
@@ -166,7 +173,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .returncode()
                 .await
@@ -180,7 +187,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .terminate()
                 .await
@@ -192,7 +199,7 @@ impl AsyncRunningProcess {
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
-            process.lock().await.close().await.map_err(process_error)
+            process.write().await.close().await.map_err(process_error)
         })
     }
 
@@ -204,7 +211,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .terminate_group_soft()
                 .await
@@ -218,7 +225,7 @@ impl AsyncRunningProcess {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
             process
-                .lock()
+                .read()
                 .await
                 .kill_tree(Duration::from_secs_f64(timeout))
                 .await
@@ -236,8 +243,8 @@ impl AsyncRunningProcess {
         // actor future owns would deadlock the interpreter.
         let process = self
             .process
-            .try_lock()
-            .map_err(|_| PyRuntimeError::new_err("process is busy in another operation"))?;
+            .try_read()
+            .map_err(|_| PyRuntimeError::new_err("process is busy in an exclusive operation"))?;
         let cursor = process.output_cursor().map_err(process_error)?;
         Ok(AsyncOutputCursor {
             cursor: Arc::new(Mutex::new(cursor)),
@@ -248,7 +255,7 @@ impl AsyncRunningProcess {
     fn run<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let process = Arc::clone(&self.process);
         future_into_py(py, async move {
-            let mut process = process.lock().await;
+            let mut process = process.write().await;
             process.start().await.map_err(process_error)?;
             process
                 .output()

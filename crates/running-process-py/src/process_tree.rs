@@ -91,6 +91,40 @@ pub(crate) fn native_terminate_process_tree(pid: u32, timeout_seconds: f64) -> b
     terminate_process_tree_impl(pid, timeout_seconds)
 }
 
+/// Awaitable counterpart of [`native_terminate_process_tree`].
+///
+/// Same bounded-island rationale as the kill form: walking the OS process
+/// table is a blocking snapshot with no async equivalent, so it runs on the
+/// library's fixed-ceiling island rather than behind a thread-pool bridge.
+#[pyfunction]
+#[pyo3(signature = (pid, timeout_seconds=3.0))]
+pub(crate) fn native_terminate_process_tree_async(
+    py: Python<'_>,
+    pid: u32,
+    timeout_seconds: f64,
+) -> PyResult<Bound<'_, PyAny>> {
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        running_process::blocking_island_dispatch(move || {
+            terminate_process_tree_impl(pid, timeout_seconds)
+        })
+        .await
+        .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))
+    })
+}
+
+/// Awaitable counterpart of [`native_get_process_tree_info`].
+#[pyfunction]
+pub(crate) fn native_get_process_tree_info_async(
+    py: Python<'_>,
+    pid: u32,
+) -> PyResult<Bound<'_, PyAny>> {
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        running_process::blocking_island_dispatch(move || native_get_process_tree_info(pid))
+            .await
+            .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))
+    })
+}
+
 /// Awaitable counterpart of [`native_kill_process_tree`].
 ///
 /// Returns the number of process instances the OS accepted a kill for, which

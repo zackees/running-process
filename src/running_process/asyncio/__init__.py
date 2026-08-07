@@ -6,6 +6,7 @@ do not delegate process work to ``asyncio.to_thread`` or an executor.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from shlex import split as split_command
@@ -17,8 +18,21 @@ from running_process._native import (
     AsyncRunningProcess as _NativeAsyncRunningProcess,
 )
 from running_process._native import (
+    native_get_process_tree_info_async as _native_get_process_tree_info_async,
+)
+from running_process._native import (
     native_kill_process_tree_async as _native_kill_process_tree_async,
 )
+from running_process._native import (
+    native_terminate_process_tree_async as _native_terminate_process_tree_async,
+)
+from running_process.asyncio._expect import (
+    ExpectTimeoutError,
+    expect_from_reader,
+    wait_for_idle_from_reader,
+)
+from running_process.compat import CalledProcessError, CompletedProcess, TimeoutExpired
+from running_process.expect import ExpectMatch, ExpectPattern
 
 
 @dataclass(frozen=True)
@@ -89,6 +103,54 @@ class AsyncOutputCursor:
         if read is None:
             raise StopAsyncIteration
         return read
+
+
+class _CursorChunkReader:
+    """Adapt a cursor to the chunk reader the matchers expect.
+
+    Deliberately **never cancels** the underlying read. `cursor.read_next()`
+    resolves a future that holds the cursor's lock on the Rust side, and
+    cancelling the Python awaitable does not stop that future -- it detaches
+    it, still holding the lock, so the next read blocks forever. The first
+    version used `asyncio.wait_for` and hung exactly there.
+
+    Instead one in-flight read is kept and re-awaited: a timeout leaves it
+    pending and the next call picks the same one up.
+
+    Terminal EOF raises `EOFError`, which is what stops a matcher spinning once
+    the process is gone. A gap reads as empty: losing records is bad news for a
+    matcher but not a reason to abandon a wait that later output may satisfy.
+    Callers that cannot tolerate loss should read the cursor directly, where
+    the gap is visible as an `OutputGap`.
+    """
+
+    def __init__(self, cursor: AsyncOutputCursor) -> None:
+        self._cursor = cursor
+        self._pending: asyncio.Future | None = None
+
+    async def __call__(self, timeout: float | None) -> bytes | None:
+        if self._pending is None:
+            self._pending = asyncio.ensure_future(self._cursor.read_next())
+        done, _pending = await asyncio.wait({self._pending}, timeout=timeout)
+        if not done:
+            return None
+        finished, self._pending = self._pending, None
+        read_result = finished.result()
+        if read_result is None:
+            raise EOFError("output cursor reached terminal EOF")
+        if isinstance(read_result, OutputRecord):
+            return read_result.data
+        return None
+
+    async def aclose(self) -> None:
+        """Drop the in-flight read, if any.
+
+        Cancelling here is safe in a way it is not mid-wait: nothing will use
+        this cursor again, so a detached future holding its lock harms nobody.
+        """
+        if self._pending is not None:
+            self._pending.cancel()
+            self._pending = None
 
 
 class AsyncRunningProcess:
@@ -177,6 +239,40 @@ class AsyncRunningProcess:
         """
         return await self._native.kill_tree(timeout)
 
+    async def expect(
+        self, pattern: ExpectPattern, *, timeout: float | None = None
+    ) -> ExpectMatch:
+        """Await output until ``pattern`` matches, or raise `ExpectTimeout`.
+
+        Reads through a private cursor, so an expect never consumes output
+        another reader was waiting for -- unlike the sync surface, where
+        `expect` and `get_next_line` draw from the same buffer.
+
+        Open it before starting a capture, for the reason `output_cursor`
+        documents.
+        """
+        reader = _CursorChunkReader(self.output_cursor())
+        try:
+            return await expect_from_reader(reader, pattern, timeout=timeout)
+        finally:
+            await reader.aclose()
+
+    async def wait_for_idle(
+        self, idle_seconds: float, *, timeout: float | None = None
+    ) -> bool:
+        """Wait until no output has arrived for ``idle_seconds``.
+
+        ``True`` if the quiet window was reached, ``False`` if ``timeout``
+        elapsed first.
+        """
+        reader = _CursorChunkReader(self.output_cursor())
+        try:
+            return await wait_for_idle_from_reader(
+                reader, idle_seconds, timeout=timeout
+            )
+        finally:
+            await reader.aclose()
+
     def output_cursor(self) -> AsyncOutputCursor:
         """Open an independent cursor over the output the actor has retained.
 
@@ -244,6 +340,52 @@ class AsyncPseudoTerminalProcess:
 
     async def pid(self) -> int | None:
         return await self._native.pid()
+
+    def _answering_reader(self):
+        """Read PTY output, answering terminal capability queries as they pass.
+
+        A PTY child often emits a Device Status Report (`ESC [ 6 n`) during
+        startup and *waits for the answer* before producing anything else. The
+        sync facade's reader thread answers those, which is why its `expect`
+        works; a plain `read()` loop does not, so a matcher built on it stalls
+        on a child that has not actually said anything yet. This was not
+        theoretical -- the async `expect` timed out against a child the sync
+        one matched fine.
+        """
+
+        async def read(timeout: float | None) -> bytes | None:
+            chunk = await self.read(timeout)
+            if chunk:
+                await self.respond_to_queries(chunk)
+            return chunk
+
+        return read
+
+    async def expect(
+        self, pattern: ExpectPattern, *, timeout: float | None = None
+    ) -> ExpectMatch:
+        """Await PTY output until ``pattern`` matches, or raise `ExpectTimeoutError`.
+
+        Terminal capability queries in the stream are answered as they arrive,
+        matching what the sync facade's reader thread does.
+        """
+        return await expect_from_reader(
+            self._answering_reader(), pattern, timeout=timeout
+        )
+
+    async def wait_for_output_idle(
+        self, idle_seconds: float, *, timeout: float | None = None
+    ) -> bool:
+        """Wait until the PTY has produced no output for ``idle_seconds``.
+
+        The counterpart of the sync `wait_for_idle` for callers that do not
+        want to construct an `IdleDetectorCore`. :meth:`wait_for_idle` remains
+        available for callers that do, and that share a detector with other
+        machinery.
+        """
+        return await wait_for_idle_from_reader(
+            self._answering_reader(), idle_seconds, timeout=timeout
+        )
 
     async def send_interrupt(self) -> None:
         """Deliver Ctrl+C / SIGINT to the PTY child."""
@@ -403,6 +545,30 @@ class AsyncInteractiveProcess:
     async def pid(self) -> int | None:
         return await self._backend.pid()
 
+    async def poll(self) -> int | None:
+        """Exit code if the session has already ended, else ``None``.
+
+        Never waits, matching `InteractiveProcess.poll`. The PTY backend has no
+        non-blocking exit query of its own, so it is asked for a zero-length
+        wait -- which is the same question phrased the only way it accepts.
+        """
+        if isinstance(self._backend, AsyncPseudoTerminalProcess):
+            try:
+                return await self._backend.wait(0.0)
+            except RuntimeError:
+                return None
+        return await self._backend.poll()
+
+    async def exit_status(self) -> int | None:
+        """The session's exit code once it has ended, else ``None``.
+
+        The sync surface exposes this as a property; here it is a coroutine,
+        because reaching the answer means asking the actor and that is a round
+        trip, not an attribute read. Pretending otherwise would mean caching a
+        value that goes stale.
+        """
+        return await self.poll()
+
     async def send_interrupt(self) -> None:
         if not isinstance(self._backend, AsyncPseudoTerminalProcess):
             raise RuntimeError("send_interrupt() is only applicable to PTY sessions")
@@ -437,12 +603,66 @@ async def kill_process_tree(pid: int, timeout_seconds: float = 3.0) -> int:
     return await _native_kill_process_tree_async(int(pid), float(timeout_seconds))
 
 
+async def terminate_process_tree(pid: int, timeout_seconds: float = 3.0) -> bool:
+    """Async counterpart of :func:`running_process.terminate_process_tree`.
+
+    Same signature, same default, same return: ``True`` also covers an
+    already-exited root, which is the idempotent cleanup result callers want.
+    """
+    return await _native_terminate_process_tree_async(int(pid), float(timeout_seconds))
+
+
+async def get_process_tree_info(pid: int) -> str:
+    """Async counterpart of :func:`running_process.get_process_tree_info`.
+
+    Enumerating the process table is a blocking snapshot, so this runs on the
+    library's bounded island rather than a thread-pool bridge.
+    """
+    return await _native_get_process_tree_info_async(int(pid))
+
+
+async def subprocess_run(
+    command: str | Sequence[str],
+    cwd: str | None = None,
+    check: bool = False,
+    timeout: float | None = None,
+) -> CompletedProcess[str]:
+    """Async counterpart of :func:`running_process.subprocess_run`.
+
+    Returns the same `CompletedProcess` shape the sync helper does, so the
+    result is a drop-in. Implemented over `AsyncRunningProcess`, not over the
+    sync helper -- the point is that no thread is parked waiting.
+    """
+    argv = list(split_command(command)) if isinstance(command, str) else list(command)
+    if not argv:
+        raise ValueError("command must contain at least one argument")
+    process = AsyncRunningProcess(argv[0], argv[1:])
+    await process.start()
+    if timeout is None:
+        code, stdout, stderr = await process.output()
+    else:
+        try:
+            code, stdout, stderr = await asyncio.wait_for(process.output(), timeout)
+        except asyncio.TimeoutError as error:
+            await process.kill()
+            raise TimeoutExpired(argv, timeout) from error
+    decoded_out = stdout.decode("utf-8", errors="replace")
+    decoded_err = stderr.decode("utf-8", errors="replace")
+    if check and code != 0:
+        raise CalledProcessError(code, argv, decoded_out, decoded_err)
+    return CompletedProcess(argv, code, decoded_out, decoded_err)
+
+
 __all__ = [
     "AsyncInteractiveProcess",
     "AsyncOutputCursor",
     "AsyncPseudoTerminalProcess",
     "AsyncRunningProcess",
+    "ExpectTimeoutError",
     "OutputGap",
     "OutputRecord",
+    "get_process_tree_info",
     "kill_process_tree",
+    "subprocess_run",
+    "terminate_process_tree",
 ]

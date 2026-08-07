@@ -198,7 +198,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `end_time` | planned | - | - | - | - |
 | `exec_script` | planned | - | - | - | - |
 | `exit_status` | planned | - | - | - | - |
-| `expect` | planned | - | - | - | - |
+| `expect` | implemented | n/a: expect has no Rust implementation on either surface; it is Python code over native reads on both, so the Python columns are the whole contract | n/a: expect has no Rust implementation on either surface; it is Python code over native reads on both, so the Python columns are the whole contract | `test_sync_expect_matches_a_literal_in_process_output` | `test_expect_matches_a_literal_in_process_output` |
 | `finished` | planned | - | - | - | - |
 | `get_command_str` | planned | - | - | - | - |
 | `get_next_line` | planned | - | - | - | - |
@@ -221,7 +221,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `proc` | planned | - | - | - | - |
 | `pseudo_terminal` | planned | - | - | - | - |
 | `returncode` | implemented | `sync_process_returncode_is_none_until_the_child_exits` | `async_process_returncode_matches_the_exit_code_the_child_chose` | `test_sync_returncode_is_none_while_the_child_runs` | `test_async_returncode_matches_the_code_the_child_chose` |
-| `run` | planned | - | - | - | - |
+| `run` | implemented | n/a: no Rust free-function counterpart; this is a Python-level convenience over capabilities the Rust columns of the tree rows already cover | n/a: no Rust free-function counterpart; this is a Python-level convenience over capabilities the Rust columns of the tree rows already cover | `test_subprocess_run_capture_output` | `test_subprocess_run_matches_the_sync_helper_result` |
 | `run_streaming` | planned | - | - | - | - |
 | `send_interrupt` | planned | - | - | - | - |
 | `start` | planned | - | - | - | - |
@@ -236,7 +236,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `wait` | planned | - | - | - | - |
 | `wait_for` | planned | - | - | - | - |
 | `wait_for_expect` | planned | - | - | - | - |
-| `wait_for_idle` | planned | - | - | - | - |
+| `wait_for_idle` | implemented | n/a: expect has no Rust implementation on either surface; it is Python code over native reads on both, so the Python columns are the whole contract | n/a: expect has no Rust implementation on either surface; it is Python code over native reads on both, so the Python columns are the whole contract | `test_sync_expect_matches_a_literal_in_process_output` | `test_wait_for_idle_reports_true_once_output_stops` |
 | `write` | planned | - | - | - | - |
 
 ### Python `PseudoTerminalProcess`
@@ -250,7 +250,7 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `drain` | planned | - | - | - | - |
 | `drain_echo` | planned | - | - | - | - |
 | `exit_status` | planned | - | - | - | - |
-| `expect` | planned | - | - | - | - |
+| `expect` | implemented | n/a: expect has no Rust implementation on either surface; it is Python code over native reads on both, so the Python columns are the whole contract | n/a: expect has no Rust implementation on either surface; it is Python code over native reads on both, so the Python columns are the whole contract | `test_sync_pty_expect_matches_child_output` | `test_pty_expect_matches_child_output` |
 | `idle_timeout_enabled` | planned | - | - | - | - |
 | `interrupt_and_wait` | planned | - | - | - | - |
 | `is_running` | planned | - | - | - | - |
@@ -274,32 +274,32 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `wait` | planned | - | - | - | - |
 | `wait_for` | planned | - | - | - | - |
 | `wait_for_expect` | planned | - | - | - | - |
-| `wait_for_idle` | planned | - | - | - | - |
+| `wait_for_idle` | implemented | `sync_pty_idle_detector_attaches_and_detaches` | `async_pty_idle_detector_attaches_detaches_and_reports_an_outcome` | `test_pseudo_terminal_wait_for_idle_can_arm_on_explicit_input_submit` | `test_pty_wait_for_output_idle_reports_true_once_quiet` |
 | `write` | planned | - | - | - | - |
 
 ### Python `InteractiveProcess`
 
 | Member | Status | Rust sync | Rust async | Python sync | Python async |
 | --- | --- | --- | --- | --- | --- |
-| `close` | planned | - | - | - | - |
-| `exit_status` | planned | - | - | - | - |
-| `kill` | planned | - | - | - | - |
-| `pid` | planned | - | - | - | - |
-| `poll` | planned | - | - | - | - |
-| `send_interrupt` | planned | - | - | - | - |
-| `start` | planned | - | - | - | - |
-| `terminate` | planned | - | - | - | - |
-| `wait` | planned | - | - | - | - |
+| `close` | implemented | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | `test_sync_close_is_idempotent` | `test_async_close_is_idempotent_and_releases_the_handle` |
+| `exit_status` | implemented | `sync_process_poll_reports_none_before_exit_and_a_code_after` | `async_process_poll_reports_none_before_exit_and_a_status_after` | `test_sync_poll_reports_none_before_start` | `test_exit_status_agrees_with_poll` |
+| `kill` | implemented | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | `test_sync_poll_reports_none_before_start` | `test_poll_reports_none_while_running_and_a_code_after_exit` |
+| `pid` | implemented | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | `test_sync_poll_reports_none_before_start` | `test_pipe_session_kill_tree_reports_a_count` |
+| `poll` | implemented | `sync_process_poll_reports_none_before_exit_and_a_code_after` | `async_process_poll_reports_none_before_exit_and_a_status_after` | `test_sync_poll_reports_none_before_start` | `test_poll_reports_none_while_running_and_a_code_after_exit` |
+| `send_interrupt` | implemented | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | `test_sync_pty_send_interrupt_before_start_is_rejected` | `test_pipe_session_rejects_pty_only_operations` |
+| `start` | implemented | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | `test_sync_poll_reports_none_before_start` | `test_poll_reports_none_while_running_and_a_code_after_exit` |
+| `terminate` | implemented | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | `test_sync_terminate_ends_the_child_like_kill` | `test_async_terminate_ends_the_child_like_kill` |
+| `wait` | implemented | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | `test_sync_poll_reports_none_before_start` | `test_exit_status_agrees_with_poll` |
 
 ### Python module-level helpers
 
 | Member | Status | Rust sync | Rust async | Python sync | Python async |
 | --- | --- | --- | --- | --- | --- |
 | `find_processes_by_originator` | planned | - | - | - | - |
-| `get_process_tree_info` | planned | - | - | - | - |
+| `get_process_tree_info` | implemented | n/a: no Rust free-function counterpart; this is a Python-level convenience over capabilities the Rust columns of the tree rows already cover | n/a: no Rust free-function counterpart; this is a Python-level convenience over capabilities the Rust columns of the tree rows already cover | `test_process_utils_describe_current_process` | `test_get_process_tree_info_matches_the_sync_helper_shape` |
 | `kill_process_tree` | implemented | `sync_kill_tree_terminates_the_started_child` | `missing_pid_is_a_successful_noop_on_the_async_form` | `test_kill_process_tree_kills_parent_and_child` | `test_module_level_kill_process_tree_kills_a_real_child` |
 | `launch_detached` | planned | - | - | - | - |
-| `subprocess_run` | planned | - | - | - | - |
-| `terminate_process_tree` | planned | - | - | - | - |
+| `subprocess_run` | implemented | n/a: no Rust free-function counterpart; this is a Python-level convenience over capabilities the Rust columns of the tree rows already cover | n/a: no Rust free-function counterpart; this is a Python-level convenience over capabilities the Rust columns of the tree rows already cover | `test_subprocess_run_capture_output` | `test_subprocess_run_matches_the_sync_helper_result` |
+| `terminate_process_tree` | implemented | `sync_kill_tree_terminates_the_started_child` | `missing_pid_is_a_successful_noop_on_the_async_form` | `test_terminate_process_tree_matches_the_sync_helper_on_a_dead_pid` | `test_terminate_process_tree_ends_a_real_child` |
 
 <!-- END GENERATED PARITY TABLE -->
