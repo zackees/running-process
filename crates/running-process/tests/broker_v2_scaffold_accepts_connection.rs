@@ -634,3 +634,77 @@ fn assert_new_coverage_profiles_are_valid(
 // `read_to_string` is on `Read`, not `BufRead`; import it explicitly so
 // the drain at the end of the bind test compiles.
 use std::io::Read as _;
+
+/// soldr#2363 testing invariant: "a second broker started in the same
+/// user session is refused; the first is unperturbed... race-tested (N
+/// concurrent starters -> exactly one survivor)".
+///
+/// The bind-race single-instance enforcement itself
+/// (`is_already_bound_error` in `main`) already existed before this test;
+/// this closes the gap between "the error classifier is unit-tested" and
+/// "N real processes racing for the same name actually produce exactly
+/// one survivor" on the host platform's real transport (named pipes on
+/// Windows, unix sockets elsewhere -- no `cfg` needed, the binary's
+/// bind/refuse behavior is the same code path on every platform).
+#[test]
+fn concurrent_starters_yield_exactly_one_singleton_survivor() {
+    const STARTERS: usize = 5;
+    const LOSER_EXIT_CODE: i32 = 75; // EX_TEMPFAIL, see running-process-broker-v2::main
+
+    let path = env!("CARGO_BIN_EXE_running-process-broker-v2");
+    let program = unique_program("singleton-race");
+
+    let mut children: Vec<ChildGuard> = (0..STARTERS)
+        .map(|_| {
+            ChildGuard(
+                Command::new(path)
+                    .arg("--program")
+                    .arg(&program)
+                    .env("RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED", "1")
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("spawn broker starter"),
+            )
+        })
+        .collect();
+
+    let mut winners = 0;
+    let mut losers = 0;
+    let mut survivor: Option<ChildGuard> = None;
+
+    for mut child in children.drain(..) {
+        let stdout = child.stdout.take().expect("piped stdout");
+        let (tx, rx) = mpsc::channel();
+        let _reader = std::thread::spawn(move || {
+            let bound = BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+                .any(|line| line.contains("bound at"));
+            let _ = tx.send(bound);
+        });
+
+        let bound = rx.recv_timeout(DEADLINE).unwrap_or(false);
+        if bound {
+            winners += 1;
+            survivor = Some(child);
+        } else {
+            let status = wait_with_deadline(&mut child, DEADLINE)
+                .expect("loser starter must exit within deadline");
+            assert_eq!(
+                status.code(),
+                Some(LOSER_EXIT_CODE),
+                "loser starter must exit EX_TEMPFAIL({LOSER_EXIT_CODE}), got {status:?}"
+            );
+            losers += 1;
+        }
+    }
+
+    assert_eq!(winners, 1, "exactly one starter must win the bind race");
+    assert_eq!(
+        losers,
+        STARTERS - 1,
+        "every other starter must lose cleanly"
+    );
+    drop(survivor); // ChildGuard::drop kills the surviving broker
+}
