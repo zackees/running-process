@@ -217,6 +217,12 @@ ALLOWED_RUST_SPAWN = {
     # connect so `connect_with_timeout` can bound it — same rationale as
     # backend_lifecycle/probe.rs above. No process spawn happens here.
     Path("crates/running-process/src/client/deadline_io.rs"),
+    # Fail-fast connect watchdog (#894): `thread::Builder::spawn` (a thread,
+    # not a process) is the out-of-band wall-clock backstop that aborts the
+    # process if a bounded connect attempt neither disarms nor exits within a
+    # hard cap. No child process is created — same rationale as the connect
+    # deadline threads above.
+    Path("crates/running-process/src/broker/connect_watchdog.rs"),
     # Broker-v2 binary accept loop: per-connection `thread::Builder::spawn`
     # (a thread, not a process) to handle Hello negotiation under a
     # MAX_INFLIGHT_HANDLERS cap. The thread reads framed bytes from an
