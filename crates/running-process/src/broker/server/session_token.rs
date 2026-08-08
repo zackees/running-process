@@ -1,7 +1,7 @@
 //! Composite broker/daemon session token authority (zackees/soldr#2360, #2361
 //! Phase 1, #2363).
 //!
-//! **STATUS: wired into [`super::hello_handler::HelloHandler`] via
+//! **STATUS: wired into [`crate::broker::server::hello_handler::HelloHandler`] via
 //! `with_session_token_authority` — opt-in, dormant unless a caller
 //! configures it. See "Not done yet" below for what's still open.**
 //!
@@ -35,7 +35,7 @@
 //! validate a stale token minted by its predecessor, the way a counter or
 //! timestamp could collide. The bytes are not secrets guarding anything,
 //! which is also why the plain `!=` comparison (mirroring
-//! [`super::handoff::HandoffToken`]) is fine here: constant-time comparison
+//! [`crate::broker::server::handoff::HandoffToken`]) is fine here: constant-time comparison
 //! defends secrets against guessing oracles, and there is no secret and
 //! nothing to guess for.
 //!
@@ -56,7 +56,7 @@
 //!
 //! - `daemon_id` is resolved as `hello.service_name` — the same key
 //!   `RegisteredBackend` already uses — rather than a new field. `Refused`
-//!   uses `ERROR_PEER_REJECTED` for every [`SessionTokenRejection`] kind.
+//!   uses `ERROR_PEER_REJECTED` for every [`crate::broker::server::session_token::SessionTokenRejection`] kind.
 //!   Both settled in the `HelloHandler` wiring.
 //! - Where the authority instance itself lives (per-broker-process
 //!   singleton state) and how `register_daemon`/`invalidate_daemon` are
