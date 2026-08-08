@@ -37,8 +37,9 @@ use crate::broker::lifecycle::names::PipePathError;
 use crate::broker::lifecycle::names_v2::v2_program_pipe;
 use crate::broker::lifecycle::sid::{user_sid_hash, SidError};
 use crate::broker::protocol::{
-    hello_reply, read_frame, write_frame, FramingError, Hello, HelloReply, Negotiated, Refused,
-    ENVELOPE_VERSION,
+    hello_reply, read_frame, write_frame, Frame, FrameKind, FramingError, Hello, HelloReply,
+    Negotiated, PayloadEncoding, Refused, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION,
+    PROTOCOL_VERSION,
 };
 
 /// Errors surfaced by [`connect`].
@@ -434,12 +435,39 @@ fn hello_round_trip<S: Read + Write>(
         capability_token: Vec::new(),
         client_keepalive_secs: 0,
     };
-    let mut body = Vec::with_capacity(hello.encoded_len());
-    hello.encode(&mut body)?;
+    // The wire-level `write_frame`/`read_frame` pair is only the raw
+    // length-prefixed byte framing (`protocol::framing`) -- v1's actual
+    // message framing is the `Frame` protobuf envelope
+    // (`envelope_version`/`kind`/`payload`/...), which the server's
+    // `connection.rs` accept loop `Frame::decode`s on every Hello and
+    // `Frame`-wraps every reply (`write_response_frame`). Sending the bare
+    // `Hello` bytes here (as this function previously did) is a genuine
+    // client/server framing mismatch: the server's `Frame::decode` of a
+    // bare `Hello` payload happens to succeed anyway (both messages start
+    // with low-numbered fields), but the reply comes back `Frame`-wrapped,
+    // and decoding those bytes directly as `HelloReply` misreads `Frame`'s
+    // own fields (e.g. `envelope_version`, a `Varint`) as `HelloReply`'s
+    // `result` oneof (which is entirely message-typed, `LengthDelimited`)
+    // -- exactly the `UnexpectedWireType { actual: Varint, expected:
+    // LengthDelimited }` decode failure this was caught by (soldr#2364).
+    let hello_bytes = hello.encode_to_vec();
+    let request_frame = Frame {
+        envelope_version: PROTOCOL_VERSION,
+        kind: FrameKind::Request as i32,
+        payload_protocol: CONTROL_PAYLOAD_PROTOCOL,
+        payload: hello_bytes,
+        request_id: 0,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: String::new(),
+        tracestate: String::new(),
+    };
+    let body = request_frame.encode_to_vec();
     write_frame(stream, &body)?;
 
-    let reply_bytes = read_frame(stream)?;
-    let reply = HelloReply::decode(reply_bytes.as_slice())?;
+    let reply_frame_bytes = read_frame(stream)?;
+    let reply_frame = Frame::decode(reply_frame_bytes.as_slice())?;
+    let reply = HelloReply::decode(reply_frame.payload.as_slice())?;
     match reply.result {
         Some(hello_reply::Result::Negotiated(n)) => Ok(n),
         Some(hello_reply::Result::Refused(r)) => Err(BrokerV2Error::Refused {
