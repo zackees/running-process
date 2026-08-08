@@ -71,6 +71,7 @@ fn a_failed_launch_leaves_no_socket_behind() {
         key: &key,
         service_definition: &service_definition,
         trace_context: &trace_context,
+        session_token: None,
     };
 
     let launcher = CommandBackendLauncher::new("0123456789abcdef");

@@ -69,6 +69,7 @@ fn launch_fails_if_endpoint_not_probe_able_within_budget() {
         key: &key,
         service_definition: &service_definition,
         trace_context: &trace_context,
+        session_token: None,
     };
 
     // 16 hex characters: the shape `BackendEndpointAllocator` expects.

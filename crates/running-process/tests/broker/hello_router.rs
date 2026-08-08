@@ -12,6 +12,9 @@ use running_process::broker::protocol::{
     hello_reply::Result as HelloReplyResult, read_frame, write_frame, BrokerIsolation, Endpoint,
     ErrorCode, Frame, FrameKind, Hello, HelloReply, PayloadEncoding, ServiceDefinition,
 };
+use running_process::broker::server::session_token::{
+    SessionTokenAuthority, TokenHalf, SESSION_TOKEN_HALF_BYTES,
+};
 use running_process::broker::server::{
     ensure_service_definition_dir, handle_hello_connection_with, service_definition_path,
     BackendLaunchError, BackendLaunchRequest, BackendLauncher, BackendRegistry, BrokerInstanceKey,
@@ -125,6 +128,7 @@ struct CurrentProcessLauncher {
     endpoint_path: String,
     calls: Mutex<usize>,
     trace_contexts: Mutex<Vec<TraceContext>>,
+    session_tokens_seen: Mutex<Vec<Option<Vec<u8>>>>,
 }
 
 impl CurrentProcessLauncher {
@@ -133,6 +137,7 @@ impl CurrentProcessLauncher {
             endpoint_path: endpoint_path.into(),
             calls: Mutex::new(0),
             trace_contexts: Mutex::new(Vec::new()),
+            session_tokens_seen: Mutex::new(Vec::new()),
         }
     }
 
@@ -142,6 +147,10 @@ impl CurrentProcessLauncher {
 
     fn trace_contexts(&self) -> Vec<TraceContext> {
         self.trace_contexts.lock().unwrap().clone()
+    }
+
+    fn session_tokens_seen(&self) -> Vec<Option<Vec<u8>>> {
+        self.session_tokens_seen.lock().unwrap().clone()
     }
 }
 
@@ -155,6 +164,10 @@ impl BackendLauncher for CurrentProcessLauncher {
             .lock()
             .unwrap()
             .push(request.trace_context.clone());
+        self.session_tokens_seen
+            .lock()
+            .unwrap()
+            .push(request.session_token.map(|t| t.to_vec()));
         Ok(current_backend_for(
             &request.key.service_name,
             &request.key.service_version,
@@ -366,6 +379,53 @@ fn router_spawns_and_registers_backend_on_live_registry_miss() {
         Some(HelloReplyResult::Negotiated(_))
     ));
     assert_eq!(launcher.calls(), 1);
+}
+
+#[test]
+fn router_mints_and_registers_session_token_on_launch_when_authority_configured() {
+    let definition = service_definition(BrokerIsolation::SharedBroker);
+    let tmp = service_dir_with_definition(&definition);
+    let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+    let registry = Mutex::new(BackendRegistry::new());
+    let spawn_coordinator = Mutex::new(SpawnCoordinator::with_config(SpawnBudgetConfig::new(
+        1,
+        Duration::from_secs(10),
+    )));
+    let endpoint_path = format!("rpb-v1-test-session-token-{}", std::process::id());
+    let launcher = CurrentProcessLauncher::new(&endpoint_path);
+    let session_tokens = Mutex::new(SessionTokenAuthority::with_broker_token(
+        TokenHalf::from_bytes([0xCC; SESSION_TOKEN_HALF_BYTES]),
+    ));
+    let router = HelloRouter::with_lifecycle_monitor(&loader, &registry)
+        .with_spawn_coordinator(&spawn_coordinator)
+        .with_backend_launcher(&launcher)
+        .with_session_token_authority(&session_tokens);
+
+    assert_eq!(
+        session_tokens.lock().unwrap().daemon_count(),
+        0,
+        "no daemon should be registered before any launch"
+    );
+
+    let reply = router.handle_request(&request("zccache", "1.11.20"));
+    assert!(matches!(
+        reply.result,
+        Some(HelloReplyResult::Negotiated(_))
+    ));
+
+    let authority = session_tokens.lock().unwrap();
+    assert_eq!(authority.daemon_count(), 1);
+    let expected_token = authority
+        .composed_token_for("zccache")
+        .expect("zccache should have a registered token after launch");
+    assert_eq!(expected_token.len(), SESSION_TOKEN_HALF_BYTES * 2);
+
+    let seen = launcher.session_tokens_seen();
+    assert_eq!(
+        seen,
+        vec![Some(expected_token)],
+        "the launcher should have received the exact composed token that was registered"
+    );
 }
 
 #[test]
