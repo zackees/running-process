@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn backend_command_environment_forwards_trace_context() {
-        let key = BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.20");
+        let key = BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.20", "");
         let service_definition = ServiceDefinition {
             service_name: "zccache".into(),
             binary_path: "backend".into(),

@@ -63,7 +63,7 @@ fn launch_fails_if_endpoint_not_probe_able_within_budget() {
         version_allow_list: vec!["1.0.0".into()],
         labels: Default::default(),
     };
-    let key = BackendKey::new(BrokerInstanceKey::Shared, "never-binds", "1.0.0");
+    let key = BackendKey::new(BrokerInstanceKey::Shared, "never-binds", "1.0.0", "");
     let trace_context = TraceContext::default();
     let request = BackendLaunchRequest {
         key: &key,

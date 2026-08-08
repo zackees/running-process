@@ -208,7 +208,8 @@ fn run_platform_handoff(
         .registry
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(backend) = registry.get(ctx.instance, ctx.service_name, ctx.service_version) else {
+    let Some(backend) = registry.get_any_build(ctx.instance, ctx.service_name, ctx.service_version)
+    else {
         acks.abandon(tokens, &issued);
         log_handoff_fallback("registered backend disappeared before handoff delivery");
         return false;

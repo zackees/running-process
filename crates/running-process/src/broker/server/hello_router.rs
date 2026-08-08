@@ -119,10 +119,17 @@ impl<'a> HelloRouter<'a> {
                 )
             })?;
 
+        // Content hash of the on-disk daemon binary this request would launch.
+        // It becomes part of the routing key so a rebuilt daemon (same version,
+        // different bytes) is a registry miss and gets its own daemon instead
+        // of being handed the resident stale-code one (running-process#894).
+        let expected_exe = on_disk_exe_sha256_hex(&service_definition.binary_path);
+
         if let Some(registered) = self.registered_backend_for(
             &instance,
             &service_definition,
             &request.hello.wanted_version,
+            &expected_exe,
         ) {
             return Ok(registered);
         }
@@ -131,6 +138,7 @@ impl<'a> HelloRouter<'a> {
             instance,
             request.hello.service_name.clone(),
             request.hello.wanted_version.clone(),
+            expected_exe,
         );
         let trace_context = request.trace_context();
         self.launch_backend(&key, &service_definition, &trace_context)
@@ -141,17 +149,26 @@ impl<'a> HelloRouter<'a> {
         instance: &BrokerInstanceKey,
         service_definition: &ServiceDefinition,
         service_version: &str,
+        expected_exe_sha256: &str,
     ) -> Option<RegisteredBackend> {
         match self.backends {
-            BackendRegistryView::Static(registry) => {
-                registry.registered_backend_for(instance, service_definition, service_version)
-            }
+            BackendRegistryView::Static(registry) => registry.registered_backend_for(
+                instance,
+                service_definition,
+                service_version,
+                expected_exe_sha256,
+            ),
             BackendRegistryView::Live(registry) => {
                 let mut registry = registry
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let _removed = registry.prune_stale();
-                registry.registered_backend_for(instance, service_definition, service_version)
+                registry.registered_backend_for(
+                    instance,
+                    service_definition,
+                    service_version,
+                    expected_exe_sha256,
+                )
             }
         }
     }
@@ -329,6 +346,60 @@ fn refused_reply(refused: Refused) -> HelloReply {
     HelloReply {
         result: Some(HelloReplyResult::Refused(refused)),
     }
+}
+
+/// Content hash (lowercase-hex SHA-256) of the daemon binary at `binary_path`,
+/// memoized on `(path, mtime, size)` so a hot broker does not re-hash a large,
+/// unchanged executable on every Hello. A rebuild bumps mtime (and usually
+/// size), which invalidates the cache entry and yields the new build's hash —
+/// which is exactly what makes a rebuilt daemon a routing-key miss.
+///
+/// Returns an empty string when the path cannot be stat'd or read. An empty
+/// hash never matches a registered backend (every live entry carries a real
+/// 64-hex hash from its verified identity), so the caller treats it as a miss
+/// and proceeds to launch — where the real spawn error surfaces — rather than
+/// silently reusing a stale daemon.
+fn on_disk_exe_sha256_hex(binary_path: &str) -> String {
+    use crate::broker::backend_lifecycle::identity::sha256_file;
+    use crate::broker::server::backend_registry::hex_lower;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    use std::time::UNIX_EPOCH;
+
+    // path -> (mtime_nanos, size_bytes, hex_hash)
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (u128, u64, String)>>> = OnceLock::new();
+
+    let path = PathBuf::from(binary_path);
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return String::new();
+    };
+    let size = meta.len();
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let map = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((c_mtime, c_size, hash)) = map.get(&path) {
+            if *c_mtime == mtime && *c_size == size {
+                return hash.clone();
+            }
+        }
+    }
+
+    let hash = match sha256_file(&path) {
+        Ok(bytes) => hex_lower(&bytes),
+        Err(_) => return String::new(),
+    };
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path, (mtime, size, hash.clone()));
+    hash
 }
 
 #[cfg(test)]

@@ -200,7 +200,7 @@ fn admin_snapshot_from_registry_includes_live_backend_rows() {
 
 #[test]
 fn dump_json_includes_spawn_budget_rows() {
-    let key = BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.20");
+    let key = BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.20", "");
     let snapshot = AdminSnapshot::from_registry_at(
         "shared",
         1234,

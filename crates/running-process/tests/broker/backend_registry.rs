@@ -33,7 +33,7 @@ fn registry_returns_registered_backend_for_hello() {
     registry.insert(instance.clone(), handle);
 
     let registered = registry
-        .registered_backend_for(&instance, &definition, "1.11.20")
+        .registered_backend_for_any_build(&instance, &definition, "1.11.20")
         .unwrap();
 
     assert_eq!(registered.service_definition.service_name, "zccache");
@@ -50,8 +50,8 @@ fn registry_isolates_same_service_version_by_instance() {
     let mut registry = BackendRegistry::new();
     registry.insert(shared.clone(), handle("zccache", "1.11.20"));
 
-    assert!(registry.get(&shared, "zccache", "1.11.20").is_some());
-    assert!(registry.get(&private, "zccache", "1.11.20").is_none());
+    assert!(registry.get_any_build(&shared, "zccache", "1.11.20").is_some());
+    assert!(registry.get_any_build(&private, "zccache", "1.11.20").is_none());
 }
 
 #[test]
