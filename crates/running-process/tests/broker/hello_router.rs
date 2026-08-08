@@ -479,3 +479,44 @@ fn router_respects_service_definition_instance_isolation() {
 
     assert_eq!(reply_code(&reply), ErrorCode::ErrorBackendSpawnFailed);
 }
+
+#[test]
+fn router_refuses_below_floor_protocol_before_any_spawn() {
+    // soldr#2363 testing invariant: "a client presenting a below-floor
+    // version is refused with the explicit message, spawns nothing, and
+    // does not fall through to any legacy path." route_request() reloads
+    // the service definition and can launch a backend process, so the
+    // wire-protocol floor must be checked before it runs -- prove the
+    // launcher is never called for a below-floor Hello.
+    let definition = service_definition(BrokerIsolation::SharedBroker);
+    let tmp = service_dir_with_definition(&definition);
+    let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+    let registry = Mutex::new(BackendRegistry::new());
+    let spawn_coordinator = Mutex::new(SpawnCoordinator::with_config(SpawnBudgetConfig::new(
+        1,
+        Duration::from_secs(10),
+    )));
+    let endpoint_path = format!("rpb-v1-test-below-floor-{}", std::process::id());
+    let launcher = CurrentProcessLauncher::new(&endpoint_path);
+    let router = HelloRouter::with_lifecycle_monitor(&loader, &registry)
+        .with_spawn_coordinator(&spawn_coordinator)
+        .with_backend_launcher(&launcher);
+
+    let mut below_floor = request("zccache", "1.11.20");
+    below_floor.hello.client_min_protocol = 99;
+    below_floor.hello.client_max_protocol = 99;
+    below_floor.frame.payload = below_floor.hello.encode_to_vec();
+
+    let reply = router.handle_request(&below_floor);
+
+    assert_eq!(reply_code(&reply), ErrorCode::ErrorVersionUnsupported);
+    assert_eq!(
+        launcher.calls(),
+        0,
+        "below-floor Hello must spawn nothing, not even attempt a launch"
+    );
+    assert!(
+        registry.lock().unwrap().is_empty(),
+        "below-floor Hello must not register a backend"
+    );
+}
