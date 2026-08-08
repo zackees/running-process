@@ -261,3 +261,80 @@ fn unix_now_ms() -> u64 {
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod broker_dance_identity_tests {
+    //! The broker owns the daemon "dance" (relocation / identity / lifecycle),
+    //! and it keys a backend on its `DaemonProcess` identity — whose distinctive
+    //! field is `exe_sha256`, the content hash of the (relocated) executable.
+    //!
+    //! These pin the invariant that lets the broker keep two *builds* apart
+    //! instead of letting them displace each other as "stale-version" — the
+    //! exact collision that spawn-stormed soldr's per-process self-managed
+    //! daemon when the identity did NOT carry the hash (zackees/soldr#2352).
+    use super::*;
+
+    fn endpoint(path: &str) -> Endpoint {
+        Endpoint {
+            namespace_id: "ns".to_owned(),
+            path: path.to_owned(),
+        }
+    }
+
+    fn identity(exe_sha256: [u8; 32]) -> DaemonProcess {
+        // Everything else is held constant so `exe_sha256` is the only variable:
+        // a distinct *build* of the same daemon differs only in its bytes.
+        DaemonProcess {
+            pid: 1234,
+            exe_path: PathBuf::from("runtime/soldr-self/v0.8.44-deadbeef/soldr.exe"),
+            exe_sha256,
+            boot_id: "boot-1".to_owned(),
+            ipc_endpoint: endpoint("rpb-v2-soldr-daemon-0123456789abcdef-0"),
+            started_at_unix_ms: 1,
+            idle_timeout_secs: Some(600),
+        }
+    }
+
+    #[test]
+    fn distinct_builds_get_distinct_identities() {
+        let a = identity([0xAA; 32]);
+
+        // One byte of the binary changed => a rebuild.
+        let mut rebuilt = [0xAA; 32];
+        rebuilt[0] = 0xBB;
+        let b = identity(rebuilt);
+
+        assert_ne!(
+            a, b,
+            "a different executable hash must produce a distinct daemon identity, \
+             so the broker can never conflate two builds (no stale-version war)"
+        );
+
+        // Same bytes => same identity: a client and the same-build daemon it
+        // spawns rendezvous on ONE identity, with no shared file or negotiation.
+        assert_eq!(
+            a,
+            identity([0xAA; 32]),
+            "identical executable bytes must yield the same identity"
+        );
+    }
+
+    #[test]
+    fn exe_sha256_survives_the_manifest_wire_round_trip() {
+        // The broker distinguishes backends off the `CacheManifest` on the wire,
+        // so the 32-byte content hash must round-trip intact — otherwise two
+        // builds could collapse to one identity in transit.
+        let original = identity([0x42; 32]);
+        let proto = original.to_proto();
+        assert_eq!(
+            proto.exe_sha256.len(),
+            32,
+            "the wire form must carry the full 32-byte SHA-256"
+        );
+        let restored = DaemonProcess::try_from(proto).expect("identity round-trips");
+        assert_eq!(
+            restored, original,
+            "identity (including exe_sha256) must survive the manifest round-trip"
+        );
+    }
+}
