@@ -201,6 +201,15 @@ impl SessionTokenAuthority {
         self.daemon_tokens.len()
     }
 
+    /// The current composite `broker_token ‖ daemon_token` bytes for
+    /// `daemon_id`, or `None` if it has no registered token (never
+    /// registered, or already invalidated) -- e.g. for a control-channel
+    /// RPC handing the client something to present in a later `Hello`.
+    pub fn composed_token_for(&self, daemon_id: &str) -> Option<Vec<u8>> {
+        let daemon_half = self.daemon_tokens.get(daemon_id)?;
+        Some(compose_presented_token(&self.broker_token, daemon_half))
+    }
+
     /// Validate a presented composite token against a claimed `daemon_id`
     /// (which daemon the client's Hello says it wants — see "Not done yet"
     /// for how that claim reaches here from the wire).

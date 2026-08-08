@@ -15,6 +15,7 @@ use crate::broker::protocol::{
     ServiceDefinition, PROTOCOL_VERSION,
 };
 use crate::broker::server::hello_handler::validate_hello_shape;
+use crate::broker::server::session_token::SessionTokenAuthority;
 use crate::broker::server::{
     check_version_allowed, BackendKey, BackendLaunchRequest, BackendLauncher, BackendRegistry,
     BrokerInstanceKey, HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity,
@@ -29,6 +30,7 @@ pub struct HelloRouter<'a> {
     backends: BackendRegistryView<'a>,
     spawn_coordinator: Option<&'a Mutex<SpawnCoordinator>>,
     backend_launcher: Option<&'a dyn BackendLauncher>,
+    session_tokens: Option<&'a Mutex<SessionTokenAuthority>>,
 }
 
 #[derive(Clone, Copy)]
@@ -48,6 +50,7 @@ impl<'a> HelloRouter<'a> {
             backends: BackendRegistryView::Static(backends),
             spawn_coordinator: None,
             backend_launcher: None,
+            session_tokens: None,
         }
     }
 
@@ -62,6 +65,7 @@ impl<'a> HelloRouter<'a> {
             backends: BackendRegistryView::Live(backends),
             spawn_coordinator: None,
             backend_launcher: None,
+            session_tokens: None,
         }
     }
 
@@ -77,6 +81,20 @@ impl<'a> HelloRouter<'a> {
     /// Attach a launcher used to satisfy verified backend registry misses.
     pub fn with_backend_launcher(mut self, backend_launcher: &'a dyn BackendLauncher) -> Self {
         self.backend_launcher = Some(backend_launcher);
+        self
+    }
+
+    /// Attach a session-token authority (zackees/soldr#2361 Phase 2,
+    /// #2363). When configured, every successful backend launch mints and
+    /// registers that daemon's token half (`daemon_id = key.service_name`,
+    /// matching `HelloHandler`'s convention) before returning. `None` --
+    /// the default -- leaves this router's launch behavior unchanged from
+    /// before this field existed.
+    pub fn with_session_token_authority(
+        mut self,
+        session_tokens: &'a Mutex<SessionTokenAuthority>,
+    ) -> Self {
+        self.session_tokens = Some(session_tokens);
         self
     }
 
@@ -200,10 +218,36 @@ impl<'a> HelloRouter<'a> {
             ));
         };
 
+        // Mint and register this daemon's token half BEFORE spawning
+        // (zackees/soldr#2361 Phase 2, #2363), so it can ride along in the
+        // spawned process's environment (`BACKEND_ENV_SESSION_TOKEN`) --
+        // the daemon has its own valid token from the moment it starts,
+        // never a window where it exists but doesn't know it yet.
+        // `daemon_id = key.service_name`, matching `HelloHandler`'s
+        // existing convention (see `session_token.rs`'s "Not done yet").
+        // Best-effort: a mint failure (OS randomness exhausted) does not
+        // block the launch -- the daemon simply starts without a token,
+        // identical to today's behavior with no authority configured.
+        let minted_session_token = self.session_tokens.and_then(|authority| {
+            let mut authority = authority
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            authority
+                .register_daemon(key.service_name.clone())
+                .ok()
+                .map(|daemon_half| {
+                    crate::broker::server::session_token::compose_presented_token(
+                        authority.broker_token(),
+                        &daemon_half,
+                    )
+                })
+        });
+
         let request = BackendLaunchRequest {
             key,
             service_definition,
             trace_context,
+            session_token: minted_session_token.as_deref(),
         };
         match backend_launcher.launch(&request) {
             Ok(handle) => match self.register_launched_backend(key, service_definition, handle) {

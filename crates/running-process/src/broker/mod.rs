@@ -25,6 +25,7 @@ pub mod connect_watchdog;
 pub mod doctor;
 pub mod fs_health;
 pub mod get_http_endpoint_dispatch;
+pub mod get_session_token_dispatch;
 pub mod host_identity;
 pub mod http_endpoint_registry;
 pub mod lifecycle;

@@ -43,3 +43,25 @@ message GetBrokerHttpEndpointResponse {
   uint32 port = 1;
   uint32 pid = 2;
 }
+
+// CLI→broker request for the current composite session token
+// (zackees/soldr#2360, #2361 Phase 2, #2363) of one daemon. A cooperative
+// liveness/revocation signal, NOT authentication -- see
+// `broker/server/session_token.rs`'s module docs for the full model. This
+// is how a client learns a token to present on a later `Hello.auth_token`:
+// the broker mints and registers a daemon's half when it launches that
+// daemon (`HelloRouter::launch_backend`), and this RPC is the read-only
+// lookup a client uses afterward, deliberately kept off the FROZEN FOREVER
+// v1 `Hello`/`Negotiated` envelope (per #228) since it evolves with v2.
+message GetSessionTokenRequest {
+  // Matches `HelloRouter`'s daemon_id convention (== `Hello.service_name`).
+  string daemon_id = 1;
+}
+
+// Broker→CLI response. `found = false` means `daemon_id` has no registered
+// token (never launched through this broker, or already invalidated) --
+// `session_token` is empty in that case, not a zero-filled placeholder.
+message GetSessionTokenResponse {
+  bool found = 1;
+  bytes session_token = 2;
+}

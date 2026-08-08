@@ -36,6 +36,11 @@ pub const BACKEND_ENV_INSTANCE: &str = "RUNNING_PROCESS_BROKER_V1_INSTANCE";
 pub const BACKEND_ENV_TRACEPARENT: &str = "RUNNING_PROCESS_BROKER_V1_TRACEPARENT";
 /// Environment variable containing the incoming W3C tracestate value.
 pub const BACKEND_ENV_TRACESTATE: &str = "RUNNING_PROCESS_BROKER_V1_TRACESTATE";
+/// Environment variable containing this daemon's composite session token
+/// (zackees/soldr#2361 Phase 2, #2363), hex-encoded. Set only when the
+/// router launching this backend was configured with a session-token
+/// authority -- absent otherwise, matching every other opt-in field here.
+pub const BACKEND_ENV_SESSION_TOKEN: &str = "RUNNING_PROCESS_BROKER_V1_SESSION_TOKEN";
 
 /// Inputs supplied to a backend launcher after Hello validation and budget
 /// admission.
@@ -46,6 +51,11 @@ pub struct BackendLaunchRequest<'a> {
     pub service_definition: &'a ServiceDefinition,
     /// Trace context from the Hello frame that triggered this launch.
     pub trace_context: &'a TraceContext,
+    /// This daemon's freshly-minted composite session token
+    /// (zackees/soldr#2361 Phase 2), `broker_half ‖ daemon_half`, if the
+    /// router was configured with a session-token authority. `None` when
+    /// no authority is configured -- the default, unchanged behavior.
+    pub session_token: Option<&'a [u8]>,
 }
 
 /// Launches or discovers one backend and returns a verified handle.
@@ -219,6 +229,18 @@ fn configure_backend_command(
     if !request.trace_context.tracestate.is_empty() {
         command.env(BACKEND_ENV_TRACESTATE, &request.trace_context.tracestate);
     }
+    if let Some(session_token) = request.session_token {
+        command.env(BACKEND_ENV_SESSION_TOKEN, hex_encode(session_token));
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 /// Errors raised while launching a backend.
@@ -369,6 +391,7 @@ mod tests {
             key: &key,
             service_definition: &service_definition,
             trace_context: &trace_context,
+            session_token: None,
         };
         let endpoint = Endpoint {
             namespace_id: "shared".into(),
