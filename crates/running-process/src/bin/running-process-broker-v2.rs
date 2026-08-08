@@ -54,7 +54,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::{Listener as _, Stream as _};
-use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions};
+use interprocess::local_socket::ListenerNonblockingMode;
 use prost::Message;
 use running_process::broker::broker_http_discovery;
 use running_process::broker::broker_http_port::BrokerHttpPort;
@@ -70,6 +70,7 @@ use running_process::broker::protocol::{
 use running_process::broker::protocol_v2::ServiceDefinitionLoader;
 use running_process::broker::server::deadline_stream::{hello_read_deadline, DeadlineStream};
 use running_process::broker::server::service_def_loader::ServiceDefinitionError;
+use running_process::broker::server::singleton_bind;
 
 /// Write a line to stdout, tolerating a reader that has gone away.
 ///
@@ -387,7 +388,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let socket_path = match resolve_socket_path(&pipe_name) {
+    let socket_path = match singleton_bind::resolve_socket_path(&pipe_name) {
         Ok(p) => p,
         Err(err) => {
             say_err!("running-process-broker-v2: resolve_socket_path failed: {err}");
@@ -395,78 +396,28 @@ fn main() -> ExitCode {
         }
     };
 
-    // On Unix, ensure the parent directory exists but do NOT unlink the
-    // socket path here: a live peer may be bound at this path right now
-    // (soldr#2361/#2363 concurrent-starter singleton race,
-    // running-process#899 — an unconditional pre-bind `remove_file`
-    // let every one of N racing starters unlink the prior "winner"'s
-    // live socket and rebind over it, so all N reported success).
-    // Cleanup of a genuinely stale (orphaned, no listener) path happens
-    // below, only after a bind attempt fails and a connect probe
-    // confirms nothing is listening. On Windows the pipe namespace is
-    // kernel-managed and previous bindings vanish when the prior process
-    // exited, so no cleanup step is needed there at all.
-    #[cfg(unix)]
-    {
-        let path = std::path::Path::new(&socket_path);
-        if let Some(parent) = path.parent() {
-            if let Err(err) = std::fs::create_dir_all(parent) {
-                say_err!(
-                    "running-process-broker-v2: create_dir_all({}) failed: {err}",
-                    parent.display()
-                );
-                return ExitCode::from(1);
-            }
-        }
-    }
-
-    let name = match wrap_socket_name(&socket_path) {
-        Ok(n) => n,
-        Err(err) => {
-            say_err!("running-process-broker-v2: wrap_socket_name failed: {err}");
-            return ExitCode::from(1);
-        }
-    };
-
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut listener_result = ListenerOptions::new().name(name).create_sync();
-
-    // A first-attempt bind failure classified as already-bound might be a
-    // genuinely live peer (correct: refuse below) or an orphaned socket
-    // file left by a process that crashed without cleaning up (stale:
-    // safe to remove and retry once). Unix-only: connect-probe the path
-    // to tell the two apart before touching the filesystem.
-    #[cfg(unix)]
-    if let Err(err) = &listener_result {
-        if is_already_bound_error(err) && unix_socket_path_is_stale(&socket_path) {
-            let _ = std::fs::remove_file(&socket_path);
-            listener_result = match wrap_socket_name(&socket_path) {
-                Ok(retry_name) => ListenerOptions::new().name(retry_name).create_sync(),
-                Err(_) => listener_result,
-            };
-        }
-    }
-
-    let listener = match listener_result {
+    // See `singleton_bind::bind_singleton`'s docs for why this does not
+    // unlink the path up front (running-process#899, soldr#2361/#2363's
+    // singleton testing invariant).
+    let listener = match singleton_bind::bind_singleton(&socket_path) {
         Ok(l) => l,
-        Err(err) => {
-            // Single-instance enforcement: a `WouldBlock` / `AddrInUse`
-            // bind failure means another `running-process-broker-v2
+        Err(singleton_bind::BindSingletonError::AlreadyBound(_)) => {
+            // Single-instance enforcement: another `running-process-broker-v2
             // --program {program}` is already running on this user's
             // socket. Surface a directly-actionable message instead of
             // a raw OS error string.
-            if is_already_bound_error(&err) {
-                say_err!(
-                    "running-process-broker-v2: another broker is already \
-                     bound at {socket_path} (program={}). Refusing to \
-                     start to avoid double-bind. Stop the other broker \
-                     first, or pass `--program <other-name>` to bind a \
-                     distinct namespace.",
-                    opts.program,
-                );
-                return ExitCode::from(75); // EX_TEMPFAIL — supervisor can retry after the other broker exits
-            }
-            say_err!("running-process-broker-v2: bind failed at {socket_path}: {err}");
+            say_err!(
+                "running-process-broker-v2: another broker is already \
+                 bound at {socket_path} (program={}). Refusing to \
+                 start to avoid double-bind. Stop the other broker \
+                 first, or pass `--program <other-name>` to bind a \
+                 distinct namespace.",
+                opts.program,
+            );
+            return ExitCode::from(75); // EX_TEMPFAIL — supervisor can retry after the other broker exits
+        }
+        Err(err) => {
+            say_err!("running-process-broker-v2: bind failed at {socket_path}: {err:?}");
             return ExitCode::from(1);
         }
     };
@@ -1015,124 +966,10 @@ impl HelloReplyExt for HelloReply {
     }
 }
 
-/// Wrap a bare pipe name into the platform's local-socket path.
-fn resolve_socket_path(bare_name: &str) -> Result<String, String> {
-    #[cfg(windows)]
-    {
-        Ok(format!(r"\\.\pipe\{bare_name}"))
-    }
-    #[cfg(unix)]
-    {
-        let dir = unix_socket_dir();
-        let leaf = if cfg!(target_os = "macos") {
-            // macOS sun_path is 104 bytes; hash the bare name to fit.
-            let mut hash = blake3::Hasher::new();
-            hash.update(bare_name.as_bytes());
-            let bytes = hash.finalize();
-            let mut hex = String::with_capacity(16);
-            for b in bytes.as_bytes().iter().take(8) {
-                use std::fmt::Write as _;
-                let _ = write!(hex, "{b:02x}");
-            }
-            format!("{hex}.sock")
-        } else {
-            format!("{bare_name}.sock")
-        };
-        Ok(dir.join(leaf).to_string_lossy().into_owned())
-    }
-}
-
-#[cfg(unix)]
-fn unix_socket_dir() -> std::path::PathBuf {
-    use std::path::PathBuf;
-    #[cfg(target_os = "macos")]
-    {
-        let uid = unsafe { libc::getuid() };
-        let tmp = env::var_os("TMPDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        tmp.join(format!(".rp-{uid}-broker-v2"))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Some(d) = env::var_os("XDG_RUNTIME_DIR") {
-            PathBuf::from(d).join("running-process").join("broker-v2")
-        } else {
-            let uid = unsafe { libc::getuid() };
-            PathBuf::from(format!("/tmp/running-process-{uid}/broker-v2"))
-        }
-    }
-}
-
-/// Classify a [`ListenerOptions::create_sync`] error as
-/// "another broker is already bound" vs any other bind failure.
-///
-/// `AddrInUse` / `WouldBlock` are the canonical "another listener
-/// already owns this name" signals on Unix-style transports.
-/// **Windows named-pipe bind reports the same condition as
-/// `PermissionDenied`** (ERROR_ACCESS_DENIED, raw os error 5)
-/// because the existing pipe instance's ACL blocks the second bind.
-/// Treat that case as already-bound too — a "true" permission
-/// problem on the v2 broker socket path is extremely rare in
-/// production (the path lives under XDG_RUNTIME_DIR / TMPDIR which
-/// is always writable by the current user).
-fn is_already_bound_error(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::AddrInUse
-            | std::io::ErrorKind::WouldBlock
-            | std::io::ErrorKind::PermissionDenied,
-    )
-}
-
-/// Unix-only: tell a genuinely orphaned unix-socket path (left behind by a
-/// process that exited without cleaning up) apart from a path where a live
-/// peer is listening right now — the two look identical to `bind`
-/// (`AddrInUse` either way). A connect probe distinguishes them: nothing is
-/// listening if the connect itself fails to even reach a peer
-/// (`ConnectionRefused` — the classic "orphaned socket file, no listener"
-/// signal — or `NotFound`); any other outcome, including a successful
-/// connect, means treat the path as live and leave it alone.
-///
-/// Used only to decide whether it is safe to `remove_file` and retry a
-/// failed bind once (soldr#2361/#2363, running-process#899) — never to
-/// unlink unconditionally, which is what let every process in a concurrent
-/// start race stomp the previous "winner"'s live socket.
-#[cfg(unix)]
-fn unix_socket_path_is_stale(socket_path: &str) -> bool {
-    use interprocess::local_socket::traits::Stream as _;
-    use interprocess::local_socket::Stream;
-    let Ok(name) = wrap_socket_name(socket_path) else {
-        return false; // can't even build the name -- don't touch the file
-    };
-    match Stream::connect(name) {
-        Ok(_stream) => false,
-        Err(err) => matches!(
-            err.kind(),
-            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-        ),
-    }
-}
-
-fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
-    use interprocess::local_socket::prelude::*;
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::GenericNamespaced;
-        let bare = socket_path
-            .strip_prefix(r"\\.\pipe\")
-            .unwrap_or(socket_path);
-        bare.to_ns_name::<GenericNamespaced>()
-            .map_err(|e| format!("to_ns_name: {e}"))
-    }
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::GenericFilePath;
-        socket_path
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|e| format!("to_fs_name: {e}"))
-    }
-}
+// Socket-path resolution, the singleton bind, and its stale-socket-cleanup
+// probe moved to `running_process::broker::server::singleton_bind`
+// (soldr#2361 Phase 2 prep, running-process#901) so soldr's own future
+// broker role can share this tested logic instead of duplicating it.
 
 #[cfg(test)]
 #[path = "running-process-broker-v2/tests.rs"]

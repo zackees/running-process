@@ -446,38 +446,12 @@ fn build_hello_reply_blocks_outside_version_allow_list() {
     }
 }
 
-#[test]
-fn is_already_bound_error_classifies_addr_in_use() {
-    let err = std::io::Error::new(std::io::ErrorKind::AddrInUse, "in use");
-    assert!(is_already_bound_error(&err));
-}
-
-#[test]
-fn is_already_bound_error_classifies_would_block() {
-    let err = std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block");
-    assert!(is_already_bound_error(&err));
-}
-
-#[test]
-fn is_already_bound_error_classifies_permission_denied() {
-    // PR #536 deliberately added `PermissionDenied` to the
-    // is_already_bound_error matcher: on Windows, a double-bind
-    // surfaces as `ERROR_ACCESS_DENIED` (raw os error 5) because
-    // the existing pipe instance's ACL blocks the second bind —
-    // not as `AddrInUse`. This test was added in PR #534 before
-    // that classification was widened, expecting the negation;
-    // PR #536 updated the impl but forgot the test, which then
-    // cascade-failed every CI run until this fix. Rename +
-    // invert to match the now-current contract.
-    let err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
-    assert!(is_already_bound_error(&err));
-}
-
-#[test]
-fn is_already_bound_error_does_not_misclassify_not_found() {
-    let err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
-    assert!(!is_already_bound_error(&err));
-}
+// is_already_bound_error's own tests moved with the function to
+// `broker::server::singleton_bind` (soldr#2361 Phase 2 prep,
+// running-process#901) — see that module's `tests` for the
+// classification coverage (AddrInUse / WouldBlock / PermissionDenied /
+// NotFound), including the PR #534/#536 PermissionDenied history this
+// file used to carry as a comment.
 
 #[test]
 fn build_hello_reply_allows_version_in_allow_list() {
