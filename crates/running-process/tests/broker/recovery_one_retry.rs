@@ -8,7 +8,7 @@ use running_process::broker::server::{
 };
 
 fn key(version: &str) -> BackendKey {
-    BackendKey::new(BrokerInstanceKey::Shared, "zccache", version)
+    BackendKey::new(BrokerInstanceKey::Shared, "zccache", version, "")
 }
 
 fn recovery_state() -> BackendRecoveryState {

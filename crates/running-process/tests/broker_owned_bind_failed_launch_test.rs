@@ -65,7 +65,7 @@ fn a_failed_launch_leaves_no_socket_behind() {
         version_allow_list: vec!["1.0.0".into()],
         labels: Default::default(),
     };
-    let key = BackendKey::new(BrokerInstanceKey::Shared, "never-binds", "1.0.0");
+    let key = BackendKey::new(BrokerInstanceKey::Shared, "never-binds", "1.0.0", "");
     let trace_context = TraceContext::default();
     let request = BackendLaunchRequest {
         key: &key,

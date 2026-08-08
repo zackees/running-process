@@ -275,7 +275,7 @@ pub fn build_hello_handler(config: &BrokerServeConfig) -> Result<HelloHandler, B
     let registered = build_registered_backend(config)?;
     let backend = registered
         .registry
-        .registered_backend_for(
+        .registered_backend_for_any_build(
             &registered.instance,
             &registered.service_definition,
             &config.service_version,

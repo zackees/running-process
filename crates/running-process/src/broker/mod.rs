@@ -21,6 +21,7 @@ pub mod builders;
 pub mod capabilities;
 pub mod client;
 pub mod client_v2;
+pub mod connect_watchdog;
 pub mod doctor;
 pub mod fs_health;
 pub mod get_http_endpoint_dispatch;

@@ -40,7 +40,7 @@ fn issue_token(store: &mut HandoffTokenStore, now: Instant, byte: u8) -> Handoff
 }
 
 fn backend_key() -> BackendKey {
-    BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.20")
+    BackendKey::new(BrokerInstanceKey::Shared, "zccache", "1.11.20", "")
 }
 
 fn assert_silent_reconnect(

@@ -9,7 +9,7 @@ use running_process::broker::server::{
 };
 
 fn key(service_name: &str, version: &str) -> BackendKey {
-    BackendKey::new(BrokerInstanceKey::Shared, service_name, version)
+    BackendKey::new(BrokerInstanceKey::Shared, service_name, version, "")
 }
 
 #[test]
