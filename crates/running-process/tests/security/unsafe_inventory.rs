@@ -74,6 +74,17 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
         unsafe_count: 6,
     },
     UnsafeInventoryEntry {
+        // soldr#2361 Phase 2 prep (running-process#901): `unsafe {
+        // libc::getuid() }` in `unix_socket_dir`, moved here from
+        // `src/bin/running-process-broker-v2.rs` (untracked by this audit,
+        // since it lived outside `src/broker/`) as part of extracting the
+        // singleton-bind logic into a reusable library module. Same
+        // getuid() pattern as `client_v2.rs`'s existing entry above; no
+        // new unsafe surface, just a relocation.
+        path: "src/broker/server/singleton_bind.rs",
+        unsafe_count: 2,
+    },
+    UnsafeInventoryEntry {
         path: "src/broker/server/spawn_coordinator.rs",
         unsafe_count: 8,
     },

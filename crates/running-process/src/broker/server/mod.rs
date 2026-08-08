@@ -30,6 +30,7 @@ pub mod service_def_loader;
 /// authority. Wired into `hello_handler` via
 /// `HelloHandler::with_session_token_authority` — see the module docs.
 pub mod session_token;
+pub mod singleton_bind;
 pub mod spawn_coordinator;
 pub mod spawn_wait;
 pub mod trace_context;

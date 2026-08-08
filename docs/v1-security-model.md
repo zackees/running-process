@@ -225,6 +225,15 @@ constructing and inspecting `msghdr` control messages, calling `sendmsg` and
 test. The additional reviewed site for #614 closes only the descriptor returned
 by that test's successful `recvmsg`; production ownership remains unchanged.
 
+The `server/singleton_bind.rs` inventory (soldr#2361 Phase 2 prep,
+running-process#901) covers `unix_socket_dir`'s two `unsafe { libc::getuid() }`
+calls, reading the current process's own real user ID to build a per-user
+runtime-directory path. This is a relocation, not new surface: the same two
+call sites previously lived in `src/bin/running-process-broker-v2.rs`
+(untracked by this audit, since the scan is scoped to `src/broker/`) and moved
+verbatim when the bind/singleton logic was extracted into a reusable library
+module so a future soldr-side broker role can call it too.
+
 ## Fuzz Campaign And Reviewer Signoff
 
 The v1 release gate requires one-hour fuzz campaign evidence for every
