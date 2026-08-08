@@ -4,36 +4,52 @@
 //! **STATUS: not yet wired into [`super::hello_handler`]. This is the
 //! standalone primitive only — see the "Not done yet" section below.**
 //!
-//! ## The design this implements a piece of
+//! ## What this is — a cooperative invalidation signal, NOT authentication
 //!
-//! soldr's broker-fronted daemon redesign wants every client connection
-//! authenticated by a composite token: `broker_token ‖ daemon_token`, where
-//! the first half is minted once by the broker at its own startup and the
-//! second half is minted by the specific daemon the client is talking to.
-//! Two-level invalidation falls out of that split for free:
+//! This is a liveness/generation notification scheme for a cooperative
+//! client inside one trust domain (all roles run as the same user on the
+//! same machine). It is **not** a security boundary and does not
+//! authenticate anyone.
 //!
-//! - Rotating the **broker** token invalidates every session across every
-//!   daemon (broker restart, or a live rotation e.g. after the spawn-storm
-//!   guard trips).
-//! - Invalidating one **daemon**'s token disrupts only that daemon's
+//! Every client session carries a composite token `broker_token ‖
+//! daemon_token`: the first half minted once by the broker at its own
+//! startup, the second minted by the specific daemon the client is talking
+//! to. The halves are generation markers — "the broker/daemon incarnation
+//! you established this session against". When a presented token stops
+//! validating, that tells the client its session has terminated or the
+//! broker/daemon got forcefully cycled since its last message: the session
+//! is invalid, and the client should report the error (the
+//! cancelled-because-stopped message class, soldr#2363), unwind, and exit 1
+//! — never retry against the new incarnation as if nothing happened.
+//! Two-level invalidation falls out of the split for free:
+//!
+//! - Rotating the **broker** half signals every session across every
+//!   daemon at once (broker restart, or a live rotation e.g. after the
+//!   spawn-storm guard trips).
+//! - Invalidating one **daemon**'s half signals only that daemon's
 //!   sessions; sessions against other daemons are unaffected.
+//!
+//! The halves come from OS randomness only so that incarnations are
+//! globally unique — a restarted broker or daemon can never accidentally
+//! validate a stale token minted by its predecessor, the way a counter or
+//! timestamp could collide. The bytes are not secrets guarding anything,
+//! which is also why the plain `!=` comparison (mirroring
+//! [`super::handoff::HandoffToken`]) is fine here: constant-time comparison
+//! defends secrets against guessing oracles, and there is no secret and
+//! nothing to guess for.
+//!
+//! There is deliberately **no TTL** on these tokens. A session may go
+//! silent for arbitrarily long (e.g. a link phase with no daemon traffic)
+//! and remain valid; invalidation is communicated lazily, just in time, on
+//! the next communication intent — the client learns its session died at
+//! the exact moment it next tries to use it, which is the only moment it
+//! matters.
 //!
 //! This module is the authority that mints, rotates, and validates both
 //! halves. It deliberately knows nothing about the wire (`Hello.auth_token`,
-//! already reserved for exactly this on the v2-reuses-v1-framing Hello
-//! message — see `broker_v1_envelope.proto`) or about `HelloHandler` /
+//! already reserved on the v2-reuses-v1-framing Hello message — see
+//! `broker_v1_envelope.proto`) or about `HelloHandler` /
 //! `RegisteredBackend` — see "Not done yet".
-//!
-//! ## Equality is NOT constant-time
-//!
-//! Deliberately mirrors [`super::handoff::HandoffToken`]'s existing
-//! `PartialEq`-based comparison rather than introducing a new
-//! constant-time-compare dependency (e.g. `subtle`) for consistency with
-//! the codebase's one existing token type. This is a **known, flagged**
-//! timing-side-channel gap for a security reviewer to weigh: whether that
-//! precedent is acceptable for a session-lifetime auth token (as opposed to
-//! a single-use handoff token with a 30s TTL) is exactly the kind of call
-//! this PR is asking for before merge.
 //!
 //! ## Not done yet (left for review / a follow-up slice)
 //!
@@ -192,11 +208,12 @@ impl SessionTokenAuthority {
     ///
     /// `presented` is `broker_half ‖ daemon_half`, [`SESSION_TOKEN_TOTAL_BYTES`]
     /// long. Checks the broker half FIRST and independently of daemon
-    /// lookup, so a broker-rotation invalidation reports as
-    /// [`SessionTokenRejection::BrokerHalfMismatch`] even for an unknown
-    /// `daemon_id` — a caller must not be able to distinguish "wrong broker
-    /// token" from "wrong broker token, also this daemon doesn't exist",
-    /// which would leak daemon-id validity to an unauthenticated peer.
+    /// lookup, so a broker cycle reports as
+    /// [`SessionTokenRejection::BrokerHalfMismatch`] even when the named
+    /// `daemon_id` is also gone — the broker-wide event is the more global
+    /// (and more actionable) verdict, and per-daemon state after a broker
+    /// cycle is stale by definition, so reporting it would mislead the
+    /// client about what happened.
     pub fn validate(&self, presented: &[u8], daemon_id: &str) -> Result<(), SessionTokenRejection> {
         if presented.len() != SESSION_TOKEN_TOTAL_BYTES {
             return Err(SessionTokenRejection::MalformedLength);
@@ -283,8 +300,9 @@ mod tests {
     fn broker_half_is_checked_before_daemon_lookup_for_an_unknown_daemon() {
         // A wrong broker half against a daemon_id that was never
         // registered must still report BrokerHalfMismatch, not
-        // DaemonUnknown -- an unauthenticated peer must not learn
-        // whether a given daemon_id exists.
+        // DaemonUnknown -- after a broker cycle the broker-wide verdict
+        // is the one the client must act on; per-daemon state is stale
+        // by definition and would misattribute what happened.
         let authority = SessionTokenAuthority::with_broker_token(half(0xAA));
         let wrong_broker_half = half(0xFF);
         let daemon_half = half(0x11);
