@@ -367,7 +367,8 @@ fn on_disk_exe_sha256_hex(binary_path: &str) -> String {
     use std::time::UNIX_EPOCH;
 
     // path -> (mtime_nanos, size_bytes, hex_hash)
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (u128, u64, String)>>> = OnceLock::new();
+    type ExeHashCache = Mutex<HashMap<PathBuf, (u128, u64, String)>>;
+    static CACHE: OnceLock<ExeHashCache> = OnceLock::new();
 
     let path = PathBuf::from(binary_path);
     let Ok(meta) = std::fs::metadata(&path) else {
@@ -383,7 +384,9 @@ fn on_disk_exe_sha256_hex(binary_path: &str) -> String {
 
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     {
-        let map = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let map = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((c_mtime, c_size, hash)) = map.get(&path) {
             if *c_mtime == mtime && *c_size == size {
                 return hash.clone();

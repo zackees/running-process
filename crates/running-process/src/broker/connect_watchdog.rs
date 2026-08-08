@@ -144,7 +144,11 @@ fn render_connect_dump(
             "  thread #{idx} os_tid={} ip={:#018x}{}",
             thread.os_tid,
             thread.instruction_pointer,
-            if thread.truncated { " (stack truncated)" } else { "" }
+            if thread.truncated {
+                " (stack truncated)"
+            } else {
+                ""
+            }
         );
         if thread.frames.is_empty() {
             let _ = writeln!(out, "    <no resolvable frames>");

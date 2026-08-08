@@ -50,8 +50,12 @@ fn registry_isolates_same_service_version_by_instance() {
     let mut registry = BackendRegistry::new();
     registry.insert(shared.clone(), handle("zccache", "1.11.20"));
 
-    assert!(registry.get_any_build(&shared, "zccache", "1.11.20").is_some());
-    assert!(registry.get_any_build(&private, "zccache", "1.11.20").is_none());
+    assert!(registry
+        .get_any_build(&shared, "zccache", "1.11.20")
+        .is_some());
+    assert!(registry
+        .get_any_build(&private, "zccache", "1.11.20")
+        .is_none());
 }
 
 #[test]

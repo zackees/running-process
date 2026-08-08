@@ -190,7 +190,8 @@ impl BackendRegistry {
         service_definition: &ServiceDefinition,
         service_version: &str,
     ) -> Option<RegisteredBackend> {
-        let handle = self.get_any_build(instance, &service_definition.service_name, service_version)?;
+        let handle =
+            self.get_any_build(instance, &service_definition.service_name, service_version)?;
         Some(RegisteredBackend {
             service_definition: service_definition.clone(),
             daemon_version: handle.service_version.clone(),
@@ -240,7 +241,11 @@ mod tests {
     /// The exe hash every `handle()` in this module carries: the test binary's
     /// own content hash (all handles are `DaemonProcess::current_process`).
     fn test_exe_hash() -> String {
-        hex_lower(&handle("probe", "0.0.0", std::process::id()).daemon_process.exe_sha256)
+        hex_lower(
+            &handle("probe", "0.0.0", std::process::id())
+                .daemon_process
+                .exe_sha256,
+        )
     }
 
     #[test]
