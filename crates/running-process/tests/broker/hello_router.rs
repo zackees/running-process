@@ -356,7 +356,7 @@ fn router_spawns_and_registers_backend_on_live_registry_miss() {
     assert!(registry
         .lock()
         .unwrap()
-        .get(&BrokerInstanceKey::Shared, "zccache", "1.11.20")
+        .get_any_build(&BrokerInstanceKey::Shared, "zccache", "1.11.20")
         .is_some());
 
     let second = router.handle_request(&request("zccache", "1.11.20"));

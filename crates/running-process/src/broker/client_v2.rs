@@ -32,6 +32,7 @@ pub const DEFAULT_HELLO_DEADLINE: Duration = Duration::from_secs(3);
 
 use crate::broker::adopt::{IntoBackendIoError, OwnedBackendIo};
 use crate::broker::client::connect_local_socket;
+use crate::broker::connect_watchdog::{capture_connect_dump, ConnectWatchdog, WATCHDOG_GRACE};
 use crate::broker::lifecycle::names::PipePathError;
 use crate::broker::lifecycle::names_v2::v2_program_pipe;
 use crate::broker::lifecycle::sid::{user_sid_hash, SidError};
@@ -320,6 +321,49 @@ pub enum BackendDialError {
 /// [`connect_with_deadline`].
 pub fn connect(program: &str, version_hint: &str) -> Result<ClientSession, BrokerV2Error> {
     connect_with_deadline(program, version_hint, DEFAULT_HELLO_DEADLINE)
+}
+
+/// Connect to the v2 broker for `program`, or terminate the process.
+///
+/// The fail-fast entry point for callers that must never spin on an
+/// unreachable daemon (running-process#894). Where [`connect`] returns an
+/// error the caller might loop on — the retry/respawn behaviour that pinned
+/// every core and hung the machine downstream — this makes an unreachable
+/// daemon terminal: one bounded attempt, then an all-thread stack dump (so the
+/// stuck thread is visible) and `exit 1`. It never retries and never respawns.
+///
+/// An out-of-band [`ConnectWatchdog`] guarantees termination even if the dump
+/// or the exit epilogue itself wedges: the attempt must finish within
+/// `deadline + WATCHDOG_GRACE` or the process is aborted. On the success path
+/// the watchdog is disarmed as the returned session leaves this function.
+///
+/// This does not return on failure; the return type reflects the success case.
+pub fn connect_or_die(program: &str, version_hint: &str, deadline: Duration) -> ClientSession {
+    // Armed for the whole attempt. Dropped (disarmed) only when we return a
+    // session below; `std::process::exit` skips destructors, so the terminal
+    // path deliberately leaves it armed as a backstop.
+    let watchdog = ConnectWatchdog::arm(deadline + WATCHDOG_GRACE);
+
+    match connect_with_deadline(program, version_hint, deadline) {
+        Ok(session) => {
+            drop(watchdog);
+            session
+        }
+        Err(err) => {
+            let error = err.to_string();
+            eprintln!(
+                "running-process: v2 broker for '{program}' unreachable within \
+                 {deadline:?}: {error} — capturing a stack dump and exiting (no retry)"
+            );
+            if let Some(path) = capture_connect_dump(program, deadline, &error) {
+                eprintln!(
+                    "running-process: all-thread stack dump written to {}",
+                    path.display()
+                );
+            }
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Same as [`connect`] but with a caller-supplied deadline for the
