@@ -1,8 +1,9 @@
 //! Composite broker/daemon session token authority (zackees/soldr#2360, #2361
 //! Phase 1, #2363).
 //!
-//! **STATUS: not yet wired into [`super::hello_handler`]. This is the
-//! standalone primitive only — see the "Not done yet" section below.**
+//! **STATUS: wired into [`super::hello_handler::HelloHandler`] via
+//! `with_session_token_authority` — opt-in, dormant unless a caller
+//! configures it. See "Not done yet" below for what's still open.**
 //!
 //! ## What this is — a cooperative invalidation signal, NOT authentication
 //!
@@ -51,19 +52,17 @@
 //! `broker_v1_envelope.proto`) or about `HelloHandler` /
 //! `RegisteredBackend` — see "Not done yet".
 //!
-//! ## Not done yet (left for review / a follow-up slice)
+//! ## Not done yet (left for a follow-up slice)
 //!
-//! - Wiring `SessionTokenAuthority` into [`super::hello_handler::HelloHandler`]
-//!   so an incoming `Hello.auth_token` is actually checked. This needs a
-//!   decision on how a `daemon_id` maps to the existing
-//!   `service_name`-keyed `RegisteredBackend` table — is it the same key, a
-//!   new field, or derived from `ServiceDefinition`? That's a real design
-//!   choice affecting the negotiation flow, not something to guess at speed.
-//! - `Refused` wiring: which `ErrorCode` a mismatch returns
-//!   (`ERROR_PEER_REJECTED` looks right, reusing an existing code, but
-//!   confirm against how callers currently branch on refusal codes).
-//! - Where the authority itself lives (per-broker-process singleton state)
-//!   and how it is threaded into the accept loop.
+//! - `daemon_id` is resolved as `hello.service_name` — the same key
+//!   `RegisteredBackend` already uses — rather than a new field. `Refused`
+//!   uses `ERROR_PEER_REJECTED` for every [`SessionTokenRejection`] kind.
+//!   Both settled in the `HelloHandler` wiring.
+//! - Where the authority instance itself lives (per-broker-process
+//!   singleton state) and how `register_daemon`/`invalidate_daemon` are
+//!   threaded into the daemon spawn/exit lifecycle — that's soldr#2361
+//!   Phase 2 (spawn-chain inversion), which is what will actually call
+//!   `with_session_token_authority` and stop this from being dormant.
 //! - Persistence-boundary invariant from soldr#2363's testing invariants
 //!   ("no token material is ever written under a daemon cache root") —
 //!   this module is pure in-memory today, so that invariant holds trivially
@@ -138,8 +137,8 @@ pub enum SessionTokenRejection {
 }
 
 /// Mints, rotates, and validates the composite `broker_token ‖ daemon_token`
-/// pair described in the module docs. See "Not done yet" — this is the
-/// authority only, not yet consulted by the Hello handshake.
+/// pair described in the module docs.
+#[derive(Debug)]
 pub struct SessionTokenAuthority {
     broker_token: TokenHalf,
     daemon_tokens: HashMap<DaemonId, TokenHalf>,

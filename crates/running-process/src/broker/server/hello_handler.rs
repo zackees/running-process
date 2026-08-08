@@ -23,6 +23,7 @@ use crate::broker::server::handoff::{
     AcknowledgedHandoff, ExpiredHandoff, HandoffAckError, HandoffAckRegistry, HandoffToken,
     HandoffTokenStore, PendingHandoffBackend,
 };
+use crate::broker::server::session_token::{SessionTokenAuthority, SessionTokenRejection};
 use crate::broker::server::version_allow_list::{check_version_allowed, VersionPolicyBlock};
 use crate::broker::server::TraceContext;
 
@@ -109,6 +110,15 @@ pub struct HelloHandler {
     rate_limiter: PeerRateLimiter,
     handoff_tokens: Mutex<HandoffTokenStore>,
     handoff_acks: Mutex<HandoffAckRegistry>,
+    /// Session-invalidation authority (soldr#2363). `None` — the default —
+    /// is today's behavior: no check, every Hello negotiates on service
+    /// registration alone. `Some` is opt-in, all-or-nothing: once
+    /// configured, every Hello must carry a composite token that validates
+    /// against this authority's live broker/daemon halves, checked with
+    /// `daemon_id = hello.service_name` (the same key `RegisteredBackend`
+    /// already uses). See [`super::session_token`] for what a mismatch
+    /// means — a cooperative revocation signal, not authentication.
+    session_tokens: Option<Mutex<SessionTokenAuthority>>,
 }
 
 impl HelloHandler {
@@ -120,7 +130,28 @@ impl HelloHandler {
             rate_limiter: PeerRateLimiter::default(),
             handoff_tokens: Mutex::new(HandoffTokenStore::new()),
             handoff_acks: Mutex::new(HandoffAckRegistry::new()),
+            session_tokens: None,
         }
+    }
+
+    /// Opt into composite session-token enforcement (soldr#2363 Phase 1/2).
+    /// Every subsequent Hello must present a valid `broker_token ‖
+    /// daemon_token` for its `service_name`, or be refused with
+    /// [`ErrorCode::ErrorPeerRejected`].
+    pub fn with_session_token_authority(mut self, authority: SessionTokenAuthority) -> Self {
+        self.session_tokens = Some(Mutex::new(authority));
+        self
+    }
+
+    /// Lock the session-token authority, if this handler was configured
+    /// with one — e.g. so a caller can register or invalidate a daemon's
+    /// token as it starts up or is torn down.
+    pub fn session_token_authority(
+        &self,
+    ) -> Option<std::sync::MutexGuard<'_, SessionTokenAuthority>> {
+        self.session_tokens
+            .as_ref()
+            .map(|m| m.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 
     /// Override the backend ACK deadline for pending handoffs.
@@ -230,6 +261,10 @@ impl HelloHandler {
             return refused_reply(refused);
         }
 
+        if let Some(refused) = self.validate_session_token(hello) {
+            return refused_reply(refused);
+        }
+
         let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
         let handle_passed_token =
             self.issue_handoff_token(hello.client_capabilities, &hello.service_name);
@@ -251,6 +286,29 @@ impl HelloHandler {
             handle_passed_token,
             connection_id,
         }))
+    }
+
+    /// Check `hello.auth_token` against the configured session-token
+    /// authority, if any. Returns `None` (proceed) when no authority is
+    /// configured — today's dormant default — or when the presented token
+    /// validates. Returns `Some(Refused)` on any
+    /// [`SessionTokenRejection`], all mapped to
+    /// [`ErrorCode::ErrorPeerRejected`]: this is a same-trust-domain
+    /// liveness signal, not an auth boundary, so there is no distinct
+    /// caller-visible refusal code to preserve per rejection kind.
+    fn validate_session_token(&self, hello: &Hello) -> Option<Refused> {
+        let authority = self.session_tokens.as_ref()?;
+        let authority = authority
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match authority.validate(&hello.auth_token, &hello.service_name) {
+            Ok(()) => None,
+            Err(rejection) => Some(refused(
+                ErrorCode::ErrorPeerRejected,
+                session_token_rejection_reason(rejection),
+                0,
+            )),
+        }
     }
 
     /// Issue a pending handoff token when both sides support handle passing.
@@ -450,6 +508,24 @@ fn refused(code: ErrorCode, reason: impl Into<String>, retry_after_ms: u64) -> R
 
 fn refused_reply(refused: Refused) -> HelloReply {
     refused_or_negotiated(HelloReplyResult::Refused(refused))
+}
+
+/// Human-readable reason for a [`SessionTokenRejection`] — logged and
+/// returned in `Refused.reason`, all in the same trust domain, so the
+/// specific kind is fine to surface (it's diagnostic, not an oracle).
+fn session_token_rejection_reason(rejection: SessionTokenRejection) -> &'static str {
+    match rejection {
+        SessionTokenRejection::MalformedLength => "session token malformed: wrong byte length",
+        SessionTokenRejection::BrokerHalfMismatch => {
+            "session invalidated: broker was restarted or rotated since this token was issued"
+        }
+        SessionTokenRejection::DaemonUnknown => {
+            "session invalidated: daemon is no longer registered"
+        }
+        SessionTokenRejection::DaemonHalfMismatch => {
+            "session invalidated: daemon was restarted since this token was issued"
+        }
+    }
 }
 
 fn refused_or_negotiated(result: HelloReplyResult) -> HelloReply {
