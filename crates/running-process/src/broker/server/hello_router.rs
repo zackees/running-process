@@ -287,11 +287,33 @@ impl<'a> HelloRouter<'a> {
                 "backend spawn already in progress",
                 1_000,
             )),
-            Err(SpawnBeginError::BudgetExhausted { retry_after, .. }) => Err(refused(
-                ErrorCode::ErrorRateLimited,
-                "backend spawn budget exhausted",
-                duration_to_retry_ms(retry_after),
-            )),
+            Err(SpawnBeginError::BudgetExhausted {
+                retry_after,
+                is_storm_trip,
+                ..
+            }) => {
+                // zackees/soldr#2364: "threshold trip -> broker rotates its
+                // own token -> all clients exit 1". Gated on is_storm_trip
+                // so a flapping key that stays exhausted for the rest of
+                // its window rotates once, not once per refused request --
+                // matches "trips the guard exactly once" in the phase's
+                // testing invariants. Rotation itself is best-effort: a
+                // mint failure (OS randomness exhausted) must not turn a
+                // rate-limit refusal into an unrelated panic or error.
+                if is_storm_trip {
+                    if let Some(session_tokens) = self.session_tokens {
+                        let mut authority = session_tokens
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        let _ = authority.rotate_broker_token();
+                    }
+                }
+                Err(refused(
+                    ErrorCode::ErrorRateLimited,
+                    "backend spawn budget exhausted",
+                    duration_to_retry_ms(retry_after),
+                ))
+            }
         }
     }
 

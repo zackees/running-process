@@ -453,6 +453,57 @@ fn router_launch_failure_consumes_spawn_budget() {
 }
 
 #[test]
+fn router_rotates_broker_token_exactly_once_when_spawn_budget_storm_trips() {
+    let definition = service_definition(BrokerIsolation::SharedBroker);
+    let tmp = service_dir_with_definition(&definition);
+    let loader = ServiceDefinitionLoader::new(tmp.path().join("services"));
+    let registry = Mutex::new(BackendRegistry::new());
+    let spawn_coordinator = Mutex::new(SpawnCoordinator::with_config(SpawnBudgetConfig::new(
+        1,
+        Duration::from_secs(10),
+    )));
+    let launcher = FailingLauncher::new();
+    let session_tokens = Mutex::new(SessionTokenAuthority::with_broker_token(
+        TokenHalf::from_bytes([0xDD; SESSION_TOKEN_HALF_BYTES]),
+    ));
+    let router = HelloRouter::with_lifecycle_monitor(&loader, &registry)
+        .with_spawn_coordinator(&spawn_coordinator)
+        .with_backend_launcher(&launcher)
+        .with_session_token_authority(&session_tokens);
+    let token_before_storm = *session_tokens.lock().unwrap().broker_token();
+
+    // First attempt: real launch failure, budget still has room -- no trip.
+    let first = router.handle_request(&request("zccache", "1.11.20"));
+    assert_eq!(reply_code(&first), ErrorCode::ErrorBackendSpawnFailed);
+    assert_eq!(
+        *session_tokens.lock().unwrap().broker_token(),
+        token_before_storm,
+        "broker token must not rotate before the budget is actually exhausted"
+    );
+
+    // Second attempt: budget exhausted -- this IS the storm trip.
+    let second = router.handle_request(&request("zccache", "1.11.20"));
+    assert_eq!(reply_code(&second), ErrorCode::ErrorRateLimited);
+    let token_after_first_trip = *session_tokens.lock().unwrap().broker_token();
+    assert_ne!(
+        token_after_first_trip, token_before_storm,
+        "broker token must rotate on the storm trip"
+    );
+
+    // Third+ attempts: still exhausted, same window -- must NOT rotate
+    // again (zackees/soldr#2364: "trips the guard exactly once").
+    for _ in 0..3 {
+        let reply = router.handle_request(&request("zccache", "1.11.20"));
+        assert_eq!(reply_code(&reply), ErrorCode::ErrorRateLimited);
+    }
+    assert_eq!(
+        *session_tokens.lock().unwrap().broker_token(),
+        token_after_first_trip,
+        "repeated refusals during the same storm must not rotate the token again"
+    );
+}
+
+#[test]
 fn router_consumes_spawn_budget_on_registry_miss() {
     let definition = service_definition(BrokerIsolation::SharedBroker);
     let tmp = service_dir_with_definition(&definition);

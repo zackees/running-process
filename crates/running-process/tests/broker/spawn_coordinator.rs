@@ -30,12 +30,64 @@ fn spawn_budget_exhaustion_is_per_backend_key() {
         err,
         SpawnBeginError::BudgetExhausted {
             retry_after,
-            remaining: 0
+            remaining: 0,
+            is_storm_trip: true
         } if retry_after == Duration::from_secs(10)
     ));
 
     let permit = coordinator.try_begin(second_key, now).unwrap();
     assert_eq!(permit.attempt_number, 1);
+}
+
+#[test]
+fn storm_trip_signals_exactly_once_per_window_then_on_success_reset() {
+    let now = Instant::now();
+    let mut coordinator =
+        SpawnCoordinator::with_config(SpawnBudgetConfig::new(1, Duration::from_secs(10)));
+    let key = key("1.11.20");
+
+    coordinator.try_begin(key.clone(), now).unwrap();
+    coordinator.finish(&key, SpawnOutcome::Failed, now);
+
+    // First call to observe the exhausted budget: this IS the storm trip.
+    assert!(matches!(
+        coordinator.try_begin(key.clone(), now),
+        Err(SpawnBeginError::BudgetExhausted {
+            is_storm_trip: true,
+            ..
+        })
+    ));
+
+    // Same window, still exhausted: no second trip -- a caller reacting to
+    // the storm signal (e.g. rotating the broker token) must not react
+    // again for every subsequent refused request during the same storm.
+    for _ in 0..5 {
+        assert!(matches!(
+            coordinator.try_begin(key.clone(), now),
+            Err(SpawnBeginError::BudgetExhausted {
+                is_storm_trip: false,
+                ..
+            })
+        ));
+    }
+
+    // A successful spawn ends the storm -- the next exhaustion sequence is
+    // a fresh potential storm and should trip again.
+    coordinator
+        .try_begin(key.clone(), now + Duration::from_secs(10))
+        .unwrap();
+    coordinator.finish(&key, SpawnOutcome::Success, now + Duration::from_secs(10));
+    coordinator
+        .try_begin(key.clone(), now + Duration::from_secs(10))
+        .unwrap();
+    coordinator.finish(&key, SpawnOutcome::Failed, now + Duration::from_secs(10));
+    assert!(matches!(
+        coordinator.try_begin(key, now + Duration::from_secs(10)),
+        Err(SpawnBeginError::BudgetExhausted {
+            is_storm_trip: true,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -126,7 +178,8 @@ fn default_budget_is_three_attempts_per_thirty_seconds() {
         coordinator.try_begin(key.clone(), now + Duration::from_secs(29)),
         Err(SpawnBeginError::BudgetExhausted {
             retry_after,
-            remaining: 0
+            remaining: 0,
+            is_storm_trip: true
         }) if retry_after == Duration::from_secs(1)
     ));
 
