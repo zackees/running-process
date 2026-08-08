@@ -260,9 +260,12 @@ impl SpawnCoordinator {
         }
 
         if state.attempts_used >= self.config.max_attempts {
+            let is_storm_trip = !state.storm_signaled;
+            state.storm_signaled = true;
             return Err(SpawnBeginError::BudgetExhausted {
                 retry_after: retry_after(state.window_started_at, now, self.config.window),
                 remaining: 0,
+                is_storm_trip,
             });
         }
 
@@ -285,6 +288,7 @@ impl SpawnCoordinator {
         if outcome == SpawnOutcome::Success {
             state.window_started_at = now;
             state.attempts_used = 0;
+            state.storm_signaled = false;
         }
     }
 
@@ -338,6 +342,13 @@ pub enum SpawnBeginError {
         retry_after: Duration,
         /// Remaining attempts, always zero for this variant.
         remaining: u32,
+        /// True on the FIRST `try_begin` call to observe this key's budget
+        /// as exhausted within the current window; false on every
+        /// subsequent call until the window resets or a spawn succeeds.
+        /// A caller that reacts to the spawn-storm signal (e.g. rotating
+        /// the broker token) should gate on this to react exactly once
+        /// per storm, not once per refused request during it.
+        is_storm_trip: bool,
     },
 }
 
@@ -361,6 +372,14 @@ struct SpawnBudgetState {
     window_started_at: Instant,
     attempts_used: u32,
     in_flight: bool,
+    /// Whether this key's budget exhaustion has already been reported as a
+    /// storm trip in the current window (zackees/soldr#2364: "driving M
+    /// failed daemon spawns inside the window trips the guard exactly
+    /// once"). Every `try_begin` call after the first exhaustion keeps
+    /// returning `BudgetExhausted`, so a caller reacting to the FIRST one
+    /// (e.g. rotating the broker token) needs this to avoid reacting again
+    /// on every subsequent call in the same window.
+    storm_signaled: bool,
 }
 
 impl SpawnBudgetState {
@@ -369,6 +388,7 @@ impl SpawnBudgetState {
             window_started_at: now,
             attempts_used: 0,
             in_flight: false,
+            storm_signaled: false,
         }
     }
 
@@ -377,6 +397,7 @@ impl SpawnBudgetState {
             self.window_started_at = now;
             self.attempts_used = 0;
             self.in_flight = false;
+            self.storm_signaled = false;
         }
     }
 }
