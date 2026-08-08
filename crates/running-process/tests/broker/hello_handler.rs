@@ -268,3 +268,98 @@ fn hello_rejects_malformed_frame_payload() {
         ErrorCode::ErrorPeerRejected
     );
 }
+
+#[test]
+fn hello_without_session_token_authority_is_unaffected() {
+    // Default handler() has no authority configured -- today's dormant
+    // behavior. An empty auth_token (what every real caller sends today)
+    // must still negotiate.
+    assert_negotiated(handler().handle_frame(frame_for_hello(&hello()), peer()));
+}
+
+#[test]
+fn hello_with_valid_composite_token_negotiates() {
+    use running_process::broker::server::session_token::{
+        compose_presented_token, SessionTokenAuthority,
+    };
+
+    let mut authority = SessionTokenAuthority::new().expect("mint broker token");
+    let daemon_token = authority
+        .register_daemon("zccache".into())
+        .expect("mint daemon token");
+    let presented = compose_presented_token(authority.broker_token(), &daemon_token);
+
+    let handler = HelloHandler::new()
+        .with_session_token_authority(authority)
+        .with_backend(RegisteredBackend {
+            service_definition: service_definition(),
+            daemon_version: "1.11.20".into(),
+            backend_pipe: r"\.\pipe\rpb-v1-test-backend".into(),
+            server_capabilities: 0x01,
+        })
+        .unwrap();
+
+    let mut request = hello();
+    request.auth_token = presented;
+
+    assert_negotiated(handler.handle_frame(frame_for_hello(&request), peer()));
+}
+
+#[test]
+fn hello_with_stale_daemon_half_is_refused_peer_rejected() {
+    use running_process::broker::server::session_token::{
+        compose_presented_token, SessionTokenAuthority,
+    };
+
+    let mut authority = SessionTokenAuthority::new().expect("mint broker token");
+    let broker_half = *authority.broker_token();
+    let stale_daemon_token = authority
+        .register_daemon("zccache".into())
+        .expect("mint daemon token");
+    // Daemon restarts and re-registers -- the pre-restart half is now stale.
+    authority
+        .register_daemon("zccache".into())
+        .expect("re-mint daemon token");
+    let stale_presented = compose_presented_token(&broker_half, &stale_daemon_token);
+
+    let handler = HelloHandler::new()
+        .with_session_token_authority(authority)
+        .with_backend(RegisteredBackend {
+            service_definition: service_definition(),
+            daemon_version: "1.11.20".into(),
+            backend_pipe: r"\.\pipe\rpb-v1-test-backend".into(),
+            server_capabilities: 0x01,
+        })
+        .unwrap();
+
+    let mut request = hello();
+    request.auth_token = stale_presented;
+
+    assert_eq!(
+        refused_code(handler.handle_frame(frame_for_hello(&request), peer())),
+        ErrorCode::ErrorPeerRejected
+    );
+}
+
+#[test]
+fn hello_with_empty_token_is_refused_once_authority_is_configured() {
+    // Configuring an authority is all-or-nothing: an empty auth_token
+    // (today's default) is now MalformedLength, not a free pass.
+    let authority = running_process::broker::server::session_token::SessionTokenAuthority::new()
+        .expect("mint broker token");
+
+    let handler = HelloHandler::new()
+        .with_session_token_authority(authority)
+        .with_backend(RegisteredBackend {
+            service_definition: service_definition(),
+            daemon_version: "1.11.20".into(),
+            backend_pipe: r"\.\pipe\rpb-v1-test-backend".into(),
+            server_capabilities: 0x01,
+        })
+        .unwrap();
+
+    assert_eq!(
+        refused_code(handler.handle_frame(frame_for_hello(&hello()), peer())),
+        ErrorCode::ErrorPeerRejected
+    );
+}

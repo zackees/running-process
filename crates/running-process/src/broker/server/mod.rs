@@ -26,6 +26,10 @@ pub mod perf_guard;
 pub mod recovery;
 pub mod serve;
 pub mod service_def_loader;
+/// zackees/soldr#2360/#2363 — composite broker/daemon session token
+/// authority. Wired into `hello_handler` via
+/// `HelloHandler::with_session_token_authority` — see the module docs.
+pub mod session_token;
 pub mod spawn_coordinator;
 pub mod spawn_wait;
 pub mod trace_context;
