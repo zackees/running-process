@@ -14,6 +14,7 @@ use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, ErrorCode, Frame, HelloReply, Refused,
     ServiceDefinition, PROTOCOL_VERSION,
 };
+use crate::broker::server::hello_handler::validate_hello_shape;
 use crate::broker::server::{
     check_version_allowed, BackendKey, BackendLaunchRequest, BackendLauncher, BackendRegistry,
     BrokerInstanceKey, HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity,
@@ -88,7 +89,16 @@ impl<'a> HelloRouter<'a> {
     }
 
     /// Route a decoded Hello request.
+    ///
+    /// The wire-protocol floor is checked FIRST, before any service lookup
+    /// or backend spawn (soldr#2363: a below-floor Hello must be refused at
+    /// connect and spawn nothing) — `route_request` below can reload a
+    /// service definition and launch a backend process, so the floor check
+    /// must happen before it runs, not after.
     pub fn handle_request(&self, request: &HelloRequest) -> HelloReply {
+        if let Some(refused) = validate_hello_shape(&request.hello, &request.peer) {
+            return refused_reply(refused);
+        }
         match self.route_request(request) {
             Ok(registered) => match HelloHandler::new().with_backend(registered) {
                 Ok(handler) => handler.handle_request(request),

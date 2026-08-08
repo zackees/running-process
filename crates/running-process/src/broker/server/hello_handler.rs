@@ -359,7 +359,14 @@ struct PeerRateWindow {
     count: u32,
 }
 
-fn validate_hello_shape(hello: &Hello, peer: &PeerIdentity) -> Option<Refused> {
+/// Wire-protocol floor check, exposed to [`super::hello_router::HelloRouter`]
+/// so it can refuse a below-floor Hello **before** service lookup / backend
+/// spawn (soldr#2363's "version floor... refused at connect, spawns
+/// nothing" testing invariant). [`HelloHandler::handle_request`] also runs
+/// the full shape check (this included) after routing — cheap and
+/// idempotent, kept as defense in depth for direct `HelloHandler` callers
+/// that skip the router.
+pub(crate) fn validate_hello_shape(hello: &Hello, peer: &PeerIdentity) -> Option<Refused> {
     if hello.client_min_protocol > PROTOCOL_VERSION || hello.client_max_protocol < PROTOCOL_VERSION
     {
         return Some(refused(
