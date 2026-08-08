@@ -26,7 +26,18 @@ DEFAULT_PDB_LOW_WATER_BYTES = 50_000
 # leaves ~70% headroom; revisit if the next release also creeps.
 DEFAULT_PDB_HIGH_WATER_BYTES = 2_000_000
 DEFAULT_PDB_IDEAL_HIGH_WATER_BYTES = 100_000
-DEFAULT_COMBINED_NATIVE_HIGH_WATER_BYTES = 8_000_000
+# Hard cap on the shipped native payload (the abi3 `.pyd` plus its tiny PDB).
+# Bumped from 8 MB to 14 MB on 4.10.1 to unblock PyPI publishing. The
+# extension legitimately grew to ~11.1 MB (9.7 MB `.pyd` + 1.4 MB tiny PDB) as
+# the client + pty + probe (framehop unwinding across PE/ELF/Mach-O) + async
+# (tokio) + originator-scan feature set landed; the `.pyd` alone already
+# exceeded the old 8 MB *combined* cap. The old value silently skipped the
+# PyPI publish job on every release since 4.9.0 (the crate still shipped to
+# crates.io, so the breakage went unnoticed — PyPI sat at 4.8.3). 14 MB leaves
+# ~2.9 MB headroom over the current payload so gradual growth stays visible;
+# it is far below PyPI's own 60 MB per-file limit. Revisit if a release
+# approaches it — that is the signal to audit what grew rather than bump again.
+DEFAULT_COMBINED_NATIVE_HIGH_WATER_BYTES = 14_000_000
 
 
 def _resolve_llvm_pdbutil(explicit: str | None = None) -> str:
