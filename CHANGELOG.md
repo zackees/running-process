@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.10.1 — unblock PyPI publishing (raise combined native-payload cap)
+
+Fixes a **pre-existing release-pipeline break**: the Windows wheel's native
+payload (the abi3 `.pyd` + its tiny PDB) has been ~11.1 MB (9.7 MB `.pyd` +
+1.4 MB PDB) since 4.9.0, above the 8 MB `DEFAULT_COMBINED_NATIVE_HIGH_WATER_BYTES`
+guard in `ci/verify_release_symbols.py`. The Windows wheel build failed that
+check on every release since 4.9.0, so the `publish-pypi` job — which `needs`
+all six wheel jobs and has no `always()` — was **silently skipped**. The crate
+still shipped to crates.io, so the breakage went unnoticed: **PyPI sat at 4.8.3**
+while crates.io advanced to 4.10.0.
+
+- Raised the cap to **14 MB** (~2.9 MB headroom over the current payload; far
+  below PyPI's 60 MB per-file limit). The `.pyd` grew legitimately with the
+  client + pty + probe (framehop unwinding across PE/ELF/Mach-O) + async
+  (tokio) + originator-scan feature set; the tiny PDB is unchanged at 1.4 MB,
+  well under its own 2 MB cap.
+- No functional/library change — `4.10.0`'s `content_hash::blake3_file` (#891)
+  is carried forward unchanged; this release exists to get those bits onto PyPI.
+
 ## 4.10.0 — `content_hash::blake3_file` primitive for dev daemon-identity isolation
 
 Adds [`running_process::blake3_file`](crates/running-process/src/content_hash.rs) (feature `client`), the shared content-hash primitive requested in [#891](https://github.com/zackees/running-process/issues/891). soldr-daemon, `FastLED/fbuild`, and standalone zccache all obtain their daemon identity through running-process and all three hit the same dev failure: two builds sharing one home root rendezvous on the same daemon pipe + pid file and displace each other on every invocation (`displace-stale` war — root-cause in [zackees/soldr#2352](https://github.com/zackees/soldr/issues/2352)). Rather than reimplement isolation in each consumer, the primitive lives here once.
