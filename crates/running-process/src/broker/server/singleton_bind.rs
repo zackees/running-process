@@ -156,7 +156,9 @@ pub enum BindSingletonError {
 /// bind instead of exactly one (running-process#899, soldr#2361/#2363's
 /// singleton testing invariant). This function instead: attempts the bind
 /// first with no cleanup; on an already-bound failure, Unix-only,
-/// connect-probes the path via [`unix_socket_path_is_stale`] to tell a
+/// connect-probes the path via `unix_socket_path_is_stale` (Unix-only, so
+/// not linked here — a doc build on a non-Unix target has no such item in
+/// scope to resolve against) to tell a
 /// genuinely orphaned socket file apart from a live peer, and only then
 /// removes + retries once. Windows needs no cleanup step at all — the
 /// named pipe namespace is kernel-managed and a prior binding vanishes
