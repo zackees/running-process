@@ -395,9 +395,17 @@ fn main() -> ExitCode {
         }
     };
 
-    // Stale-file cleanup is Unix-only; on Windows the pipe namespace is
-    // managed by the kernel and previous bindings vanish when the prior
-    // process exited.
+    // On Unix, ensure the parent directory exists but do NOT unlink the
+    // socket path here: a live peer may be bound at this path right now
+    // (soldr#2361/#2363 concurrent-starter singleton race,
+    // running-process#899 — an unconditional pre-bind `remove_file`
+    // let every one of N racing starters unlink the prior "winner"'s
+    // live socket and rebind over it, so all N reported success).
+    // Cleanup of a genuinely stale (orphaned, no listener) path happens
+    // below, only after a bind attempt fails and a connect probe
+    // confirms nothing is listening. On Windows the pipe namespace is
+    // kernel-managed and previous bindings vanish when the prior process
+    // exited, so no cleanup step is needed there at all.
     #[cfg(unix)]
     {
         let path = std::path::Path::new(&socket_path);
@@ -410,7 +418,6 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         }
-        let _ = std::fs::remove_file(&socket_path);
     }
 
     let name = match wrap_socket_name(&socket_path) {
@@ -421,7 +428,26 @@ fn main() -> ExitCode {
         }
     };
 
-    let listener = match ListenerOptions::new().name(name).create_sync() {
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut listener_result = ListenerOptions::new().name(name).create_sync();
+
+    // A first-attempt bind failure classified as already-bound might be a
+    // genuinely live peer (correct: refuse below) or an orphaned socket
+    // file left by a process that crashed without cleaning up (stale:
+    // safe to remove and retry once). Unix-only: connect-probe the path
+    // to tell the two apart before touching the filesystem.
+    #[cfg(unix)]
+    if let Err(err) = &listener_result {
+        if is_already_bound_error(err) && unix_socket_path_is_stale(&socket_path) {
+            let _ = std::fs::remove_file(&socket_path);
+            listener_result = match wrap_socket_name(&socket_path) {
+                Ok(retry_name) => ListenerOptions::new().name(retry_name).create_sync(),
+                Err(_) => listener_result,
+            };
+        }
+    }
+
+    let listener = match listener_result {
         Ok(l) => l,
         Err(err) => {
             // Single-instance enforcement: a `WouldBlock` / `AddrInUse`
@@ -1057,6 +1083,35 @@ fn is_already_bound_error(err: &std::io::Error) -> bool {
             | std::io::ErrorKind::WouldBlock
             | std::io::ErrorKind::PermissionDenied,
     )
+}
+
+/// Unix-only: tell a genuinely orphaned unix-socket path (left behind by a
+/// process that exited without cleaning up) apart from a path where a live
+/// peer is listening right now — the two look identical to `bind`
+/// (`AddrInUse` either way). A connect probe distinguishes them: nothing is
+/// listening if the connect itself fails to even reach a peer
+/// (`ConnectionRefused` — the classic "orphaned socket file, no listener"
+/// signal — or `NotFound`); any other outcome, including a successful
+/// connect, means treat the path as live and leave it alone.
+///
+/// Used only to decide whether it is safe to `remove_file` and retry a
+/// failed bind once (soldr#2361/#2363, running-process#899) — never to
+/// unlink unconditionally, which is what let every process in a concurrent
+/// start race stomp the previous "winner"'s live socket.
+#[cfg(unix)]
+fn unix_socket_path_is_stale(socket_path: &str) -> bool {
+    use interprocess::local_socket::traits::Stream as _;
+    use interprocess::local_socket::Stream;
+    let Ok(name) = wrap_socket_name(socket_path) else {
+        return false; // can't even build the name -- don't touch the file
+    };
+    match Stream::connect(name) {
+        Ok(_stream) => false,
+        Err(err) => matches!(
+            err.kind(),
+            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+        ),
+    }
 }
 
 fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {

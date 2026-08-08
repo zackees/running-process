@@ -144,9 +144,9 @@ expires_phase = 4
 id = "RP-RAW-STDIO-014"
 symbol = "std::process::Stdio"
 path = "crates/running-process/tests/broker_v2_scaffold_accepts_connection.rs"
-max_occurrences = 9
+max_occurrences = 11
 owner = "running-process"
-justification = "Legacy broker fixture; Phase 4 migrates it to internal test support."
+justification = "Legacy broker fixture; Phase 4 migrates it to internal test support. Bumped by 2 for the soldr#2363 concurrent-starters singleton race test (running-process#899)."
 expires_phase = 4
 
 [[exception]]
