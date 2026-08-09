@@ -36,6 +36,11 @@ pub mod secure_dir;
 pub mod server;
 pub mod session_codec;
 pub mod session_pump;
+// The SESSION relay dials the daemon endpoint over `interprocess/tokio`, which
+// today is enabled only by the `daemon` feature; gate it there until the
+// feature graph is refined for the standalone broker binary.
+#[cfg(feature = "daemon")]
+pub mod session_relay;
 pub mod session_server;
 
 /// Framing byte for every v1 broker connection. Wire layout:
