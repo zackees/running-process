@@ -4,6 +4,15 @@ The broker layer — backend identity, service-definition + cache-manifest
 schemas, the v1 sync client + v2 async client, broker-owned HTTP
 endpoint registry, and the broker-side service-def loader.
 
+> **SESSION execution note (soldr#2365 / #2387).** `session_takeover` /
+> `serve_session` / `run_child_session` are running-process's **generic**
+> spawn-and-stream SESSION execution: they spawn the command a client sends and
+> proxy its stdio. **soldr compiles do NOT use this** — soldr consumes
+> `session_codec` only and executes compiles in-process via its embedded zccache
+> service. The SESSION *transport* (`SessionFrame` proto, `session_codec`,
+> `relay_session`) is the shared contract; the generic *execution* handler is for
+> running-process's own consumers.
+
 ## Top-level layout
 
 | file | what it owns |
