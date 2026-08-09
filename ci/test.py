@@ -690,6 +690,31 @@ def main(argv: list[str] | None = None) -> int:
             if run(seam_cmd) != 0:
                 return 1
 
+            # soldr#2365 Phase 3: the daemon-side compile-session handler lives
+            # behind the `daemon` feature, which the default workspace nextest
+            # run does not enable. Exercise its byte-fidelity tests in a scoped
+            # pass so the SESSION data-plane handler is covered, without turning
+            # on the whole (never-CI-run) daemon test suite here.
+            compile_session_args = cargo_command(
+                "nextest",
+                "run",
+                "-p",
+                "running-process",
+                "--features",
+                "daemon",
+                "-E",
+                "test(compile_session)",
+            )
+            if sys.platform == "win32":
+                compile_session_args += ["--test-threads", "1"]
+            compile_session_cmd = supervised_command(
+                python,
+                *compile_session_args,
+                timeout=rust_test_timeout,
+            )
+            if run(compile_session_cmd) != 0:
+                return 1
+
         # -- Python non-live tests --
         cov_first = list(_COV_PYTEST_FIRST) if coverage else []
         if not _pytest_exit_is_acceptable(
