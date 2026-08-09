@@ -23,6 +23,55 @@ use std::thread;
 
 use crate::broker::protocol_v2::{session_frame, SessionExit, SessionFrame};
 
+/// A spawned child the session pump can drive: the three raw stdio pipes plus a
+/// blocking wait that yields a [`SessionExit`].
+///
+/// Implemented for a plain [`std::process::Child`] (the reference/client path,
+/// exercised by the pump's own tests) and, in [`super::session_server`], for the
+/// sanitized contained [`crate::spawn::SpawnedChild`] so the daemon can proxy a
+/// child confined to its own Job Object / process group. Keeping the pump
+/// generic over this trait is what lets one byte-transparent implementation
+/// serve both paths without the daemon side re-deriving the fidelity logic.
+///
+/// The stdio associated types are `Send + 'static` because the pump moves each
+/// into its own reader/writer thread.
+pub trait SessionChild {
+    /// Parent-side writer for the child's stdin.
+    type Stdin: Write + Send + 'static;
+    /// Parent-side reader for the child's stdout.
+    type Stdout: Read + Send + 'static;
+    /// Parent-side reader for the child's stderr.
+    type Stderr: Read + Send + 'static;
+
+    /// Take the stdin writer. `None` if stdin was not piped or already taken.
+    fn take_stdin(&mut self) -> Option<Self::Stdin>;
+    /// Take the stdout reader. `None` if stdout was not piped or already taken.
+    fn take_stdout(&mut self) -> Option<Self::Stdout>;
+    /// Take the stderr reader. `None` if stderr was not piped or already taken.
+    fn take_stderr(&mut self) -> Option<Self::Stderr>;
+    /// Block until the child exits and report its [`SessionExit`].
+    fn wait_session(&mut self) -> std::io::Result<SessionExit>;
+}
+
+impl SessionChild for Child {
+    type Stdin = std::process::ChildStdin;
+    type Stdout = std::process::ChildStdout;
+    type Stderr = std::process::ChildStderr;
+
+    fn take_stdin(&mut self) -> Option<Self::Stdin> {
+        self.stdin.take()
+    }
+    fn take_stdout(&mut self) -> Option<Self::Stdout> {
+        self.stdout.take()
+    }
+    fn take_stderr(&mut self) -> Option<Self::Stderr> {
+        self.stderr.take()
+    }
+    fn wait_session(&mut self) -> std::io::Result<SessionExit> {
+        Ok(session_exit_from_status(&self.wait()?))
+    }
+}
+
 /// Read `stream` to EOF, emitting each chunk as a `SessionFrame` built by
 /// `wrap`. Stops on EOF, a send error (receiver gone), or a read error.
 fn pump_output_stream<S, F>(stream: Option<S>, wrap: F, out: &Sender<SessionFrame>)
@@ -81,17 +130,17 @@ fn session_exit_from_status(status: &ExitStatus) -> SessionExit {
 /// - when the child exits, a terminal `SessionFrame::Exit` is sent on `out` and
 ///   the same [`SessionExit`] is returned.
 ///
-/// `child` must be spawned with `Stdio::piped()` on all three streams. Returns
-/// the child's [`SessionExit`]; an `Err` only reflects a failure to reap the
-/// child, never stdio content.
-pub fn run_child_session(
-    mut child: Child,
+/// `child` must be spawned with all three stdio streams piped. Returns the
+/// child's [`SessionExit`]; an `Err` only reflects a failure to reap the child,
+/// never stdio content.
+pub fn run_child_session<C: SessionChild>(
+    mut child: C,
     out: Sender<SessionFrame>,
     stdin_rx: Receiver<SessionFrame>,
 ) -> std::io::Result<SessionExit> {
-    let child_stdout = child.stdout.take();
-    let child_stderr = child.stderr.take();
-    let mut child_stdin = child.stdin.take();
+    let child_stdout = child.take_stdout();
+    let child_stderr = child.take_stderr();
+    let mut child_stdin = child.take_stdin();
 
     // Apply inbound stdin frames on their own thread so a child that interleaves
     // reads and writes never deadlocks against the output pumps.
@@ -135,10 +184,9 @@ pub fn run_child_session(
     // The output pumps end when the child closes stdout/stderr, i.e. on exit.
     let _ = stdout_handle.join();
     let _ = stderr_handle.join();
-    let status = child.wait()?;
+    let exit = child.wait_session()?;
     let _ = stdin_handle.join();
 
-    let exit = session_exit_from_status(&status);
     let _ = out.send(SessionFrame {
         kind: Some(session_frame::Kind::Exit(exit)),
     });

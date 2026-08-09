@@ -47,6 +47,9 @@ ALLOWED_RUST_COMMAND_NEW = {
     # bridge against a golden direct run, so it must NOT route through the
     # sanitized spawn layer that these tests exist to be independent of.
     Path("crates/running-process/src/broker/session_pump/tests.rs"),
+    # Phase 3 session server (soldr#2365, slice 3b): its tests spawn the stdio
+    # fixture directly for the oracle, same as the pump oracle above.
+    Path("crates/running-process/src/broker/session_server/tests.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),
@@ -186,6 +189,13 @@ ALLOWED_RUST_SPAWN = {
     # pump and bare) to diff the two byte streams; deliberately independent of
     # the sanitized spawn layer, no daemon in the loop.
     Path("crates/running-process/src/broker/session_pump/tests.rs"),
+    # Phase 3 session server (soldr#2365, slice 3b): its tests spawn the stdio
+    # fixture directly for the oracle, same as the pump oracle above.
+    Path("crates/running-process/src/broker/session_server/tests.rs"),
+    # Phase 3 session server module — calls the sanitized
+    # `ContainedProcessGroup::spawn` to launch the contained session child; the
+    # actual spawn happens in that reviewed layer, not here.
+    Path("crates/running-process/src/broker/session_server.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),
