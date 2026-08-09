@@ -110,7 +110,22 @@ conpty-sidecar = [
 # footprint minimal — only `rt` + `time` are required.
 client-async = [
     "client",
+    # Async client surface (#414) plus the async transport primitives the v2
+    # broker's async SESSION serve path needs (soldr#2365): interprocess tokio
+    # sockets, the frame codec layer, and a multi-thread runtime. These were
+    # daemon-only; the async broker is client-async, not daemon.
     "dep:tokio",
+    "tokio/rt",
+    "tokio/rt-multi-thread",
+    "tokio/net",
+    "tokio/io-util",
+    "tokio/macros",
+    "tokio/time",
+    "tokio/sync",
+    "interprocess/tokio",
+    "dep:tokio-util",
+    "dep:bytes",
+    "dep:futures-util",
 ]
 daemon = [
     "client",

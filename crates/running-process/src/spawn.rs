@@ -599,7 +599,8 @@ pub fn spawn_tokio(
     // equivalent primitive, so this is a no-op there (running-process#885).
     #[cfg(target_os = "linux")]
     if options.kill_when_owner_dies {
-        use std::os::unix::process::CommandExt;
+        // `tokio::process::Command::pre_exec` is an inherent Unix method — no
+        // `std::os::unix::process::CommandExt` import needed here.
         // SAFETY: the closure calls only prctl(2), which is async-signal-safe.
         unsafe {
             command.pre_exec(|| {
