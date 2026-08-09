@@ -19,14 +19,19 @@ use crate::broker::server::session_token::SessionTokenAuthority;
 use crate::broker::server::{
     check_version_allowed, BackendKey, BackendLaunchRequest, BackendLauncher, BackendRegistry,
     BrokerInstanceKey, HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity,
-    RegisteredBackend, ServiceDefinitionError, ServiceDefinitionLoader, SpawnBeginError,
+    RegisteredBackend, ServiceDefinitionError, ServiceDefinitionSource, SpawnBeginError,
     SpawnCoordinator, SpawnOutcome, TraceContext, VersionPolicyBlock,
 };
 
 /// Routes decoded Hello requests through service definitions and backend state.
+///
+/// The service-definition source is a `&dyn `[`ServiceDefinitionSource`] so the
+/// shared broker's v2-first [`super::CombinedServiceDefinitionLoader`] and the
+/// bare v1 [`super::ServiceDefinitionLoader`] (used by tests that install v1
+/// files) both drive the router unchanged (soldr#2364).
 #[derive(Clone, Copy)]
 pub struct HelloRouter<'a> {
-    service_definitions: &'a ServiceDefinitionLoader,
+    service_definitions: &'a dyn ServiceDefinitionSource,
     backends: BackendRegistryView<'a>,
     spawn_coordinator: Option<&'a Mutex<SpawnCoordinator>>,
     backend_launcher: Option<&'a dyn BackendLauncher>,
@@ -42,7 +47,7 @@ enum BackendRegistryView<'a> {
 impl<'a> HelloRouter<'a> {
     /// Create a router over immutable broker state.
     pub fn new(
-        service_definitions: &'a ServiceDefinitionLoader,
+        service_definitions: &'a dyn ServiceDefinitionSource,
         backends: &'a BackendRegistry,
     ) -> Self {
         Self {
@@ -57,7 +62,7 @@ impl<'a> HelloRouter<'a> {
     /// Create a router over live broker state that prunes stale backend handles
     /// before each registry lookup.
     pub fn with_lifecycle_monitor(
-        service_definitions: &'a ServiceDefinitionLoader,
+        service_definitions: &'a dyn ServiceDefinitionSource,
         backends: &'a Mutex<BackendRegistry>,
     ) -> Self {
         Self {
@@ -493,6 +498,7 @@ mod tests {
     };
     use crate::broker::server::{
         ensure_service_definition_dir, service_definition_path, PeerIdentity,
+        ServiceDefinitionLoader,
     };
 
     use super::*;

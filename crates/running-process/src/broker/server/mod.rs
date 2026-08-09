@@ -10,6 +10,7 @@ pub mod backend_endpoint_allocator;
 pub mod backend_launcher;
 pub mod backend_registry;
 pub mod broadcast;
+pub mod combined_service_def_loader;
 pub mod connection;
 pub mod control_socket;
 #[doc(hidden)]
@@ -55,6 +56,9 @@ pub use broadcast::{
     BroadcastAck, BroadcastBackend, BroadcastBackendResponse, BroadcastFailure,
     BroadcastFailureReason, BroadcastOperation, BroadcastPolicy, BroadcastResult, BroadcastTimeout,
     LifecycleBroadcastModel, QuiesceReason, DEFAULT_BROADCAST_ACK_TIMEOUT,
+};
+pub use combined_service_def_loader::{
+    service_definition_v2_to_v1, CombinedServiceDefinitionLoader, ServiceDefinitionSource,
 };
 pub use connection::{
     handle_hello_connection, handle_hello_connection_with,
