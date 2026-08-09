@@ -483,3 +483,95 @@ async fn client_kill_mid_session_torn_down_by_daemon_within_bound() {
     let _ = std::fs::remove_file(&daemon_sock);
     let _ = std::fs::remove_file(&broker_sock);
 }
+
+/// Kill-matrix cell: **daemon death mid-session is detected by the client within
+/// a bounded latency**, through the broker relay. The daemon's session is
+/// aborted (its socket closes, as it would on daemon-process death); the broker
+/// relay propagates that EOF to the client, whose stream ends promptly — asserted
+/// with a number (< 1s). The *reaping* half of daemon-death (the contained child
+/// is killed, no orphan rustc) is an OS-level guarantee proven separately by
+/// `tests/async_owner_death_test.rs` (kill-when-owner-dies) and
+/// `tests/daemon_tree_kill_test.rs` (whole-tree, no orphan grandchildren); this
+/// cell covers the client-observable cancellation the relay must deliver.
+/// Unix-first.
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_kill_mid_session_detected_by_client_within_bound() {
+    use std::time::{Duration, Instant};
+    use tokio::net::{UnixListener, UnixStream};
+
+    let pid = std::process::id();
+    let daemon_sock = std::env::temp_dir().join(format!("rp-dkill-d-{pid}.sock"));
+    let broker_sock = std::env::temp_dir().join(format!("rp-dkill-b-{pid}.sock"));
+    let _ = std::fs::remove_file(&daemon_sock);
+    let _ = std::fs::remove_file(&broker_sock);
+    let daemon_listener = UnixListener::bind(&daemon_sock).expect("bind daemon listener");
+    let broker_listener = UnixListener::bind(&broker_sock).expect("bind broker listener");
+
+    let mut cmd = fixture();
+    cmd.args(["out:ping", "echo"]);
+    let group = Arc::new(ContainedProcessGroup::new().expect("contained group"));
+
+    // Keep the daemon handle so we can abort it (simulating daemon death).
+    let daemon = tokio::spawn(async move {
+        let (io, _addr) = daemon_listener.accept().await.expect("daemon accept");
+        run_compile_session(session_framed(io), cmd, group).await
+    });
+
+    let daemon_sock_for_broker = daemon_sock.clone();
+    let broker = tokio::spawn(async move {
+        let (mut client_conn, _addr) = broker_listener.accept().await.expect("broker accept");
+        let mut daemon_conn = UnixStream::connect(&daemon_sock_for_broker)
+            .await
+            .expect("broker dials daemon");
+        let _ = tokio::io::copy_bidirectional(&mut client_conn, &mut daemon_conn).await;
+    });
+
+    let client_io = UnixStream::connect(&broker_sock)
+        .await
+        .expect("client dials broker");
+    let mut client = session_framed(client_io);
+
+    let live = tokio::time::timeout(Duration::from_secs(5), client.next())
+        .await
+        .expect("first output within 5s")
+        .expect("a frame")
+        .expect("decode ok");
+    assert_eq!(
+        live.kind,
+        Some(session_frame::Kind::Stdout(b"ping".to_vec())),
+        "session is live over the relay before the kill"
+    );
+
+    // Kill the daemon mid-session; its socket closes and the relay carries the
+    // EOF to the client.
+    let t0 = Instant::now();
+    daemon.abort();
+
+    let detected = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match client.next().await {
+                None | Some(Err(_)) => break,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await;
+    let latency = t0.elapsed();
+
+    assert!(
+        detected.is_ok(),
+        "client hung after daemon death instead of detecting it"
+    );
+    assert!(
+        latency < Duration::from_secs(1),
+        "daemon-death detection latency {latency:?} exceeds the 1s bound"
+    );
+
+    // The client is still open, so the relay's client→daemon half hasn't hit
+    // EOF; just tear the relay task down (clean relay completion is covered by
+    // the relay test) rather than waiting on it.
+    broker.abort();
+    let _ = std::fs::remove_file(&daemon_sock);
+    let _ = std::fs::remove_file(&broker_sock);
+}
