@@ -66,6 +66,35 @@ def _expected_cargo_test_cmd(python: str) -> list[str]:
     return cmd
 
 
+def _expected_compile_session_cmd(python: str) -> list[str]:
+    """Build the expected scoped daemon compile-session pass (soldr#2365)."""
+    timeout = (
+        str(ci_test.WINDOWS_RUST_TEST_TIMEOUT_SECONDS)
+        if ci_test.sys.platform == "win32"
+        else str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
+    )
+    cmd = [
+        python,
+        "-m",
+        "running_process.cli",
+        "--timeout",
+        timeout,
+        "--",
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "running-process",
+        "--features",
+        "daemon",
+        "-E",
+        "test(compile_session)",
+    ]
+    if ci_test.sys.platform == "win32":
+        cmd += ["--test-threads", "1"]
+    return cmd
+
+
 def _expected_seam_test_cmd(python: str) -> list[str]:
     """Build the expected supervised test-seams nextest pass (#433 R4)."""
     timeout = (
@@ -202,6 +231,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
+        _expected_compile_session_cmd(python),
         [
             python,
             "-m",
@@ -285,6 +315,7 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
+        _expected_compile_session_cmd(python),
         [
             python,
             "-m",
@@ -332,6 +363,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
+        _expected_compile_session_cmd(python),
         [
             python,
             "-m",
@@ -515,6 +547,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(python),
         _expected_seam_test_cmd(python),
+        _expected_compile_session_cmd(python),
         [
             python,
             "-m",
