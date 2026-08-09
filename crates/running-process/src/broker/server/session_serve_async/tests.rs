@@ -22,14 +22,19 @@ use crate::broker::server::hello_handler::PeerIdentity;
 use crate::daemon::compile_session::session_framed;
 use crate::daemon::session_endpoint::serve_session_endpoint;
 
-/// A permissive responder that negotiates every Hello — isolates the async
-/// transport under test from the (separately-tested) routing policy.
-struct AlwaysNegotiate;
+/// A permissive responder that negotiates every Hello, pointing the relay at a
+/// fixed `backend_pipe` — isolates the async transport under test from the
+/// (separately-tested) routing policy while still exercising the production
+/// per-connection `Negotiated.backend_pipe` relay-target resolution.
+struct NegotiateToBackend(String);
 
-impl HelloResponder for AlwaysNegotiate {
+impl HelloResponder for NegotiateToBackend {
     fn handle_frame(&self, _frame: Frame, _peer: PeerIdentity) -> HelloReply {
         HelloReply {
-            result: Some(HelloReplyResult::Negotiated(Negotiated::default())),
+            result: Some(HelloReplyResult::Negotiated(Negotiated {
+                backend_pipe: self.0.clone(),
+                ..Default::default()
+            })),
         }
     }
 }
@@ -100,11 +105,12 @@ async fn async_broker_negotiates_hello_then_proxies_session() {
         .expect("bind broker endpoint");
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
+        // The responder points the per-connection relay at the daemon endpoint
+        // via Negotiated.backend_pipe — the production resolution path.
         let _ = serve_broker_session_endpoint(
             broker_listener,
-            &AlwaysNegotiate,
+            &NegotiateToBackend(daemon_path_str),
             &PeerCredentialPolicy::allow_any(),
-            &daemon_path_str,
         )
         .await;
     });
@@ -209,11 +215,11 @@ async fn async_broker_drops_peer_refused_by_policy() {
     // connection is refused on the credential check before any Hello read.
     let policy = PeerCredentialPolicy::owner_only("rp-no-such-owner-sentinel");
     let broker = tokio::spawn(async move {
+        // backend_pipe is irrelevant here: the peer is refused before any Hello.
         let _ = serve_broker_session_endpoint(
             broker_listener,
-            &AlwaysNegotiate,
+            &NegotiateToBackend(String::new()),
             &policy,
-            "/nonexistent-daemon.sock",
         )
         .await;
     });

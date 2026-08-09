@@ -45,7 +45,14 @@ use super::hello_handler::PeerIdentity;
 
 /// Accept SESSION connections on `listener`, negotiate each Hello with the sync
 /// `responder`, and full-proxy every negotiated session to the daemon SESSION
-/// endpoint at `daemon_session_endpoint`.
+/// endpoint the negotiation itself selected (`Negotiated.backend_pipe`).
+///
+/// The relay target is resolved **per connection** from the reply, exactly as
+/// the broker binary resolves it per Hello (`resolve_backend_pipe`): in the
+/// full-proxy model `backend_pipe` stops being "where the client reconnects"
+/// and becomes "where the broker relays". A negotiation that yields an empty
+/// `backend_pipe` (no daemon has published for the service yet) is dropped
+/// rather than relayed to nowhere.
 ///
 /// Each peer is refused up front unless `peer_policy` allows its OS
 /// credentials — the same foreign-peer rejection the sync loop performs before
@@ -63,7 +70,6 @@ pub async fn serve_broker_session_endpoint<R>(
     listener: interprocess::local_socket::tokio::Listener,
     responder: &R,
     peer_policy: &PeerCredentialPolicy,
-    daemon_session_endpoint: &str,
 ) -> std::io::Result<()>
 where
     R: HelloResponder + ?Sized,
@@ -88,10 +94,16 @@ where
             continue;
         }
         match negotiate_session_hello(stream, responder, peer).await {
-            Ok(Some(stream)) => {
-                let endpoint = daemon_session_endpoint.to_owned();
+            Ok(Some((stream, backend_pipe))) => {
+                if backend_pipe.is_empty() {
+                    eprintln!(
+                        "running-process-broker: negotiated a session but no backend endpoint \
+                         is published; dropping"
+                    );
+                    continue;
+                }
                 tokio::spawn(async move {
-                    if let Err(err) = relay_session(stream, &endpoint).await {
+                    if let Err(err) = relay_session(stream, &backend_pipe).await {
                         eprintln!("running-process-broker: session relay ended: {err}");
                     }
                 });
@@ -105,14 +117,16 @@ where
 }
 
 /// Run one async Hello round-trip over `stream` and, if it negotiated a
-/// SESSION, return the same `stream` for the caller to relay; otherwise
-/// return `None`.
+/// SESSION, return the same `stream` paired with the daemon SESSION endpoint
+/// the reply selected (`Negotiated.backend_pipe`); otherwise return `None`.
 ///
 /// This is the async analog of `handle_control_connection` for the Hello step:
 /// it reads the framed Hello, calls the sync `responder`, and writes the framed
 /// reply. The stream is returned by value (never split or buffered) so the
 /// caller can move it into a relay task with its byte stream untouched — the
-/// client's first `SessionStart` bytes are still unread on the wire.
+/// client's first `SessionStart` bytes are still unread on the wire. The
+/// returned `backend_pipe` may be empty when negotiation succeeded but no
+/// daemon has published for the service; the caller decides how to handle that.
 ///
 /// # Errors
 ///
@@ -123,7 +137,7 @@ pub async fn negotiate_session_hello<S, R>(
     mut stream: S,
     responder: &R,
     peer: PeerIdentity,
-) -> std::io::Result<Option<S>>
+) -> std::io::Result<Option<(S, String)>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     R: HelloResponder + ?Sized,
@@ -148,15 +162,16 @@ where
     let reply = responder.handle_frame(request_frame.clone(), peer);
     write_hello_response(&mut stream, Some(&request_frame), &reply).await?;
 
-    Ok(negotiated(&reply).map(|_| stream))
+    let backend_pipe = negotiated(&reply).map(|n| n.backend_pipe.clone());
+    Ok(backend_pipe.map(|pipe| (stream, pipe)))
 }
 
 /// Return the `Negotiated` payload when `reply` negotiated a backend.
 ///
-/// A successful negotiation is the spike's "proceed to SESSION" signal. The
-/// SESSION-vs-handoff distinction (and reading the daemon endpoint from
-/// `Negotiated::backend_pipe` instead of a caller-supplied path) is a
-/// follow-up once this transport is proven.
+/// A successful negotiation is the "proceed to SESSION" signal; its
+/// `backend_pipe` is the daemon SESSION endpoint the broker relays to. The
+/// SESSION-vs-adopt distinction on a shared socket (if the design mounts one
+/// socket for both) is a follow-up decided by the #2360/#2365 socket model.
 fn negotiated(reply: &HelloReply) -> Option<&Negotiated> {
     match reply.result.as_ref()? {
         HelloReplyResult::Negotiated(n) => Some(n),
