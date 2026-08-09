@@ -123,3 +123,99 @@ async fn relay_session_proxies_client_to_daemon_endpoint() {
     assert_eq!(stderr, b"WORLD", "stderr proxied client←broker←daemon");
     assert_eq!(code, Some(9), "exit code proxied across both real sockets");
 }
+
+/// The opaque `SessionExit.metadata` map (soldr#2365 Q3) must cross the relay
+/// untouched — `relay_session` never decodes the frame, so a consumer daemon's
+/// `cache_outcome` / `compile_id` reach the client verbatim.
+#[cfg(unix)]
+#[tokio::test]
+async fn relay_session_preserves_session_exit_metadata() {
+    use crate::broker::protocol_v2::SessionExit;
+
+    let pid = std::process::id();
+    let daemon_path = std::env::temp_dir().join(format!("rp-relay-md-d-{pid}.sock"));
+    let broker_path = std::env::temp_dir().join(format!("rp-relay-md-b-{pid}.sock"));
+    let _ = std::fs::remove_file(&daemon_path);
+    let _ = std::fs::remove_file(&broker_path);
+
+    // Stub daemon: accept, read the client's opening frame, reply with one Exit
+    // carrying a metadata map, then close.
+    let daemon_listener = ListenerOptions::new()
+        .name(
+            daemon_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("daemon fs name"),
+        )
+        .create_tokio()
+        .expect("bind daemon endpoint");
+    let daemon = tokio::spawn(async move {
+        let conn = daemon_listener.accept().await.expect("daemon accept");
+        let mut d = session_framed(conn);
+        let _ = d.next().await; // the client's Start
+        let _ = d
+            .send(frame(session_frame::Kind::Exit(SessionExit {
+                code: 0,
+                signal: 0,
+                metadata: [("cache_outcome".to_owned(), "hit".to_owned())]
+                    .into_iter()
+                    .collect(),
+            })))
+            .await;
+    });
+
+    let broker_listener = ListenerOptions::new()
+        .name(
+            broker_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("broker fs name"),
+        )
+        .create_tokio()
+        .expect("bind broker endpoint");
+    let daemon_path_str = daemon_path.to_string_lossy().into_owned();
+    let broker = tokio::spawn(async move {
+        let client_conn = broker_listener.accept().await.expect("broker accept");
+        let _ = relay_session(client_conn, &daemon_path_str).await;
+    });
+
+    let stream = interprocess::local_socket::tokio::Stream::connect(
+        broker_path
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("client fs name"),
+    )
+    .await
+    .expect("client dials broker");
+    let mut client = session_framed(stream);
+    client
+        .send(frame(session_frame::Kind::Start(SessionStart {
+            program: "true".to_owned(),
+            args: Vec::new(),
+            cwd: String::new(),
+            env: Vec::new(),
+            clear_inherited_env: false,
+        })))
+        .await
+        .expect("send start");
+
+    let mut got = None;
+    while let Some(Ok(sf)) = client.next().await {
+        if let Some(session_frame::Kind::Exit(e)) = sf.kind {
+            got = Some(e);
+            break;
+        }
+    }
+
+    daemon.abort();
+    broker.abort();
+    let _ = std::fs::remove_file(&daemon_path);
+    let _ = std::fs::remove_file(&broker_path);
+
+    let exit = got.expect("received an Exit frame through the relay");
+    assert_eq!(
+        exit.metadata.get("cache_outcome").map(String::as_str),
+        Some("hit"),
+        "SessionExit.metadata must survive relay_session uninterpreted"
+    );
+}
