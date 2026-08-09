@@ -1,0 +1,48 @@
+// running-process v2 broker — Phase 3 session data-plane messages (soldr#2365).
+//
+// Pairs with the other `running_process.broker.v2` protos. After a client
+// negotiates a compile session on the control plane, the session's stdio is
+// proxied client <-> broker <-> daemon as a stream of `SessionFrame`s on the
+// SESSION payload-protocol lane (see `broker::protocol::registry`). The client
+// is a dumb terminal: it feeds stdin frames and renders stdout/stderr frames,
+// then reads the terminal `SessionExit`. All byte payloads are opaque and
+// byte-transparent — rustc emits raw artifacts on stdout and JSON diagnostics
+// on stderr; neither stream may be mutated or reordered.
+//
+// This file adds only the message definitions + prost wiring; the broker proxy
+// pump, the daemon session backend, and the dumb-terminal client land in later
+// slices of Phase 3 (see soldr#2365).
+
+syntax = "proto3";
+package running_process.broker.v2;
+
+// One frame on a proxied compile session's stdio stream. Exactly one field is
+// set per frame (proto3 oneof). Directionality is by field, not a flag:
+// `stdin` / `stdin_eof` flow client -> daemon; `stdout` / `stderr` / `exit`
+// flow daemon -> client. Frames are delivered in order within each direction.
+message SessionFrame {
+  oneof kind {
+    // Raw stdin bytes from the client's terminal toward the daemon's compiler.
+    bytes stdin = 1;
+    // The client closed stdin; no further `stdin` frames follow. Distinct from
+    // an empty `stdin` chunk so the daemon can close the child's stdin pipe.
+    bool stdin_eof = 2;
+    // Raw stdout bytes from the compile (artifacts), verbatim.
+    bytes stdout = 3;
+    // Raw stderr bytes from the compile (diagnostics), verbatim.
+    bytes stderr = 4;
+    // Terminal frame: the compile ended. No further frames follow for this
+    // session in either direction.
+    SessionExit exit = 5;
+  }
+}
+
+// How a proxied compile session ended. `code` is the child's exit code when it
+// exited normally. `signal` is the terminating Unix signal number when the
+// child was killed by a signal (0 when it exited normally, and always 0 on
+// Windows). Consumers read `signal` first: a non-zero `signal` means signal
+// death regardless of `code`.
+message SessionExit {
+  int32 code = 1;
+  int32 signal = 2;
+}
