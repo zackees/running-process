@@ -124,8 +124,11 @@ fn concatenated_stream_decodes_in_order_with_exact_consume() {
 #[test]
 fn a_frame_on_another_lane_is_rejected() {
     // A well-formed v1 frame, but on the zccache lane rather than SESSION.
-    let foreign = encode_framed(&Frame::request(ZCCACHE_PAYLOAD_PROTOCOL, b"not ours".to_vec()))
-        .expect("encode foreign");
+    let foreign = encode_framed(&Frame::request(
+        ZCCACHE_PAYLOAD_PROTOCOL,
+        b"not ours".to_vec(),
+    ))
+    .expect("encode foreign");
     match try_decode_session_frame(&foreign) {
         Err(SessionCodecError::WrongProtocol { got }) => {
             assert_eq!(got, ZCCACHE_PAYLOAD_PROTOCOL)

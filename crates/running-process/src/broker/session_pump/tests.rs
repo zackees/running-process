@@ -209,7 +209,11 @@ fn run_through_pump_over_codec(directives: &[&str], stdin: &[u8]) -> Reassembled
             cursor += consumed;
         }
     }
-    assert_eq!(cursor, stream.len(), "the whole outbound stream is consumed");
+    assert_eq!(
+        cursor,
+        stream.len(),
+        "the whole outbound stream is consumed"
+    );
     let exit_frame = exit_frame.expect("a terminal Exit frame is always sent");
     assert_eq!(exit_frame, (exit.code, exit.signal));
     Reassembled {
