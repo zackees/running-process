@@ -138,6 +138,74 @@ fn pump_reports_a_nonzero_exit_code() {
     assert_eq!(pumped.stderr, b"boom");
 }
 
+/// Drive the pump through a **bounded** `SyncSender` (capacity 1 — maximum
+/// backpressure) with a slow, concurrent consumer, and prove no bytes are lost.
+/// A drop-on-overflow sink would lose frames under this burst; a bounded-blocking
+/// sink stalls the pump (→ the child's pipe fills → the child blocks) and
+/// preserves every byte. This is the soldr#2365 "bounded per-channel memory +
+/// byte-exact" invariant, exercised on the pump's real output path.
+#[test]
+fn bounded_sink_backpressures_without_dropping_bytes() {
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+
+    // Many small writes on both streams → many frames through a depth-1 channel.
+    let script = &[
+        "out:A", "err:1", "out:B", "err:2", "out:C", "err:3", "out:D", "exit:0",
+    ];
+    let child = Command::new(testbin_path("testbin-stdio-scripted"))
+        .args(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn fixture under pump");
+
+    let (stdin_tx, stdin_rx) = channel();
+    stdin_tx
+        .send(SessionFrame {
+            kind: Some(session_frame::Kind::StdinEof(true)),
+        })
+        .unwrap();
+    drop(stdin_tx);
+
+    // Depth-1 bounded sink: the pump blocks whenever a frame is unconsumed.
+    let (out_tx, out_rx) = sync_channel::<SessionFrame>(1);
+
+    // Concurrent consumer that drains slowly, so the depth-1 bound is
+    // continuously saturated and the pump is forced to block.
+    let consumer = std::thread::spawn(move || {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_frame = None;
+        for frame in out_rx {
+            std::thread::sleep(Duration::from_millis(1));
+            match frame.kind {
+                Some(session_frame::Kind::Stdout(b)) => stdout.extend_from_slice(&b),
+                Some(session_frame::Kind::Stderr(b)) => stderr.extend_from_slice(&b),
+                Some(session_frame::Kind::Exit(e)) => exit_frame = Some((e.code, e.signal)),
+                _ => panic!("unexpected inbound-only frame on the outbound lane"),
+            }
+        }
+        (
+            stdout,
+            stderr,
+            exit_frame.expect("a terminal Exit frame is always sent"),
+        )
+    });
+
+    let exit = run_child_session(child, out_tx, stdin_rx).expect("pump reaps child");
+    let (stdout, stderr, exit_frame) = consumer.join().expect("consumer thread");
+
+    // No drops: every byte on each stream survives, in order, under a depth-1
+    // bound. (stderr/stdout interleaving order across streams is not asserted —
+    // only per-stream fidelity, which is the contract.)
+    assert_eq!(stdout, b"ABCD");
+    assert_eq!(stderr, b"123");
+    assert_eq!(exit_frame, (exit.code, exit.signal));
+    assert_eq!(exit_frame, (0, 0));
+}
+
 /// Drive the pump, then push both directions through the SESSION codec's byte
 /// boundary (slice 3a). Inbound stdin is encoded → bytes → decoded before it
 /// reaches the pump; every outbound frame is encoded into one concatenated

@@ -18,10 +18,44 @@
 
 use std::io::{Read, Write};
 use std::process::{Child, ExitStatus};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::thread;
 
 use crate::broker::protocol_v2::{session_frame, SessionExit, SessionFrame};
+
+/// A sink the pump writes outbound `SessionFrame`s to.
+///
+/// `send` is **blocking**: a bounded implementation stalls the pump's reader
+/// thread when the consumer is slow, which lets the child's OS pipe fill and
+/// backpressures the child. That is what keeps a fast producer (rustc) within
+/// **bounded per-channel memory** while staying byte-exact — the sink never
+/// drops output, it slows the producer (soldr#2365: "bounded per-channel memory
+/// asserted", byte-exact fidelity). `Err(())` means the receiver is gone and the
+/// pump should stop.
+///
+/// Implemented for the unbounded [`Sender`] (the handoff / test path, where the
+/// consumer drains eagerly) and the bounded [`SyncSender`] (the daemon path,
+/// where backpressure is required). The daemon adds an impl for a bounded async
+/// channel sender so the same pump feeds an async transport.
+pub trait FrameSink: Clone + Send + 'static {
+    /// Send one frame, blocking if the sink is bounded and full. On failure the
+    /// receiver is gone; the un-sent frame is returned (as `std`'s channels do
+    /// via `SendError`) so the caller can stop pumping.
+    fn send(&self, frame: SessionFrame) -> Result<(), SessionFrame>;
+}
+
+impl FrameSink for Sender<SessionFrame> {
+    fn send(&self, frame: SessionFrame) -> Result<(), SessionFrame> {
+        Sender::send(self, frame).map_err(|e| e.0)
+    }
+}
+
+impl FrameSink for SyncSender<SessionFrame> {
+    fn send(&self, frame: SessionFrame) -> Result<(), SessionFrame> {
+        // Blocks when the bounded channel is full → backpressure to the child.
+        SyncSender::send(self, frame).map_err(|e| e.0)
+    }
+}
 
 /// A spawned child the session pump can drive: the three raw stdio pipes plus a
 /// blocking wait that yields a [`SessionExit`].
@@ -74,10 +108,11 @@ impl SessionChild for Child {
 
 /// Read `stream` to EOF, emitting each chunk as a `SessionFrame` built by
 /// `wrap`. Stops on EOF, a send error (receiver gone), or a read error.
-fn pump_output_stream<S, F>(stream: Option<S>, wrap: F, out: &Sender<SessionFrame>)
+fn pump_output_stream<S, F, K>(stream: Option<S>, wrap: F, out: &K)
 where
     S: Read,
     F: Fn(Vec<u8>) -> session_frame::Kind,
+    K: FrameSink,
 {
     let Some(mut stream) = stream else {
         return;
@@ -133,9 +168,9 @@ fn session_exit_from_status(status: &ExitStatus) -> SessionExit {
 /// `child` must be spawned with all three stdio streams piped. Returns the
 /// child's [`SessionExit`]; an `Err` only reflects a failure to reap the child,
 /// never stdio content.
-pub fn run_child_session<C: SessionChild>(
+pub fn run_child_session<C: SessionChild, K: FrameSink>(
     mut child: C,
-    out: Sender<SessionFrame>,
+    out: K,
     stdin_rx: Receiver<SessionFrame>,
 ) -> std::io::Result<SessionExit> {
     let child_stdout = child.take_stdout();
