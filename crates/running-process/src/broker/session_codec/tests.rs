@@ -23,10 +23,14 @@ fn every_variant() -> Vec<SessionFrame> {
         sf(session_frame::Kind::Exit(SessionExit {
             code: 7,
             signal: 0,
+            metadata: Default::default(),
         })),
         sf(session_frame::Kind::Exit(SessionExit {
             code: -1,
             signal: 9,
+            metadata: [("compile_id".to_owned(), "42".to_owned())]
+                .into_iter()
+                .collect(),
         })),
     ]
 }
@@ -61,7 +65,11 @@ fn frame_kind_is_derived_from_direction() {
     let outbound = [
         session_frame::Kind::Stdout(vec![1]),
         session_frame::Kind::Stderr(vec![2]),
-        session_frame::Kind::Exit(SessionExit { code: 0, signal: 0 }),
+        session_frame::Kind::Exit(SessionExit {
+            code: 0,
+            signal: 0,
+            metadata: Default::default(),
+        }),
     ];
     for kind in outbound {
         let frame = session_frame_to_frame(&sf(kind), 2);

@@ -58,6 +58,7 @@ impl SessionChild for SpawnedChild {
         Ok(SessionExit {
             code: self.wait()?,
             signal: 0,
+            metadata: Default::default(),
         })
     }
 }

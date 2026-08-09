@@ -144,6 +144,7 @@ fn session_exit_from_status(status: &ExitStatus) -> SessionExit {
         SessionExit {
             code: status.code().unwrap_or(-1),
             signal: status.signal().unwrap_or(0),
+            metadata: Default::default(),
         }
     }
     #[cfg(windows)]
@@ -151,6 +152,7 @@ fn session_exit_from_status(status: &ExitStatus) -> SessionExit {
         SessionExit {
             code: status.code().unwrap_or(-1),
             signal: 0,
+            metadata: Default::default(),
         }
     }
 }
@@ -222,8 +224,10 @@ pub fn run_child_session<C: SessionChild, K: FrameSink>(
     let exit = child.wait_session()?;
     let _ = stdin_handle.join();
 
+    // Clone for the terminal frame and return the original: `SessionExit` is no
+    // longer `Copy` (it carries an opaque `metadata` map since soldr#2365 Q3).
     let _ = out.send(SessionFrame {
-        kind: Some(session_frame::Kind::Exit(exit)),
+        kind: Some(session_frame::Kind::Exit(exit.clone())),
     });
     Ok(exit)
 }

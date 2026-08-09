@@ -71,4 +71,13 @@ message SessionEnvVar {
 message SessionExit {
   int32 code = 1;
   int32 signal = 2;
+  // Opaque service-defined key/value metadata carried on the terminal frame
+  // (soldr#2365 Q3). running-process never interprets it — `relay_session`
+  // does not even decode the frame, so the broker relays it transparently. A
+  // consumer daemon populates keys its own clients understand: soldr carries
+  // `cache_outcome` / `compile_id` here so the SESSION path preserves the
+  // observability the legacy `CompileDone` frame carried (build history,
+  // `soldr doctor`, perf-gate attribution). Backward-compatible proto3
+  // addition; existing peers that do not set it send an empty map.
+  map<string, string> metadata = 3;
 }

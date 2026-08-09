@@ -1,12 +1,22 @@
-//! Async SESSION-lane takeover handler (soldr#2365): drive a compile session
-//! over the Model-B mux wire, on the `client-async` feature so **any** async
-//! consumer daemon — running-process's own daemon *and* soldr-daemon (which
-//! enables `running-process/client-async`, not `daemon`) — can serve SESSION
-//! from its accept loop without pulling the full running-process daemon runtime.
+//! Async SESSION-lane takeover handler (soldr#2365): running-process's
+//! **generic spawn-and-stream** SESSION execution, on the `client-async`
+//! feature so any async consumer daemon can serve a SESSION by spawning the
+//! command the client sent and proxying its stdio.
 //!
-//! This is the byte-transparent compile-session handler (the proxy pump
-//! [`run_child_session`] driving a **contained** child, [`spawn_contained_session`])
-//! bridged onto the async transport. It lived under the `daemon` feature as
+//! # Not soldr's compile path (Fable 5 ruling on #2365 / #2387)
+//!
+//! **soldr does NOT use this handler for compiles.** soldr executes compiles
+//! in-process through its embedded zccache service, not by spawning a child, so
+//! its SESSION seam is [`crate::broker::session_codec`] alone: it decodes the
+//! opening `SessionStart` argv, runs the compile through zccache, and encodes
+//! the captured output back as `SessionFrame`s. It never calls
+//! [`session_takeover_from_buffered`] / [`serve_session`] / [`run_child_session`].
+//! This handler is for running-process's own generic consumers (spawn a
+//! command, stream its stdio); do not route soldr compiles through it.
+//!
+//! This is the byte-transparent handler (the proxy pump [`run_child_session`]
+//! driving a **contained** child, [`spawn_contained_session`]) bridged onto the
+//! async transport. It lived under the `daemon` feature as
 //! `daemon::compile_session`; it moved here so `client-async` consumers can
 //! reach it (`daemon::compile_session` re-exports it unchanged).
 //!
