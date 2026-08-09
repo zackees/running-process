@@ -35,10 +35,13 @@ pub mod protocol_v2;
 pub mod secure_dir;
 pub mod server;
 pub mod session_codec;
+// The dumb-terminal client and the SESSION relay both ride the async
+// `SessionFrameCodec` (defined behind the `daemon` feature today) and, for the
+// relay, `interprocess/tokio`; gate them there until the feature graph is
+// refined for the standalone broker/client binaries.
+#[cfg(feature = "daemon")]
+pub mod session_client;
 pub mod session_pump;
-// The SESSION relay dials the daemon endpoint over `interprocess/tokio`, which
-// today is enabled only by the `daemon` feature; gate it there until the
-// feature graph is refined for the standalone broker binary.
 #[cfg(feature = "daemon")]
 pub mod session_relay;
 pub mod session_server;
