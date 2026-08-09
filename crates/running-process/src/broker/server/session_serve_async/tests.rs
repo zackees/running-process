@@ -17,7 +17,7 @@ use crate::broker::protocol::{
     CONTROL_PAYLOAD_PROTOCOL,
 };
 use crate::broker::protocol_v2::{session_frame, SessionFrame, SessionStart};
-use crate::broker::server::connection::HelloResponder;
+use crate::broker::server::connection::{HelloResponder, PeerCredentialPolicy};
 use crate::broker::server::hello_handler::PeerIdentity;
 use crate::daemon::compile_session::session_framed;
 use crate::daemon::session_endpoint::serve_session_endpoint;
@@ -100,8 +100,13 @@ async fn async_broker_negotiates_hello_then_proxies_session() {
         .expect("bind broker endpoint");
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
-        let _ = serve_broker_session_endpoint(broker_listener, &AlwaysNegotiate, &daemon_path_str)
-            .await;
+        let _ = serve_broker_session_endpoint(
+            broker_listener,
+            &AlwaysNegotiate,
+            &PeerCredentialPolicy::allow_any(),
+            &daemon_path_str,
+        )
+        .await;
     });
 
     // Client dials ONLY the broker: first the Hello frame, then the SESSION wire.
@@ -180,5 +185,61 @@ async fn async_broker_negotiates_hello_then_proxies_session() {
         code,
         Some(9),
         "exit code proxied after async Hello negotiation"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn async_broker_drops_peer_refused_by_policy() {
+    let pid = std::process::id();
+    let broker_path = std::env::temp_dir().join(format!("rp-async-brk-drop-{pid}.sock"));
+    let _ = std::fs::remove_file(&broker_path);
+
+    let broker_listener = ListenerOptions::new()
+        .name(
+            broker_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("broker fs name"),
+        )
+        .create_tokio()
+        .expect("bind broker endpoint");
+
+    // A policy whose owner can never match a real peer's uid/SID, so every
+    // connection is refused on the credential check before any Hello read.
+    let policy = PeerCredentialPolicy::owner_only("rp-no-such-owner-sentinel");
+    let broker = tokio::spawn(async move {
+        let _ = serve_broker_session_endpoint(
+            broker_listener,
+            &AlwaysNegotiate,
+            &policy,
+            "/nonexistent-daemon.sock",
+        )
+        .await;
+    });
+
+    let mut stream = interprocess::local_socket::tokio::Stream::connect(
+        broker_path
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("client fs name"),
+    )
+    .await
+    .expect("client dials broker");
+
+    // Send a well-formed Hello; the broker must drop us on the credential check
+    // *before* replying, so the reply read hits EOF (the connection is closed).
+    let hello_wire =
+        encode_framed(&Frame::request(CONTROL_PAYLOAD_PROTOCOL, Vec::new())).expect("encode hello");
+    let _ = stream.write_all(&hello_wire).await;
+    let mut one = [0u8; 1];
+    let read = stream.read_exact(&mut one).await;
+
+    broker.abort();
+    let _ = std::fs::remove_file(&broker_path);
+
+    assert!(
+        read.is_err(),
+        "a peer refused by PeerCredentialPolicy must be dropped without a Hello reply"
     );
 }

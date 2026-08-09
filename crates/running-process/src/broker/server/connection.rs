@@ -468,6 +468,32 @@ pub fn peer_identity_from_stream(
     use interprocess::local_socket::traits::StreamCommon;
 
     let creds = stream.peer_creds()?;
+    Ok(peer_identity_from_peer_creds(&creds))
+}
+
+/// Async analog of [`peer_identity_from_stream`] for tokio-`interprocess`
+/// streams (soldr#2365, the async v2 broker serve path).
+///
+/// `peer_creds()` is a synchronous `getsockopt`/`GetNamedPipeClientProcessId`
+/// query — it does not block on I/O — so it is safe to call from an async
+/// accept loop without yielding. The credential extraction is identical to the
+/// sync path (shared [`peer_identity_from_peer_creds`]).
+#[cfg(feature = "client-async")]
+pub fn peer_identity_from_tokio_stream(
+    stream: &interprocess::local_socket::tokio::Stream,
+) -> Result<PeerIdentity, BrokerConnectionError> {
+    use interprocess::local_socket::traits::StreamCommon;
+
+    let creds = stream.peer_creds()?;
+    Ok(peer_identity_from_peer_creds(&creds))
+}
+
+/// Derive a [`PeerIdentity`] from already-read OS peer credentials.
+///
+/// Shared by the sync [`peer_identity_from_stream`] and the async
+/// [`peer_identity_from_tokio_stream`] so both transports resolve the same
+/// `(pid, uid_or_sid)` from the same `PeerCreds`.
+fn peer_identity_from_peer_creds(creds: &interprocess::local_socket::PeerCreds) -> PeerIdentity {
     #[cfg(unix)]
     let pid = creds
         .pid()
@@ -487,7 +513,7 @@ pub fn peer_identity_from_stream(
         process_user_sid(pid).unwrap_or_default()
     };
 
-    Ok(PeerIdentity { pid, uid_or_sid })
+    PeerIdentity { pid, uid_or_sid }
 }
 
 #[cfg(windows)]

@@ -20,15 +20,14 @@
 //!    [`relay_session`](crate::broker::session_relay::relay_session), which
 //!    dials the daemon SESSION endpoint and proxies bytes both ways.
 //!
-//! # Not yet wired to the binary
+//! # Peer-credential enforcement
 //!
-//! Peer-credential extraction is unresolved on tokio-`interprocess` streams
-//! (`peer_creds()` is a sync-`Stream` method). This module uses a placeholder
-//! [`PeerIdentity`] and therefore does **not** enforce
-//! [`PeerCredentialPolicy`](super::connection::PeerCredentialPolicy) — the sync
-//! path refuses foreign peers, so wiring this into
-//! `running-process-broker-v2` is BLOCKED until async peer creds land. This is
-//! a proven spike of the transport, not a production serve loop.
+//! The accept loop reads OS peer credentials off each tokio-`interprocess`
+//! stream via [`peer_identity_from_tokio_stream`] (`peer_creds()` is a
+//! synchronous, non-blocking `getsockopt` query — safe from async) and refuses
+//! any peer the [`PeerCredentialPolicy`] rejects **before** reading a byte of
+//! Hello, exactly as the sync loop does. This is the parity that lets the path
+//! be wired into `running-process-broker-v2`.
 
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -39,26 +38,31 @@ use crate::broker::protocol::{
 };
 use crate::broker::session_relay::relay_session;
 
-use super::connection::refused_reply;
-use super::connection::HelloResponder;
+use super::connection::{
+    peer_identity_from_tokio_stream, refused_reply, HelloResponder, PeerCredentialPolicy,
+};
 use super::hello_handler::PeerIdentity;
 
 /// Accept SESSION connections on `listener`, negotiate each Hello with the sync
 /// `responder`, and full-proxy every negotiated session to the daemon SESSION
 /// endpoint at `daemon_session_endpoint`.
 ///
-/// The Hello round-trip runs inline (it borrows `responder`, which holds
-/// broker-owned non-`Send` routing state, exactly as the sync loop does), so
-/// negotiation is sequential and cheap; the byte relay — the only long-lived
-/// part — is spawned per connection so concurrent compiles never serialize.
+/// Each peer is refused up front unless `peer_policy` allows its OS
+/// credentials — the same foreign-peer rejection the sync loop performs before
+/// reading any Hello bytes. The Hello round-trip then runs inline (it borrows
+/// `responder`, which holds broker-owned non-`Send` routing state, exactly as
+/// the sync loop does), so negotiation is sequential and cheap; the byte relay
+/// — the only long-lived part — is spawned per connection so concurrent
+/// compiles never serialize.
 ///
 /// # Errors
 ///
 /// Returns the first fatal `accept()` error (the listener is unusable).
-/// Per-connection negotiation errors are logged and never propagate.
+/// Per-connection credential/negotiation errors are logged and never propagate.
 pub async fn serve_broker_session_endpoint<R>(
     listener: interprocess::local_socket::tokio::Listener,
     responder: &R,
+    peer_policy: &PeerCredentialPolicy,
     daemon_session_endpoint: &str,
 ) -> std::io::Result<()>
 where
@@ -68,9 +72,21 @@ where
 
     loop {
         let stream = listener.accept().await?;
-        // TODO(soldr#2365): real peer creds on tokio-interprocess streams.
-        // Until then this spike does not enforce PeerCredentialPolicy.
-        let peer = placeholder_peer();
+        let peer = match peer_identity_from_tokio_stream(&stream) {
+            Ok(peer) => peer,
+            Err(err) => {
+                eprintln!("running-process-broker: could not read peer credentials: {err}");
+                continue;
+            }
+        };
+        if !peer_policy.allows(&peer) {
+            eprintln!(
+                "running-process-broker: dropped session peer pid={} uid_or_sid={:?}: \
+                 credential policy refused",
+                peer.pid, peer.uid_or_sid
+            );
+            continue;
+        }
         match negotiate_session_hello(stream, responder, peer).await {
             Ok(Some(stream)) => {
                 let endpoint = daemon_session_endpoint.to_owned();
@@ -250,17 +266,6 @@ async fn write_hello_response<S: AsyncWrite + Unpin>(
     }
     stream.flush().await?;
     Ok(())
-}
-
-/// Placeholder peer identity used until async peer creds are resolved.
-///
-/// See the module-level "Not yet wired to the binary" note: this is why the
-/// spike must not be reachable from `running-process-broker-v2` yet.
-fn placeholder_peer() -> PeerIdentity {
-    PeerIdentity {
-        pid: std::process::id(),
-        uid_or_sid: String::new(),
-    }
 }
 
 #[cfg(all(test, feature = "daemon"))]
