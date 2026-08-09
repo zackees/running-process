@@ -34,7 +34,33 @@ message SessionFrame {
     // Terminal frame: the compile ended. No further frames follow for this
     // session in either direction.
     SessionExit exit = 5;
+    // The mandatory FIRST frame client -> daemon: names the command to run for
+    // this session (added in a later Phase-3 slice; a session must open with
+    // exactly one `start` before any `stdin`). The daemon builds the compiler
+    // process from it, then proxies stdio as above.
+    SessionStart start = 6;
   }
+}
+
+// The command a compile session runs, carried on the session's opening `start`
+// frame. Mirrors the daemon's `SpawnPipeSessionRequest` env semantics: with
+// `clear_inherited_env` false the `env` entries layer over the daemon's
+// inherited environment (later entries win); with it true they are the whole
+// environment. `env` is ordered (repeated, not a map) so key-case collisions
+// resolve deterministically the way `std::process::Command::env` does.
+message SessionStart {
+  string program = 1;
+  repeated string args = 2;
+  string cwd = 3;
+  repeated SessionEnvVar env = 4;
+  bool clear_inherited_env = 5;
+}
+
+// One ordered environment entry for `SessionStart.env`. (The `broker.v2`
+// package cannot reach `daemon.proto`'s `KeyValue`, so it defines its own.)
+message SessionEnvVar {
+  string key = 1;
+  string value = 2;
 }
 
 // How a proxied compile session ended. `code` is the child's exit code when it

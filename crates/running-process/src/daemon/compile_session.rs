@@ -38,7 +38,7 @@ use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
-use crate::broker::protocol_v2::{session_frame, SessionExit, SessionFrame};
+use crate::broker::protocol_v2::{session_frame, SessionExit, SessionFrame, SessionStart};
 use crate::broker::session_codec::{encode_session_frame, try_decode_session_frame};
 use crate::broker::session_pump::{run_child_session, FrameSink};
 use crate::broker::session_server::spawn_contained_session;
@@ -108,6 +108,62 @@ where
 /// at most this many pump-produced frames (each ≤ the pump's 8 KiB read chunk)
 /// buffer ahead of a slow client before the child is stalled.
 const OUTBOUND_FRAME_CAPACITY: usize = 64;
+
+/// Build the compiler [`Command`] from a session's opening [`SessionStart`].
+///
+/// Mirrors the daemon's `SpawnPipeSession` env semantics: `clear_inherited_env`
+/// wipes the inherited environment first; `env` entries are then layered in
+/// order (later entries win case collisions the way `Command::env` does).
+fn command_from_start(start: &SessionStart) -> Command {
+    let mut command = Command::new(&start.program);
+    command.args(&start.args);
+    if !start.cwd.is_empty() {
+        command.current_dir(&start.cwd);
+    }
+    if start.clear_inherited_env {
+        command.env_clear();
+    }
+    for entry in &start.env {
+        command.env(&entry.key, &entry.value);
+    }
+    command
+}
+
+/// Serve a compile session whose command is carried **on the wire**: read the
+/// mandatory opening [`SessionStart`] frame, build the contained child from it,
+/// and proxy the rest of the session via [`run_compile_session`].
+///
+/// This is the real daemon serve entry — the command comes from the client, not
+/// a caller-passed [`Command`]. A session that does not open with exactly one
+/// `SessionStart` is a protocol error.
+///
+/// # Errors
+///
+/// Errors if the peer hangs up before sending `SessionStart`, sends a different
+/// first frame, or on any failure propagated by [`run_compile_session`].
+pub async fn serve_session<T>(
+    mut framed: Framed<T, SessionFrameCodec>,
+    group: Arc<ContainedProcessGroup>,
+) -> std::io::Result<SessionExit>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let first = framed
+        .next()
+        .await
+        .ok_or_else(|| std::io::Error::other("session closed before SessionStart"))?
+        .map_err(|e| std::io::Error::other(format!("session recv failed before start: {e}")))?;
+    let start = match first.kind {
+        Some(session_frame::Kind::Start(start)) => start,
+        other => {
+            return Err(std::io::Error::other(format!(
+                "session must open with SessionStart, got {other:?}"
+            )))
+        }
+    };
+    let command = command_from_start(&start);
+    run_compile_session(framed, command, group).await
+}
 
 /// Run a compile session over `framed`: spawn `command` as a contained child,
 /// proxy its stdio byte-for-byte as SESSION-lane `SessionFrame`s, apply inbound

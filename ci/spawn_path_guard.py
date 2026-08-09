@@ -53,6 +53,11 @@ ALLOWED_RUST_COMMAND_NEW = {
     # Phase 3 daemon compile-session handler (soldr#2365, slice 3c): its
     # daemon-direct tests spawn the stdio fixture directly for the oracle.
     Path("crates/running-process/src/daemon/compile_session/tests.rs"),
+    # Phase 3 command carriage: `command_from_start` constructs the compiler
+    # Command from the session's opening SessionStart frame, then spawns it
+    # through the sanitized layer (spawn_contained_session). Building the Command
+    # here (not spawning) is what needs the allowlist.
+    Path("crates/running-process/src/daemon/compile_session.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),

@@ -73,6 +73,16 @@ mod tests {
                 code: 101,
                 signal: 0,
             }),
+            session_frame::Kind::Start(SessionStart {
+                program: "rustc".to_owned(),
+                args: vec!["--edition".to_owned(), "2021".to_owned()],
+                cwd: "/work".to_owned(),
+                env: vec![SessionEnvVar {
+                    key: "CARGO".to_owned(),
+                    value: "1".to_owned(),
+                }],
+                clear_inherited_env: true,
+            }),
         ];
         for kind in cases {
             let original = SessionFrame {
