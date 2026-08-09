@@ -56,5 +56,8 @@ where
     Ok(())
 }
 
-#[cfg(test)]
+// The relay's e2e test dials a real daemon SESSION endpoint
+// (`serve_session_endpoint`), which only exists under `daemon`; the relay
+// module itself needs only `client-async`.
+#[cfg(all(test, feature = "daemon"))]
 mod tests;
