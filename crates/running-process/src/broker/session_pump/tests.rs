@@ -1,5 +1,4 @@
 use super::*;
-use std::io::Write as _;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::channel;
 
