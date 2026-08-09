@@ -62,6 +62,24 @@ fn write_service_definition_dir() -> tempfile::TempDir {
     tmp
 }
 
+/// soldr#2364: install a **v2** `.servicedef.v2` file (what soldr and other v2
+/// consumers write) instead of the v1 `.servicedef`. The shared broker's
+/// `CombinedServiceDefinitionLoader` must resolve it and negotiate.
+fn write_service_definition_dir_v2() -> tempfile::TempDir {
+    use running_process::broker::protocol_v2::ServiceDefinitionBuilder;
+    let (binary_path, per_version_binary_dir) = absolute_paths();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("services");
+    ensure_service_definition_dir(&root).unwrap();
+    ServiceDefinitionBuilder::shared_broker("zccache", binary_path)
+        .per_version_binary_dir(per_version_binary_dir)
+        .min_version("1.10.0")
+        .version_allow_list(["1.11.20"])
+        .install_in(&root)
+        .unwrap();
+    tmp
+}
+
 fn serve_config(
     service_root: &Path,
     socket_path: impl Into<String>,
@@ -301,6 +319,32 @@ fn serve_launching_backends_launches_once_then_reuses_registry() {
     server.join().unwrap().unwrap();
     assert_negotiated_backend(first, &backend_endpoint);
     assert_negotiated_backend(second, &backend_endpoint);
+    assert_eq!(launcher.launch_count(), 1);
+}
+
+/// End-to-end proof for soldr#2364 (Phase 2 of soldr#2361): a cold Hello against
+/// a real `serve_launching_backends` broker whose service is installed as a
+/// `.servicedef.v2` file negotiates a backend instead of returning
+/// `Refused { "service definition was not found" }`. Before the
+/// `CombinedServiceDefinitionLoader`, the serve path read only v1 `.servicedef`
+/// files, so a v2-only install (the soldr default) was refused.
+#[test]
+fn serve_launching_backends_negotiates_with_a_v2_servicedef() {
+    let tmp = write_service_definition_dir_v2();
+    let service_root = tmp.path().join("services");
+    let socket_name = unique_socket_name();
+    let backend_endpoint = unique_backend_endpoint();
+    let launcher = Arc::new(CurrentProcessLauncher::new(backend_endpoint.clone()));
+    let server_launcher = Arc::clone(&launcher);
+    let config = launch_serve_config(&service_root, socket_name.clone(), 1);
+    let server = thread::spawn(move || {
+        serve_launching_backends_with_launcher(config, server_launcher.as_ref())
+    });
+
+    let reply = send_hello_roundtrip(&socket_name);
+
+    server.join().unwrap().unwrap();
+    assert_negotiated_backend(reply, &backend_endpoint);
     assert_eq!(launcher.launch_count(), 1);
 }
 
