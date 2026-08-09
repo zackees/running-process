@@ -114,6 +114,11 @@ client-async = [
     # broker's async SESSION serve path needs (soldr#2365): interprocess tokio
     # sockets, the frame codec layer, and a multi-thread runtime. These were
     # daemon-only; the async broker is client-async, not daemon.
+    #
+    # `async-process` provides `ContainedProcessGroup`, which the SESSION
+    # takeover handler (`broker::session_takeover`) spawns compiler children
+    # into — so a `client-async` consumer daemon can serve SESSION.
+    "async-process",
     "dep:tokio",
     "tokio/rt",
     "tokio/rt-multi-thread",

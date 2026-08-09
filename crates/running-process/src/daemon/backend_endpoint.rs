@@ -28,13 +28,12 @@ use std::sync::Arc;
 use bytes::{Buf, BytesMut};
 use interprocess::local_socket::tokio::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio_util::codec::{Framed, FramedParts};
 
 use crate::broker::backend_handle::DaemonProcess;
 use crate::broker::backend_sdk::{BackendEndpointMux, LegacyClassification, MuxPoll};
 use crate::broker::protocol::registry::SESSION_PAYLOAD_PROTOCOL;
 use crate::containment::ContainedProcessGroup;
-use crate::daemon::compile_session::{serve_session, SessionFrameCodec};
+use crate::daemon::compile_session::session_takeover_from_buffered;
 
 /// Accept connections on `listener` and serve each backend connection with the
 /// daemon `identity` (used to answer identity probes).
@@ -106,14 +105,11 @@ where
             }
             MuxPoll::Payload { .. } => {
                 // A `0x5350` frame → this connection is a compile session for
-                // its lifetime. Hand it to `serve_session` with the buffered
-                // bytes intact (do NOT consume them) so the handler reads the
-                // opening `SessionStart` itself.
-                let mut parts = FramedParts::new(io, SessionFrameCodec::default());
-                parts.read_buf = buf;
-                let framed = Framed::from_parts(parts);
+                // its lifetime. Hand it off with the buffered bytes intact (do
+                // NOT consume them) so the takeover handler reads the opening
+                // `SessionStart` itself.
                 let group = Arc::new(ContainedProcessGroup::new()?);
-                serve_session(framed, group).await?;
+                session_takeover_from_buffered(io, buf, group).await?;
                 return Ok(());
             }
         }

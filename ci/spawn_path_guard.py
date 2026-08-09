@@ -56,8 +56,11 @@ ALLOWED_RUST_COMMAND_NEW = {
     # Phase 3 command carriage: `command_from_start` constructs the compiler
     # Command from the session's opening SessionStart frame, then spawns it
     # through the sanitized layer (spawn_contained_session). Building the Command
-    # here (not spawning) is what needs the allowlist.
-    Path("crates/running-process/src/daemon/compile_session.rs"),
+    # here (not spawning) is what needs the allowlist. Moved from
+    # daemon/compile_session.rs to broker/session_takeover.rs (soldr#2365) so a
+    # client-async consumer daemon can serve SESSION; the re-export shell at
+    # daemon/compile_session.rs no longer constructs a Command.
+    Path("crates/running-process/src/broker/session_takeover.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),
