@@ -19,6 +19,7 @@ use crate::broker::protocol::{Endpoint, ServiceDefinition};
 use super::admin::AdminSnapshot;
 use super::backend_launcher::{BackendLauncher, CommandBackendLauncher};
 use super::backend_registry::BackendRegistry;
+use super::combined_service_def_loader::CombinedServiceDefinitionLoader;
 use super::connection::{BrokerConnectionError, PeerCredentialPolicy};
 use super::control_socket::{
     serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard,
@@ -29,9 +30,7 @@ use super::handoff_serve::{complete_negotiated_handoff, ServeHandoffContext};
 use super::hello_handler::{HelloHandler, HelloHandlerError};
 use super::hello_router::HelloRouter;
 use super::instance::{BrokerInstanceError, BrokerInstanceKey};
-use super::service_def_loader::{
-    service_definition_dir, ServiceDefinitionError, ServiceDefinitionLoader,
-};
+use super::service_def_loader::{service_definition_dir, ServiceDefinitionError};
 use super::spawn_coordinator::SpawnCoordinator;
 use super::version_allow_list::{check_version_allowed, VersionPolicyBlock};
 
@@ -240,7 +239,7 @@ pub fn serve_launching_backends_with_launcher(
     config: BrokerLaunchServeConfig,
     launcher: &dyn BackendLauncher,
 ) -> Result<(), BrokerServeError> {
-    let loader = ServiceDefinitionLoader::new(&config.service_definition_dir);
+    let loader = CombinedServiceDefinitionLoader::new(&config.service_definition_dir);
     let registry = Mutex::new(BackendRegistry::new());
     let spawn_coordinator = Mutex::new(SpawnCoordinator::new());
     let router = HelloRouter::with_lifecycle_monitor(&loader, &registry)
@@ -286,7 +285,7 @@ pub fn build_hello_handler(config: &BrokerServeConfig) -> Result<HelloHandler, B
 }
 
 struct RegisteredServeBackend {
-    loader: ServiceDefinitionLoader,
+    loader: CombinedServiceDefinitionLoader,
     registry: BackendRegistry,
     instance: BrokerInstanceKey,
     service_definition: ServiceDefinition,
@@ -299,7 +298,7 @@ fn build_registered_backend(
         return Err(BrokerServeError::EmptyBackendEndpoint);
     }
 
-    let loader = ServiceDefinitionLoader::new(&config.service_definition_dir);
+    let loader = CombinedServiceDefinitionLoader::new(&config.service_definition_dir);
     let service_definition = loader.lookup_or_reload(&config.service_name)?;
     check_version_allowed(&config.service_version, &service_definition)
         .map_err(BrokerServeError::VersionPolicy)?;
