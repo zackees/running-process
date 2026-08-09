@@ -8,6 +8,10 @@ publish = false
 workspace = true
 
 [[bin]]
+name = "testbin-stdio-scripted"
+path = "src/bin/stdio_scripted.rs"
+
+[[bin]]
 name = "testbin-cwd-reporter"
 path = "src/bin/cwd_reporter.rs"
 
