@@ -72,6 +72,7 @@ mod tests {
             session_frame::Kind::Exit(SessionExit {
                 code: 101,
                 signal: 0,
+                metadata: Default::default(),
             }),
             session_frame::Kind::Start(SessionStart {
                 program: "rustc".to_owned(),
@@ -100,6 +101,11 @@ mod tests {
         let original = SessionExit {
             code: -1,
             signal: 9,
+            // Non-empty so the opaque metadata map (soldr#2365 Q3) is exercised
+            // across the wire, not just defaulted away.
+            metadata: [("cache_outcome".to_owned(), "miss".to_owned())]
+                .into_iter()
+                .collect(),
         };
         let decoded =
             SessionExit::decode(original.encode_to_vec().as_slice()).expect("SessionExit decodes");
