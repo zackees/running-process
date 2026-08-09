@@ -2,7 +2,7 @@
 //!
 //! PTY backends still expose synchronous operations on some supported
 //! platforms (notably ConPTY). This module keeps those calls off Tokio workers
-//! behind [`crate::blocking_island`], the single process-wide bounded island
+//! behind `crate::blocking_island`, the single process-wide bounded island
 //! shared with the other operations that have no async form. The process actor
 //! remains the canonical async engine for pipes; this boundary is intentionally
 //! narrow, observable, and temporary until native PTY readiness is available.

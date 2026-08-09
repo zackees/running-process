@@ -477,7 +477,7 @@ pub fn peer_identity_from_stream(
 /// `peer_creds()` is a synchronous `getsockopt`/`GetNamedPipeClientProcessId`
 /// query — it does not block on I/O — so it is safe to call from an async
 /// accept loop without yielding. The credential extraction is identical to the
-/// sync path (shared [`peer_identity_from_peer_creds`]).
+/// sync path (shared `peer_identity_from_peer_creds`).
 #[cfg(feature = "client-async")]
 pub fn peer_identity_from_tokio_stream(
     stream: &interprocess::local_socket::tokio::Stream,

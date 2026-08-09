@@ -14,11 +14,11 @@
 //! 2. **SESSION (`0x5350`) frames** — a compile session's stdio stream. The
 //!    first `0x5350` frame marks the connection as a session for its lifetime
 //!    (**streaming takeover**, matching the daemon's other takeover handlers):
-//!    the connection is handed to [`serve_session`], which reads the opening
+//!    the connection is handed to `serve_session`, which reads the opening
 //!    `SessionStart` and proxies the contained child's stdio byte-for-byte.
 //!
 //! The SESSION wire is Model B — each `SessionFrame` wrapped in a `Frame` on the
-//! `0x5350` lane ([`SessionFrameCodec`]) — exactly what the mux classifies and
+//! `0x5350` lane (`SessionFrameCodec`) — exactly what the mux classifies and
 //! what the broker's transparent relay carries end-to-end. There is no legacy
 //! wire on this endpoint, so the mux's legacy detector always answers
 //! `NotLegacy`.
@@ -62,7 +62,7 @@ pub async fn serve_backend_endpoint(
 
 /// Serve one backend connection: classify each frame with a
 /// [`BackendEndpointMux`], answer identity probes inline, and hand the
-/// connection to [`serve_session`] on the first SESSION (`0x5350`) frame.
+/// connection to `serve_session` on the first SESSION (`0x5350`) frame.
 ///
 /// # Errors
 ///
