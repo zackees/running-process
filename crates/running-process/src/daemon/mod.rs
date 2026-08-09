@@ -20,5 +20,6 @@ pub mod runtime_gc;
 pub mod server;
 pub mod services;
 pub mod services_snapshot;
+pub mod session_endpoint;
 pub mod shadow;
 pub mod telemetry;
