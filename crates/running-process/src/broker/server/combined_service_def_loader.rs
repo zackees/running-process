@@ -16,7 +16,7 @@
 //! v2-only optional `http_server` capability at field 10), so the
 //! down-conversion is lossless for everything the broker launch path reads.
 //!
-//! [`HelloRouter`] takes its loader as a `&dyn `[`ServiceDefinitionSource`] so
+//! [`super::HelloRouter`] takes its loader as a `&dyn `[`ServiceDefinitionSource`] so
 //! both the bare v1 [`ServiceDefinitionLoader`] (used by the crate's existing
 //! unit/integration tests, which install v1 files) and this combined loader
 //! satisfy it: a `&ServiceDefinitionLoader` unsize-coerces to the trait object
