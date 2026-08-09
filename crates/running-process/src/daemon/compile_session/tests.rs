@@ -13,9 +13,24 @@ use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 
-use super::{run_compile_session, session_framed};
-use crate::broker::protocol_v2::{session_frame, SessionFrame};
+use super::{run_compile_session, serve_session, session_framed};
+use crate::broker::protocol_v2::{session_frame, SessionFrame, SessionStart};
 use crate::containment::ContainedProcessGroup;
+
+/// The fixture binary's path as the string a `SessionStart.program` carries.
+fn fixture_program() -> String {
+    let exe = std::env::current_exe().expect("test executable path");
+    let dir = exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("test binary should live in <profile>/deps/");
+    dir.join(format!(
+        "testbin-stdio-scripted{}",
+        std::env::consts::EXE_SUFFIX
+    ))
+    .to_string_lossy()
+    .into_owned()
+}
 
 fn fixture() -> Command {
     let exe = std::env::current_exe().expect("test executable path");
@@ -574,4 +589,84 @@ async fn daemon_kill_mid_session_detected_by_client_within_bound() {
     broker.abort();
     let _ = std::fs::remove_file(&daemon_sock);
     let _ = std::fs::remove_file(&broker_sock);
+}
+
+/// The real daemon serve entry (#2365 command carriage): the command is carried
+/// on the wire in the opening `SessionStart` frame, not passed by the caller.
+/// `serve_session` reads it, builds the contained child, and proxies the rest of
+/// the session — byte-exact vs the direct oracle.
+#[tokio::test]
+async fn serve_session_runs_command_from_start_frame() {
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server = session_framed(server_io);
+    let mut client = session_framed(client_io);
+    let group = Arc::new(ContainedProcessGroup::new().expect("contained group"));
+
+    let handler = tokio::spawn(serve_session(server, group));
+
+    let script = ["out:ARTIFACT", "err:DIAGNOSTIC", "out:MORE", "exit:5"];
+    client
+        .send(frame(session_frame::Kind::Start(SessionStart {
+            program: fixture_program(),
+            args: script.iter().map(|s| s.to_string()).collect(),
+            cwd: String::new(),
+            env: Vec::new(),
+            clear_inherited_env: false,
+        })))
+        .await
+        .expect("send start");
+    client
+        .send(frame(session_frame::Kind::StdinEof(true)))
+        .await
+        .expect("send stdin eof");
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut code = None;
+    while let Some(Ok(sf)) = client.next().await {
+        match sf.kind {
+            Some(session_frame::Kind::Stdout(b)) => stdout.extend_from_slice(&b),
+            Some(session_frame::Kind::Stderr(b)) => stderr.extend_from_slice(&b),
+            Some(session_frame::Kind::Exit(e)) => {
+                code = Some(e.code);
+                break;
+            }
+            _ => panic!("unexpected inbound-only frame on the outbound lane"),
+        }
+    }
+
+    let exit = handler
+        .await
+        .expect("handler task")
+        .expect("serve reaps child");
+    let oracle = run_direct(&script, b"");
+    assert_eq!(code, Some(exit.code), "client-visible exit matches handler");
+    assert_eq!(stdout, oracle.stdout, "stdout byte-exact");
+    assert_eq!(stderr, oracle.stderr, "stderr byte-exact");
+    assert_eq!(exit.code, oracle.code, "exit code fidelity");
+}
+
+/// A session that does not open with `SessionStart` is a protocol error, not a
+/// hang or a silent default.
+#[tokio::test]
+async fn serve_session_rejects_missing_start_frame() {
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server = session_framed(server_io);
+    let mut client = session_framed(client_io);
+    let group = Arc::new(ContainedProcessGroup::new().expect("contained group"));
+
+    let handler = tokio::spawn(serve_session(server, group));
+
+    // Open with stdin instead of the mandatory Start.
+    client
+        .send(frame(session_frame::Kind::Stdin(b"oops".to_vec())))
+        .await
+        .expect("send stdin");
+    drop(client);
+
+    let result = handler.await.expect("handler task");
+    assert!(
+        result.is_err(),
+        "serve_session must reject a session that skips SessionStart"
+    );
 }

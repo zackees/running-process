@@ -37,7 +37,11 @@ use crate::broker::protocol_v2::{session_frame, SessionFrame};
 /// docs for why this is a hint rather than request/response correlation.
 fn frame_kind_for(kind: &session_frame::Kind) -> FrameKind {
     match kind {
-        session_frame::Kind::Stdin(_) | session_frame::Kind::StdinEof(_) => FrameKind::Request,
+        // Client → daemon: stdin stream and the opening command carriage.
+        session_frame::Kind::Stdin(_)
+        | session_frame::Kind::StdinEof(_)
+        | session_frame::Kind::Start(_) => FrameKind::Request,
+        // Daemon → client: stdout/stderr stream and the terminal exit.
         session_frame::Kind::Stdout(_)
         | session_frame::Kind::Stderr(_)
         | session_frame::Kind::Exit(_) => FrameKind::Response,
@@ -77,7 +81,12 @@ pub fn encode_session_frame(frame: &SessionFrame, seq: u64) -> Result<Vec<u8>, F
 
 /// One `SessionFrame` decoded from the front of a byte buffer, plus how many
 /// wire bytes it occupied.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `PartialEq` only, not `Eq`: prost stops auto-deriving `Eq` for `SessionFrame`
+/// once its oneof includes `SessionStart` (which carries a repeated message
+/// field), and equality here is only ever used through `assert_eq!` (which needs
+/// `PartialEq`).
+#[derive(Debug, Clone, PartialEq)]
 pub struct DecodedSessionFrame {
     /// The decoded session frame.
     pub frame: SessionFrame,
