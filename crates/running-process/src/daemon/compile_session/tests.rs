@@ -212,3 +212,91 @@ async fn compile_session_matches_oracle_over_real_unix_socket() {
         "exit code fidelity across a real socket"
     );
 }
+
+/// The full Phase-3 relay data path (#2386 ruling): one compile session proxied
+/// **client → broker → daemon across two real Unix sockets**. The "broker" is a
+/// minimal full-proxy — it accepts the client, dials the daemon, and relays
+/// bytes both ways with `copy_bidirectional` (this is the model that *replaces*
+/// the legacy handle-passing handoff). The daemon serves the session on its own
+/// real endpoint. Byte-exact stdout/stderr and exit fidelity must survive both
+/// hops. Proves the SESSION wire tolerates a relay and two socket boundaries;
+/// the production broker adds Hello/routing/backpressure on top. Unix-first.
+#[cfg(unix)]
+#[tokio::test]
+async fn compile_session_matches_oracle_across_broker_relay() {
+    use tokio::net::{UnixListener, UnixStream};
+
+    let pid = std::process::id();
+    let daemon_sock = std::env::temp_dir().join(format!("rp-relay-d-{pid}.sock"));
+    let broker_sock = std::env::temp_dir().join(format!("rp-relay-b-{pid}.sock"));
+    let _ = std::fs::remove_file(&daemon_sock);
+    let _ = std::fs::remove_file(&broker_sock);
+    let daemon_listener = UnixListener::bind(&daemon_sock).expect("bind daemon listener");
+    let broker_listener = UnixListener::bind(&broker_sock).expect("bind broker listener");
+
+    let script: &[&str] = &["out:ARTIFACT", "err:DIAGNOSTIC", "out:MORE", "exit:5"];
+    let mut cmd = fixture();
+    cmd.args(script);
+    let group = Arc::new(ContainedProcessGroup::new().expect("contained group"));
+
+    // Daemon: accept its real connection and serve the session.
+    let daemon = tokio::spawn(async move {
+        let (io, _addr) = daemon_listener.accept().await.expect("daemon accept");
+        run_compile_session(session_framed(io), cmd, group).await
+    });
+
+    // Broker: accept the client, dial the daemon, relay bytes both ways.
+    let daemon_sock_for_broker = daemon_sock.clone();
+    let broker = tokio::spawn(async move {
+        let (mut client_conn, _addr) = broker_listener.accept().await.expect("broker accept");
+        let mut daemon_conn = UnixStream::connect(&daemon_sock_for_broker)
+            .await
+            .expect("broker dials daemon");
+        // Full-proxy: every byte flows through the broker, both directions.
+        let _ = tokio::io::copy_bidirectional(&mut client_conn, &mut daemon_conn).await;
+    });
+
+    // Client: dial the broker (never the daemon) and speak the SESSION wire.
+    let client_io = UnixStream::connect(&broker_sock)
+        .await
+        .expect("client dials broker");
+    let mut client = session_framed(client_io);
+    client
+        .send(frame(session_frame::Kind::StdinEof(true)))
+        .await
+        .expect("send stdin eof");
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut code = None;
+    while let Some(Ok(sf)) = client.next().await {
+        match sf.kind {
+            Some(session_frame::Kind::Stdout(b)) => stdout.extend_from_slice(&b),
+            Some(session_frame::Kind::Stderr(b)) => stderr.extend_from_slice(&b),
+            Some(session_frame::Kind::Exit(e)) => {
+                code = Some(e.code);
+                break;
+            }
+            _ => panic!("unexpected inbound-only frame on the outbound lane"),
+        }
+    }
+    // Close the client leg so the relay's client→daemon half reaches EOF.
+    drop(client);
+
+    let exit = daemon
+        .await
+        .expect("daemon task")
+        .expect("handler reaps child");
+    let _ = broker.await;
+    let _ = std::fs::remove_file(&daemon_sock);
+    let _ = std::fs::remove_file(&broker_sock);
+
+    let oracle = run_direct(script, b"");
+    assert_eq!(code, Some(exit.code), "client-visible exit matches handler");
+    assert_eq!(stdout, oracle.stdout, "stdout byte-exact across the relay");
+    assert_eq!(stderr, oracle.stderr, "stderr byte-exact across the relay");
+    assert_eq!(
+        exit.code, oracle.code,
+        "exit code fidelity across the relay"
+    );
+}
