@@ -20,6 +20,7 @@
 //! | `0xAD01` | [`ADMIN_PAYLOAD_PROTOCOL`]                 | Admin verbs over the broker control socket      | `AdminRequest` / `AdminReply`    |
 //! | `0xB232` | [`BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL`]  | `BackendHandle` endpoint identity probes        | raw nonce / nonce + `DaemonProcess` |
 //! | `0xD0FF` | [`HANDOFF_PAYLOAD_PROTOCOL`]               | Connection handoff offer/ACK and client relay   | `HandoffOffer` / `HandoffAck`    |
+//! | `0x5350` | [`SESSION_PAYLOAD_PROTOCOL`]               | Phase 3 proxy data plane: session stdio stream  | `SessionFrame` (`broker.v2`)     |
 //!
 //! # Consumer payload-protocol IDs (#412)
 //!
@@ -84,6 +85,13 @@ pub const BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL: u32 = 0xB232;
 /// Payload protocol reserved for broker↔backend handoff offer/ACK frames
 /// and the broker→client handoff-ready relay.
 pub const HANDOFF_PAYLOAD_PROTOCOL: u32 = 0xD0FF;
+
+/// Payload protocol for the Phase 3 proxy data plane (soldr#2365): the
+/// `SessionFrame` stdio stream proxied client↔broker↔daemon (`0x5350` = ASCII
+/// `"SP"`, session-proxy). Distinct from [`HANDOFF_PAYLOAD_PROTOCOL`] — handoff
+/// hands the client a backend endpoint to dial directly, whereas the session
+/// lane carries the compile's stdio *through* the broker.
+pub const SESSION_PAYLOAD_PROTOCOL: u32 = 0x5350;
 
 /// Inclusive lower bound of the registered-consumer payload-protocol range.
 pub const CONSUMER_PAYLOAD_PROTOCOL_MIN: u32 = 0x7000;
