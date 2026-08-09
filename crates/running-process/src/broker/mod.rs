@@ -48,6 +48,12 @@ pub mod session_pump;
 #[cfg(feature = "client-async")]
 pub mod session_relay;
 pub mod session_server;
+// The async SESSION-lane takeover handler. On `client-async` (not `daemon`) so
+// any async consumer daemon — including soldr-daemon, which enables
+// `running-process/client-async` — can serve SESSION without the full
+// running-process daemon runtime. `daemon::compile_session` re-exports it.
+#[cfg(feature = "client-async")]
+pub mod session_takeover;
 
 /// Framing byte for every v1 broker connection. Wire layout:
 /// `[u8 framing_version=1][u32 LE body_length][prost body]`.
