@@ -8,23 +8,11 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use prost::Message;
-use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use super::run_compile_session;
+use super::{run_compile_session, session_framed};
 use crate::broker::protocol_v2::{session_frame, SessionFrame};
 use crate::containment::ContainedProcessGroup;
-
-/// The daemon's frame codec (big-endian u32 length prefix), used on both ends
-/// of the test transport so the client and handler agree on framing.
-fn codec() -> LengthDelimitedCodec {
-    LengthDelimitedCodec::builder()
-        .big_endian()
-        .length_field_type::<u32>()
-        .new_codec()
-}
 
 fn fixture() -> Command {
     let exe = std::env::current_exe().expect("test executable path");
@@ -76,8 +64,8 @@ fn run_direct(directives: &[&str], stdin: &[u8]) -> Reassembled {
 /// Drive the handler over the daemon transport with a codec-speaking client.
 async fn run_over_daemon_transport(directives: &[&str], stdin: &[u8]) -> Reassembled {
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-    let server = Framed::new(server_io, codec());
-    let mut client = Framed::new(client_io, codec());
+    let server = session_framed(server_io);
+    let mut client = session_framed(client_io);
 
     let mut cmd = fixture();
     cmd.args(directives);
@@ -87,24 +75,19 @@ async fn run_over_daemon_transport(directives: &[&str], stdin: &[u8]) -> Reassem
 
     if !stdin.is_empty() {
         client
-            .send(Bytes::from(
-                frame(session_frame::Kind::Stdin(stdin.to_vec())).encode_to_vec(),
-            ))
+            .send(frame(session_frame::Kind::Stdin(stdin.to_vec())))
             .await
             .unwrap();
     }
     client
-        .send(Bytes::from(
-            frame(session_frame::Kind::StdinEof(true)).encode_to_vec(),
-        ))
+        .send(frame(session_frame::Kind::StdinEof(true)))
         .await
         .unwrap();
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut code = None;
-    while let Some(Ok(bytes)) = client.next().await {
-        let sf = SessionFrame::decode(bytes.as_ref()).unwrap();
+    while let Some(Ok(sf)) = client.next().await {
         match sf.kind {
             Some(session_frame::Kind::Stdout(b)) => stdout.extend_from_slice(&b),
             Some(session_frame::Kind::Stderr(b)) => stderr.extend_from_slice(&b),
