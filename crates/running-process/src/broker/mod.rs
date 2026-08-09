@@ -34,6 +34,7 @@ pub mod protocol;
 pub mod protocol_v2;
 pub mod secure_dir;
 pub mod server;
+pub mod session_pump;
 
 /// Framing byte for every v1 broker connection. Wire layout:
 /// `[u8 framing_version=1][u32 LE body_length][prost body]`.

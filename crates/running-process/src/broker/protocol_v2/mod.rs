@@ -58,6 +58,64 @@ mod tests {
         assert!(decoded.http_server.is_none());
     }
 
+    /// soldr#2365 Phase 3: every `SessionFrame` variant survives a prost
+    /// round-trip byte-exactly, including raw non-UTF-8 stdio payloads (the
+    /// proxy data plane must be byte-transparent, not text-normalizing).
+    #[test]
+    fn session_frame_each_variant_round_trips() {
+        let raw: Vec<u8> = vec![0x00, 0xff, 0x80, b'\n', 0x1b];
+        let cases = [
+            session_frame::Kind::Stdin(raw.clone()),
+            session_frame::Kind::StdinEof(true),
+            session_frame::Kind::Stdout(raw.clone()),
+            session_frame::Kind::Stderr(raw.clone()),
+            session_frame::Kind::Exit(SessionExit {
+                code: 101,
+                signal: 0,
+            }),
+        ];
+        for kind in cases {
+            let original = SessionFrame {
+                kind: Some(kind.clone()),
+            };
+            let decoded = SessionFrame::decode(original.encode_to_vec().as_slice())
+                .expect("SessionFrame decodes");
+            assert_eq!(decoded, original, "variant did not round-trip: {kind:?}");
+        }
+    }
+
+    /// Signal death carries a non-zero `signal`; consumers read it first.
+    #[test]
+    fn session_exit_signal_death_round_trips() {
+        let original = SessionExit {
+            code: -1,
+            signal: 9,
+        };
+        let decoded =
+            SessionExit::decode(original.encode_to_vec().as_slice()).expect("SessionExit decodes");
+        assert_eq!(decoded, original);
+        assert_ne!(decoded.signal, 0, "signal death must be distinguishable");
+    }
+
+    /// The session lane's payload-protocol id is distinct from every other
+    /// registered broker protocol (the registry's pairwise-distinct invariant).
+    #[test]
+    fn session_payload_protocol_is_distinct() {
+        use crate::broker::protocol::{
+            ADMIN_PAYLOAD_PROTOCOL, BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL,
+            CONTROL_PAYLOAD_PROTOCOL, HANDOFF_PAYLOAD_PROTOCOL, SESSION_PAYLOAD_PROTOCOL,
+        };
+        assert_eq!(SESSION_PAYLOAD_PROTOCOL, 0x5350);
+        for other in [
+            CONTROL_PAYLOAD_PROTOCOL,
+            ADMIN_PAYLOAD_PROTOCOL,
+            BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL,
+            HANDOFF_PAYLOAD_PROTOCOL,
+        ] {
+            assert_ne!(SESSION_PAYLOAD_PROTOCOL, other);
+        }
+    }
+
     /// `ServiceDefinition` round-trips with an `HttpServerCapability`
     /// populated — all three fields survive.
     #[test]

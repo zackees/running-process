@@ -40,6 +40,13 @@ ALLOWED_RUST_COMMAND_NEW = {
     # never executed. The real spawn, when the launcher wiring lands, goes
     # through `spawn_daemon` like every other backend launch.
     Path("crates/running-process/src/broker/broker_owned_bind/tests.rs"),
+    # Phase 3 proxy-pump oracle (soldr#2365). These spawn the
+    # `testbin-stdio-scripted` fixture directly — once through the pump and
+    # once bare — so the two byte streams can be diffed for fidelity. There is
+    # no daemon in the loop: the whole point is to exercise the raw stdio
+    # bridge against a golden direct run, so it must NOT route through the
+    # sanitized spawn layer that these tests exist to be independent of.
+    Path("crates/running-process/src/broker/session_pump/tests.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),
@@ -174,6 +181,11 @@ ALLOWED_RUST_SPAWN = {
     # backend implementations are reviewed separately below; this is not a
     # raw std::process::Command spawn site.
     Path("crates/running-process/src/pty/native_pty_process.rs"),
+    # Phase 3 proxy-pump oracle (soldr#2365) — see the matching note in
+    # ALLOWED_RUST_COMMAND_NEW. Spawns the stdio fixture directly (through the
+    # pump and bare) to diff the two byte streams; deliberately independent of
+    # the sanitized spawn layer, no daemon in the loop.
+    Path("crates/running-process/src/broker/session_pump/tests.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),
