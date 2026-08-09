@@ -11,7 +11,7 @@ use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{serve_broker_session_endpoint, ENVELOPE_VERSION};
+use super::{serve_broker_session_endpoint, serve_broker_session_socket, ENVELOPE_VERSION};
 use crate::broker::protocol::{
     encode_framed, hello_reply::Result as HelloReplyResult, Frame, HelloReply, Negotiated,
     CONTROL_PAYLOAD_PROTOCOL,
@@ -248,4 +248,108 @@ async fn async_broker_drops_peer_refused_by_policy() {
         read.is_err(),
         "a peer refused by PeerCredentialPolicy must be dropped without a Hello reply"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn async_broker_session_socket_entry_binds_and_proxies() {
+    let pid = std::process::id();
+    let daemon_path = std::env::temp_dir().join(format!("rp-async-sock-d-{pid}.sock"));
+    let broker_path = std::env::temp_dir().join(format!("rp-async-sock-b-{pid}.sock"));
+    let _ = std::fs::remove_file(&daemon_path);
+    let _ = std::fs::remove_file(&broker_path);
+
+    let daemon_listener = ListenerOptions::new()
+        .name(
+            daemon_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("daemon fs name"),
+        )
+        .create_tokio()
+        .expect("bind daemon endpoint");
+    let daemon = tokio::spawn(serve_session_endpoint(daemon_listener));
+
+    // The socket entry binds the broker path itself (the production shape:
+    // callers hold a path string, not a pre-bound listener).
+    let daemon_path_str = daemon_path.to_string_lossy().into_owned();
+    let broker_path_str = broker_path.to_string_lossy().into_owned();
+    let broker = tokio::spawn(async move {
+        let _ = serve_broker_session_socket(
+            &broker_path_str,
+            &NegotiateToBackend(daemon_path_str),
+            &PeerCredentialPolicy::allow_any(),
+        )
+        .await;
+    });
+
+    // The bind happens inside the task, so retry the dial until it is listening.
+    let mut stream = None;
+    for _ in 0..200 {
+        match interprocess::local_socket::tokio::Stream::connect(
+            broker_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("client fs name"),
+        )
+        .await
+        {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+        }
+    }
+    let mut stream = stream.expect("broker socket became connectable");
+
+    // Hello round-trip, then SESSION relay on the same connection.
+    let hello_wire =
+        encode_framed(&Frame::request(CONTROL_PAYLOAD_PROTOCOL, Vec::new())).expect("encode hello");
+    stream.write_all(&hello_wire).await.expect("send hello");
+    let reply_body = read_framed_body(&mut stream).await;
+    let reply_frame = Frame::decode(reply_body.as_slice()).expect("decode reply frame");
+    let reply = HelloReply::decode(reply_frame.payload.as_slice()).expect("decode HelloReply");
+    assert!(
+        matches!(reply.result, Some(HelloReplyResult::Negotiated(_))),
+        "broker negotiated the Hello via the socket entry"
+    );
+
+    let mut client = session_framed(stream);
+    client
+        .send(frame(session_frame::Kind::Start(SessionStart {
+            program: fixture_program(),
+            args: vec!["out:HELLO".to_owned(), "exit:7".to_owned()],
+            cwd: String::new(),
+            env: Vec::new(),
+            clear_inherited_env: false,
+        })))
+        .await
+        .expect("send start");
+    client
+        .send(frame(session_frame::Kind::StdinEof(true)))
+        .await
+        .expect("send stdin eof");
+
+    let mut stdout = Vec::new();
+    let mut code = None;
+    while let Some(Ok(sf)) = client.next().await {
+        match sf.kind {
+            Some(session_frame::Kind::Stdout(b)) => stdout.extend_from_slice(&b),
+            Some(session_frame::Kind::Stderr(_)) => {}
+            Some(session_frame::Kind::Exit(e)) => {
+                code = Some(e.code);
+                break;
+            }
+            _ => panic!("unexpected inbound-only frame on the outbound lane"),
+        }
+    }
+
+    daemon.abort();
+    broker.abort();
+    let _ = std::fs::remove_file(&daemon_path);
+    let _ = std::fs::remove_file(&broker_path);
+
+    assert_eq!(stdout, b"HELLO", "stdout proxied through the socket entry");
+    assert_eq!(code, Some(7), "exit code proxied through the socket entry");
 }

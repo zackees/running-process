@@ -39,9 +39,50 @@ use crate::broker::protocol::{
 use crate::broker::session_relay::relay_session;
 
 use super::connection::{
-    peer_identity_from_tokio_stream, refused_reply, HelloResponder, PeerCredentialPolicy,
+    local_socket_name, peer_identity_from_tokio_stream, refused_reply, HelloResponder,
+    PeerCredentialPolicy,
 };
 use super::hello_handler::PeerIdentity;
+
+/// Bind `socket_path` as a tokio SESSION listener and serve it via
+/// [`serve_broker_session_endpoint`].
+///
+/// This is the production entry point: real callers (e.g. `soldr broker serve`)
+/// hold a socket-path string and a [`HelloResponder`] (typically a
+/// `HelloRouter`) — not a pre-bound `interprocess::local_socket::tokio::Listener`.
+/// It resolves the platform local-socket name the same way the sync broker bind
+/// does ([`local_socket_name`]) and creates the tokio listener.
+///
+/// # Errors
+///
+/// Fails if the socket path cannot be bound (e.g. another broker already owns
+/// it), or with the first fatal `accept()` error from the serve loop.
+pub async fn serve_broker_session_socket<R>(
+    socket_path: &str,
+    responder: &R,
+    peer_policy: &PeerCredentialPolicy,
+) -> std::io::Result<()>
+where
+    R: HelloResponder + ?Sized,
+{
+    let listener = bind_session_listener(socket_path)?;
+    serve_broker_session_endpoint(listener, responder, peer_policy).await
+}
+
+/// Bind a tokio-`interprocess` SESSION listener at `socket_path`.
+///
+/// Uses the same platform name resolution ([`local_socket_name`]) as the sync
+/// broker bind, so a SESSION listener and a legacy control listener name the
+/// same path identically across Unix (filesystem) and Windows (namespace).
+fn bind_session_listener(
+    socket_path: &str,
+) -> std::io::Result<interprocess::local_socket::tokio::Listener> {
+    use interprocess::local_socket::tokio::prelude::*;
+    use interprocess::local_socket::ListenerOptions;
+
+    let name = local_socket_name(socket_path)?;
+    ListenerOptions::new().name(name).create_tokio()
+}
 
 /// Accept SESSION connections on `listener`, negotiate each Hello with the sync
 /// `responder`, and full-proxy every negotiated session to the daemon SESSION
