@@ -300,3 +300,99 @@ async fn compile_session_matches_oracle_across_broker_relay() {
         "exit code fidelity across the relay"
     );
 }
+
+/// Kill-matrix cell (#2361/#2360 "core of the design"): **broker death mid-session
+/// is detected by the client within a bounded latency** — no hang, no 30s budget.
+/// A session is established end-to-end over the relay (a stdin byte echoed back
+/// proves the path is live), then the broker relay is aborted mid-flight; the
+/// client's stream must reach EOF/error promptly. The bound is asserted with a
+/// number. Unix-first.
+#[cfg(unix)]
+#[tokio::test]
+async fn broker_kill_mid_session_detected_by_client_within_bound() {
+    use std::time::{Duration, Instant};
+    use tokio::net::{UnixListener, UnixStream};
+
+    let pid = std::process::id();
+    let daemon_sock = std::env::temp_dir().join(format!("rp-kill-d-{pid}.sock"));
+    let broker_sock = std::env::temp_dir().join(format!("rp-kill-b-{pid}.sock"));
+    let _ = std::fs::remove_file(&daemon_sock);
+    let _ = std::fs::remove_file(&broker_sock);
+    let daemon_listener = UnixListener::bind(&daemon_sock).expect("bind daemon listener");
+    let broker_listener = UnixListener::bind(&broker_sock).expect("bind broker listener");
+
+    // A long-lived session that also emits output UNPROMPTED so we can prove the
+    // path is live before killing: `out:ping` writes immediately, then `echo`
+    // reads stdin until EOF — with no StdinEof the child stays alive, so the
+    // session is genuinely mid-flight when we kill. (`echo` alone would block
+    // waiting for stdin EOF before producing any output.)
+    let mut cmd = fixture();
+    cmd.args(["out:ping", "echo"]);
+    let group = Arc::new(ContainedProcessGroup::new().expect("contained group"));
+
+    let daemon = tokio::spawn(async move {
+        let (io, _addr) = daemon_listener.accept().await.expect("daemon accept");
+        run_compile_session(session_framed(io), cmd, group).await
+    });
+
+    let daemon_sock_for_broker = daemon_sock.clone();
+    let broker = tokio::spawn(async move {
+        let (mut client_conn, _addr) = broker_listener.accept().await.expect("broker accept");
+        let mut daemon_conn = UnixStream::connect(&daemon_sock_for_broker)
+            .await
+            .expect("broker dials daemon");
+        let _ = tokio::io::copy_bidirectional(&mut client_conn, &mut daemon_conn).await;
+    });
+
+    let client_io = UnixStream::connect(&broker_sock)
+        .await
+        .expect("client dials broker");
+    let mut client = session_framed(client_io);
+
+    // Prove the path is live end-to-end: the child's unprompted `out:ping`
+    // reaches the client across both relay legs.
+    let live = tokio::time::timeout(Duration::from_secs(5), client.next())
+        .await
+        .expect("first output within 5s")
+        .expect("a frame")
+        .expect("decode ok");
+    assert_eq!(
+        live.kind,
+        Some(session_frame::Kind::Stdout(b"ping".to_vec())),
+        "session is live over the relay before the kill"
+    );
+
+    // Kill the broker mid-session.
+    let t0 = Instant::now();
+    broker.abort();
+
+    // The client must detect the disconnect (EOF/error), not hang.
+    let detected = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match client.next().await {
+                None | Some(Err(_)) => break,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await;
+    let latency = t0.elapsed();
+
+    assert!(
+        detected.is_ok(),
+        "client hung after broker death instead of detecting it"
+    );
+    assert!(
+        latency < Duration::from_secs(1),
+        "broker-death detection latency {latency:?} exceeds the 1s bound"
+    );
+
+    // The daemon side sees its connection drop and tears the session down (its
+    // inbound stream EOFs, closing the child's stdin so `echo` exits) — no hang.
+    let _ = tokio::time::timeout(Duration::from_secs(5), daemon)
+        .await
+        .expect("daemon session terminates after its connection drops");
+
+    let _ = std::fs::remove_file(&daemon_sock);
+    let _ = std::fs::remove_file(&broker_sock);
+}
