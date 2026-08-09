@@ -552,6 +552,36 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    /// Test-side counterpart of [`connect`]'s Frame-wrapping: reads a
+    /// length-prefixed `Frame`-wrapped `Hello` off `stream` and decodes
+    /// the inner `Hello`. These in-process stub brokers stand in for the
+    /// real `serve_launching_backends` accept loop, so they must speak
+    /// the same on-wire shape the real server does (soldr#2364) -- a
+    /// stub that reads/writes bare `Hello`/`HelloReply` bytes no longer
+    /// matches what `connect` sends/expects.
+    fn read_hello_frame(stream: &mut impl Read) -> Hello {
+        let bytes = read_frame(stream).expect("read Hello frame");
+        let frame = Frame::decode(bytes.as_slice()).expect("decode Frame");
+        Hello::decode(frame.payload.as_slice()).expect("decode Hello")
+    }
+
+    /// Test-side counterpart of [`connect`]'s Frame-wrapping: encodes
+    /// `reply` as a `Frame`-wrapped `HelloReply` and writes it to `stream`.
+    fn write_hello_reply_frame(stream: &mut impl Write, reply: &HelloReply) {
+        let reply_frame = Frame {
+            envelope_version: PROTOCOL_VERSION,
+            kind: FrameKind::Response as i32,
+            payload_protocol: CONTROL_PAYLOAD_PROTOCOL,
+            payload: reply.encode_to_vec(),
+            request_id: 0,
+            payload_encoding: PayloadEncoding::None as i32,
+            deadline_unix_ms: 0,
+            traceparent: String::new(),
+            tracestate: String::new(),
+        };
+        write_frame(stream, &reply_frame.encode_to_vec()).expect("write HelloReply frame");
+    }
+
     /// RAII guard: on `Drop`, removes the socket file at `path`. Used by
     /// [`spawn_stub_broker`] so a panic between bind and the final
     /// explicit `remove_file` doesn't leak a stale `.sock` that would
@@ -592,8 +622,7 @@ mod tests {
                 .expect("ListenerOptions create_sync");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
-            let bytes = read_frame(&mut stream).expect("read Hello frame");
-            let hello = Hello::decode(bytes.as_slice()).expect("decode Hello");
+            let hello = read_hello_frame(&mut stream);
             let reply = HelloReply {
                 result: Some(hello_reply::Result::Negotiated(Negotiated {
                     negotiated_protocol: ENVELOPE_VERSION as u32,
@@ -606,9 +635,7 @@ mod tests {
                     connection_id: 0x00C0_FFEE,
                 })),
             };
-            let mut body = Vec::with_capacity(reply.encoded_len());
-            reply.encode(&mut body).expect("encode HelloReply");
-            write_frame(&mut stream, &body).expect("write HelloReply frame");
+            write_hello_reply_frame(&mut stream, &reply);
             // RAII guard removes the socket on scope exit; the explicit
             // remove that lived here previously was a no-op leftover.
             let _ = hello.service_name;
@@ -735,7 +762,7 @@ mod tests {
                 .expect("ListenerOptions create_sync");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
-            let _bytes = read_frame(&mut stream).expect("read Hello frame");
+            let _hello = read_hello_frame(&mut stream);
             let reply = HelloReply {
                 result: Some(hello_reply::Result::Refused(Refused {
                     code: 0,
@@ -744,9 +771,7 @@ mod tests {
                     ..Refused::default()
                 })),
             };
-            let mut body = Vec::with_capacity(reply.encoded_len());
-            reply.encode(&mut body).expect("encode HelloReply");
-            write_frame(&mut stream, &body).expect("write HelloReply frame");
+            write_hello_reply_frame(&mut stream, &reply);
         });
         rx
     }
@@ -776,7 +801,7 @@ mod tests {
                     Ok(s) => s,
                     Err(_) => break,
                 };
-                let _ = read_frame(&mut stream).expect("read Hello frame");
+                let _hello = read_hello_frame(&mut stream);
                 let reply = HelloReply {
                     result: Some(hello_reply::Result::Negotiated(Negotiated {
                         negotiated_protocol: ENVELOPE_VERSION as u32,
@@ -789,9 +814,7 @@ mod tests {
                         connection_id: 0x0FFF_F1EE,
                     })),
                 };
-                let mut body = Vec::with_capacity(reply.encoded_len());
-                reply.encode(&mut body).expect("encode HelloReply");
-                write_frame(&mut stream, &body).expect("write HelloReply frame");
+                write_hello_reply_frame(&mut stream, &reply);
             }
         });
         rx
@@ -860,11 +883,9 @@ mod tests {
                 .expect("ListenerOptions create_sync");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
-            let _ = read_frame(&mut stream).expect("read Hello frame");
+            let _hello = read_hello_frame(&mut stream);
             let reply = HelloReply { result: None };
-            let mut body = Vec::with_capacity(reply.encoded_len());
-            reply.encode(&mut body).expect("encode HelloReply");
-            write_frame(&mut stream, &body).expect("write HelloReply frame");
+            write_hello_reply_frame(&mut stream, &reply);
         });
         rx
     }
