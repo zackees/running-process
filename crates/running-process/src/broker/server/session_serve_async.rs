@@ -14,7 +14,7 @@
 //! 1. read exactly one `[1][u32 LE len][Frame]` Hello frame — **manually**, so
 //!    no read buffer over-reads into the client's first SESSION bytes (that
 //!    `SessionStart` must reach the daemon's `serve_session` intact);
-//! 2. route it through the sync `responder` to a [`HelloReply`];
+//! 2. route it through the sync `responder` to a `HelloReply`;
 //! 3. write the framed reply back;
 //! 4. on a negotiated SESSION, hand the **same** connection to
 //!    [`relay_session`](crate::broker::session_relay::relay_session), which
@@ -23,7 +23,7 @@
 //! # Peer-credential enforcement
 //!
 //! The accept loop reads OS peer credentials off each tokio-`interprocess`
-//! stream via [`peer_identity_from_tokio_stream`] (`peer_creds()` is a
+//! stream via `peer_identity_from_tokio_stream` (`peer_creds()` is a
 //! synchronous, non-blocking `getsockopt` query — safe from async) and refuses
 //! any peer the [`PeerCredentialPolicy`] rejects **before** reading a byte of
 //! Hello, exactly as the sync loop does. This is the parity that lets the path
@@ -285,7 +285,7 @@ async fn read_exact_eof<S: AsyncRead + Unpin>(
     }
 }
 
-/// Frame a [`HelloReply`] as a `Response` and write it as `[1][u32 LE len][Frame]`.
+/// Frame a `HelloReply` as a `Response` and write it as `[1][u32 LE len][Frame]`.
 ///
 /// Byte-for-byte the same response frame the sync `write_response_frame` emits;
 /// only the write is async.

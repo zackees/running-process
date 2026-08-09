@@ -6,7 +6,7 @@
 //! deleting one listener, not un-weaving a shared loop). The broker binds this
 //! endpoint and hands the daemon the listener (`broker_owned_bind`); this loop
 //! accepts each SESSION connection and serves it via
-//! [`serve_session`](crate::daemon::compile_session::serve_session), which reads
+//! [`serve_session`], which reads
 //! the connection's opening `SessionStart` frame, builds the contained compiler
 //! child, and proxies its stdio on the SESSION wire.
 //!
