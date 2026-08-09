@@ -137,3 +137,110 @@ fn pump_reports_a_nonzero_exit_code() {
     assert_eq!(pumped.exit, (7, 0));
     assert_eq!(pumped.stderr, b"boom");
 }
+
+/// Drive the pump, then push both directions through the SESSION codec's byte
+/// boundary (slice 3a). Inbound stdin is encoded → bytes → decoded before it
+/// reaches the pump; every outbound frame is encoded into one concatenated
+/// stream that is then decoded **one byte at a time**, so every partial-frame
+/// cut is exercised on a real byte boundary. The reassembled result must equal
+/// the direct oracle exactly — the codec adds framing, never touches fidelity.
+fn run_through_pump_over_codec(directives: &[&str], stdin: &[u8]) -> Reassembled {
+    use crate::broker::session_codec::{
+        encode_session_frame, try_decode_session_frame, DecodedSessionFrame,
+    };
+
+    let child = Command::new(testbin_path("testbin-stdio-scripted"))
+        .args(directives)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn fixture under pump");
+
+    // Feed inbound stdin frames through the codec (encode → decode) before the
+    // pump sees them, proving the client→daemon direction crosses the boundary.
+    let (stdin_tx, stdin_rx) = channel();
+    let mut seq = 0u64;
+    let mut send_via_codec = |frame: SessionFrame| {
+        let wire = encode_session_frame(&frame, seq).expect("encode stdin frame");
+        seq += 1;
+        let decoded = try_decode_session_frame(&wire)
+            .expect("decode ok")
+            .expect("complete")
+            .frame;
+        stdin_tx.send(decoded).unwrap();
+    };
+    if !stdin.is_empty() {
+        send_via_codec(SessionFrame {
+            kind: Some(session_frame::Kind::Stdin(stdin.to_vec())),
+        });
+    }
+    send_via_codec(SessionFrame {
+        kind: Some(session_frame::Kind::StdinEof(true)),
+    });
+    drop(stdin_tx);
+
+    let (out_tx, out_rx) = channel();
+    let exit = run_child_session(child, out_tx, stdin_rx).expect("pump reaps child");
+
+    // Encode every outbound frame into one concatenated byte stream.
+    let mut stream = Vec::new();
+    for (oseq, frame) in out_rx.into_iter().enumerate() {
+        stream.extend_from_slice(&encode_session_frame(&frame, oseq as u64).expect("encode out"));
+    }
+
+    // Decode the stream one byte at a time to hit every partial-frame boundary.
+    let mut fed = Vec::new();
+    let mut cursor = 0usize;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_frame = None;
+    for &byte in &stream {
+        fed.push(byte);
+        while let Some(DecodedSessionFrame { frame, consumed }) =
+            try_decode_session_frame(&fed[cursor..]).expect("decode ok")
+        {
+            match frame.kind {
+                Some(session_frame::Kind::Stdout(b)) => stdout.extend_from_slice(&b),
+                Some(session_frame::Kind::Stderr(b)) => stderr.extend_from_slice(&b),
+                Some(session_frame::Kind::Exit(e)) => exit_frame = Some((e.code, e.signal)),
+                other => panic!("unexpected frame on outbound stream: {other:?}"),
+            }
+            cursor += consumed;
+        }
+    }
+    assert_eq!(cursor, stream.len(), "the whole outbound stream is consumed");
+    let exit_frame = exit_frame.expect("a terminal Exit frame is always sent");
+    assert_eq!(exit_frame, (exit.code, exit.signal));
+    Reassembled {
+        stdout,
+        stderr,
+        exit: exit_frame,
+    }
+}
+
+#[test]
+fn pump_over_codec_matches_the_direct_oracle() {
+    let script = &["out:ARTIFACT", "err:DIAGNOSTIC", "out:MORE", "exit:5"];
+    assert_eq!(
+        run_through_pump_over_codec(script, b""),
+        run_direct(script, b"")
+    );
+}
+
+#[test]
+fn pump_over_codec_is_byte_transparent_for_raw_non_utf8() {
+    let script = &["outhex:00ff80", "errhex:8081ff"];
+    let got = run_through_pump_over_codec(script, b"");
+    assert_eq!(got.stdout, vec![0x00, 0xff, 0x80]);
+    assert_eq!(got.stderr, vec![0x80, 0x81, 0xff]);
+    assert_eq!(got, run_direct(script, b""));
+}
+
+#[test]
+fn pump_over_codec_delivers_full_byte_range_stdin() {
+    let payload: Vec<u8> = (0u8..=255).collect();
+    let got = run_through_pump_over_codec(&["echo"], &payload);
+    assert_eq!(got.stdout, payload);
+    assert_eq!(got, run_direct(&["echo"], &payload));
+}
