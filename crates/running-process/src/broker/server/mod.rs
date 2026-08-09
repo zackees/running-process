@@ -27,6 +27,12 @@ pub mod perf_guard;
 pub mod recovery;
 pub mod serve;
 pub mod service_def_loader;
+/// Async v2 broker SESSION serve path (soldr#2365) — the strangler-fig async
+/// twin of the sync control-socket loop. Gated on `client-async`: it needs a
+/// tokio runtime and the async `session_relay`. See the module docs for why it
+/// is not yet wired to the broker binary (async peer creds are unresolved).
+#[cfg(feature = "client-async")]
+pub mod session_serve_async;
 /// zackees/soldr#2360/#2363 — composite broker/daemon session token
 /// authority. Wired into `hello_handler` via
 /// `HelloHandler::with_session_token_authority` — see the module docs.
