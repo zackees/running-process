@@ -1,8 +1,11 @@
-//! Daemon-direct tests for the compile-session handler (soldr#2365, slice 3c):
-//! drive [`run_compile_session`] over a tokio `duplex()` wrapped in the daemon's
-//! real `Framed<_, LengthDelimitedCodec>` transport — no broker — and assert the
-//! proxied bytes match a direct-execution oracle. Run in CI by a scoped
-//! `--features daemon -E test(compile_session)` nextest step.
+//! Tests for the compile-session handler (soldr#2365). Drive
+//! [`run_compile_session`] over the SESSION-lane [`SessionFrameCodec`](super::SessionFrameCodec)
+//! wire and assert the proxied bytes match a direct-execution oracle:
+//! in-process over a tokio `duplex()` (fast, deterministic), and — per the #2386
+//! ruling's "real sockets" mandate — over an **actual Unix-domain socket**
+//! (accept + connect), which exercises partial-frame reads a `duplex()` hides.
+//! Run in CI by a scoped `--features daemon -E test(compile_session)` nextest
+//! step.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -132,4 +135,80 @@ async fn compile_session_delivers_full_byte_range_stdin() {
     let got = run_over_daemon_transport(&["echo"], &payload).await;
     assert_eq!(got.stdout, payload);
     assert_eq!(got, run_direct(&["echo"], &payload));
+}
+
+/// The daemon's half of the Phase-3 relay vertical, over an **actual Unix-domain
+/// socket** (#2386 ruling: real sockets, not oracle-only `duplex()`). A listener
+/// accepts one connection and runs the session; a client dials it over the same
+/// real socket and speaks the SESSION-lane wire. Unlike `duplex()`, the kernel
+/// may split a `[1][len][Frame]` mid-header, so this exercises the
+/// buffer-until-complete partial-frame path in [`SessionFrameCodec`](super::SessionFrameCodec).
+/// Unix-first per invariant 7; the Windows named-pipe equivalent lands later.
+#[cfg(unix)]
+#[tokio::test]
+async fn compile_session_matches_oracle_over_real_unix_socket() {
+    use tokio::net::{UnixListener, UnixStream};
+
+    // A unique, short socket path (sun_path is length-limited). nextest runs
+    // each test in its own process, so the pid uniquely names this socket.
+    let sock = std::env::temp_dir().join(format!("rp-sess-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock);
+    let listener = UnixListener::bind(&sock).expect("bind unix listener");
+
+    let script: &[&str] = &["out:ARTIFACT", "err:DIAGNOSTIC", "out:MORE", "exit:5"];
+    let mut cmd = fixture();
+    cmd.args(script);
+    let group = Arc::new(ContainedProcessGroup::new().expect("contained group"));
+
+    // Daemon side: accept one real connection and run the session over it.
+    let server = tokio::spawn(async move {
+        let (io, _addr) = listener.accept().await.expect("accept");
+        run_compile_session(session_framed(io), cmd, group).await
+    });
+
+    // Client side: dial the same real socket and speak the SESSION wire.
+    let client_io = UnixStream::connect(&sock)
+        .await
+        .expect("connect unix socket");
+    let mut client = session_framed(client_io);
+    client
+        .send(frame(session_frame::Kind::StdinEof(true)))
+        .await
+        .expect("send stdin eof");
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut code = None;
+    while let Some(Ok(sf)) = client.next().await {
+        match sf.kind {
+            Some(session_frame::Kind::Stdout(b)) => stdout.extend_from_slice(&b),
+            Some(session_frame::Kind::Stderr(b)) => stderr.extend_from_slice(&b),
+            Some(session_frame::Kind::Exit(e)) => {
+                code = Some(e.code);
+                break;
+            }
+            _ => panic!("unexpected inbound-only frame on the outbound lane"),
+        }
+    }
+
+    let exit = server
+        .await
+        .expect("server task")
+        .expect("handler reaps child");
+    let _ = std::fs::remove_file(&sock);
+
+    let oracle = run_direct(script, b"");
+    assert_eq!(code, Some(exit.code), "client-visible exit matches handler");
+    assert_eq!(
+        stdout, oracle.stdout,
+        "stdout byte-exact across a real socket"
+    );
+    assert_eq!(
+        stderr, oracle.stderr,
+        "stderr byte-exact across a real socket"
+    );
+    assert_eq!(
+        exit.code, oracle.code,
+        "exit code fidelity across a real socket"
+    );
 }
