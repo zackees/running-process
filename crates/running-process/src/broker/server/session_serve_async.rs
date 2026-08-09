@@ -77,7 +77,6 @@ where
 fn bind_session_listener(
     socket_path: &str,
 ) -> std::io::Result<interprocess::local_socket::tokio::Listener> {
-    use interprocess::local_socket::tokio::prelude::*;
     use interprocess::local_socket::ListenerOptions;
 
     let name = local_socket_name(socket_path)?;
