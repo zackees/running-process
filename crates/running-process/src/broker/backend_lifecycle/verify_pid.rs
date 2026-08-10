@@ -412,6 +412,13 @@ mod platform {
         }
     }
 
+    // SAFETY: Windows HANDLEs are process-scoped integer identifiers.
+    // The kernel does not move them between threads or processes, and
+    // sharing a handle across threads is the normal use pattern
+    // (WaitForMultipleObjects, etc.).
+    unsafe impl Send for ProcessHandle {}
+    unsafe impl Sync for ProcessHandle {}
+
     pub(crate) fn platform_signal_terminate(_pid: u32) -> Result<(), VerifyPidError> {
         Err(VerifyPidError::GracefulTerminateUnsupported)
     }
