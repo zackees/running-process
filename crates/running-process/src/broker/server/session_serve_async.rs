@@ -30,6 +30,7 @@
 //! be wired into `running-process-broker-v2`.
 
 use prost::Message;
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::broker::protocol::{
@@ -43,6 +44,8 @@ use super::connection::{
     PeerCredentialPolicy,
 };
 use super::hello_handler::PeerIdentity;
+
+const MAX_CONCURRENT_SESSION_NEGOTIATIONS: usize = 8;
 
 /// Bind `socket_path` as a tokio SESSION listener and serve it via
 /// [`serve_broker_session_endpoint`].
@@ -154,6 +157,106 @@ where
             }
         }
     }
+}
+
+/// Accept SESSION connections with bounded concurrent Hello routing.
+///
+/// Unlike [`serve_broker_session_endpoint`], this entry point supports a
+/// responder whose synchronous routing step may perform blocking launch and
+/// readiness work. Accepted peers are bounded by a semaphore, frame I/O stays
+/// async, and only `HelloResponder::handle_frame` runs on Tokio's blocking
+/// pool. This keeps the listener responsive without creating an unbounded
+/// collection of tasks or threads.
+pub async fn serve_broker_session_endpoint_concurrently<R>(
+    listener: interprocess::local_socket::tokio::Listener,
+    responder: Arc<R>,
+    peer_policy: &PeerCredentialPolicy,
+) -> std::io::Result<()>
+where
+    R: HelloResponder + Send + Sync + 'static,
+{
+    use interprocess::local_socket::tokio::prelude::*;
+
+    let permits = Arc::new(tokio::sync::Semaphore::new(
+        MAX_CONCURRENT_SESSION_NEGOTIATIONS,
+    ));
+    loop {
+        let stream = listener.accept().await?;
+        let peer = match peer_identity_from_tokio_stream(&stream) {
+            Ok(peer) => peer,
+            Err(err) => {
+                eprintln!("running-process-broker: could not read peer credentials: {err}");
+                continue;
+            }
+        };
+        if !peer_policy.allows(&peer) {
+            eprintln!(
+                "running-process-broker: dropped session peer pid={} uid_or_sid={:?}: \
+                 credential policy refused",
+                peer.pid, peer.uid_or_sid
+            );
+            continue;
+        }
+        let permit = Arc::clone(&permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| std::io::Error::other("SESSION negotiation pool closed"))?;
+        let responder = Arc::clone(&responder);
+        tokio::spawn(async move {
+            let _permit = permit;
+            match negotiate_session_hello_concurrently(stream, responder, peer).await {
+                Ok(Some((stream, backend_pipe))) => {
+                    if backend_pipe.is_empty() {
+                        eprintln!(
+                            "running-process-broker: negotiated a session but no backend endpoint \
+                             is published; dropping"
+                        );
+                        return;
+                    }
+                    if let Err(err) = relay_session(stream, &backend_pipe).await {
+                        eprintln!("running-process-broker: session relay ended: {err}");
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("running-process-broker: session hello failed: {err}");
+                }
+            }
+        });
+    }
+}
+
+async fn negotiate_session_hello_concurrently<S, R>(
+    mut stream: S,
+    responder: Arc<R>,
+    peer: PeerIdentity,
+) -> std::io::Result<Option<(S, String)>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    R: HelloResponder + Send + Sync + 'static,
+{
+    let request_bytes = match read_hello_frame(&mut stream).await? {
+        Ok(bytes) => bytes,
+        Err(reply) => {
+            write_hello_response(&mut stream, None, &reply).await?;
+            return Ok(None);
+        }
+    };
+    let request_frame = match Frame::decode(request_bytes.as_slice()) {
+        Ok(frame) => frame,
+        Err(_) => {
+            let reply = refused_reply(ErrorCode::ErrorPeerRejected, "malformed broker Frame", 0);
+            write_hello_response(&mut stream, None, &reply).await?;
+            return Ok(None);
+        }
+    };
+    let route_frame = request_frame.clone();
+    let reply = tokio::task::spawn_blocking(move || responder.handle_frame(route_frame, peer))
+        .await
+        .map_err(|err| std::io::Error::other(format!("SESSION route worker failed: {err}")))?;
+    write_hello_response(&mut stream, Some(&request_frame), &reply).await?;
+    let backend_pipe = negotiated(&reply).map(|n| n.backend_pipe.clone());
+    Ok(backend_pipe.map(|pipe| (stream, pipe)))
 }
 
 /// Run one async Hello round-trip over `stream` and, if it negotiated a
