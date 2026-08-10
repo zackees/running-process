@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
     UnsafeInventoryEntry {
         path: "src/broker/backend_lifecycle/verify_pid.rs",
-        unsafe_count: 19,
+        // +2 for unsafe impl Send + unsafe impl Sync on Windows ProcessHandle
+        // (required for HelloResponder: Sync bound in serve_*_concurrently)
+        unsafe_count: 21,
     },
     UnsafeInventoryEntry {
         // Slice 32 of #500: broker-owned bind. Two `fcntl` sites clear
