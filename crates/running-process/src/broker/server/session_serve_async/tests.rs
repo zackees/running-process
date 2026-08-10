@@ -9,9 +9,13 @@ use futures_util::{SinkExt, StreamExt};
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 use prost::Message;
+use std::sync::{Arc, Condvar, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{serve_broker_session_endpoint, serve_broker_session_socket, ENVELOPE_VERSION};
+use super::{
+    serve_broker_session_endpoint, serve_broker_session_endpoint_concurrently,
+    serve_broker_session_socket, ENVELOPE_VERSION,
+};
 use crate::broker::protocol::{
     encode_framed, hello_reply::Result as HelloReplyResult, Frame, HelloReply, Negotiated,
     CONTROL_PAYLOAD_PROTOCOL,
@@ -35,6 +39,54 @@ impl HelloResponder for NegotiateToBackend {
                 backend_pipe: self.0.clone(),
                 ..Default::default()
             })),
+        }
+    }
+}
+
+struct OverlapResponder {
+    state: Mutex<OverlapState>,
+    both_entered: Condvar,
+}
+
+#[derive(Default)]
+struct OverlapState {
+    active: usize,
+    max_active: usize,
+    arrivals: usize,
+}
+
+impl OverlapResponder {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(OverlapState::default()),
+            both_entered: Condvar::new(),
+        }
+    }
+
+    fn max_active(&self) -> usize {
+        self.state.lock().unwrap().max_active
+    }
+}
+
+impl HelloResponder for OverlapResponder {
+    fn handle_frame(&self, _frame: Frame, _peer: PeerIdentity) -> HelloReply {
+        let mut state = self.state.lock().unwrap();
+        state.active += 1;
+        state.arrivals += 1;
+        state.max_active = state.max_active.max(state.active);
+        self.both_entered.notify_all();
+        if state.arrivals < 2 {
+            state = self
+                .both_entered
+                .wait_timeout_while(state, std::time::Duration::from_millis(250), |state| {
+                    state.arrivals < 2
+                })
+                .unwrap()
+                .0;
+        }
+        state.active -= 1;
+        HelloReply {
+            result: Some(HelloReplyResult::Negotiated(Negotiated::default())),
         }
     }
 }
@@ -70,6 +122,64 @@ async fn read_framed_body<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> Ve
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body).await.expect("read body");
     body
+}
+
+#[cfg(unix)]
+async fn send_hello_only(broker_path: &std::path::Path) {
+    let mut stream = interprocess::local_socket::tokio::Stream::connect(
+        broker_path
+            .to_fs_name::<GenericFilePath>()
+            .expect("client fs name"),
+    )
+    .await
+    .expect("client dials broker");
+    let hello_wire =
+        encode_framed(&Frame::request(CONTROL_PAYLOAD_PROTOCOL, Vec::new())).expect("encode hello");
+    stream.write_all(&hello_wire).await.expect("send hello");
+    let reply_body = read_framed_body(&mut stream).await;
+    let reply_frame = Frame::decode(reply_body.as_slice()).expect("decode reply frame");
+    let reply = HelloReply::decode(reply_frame.payload.as_slice()).expect("decode HelloReply");
+    assert!(matches!(
+        reply.result,
+        Some(HelloReplyResult::Negotiated(_))
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn async_broker_negotiates_distinct_sessions_concurrently() {
+    let pid = std::process::id();
+    let broker_path = std::env::temp_dir().join(format!("rp-async-brk-overlap-{pid}.sock"));
+    let _ = std::fs::remove_file(&broker_path);
+    let broker_listener = ListenerOptions::new()
+        .name(
+            broker_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("broker fs name"),
+        )
+        .create_tokio()
+        .expect("bind broker endpoint");
+    let responder = Arc::new(OverlapResponder::new());
+    let broker_responder = Arc::clone(&responder);
+    let broker = tokio::spawn(async move {
+        let _ = serve_broker_session_endpoint_concurrently(
+            broker_listener,
+            broker_responder,
+            &PeerCredentialPolicy::allow_any(),
+        )
+        .await;
+    });
+
+    tokio::join!(send_hello_only(&broker_path), send_hello_only(&broker_path));
+
+    broker.abort();
+    let _ = std::fs::remove_file(&broker_path);
+    assert_eq!(
+        responder.max_active(),
+        2,
+        "one blocking route lookup must not serialize another SESSION Hello"
+    );
 }
 
 #[cfg(unix)]
