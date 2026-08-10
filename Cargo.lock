@@ -2103,7 +2103,7 @@ dependencies = [
  "trybuild",
  "ureq",
  "winapi",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
  "x11rb",
  "zstd",
 ]
@@ -2114,7 +2114,7 @@ version = "4.10.1"
 dependencies = [
  "libc",
  "tokio",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2137,7 +2137,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "winapi",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2193,7 +2193,7 @@ name = "running-process-probe-interposer-windows"
 version = "4.10.1"
 dependencies = [
  "retour",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2235,7 +2235,7 @@ dependencies = [
 name = "running-process-win-gnu-bridge"
 version = "4.10.1"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

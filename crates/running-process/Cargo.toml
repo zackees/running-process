@@ -1,17 +1,12 @@
 [package]
 name = "running-process"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-homepage.workspace = true
+version = "4.10.1"
+edition = "2021"
+rust-version = "1.85"
+license = "BSD-3-Clause"
+repository = "https://github.com/zackees/running-process"
+homepage = "https://github.com/zackees/running-process"
 description = "Subprocess and PTY runtime for the running-process project"
-
-[lints]
-# Phase 0 of #228: pick up the workspace-wide `disallowed_methods =
-# "deny"` so bincode serialization is rejected at compile time.
-workspace = true
 
 [[bin]]
 # Wave 4 of #165: PM2-style supervisor CLI absorbed from
@@ -168,7 +163,7 @@ test-support = ["client"]
 libc = "0.2"
 portable-pty = { version = "0.9", optional = true }
 sysinfo = "0.30"
-thiserror = { workspace = true }
+thiserror = "2"
 winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi", "ioapiset", "jobapi2", "namedpipeapi", "processthreadsapi", "winnt", "minwindef", "windef", "winuser", "consoleapi", "processenv", "synchapi", "winbase", "wincon", "tlhelp32", "securitybaseapi", "winerror", "sysinfoapi"] }
 # Wave 4 of #165: client-feature deps. All optional so the always-on
 # `core` API stays a minimal-dep leaf.
@@ -204,7 +199,7 @@ bytes = { version = "1", optional = true }
 futures-util = { version = "0.3", features = ["sink"], optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-rusqlite = { workspace = true, optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 toml = { version = "0.8", optional = true }
 # Wave 6 of #165: serde / serde_json promoted from daemon-feature
 # optional to unconditional so the `daemon-trampoline` binary (which
@@ -255,7 +250,7 @@ x11rb = "0.13"
 png = "0.17"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Wdk_System_Threading",
     "Win32_Foundation",
     "Win32_Security",
