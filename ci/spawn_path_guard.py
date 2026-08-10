@@ -210,6 +210,11 @@ ALLOWED_RUST_SPAWN = {
     # `ContainedProcessGroup::spawn` to launch the contained session child; the
     # actual spawn happens in that reviewed layer, not here.
     Path("crates/running-process/src/broker/session_server.rs"),
+    # #941 launch control-socket workers: `std::thread::scope(…).spawn` starts
+    # THREADS, not child processes. The spawned closure dequeues accept jobs
+    # and calls into the reviewed HelloResponder; it never constructs a
+    # Command or forks.
+    Path("crates/running-process/src/broker/server/control_socket.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),

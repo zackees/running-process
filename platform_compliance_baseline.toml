@@ -9,9 +9,9 @@
 id = "RP-RAW-TOKIO-001"
 symbol = "tokio::process::Command"
 path = "crates/running-process/src/spawn.rs"
-max_occurrences = 1
+max_occurrences = 2
 owner = "running-process"
-justification = "Retained client-async compatibility function; Phase 2 moves it behind the typed actor protocol."
+justification = "Retained client-async compatibility function; Phase 2 moves it behind the typed actor protocol. Second occurrence is a doc-comment reference."
 expires_phase = 2
 
 [[exception]]
