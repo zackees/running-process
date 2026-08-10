@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 /// Implemented by the bare v1 [`ServiceDefinitionLoader`] and by
 /// [`CombinedServiceDefinitionLoader`]. The router only ever needs to look a
 /// service up by name, so this is the whole surface.
-pub trait ServiceDefinitionSource {
+pub trait ServiceDefinitionSource: Sync {
     /// Look up (always re-reading from disk) the service definition for
     /// `service_name`, returning the v1 [`ServiceDefinition`] type.
     fn lookup_or_reload(

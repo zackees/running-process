@@ -6,6 +6,7 @@
 
 use std::io::{Read, Write};
 use std::num::NonZeroUsize;
+use std::sync::{mpsc, Mutex};
 
 use interprocess::local_socket::traits::{Listener, Stream as _};
 use prost::Message;
@@ -53,6 +54,8 @@ impl ControlSocketConnectionLimit {
         }
     }
 }
+
+const LAUNCH_CONTROL_SOCKET_WORKERS: usize = 8;
 
 /// Handle one already-accepted broker control connection.
 pub fn handle_control_connection_with_peer_policy<S, R, F>(
@@ -310,6 +313,180 @@ where
     drop(listener);
     drop(cleanup);
     result
+}
+
+/// Run the launch-backed control socket with a bounded worker pool.
+///
+/// Backend launch may perform image verification, placement, process spawn,
+/// and readiness checks. Keeping that work on the accept thread serializes
+/// unrelated service roots, so this variant dispatches accepted connections
+/// to workers while retaining a fixed upper bound on broker threads.
+pub(super) fn serve_launch_control_socket_connections_concurrently<R, F>(
+    socket_path: &str,
+    hello_responder: &R,
+    snapshot_provider: F,
+    connection_limit: ControlSocketConnectionLimit,
+    peer_policy: &PeerCredentialPolicy,
+    fd_guard: &FdPressureGuard,
+) -> Result<(), ControlSocketError>
+where
+    R: HelloResponder + Sync + ?Sized,
+    F: Fn() -> AdminSnapshot + Sync,
+{
+    const FD_PRESSURE_ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+    let listener = bind_local_socket(socket_path)?;
+    let cleanup = LocalSocketCleanup(socket_path);
+    let bounded = matches!(connection_limit, ControlSocketConnectionLimit::Bounded(_));
+    let (job_sender, job_receiver) = mpsc::sync_channel(LAUNCH_CONTROL_SOCKET_WORKERS);
+    let job_receiver = Mutex::new(job_receiver);
+    let (result_sender, result_receiver) = mpsc::channel();
+    let result = std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(LAUNCH_CONTROL_SOCKET_WORKERS);
+
+        for _ in 0..LAUNCH_CONTROL_SOCKET_WORKERS {
+            let result_sender = result_sender.clone();
+            let job_receiver = &job_receiver;
+            let hello_responder = hello_responder;
+            let snapshot_provider = &snapshot_provider;
+            let peer_policy = peer_policy;
+            let fd_guard = fd_guard;
+            workers.push(scope.spawn(move || loop {
+                let job = {
+                    let receiver = job_receiver
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    receiver.recv()
+                };
+                let Ok((mut stream, peer)) = job else {
+                    break;
+                };
+                let result = handle_accepted_control_connection(
+                    &mut stream,
+                    hello_responder,
+                    snapshot_provider,
+                    peer,
+                    peer_policy,
+                    fd_guard,
+                )
+                .map(|_| ());
+                if bounded {
+                    let _ = result_sender.send(result);
+                } else if let Err(error) = result {
+                    eprintln!(
+                        "running-process-broker: control connection failed on {socket_path}: {error}"
+                    );
+                }
+            }));
+        }
+        drop(result_sender);
+
+        let mut accepted = 0;
+        let mut dispatched = 0;
+        let accept_result: Result<(), ControlSocketError> = loop {
+            if !connection_limit.should_continue(accepted) {
+                break Ok(());
+            }
+            let stream = match listener.accept() {
+                Ok(stream) => {
+                    fd_guard.on_accept_ok();
+                    stream
+                }
+                Err(error) => {
+                    let was_demoted = fd_guard.is_demoted();
+                    if fd_guard.on_accept_error(&error) == FdPressureDecision::Demoted {
+                        if !was_demoted {
+                            eprintln!(
+                                "running-process-broker: accept on {socket_path} demoted \
+                                 under fd pressure: {error}"
+                            );
+                        }
+                        accepted += 1;
+                        std::thread::sleep(FD_PRESSURE_ACCEPT_BACKOFF);
+                        continue;
+                    }
+                    break Err(BrokerConnectionError::Io(error).into());
+                }
+            };
+            accepted += 1;
+            let peer = match peer_identity_from_stream(&stream) {
+                Ok(peer) => peer,
+                Err(error) => break Err(error.into()),
+            };
+            if job_sender.send((stream, peer)).is_err() {
+                break Err(BrokerConnectionError::WorkerPanic.into());
+            }
+            dispatched += 1;
+        };
+        drop(job_sender);
+
+        let mut connection_error = None;
+        if bounded {
+            for _ in 0..dispatched {
+                match result_receiver.recv() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) if connection_error.is_none() => connection_error = Some(error),
+                    Ok(Err(_)) => {}
+                    Err(_) => break,
+                }
+            }
+        }
+
+        let mut worker_panicked = false;
+        for worker in workers {
+            worker_panicked |= worker.join().is_err();
+        }
+        if worker_panicked {
+            return Err(BrokerConnectionError::WorkerPanic.into());
+        }
+        accept_result?;
+        if let Some(error) = connection_error {
+            return Err(error);
+        }
+        Ok(())
+    });
+    drop(listener);
+    drop(cleanup);
+    result
+}
+
+fn handle_accepted_control_connection<R, F>(
+    stream: &mut interprocess::local_socket::Stream,
+    hello_responder: &R,
+    snapshot_provider: &F,
+    peer: PeerIdentity,
+    peer_policy: &PeerCredentialPolicy,
+    fd_guard: &FdPressureGuard,
+) -> Result<ControlSocketReply, ControlSocketError>
+where
+    R: HelloResponder + ?Sized,
+    F: Fn() -> AdminSnapshot + ?Sized,
+{
+    let peer_for_log = peer.clone();
+    let nonblocking_set = stream.set_nonblocking(true).is_ok();
+    let reply_result = {
+        let mut deadline_stream = DeadlineStream::new(stream, hello_read_deadline());
+        handle_control_connection_with_peer_policy_and_fd_guard(
+            &mut deadline_stream,
+            hello_responder,
+            snapshot_provider,
+            peer,
+            peer_policy,
+            Some(fd_guard),
+        )
+    };
+    if nonblocking_set {
+        let _ = stream.set_nonblocking(false);
+    }
+    let reply = reply_result?;
+    if reply == ControlSocketReply::DroppedPeer {
+        eprintln!(
+            "running-process-broker: dropped connection from peer pid={} uid_or_sid={:?}: \
+             credential policy refused",
+            peer_for_log.pid, peer_for_log.uid_or_sid
+        );
+    }
+    Ok(reply)
 }
 
 fn write_admin_response_frame<W: Write>(
