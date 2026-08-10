@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -108,10 +108,14 @@ fn launch_serve_config(
 }
 
 fn hello(peer_pid: u32) -> Hello {
+    hello_for_service(peer_pid, "zccache")
+}
+
+fn hello_for_service(peer_pid: u32, service_name: &str) -> Hello {
     Hello {
         client_min_protocol: 1,
         client_max_protocol: 1,
-        service_name: "zccache".into(),
+        service_name: service_name.into(),
         wanted_version: "1.11.20".into(),
         client_version: "zccache-cli/1.11.20".into(),
         client_capabilities: 0,
@@ -322,6 +326,47 @@ fn serve_launching_backends_launches_once_then_reuses_registry() {
     assert_eq!(launcher.launch_count(), 1);
 }
 
+#[test]
+fn serve_launching_backends_launches_distinct_services_concurrently() {
+    let tmp = tempfile::tempdir().unwrap();
+    let service_root = tmp.path().join("services");
+    ensure_service_definition_dir(&service_root).unwrap();
+    for service_name in ["service-a", "service-b"] {
+        let mut definition = service_definition();
+        definition.service_name = service_name.into();
+        write_definition_for(&service_root, service_name, &definition);
+    }
+
+    let socket_name = unique_socket_name();
+    let launcher = Arc::new(OverlapLauncher::new(unique_backend_endpoint()));
+    let server_launcher = Arc::clone(&launcher);
+    let config = launch_serve_config(&service_root, socket_name.clone(), 2);
+    let server = thread::spawn(move || {
+        serve_launching_backends_with_launcher(config, server_launcher.as_ref())
+    });
+
+    let first_socket = socket_name.clone();
+    let first = thread::spawn(move || send_hello_roundtrip_for(&first_socket, "service-a"));
+    let second = thread::spawn(move || send_hello_roundtrip_for(&socket_name, "service-b"));
+    let first_reply = first.join().unwrap();
+    let second_reply = second.join().unwrap();
+
+    server.join().unwrap().unwrap();
+    assert!(matches!(
+        first_reply.result,
+        Some(HelloReplyResult::Negotiated(_))
+    ));
+    assert!(matches!(
+        second_reply.result,
+        Some(HelloReplyResult::Negotiated(_))
+    ));
+    assert_eq!(
+        launcher.max_active(),
+        2,
+        "one slow backend launch must not block an unrelated service"
+    );
+}
+
 /// End-to-end proof for soldr#2364 (Phase 2 of soldr#2361): a cold Hello against
 /// a real `serve_launching_backends` broker whose service is installed as a
 /// `.servicedef.v2` file negotiates a backend instead of returning
@@ -388,9 +433,13 @@ fn serve_launching_backends_serves_admin_on_same_socket() {
 }
 
 fn send_hello_roundtrip(socket_name: &str) -> HelloReply {
+    send_hello_roundtrip_for(socket_name, "zccache")
+}
+
+fn send_hello_roundtrip_for(socket_name: &str, service_name: &str) -> HelloReply {
     let name = local_socket_name(socket_name).unwrap().into_owned();
     let mut client = connect_with_retry(name);
-    let request_frame = frame_for_hello(&hello(0));
+    let request_frame = frame_for_hello(&hello_for_service(0, service_name));
     write_frame(&mut client, &request_frame.encode_to_vec()).unwrap();
 
     let response_bytes = read_frame(&mut client).unwrap();
@@ -400,6 +449,68 @@ fn send_hello_roundtrip(socket_name: &str) -> HelloReply {
         Ok(FrameKind::Response)
     );
     HelloReply::decode(response_frame.payload.as_slice()).unwrap()
+}
+
+struct OverlapLauncher {
+    endpoint_prefix: String,
+    state: Mutex<OverlapState>,
+    both_entered: Condvar,
+}
+
+#[derive(Default)]
+struct OverlapState {
+    active: usize,
+    max_active: usize,
+    arrivals: usize,
+}
+
+impl OverlapLauncher {
+    fn new(endpoint_prefix: String) -> Self {
+        Self {
+            endpoint_prefix,
+            state: Mutex::new(OverlapState::default()),
+            both_entered: Condvar::new(),
+        }
+    }
+
+    fn max_active(&self) -> usize {
+        self.state.lock().unwrap().max_active
+    }
+}
+
+impl BackendLauncher for OverlapLauncher {
+    fn launch(
+        &self,
+        request: &BackendLaunchRequest<'_>,
+    ) -> Result<BackendHandle, BackendLaunchError> {
+        let mut state = self.state.lock().unwrap();
+        state.active += 1;
+        state.arrivals += 1;
+        state.max_active = state.max_active.max(state.active);
+        self.both_entered.notify_all();
+        if state.arrivals < 2 {
+            state = self
+                .both_entered
+                .wait_timeout_while(state, Duration::from_millis(500), |state| {
+                    state.arrivals < 2
+                })
+                .unwrap()
+                .0;
+        }
+        state.active -= 1;
+        drop(state);
+
+        let endpoint = Endpoint {
+            namespace_id: request.key.instance.id(),
+            path: format!("{}-{}", self.endpoint_prefix, request.key.service_name),
+        };
+        let daemon = DaemonProcess::current_process(endpoint, Some(30))?;
+        Ok(verified_backend_from_daemon(
+            &request.key.service_name,
+            &request.key.service_version,
+            &daemon,
+        ))
+    }
 }
 
 fn assert_negotiated_backend(reply: HelloReply, expected_endpoint: &str) {

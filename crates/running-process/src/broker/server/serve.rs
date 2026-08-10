@@ -23,7 +23,8 @@ use super::combined_service_def_loader::CombinedServiceDefinitionLoader;
 use super::connection::{BrokerConnectionError, PeerCredentialPolicy};
 use super::control_socket::{
     serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard,
-    ControlSocketConnectionLimit, ControlSocketError,
+    serve_launch_control_socket_connections_concurrently, ControlSocketConnectionLimit,
+    ControlSocketError,
 };
 use super::fd_pressure::FdPressureGuard;
 use super::handoff_serve::{complete_negotiated_handoff, ServeHandoffContext};
@@ -257,13 +258,12 @@ pub fn serve_launching_backends_with_launcher(
         AdminSnapshot::from_registry("launch", started_at.elapsed(), !demoted, 0, &registry, &[])
             .with_fd_pressure_demoted(demoted)
     };
-    serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard(
+    serve_launch_control_socket_connections_concurrently(
         &config.socket_path,
         &router,
         snapshot_provider,
         config.connection_limit(),
         &peer_policy,
-        |_stream, _reply| {},
         &fd_guard,
     )?;
     Ok(())
