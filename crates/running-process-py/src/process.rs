@@ -32,7 +32,7 @@ pub(crate) struct NativeRunningProcess {
 impl NativeRunningProcess {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false))]
+    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false, address_space_limit_bytes=None))]
     pub(crate) fn new(
         command: &Bound<'_, PyAny>,
         cwd: Option<String>,
@@ -47,6 +47,7 @@ impl NativeRunningProcess {
         stderr_mode_name: &str,
         nice: Option<i32>,
         create_process_group: bool,
+        address_space_limit_bytes: Option<u64>,
     ) -> PyResult<Self> {
         let parsed = parse_command(command, shell)?;
         let env_pairs = env
@@ -69,6 +70,7 @@ impl NativeRunningProcess {
                 create_process_group,
                 stdin_mode: stdin_mode(stdin_mode_name)?,
                 nice,
+                address_space_limit_bytes,
             }),
             text,
             encoding,

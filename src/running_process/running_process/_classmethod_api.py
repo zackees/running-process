@@ -72,6 +72,7 @@ def run(
     on_timeout: Callable[[ProcessInfo], None] | None = None,
     raise_on_abnormal_exit: bool = False,
     nice: int | CpuPriority | None = None,
+    address_space_limit_bytes: int | None = None,
     **_other_popen_kwargs: Any,
 ) -> CompletedProcess[Any]:
     if input is not None and stdin is not None:
@@ -115,6 +116,7 @@ def run(
         on_timeout=on_timeout,
         nice=nice,
         stderr=stderr,
+        address_space_limit_bytes=address_space_limit_bytes,
     )
     if input is not None:
         payload = (

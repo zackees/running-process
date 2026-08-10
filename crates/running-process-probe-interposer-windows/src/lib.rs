@@ -77,9 +77,7 @@ use std::sync::{Condvar, Mutex, OnceLock};
 
 use retour::RawDetour;
 use windows_sys::core::BOOL;
-use windows_sys::Win32::Foundation::{
-    CloseHandle, FALSE, HANDLE, INVALID_HANDLE_VALUE, TRUE,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE, INVALID_HANDLE_VALUE, TRUE};
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH};

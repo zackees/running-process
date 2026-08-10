@@ -285,3 +285,66 @@ def test_top_level_imports_preserve_output_formatter_exports() -> None:
 
     assert hasattr(running_process, "OutputFormatter")
     assert hasattr(running_process, "TimeDeltaFormatter")
+
+
+def test_run_accepts_address_space_limit_bytes() -> None:
+    """address_space_limit_bytes is a typed non-callback parameter — it must
+    not be rejected as an extra Popen kwarg."""
+    result = RunningProcess.run(
+        [sys.executable, "-c", "print('ok')"],
+        capture_output=True,
+        text=True,
+        address_space_limit_bytes=1_000_000_000,
+    )
+    assert result.stdout is not None
+    assert "ok" in result.stdout
+
+
+def test_init_accepts_address_space_limit_bytes() -> None:
+    """The live RunningProcess(...) constructor also accepts the parameter."""
+    proc = RunningProcess(
+        [sys.executable, "-c", "print('ok')"],
+        capture=True,
+        text=True,
+        address_space_limit_bytes=1_000_000_000,
+    )
+    proc.wait()
+    assert proc.returncode == 0
+
+
+def test_address_space_limit_bytes_pty_guard() -> None:
+    """PTY-backed processes don't support address_space_limit_bytes yet."""
+    with pytest.raises(
+        ValueError, match="address_space_limit_bytes is not yet supported with use_pty=True"
+    ):
+        RunningProcess(
+            [sys.executable, "-c", "print('ok')"],
+            use_pty=True,
+            address_space_limit_bytes=1_000_000_000,
+        )
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="RLIMIT_AS enforcement is Linux-specific; "
+    "Windows JOB_OBJECT_LIMIT_PROCESS_MEMORY behaves differently",
+)
+def test_address_space_limit_bytes_enforced_on_linux() -> None:
+    """On Linux, setrlimit(RLIMIT_AS, ...) must prevent allocations beyond the
+    ceiling.  A Python process that tries to allocate 50 MiB with a 1 MiB limit
+    must exit nonzero."""
+    result = RunningProcess.run(
+        [
+            sys.executable,
+            "-c",
+            "import ctypes, sys; "
+            "p = ctypes.CDLL(None).malloc(50_000_000); "
+            "sys.exit(0 if p else 1)",
+        ],
+        capture_output=True,
+        timeout=10,
+        address_space_limit_bytes=1 * 1024 * 1024,  # 1 MiB
+    )
+    assert result.returncode != 0, (
+        "Linux RLIMIT_AS should have denied the 50 MiB allocation"
+    )

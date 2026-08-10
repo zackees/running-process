@@ -347,10 +347,7 @@ where
         for _ in 0..LAUNCH_CONTROL_SOCKET_WORKERS {
             let result_sender = result_sender.clone();
             let job_receiver = &job_receiver;
-            let hello_responder = hello_responder;
             let snapshot_provider = &snapshot_provider;
-            let peer_policy = peer_policy;
-            let fd_guard = fd_guard;
             workers.push(scope.spawn(move || loop {
                 let job = {
                     let receiver = job_receiver

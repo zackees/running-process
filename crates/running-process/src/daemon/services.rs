@@ -624,6 +624,7 @@ impl ServiceRegistry {
             create_process_group: true,
             stdin_mode: StdinMode::Piped,
             nice: None,
+            address_space_limit_bytes: None,
         };
         let process = Arc::new(NativeProcess::new(config));
         process

@@ -526,6 +526,7 @@ impl NativeProcess {
                 &child,
                 descendant_sink,
                 direct_pid,
+                self.config.address_space_limit_bytes,
             )
             .map_err(ProcessError::Spawn)?
         };
@@ -1359,8 +1360,9 @@ impl NativeProcess {
         {
             let create_process_group = self.config.create_process_group;
             let nice = self.config.nice;
+            let address_space_limit_bytes = self.config.address_space_limit_bytes;
 
-            if create_process_group || nice.is_some() {
+            if create_process_group || nice.is_some() || address_space_limit_bytes.is_some() {
                 use std::os::unix::process::CommandExt;
 
                 unsafe {
@@ -1374,6 +1376,24 @@ impl NativeProcess {
                                 return Err(std::io::Error::last_os_error());
                             }
                         }
+                        // RLIMIT_AS is a Linux resource; macOS defines
+                        // the constant but returns EINVAL for typical
+                        // values (the limit is advisory there). Other
+                        // Unixes may not support it at all. Gate to
+                        // Linux so the typed parameter degrades to a
+                        // no-op rather than failing the spawn.
+                        #[cfg(target_os = "linux")]
+                        if let Some(limit) = address_space_limit_bytes {
+                            let rlim = libc::rlimit {
+                                rlim_cur: limit,
+                                rlim_max: limit,
+                            };
+                            if libc::setrlimit(libc::RLIMIT_AS, &rlim) == -1 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        let _ = address_space_limit_bytes;
                         Ok(())
                     });
                 }
@@ -1843,6 +1863,7 @@ pub fn run_std_command_bounded(
         create_process_group: true,
         stdin_mode: StdinMode::Null,
         nice: None,
+        address_space_limit_bytes: None,
     };
     let process = NativeProcess::new_with_command_capture_limit(command, config, output_limit);
     run_native_process_bounded(process, timeout, output_limit)
