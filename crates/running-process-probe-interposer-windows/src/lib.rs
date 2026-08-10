@@ -76,14 +76,26 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
 use retour::RawDetour;
+use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, BOOL, FALSE, HANDLE, INVALID_HANDLE_VALUE, TRUE,
+    CloseHandle, FALSE, HANDLE, INVALID_HANDLE_VALUE, TRUE,
 };
-use windows_sys::Win32::Storage::FileSystem::WriteFile;
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH};
 use windows_sys::Win32::System::Threading::CreateThread;
+
+// windows-sys 0.61 removed the WriteFile binding; declare it manually.
+// The signature matches the Win32 `WriteFile` from kernel32.dll.
+extern "system" {
+    fn WriteFile(
+        hFile: HANDLE,
+        lpBuffer: *const u8,
+        nNumberOfBytesToWrite: u32,
+        lpNumberOfBytesWritten: *mut u32,
+        lpOverlapped: *mut core::ffi::c_void,
+    ) -> BOOL;
+}
 
 // ── Function-pointer types ──
 

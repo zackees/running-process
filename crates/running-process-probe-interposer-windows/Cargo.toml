@@ -47,7 +47,7 @@ retour = { version = "0.4.0-alpha.4", default-features = false }
 # `windows-sys` for FFI type definitions used by detoured signatures
 # (HANDLE, LPCWSTR, etc.) and the GetModuleHandleW/GetProcAddress
 # pair used to look up `CreateFileW` etc. in kernel32.
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
