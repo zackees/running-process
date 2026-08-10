@@ -1376,6 +1376,13 @@ impl NativeProcess {
                                 return Err(std::io::Error::last_os_error());
                             }
                         }
+                        // RLIMIT_AS is a Linux resource; macOS defines
+                        // the constant but returns EINVAL for typical
+                        // values (the limit is advisory there). Other
+                        // Unixes may not support it at all. Gate to
+                        // Linux so the typed parameter degrades to a
+                        // no-op rather than failing the spawn.
+                        #[cfg(target_os = "linux")]
                         if let Some(limit) = address_space_limit_bytes {
                             let rlim = libc::rlimit {
                                 rlim_cur: limit,
@@ -1385,6 +1392,8 @@ impl NativeProcess {
                                 return Err(std::io::Error::last_os_error());
                             }
                         }
+                        #[cfg(not(target_os = "linux"))]
+                        let _ = address_space_limit_bytes;
                         Ok(())
                     });
                 }
