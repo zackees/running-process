@@ -526,6 +526,7 @@ impl NativeProcess {
                 &child,
                 descendant_sink,
                 direct_pid,
+                self.config.address_space_limit_bytes,
             )
             .map_err(ProcessError::Spawn)?
         };
@@ -1359,8 +1360,9 @@ impl NativeProcess {
         {
             let create_process_group = self.config.create_process_group;
             let nice = self.config.nice;
+            let address_space_limit_bytes = self.config.address_space_limit_bytes;
 
-            if create_process_group || nice.is_some() {
+            if create_process_group || nice.is_some() || address_space_limit_bytes.is_some() {
                 use std::os::unix::process::CommandExt;
 
                 unsafe {
@@ -1371,6 +1373,15 @@ impl NativeProcess {
                         if let Some(nice) = nice {
                             let result = libc::setpriority(libc::PRIO_PROCESS, 0, nice);
                             if result == -1 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        }
+                        if let Some(limit) = address_space_limit_bytes {
+                            let rlim = libc::rlimit {
+                                rlim_cur: limit,
+                                rlim_max: limit,
+                            };
+                            if libc::setrlimit(libc::RLIMIT_AS, &rlim) == -1 {
                                 return Err(std::io::Error::last_os_error());
                             }
                         }
@@ -1843,6 +1854,7 @@ pub fn run_std_command_bounded(
         create_process_group: true,
         stdin_mode: StdinMode::Null,
         nice: None,
+        address_space_limit_bytes: None,
     };
     let process = NativeProcess::new_with_command_capture_limit(command, config, output_limit);
     run_native_process_bounded(process, timeout, output_limit)

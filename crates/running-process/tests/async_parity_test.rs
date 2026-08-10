@@ -28,6 +28,7 @@ fn sync_config(argv: Vec<String>, create_process_group: bool) -> ProcessConfig {
         create_process_group,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     }
 }
 

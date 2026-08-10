@@ -48,8 +48,14 @@ pub(crate) struct CapturePipeHandles {
 
 pub(crate) fn assign_child_to_windows_kill_on_close_job_impl(
     child: &Child,
+    address_space_limit_bytes: Option<u64>,
 ) -> Result<WindowsJobHandle, std::io::Error> {
-    assign_child_to_windows_kill_on_close_job_with_observer_impl(child, None, 0)
+    assign_child_to_windows_kill_on_close_job_with_observer_impl(
+        child,
+        None,
+        0,
+        address_space_limit_bytes,
+    )
 }
 
 /// Like [`assign_child_to_windows_kill_on_close_job_impl`] but also wires
@@ -74,6 +80,7 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
     child: &Child,
     descendant_sink: Option<Sender<ObserverEvent>>,
     direct_pid: u32,
+    address_space_limit_bytes: Option<u64>,
 ) -> Result<WindowsJobHandle, std::io::Error> {
     crate::rp_rust_debug_scope!("running_process::assign_child_to_windows_kill_on_close_job");
     use std::mem::zeroed;
@@ -87,6 +94,7 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
     use winapi::um::winnt::{
         JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     };
 
     let handle = child.as_raw_handle();
@@ -100,8 +108,21 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
     // only if it explicitly passes CREATE_BREAKAWAY_FROM_JOB. Without it,
     // that request fails with ERROR_ACCESS_DENIED and long-lived daemons
     // spawned beneath this job are killed when the job handle drops.
-    info.BasicLimitInformation.LimitFlags =
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    let mut limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    if address_space_limit_bytes.is_some() {
+        limit_flags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    }
+    info.BasicLimitInformation.LimitFlags = limit_flags;
+    if let Some(limit) = address_space_limit_bytes {
+        // RLIMIT_AS is u64; Windows SIZE_T (usize) is the same width on
+        // 64-bit (the only target this crate ships).  Truncation on 32-bit
+        // would silently lower the limit; a 32-bit process cannot address
+        // more than 4 GiB anyway, so the practical ceiling is unchanged.
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            info.ProcessMemoryLimit = limit as usize;
+        }
+    }
     let ok = unsafe {
         SetInformationJobObject(
             job,

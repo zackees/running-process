@@ -410,6 +410,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            address_space_limit_bytes: None,
         };
         let (process, _sub) = NativeProcess::with_observer(cfg, ObserverConfig::lifecycle());
         process.start().expect("spawn sleep");
@@ -492,6 +493,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            address_space_limit_bytes: None,
         };
         let (process, _sub) = NativeProcess::with_observer(cfg, ObserverConfig::lifecycle());
         process.start().expect("spawn ping");

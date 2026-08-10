@@ -393,6 +393,7 @@ mod tests {
             create_process_group: false,
             stdin_mode: StdinMode::Inherit,
             nice: None,
+            address_space_limit_bytes: None,
         };
         let (process, subscriber) = NativeProcess::with_observer(
             cfg,
