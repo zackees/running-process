@@ -321,7 +321,21 @@ pub enum BackendDialError {
 /// Bounded by [`DEFAULT_HELLO_DEADLINE`]; for a custom deadline use
 /// [`connect_with_deadline`].
 pub fn connect(program: &str, version_hint: &str) -> Result<ClientSession, BrokerV2Error> {
-    connect_with_deadline(program, version_hint, DEFAULT_HELLO_DEADLINE)
+    connect_service(program, program, version_hint)
+}
+
+/// Dial the v2 broker bound for `program` while routing the Hello to an
+/// independently named `service_name`.
+///
+/// Shared brokers use one stable bind namespace and select among backend
+/// partitions through `Hello.service_name`. [`connect`] remains the convenient
+/// same-name form for dedicated brokers.
+pub fn connect_service(
+    program: &str,
+    service_name: &str,
+    version_hint: &str,
+) -> Result<ClientSession, BrokerV2Error> {
+    connect_service_with_deadline(program, service_name, version_hint, DEFAULT_HELLO_DEADLINE)
 }
 
 /// Connect to the v2 broker for `program`, or terminate the process.
@@ -380,11 +394,22 @@ pub fn connect_with_deadline(
     version_hint: &str,
     deadline: Duration,
 ) -> Result<ClientSession, BrokerV2Error> {
+    connect_service_with_deadline(program, program, version_hint, deadline)
+}
+
+/// Deadline-bounded form of [`connect_service`].
+pub fn connect_service_with_deadline(
+    program: &str,
+    service_name: &str,
+    version_hint: &str,
+    deadline: Duration,
+) -> Result<ClientSession, BrokerV2Error> {
     let program = program.to_owned();
+    let service_name = service_name.to_owned();
     let version_hint = version_hint.to_owned();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(connect_unbounded(&program, &version_hint));
+        let _ = tx.send(connect_unbounded(&program, &service_name, &version_hint));
     });
     match rx.recv_timeout(deadline) {
         Ok(result) => result,
@@ -397,7 +422,11 @@ pub fn connect_with_deadline(
 
 /// Inner connect without a deadline. Called from inside the helper
 /// thread spawned by [`connect_with_deadline`].
-fn connect_unbounded(program: &str, version_hint: &str) -> Result<ClientSession, BrokerV2Error> {
+fn connect_unbounded(
+    program: &str,
+    service_name: &str,
+    version_hint: &str,
+) -> Result<ClientSession, BrokerV2Error> {
     let sid = user_sid_hash()?;
     let pipe_name = v2_program_pipe(program, &sid, 0)?;
     let socket_path = resolve_socket_path(&pipe_name);
@@ -409,19 +438,20 @@ fn connect_unbounded(program: &str, version_hint: &str) -> Result<ClientSession,
         socket_path: socket_path.clone(),
         source,
     })?;
-    let negotiated = hello_round_trip(&mut stream, program, version_hint)?;
+    let negotiated = hello_round_trip(&mut stream, program, service_name, version_hint)?;
     Ok(ClientSession { stream, negotiated })
 }
 
 fn hello_round_trip<S: Read + Write>(
     stream: &mut S,
     program: &str,
+    service_name: &str,
     version_hint: &str,
 ) -> Result<Negotiated, BrokerV2Error> {
     let hello = Hello {
         client_min_protocol: ENVELOPE_VERSION as u32,
         client_max_protocol: ENVELOPE_VERSION as u32,
-        service_name: program.to_string(),
+        service_name: service_name.to_string(),
         wanted_version: version_hint.to_string(),
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         client_capabilities: 0,
@@ -676,6 +706,58 @@ mod tests {
         assert_eq!(neg.negotiated_protocol, ENVELOPE_VERSION as u32);
         assert_eq!(neg.connection_id, 0x00C0_FFEE);
         assert_eq!(neg.daemon_version, "stub-1.2.3");
+    }
+
+    #[test]
+    fn connect_service_dials_broker_program_but_routes_named_service() {
+        let program = "client-v2-router";
+        let service_name = "soldr-daemon-root-version-hash";
+        let sid = user_sid_hash().expect("user_sid_hash");
+        let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
+        let socket_path = resolve_socket_path(&pipe_name);
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (hello_tx, hello_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            #[cfg(unix)]
+            let _cleanup = {
+                let _ =
+                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
+                let _ = std::fs::remove_file(&socket_path);
+                SocketCleanup(std::path::PathBuf::from(&socket_path))
+            };
+            let listener = ListenerOptions::new()
+                .name(name)
+                .create_sync()
+                .expect("ListenerOptions create_sync");
+            ready_tx.send(()).expect("ready");
+            let mut stream = listener.accept().expect("accept");
+            let hello = read_hello_frame(&mut stream);
+            hello_tx
+                .send(hello.service_name.clone())
+                .expect("observed service name");
+            write_hello_reply_frame(
+                &mut stream,
+                &HelloReply {
+                    result: Some(hello_reply::Result::Negotiated(Negotiated {
+                        backend_pipe: "route-endpoint".into(),
+                        ..Default::default()
+                    })),
+                },
+            );
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stub broker listening");
+        let session = connect_service(program, service_name, "0.8.0")
+            .expect("independent service route connects");
+        assert_eq!(session.negotiated().backend_pipe, "route-endpoint");
+        assert_eq!(
+            hello_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            service_name
+        );
     }
 
     #[test]
