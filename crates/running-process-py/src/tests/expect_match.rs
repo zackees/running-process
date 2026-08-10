@@ -19,6 +19,7 @@ pub(crate) fn make_test_running_process(py: Python<'_>) -> NativeRunningProcess 
         "stdout",
         None,
         false,
+        None,
     )
     .unwrap()
 }

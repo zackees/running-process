@@ -134,4 +134,11 @@ pub struct ProcessConfig {
     pub stdin_mode: StdinMode,
     /// Nice value to apply on Unix-like platforms.
     pub nice: Option<i32>,
+    /// Address space limit (RLIMIT_AS / Job Object process memory limit).
+    ///
+    /// On Linux this calls `setrlimit(RLIMIT_AS, ...)` in the child's
+    /// `pre_exec` hook. On Windows it sets `JOB_OBJECT_LIMIT_PROCESS_MEMORY`
+    /// on the per-spawn Job Object. On other platforms it is silently
+    /// ignored (the spawn still succeeds; limits are best-effort).
+    pub address_space_limit_bytes: Option<u64>,
 }

@@ -100,6 +100,7 @@ class RunningProcess:
         output_formatter: OutputFormatter | None = None,
         on_complete: Callable[[], None] | None = None,
         allows_child_ctrl_c_interruption: bool = True,
+        address_space_limit_bytes: int | None = None,
         **_popen_kwargs: Any,
     ) -> None:
         if isinstance(command, str) and shell is False:
@@ -137,6 +138,10 @@ class RunningProcess:
             raise ValueError("stderr=PIPE requires capture=True")
         self._stderr_mode_name = "pipe" if stderr is PIPE else "stdout"
         if use_pty:
+            if address_space_limit_bytes is not None:
+                raise ValueError(
+                    "address_space_limit_bytes is not yet supported with use_pty=True"
+                )
             self.capture = bool(capture) if capture is not None else False
             if stdin not in (None, PIPE):
                 raise ValueError("use_pty=True only supports stdin=None or PIPE")
@@ -187,6 +192,7 @@ class RunningProcess:
                 stderr_mode_name=self._stderr_mode_name,
                 nice=self.nice,
                 create_process_group=effective_create_process_group,
+                address_space_limit_bytes=address_space_limit_bytes,
             )
         self._output_formatter: OutputFormatter = (
             output_formatter or NullOutputFormatter()
@@ -771,6 +777,7 @@ class RunningProcess:
         on_timeout: Callable[[ProcessInfo], None] | None = None,
         raise_on_abnormal_exit: bool = False,
         nice: int | CpuPriority | None = None,
+        address_space_limit_bytes: int | None = None,
         **_other_popen_kwargs: Any,
     ) -> CompletedProcess[Any]:
         return _classmethod_api.run(
@@ -795,6 +802,7 @@ class RunningProcess:
             on_timeout=on_timeout,
             raise_on_abnormal_exit=raise_on_abnormal_exit,
             nice=nice,
+            address_space_limit_bytes=address_space_limit_bytes,
             **_other_popen_kwargs,
         )
 

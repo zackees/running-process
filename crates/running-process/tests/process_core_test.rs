@@ -54,6 +54,7 @@ fn config(
         create_process_group: false,
         stdin_mode,
         nice,
+        address_space_limit_bytes: None,
     }
 }
 

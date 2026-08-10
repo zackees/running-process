@@ -19,6 +19,7 @@ fn quick_exit_config() -> ProcessConfig {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     }
 }
 
@@ -532,6 +533,7 @@ fn windows_iocp_pump_emits_descendant_lifecycle_for_subprocess_chain() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     };
     let (process, subscriber) = NativeProcess::with_observer(
         cfg,
@@ -606,6 +608,7 @@ fn windows_iocp_pump_inert_when_only_lifecycle_requested() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     };
     let (process, subscriber) = NativeProcess::with_observer(cfg, ObserverConfig::lifecycle());
     process.start().expect("spawn");

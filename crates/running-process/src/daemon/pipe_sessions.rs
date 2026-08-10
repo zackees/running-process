@@ -554,6 +554,7 @@ impl PipeSessionRegistry {
             create_process_group: true,
             stdin_mode: StdinMode::Piped,
             nice: None,
+            address_space_limit_bytes: None,
         };
         let process = NativeProcess::new(config);
         process

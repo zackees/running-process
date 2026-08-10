@@ -22,7 +22,7 @@ pub(crate) struct PyNativeProcess {
 impl PyNativeProcess {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false))]
+    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false, address_space_limit_bytes=None))]
     fn new(
         command: &Bound<'_, PyAny>,
         cwd: Option<String>,
@@ -37,6 +37,7 @@ impl PyNativeProcess {
         stderr_mode_name: &str,
         nice: Option<i32>,
         create_process_group: bool,
+        address_space_limit_bytes: Option<u64>,
     ) -> PyResult<Self> {
         Ok(Self {
             backend: NativeProcessBackend::Running(NativeRunningProcess::new(
@@ -53,6 +54,7 @@ impl PyNativeProcess {
                 stderr_mode_name,
                 nice,
                 create_process_group,
+                address_space_limit_bytes,
             )?),
         })
     }

@@ -277,6 +277,7 @@ fn native_process_returncode_none_before_start() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert!(process.returncode().is_none());
 }
@@ -293,6 +294,7 @@ fn native_process_pid_none_before_start() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert!(process.pid().is_none());
 }
@@ -309,6 +311,7 @@ fn native_process_has_pending_false_when_no_capture() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert!(!process.has_pending_stream(StreamKind::Stdout));
     assert!(!process.has_pending_combined());
@@ -326,6 +329,7 @@ fn native_process_drain_empty_when_no_capture() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert!(process.drain_stream(StreamKind::Stdout).is_empty());
     assert!(process.drain_combined().is_empty());
@@ -343,6 +347,7 @@ fn native_process_stderr_not_pending_when_merged() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert!(!process.has_pending_stream(StreamKind::Stderr));
 }
@@ -359,6 +364,7 @@ fn native_process_drain_stderr_empty_when_merged() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert!(process.drain_stream(StreamKind::Stderr).is_empty());
 }
@@ -375,6 +381,7 @@ fn native_process_captured_stderr_empty_when_merged() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert!(process.captured_stderr().is_empty());
 }
@@ -391,6 +398,7 @@ fn native_process_captured_stream_bytes_zero_when_merged_stderr() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert_eq!(process.captured_stream_bytes(StreamKind::Stderr), 0);
 }
@@ -407,6 +415,7 @@ fn native_process_clear_captured_stderr_zero_when_merged() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert_eq!(process.clear_captured_stream(StreamKind::Stderr), 0);
 }
@@ -423,6 +432,7 @@ fn native_process_read_stream_eof_when_stderr_merged() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert_eq!(
         process.read_stream(StreamKind::Stderr, Some(Duration::from_millis(10))),
@@ -625,6 +635,7 @@ fn process_config_clone() {
         create_process_group: true,
         stdin_mode: StdinMode::Piped,
         nice: Some(5),
+        address_space_limit_bytes: None,
     };
     let cloned = config.clone();
     assert!(cloned.capture);
@@ -684,6 +695,7 @@ fn wait_for_capture_completion_noop_without_capture() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     unsafe {
         crate::public_symbols::rp_native_process_wait_for_capture_completion_public(&process);
@@ -707,6 +719,7 @@ fn assert_blocked_stdin_write_does_not_starve_child(streaming: bool) {
         create_process_group: false,
         stdin_mode: StdinMode::Piped,
         nice: None,
+        address_space_limit_bytes: None,
     }));
     process.start().expect("start non-reading child");
     let expected_pid = process.pid().expect("child pid");
@@ -778,6 +791,7 @@ fn build_command_from_argv() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     let cmd = process.build_command();
     assert_eq!(cmd.get_program(), "echo");
@@ -797,6 +811,7 @@ fn build_command_from_shell() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     let cmd = process.build_command();
     // Shell commands go through the OS shell
@@ -824,6 +839,7 @@ fn build_command_with_cwd() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     let cmd = process.build_command();
     assert_eq!(cmd.get_current_dir().unwrap(), &tmp);
@@ -844,6 +860,7 @@ fn build_command_with_env() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     let cmd = process.build_command();
     let envs: Vec<_> = cmd.get_envs().collect();
@@ -867,6 +884,7 @@ fn build_command_single_argv() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     let cmd = process.build_command();
     assert_eq!(cmd.get_program(), "echo");
@@ -887,6 +905,7 @@ fn set_returncode_updates_shared_state() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     assert!(process.returncode().is_none());
     process.set_returncode(42);
@@ -905,6 +924,7 @@ fn set_returncode_overwrites() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     process.set_returncode(1);
     process.set_returncode(2);
@@ -1040,6 +1060,7 @@ fn unix_natural_exit_cancels_both_orphaned_capture_readers() {
         create_process_group: false,
         stdin_mode: StdinMode::Inherit,
         nice: None,
+        address_space_limit_bytes: None,
     });
     process.start().expect("spawn shell");
     let grandchild_pid = match process.read_stream(StreamKind::Stdout, Some(Duration::from_secs(5)))
