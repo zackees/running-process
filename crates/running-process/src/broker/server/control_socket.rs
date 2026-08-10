@@ -6,21 +6,22 @@
 
 use std::io::{Read, Write};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
 
 use interprocess::local_socket::traits::{Listener, Stream as _};
 use prost::Message;
 
 use crate::broker::protocol::{
-    read_frame, write_frame, AdminReply, ErrorCode, Frame, FramingError, HelloReply,
-    MAX_HELLO_BYTES,
+    read_frame, write_frame, AdminReply, AdminRequest, AdminVerb, ErrorCode, Frame, FramingError,
+    HelloReply, MAX_HELLO_BYTES,
 };
 
 use super::admin::{handle_admin_frame, AdminFrameError, AdminSnapshot, ADMIN_PAYLOAD_PROTOCOL};
 use super::connection::{
-    bind_local_socket, peer_identity_from_stream, refused_reply, reply_for_framing_error,
-    write_response_frame, BrokerConnectionError, HelloResponder, LocalSocketCleanup,
-    PeerCredentialPolicy,
+    bind_local_socket, local_socket_name, peer_identity_from_stream, refused_reply,
+    reply_for_framing_error, write_response_frame, BrokerConnectionError, HelloResponder,
+    LocalSocketCleanup, PeerCredentialPolicy,
 };
 use super::deadline_stream::{hello_read_deadline, DeadlineStream};
 use super::fd_pressure::{FdPressureDecision, FdPressureGuard};
@@ -35,6 +36,28 @@ pub enum ControlSocketReply {
     Hello(HelloReply),
     /// The connection was handled as an admin request.
     Admin(AdminReply),
+    /// The connection carried an `ADMIN_VERB_SHUTDOWN` request (soldr#2442
+    /// Option B). The ack was already written to the client; the accept loop
+    /// stops serving on this outcome so the broker process can exit.
+    ShutdownRequested,
+}
+
+/// Decode the admin verb from a control frame, if it is a well-formed admin
+/// request. Used to intercept `ADMIN_VERB_SHUTDOWN` before the normal render.
+fn admin_request_verb(frame: &Frame) -> Option<AdminVerb> {
+    AdminRequest::decode(frame.payload.as_slice())
+        .ok()
+        .and_then(|request| AdminVerb::try_from(request.verb).ok())
+}
+
+/// Best-effort self-connect that unblocks a control-socket accept loop parked
+/// in a blocking `accept()`, so a shutdown flag set by a worker takes effect
+/// without waiting for the next real client (soldr#2442 Option B).
+fn wake_control_socket_accept(socket_path: &str) {
+    use interprocess::local_socket::Stream;
+    if let Ok(name) = local_socket_name(socket_path) {
+        let _ = Stream::connect(name);
+    }
 }
 
 /// Connection limit for a broker control-socket accept loop.
@@ -120,10 +143,18 @@ where
     };
 
     if request_frame.payload_protocol == ADMIN_PAYLOAD_PROTOCOL {
+        // soldr#2442 Option B: a SHUTDOWN request is acked like any admin verb
+        // (render_admin_reply produces the ack body) but reported as a distinct
+        // outcome so the accept loop stops serving and the broker exits.
+        let is_shutdown = admin_request_verb(&request_frame) == Some(AdminVerb::Shutdown);
         let snapshot = snapshot_provider();
         let response_frame = handle_admin_frame(request_frame, &snapshot)?;
         let reply = write_admin_response_frame(stream, &response_frame)?;
-        return Ok(ControlSocketReply::Admin(reply));
+        return Ok(if is_shutdown {
+            ControlSocketReply::ShutdownRequested
+        } else {
+            ControlSocketReply::Admin(reply)
+        });
     }
 
     let reply = if request_bytes.len() > MAX_HELLO_BYTES {
@@ -341,6 +372,9 @@ where
     let (job_sender, job_receiver) = mpsc::sync_channel(LAUNCH_CONTROL_SOCKET_WORKERS);
     let job_receiver = Mutex::new(job_receiver);
     let (result_sender, result_receiver) = mpsc::channel();
+    // soldr#2442 Option B: set by a worker that handles an `ADMIN_VERB_SHUTDOWN`
+    // request; the accept loop observes it and stops serving so the broker exits.
+    let shutdown = AtomicBool::new(false);
     let result = std::thread::scope(|scope| {
         let mut workers = Vec::with_capacity(LAUNCH_CONTROL_SOCKET_WORKERS);
 
@@ -348,6 +382,7 @@ where
             let result_sender = result_sender.clone();
             let job_receiver = &job_receiver;
             let snapshot_provider = &snapshot_provider;
+            let shutdown = &shutdown;
             workers.push(scope.spawn(move || loop {
                 let job = {
                     let receiver = job_receiver
@@ -358,15 +393,21 @@ where
                 let Ok((mut stream, peer)) = job else {
                     break;
                 };
-                let result = handle_accepted_control_connection(
+                let outcome = handle_accepted_control_connection(
                     &mut stream,
                     hello_responder,
                     snapshot_provider,
                     peer,
                     peer_policy,
                     fd_guard,
-                )
-                .map(|_| ());
+                );
+                if matches!(outcome, Ok(ControlSocketReply::ShutdownRequested)) {
+                    shutdown.store(true, Ordering::SeqCst);
+                    // Unblock the accept loop parked in `accept()` so it sees the
+                    // flag now instead of on the next real connection.
+                    wake_control_socket_accept(socket_path);
+                }
+                let result = outcome.map(|_| ());
                 if bounded {
                     let _ = result_sender.send(result);
                 } else if let Err(error) = result {
@@ -381,6 +422,12 @@ where
         let mut accepted = 0;
         let mut dispatched = 0;
         let accept_result: Result<(), ControlSocketError> = loop {
+            // soldr#2442 Option B: a worker set this after acking a SHUTDOWN
+            // request. Stop serving so the broker process can exit; in-flight
+            // worker connections drain as the thread scope joins them below.
+            if shutdown.load(Ordering::SeqCst) {
+                break Ok(());
+            }
             if !connection_limit.should_continue(accepted) {
                 break Ok(());
             }
@@ -405,6 +452,11 @@ where
                     break Err(BrokerConnectionError::Io(error).into());
                 }
             };
+            // The accept above may have been unblocked by the shutdown
+            // self-connect rather than a real client; drop it and stop.
+            if shutdown.load(Ordering::SeqCst) {
+                break Ok(());
+            }
             accepted += 1;
             let peer = match peer_identity_from_stream(&stream) {
                 Ok(peer) => peer,

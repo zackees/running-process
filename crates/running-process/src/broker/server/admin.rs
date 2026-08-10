@@ -485,6 +485,10 @@ pub fn render_admin_reply(snapshot: &AdminSnapshot, request: &AdminRequest) -> A
             exit_code: 0,
             content_type: "application/openmetrics-text".into(),
         },
+        // soldr#2442 Option B: acknowledge the shutdown request. The accept
+        // loop stops on this verb (see `control_socket`); this render only
+        // produces the ack body the client reads.
+        Ok(AdminVerb::Shutdown) => text_reply("broker shutting down\n", 0),
         Ok(AdminVerb::Unspecified) | Err(_) => text_reply("unsupported admin verb\n", 2),
     }
 }

@@ -12,6 +12,7 @@ message AdminRequest {
   bool json = 2;
   string service_name = 3;   // backend-health
   string output_path = 4;    // diagnose
+  uint64 drain_deadline_ms = 5;  // shutdown: bound the cooperative drain (soldr#2442)
   reserved 10 to 20;
 }
 
@@ -34,7 +35,12 @@ enum AdminVerb {
   ADMIN_VERB_CONFIG = 7;
   ADMIN_VERB_DIAGNOSE = 8;
   ADMIN_VERB_METRICS = 9;
-  reserved 10 to 20;
+  // Cooperative graceful shutdown (soldr#2442 Option B). Additive value 21
+  // (10-20 stay reserved). Brokers that predate this verb answer it with the
+  // "unsupported admin verb" refusal (exit_code 2), which the client uses to
+  // fall back to verified-PID termination — so this stays compatible with the
+  // frozen-v1 contract.
+  ADMIN_VERB_SHUTDOWN = 21;
 }
 
 enum AdminReplyKind {
