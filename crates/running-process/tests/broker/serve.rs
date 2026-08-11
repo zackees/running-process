@@ -412,6 +412,7 @@ fn serve_launching_backends_serves_admin_on_same_socket() {
         AdminRequest {
             verb: AdminVerb::Status as i32,
             json: true,
+            drain_deadline_ms: 0,
             service_name: String::new(),
             output_path: String::new(),
         },

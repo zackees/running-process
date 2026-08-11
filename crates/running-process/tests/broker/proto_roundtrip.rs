@@ -129,6 +129,7 @@ fn admin_request_roundtrip() {
     let request = AdminRequest {
         verb: AdminVerb::BackendHealth as i32,
         json: true,
+        drain_deadline_ms: 0,
         service_name: "zccache".into(),
         output_path: String::new(),
     };

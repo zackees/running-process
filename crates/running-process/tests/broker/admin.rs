@@ -301,6 +301,7 @@ fn admin_request_dispatches_status_json_reply() {
     let request = AdminRequest {
         verb: AdminVerb::Status as i32,
         json: true,
+        drain_deadline_ms: 0,
         service_name: String::new(),
         output_path: String::new(),
     };
@@ -323,6 +324,7 @@ fn admin_frame_round_trips_response_metadata_and_payload() {
     let request = AdminRequest {
         verb: AdminVerb::BackendHealth as i32,
         json: true,
+        drain_deadline_ms: 0,
         service_name: "zccache".into(),
         output_path: String::new(),
     };
@@ -384,6 +386,7 @@ fn handle_admin_connection_writes_admin_reply_frame() {
     let request = AdminRequest {
         verb: AdminVerb::Metrics as i32,
         json: false,
+        drain_deadline_ms: 0,
         service_name: String::new(),
         output_path: String::new(),
     };
@@ -425,6 +428,7 @@ fn serve_one_admin_socket_round_trips_client_request() {
     let request = AdminRequest {
         verb: AdminVerb::Status as i32,
         json: true,
+        drain_deadline_ms: 0,
         service_name: String::new(),
         output_path: String::new(),
     };
