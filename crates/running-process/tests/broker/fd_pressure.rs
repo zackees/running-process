@@ -84,6 +84,7 @@ fn status_json_frame() -> Frame {
     let request = AdminRequest {
         verb: AdminVerb::Status as i32,
         json: true,
+        drain_deadline_ms: 0,
         service_name: String::new(),
         output_path: String::new(),
     };
