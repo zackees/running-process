@@ -11,12 +11,10 @@ use std::path::PathBuf;
 ///   (fallback: `/tmp/running-process-{uid}/daemon{-hash}.sock`)
 /// - **Windows**: `\\.\pipe\running-process-daemon-{username}{-hash}`
 ///
-/// On Windows the returned string is a full named pipe path that should be
-/// passed to [`interprocess::local_socket::ToNsName::to_ns_name`] with
-/// [`GenericNamespaced`](interprocess::local_socket::GenericNamespaced).
-/// On Unix it is a filesystem path for
-/// [`interprocess::local_socket::ToFsName::to_fs_name`] with
-/// [`GenericFilePath`](interprocess::local_socket::GenericFilePath).
+/// The returned display path must be passed through
+/// [`crate::broker::server::singleton_bind::wrap_socket_name`] before use.
+/// That shared boundary prevents Windows pipe paths from acquiring the
+/// namespace prefix more than once.
 pub fn socket_path(scope_hash: Option<&str>) -> String {
     #[cfg(unix)]
     {
@@ -52,19 +50,7 @@ pub fn socket_path_view(scope_hash: Option<&str>) -> String {
 /// This must use the same name-type dispatch as the server so that client
 /// and server agree on the actual IPC endpoint.
 pub fn make_socket_name(path: &str) -> std::io::Result<interprocess::local_socket::Name<'_>> {
-    use interprocess::local_socket::prelude::*;
-
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::GenericFilePath;
-        path.to_fs_name::<GenericFilePath>()
-    }
-
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::GenericNamespaced;
-        path.to_ns_name::<GenericNamespaced>()
-    }
+    crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(std::io::Error::other)
 }
 
 /// Returns the path to the daemon PID file.

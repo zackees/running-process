@@ -6,10 +6,6 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use interprocess::local_socket::tokio::prelude::*;
-#[cfg(unix)]
-use interprocess::local_socket::GenericFilePath;
-#[cfg(windows)]
-use interprocess::local_socket::GenericNamespaced;
 use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use tokio::sync::watch;
@@ -223,31 +219,13 @@ impl DaemonServer {
 
     /// Convert the socket path string into an `interprocess::local_socket::Name`.
     ///
-    /// On Windows, named pipes live in a namespace, so we use `ToNsName` with
-    /// `GenericNamespaced`.  On Unix, sockets are filesystem paths, so we use
-    /// `ToFsName` with `GenericFilePath`.
+    /// Delegates to the broker's canonical conversion boundary so an already
+    /// resolved Windows `\\.\pipe\...` display path is never prefixed twice.
     fn create_socket_name(
         &self,
     ) -> Result<interprocess::local_socket::Name<'_>, Box<dyn std::error::Error>> {
-        #[cfg(unix)]
-        {
-            use interprocess::local_socket::ToFsName;
-            Ok(self
-                .state
-                .socket_path
-                .as_str()
-                .to_fs_name::<GenericFilePath>()?)
-        }
-
-        #[cfg(windows)]
-        {
-            use interprocess::local_socket::ToNsName;
-            Ok(self
-                .state
-                .socket_path
-                .as_str()
-                .to_ns_name::<GenericNamespaced>()?)
-        }
+        crate::broker::server::singleton_bind::wrap_socket_name(&self.state.socket_path)
+            .map_err(|error| std::io::Error::other(error).into())
     }
 }
 

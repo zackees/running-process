@@ -14,25 +14,12 @@
 //! path uses the same `interprocess` abstraction.
 
 use interprocess::local_socket::tokio::prelude::*;
-#[cfg(unix)]
-use interprocess::local_socket::GenericFilePath;
-#[cfg(windows)]
-use interprocess::local_socket::GenericNamespaced;
 
 /// Resolve a daemon SESSION endpoint path into an `interprocess` name
 /// (filesystem path on Unix, pipe namespace on Windows), matching how the daemon
 /// binds it.
 fn daemon_endpoint_name(path: &str) -> std::io::Result<interprocess::local_socket::Name<'_>> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::ToFsName;
-        path.to_fs_name::<GenericFilePath>()
-    }
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::ToNsName;
-        path.to_ns_name::<GenericNamespaced>()
-    }
+    crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(std::io::Error::other)
 }
 
 /// Relay a client's SESSION connection to the daemon endpoint at

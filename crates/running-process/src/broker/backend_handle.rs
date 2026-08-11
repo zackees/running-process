@@ -432,19 +432,7 @@ pub enum BackendHandleError {
 }
 
 fn endpoint_name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
-    use interprocess::local_socket::prelude::*;
-
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::GenericFilePath;
-        path.to_fs_name::<GenericFilePath>()
-    }
-
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::GenericNamespaced;
-        path.to_ns_name::<GenericNamespaced>()
-    }
+    crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(io::Error::other)
 }
 
 /// Remove the socket file backing `endpoint`, if there is one.

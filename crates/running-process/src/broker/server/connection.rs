@@ -344,17 +344,7 @@ where
 /// Convert the broker's platform socket path/name string into an
 /// `interprocess` local-socket name.
 pub fn local_socket_name(socket_path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::{GenericFilePath, ToFsName};
-        socket_path.to_fs_name::<GenericFilePath>()
-    }
-
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        socket_path.to_ns_name::<GenericNamespaced>()
-    }
+    super::singleton_bind::wrap_socket_name(socket_path).map_err(io::Error::other)
 }
 
 /// Errors raised while serving a framed broker Hello connection.
@@ -664,4 +654,27 @@ fn cleanup_local_socket_path(socket_path: &str) {
 
     #[cfg(windows)]
     let _ = socket_path;
+}
+
+#[cfg(all(test, windows))]
+mod windows_endpoint_tests {
+    use super::local_socket_name;
+
+    #[test]
+    fn resolved_pipe_has_one_canonical_interprocess_name() {
+        use crate::broker::server::singleton_bind::{resolve_socket_path, wrap_socket_name};
+
+        let resolved = resolve_socket_path(&format!(
+            "rpb-v2-canonical-name-test-{}",
+            std::process::id()
+        ))
+        .expect("resolve Windows pipe path");
+        let server = local_socket_name(&resolved).expect("server name");
+        let client = wrap_socket_name(&resolved).expect("client name");
+
+        assert_eq!(
+            server, client,
+            "server bind and client dial must normalize a resolved pipe identically"
+        );
+    }
 }
