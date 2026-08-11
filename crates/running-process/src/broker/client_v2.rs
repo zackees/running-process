@@ -51,10 +51,6 @@ pub enum BrokerV2Error {
     #[error(transparent)]
     Sid(#[from] SidError),
 
-    /// The installed broker path could not be canonicalized exactly.
-    #[error(transparent)]
-    BrokerPath(#[from] BrokerPathIdentityError),
-
     /// Building the v2 pipe name failed.
     #[error(transparent)]
     PipeName(#[from] PipePathError),
@@ -108,6 +104,22 @@ pub enum BrokerV2Error {
     /// Encoding the outbound `Hello` failed.
     #[error("Hello encode: {0}")]
     Encode(#[from] prost::EncodeError),
+}
+
+/// Error from the install-path-scoped broker connection API.
+///
+/// This is deliberately separate from [`BrokerV2Error`] so adding the new
+/// identity failure cannot break downstream exhaustive matches on that
+/// established public enum.
+#[derive(Debug, thiserror::Error)]
+pub enum BrokerPathConnectError {
+    /// The installed broker path could not be canonicalized exactly.
+    #[error(transparent)]
+    Identity(#[from] BrokerPathIdentityError),
+
+    /// The derived endpoint could not complete the v2 broker handshake.
+    #[error(transparent)]
+    Connect(#[from] BrokerV2Error),
 }
 
 /// Async counterpart of [`ClientSession`] for tokio callers.
@@ -431,15 +443,15 @@ pub fn connect_service_for_broker_path_with_deadline(
     service_name: &str,
     version_hint: &str,
     deadline: Duration,
-) -> Result<ClientSession, BrokerV2Error> {
+) -> Result<ClientSession, BrokerPathConnectError> {
     let scope_hash = broker_path_scope_hash(broker_path)?;
-    connect_service_with_scope_hash_and_deadline(
+    Ok(connect_service_with_scope_hash_and_deadline(
         program,
         &scope_hash,
         service_name,
         version_hint,
         deadline,
-    )
+    )?)
 }
 
 /// Deadline-bounded connect using a caller-supplied canonical scope hash.
