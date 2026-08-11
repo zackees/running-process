@@ -25,6 +25,7 @@ message AdminReply {
 }
 
 enum AdminVerb {
+  reserved 10 to 20;
   ADMIN_VERB_UNSPECIFIED = 0;
   ADMIN_VERB_STATUS = 1;
   ADMIN_VERB_DUMP = 2;
