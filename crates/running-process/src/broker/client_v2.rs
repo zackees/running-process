@@ -34,7 +34,9 @@ use crate::broker::adopt::{IntoBackendIoError, OwnedBackendIo};
 use crate::broker::client::connect_local_socket;
 use crate::broker::connect_watchdog::{capture_connect_dump, ConnectWatchdog, WATCHDOG_GRACE};
 use crate::broker::lifecycle::names::PipePathError;
-use crate::broker::lifecycle::names_v2::v2_program_pipe;
+use crate::broker::lifecycle::names_v2::{
+    broker_path_scope_hash, v2_program_pipe, BrokerPathIdentityError,
+};
 use crate::broker::lifecycle::sid::{user_sid_hash, SidError};
 use crate::broker::protocol::{
     hello_reply, read_frame, write_frame, Frame, FrameKind, FramingError, Hello, HelloReply,
@@ -48,6 +50,10 @@ pub enum BrokerV2Error {
     /// `user_sid_hash` failed.
     #[error(transparent)]
     Sid(#[from] SidError),
+
+    /// The installed broker path could not be canonicalized exactly.
+    #[error(transparent)]
+    BrokerPath(#[from] BrokerPathIdentityError),
 
     /// Building the v2 pipe name failed.
     #[error(transparent)]
@@ -404,12 +410,62 @@ pub fn connect_service_with_deadline(
     version_hint: &str,
     deadline: Duration,
 ) -> Result<ClientSession, BrokerV2Error> {
+    let scope_hash = user_sid_hash()?;
+    connect_service_with_scope_hash_and_deadline(
+        program,
+        &scope_hash,
+        service_name,
+        version_hint,
+        deadline,
+    )
+}
+
+/// Connect to the broker endpoint derived from an installed broker path.
+///
+/// The canonical path is the complete scope identity. This intentionally
+/// bypasses [`user_sid_hash`]: a machine-wide installation is shared, while a
+/// user-private installation already differs by its path.
+pub fn connect_service_for_broker_path_with_deadline(
+    program: &str,
+    broker_path: impl AsRef<std::path::Path>,
+    service_name: &str,
+    version_hint: &str,
+    deadline: Duration,
+) -> Result<ClientSession, BrokerV2Error> {
+    let scope_hash = broker_path_scope_hash(broker_path)?;
+    connect_service_with_scope_hash_and_deadline(
+        program,
+        &scope_hash,
+        service_name,
+        version_hint,
+        deadline,
+    )
+}
+
+/// Deadline-bounded connect using a caller-supplied canonical scope hash.
+///
+/// Prefer [`connect_service_for_broker_path_with_deadline`] for production
+/// path-scoped brokers. This lower-level form exists for callers that already
+/// derived the scope once and for focused transport tests.
+pub fn connect_service_with_scope_hash_and_deadline(
+    program: &str,
+    scope_hash: &str,
+    service_name: &str,
+    version_hint: &str,
+    deadline: Duration,
+) -> Result<ClientSession, BrokerV2Error> {
     let program = program.to_owned();
+    let scope_hash = scope_hash.to_owned();
     let service_name = service_name.to_owned();
     let version_hint = version_hint.to_owned();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(connect_unbounded(&program, &service_name, &version_hint));
+        let _ = tx.send(connect_unbounded(
+            &program,
+            &scope_hash,
+            &service_name,
+            &version_hint,
+        ));
     });
     match rx.recv_timeout(deadline) {
         Ok(result) => result,
@@ -424,11 +480,11 @@ pub fn connect_service_with_deadline(
 /// thread spawned by [`connect_with_deadline`].
 fn connect_unbounded(
     program: &str,
+    scope_hash: &str,
     service_name: &str,
     version_hint: &str,
 ) -> Result<ClientSession, BrokerV2Error> {
-    let sid = user_sid_hash()?;
-    let pipe_name = v2_program_pipe(program, &sid, 0)?;
+    let pipe_name = v2_program_pipe(program, scope_hash, 0)?;
     let socket_path = resolve_socket_path(&pipe_name);
     let name = wrap_socket_name(&socket_path).map_err(|err| BrokerV2Error::Dial {
         socket_path: socket_path.clone(),

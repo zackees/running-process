@@ -13,12 +13,104 @@
 //! more names (private/shared/explicit-instance counterparts, the
 //! broker↔daemon transport name) as they are needed.
 
+use std::path::{Path, PathBuf};
+
 use crate::broker::lifecycle::names::{validate_service_name, PipePathError};
 
 /// Compile-time prefix for every v2 broker pipe. Counterpart of the
 /// frozen v1 `PIPE_PREFIX = "rpb-v1"`. Encodes the v2 envelope version
 /// so v1 and v2 brokers can bind simultaneously without colliding.
 const PIPE_PREFIX_V2: &str = "rpb-v2";
+
+/// Failure to turn an installed broker executable path into an IPC scope.
+#[derive(Debug, thiserror::Error)]
+pub enum BrokerPathIdentityError {
+    /// The executable path must exist so every process hashes the same
+    /// canonical filesystem identity. There is deliberately no lexical-path
+    /// fallback: disagreement here would send clients to a different pipe.
+    #[error("canonicalize installed broker path {path:?}: {source}")]
+    Canonicalize {
+        /// Broker executable path supplied by the caller.
+        path: PathBuf,
+        /// Filesystem error returned by canonicalization.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Derive the 16-hex IPC scope from the canonical installed broker path.
+///
+/// The path itself is the scope contract. A per-user installation naturally
+/// contains that user's private install path, while every caller of a
+/// machine-wide installation sees the same path and therefore the same pipe.
+/// No SID, machine-id, registry mapping, or fallback namespace participates.
+pub fn broker_path_scope_hash(
+    broker_path: impl AsRef<Path>,
+) -> Result<String, BrokerPathIdentityError> {
+    let supplied = broker_path.as_ref();
+    let canonical = std::fs::canonicalize(supplied).map_err(|source| {
+        BrokerPathIdentityError::Canonicalize {
+            path: supplied.to_path_buf(),
+            source,
+        }
+    })?;
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"running-process:broker-install-path:v1\0");
+    #[cfg(windows)]
+    {
+        // Windows paths and named pipes are case-insensitive. Hash one
+        // slash/case-normalized spelling so callers cannot split the broker
+        // merely by varying path presentation.
+        let normalized = canonical
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_lowercase();
+        hasher.update(normalized.as_bytes());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        hasher.update(canonical.as_os_str().as_bytes());
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        hasher.update(canonical.to_string_lossy().as_bytes());
+    }
+
+    let digest = hasher.finalize();
+    let mut scope = String::with_capacity(16);
+    for byte in digest.as_bytes().iter().take(8) {
+        use std::fmt::Write as _;
+        let _ = write!(scope, "{byte:02x}");
+    }
+    Ok(scope)
+}
+
+/// Compute the v2 pipe name for one installed broker executable.
+///
+/// This is the path-scoped counterpart of [`v2_program_pipe`]. Both broker
+/// and client should call it with the same canonical installed executable;
+/// the resulting endpoint contains no per-user SID component.
+pub fn v2_broker_path_pipe(
+    program: &str,
+    broker_path: impl AsRef<Path>,
+    pipe_idx: u32,
+) -> Result<String, BrokerPathPipeError> {
+    let scope = broker_path_scope_hash(broker_path)?;
+    Ok(v2_program_pipe(program, &scope, pipe_idx)?)
+}
+
+/// Error returned while deriving a path-scoped v2 pipe name.
+#[derive(Debug, thiserror::Error)]
+pub enum BrokerPathPipeError {
+    /// Installed broker path identity could not be resolved exactly.
+    #[error(transparent)]
+    Identity(#[from] BrokerPathIdentityError),
+    /// The program/scope combination was not a valid v2 pipe name.
+    #[error(transparent)]
+    Pipe(#[from] PipePathError),
+}
 
 /// Compute the v2 per-program pipe name.
 ///
@@ -285,5 +377,43 @@ mod tests {
             v2_program_pipe("zccache", "DEADBEEFCAFEF00D", 0),
             Err(PipePathError::InvalidName { .. })
         ));
+    }
+
+    #[test]
+    fn broker_path_scope_is_stable_and_path_specific() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = temp.path().join("broker-a");
+        let second = temp.path().join("broker-b");
+        std::fs::write(&first, b"a").expect("first broker fixture");
+        std::fs::write(&second, b"b").expect("second broker fixture");
+
+        let a = broker_path_scope_hash(&first).expect("first scope");
+        assert_eq!(a, broker_path_scope_hash(&first).expect("stable scope"));
+        assert_ne!(a, broker_path_scope_hash(&second).expect("second scope"));
+        assert_eq!(a.len(), 16);
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn path_scoped_pipe_contains_no_user_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let broker = temp.path().join("soldr");
+        std::fs::write(&broker, b"broker").expect("broker fixture");
+        let scope = broker_path_scope_hash(&broker).expect("scope");
+
+        let name = v2_broker_path_pipe("soldr-daemon", &broker, 1).expect("pipe");
+        assert_eq!(name, format!("rpb-v2-soldr-daemon-{scope}-1"));
+    }
+
+    #[test]
+    fn missing_broker_path_has_no_lexical_fallback() {
+        let missing = std::env::temp_dir().join(format!(
+            "running-process-missing-broker-{}",
+            std::process::id()
+        ));
+        let err = broker_path_scope_hash(&missing).expect_err("missing path must fail");
+        assert!(matches!(err, BrokerPathIdentityError::Canonicalize { .. }));
     }
 }
