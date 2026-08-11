@@ -226,18 +226,21 @@ mod tests {
             // collide on the same name.
             #[cfg(windows)]
             let name = {
-                use interprocess::local_socket::{GenericNamespaced, ToNsName};
                 let bare = format!("rp-brokered-backend-stub-{endpoint}");
-                ToNsName::to_ns_name::<GenericNamespaced>(bare.as_str())?.into_owned()
+                crate::broker::server::singleton_bind::wrap_socket_name(&bare)
+                    .map_err(std::io::Error::other)?
+                    .into_owned()
             };
             #[cfg(unix)]
             let name = {
-                use interprocess::local_socket::{GenericFilePath, ToFsName};
                 let path =
                     std::env::temp_dir().join(format!("rp-brokered-backend-stub-{endpoint}.sock"));
                 let _ = std::fs::remove_file(&path);
-                ToFsName::to_fs_name::<GenericFilePath>(path.to_string_lossy().as_ref())?
-                    .into_owned()
+                crate::broker::server::singleton_bind::wrap_socket_name(
+                    path.to_string_lossy().as_ref(),
+                )
+                .map_err(std::io::Error::other)?
+                .into_owned()
             };
             let listener = ListenerOptions::new().name(name).create_sync()?;
             Ok(listener)

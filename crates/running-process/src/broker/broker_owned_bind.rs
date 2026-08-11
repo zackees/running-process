@@ -151,10 +151,11 @@ impl InheritableListener {
     /// point: a probe issued immediately afterwards succeeds even though no
     /// daemon exists yet.
     pub fn bind(endpoint: &str) -> std::io::Result<Self> {
-        use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName as _};
+        use interprocess::local_socket::ListenerOptions;
         use interprocess::os::unix::uds_local_socket::Listener as UdsListener;
 
-        let name = endpoint.to_fs_name::<GenericFilePath>()?;
+        let name = super::server::singleton_bind::wrap_socket_name(endpoint)
+            .map_err(std::io::Error::other)?;
         // Built through the generic options so the socket file's mode and
         // cleanup semantics match every other listener this crate creates;
         // only the concrete type differs, because the generic `Listener` enum

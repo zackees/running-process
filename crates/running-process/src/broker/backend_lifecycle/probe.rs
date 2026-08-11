@@ -600,15 +600,5 @@ fn wait_for_io(deadline: Instant) -> Result<(), EndpointProbeError> {
 }
 
 fn endpoint_name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::GenericFilePath;
-        path.to_fs_name::<GenericFilePath>()
-    }
-
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::GenericNamespaced;
-        path.to_ns_name::<GenericNamespaced>()
-    }
+    crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(io::Error::other)
 }

@@ -622,23 +622,7 @@ fn resolve_socket_path(bare_name: &str) -> String {
 }
 
 fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
-    use interprocess::local_socket::prelude::*;
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::GenericNamespaced;
-        let bare = socket_path
-            .strip_prefix(r"\\.\pipe\")
-            .unwrap_or(socket_path);
-        bare.to_ns_name::<GenericNamespaced>()
-            .map_err(|e| format!("to_ns_name: {e}"))
-    }
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::GenericFilePath;
-        socket_path
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|e| format!("to_fs_name: {e}"))
-    }
+    crate::broker::server::singleton_bind::wrap_socket_name(socket_path)
 }
 
 #[cfg(test)]
@@ -1322,11 +1306,8 @@ mod backend_dial_tests {
     /// Resolve a name the same way the code under test does.
     ///
     /// Deliberately delegates to production's `local_socket_name` rather than
-    /// re-deriving it. An earlier version of this helper stripped the
-    /// `\.\pipe\` prefix before `to_ns_name` while production passes the whole
-    /// string, so the test bound one name and dialed another, and failed on
-    /// Windows with `NotFound` — a bug in the test that reads exactly like a
-    /// bug in the dial.
+    /// re-deriving it. Every bind and dial must share the canonical conversion
+    /// boundary so a resolved Windows pipe cannot acquire its namespace twice.
     fn socket_name(path: &str) -> interprocess::local_socket::Name<'_> {
         crate::broker::server::connection::local_socket_name(path).expect("socket name")
     }
