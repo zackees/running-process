@@ -445,20 +445,27 @@ pub fn connect_service_for_broker_path_with_deadline(
     deadline: Duration,
 ) -> Result<ClientSession, BrokerPathConnectError> {
     let scope_hash = broker_path_scope_hash(broker_path)?;
-    Ok(connect_service_with_scope_hash_and_deadline(
+    let pipe_name = v2_program_pipe(program, &scope_hash, 0).map_err(BrokerV2Error::from)?;
+    let socket_path =
+        crate::broker::server::singleton_bind::resolve_path_scoped_socket_path(&pipe_name)
+            .map_err(|err| {
+                BrokerV2Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, err))
+            })?;
+    Ok(connect_service_at_socket_with_deadline(
         program,
-        &scope_hash,
+        socket_path,
         service_name,
         version_hint,
         deadline,
     )?)
 }
 
-/// Deadline-bounded connect using a caller-supplied canonical scope hash.
+/// Deadline-bounded legacy per-user connect using a caller-supplied scope hash.
 ///
-/// Prefer [`connect_service_for_broker_path_with_deadline`] for production
-/// path-scoped brokers. This lower-level form exists for callers that already
-/// derived the scope once and for focused transport tests.
+/// The bare name still resolves through the per-user runtime directory. Do not
+/// pass [`broker_path_scope_hash`] here: install-path-scoped callers must use
+/// [`connect_service_for_broker_path_with_deadline`] so Unix does not add user
+/// identity back into the resolved endpoint.
 pub fn connect_service_with_scope_hash_and_deadline(
     program: &str,
     scope_hash: &str,
@@ -466,15 +473,32 @@ pub fn connect_service_with_scope_hash_and_deadline(
     version_hint: &str,
     deadline: Duration,
 ) -> Result<ClientSession, BrokerV2Error> {
+    let pipe_name = v2_program_pipe(program, scope_hash, 0)?;
+    let socket_path = resolve_socket_path(&pipe_name);
+    connect_service_at_socket_with_deadline(
+        program,
+        socket_path,
+        service_name,
+        version_hint,
+        deadline,
+    )
+}
+
+fn connect_service_at_socket_with_deadline(
+    program: &str,
+    socket_path: String,
+    service_name: &str,
+    version_hint: &str,
+    deadline: Duration,
+) -> Result<ClientSession, BrokerV2Error> {
     let program = program.to_owned();
-    let scope_hash = scope_hash.to_owned();
     let service_name = service_name.to_owned();
     let version_hint = version_hint.to_owned();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(connect_unbounded(
             &program,
-            &scope_hash,
+            &socket_path,
             &service_name,
             &version_hint,
         ));
@@ -492,18 +516,16 @@ pub fn connect_service_with_scope_hash_and_deadline(
 /// thread spawned by [`connect_with_deadline`].
 fn connect_unbounded(
     program: &str,
-    scope_hash: &str,
+    socket_path: &str,
     service_name: &str,
     version_hint: &str,
 ) -> Result<ClientSession, BrokerV2Error> {
-    let pipe_name = v2_program_pipe(program, scope_hash, 0)?;
-    let socket_path = resolve_socket_path(&pipe_name);
-    let name = wrap_socket_name(&socket_path).map_err(|err| BrokerV2Error::Dial {
-        socket_path: socket_path.clone(),
+    let name = wrap_socket_name(socket_path).map_err(|err| BrokerV2Error::Dial {
+        socket_path: socket_path.to_string(),
         source: std::io::Error::new(std::io::ErrorKind::InvalidInput, err),
     })?;
     let mut stream = Stream::connect(name).map_err(|source| BrokerV2Error::Dial {
-        socket_path: socket_path.clone(),
+        socket_path: socket_path.to_string(),
         source,
     })?;
     let negotiated = hello_round_trip(&mut stream, program, service_name, version_hint)?;

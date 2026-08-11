@@ -44,6 +44,37 @@ pub fn resolve_socket_path(bare_name: &str) -> Result<String, String> {
     }
 }
 
+/// Resolve an install-path-scoped broker name without adding user identity.
+///
+/// Unlike [`resolve_socket_path`], this endpoint must remain identical across
+/// users and runtime environments: a user-local install is already unique by
+/// its canonical path hash, while one machine-wide install intentionally has
+/// one machine-wide endpoint. Windows named pipes are already machine-global.
+/// Unix uses the machine-global temporary root and a compact hash to stay
+/// within every platform's `sun_path` limit.
+pub fn resolve_path_scoped_socket_path(bare_name: &str) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        Ok(format!(r"\\.\pipe\{bare_name}"))
+    }
+    #[cfg(unix)]
+    {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"running-process:path-scoped-socket:v1\0");
+        hash.update(bare_name.as_bytes());
+        let digest = hash.finalize();
+        let mut leaf_hash = String::with_capacity(32);
+        for byte in digest.as_bytes().iter().take(16) {
+            use std::fmt::Write as _;
+            let _ = write!(leaf_hash, "{byte:02x}");
+        }
+        Ok(std::path::Path::new("/tmp")
+            .join(format!(".rp-path-{leaf_hash}.sock"))
+            .to_string_lossy()
+            .into_owned())
+    }
+}
+
 #[cfg(unix)]
 fn unix_socket_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
@@ -207,6 +238,20 @@ mod tests {
     fn resolve_socket_path_produces_a_nonempty_path() {
         let path = resolve_socket_path("rpb-v2-test-singleton-bind").expect("resolve");
         assert!(!path.is_empty());
+    }
+
+    #[test]
+    fn path_scoped_socket_does_not_add_a_user_runtime_directory() {
+        let first = resolve_path_scoped_socket_path("rpb-v2-program-0123456789abcdef-0")
+            .expect("resolve path-scoped endpoint");
+        let again = resolve_path_scoped_socket_path("rpb-v2-program-0123456789abcdef-0")
+            .expect("resolve stable endpoint");
+        assert_eq!(first, again);
+        #[cfg(unix)]
+        assert_eq!(
+            std::path::Path::new(&first).parent(),
+            Some(std::path::Path::new("/tmp"))
+        );
     }
 
     #[test]
