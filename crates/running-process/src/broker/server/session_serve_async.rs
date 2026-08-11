@@ -45,7 +45,13 @@ use super::connection::{
 };
 use super::hello_handler::PeerIdentity;
 
-const MAX_CONCURRENT_SESSION_NEGOTIATIONS: usize = 8;
+// soldr#2451: this bounds concurrent Hello NEGOTIATIONS only (the relay no
+// longer holds a permit). Negotiations are a sub-millisecond round-trip, so a
+// generous cap keeps the accept loop from stalling when cargo opens a burst of
+// per-compile connections at once, while still guarding the blocking pool
+// against an unbounded task fan-out. 8 was sized as if it capped live compiles;
+// it does not, so it can be much higher.
+const MAX_CONCURRENT_SESSION_NEGOTIATIONS: usize = 256;
 
 /// Bind `socket_path` as a tokio SESSION listener and serve it via
 /// [`serve_broker_session_endpoint`].
@@ -203,8 +209,22 @@ where
             .map_err(|_| std::io::Error::other("SESSION negotiation pool closed"))?;
         let responder = Arc::clone(&responder);
         tokio::spawn(async move {
-            let _permit = permit;
-            match negotiate_session_hello_concurrently(stream, responder, peer).await {
+            // soldr#2451: the permit must bound ONLY the negotiation (a fast
+            // Hello round-trip whose `handle_frame` runs on the blocking pool),
+            // NOT the relay below. `relay_session` is pure async
+            // `copy_bidirectional` that lives for the whole compile (seconds);
+            // holding the permit across it turned this negotiation-concurrency
+            // bound into a hard cap on *concurrent compiles*. With cargo's
+            // pipelining running far more than the cap's worth of rustc at once,
+            // the accept loop blocked on `acquire_owned`, dials overflowed the
+            // OS backlog, and ~4% were refused — surfacing on cross-builds as
+            // "SESSION relay closed before Exit" / broker-unreachable hard
+            // fails. Scope the permit to negotiation; relays scale freely.
+            let negotiated = {
+                let _permit = permit;
+                negotiate_session_hello_concurrently(stream, responder, peer).await
+            };
+            match negotiated {
                 Ok(Some((stream, backend_pipe))) => {
                     if backend_pipe.is_empty() {
                         eprintln!(
