@@ -102,13 +102,24 @@ fn unix_login_baseline_environment() -> Option<Vec<(OsString, OsString)>> {
     if let Some(shell) = field(passwd.pw_shell) {
         env.push((OsString::from("SHELL"), shell));
     }
-    // Locale, timezone, and per-user tmpdir describe the session rather
-    // than the parent process; carry them over when present so children
-    // keep rendering text and resolving paths the way the user expects.
+    // Locale, timezone, and the per-user runtime/tmp dirs describe the login
+    // *session* rather than the parent process; carry them over when present so
+    // children keep rendering text and resolving paths the way the user does.
+    //
+    // XDG_RUNTIME_DIR (Linux) and TMPDIR (macOS) are the runtime-dir vars the
+    // broker's own `resolve_socket_path` keys on to place its control + SESSION
+    // sockets. They are set by the login session (PAM/logind), not by
+    // getpwuid_r or profile scripts, so a reconstructed baseline can only obtain
+    // them by carrying them. Dropping XDG_RUNTIME_DIR made a daemon fall back to
+    // /tmp while its session-resident clients dialed $XDG_RUNTIME_DIR/… — every
+    // request then missed the socket (zackees/soldr#2442). TMPDIR was already
+    // carried; XDG_RUNTIME_DIR is its Linux counterpart and must be too.
     for (key, value) in std::env::vars_os() {
-        let carry = key == "LANG" || key == "TZ" || key == "TMPDIR" || {
-            key.to_str().is_some_and(|k| k.starts_with("LC_"))
-        };
+        let carry = key == "LANG"
+            || key == "TZ"
+            || key == "TMPDIR"
+            || key == "XDG_RUNTIME_DIR"
+            || { key.to_str().is_some_and(|k| k.starts_with("LC_")) };
         if carry {
             env.push((key, value));
         }
@@ -244,6 +255,26 @@ mod unix_tests {
             "process-local variables must not leak into the login baseline"
         );
         std::env::remove_var("RUNNING_PROCESS_BASELINE_CANARY");
+    }
+
+    #[test]
+    fn login_baseline_carries_xdg_runtime_dir() {
+        // The broker keys its socket path on XDG_RUNTIME_DIR (Linux). The
+        // reconstructed login baseline must carry it so a daemon binds under the
+        // same runtime dir its session-resident clients dial, instead of
+        // falling back to /tmp and stranding every request (zackees/soldr#2442).
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/4242");
+        let env = unix_login_baseline_environment().expect("test user must have a passwd entry");
+        let carried = env
+            .iter()
+            .find(|(key, _)| key == "XDG_RUNTIME_DIR")
+            .map(|(_, value)| value.clone());
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        assert_eq!(
+            carried.as_deref(),
+            Some(std::ffi::OsStr::new("/run/user/4242")),
+            "login baseline must carry XDG_RUNTIME_DIR when the session sets it"
+        );
     }
 }
 
