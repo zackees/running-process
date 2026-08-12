@@ -98,7 +98,9 @@ pub use handoff::{
     DEFAULT_HANDOFF_TOKEN_TTL, DEFAULT_MAX_PENDING_HANDOFFS, DEFAULT_MAX_PENDING_HANDOFF_TOKENS,
     DEFAULT_PENDING_HANDOFF_TTL, HANDOFF_TOKEN_BYTES,
 };
-pub use handoff_serve::{complete_negotiated_handoff, ServeHandoffContext};
+pub use handoff_serve::{
+    complete_negotiated_handoff, try_complete_negotiated_handoff, ServeHandoffContext,
+};
 pub use hello_handler::{
     HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend,
 };
