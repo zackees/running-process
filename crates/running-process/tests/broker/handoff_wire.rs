@@ -108,6 +108,40 @@ fn await_backend_ack_honors_deadline_for_trickled_partial_frame() {
     assert_ack_read_honors_deadline("hw-ack-partial-deadline", true);
 }
 
+#[test]
+fn explicit_backend_rejection_is_distinct_from_an_unobserved_ack() {
+    let (broker_side, mut backend_side) = connected_pair("hw-ack-rejected");
+    let expected = token(0x62);
+    let expected_bytes = expected.as_bytes().to_vec();
+    let backend = thread::spawn(move || {
+        write_handoff_ack(
+            &mut backend_side,
+            &HandoffAck {
+                token: expected_bytes,
+                accepted: false,
+                error_detail: "not adopted".into(),
+                correlation_id: CORRELATION_ID,
+            },
+        )
+        .expect("write rejection ACK");
+    });
+    let mut delivery = wire_delivery(broker_side);
+    let error = delivery
+        .await_backend_ack(&expected, Instant::now() + Duration::from_secs(1))
+        .expect_err("rejection must not report an observed adoption");
+    backend.join().unwrap();
+
+    assert!(
+        matches!(
+            error,
+            HandoffDeliveryError::AckNotObserved { ref detail }
+                if detail.contains("backend refused the handoff: not adopted")
+        ),
+        "unexpected rejection error: {error:?}"
+    );
+    assert!(delivery.backend_explicitly_rejected());
+}
+
 fn assert_ack_read_honors_deadline(label: &str, trickle: bool) {
     use std::io::Write as _;
     use std::sync::mpsc;

@@ -19,12 +19,11 @@
 //!    ([`handoff_ready_frame`]) to the waiting client on the connection
 //!    that carried Hello.
 //!
-//! Any failure at any step abandons the handoff through the existing
-//! registry APIs and writes **nothing** to the client: the client's
-//! bounded relay wait expires and it silently reconnects through the
-//! negotiated `backend_pipe`. Handoff failures are logged but are never
-//! client errors — the reconnect path stays authoritative (the frozen
-//! correctness contract).
+//! A failure before delivery, or an explicit backend rejection, writes
+//! **nothing** to the client so the caller can proxy the accepted stream.
+//! A missing or malformed ACK after delivery is ownership-ambiguous:
+//! [`try_complete_negotiated_handoff`] reports that the caller must relinquish
+//! the original stream instead of proxying it concurrently.
 //!
 //! # Token lifecycle
 //!
@@ -79,32 +78,15 @@ pub struct ServeHandoffContext<'a> {
     pub registry: &'a Mutex<BackendRegistry>,
 }
 
-/// Run the platform handoff for one freshly negotiated Hello connection.
-///
-/// No-op unless `reply` negotiated handle passing (capability bit plus a
-/// well-formed 16-byte `handle_passed_token`). On a completed handoff the
-/// handoff-ready EVENT frame is written to `client_stream`; on any failure
-/// nothing is written and the client falls back to the `backend_pipe`
-/// reconnect on its own. This function never returns an error: serve-side
-/// handoff failures are silent optimization failures by contract.
-pub fn complete_negotiated_handoff(
-    ctx: &ServeHandoffContext<'_>,
-    client_stream: &mut interprocess::local_socket::Stream,
-    reply: &HelloReply,
-) {
-    let _ = try_complete_negotiated_handoff(ctx, client_stream, reply);
-}
-
-/// Attempt the same production handoff as [`complete_negotiated_handoff`],
+/// Run the platform handoff for one freshly negotiated Hello connection,
 /// returning whether the caller must relinquish its copy of the connection.
 ///
 /// This result lets unified broker listeners retain the exact accepted stream
 /// as an in-place proxy fallback only while that is safe. Once the offer has
 /// reached the backend, a lost or late ACK cannot prove the backend did not
 /// adopt it, so this conservatively returns `true`; both sides must never
-/// consume the same connection. The compatibility wrapper intentionally
-/// discards the result because the historical control-listener path reconnects
-/// instead.
+/// consume the same connection.
+#[must_use = "true means the backend may own the connection and the caller must relinquish it"]
 pub fn try_complete_negotiated_handoff(
     ctx: &ServeHandoffContext<'_>,
     client_stream: &mut interprocess::local_socket::Stream,
@@ -241,7 +223,10 @@ fn run_platform_handoff(
         return false;
     };
 
-    match execute_verified_windows_handoff(backend, pipe_handle, issued, tokens, acks, delivery) {
+    let outcome =
+        execute_verified_windows_handoff(backend, pipe_handle, issued, tokens, acks, delivery);
+    let explicitly_rejected = delivery.backend_explicitly_rejected();
+    match outcome {
         WindowsHandoffOutcome::Completed(_) => true,
         WindowsHandoffOutcome::FallbackToReconnect(fallback) => {
             let leak = match fallback.leaked_backend_handle {
@@ -256,18 +241,9 @@ fn run_platform_handoff(
                 "abandoned at {:?} stage: {}{leak}",
                 fallback.stage, fallback.detail
             ));
-            windows_fallback_requires_relinquish(fallback.stage)
+            windows_fallback_requires_relinquish(fallback.stage, explicitly_rejected)
         }
     }
-}
-
-#[cfg(windows)]
-fn windows_fallback_requires_relinquish(stage: super::handoff::WindowsHandoffStage) -> bool {
-    use super::handoff::WindowsHandoffStage;
-    matches!(
-        stage,
-        WindowsHandoffStage::AwaitAck | WindowsHandoffStage::Acknowledge
-    )
 }
 
 #[cfg(unix)]
@@ -340,7 +316,10 @@ fn run_platform_handoff(
         delivery: &delivery,
     };
 
-    match execute_unix_handoff_with_transport(tokens, acks, &request, transport, &mut ack_wait) {
+    let outcome =
+        execute_unix_handoff_with_transport(tokens, acks, &request, transport, &mut ack_wait);
+    let explicitly_rejected = delivery.borrow().backend_explicitly_rejected();
+    match outcome {
         UnixHandoffOutcome::Completed(_) => true,
         UnixHandoffOutcome::FallbackToReconnect(fallback) => {
             let reached = if fallback.fd_reached_backend {
@@ -352,18 +331,37 @@ fn run_platform_handoff(
                 "abandoned at {:?} stage: {}{reached}",
                 fallback.stage, fallback.detail
             ));
-            unix_fallback_requires_relinquish(fallback.stage)
+            unix_fallback_requires_relinquish(fallback.stage, explicitly_rejected)
         }
     }
 }
 
+#[cfg(windows)]
+fn windows_fallback_requires_relinquish(
+    stage: super::handoff::WindowsHandoffStage,
+    explicitly_rejected: bool,
+) -> bool {
+    use super::handoff::WindowsHandoffStage;
+
+    match stage {
+        WindowsHandoffStage::Duplicate | WindowsHandoffStage::Deliver => false,
+        WindowsHandoffStage::AwaitAck => !explicitly_rejected,
+        WindowsHandoffStage::Acknowledge => true,
+    }
+}
+
 #[cfg(unix)]
-fn unix_fallback_requires_relinquish(stage: super::handoff::UnixHandoffStage) -> bool {
+fn unix_fallback_requires_relinquish(
+    stage: super::handoff::UnixHandoffStage,
+    explicitly_rejected: bool,
+) -> bool {
     use super::handoff::UnixHandoffStage;
-    matches!(
-        stage,
-        UnixHandoffStage::AwaitAck | UnixHandoffStage::Acknowledge
-    )
+
+    match stage {
+        UnixHandoffStage::Send => false,
+        UnixHandoffStage::AwaitAck => !explicitly_rejected,
+        UnixHandoffStage::Acknowledge => true,
+    }
 }
 
 /// Log one silent serve-side handoff fallback.
@@ -399,36 +397,53 @@ mod tests {
         >(())));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn unix_post_delivery_ack_ambiguity_forbids_proxy_fallback() {
+    #[cfg(unix)]
+    fn explicit_rejection_is_safe_but_an_unobserved_ack_is_ambiguous() {
         use super::super::handoff::UnixHandoffStage;
 
-        assert!(!unix_fallback_requires_relinquish(UnixHandoffStage::Send));
-        assert!(unix_fallback_requires_relinquish(
-            UnixHandoffStage::AwaitAck
+        assert!(!unix_fallback_requires_relinquish(
+            UnixHandoffStage::Send,
+            false
+        ));
+        assert!(!unix_fallback_requires_relinquish(
+            UnixHandoffStage::AwaitAck,
+            true
         ));
         assert!(unix_fallback_requires_relinquish(
-            UnixHandoffStage::Acknowledge
+            UnixHandoffStage::AwaitAck,
+            false
+        ));
+        assert!(unix_fallback_requires_relinquish(
+            UnixHandoffStage::Acknowledge,
+            false
         ));
     }
 
-    #[cfg(windows)]
     #[test]
-    fn windows_post_delivery_ack_ambiguity_forbids_proxy_fallback() {
+    #[cfg(windows)]
+    fn explicit_rejection_is_safe_but_an_unobserved_ack_is_ambiguous() {
         use super::super::handoff::WindowsHandoffStage;
 
         assert!(!windows_fallback_requires_relinquish(
-            WindowsHandoffStage::Duplicate
+            WindowsHandoffStage::Duplicate,
+            false
         ));
         assert!(!windows_fallback_requires_relinquish(
-            WindowsHandoffStage::Deliver
+            WindowsHandoffStage::Deliver,
+            false
+        ));
+        assert!(!windows_fallback_requires_relinquish(
+            WindowsHandoffStage::AwaitAck,
+            true
         ));
         assert!(windows_fallback_requires_relinquish(
-            WindowsHandoffStage::AwaitAck
+            WindowsHandoffStage::AwaitAck,
+            false
         ));
         assert!(windows_fallback_requires_relinquish(
-            WindowsHandoffStage::Acknowledge
+            WindowsHandoffStage::Acknowledge,
+            false
         ));
     }
 }

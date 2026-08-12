@@ -162,6 +162,7 @@ pub struct WireHandoffDelivery<S> {
     configure_ack_bounded_io: Option<fn(&S, bool) -> std::io::Result<()>>,
     ack_setup_error: Option<String>,
     io_deadline: Instant,
+    backend_explicitly_rejected: bool,
 }
 
 impl<S> WireHandoffDelivery<S> {
@@ -182,6 +183,7 @@ impl<S> WireHandoffDelivery<S> {
             configure_ack_bounded_io: None,
             ack_setup_error: None,
             io_deadline,
+            backend_explicitly_rejected: false,
         }
     }
 
@@ -201,6 +203,7 @@ impl<S> WireHandoffDelivery<S> {
             configure_ack_bounded_io: None,
             ack_setup_error: None,
             io_deadline: Instant::now() + std::time::Duration::from_secs(30),
+            backend_explicitly_rejected: false,
         }
     }
 
@@ -213,6 +216,13 @@ impl<S> WireHandoffDelivery<S> {
     /// Unix `SCM_RIGHTS` send that precedes the offer frame).
     pub fn stream(&self) -> &S {
         &self.stream
+    }
+
+    /// True only after a valid, correlated backend ACK explicitly rejected
+    /// this offer. This is a definitive non-adoption verdict; other ACK
+    /// failures remain ownership-ambiguous after descriptor delivery.
+    pub fn backend_explicitly_rejected(&self) -> bool {
+        self.backend_explicitly_rejected
     }
 
     /// Unwrap the underlying connection (e.g. to keep using it after a
@@ -246,6 +256,7 @@ impl WireHandoffDelivery<interprocess::local_socket::Stream> {
             }),
             ack_setup_error,
             io_deadline,
+            backend_explicitly_rejected: false,
         }
     }
 }
@@ -351,6 +362,7 @@ impl<S: Read + Write> HandoffDelivery for WireHandoffDelivery<S> {
             ));
         }
         if !ack.accepted {
+            self.backend_explicitly_rejected = true;
             return Err(ack_not_observed(format!(
                 "backend refused the handoff: {}",
                 if ack.error_detail.is_empty() {

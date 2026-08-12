@@ -27,7 +27,7 @@ use super::control_socket::{
     ControlSocketError,
 };
 use super::fd_pressure::FdPressureGuard;
-use super::handoff_serve::{complete_negotiated_handoff, ServeHandoffContext};
+use super::handoff_serve::{try_complete_negotiated_handoff, ServeHandoffContext};
 use super::hello_handler::{HelloHandler, HelloHandlerError};
 use super::hello_router::HelloRouter;
 use super::instance::{BrokerInstanceError, BrokerInstanceKey};
@@ -221,7 +221,7 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
                 instance: &instance,
                 registry: &registry,
             };
-            complete_negotiated_handoff(&ctx, stream, reply);
+            let _must_relinquish = try_complete_negotiated_handoff(&ctx, stream, reply);
         },
         &fd_guard,
     )?;
