@@ -164,6 +164,16 @@ pub fn try_complete_negotiated_handoff(
     handoff_transferred_after_ready_event(write_frame(client_stream, &frame.encode_to_vec()))
 }
 
+/// Complete a negotiated handoff for callers that do not need proxy-fallback
+/// ownership information.
+pub fn complete_negotiated_handoff(
+    ctx: &ServeHandoffContext<'_>,
+    client_stream: &mut interprocess::local_socket::Stream,
+    reply: &HelloReply,
+) {
+    let _ = try_complete_negotiated_handoff(ctx, client_stream, reply);
+}
+
 /// Record the post-transfer notification result without changing ownership.
 /// After backend ACK, returning `false` would authorize an unsafe proxy of a
 /// connection the backend already owns.
