@@ -92,6 +92,35 @@ pub fn try_complete_negotiated_handoff(
     client_stream: &mut interprocess::local_socket::Stream,
     reply: &HelloReply,
 ) -> bool {
+    if !try_transfer_negotiated_handoff(ctx, client_stream, reply) {
+        return false;
+    }
+    let Some(negotiated) = negotiated_with_handoff(reply) else {
+        return false;
+    };
+    let ack = HandoffAck {
+        token: negotiated.handle_passed_token.clone(),
+        accepted: true,
+        error_detail: String::new(),
+        correlation_id: negotiated.connection_id,
+    };
+    let frame = handoff_ready_frame(&ack);
+    handoff_transferred_after_ready_event(write_frame(client_stream, &frame.encode_to_vec()))
+}
+
+/// Transfer the accepted client connection to the negotiated backend without
+/// writing the handoff-ready event.
+///
+/// Async broker front doors must use this entry point and write the ready event
+/// through their original async stream. A Tokio Windows named-pipe handle is
+/// opened for overlapped I/O; wrapping a duplicate as a synchronous stream and
+/// writing through it fails with `ERROR_INVALID_PARAMETER`.
+#[must_use = "true means the backend may own the connection and the caller must relinquish it"]
+pub fn try_transfer_negotiated_handoff(
+    ctx: &ServeHandoffContext<'_>,
+    client_stream: &mut interprocess::local_socket::Stream,
+    reply: &HelloReply,
+) -> bool {
     let Some(negotiated) = negotiated_with_handoff(reply) else {
         return false;
     };
@@ -151,17 +180,7 @@ pub fn try_complete_negotiated_handoff(
         return false;
     }
 
-    // Relay the handoff-ready EVENT to the waiting client. The token was
-    // consumed exactly once above; a failed relay write means the client
-    // is gone and there is nothing further to clean up on the broker side.
-    let ack = HandoffAck {
-        token: token_bytes.to_vec(),
-        accepted: true,
-        error_detail: String::new(),
-        correlation_id: negotiated.connection_id,
-    };
-    let frame = handoff_ready_frame(&ack);
-    handoff_transferred_after_ready_event(write_frame(client_stream, &frame.encode_to_vec()))
+    true
 }
 
 /// Complete a negotiated handoff for callers that do not need proxy-fallback
@@ -394,6 +413,11 @@ mod tests {
             &'stream mut interprocess::local_socket::Stream,
             &'reply HelloReply,
         ) -> bool = try_complete_negotiated_handoff;
+        let _transfer_entry_point: for<'context, 'stream, 'reply> fn(
+            &'context ServeHandoffContext<'context>,
+            &'stream mut interprocess::local_socket::Stream,
+            &'reply HelloReply,
+        ) -> bool = try_transfer_negotiated_handoff;
     }
 
     #[test]
