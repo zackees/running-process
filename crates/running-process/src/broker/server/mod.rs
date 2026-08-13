@@ -88,7 +88,7 @@ pub use fd_pressure::{
     FdPressureGuard, DEFAULT_FD_PRESSURE_RECOVERY_ACCEPTS, DEFAULT_FD_PRESSURE_RETRY_AFTER_MS,
 };
 pub use handoff::{
-    AcknowledgedHandoff, ExpiredHandoff, HandoffAckError, HandoffAckRegistry,
+    handoff_ready_frame, AcknowledgedHandoff, ExpiredHandoff, HandoffAckError, HandoffAckRegistry,
     HandoffAttemptDecision, HandoffAttemptFailure, HandoffAttemptInputs, HandoffFallbackDecision,
     HandoffFallbackPolicy, HandoffFallbackReason, HandoffFallbackState, HandoffToken,
     HandoffTokenError, HandoffTokenStore, HandoffTokenStoreConfig, PendingHandoffBackend,
@@ -99,7 +99,8 @@ pub use handoff::{
     DEFAULT_PENDING_HANDOFF_TTL, HANDOFF_TOKEN_BYTES,
 };
 pub use handoff_serve::{
-    complete_negotiated_handoff, try_complete_negotiated_handoff, ServeHandoffContext,
+    complete_negotiated_handoff, try_complete_negotiated_handoff, try_transfer_negotiated_handoff,
+    ServeHandoffContext,
 };
 pub use hello_handler::{
     HelloHandler, HelloHandlerError, HelloRequest, PeerIdentity, RegisteredBackend,
