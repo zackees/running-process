@@ -24,4 +24,4 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
-winapi = { version = "0.3", features = ["fileapi", "handleapi", "jobapi2", "minwindef", "namedpipeapi", "processenv", "processthreadsapi", "synchapi", "winbase", "winnt"] }
+winapi = { version = "0.3", features = ["fileapi", "handleapi", "jobapi2", "minwindef", "namedpipeapi", "processenv", "processthreadsapi", "synchapi", "winbase", "windef", "winnt", "winuser"] }

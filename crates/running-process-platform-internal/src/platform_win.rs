@@ -1,5 +1,23 @@
 //! Windows implementation root for the process capability.
 
+#[path = "platform_win/console.rs"]
+mod console;
+pub use console::monitor_console_windows;
+
+pub fn shell_command(command: &str) -> std::process::Command {
+    let mut shell = std::process::Command::new("cmd.exe");
+    shell.arg("/D").arg("/S").arg("/C").arg(command);
+    shell
+}
+
+pub fn canonical_environment_pairs(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut seen = std::collections::BTreeMap::new();
+    for (key, value) in pairs {
+        seen.insert(key.to_ascii_uppercase(), (key, value));
+    }
+    seen.into_values().collect()
+}
+
 use std::ffi::OsStr;
 use std::io;
 use std::sync::OnceLock;
