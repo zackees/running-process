@@ -325,7 +325,8 @@ pub struct NativeProcess {
     shared: Arc<SharedState>,
     #[cfg(test)]
     stdin_write_active: AtomicBool,
-    capture_cancellation: Arc<running_process_platform_internal::platform::process::CaptureCancellation>,
+    capture_cancellation:
+        Arc<running_process_platform_internal::platform::process::CaptureCancellation>,
 }
 
 impl NativeProcess {
@@ -475,32 +476,34 @@ impl NativeProcess {
         if self.config.capture {
             let stdout = child.stdout.take().expect("stdout pipe missing");
             let stderr = child.stderr.take().expect("stderr pipe missing");
-            let stdout = match running_process_platform_internal::platform::process::prepare_capture_reader(
-                stdout,
-                &self.capture_cancellation,
-                running_process_platform_internal::platform::process::CaptureStream::Stdout,
-            ) {
-                Ok(stdout) => stdout,
-                Err(error) => {
-                    cleanup_child_after_start_error(child);
-                    return Err(ProcessError::Spawn(error));
-                }
-            };
-            let stderr = match running_process_platform_internal::platform::process::prepare_capture_reader(
-                stderr,
-                &self.capture_cancellation,
-                running_process_platform_internal::platform::process::CaptureStream::Stderr,
-            ) {
-                Ok(stderr) => stderr,
-                Err(error) => {
-                    running_process_platform_internal::platform::process::capture_reader_done(
+            let stdout =
+                match running_process_platform_internal::platform::process::prepare_capture_reader(
+                    stdout,
+                    &self.capture_cancellation,
+                    running_process_platform_internal::platform::process::CaptureStream::Stdout,
+                ) {
+                    Ok(stdout) => stdout,
+                    Err(error) => {
+                        cleanup_child_after_start_error(child);
+                        return Err(ProcessError::Spawn(error));
+                    }
+                };
+            let stderr =
+                match running_process_platform_internal::platform::process::prepare_capture_reader(
+                    stderr,
+                    &self.capture_cancellation,
+                    running_process_platform_internal::platform::process::CaptureStream::Stderr,
+                ) {
+                    Ok(stderr) => stderr,
+                    Err(error) => {
+                        running_process_platform_internal::platform::process::capture_reader_done(
                         &self.capture_cancellation,
                         running_process_platform_internal::platform::process::CaptureStream::Stdout,
                     );
-                    cleanup_child_after_start_error(child);
-                    return Err(ProcessError::Spawn(error));
-                }
-            };
+                        cleanup_child_after_start_error(child);
+                        return Err(ProcessError::Spawn(error));
+                    }
+                };
             self.spawn_reader(
                 stdout,
                 StreamKind::Stdout,
@@ -1315,10 +1318,17 @@ impl NativeProcess {
         let cancellation = Arc::clone(&self.capture_cancellation);
         Box::new(move || {
             let stream = match stream {
-                StreamKind::Stdout => running_process_platform_internal::platform::process::CaptureStream::Stdout,
-                StreamKind::Stderr => running_process_platform_internal::platform::process::CaptureStream::Stderr,
+                StreamKind::Stdout => {
+                    running_process_platform_internal::platform::process::CaptureStream::Stdout
+                }
+                StreamKind::Stderr => {
+                    running_process_platform_internal::platform::process::CaptureStream::Stderr
+                }
             };
-            running_process_platform_internal::platform::process::capture_reader_done(&cancellation, stream);
+            running_process_platform_internal::platform::process::capture_reader_done(
+                &cancellation,
+                stream,
+            );
         })
     }
 
