@@ -21,12 +21,6 @@ GITHUB_ACTIONS_ENV = "GITHUB_ACTIONS"
 SKIP_LINUX_DOCKER_ENV = "RUNNING_PROCESS_SKIP_LINUX_DOCKER"
 DEFAULT_TEST_TIMEOUT_SECONDS = "40"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
-DEFAULT_RUST_TEST_TIMEOUT_SECONDS = 60.0
-# Windows runs cargo nextest with --test-threads=1 for extra isolation around
-# filesystem and named-pipe races. Serialized ConPTY teardown — Job Object close + child wait
-# + reader-thread join — can stay quiet for 10s+ at a time, so the
-# supervisor's idle window needs more headroom than the parallel POSIX path.
-WINDOWS_RUST_TEST_TIMEOUT_SECONDS = 180.0
 # The containerized run includes a silent maturin release build of the
 # project wheel ("Building running-process @ file:///work"), which can stay
 # quiet for ~3 minutes — give the idle watchdog the same headroom as the
@@ -553,10 +547,12 @@ def main(argv: list[str] | None = None) -> int:
             # LLVM 21.1.8 inputs have crashed llvm-profdata with SIGILL;
             # pruning is retained as defense in depth while graceful daemon
             # profile flushing soaks on main.
-            cargo_cmd = supervised_command(
-                python,
-                *cargo_command("llvm-cov", "nextest", "--workspace", "--no-report"),
-                timeout=DEFAULT_RUST_TEST_TIMEOUT_SECONDS,
+            # nextest owns Rust per-test wall-clock limits through
+            # `.config/nextest.toml`. An outer idle watchdog cannot tell a
+            # hung test from a quiet compile and can kill the entire suite
+            # before nextest gets a chance to name and terminate one test.
+            cargo_cmd = cargo_command(
+                "llvm-cov", "nextest", "--workspace", "--no-report"
             )
             if run(cargo_cmd) != 0:
                 return 1
@@ -639,8 +635,10 @@ def main(argv: list[str] | None = None) -> int:
             if run(build_args) != 0:
                 return 1
 
-            # Step 2: run the pre-built tests under the idle-timeout supervisor.
-            # nextest's per-test wall clock comes from .config/nextest.toml.
+            # Step 2: run the pre-built tests. nextest's per-test wall clock
+            # comes from `.config/nextest.toml`; do not wrap it in the CLI's
+            # output-idle watchdog. Quiet test compilation is not a hang, and
+            # nextest already isolates, names, and terminates an overdue test.
             cargo_test_args = cargo_command("nextest", "run", "--workspace")
             if sys.platform == "win32":
                 # Belt-and-braces: even with process-per-test isolation,
@@ -651,17 +649,7 @@ def main(argv: list[str] | None = None) -> int:
                 # CI-only: surface println!/eprintln! from Rust tests so
                 # hangs and panics leave a usable trail in the GH log.
                 cargo_test_args.append("--no-capture")
-            rust_test_timeout = (
-                WINDOWS_RUST_TEST_TIMEOUT_SECONDS
-                if sys.platform == "win32"
-                else DEFAULT_RUST_TEST_TIMEOUT_SECONDS
-            )
-            cargo_cmd = supervised_command(
-                python,
-                *cargo_test_args,
-                timeout=rust_test_timeout,
-            )
-            if run(cargo_cmd) != 0:
+            if run(cargo_test_args) != 0:
                 return 1
 
             # #433 R4: the RUNNING_PROCESS_FAKE_BACKEND seam is compiled out of
@@ -682,12 +670,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if sys.platform == "win32":
                 seam_test_args += ["--test-threads", "1"]
-            seam_cmd = supervised_command(
-                python,
-                *seam_test_args,
-                timeout=rust_test_timeout,
-            )
-            if run(seam_cmd) != 0:
+            if run(seam_test_args) != 0:
                 return 1
 
             # soldr#2365 Phase 3: the daemon-side compile-session handler lives
@@ -709,12 +692,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if sys.platform == "win32":
                 compile_session_args += ["--test-threads", "1"]
-            compile_session_cmd = supervised_command(
-                python,
-                *compile_session_args,
-                timeout=rust_test_timeout,
-            )
-            if run(compile_session_cmd) != 0:
+            if run(compile_session_args) != 0:
                 return 1
 
         # -- Python non-live tests --
