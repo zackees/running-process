@@ -55,8 +55,8 @@ def _expected_cargo_test_cmd() -> list[str]:
     return cmd
 
 
-def _expected_compile_session_cmd() -> list[str]:
-    """Build the expected scoped daemon compile-session pass (soldr#2365)."""
+def _expected_daemon_spawn_cmd() -> list[str]:
+    """Build the scoped daemon SESSION and environment-policy E2E pass."""
     cmd = [
         "cargo",
         "nextest",
@@ -66,7 +66,7 @@ def _expected_compile_session_cmd() -> list[str]:
         "--features",
         "daemon",
         "-E",
-        "test(compile_session)",
+        "test(compile_session) | binary(daemon_environment_policy_test)",
     ]
     if ci_test.sys.platform == "win32":
         cmd += ["--test-threads", "1"]
@@ -198,7 +198,7 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(),
         _expected_seam_test_cmd(),
-        _expected_compile_session_cmd(),
+        _expected_daemon_spawn_cmd(),
         [
             python,
             "-m",
@@ -282,7 +282,7 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(),
         _expected_seam_test_cmd(),
-        _expected_compile_session_cmd(),
+        _expected_daemon_spawn_cmd(),
         [
             python,
             "-m",
@@ -330,7 +330,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(),
         _expected_seam_test_cmd(),
-        _expected_compile_session_cmd(),
+        _expected_daemon_spawn_cmd(),
         [
             python,
             "-m",
@@ -514,7 +514,7 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(
         _expected_cargo_build_tests_cmd(),
         _expected_cargo_test_cmd(),
         _expected_seam_test_cmd(),
-        _expected_compile_session_cmd(),
+        _expected_daemon_spawn_cmd(),
         [
             python,
             "-m",

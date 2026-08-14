@@ -673,14 +673,11 @@ def main(argv: list[str] | None = None) -> int:
             if run(seam_test_args) != 0:
                 return 1
 
-            # soldr#2365 Phase 3: the daemon-side compile-session handler lives
-            # behind the `daemon` feature, which the default workspace nextest
-            # run does not enable. Exercise its byte-fidelity tests in a scoped
-            # pass for every local/default CI invocation. The Linux x86-musl
-            # lane additionally runs the complete daemon-feature unit and
-            # integration suite; macOS and Windows will follow in their staged
-            # platform branches.
-            compile_session_args = cargo_command(
+            # Daemon-owned child spawning lives behind the `daemon` feature,
+            # which the default workspace nextest run does not enable. Exercise
+            # the SESSION byte-fidelity tests and the detached/pipe/PTY
+            # environment-policy E2E target in every primary platform lane.
+            daemon_spawn_args = cargo_command(
                 "nextest",
                 "run",
                 "-p",
@@ -688,11 +685,11 @@ def main(argv: list[str] | None = None) -> int:
                 "--features",
                 "daemon",
                 "-E",
-                "test(compile_session)",
+                "test(compile_session) | binary(daemon_environment_policy_test)",
             )
             if sys.platform == "win32":
-                compile_session_args += ["--test-threads", "1"]
-            if run(compile_session_args) != 0:
+                daemon_spawn_args += ["--test-threads", "1"]
+            if run(daemon_spawn_args) != 0:
                 return 1
 
         # -- Python non-live tests --
