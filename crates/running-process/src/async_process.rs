@@ -364,17 +364,7 @@ fn run_output(output: Output) -> RunOutput {
     RunOutput {
         stdout: output.stdout,
         stderr: output.stderr,
-        exit_code: output.status.code().unwrap_or({
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                -output.status.signal().unwrap_or(1)
-            }
-            #[cfg(not(unix))]
-            {
-                -1
-            }
-        }),
+        exit_code: running_process_platform_internal::platform::process::exit_code(output.status),
     }
 }
 

@@ -706,8 +706,6 @@ crates/running-process-win-gnu-bridge/src/lib.rs	cfg_macro	target_os	0
 crates/running-process-win-gnu-bridge/src/lib.rs	cfg_macro	target_os	1
 crates/running-process-win-gnu-bridge/src/lib.rs	cfg_macro	target_os	2
 crates/running-process-win-gnu-bridge/src/lib.rs	cfg_macro	target_os	3
-crates/running-process/src/async_process.rs	attr_cfg	unix	0
-crates/running-process/src/async_process.rs	attr_cfg	unix	1
 crates/running-process/src/async_process.rs	attr_cfg	windows	0
 crates/running-process/src/async_process.rs	attr_cfg	windows	1
 crates/running-process/src/async_process.rs	attr_cfg	windows	2
@@ -732,8 +730,6 @@ crates/running-process/src/async_process.rs	cfg_macro	windows	2
 crates/running-process/src/async_process.rs	cfg_macro	windows	3
 crates/running-process/src/async_process.rs	cfg_macro	windows	4
 crates/running-process/src/async_process.rs	cfg_macro	windows	5
-crates/running-process/src/async_process.rs	native_import	std::os::unix	0
-crates/running-process/src/async_process.rs	native_import	std::os::unix	1
 crates/running-process/src/bin/daemon.rs	attr_cfg	target_os	0
 crates/running-process/src/bin/daemon.rs	attr_cfg	target_os	1
 crates/running-process/src/bin/daemon.rs	native_import	libc	0
