@@ -32,6 +32,17 @@ pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
 pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
+
+pub fn set_process_name(_name: &str) {}
+
+pub fn configure_trampoline_command(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+}
+
+pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
+}
 pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
     use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
     match (scope, category) {

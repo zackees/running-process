@@ -22,32 +22,13 @@ fn sidecar_path(exe: &Path) -> PathBuf {
     exe.with_file_name(format!("{}.daemon.json", stem.to_string_lossy()))
 }
 
-#[allow(clippy::needless_return)]
 fn set_process_name(exe: &Path) {
     let stem = exe
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    if stem.is_empty() {
-        return;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // prctl(PR_SET_NAME, ...) — name truncated to 15 chars by the kernel
-        let truncated: String = stem.chars().take(15).collect();
-        let c_name = std::ffi::CString::new(truncated).unwrap_or_default();
-        unsafe {
-            libc::prctl(libc::PR_SET_NAME, c_name.as_ptr() as libc::c_ulong, 0, 0, 0);
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let c_name = std::ffi::CString::new(stem).unwrap_or_default();
-        unsafe {
-            libc::pthread_setname_np(c_name.as_ptr());
-        }
+    if !stem.is_empty() {
+        running_process_platform_internal::platform::process::set_process_name(&stem);
     }
 }
 
@@ -107,31 +88,13 @@ fn run() -> i32 {
 
     // 8. Inherit stdin/stdout/stderr (default behavior).
 
-    // 8b. On Windows, prevent the child from creating a visible console window.
-    //     The trampoline itself was spawned with DETACHED_PROCESS (no console).
-    //     Without explicit flags, Windows auto-creates a visible console for
-    //     console applications spawned by a consoleless parent.
-    //     CREATE_NO_WINDOW (0x0800_0000) gives the child a hidden console.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    // The platform owns console/window mechanics; the trampoline only owns
+    // its sidecar and launch policy.
+    running_process_platform_internal::platform::process::configure_trampoline_command(&mut cmd);
 
     // 9. Spawn, wait, and exit with child's status code.
     match cmd.status() {
-        Ok(status) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                // If killed by signal, map to 128 + signal (Unix convention).
-                if let Some(sig) = status.signal() {
-                    return 128 + sig;
-                }
-            }
-            status.code().unwrap_or(1)
-        }
+        Ok(status) => running_process_platform_internal::platform::process::trampoline_exit_code(status),
         Err(e) => {
             eprintln!("daemon-trampoline: failed to spawn '{}': {e}", cfg.command);
             1

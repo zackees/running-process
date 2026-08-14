@@ -25,6 +25,18 @@ pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     status.code().unwrap_or_else(|| -status.signal().unwrap_or(1))
 }
+
+pub fn set_process_name(name: &str) {
+    let c_name = std::ffi::CString::new(name).unwrap_or_default();
+    unsafe { libc::pthread_setname_np(c_name.as_ptr()); }
+}
+
+pub fn configure_trampoline_command(_command: &mut std::process::Command) {}
+
+pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal().map_or_else(|| status.code().unwrap_or(1), |signal| 128 + signal)
+}
 pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
     use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
     match (scope, category) {
