@@ -8,14 +8,12 @@ pub fn read_process_file_handles(pid: u32) -> std::io::Result<Vec<String>> {
 mod tests {
     use super::*;
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
     fn read_handles_for_pid_zero_returns_invalid_input() {
         let err = read_process_file_handles(0).expect_err("pid 0 should be rejected");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
     fn self_snapshot_includes_a_temp_file_we_just_opened() {
         // Open a temp file, snapshot our own fds, assert the temp

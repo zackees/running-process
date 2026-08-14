@@ -78,30 +78,15 @@ fn syscall_categories_advertise_per_os_backend_name() {
     let network = caps.category(EventCategory::Network);
     let process = caps.category(EventCategory::Process);
 
-    #[cfg(target_os = "linux")]
-    {
-        assert_eq!(file.backend, "seccomp-user-notify");
-        assert_eq!(network.backend, "ebpf");
-        assert_eq!(process.backend, "seccomp-user-notify");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        assert_eq!(file.backend, "etw");
-        assert_eq!(network.backend, "etw");
-        assert_eq!(process.backend, "etw");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        assert_eq!(file.backend, "kqueue");
-        assert_eq!(network.backend, "endpoint-security");
-        assert_eq!(process.backend, "endpoint-security");
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        assert_eq!(file.backend, "none");
-        assert_eq!(network.backend, "none");
-        assert_eq!(process.backend, "none");
-    }
+    let expected = match std::env::consts::OS {
+        "linux" => ("seccomp-user-notify", "ebpf", "seccomp-user-notify"),
+        "windows" => ("etw", "etw", "etw"),
+        "macos" => ("kqueue", "endpoint-security", "endpoint-security"),
+        _ => ("none", "none", "none"),
+    };
+    assert_eq!(file.backend, expected.0);
+    assert_eq!(network.backend, expected.1);
+    assert_eq!(process.backend, expected.2);
 
     // The reason field no longer hardcodes the multi-backend "(seccomp/eBPF/ETW)"
     // literal — it points at the one backend planned for THIS OS.
@@ -342,21 +327,14 @@ fn launched_process_tree_scope_advertises_no_admin_backends() {
     let process = caps.category(EventCategory::Process);
     let network = caps.category(EventCategory::Network);
 
-    #[cfg(target_os = "linux")]
-    {
-        assert_eq!(file.backend, "proc-fd-snapshot");
-        assert_eq!(process.backend, "subreaper-proc-poll");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        assert_eq!(file.backend, "nt-handle-snapshot");
-        assert_eq!(process.backend, "job-object-iocp");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        assert_eq!(file.backend, "proc-pidinfo");
-        assert_eq!(process.backend, "sysctl-proc-poll");
-    }
+    let expected = match std::env::consts::OS {
+        "linux" => ("proc-fd-snapshot", "subreaper-proc-poll"),
+        "windows" => ("nt-handle-snapshot", "job-object-iocp"),
+        "macos" => ("proc-pidinfo", "sysctl-proc-poll"),
+        _ => ("none", "none"),
+    };
+    assert_eq!(file.backend, expected.0);
+    assert_eq!(process.backend, expected.1);
 
     // Network is uniformly deferred for this scope — no admin-free
     // per-child primitive exists across all three platforms.
@@ -488,9 +466,11 @@ fn observer_event_can_carry_file_hook_variants() {
     assert_eq!(ev.kind.as_str(), "file-open");
 }
 
-#[cfg(target_os = "windows")]
 #[test]
 fn windows_process_backend_supported_on_launched_process_tree_scope() {
+    if std::env::consts::OS != "windows" {
+        return;
+    }
     // Slice 2 flips Windows Process from Unavailable → Supported under
     // the LaunchedProcessTree scope. Lock the contract so a future
     // refactor cannot silently downgrade it.
@@ -515,9 +495,11 @@ fn windows_process_backend_supported_on_launched_process_tree_scope() {
     assert_eq!(sw_process.backend, "etw");
 }
 
-#[cfg(target_os = "windows")]
 #[test]
 fn windows_iocp_pump_emits_descendant_lifecycle_for_subprocess_chain() {
+    if std::env::consts::OS != "windows" {
+        return;
+    }
     // Direct child: cmd /C — that cmd then runs three nested `cmd /C exit 0`
     // subprocesses sequentially via &&. The outer cmd is direct_pid
     // (suppressed in the pump), each of the three inner cmds is a
@@ -591,9 +573,11 @@ fn windows_iocp_pump_emits_descendant_lifecycle_for_subprocess_chain() {
     }
 }
 
-#[cfg(target_os = "windows")]
 #[test]
 fn windows_iocp_pump_inert_when_only_lifecycle_requested() {
+    if std::env::consts::OS != "windows" {
+        return;
+    }
     // Off-by-default contract: if the consumer only asked for Lifecycle,
     // the descendant_sink is None and no Process events are emitted even
     // when the child spawns descendants. The pump thread should not
@@ -697,8 +681,10 @@ fn subscriber_recv_timeout_is_bounded_and_normal_events_still_arrive() {
 }
 
 #[test]
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn subscriber_stop_is_idempotent_and_signals_descendant_pump() {
+    if !matches!(std::env::consts::OS, "linux" | "macos") {
+        return;
+    }
     let (emitter, subscriber) =
         ObserverEmitter::new(ObserverConfig::with_categories([EventCategory::Process]));
     let (_, stop) = emitter.descendant_pump().expect("descendant pump token");
@@ -710,8 +696,10 @@ fn subscriber_stop_is_idempotent_and_signals_descendant_pump() {
 }
 
 #[test]
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn dropping_subscriber_signals_descendant_pump() {
+    if !matches!(std::env::consts::OS, "linux" | "macos") {
+        return;
+    }
     let (emitter, subscriber) =
         ObserverEmitter::new(ObserverConfig::with_categories([EventCategory::Process]));
     let (_, stop) = emitter.descendant_pump().expect("descendant pump token");
