@@ -98,11 +98,11 @@ expires_phase = 4
 [[exception]]
 id = "RP-RAW-STDIO-009"
 symbol = "std::process::Stdio"
-path = "crates/running-process/src/spawn_imp_unix.rs"
+path = "crates/running-process-platform-internal/src/sync_spawn_group.rs"
 max_occurrences = 10
 owner = "running-process"
-justification = "Legacy synchronous Unix spawn boundary; Phase 4 moves it to the internal crate."
-expires_phase = 4
+justification = "Selected Unix synchronous spawn boundary owns the native stdio conversion."
+expires_phase = 9
 
 [[exception]]
 id = "RP-RAW-STDIO-010"

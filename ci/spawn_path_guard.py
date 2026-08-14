@@ -186,11 +186,10 @@ ALLOWED_RUST_SPAWN = {
     # Two-mode spawn surface: `spawn` (contained, sanitized handles, caller stdio)
     # and `spawn_daemon` (detached, NUL stdio, sanitized handles). See #110, #113.
     Path("crates/running-process/src/spawn.rs"),
-    # Unix backing impl for `spawn`/`spawn_daemon`: drives bare
+    # Selected Unix platform boundary for `spawn`/`spawn_daemon`: drives bare
     # `Command::spawn()` after applying setpgid/setsid + fd hygiene
-    # via `pre_exec`. Windows impl uses CreateProcessW directly so it
-    # doesn't trigger this lint.
-    Path("crates/running-process/src/spawn_imp_unix.rs"),
+    # via `pre_exec`. Windows uses CreateProcessW directly.
+    Path("crates/running-process-platform-internal/src/sync_spawn_group.rs"),
     # Native PTY process calls the backend trait's `spawn` method. The
     # backend implementations are reviewed separately below; this is not a
     # raw std::process::Command spawn site.
@@ -318,10 +317,11 @@ ALLOWED_PORTABLE_PTY = {
 # `alertable_io_internal` (overlapped I/O + alertable `SleepEx`); pairing
 # that against a synchronous handle silently drops every write after the
 # first — exactly issue #115. The typed `OverlappedHandle::into_child_*`
-# wrappers in spawn_imp_windows.rs are the ONLY approved way to do this
+# wrappers in the selected Windows sync-spawn boundary are the ONLY approved
+# way to do this
 # conversion, and they bake in the FILE_FLAG_OVERLAPPED guarantee.
 ALLOWED_RUST_CHILD_PIPE_FROM = {
-    Path("crates/running-process/src/spawn_imp_windows.rs"),
+    Path("crates/running-process-platform-internal/src/platform_win/sync_spawn.rs"),
 }
 
 # `CreatePipe` is allowed only for the ConPTY passthrough host/child pipe
@@ -385,11 +385,12 @@ def check_rust_spawn_sites() -> list[str]:
     # synchronous-only anonymous pipes. Wrapping the parent end in a Rust
     # ChildStd* (whose read uses alertable_io_internal / overlapped I/O)
     # silently drops every write after the first. Use the typed
-    # `create_pipe_pair` helper in spawn_imp_windows.rs instead.
+    # selected Windows sync-spawn boundary's `create_pipe_pair` helper instead.
     # See issue #115.
     create_pipe_pattern = re.compile(r"\bCreatePipe\s*\(")
     # Bypass detector for the typed-pipe API: only the typed
-    # `OverlappedHandle::into_child_*` wrappers in spawn_imp_windows.rs
+    # selected Windows sync-spawn boundary's `OverlappedHandle::into_child_*`
+    # wrappers
     # should construct a `ChildStd*` from a raw handle.
     child_pipe_from_pattern = re.compile(r"\bChild(?:Stdin|Stdout|Stderr)::from\s*\(")
 
@@ -439,7 +440,8 @@ def check_rust_spawn_sites() -> list[str]:
 
             # CreatePipe is banned workspace-wide except the ConPTY passthrough
             # helper allowlisted above. `create_pipe_pair` in
-            # spawn_imp_windows.rs uses CreateNamedPipeW + CreateFileW instead
+            # selected Windows sync-spawn boundary uses CreateNamedPipeW +
+            # CreateFileW instead
             # and is the only sanctioned construction for Rust ChildStd* pipes.
             create_pipe_hits = _find_matches(path, create_pipe_pattern)
             if create_pipe_hits and rel not in ALLOWED_RUST_CREATE_PIPE:
@@ -450,7 +452,7 @@ def check_rust_spawn_sites() -> list[str]:
                         (
                             "CreatePipe is banned: it returns sync-only handles "
                             "incompatible with Rust's ChildStd* reader; use "
-                            "create_pipe_pair (spawn_imp_windows.rs). See #115."
+                            "create_pipe_pair in the Windows sync-spawn boundary. See #115."
                         ),
                     )
                 )
@@ -464,7 +466,7 @@ def check_rust_spawn_sites() -> list[str]:
                         (
                             "ChildStd* construction from a raw handle bypasses the "
                             "typed OverlappedHandle API; route through "
-                            "OverlappedHandle::into_child_* in spawn_imp_windows.rs. "
+                            "OverlappedHandle::into_child_* in the Windows sync-spawn boundary. "
                             "See #115."
                         ),
                     )

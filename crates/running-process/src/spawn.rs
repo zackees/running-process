@@ -28,7 +28,10 @@
 //! Issue: <https://github.com/zackees/running-process/issues/110>.
 
 use std::process::Command;
-use std::time::Duration;
+
+pub use running_process_platform_internal::platform::process::{
+    DaemonChild, DaemonStdio, DaemonStdioSource, SpawnStdio, SpawnedChild, StdioSource,
+};
 
 /// Selects the base environment used for a newly spawned process.
 ///
@@ -116,32 +119,6 @@ impl EnvironmentPolicy {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-/// Caller-supplied stdio bindings for [`spawn`].
-///
-/// Each of `stdin`, `stdout`, `stderr` is independently a [`StdioSource`].
-/// `drain_timeout` bounds the post-mortem wait the watcher thread applies
-/// before force-closing any wrapper-held pipe ends so the parent observes
-/// EOF after the child exits. `None` means the wrapper never auto-closes;
-/// the parent is responsible for closing the pipes when it's done reading.
-///
-/// `show_console` (Windows-only effect) controls whether the child gets a
-/// console window. Default is `false` — `CREATE_NO_WINDOW` is set, so the
-/// child has no console regardless of how the parent was launched. Set this
-/// to `true` only when you actually want the child to inherit / allocate a
-/// console (interactive subprocess that should be visible to the user).
-pub struct SpawnStdio<'a> {
-    /// Source connected to the child's standard input.
-    pub stdin: StdioSource<'a>,
-    /// Source connected to the child's standard output.
-    pub stdout: StdioSource<'a>,
-    /// Source connected to the child's standard error.
-    pub stderr: StdioSource<'a>,
-    /// Maximum time the watcher waits before closing wrapper-held pipe ends.
-    pub drain_timeout: Option<Duration>,
-    /// Whether Windows children may inherit or allocate a visible console.
-    pub show_console: bool,
-}
-
 /// Creation policy for [`spawn_tokio`].
 ///
 /// This compatibility entrypoint lets async daemons keep Tokio's pipe and
@@ -177,168 +154,6 @@ impl Default for TokioSpawnOptions {
             show_console: false,
             kill_when_owner_dies: false,
         }
-    }
-}
-
-impl Default for SpawnStdio<'_> {
-    fn default() -> Self {
-        Self {
-            stdin: StdioSource::Null,
-            stdout: StdioSource::Parent,
-            stderr: StdioSource::Parent,
-            drain_timeout: Some(Duration::from_secs(2)),
-            show_console: false,
-        }
-    }
-}
-
-/// Caller-supplied output bindings for a detached daemon.
-///
-/// Detached children may write only to the platform null device or to
-/// caller-owned file handles. Parent stdio and anonymous pipes are
-/// intentionally unavailable: either can retain the launching process's
-/// lifetime or fail after that process exits. The child always receives a
-/// fresh inheritable duplicate, and the caller retains its original handle.
-pub struct DaemonStdio<'a> {
-    /// Source connected to the daemon's standard output.
-    pub stdout: DaemonStdioSource<'a>,
-    /// Source connected to the daemon's standard error.
-    pub stderr: DaemonStdioSource<'a>,
-}
-
-impl Default for DaemonStdio<'_> {
-    fn default() -> Self {
-        Self {
-            stdout: DaemonStdioSource::Null,
-            stderr: DaemonStdioSource::Null,
-        }
-    }
-}
-
-/// Safe output source for a detached daemon.
-pub enum DaemonStdioSource<'a> {
-    /// Connect this slot to the platform null device (`NUL` / `/dev/null`).
-    Null,
-    /// Bind this slot to a caller-owned file. The wrapper duplicates the
-    /// underlying platform resource for the child, so the caller retains its
-    /// file and may close it after spawning.
-    File(&'a std::fs::File),
-}
-
-/// Per-slot source describing what the child should inherit for one of
-/// stdin / stdout / stderr.
-pub enum StdioSource<'a> {
-    /// Connect this slot to the platform null device (`NUL` / `/dev/null`).
-    Null,
-    /// Inherit the parent's corresponding standard handle. The kernel
-    /// receives a fresh inheritable duplicate; the parent's original slot
-    /// is untouched.
-    Parent,
-    /// Bind this slot to a caller-owned file. The wrapper duplicates the
-    /// underlying platform resource for the child; the caller retains its
-    /// file and is responsible for closing it.
-    File(&'a std::fs::File),
-    /// Create a fresh anonymous pipe. The child gets one end; the parent
-    /// gets the other via [`SpawnedChild`]'s `stdin` / `stdout` / `stderr`
-    /// fields.
-    Pipe,
-}
-
-/// Handle to a detached daemon spawned via [`spawn_daemon`].
-///
-/// The daemon child always has stdin connected to the platform null device.
-/// Stdout and stderr also default to null, but [`spawn_daemon_with_stdio`]
-/// can bind them to caller-owned files. A detached process can never inherit
-/// parent stdio or caller pipes through this API. Dropping `DaemonChild` does
-/// NOT terminate the daemon; it only closes the OS handle the wrapper held.
-/// Call [`DaemonChild::kill`] to terminate.
-pub struct DaemonChild {
-    pid: u32,
-    inner: Box<dyn DaemonChildControl>,
-}
-
-trait DaemonChildControl: Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe {
-    fn kill(&mut self) -> std::io::Result<()>;
-    fn wait(&mut self) -> std::io::Result<i32>;
-    fn try_wait(&mut self) -> std::io::Result<Option<i32>>;
-}
-
-impl DaemonChild {
-    /// Process ID.
-    pub fn id(&self) -> u32 {
-        self.pid
-    }
-
-    /// Forcibly terminate the child. Best-effort.
-    pub fn kill(&mut self) -> std::io::Result<()> {
-        self.inner.kill()
-    }
-
-    /// Block until the child exits and return its exit code.
-    pub fn wait(&mut self) -> std::io::Result<i32> {
-        self.inner.wait()
-    }
-
-    /// Non-blocking variant of [`Self::wait`].
-    pub fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
-        self.inner.try_wait()
-    }
-}
-
-/// Handle to a contained child spawned via [`spawn`].
-///
-/// On Drop, `SpawnedChild` synchronously kills the child:
-///   * Windows: closes the Job Object handle; `KILL_ON_JOB_CLOSE` causes the
-///     kernel to terminate every process in the job (the child and its
-///     descendants).
-///   * Unix: `killpg(pgid, SIGKILL)` and `waitpid` to reap.
-///
-/// The optional `stdin` / `stdout` / `stderr` fields are present when the
-/// corresponding [`StdioSource`] was [`StdioSource::Pipe`]; otherwise they
-/// are `None`.
-pub struct SpawnedChild {
-    /// Parent-side pipe for writing to child stdin when requested.
-    pub stdin: Option<std::process::ChildStdin>,
-    /// Parent-side pipe for reading child stdout when requested.
-    pub stdout: Option<std::process::ChildStdout>,
-    /// Parent-side pipe for reading child stderr when requested.
-    pub stderr: Option<std::process::ChildStderr>,
-    pid: u32,
-    inner: Box<dyn SpawnedChildControl>,
-}
-
-trait SpawnedChildControl: Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe {
-    fn kill(&mut self) -> std::io::Result<()>;
-    fn wait(&mut self) -> std::io::Result<i32>;
-    fn try_wait(&mut self) -> std::io::Result<Option<i32>>;
-    fn shutdown(&mut self);
-}
-
-impl SpawnedChild {
-    /// Process ID of the spawned child.
-    pub fn id(&self) -> u32 {
-        self.pid
-    }
-
-    /// Forcibly terminate the child. Best-effort.
-    pub fn kill(&mut self) -> std::io::Result<()> {
-        self.inner.kill()
-    }
-
-    /// Block until the child exits and return its exit code.
-    pub fn wait(&mut self) -> std::io::Result<i32> {
-        self.inner.wait()
-    }
-
-    /// Non-blocking variant of [`Self::wait`].
-    pub fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
-        self.inner.try_wait()
-    }
-}
-
-impl Drop for SpawnedChild {
-    fn drop(&mut self) {
-        self.inner.shutdown();
     }
 }
 
@@ -500,6 +315,29 @@ pub(crate) fn mark_as_daemon(command: &mut Command) {
     command.env(DAEMON_MARKER_ENV_VAR, "1");
 }
 
+fn prepare_sync_environment(
+    policy: EnvironmentPolicy,
+) -> std::io::Result<running_process_platform_internal::platform::process::SyncEnvironment> {
+    use running_process_platform_internal::platform::process::SyncEnvironment;
+
+    if policy == EnvironmentPolicy::Inherit {
+        return Ok(SyncEnvironment::Inherit);
+    }
+    if policy == EnvironmentPolicy::Auto {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Auto environment policy must be resolved before platform spawn",
+        ));
+    }
+
+    let baseline = match policy {
+        EnvironmentPolicy::UserBaseline => crate::environment::user_baseline_environment()?,
+        EnvironmentPolicy::Clear => Vec::new(),
+        EnvironmentPolicy::Auto | EnvironmentPolicy::Inherit => unreachable!(),
+    };
+    Ok(SyncEnvironment::Explicit(baseline))
+}
+
 fn spawn_daemon_inner(
     command: &mut Command,
     stdio: DaemonStdio<'_>,
@@ -511,17 +349,13 @@ fn spawn_daemon_inner(
     // like zccache call directly.
     mark_as_daemon(command);
     let policy = policy.resolve(SpawnLifetime::Daemon);
-    #[cfg(windows)]
-    {
-        imp::spawn_daemon(command, stdio, policy, breakaway)
-    }
-    #[cfg(unix)]
-    {
-        // Unix has no Job Object; `setsid` already detaches the daemon from
-        // the parent's session and process group, so breakaway is moot.
-        let _ = breakaway;
-        unix_impl::spawn_daemon(command, stdio, policy)
-    }
+    let environment = prepare_sync_environment(policy)?;
+    running_process_platform_internal::platform::process::spawn_sync_daemon(
+        command,
+        stdio,
+        environment,
+        breakaway,
+    )
 }
 
 /// Spawn `command` as a contained child with caller-controlled stdio.
@@ -539,14 +373,8 @@ pub fn spawn_with_env_policy(
     policy: EnvironmentPolicy,
 ) -> std::io::Result<SpawnedChild> {
     let policy = policy.resolve(SpawnLifetime::Contained);
-    #[cfg(windows)]
-    {
-        imp::spawn(command, stdio, policy)
-    }
-    #[cfg(unix)]
-    {
-        unix_impl::spawn(command, stdio, policy)
-    }
+    let environment = prepare_sync_environment(policy)?;
+    running_process_platform_internal::platform::process::spawn_sync(command, stdio, environment)
 }
 
 /// Spawn a Tokio child through the centralized process-creation boundary.
@@ -577,19 +405,11 @@ pub fn spawn_tokio(
     Ok(child)
 }
 
-// ── Windows implementation ──────────────────────────────────────────────────
-
-#[cfg(windows)]
-#[path = "spawn_imp_windows.rs"]
-mod imp;
-
-#[cfg(unix)]
-#[path = "spawn_imp_unix.rs"]
-mod unix_impl;
 #[cfg(test)]
 mod tests {
     use super::*;
     use prost::Message;
+    use std::time::Duration;
 
     fn assert_child_auto_traits<T>()
     where
@@ -816,5 +636,4 @@ mod tests {
             }
         );
     }
-
 }

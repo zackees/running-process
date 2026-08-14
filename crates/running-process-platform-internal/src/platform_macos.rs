@@ -260,3 +260,6 @@ fn owner_death_supervisor(owner_pid: libc::pid_t) -> ! {
     }
     unsafe { libc::close(queue); libc::_exit(0); }
 }
+#[path = "sync_spawn_group.rs"]
+mod sync_spawn;
+pub use sync_spawn::{spawn_sync, spawn_sync_daemon};
