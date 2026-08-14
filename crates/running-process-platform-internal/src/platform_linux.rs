@@ -62,6 +62,20 @@ pub fn enable_descendant_subreaper() {
     let _ = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
 }
 
+/// Request a graceful shutdown for a child-owned POSIX process group.
+pub fn soft_terminate_process_group(pid: u32) -> io::Result<()> {
+    // SAFETY: `kill` receives only the numeric child-owned group id; no Rust
+    // references or borrowed state cross the OS boundary.
+    let result = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+    if result != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 pub fn process_snapshot() -> Vec<crate::platform::process::ProcessSnapshot> {
     Vec::new()
 }

@@ -64,6 +64,21 @@ pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
 
 pub fn enable_descendant_subreaper() {}
 
+/// Request a Ctrl+Break event for a child-owned Windows process group.
+pub fn soft_terminate_process_group(pid: u32) -> io::Result<()> {
+    // SAFETY: the Windows API receives only a numeric process-group id and
+    // does not retain Rust pointers or references.
+    let ok = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
+    if ok == 0 {
+        let error = io::Error::last_os_error();
+        // A closed or detached console target no longer needs a soft step.
+        if error.raw_os_error() != Some(ERROR_INVALID_HANDLE as i32) {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 pub fn process_snapshot() -> Vec<crate::platform::process::ProcessSnapshot> {
     Vec::new()
 }

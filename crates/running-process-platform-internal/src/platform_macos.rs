@@ -56,6 +56,20 @@ pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
 
 pub fn enable_descendant_subreaper() {}
 
+/// Request a graceful shutdown for a child-owned POSIX process group.
+pub fn soft_terminate_process_group(pid: u32) -> io::Result<()> {
+    // SAFETY: `kill` receives only the numeric child-owned group id; no Rust
+    // references or borrowed state cross the OS boundary.
+    let result = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+    if result != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 const PROC_ALL_PIDS: u32 = 1;
 const PROC_PIDTBSDINFO: libc::c_int = 3;
 
