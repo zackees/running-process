@@ -155,6 +155,8 @@ pub use spawn::{
     spawn_with_env_policy, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy,
     SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR,
 };
+#[cfg(target_os = "linux")]
+pub use running_process_platform_internal::platform::process::current_executable_build_id;
 #[cfg(feature = "client-async")]
 pub use spawn::{spawn_tokio, TokioSpawnOptions};
 pub use terminal_graphics::{

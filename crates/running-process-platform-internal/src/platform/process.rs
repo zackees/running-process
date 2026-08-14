@@ -15,6 +15,9 @@ pub use crate::platform_imp::{
     CaptureCancellation,
 };
 
+#[cfg(target_os = "linux")]
+pub use crate::platform_imp::current_executable_build_id;
+
 /// Identifies one captured child output stream.
 #[derive(Clone, Copy)]
 pub enum CaptureStream {
