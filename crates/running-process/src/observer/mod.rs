@@ -44,9 +44,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod cmdline;
@@ -677,9 +675,7 @@ impl Drop for ObserverSubscriber {
 
 pub(crate) struct DescendantPumpStop {
     stopped: AtomicBool,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     mutex: Mutex<()>,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     wake: Condvar,
 }
 
@@ -687,33 +683,24 @@ impl DescendantPumpStop {
     fn new() -> Self {
         Self {
             stopped: AtomicBool::new(false),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
             mutex: Mutex::new(()),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
             wake: Condvar::new(),
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[allow(dead_code)]
     pub(crate) fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }
 
     pub(crate) fn stop(&self) {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            let _guard = self.mutex.lock().unwrap_or_else(|error| error.into_inner());
-            if !self.stopped.swap(true, Ordering::AcqRel) {
-                self.wake.notify_all();
-            }
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            self.stopped.store(true, Ordering::Release);
+        let _guard = self.mutex.lock().unwrap_or_else(|error| error.into_inner());
+        if !self.stopped.swap(true, Ordering::AcqRel) {
+            self.wake.notify_all();
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[allow(dead_code)]
     pub(crate) fn wait_timeout(&self, timeout: Duration) -> bool {
         if self.is_stopped() {
             return true;
@@ -738,7 +725,7 @@ impl DescendantPumpStop {
 pub(crate) struct ObserverEmitter {
     config: ObserverConfig,
     tx: Sender<ObserverEvent>,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[allow(dead_code)]
     descendant_stop: Arc<DescendantPumpStop>,
 }
 
@@ -751,7 +738,6 @@ impl ObserverEmitter {
             Self {
                 config,
                 tx,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 descendant_stop: Arc::clone(&descendant_stop),
             },
             ObserverSubscriber {
@@ -810,7 +796,7 @@ impl ObserverEmitter {
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[allow(dead_code)]
     pub(crate) fn descendant_pump(
         &self,
     ) -> Option<(Sender<ObserverEvent>, Arc<DescendantPumpStop>)> {
