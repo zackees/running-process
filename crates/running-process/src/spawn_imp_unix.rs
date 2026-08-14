@@ -26,6 +26,22 @@ impl UnixChild for std::process::Child {
     }
 }
 
+impl super::DaemonChildControl for std::process::Child {
+    fn kill(&mut self) -> io::Result<()> {
+        std::process::Child::kill(self)
+    }
+
+    fn wait(&mut self) -> io::Result<i32> {
+        std::process::Child::wait(self)
+            .map(running_process_platform_internal::platform::process::exit_code)
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<i32>> {
+        Ok(std::process::Child::try_wait(self)?
+            .map(running_process_platform_internal::platform::process::exit_code))
+    }
+}
+
 pub struct SpawnedInner {
     child: Arc<Mutex<Option<Box<dyn UnixChild>>>>,
     pgid: i32,
@@ -89,6 +105,24 @@ impl SpawnedInner {
     }
 }
 
+impl super::SpawnedChildControl for SpawnedInner {
+    fn kill(&mut self) -> io::Result<()> {
+        SpawnedInner::kill(self)
+    }
+
+    fn wait(&mut self) -> io::Result<i32> {
+        SpawnedInner::wait(self)
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<i32>> {
+        SpawnedInner::try_wait(self)
+    }
+
+    fn shutdown(&mut self) {
+        SpawnedInner::shutdown(self);
+    }
+}
+
 fn spawn_background_reaper(mut child: Box<dyn UnixChild>) {
     thread::spawn(move || {
         // Once ownership is off the caller's teardown path, a blocking wait is
@@ -130,7 +164,10 @@ pub fn spawn_daemon(
 
     let child = command.spawn()?;
     let pid = child.id();
-    Ok(super::DaemonChild { pid, child })
+    Ok(super::DaemonChild {
+        pid,
+        inner: Box::new(child),
+    })
 }
 
 pub fn spawn(
@@ -196,7 +233,7 @@ pub fn spawn(
         stdout,
         stderr,
         pid,
-        inner: SpawnedInner { child, pgid },
+        inner: Box::new(SpawnedInner { child, pgid }),
     })
 }
 

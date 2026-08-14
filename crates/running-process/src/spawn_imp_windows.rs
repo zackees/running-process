@@ -398,6 +398,24 @@ impl SpawnedInner {
     }
 }
 
+impl super::SpawnedChildControl for SpawnedInner {
+    fn kill(&mut self) -> io::Result<()> {
+        SpawnedInner::kill(self)
+    }
+
+    fn wait(&mut self) -> io::Result<i32> {
+        SpawnedInner::wait(self)
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<i32>> {
+        SpawnedInner::try_wait(self)
+    }
+
+    fn shutdown(&mut self) {
+        SpawnedInner::shutdown(self);
+    }
+}
+
 pub fn spawn_daemon(
     command: &mut Command,
     stdio: super::DaemonStdio<'_>,
@@ -417,7 +435,7 @@ pub fn spawn_daemon(
     )?;
     Ok(super::DaemonChild {
         pid,
-        handle: OwnedHandle(handle),
+        inner: Box::new(OwnedHandle(handle)),
     })
 }
 
@@ -502,11 +520,11 @@ pub fn spawn(
         stdout: stdout_pipe,
         stderr: stderr_pipe,
         pid,
-        inner: SpawnedInner {
+        inner: Box::new(SpawnedInner {
             process: Some(OwnedHandle(process)),
             job: Some(job),
             _drain_keepalive: drain_keepalive,
-        },
+        }),
     })
 }
 
@@ -854,6 +872,20 @@ pub fn wait(handle: &OwnedHandle) -> io::Result<i32> {
 
 pub fn try_wait(handle: &OwnedHandle) -> io::Result<Option<i32>> {
     try_wait_inner(handle)
+}
+
+impl super::DaemonChildControl for OwnedHandle {
+    fn kill(&mut self) -> io::Result<()> {
+        terminate(self)
+    }
+
+    fn wait(&mut self) -> io::Result<i32> {
+        wait(self)
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<i32>> {
+        try_wait(self)
+    }
 }
 
 fn wait_inner(handle: &OwnedHandle) -> io::Result<i32> {
