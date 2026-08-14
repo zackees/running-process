@@ -412,42 +412,26 @@ impl PtyAttachment {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<PtyStreamFrame>, AttachError> {
-        // Pull the underlying stream out of BufReader so we can set
-        // read_timeout. interprocess::local_socket::Stream supports
-        // set_nonblocking via the platform shim; for portability we just
-        // poll in a short loop.
+        use interprocess::local_socket::traits::Stream as _;
+
         let deadline = std::time::Instant::now() + timeout;
-        loop {
-            // Try to fill the BufReader buffer non-blockingly. If we
-            // already have data, decode directly. Otherwise, sleep briefly
-            // and retry until the deadline.
-            if !self.reader.buffer().is_empty() {
-                return self.recv_frame().map(Some);
-            }
-            if std::time::Instant::now() >= deadline {
-                return Ok(None);
-            }
-            // Sleep a small amount; the OS will buffer incoming data.
-            //
-            // #199: intentional — `interprocess::local_socket::Stream`
-            // lacks a portable peek/ready primitive on Windows. The
-            // 20ms poll is the documented fallback. Replacing with
-            // an event-based primitive would require a per-platform
-            // shim that the upstream crate doesn't expose.
-            std::thread::sleep(Duration::from_millis(20));
-            // Probe by peeking a single byte: read from reader will block,
-            // so we use the BufReader.fill_buf trick by reading 0 bytes
-            // first to populate. Simpler: just call recv_frame once the
-            // underlying socket reports it has data — but
-            // interprocess::Stream lacks portable peek. As a portable
-            // fallback, attempt a frame read and return on first success.
-            //
-            // To avoid blocking forever past the deadline, we rely on the
-            // OS to make recv_frame's read_exact return data quickly once
-            // it arrives; in practice for the M2 use case timeouts are
-            // generous (seconds) and the sleep loop above is the dominant
-            // mechanism. We do NOT actually call recv_frame here because
-            // it would block.
+        self.reader
+            .get_ref()
+            .set_nonblocking(true)
+            .map_err(AttachError::Io)?;
+        let read_result =
+            crate::client::deadline_io::read_frame_with_deadline(&mut self.reader, deadline);
+        let restore_result = self.reader.get_ref().set_nonblocking(false);
+        if let Err(error) = restore_result {
+            return Err(AttachError::Io(error));
+        }
+
+        match read_result {
+            Ok(bytes) => PtyStreamFrame::decode(&bytes[..])
+                .map(Some)
+                .map_err(AttachError::Decode),
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => Ok(None),
+            Err(error) => Err(AttachError::Io(error)),
         }
     }
 

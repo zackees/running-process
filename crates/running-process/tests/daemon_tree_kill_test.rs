@@ -28,8 +28,6 @@ use running_process::proto::daemon::TerminationOutcome;
 #[cfg(unix)]
 use std::path::PathBuf;
 #[cfg(unix)]
-use std::process::Command;
-#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]

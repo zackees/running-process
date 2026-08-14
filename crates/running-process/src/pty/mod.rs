@@ -403,16 +403,10 @@ pub fn spawn_pty_reader(
         .expect("idle detector mutex poisoned")
         .clone();
     let mut chunk = vec![0_u8; 65536];
-    #[cfg(unix)]
-    let mut eio_started_at = None;
     loop {
         match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
-                #[cfg(unix)]
-                {
-                    eio_started_at = None;
-                }
                 let data = &chunk[..n];
 
                 let churn = control_churn_bytes(data);
@@ -442,19 +436,6 @@ pub fn spawn_pty_reader(
                 // used here.
                 thread::sleep(Duration::from_millis(10));
                 continue;
-            }
-            #[cfg(unix)]
-            Err(err) if err.raw_os_error() == Some(libc::EIO) => {
-                // A Unix PTY master can report EIO during a transient slave
-                // handoff even though the child is still alive and more bytes
-                // are imminent. Treat a short run of EIO like WouldBlock; a
-                // sustained EIO is the normal closed-slave terminal state.
-                let started_at = eio_started_at.get_or_insert_with(Instant::now);
-                if started_at.elapsed() < Duration::from_millis(500) {
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-                break;
             }
             Err(_) => break,
         }
@@ -979,54 +960,6 @@ pub fn apply_windows_pty_priority(
 #[cfg(test)]
 mod tests {
     use super::native_pty_process::resolved_spawn_cwd;
-
-    #[cfg(unix)]
-    #[test]
-    fn pty_reader_recovers_when_data_follows_a_transient_eio() {
-        use std::collections::VecDeque;
-        use std::io::{Error, Read};
-        use std::sync::atomic::{AtomicBool, AtomicUsize};
-        use std::sync::{Arc, Condvar, Mutex};
-
-        struct EioThenData(u8);
-
-        impl Read for EioThenData {
-            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-                match self.0 {
-                    0 => {
-                        self.0 = 1;
-                        Err(Error::from_raw_os_error(libc::EIO))
-                    }
-                    1 => {
-                        self.0 = 2;
-                        buffer[..5].copy_from_slice(b"after");
-                        Ok(5)
-                    }
-                    _ => Ok(0),
-                }
-            }
-        }
-
-        let shared = Arc::new(super::PtyReadShared {
-            state: Mutex::new(super::PtyReadState {
-                chunks: VecDeque::new(),
-                closed: false,
-            }),
-            condvar: Condvar::new(),
-        });
-        super::spawn_pty_reader(
-            Box::new(EioThenData(0)),
-            Arc::clone(&shared),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(Mutex::new(None)),
-            Arc::new(AtomicUsize::new(0)),
-            Arc::new(AtomicUsize::new(0)),
-        );
-
-        let state = shared.state.lock().unwrap();
-        assert_eq!(state.chunks, VecDeque::from([b"after".to_vec()]));
-        assert!(state.closed);
-    }
 
     #[test]
     fn resolved_spawn_cwd_preserves_explicit_value() {
