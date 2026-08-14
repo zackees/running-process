@@ -21,7 +21,7 @@
 //! ```
 //!
 //! The blocking [`BrokerSession`] is the wire-of-record; the async
-//! [`AsyncBrokerSession`] (feature `client-async`, #433 R3) is a thin
+//! `AsyncBrokerSession` (feature `client-async`, #433 R3) is a thin
 //! `spawn_blocking` wrapper so tokio daemons get the same one-call adoption
 //! without re-implementing the negotiation against `AsyncRead`/`AsyncWrite`.
 
@@ -178,7 +178,7 @@ impl std::os::fd::AsFd for OwnedBackendIo {
 }
 
 /// Errors from [`BrokerSession::into_backend_io`] /
-/// [`AsyncBrokerSession::into_backend_io`].
+/// `AsyncBrokerSession::into_backend_io`.
 #[derive(Debug, thiserror::Error)]
 pub enum IntoBackendIoError {
     /// The frame reader still holds buffered response bytes that the bare
