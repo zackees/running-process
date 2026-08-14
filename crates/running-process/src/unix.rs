@@ -28,6 +28,7 @@ pub fn unix_signal_process_group(pid: i32, signal: UnixSignal) -> Result<(), std
         kind(signal),
     )
 }
+#[cfg(test)]
 pub(crate) fn unix_signal_raw(signal: UnixSignal) -> i32 {
     running_process_platform_internal::platform::process::unix_signal_raw(kind(signal))
 }
