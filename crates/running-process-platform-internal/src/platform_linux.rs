@@ -7,6 +7,10 @@ use tokio::process::{Child, Command};
 
 use crate::SpawnSpec;
 
+#[path = "platform_linux_file_handles.rs"]
+mod file_handles;
+pub use file_handles::read_process_file_handles;
+
 #[path = "platform/process_tree.rs"]
 mod process_tree;
 

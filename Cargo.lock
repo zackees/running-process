@@ -2115,6 +2115,7 @@ dependencies = [
  "libc",
  "sysinfo",
  "tokio",
+ "winapi",
  "windows-sys 0.61.2",
 ]
 
