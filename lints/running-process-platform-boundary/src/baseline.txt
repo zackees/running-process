@@ -1706,8 +1706,6 @@ crates/running-process/src/observer/cmdline.rs	attr_cfg	target_os	5
 crates/running-process/src/observer/cmdline.rs	attr_cfg	target_os	6
 crates/running-process/src/observer/cmdline.rs	attr_cfg	target_os	7
 crates/running-process/src/observer/cmdline.rs	attr_cfg	target_os	8
-crates/running-process/src/observer/descendants_linux.rs	native_import	libc	0
-crates/running-process/src/observer/descendants_linux.rs	native_import	libc	1
 crates/running-process/src/observer/descendants_macos.rs	native_import	libc	0
 crates/running-process/src/observer/descendants_macos.rs	native_import	libc	1
 crates/running-process/src/observer/descendants_macos.rs	native_import	libc	2
