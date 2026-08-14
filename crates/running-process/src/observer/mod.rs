@@ -42,9 +42,8 @@
 //! baseline stays free of the daemon runtime (tokio/IPC). Phase 2 layers the
 //! daemon-owned subscriber model on top of these same event types.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod cmdline;
@@ -53,14 +52,8 @@ pub use cmdline::read_process_cmdline;
 mod file_handles;
 pub use file_handles::read_process_file_handles;
 
-#[cfg(target_os = "linux")]
-pub(crate) mod descendants_linux;
-
-#[cfg(target_os = "macos")]
-pub(crate) mod descendants_macos;
-
-#[cfg(any(test, target_os = "linux", target_os = "macos"))]
-mod pid_identity;
+pub(crate) type DescendantPumpStop =
+    running_process_platform_internal::platform::process::DescendantMonitorStop;
 
 /// Scope at which observation is negotiated.
 ///
@@ -679,50 +672,6 @@ impl ObserverSubscriber {
 impl Drop for ObserverSubscriber {
     fn drop(&mut self) {
         self.stop();
-    }
-}
-
-pub(crate) struct DescendantPumpStop {
-    stopped: AtomicBool,
-    mutex: Mutex<()>,
-    wake: Condvar,
-}
-
-impl DescendantPumpStop {
-    fn new() -> Self {
-        Self {
-            stopped: AtomicBool::new(false),
-            mutex: Mutex::new(()),
-            wake: Condvar::new(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.stopped.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn stop(&self) {
-        let _guard = self.mutex.lock().unwrap_or_else(|error| error.into_inner());
-        if !self.stopped.swap(true, Ordering::AcqRel) {
-            self.wake.notify_all();
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn wait_timeout(&self, timeout: Duration) -> bool {
-        if self.is_stopped() {
-            return true;
-        }
-        let guard = self.mutex.lock().unwrap_or_else(|error| error.into_inner());
-        if self.is_stopped() {
-            return true;
-        }
-        let (_guard, _wait_result) = self
-            .wake
-            .wait_timeout(guard, timeout)
-            .unwrap_or_else(|error| error.into_inner());
-        self.is_stopped()
     }
 }
 

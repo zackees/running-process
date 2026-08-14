@@ -42,6 +42,14 @@ pub fn canonical_environment_pairs(pairs: Vec<(String, String)>) -> Vec<(String,
     seen.into_values().collect()
 }
 
+/// Windows reports descendants through its Job Object IOCP path during spawn.
+pub fn start_descendant_monitor(
+    _root_pid: u32,
+    _stop: std::sync::Arc<crate::platform::process::DescendantMonitorStop>,
+    _emit: Box<dyn Fn(crate::platform::process::DescendantEvent) + Send>,
+) {
+}
+
 use std::ffi::OsStr;
 use std::io;
 use std::io::Read;

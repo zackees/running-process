@@ -69,6 +69,10 @@ use tokio::process::{Child, Command};
 
 use crate::SpawnSpec;
 
+#[path = "platform_linux_descendants.rs"]
+mod descendants;
+pub use descendants::start_descendant_monitor;
+
 #[derive(Default)]
 pub struct CaptureCancellation {
     wakers: Mutex<CaptureWakers>,

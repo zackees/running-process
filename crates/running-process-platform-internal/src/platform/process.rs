@@ -8,15 +8,76 @@ pub use crate::{
 pub use crate::platform_imp::{
     cancel_capture_reader, canonical_environment_pairs, capture_reader_done, compat_shell_command,
     configure_native_command, configure_sync_contained_command, configure_sync_daemon_command,
-    configure_trampoline_command, enable_descendant_subreaper, exit_code, monitor_console_windows,
-    parent_has_console, prepare_capture_reader, process_snapshot, process_snapshot_for_pid,
-    set_process_name, shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
+    configure_trampoline_command, exit_code, monitor_console_windows, parent_has_console,
+    prepare_capture_reader, process_snapshot, process_snapshot_for_pid, set_process_name,
+    shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
+    start_descendant_monitor,
     sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
     CaptureCancellation,
 };
 
 #[cfg(target_os = "linux")]
 pub use crate::platform_imp::current_executable_build_id;
+
+/// A descendant lifecycle fact reported by the host monitor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DescendantEvent {
+    Started(u32),
+    Exited(u32),
+}
+
+/// Shared cancellation handle for a host-native descendant monitor.
+pub struct DescendantMonitorStop {
+    stopped: std::sync::atomic::AtomicBool,
+    mutex: std::sync::Mutex<()>,
+    wake: std::sync::Condvar,
+}
+
+impl DescendantMonitorStop {
+    /// Create an untriggered monitor cancellation handle.
+    pub fn new() -> Self {
+        Self {
+            stopped: std::sync::atomic::AtomicBool::new(false),
+            mutex: std::sync::Mutex::new(()),
+            wake: std::sync::Condvar::new(),
+        }
+    }
+
+    /// Report whether monitoring was cancelled.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Cancel monitoring and wake a sleeping monitor immediately.
+    pub fn stop(&self) {
+        let _guard = self.mutex.lock().unwrap_or_else(|error| error.into_inner());
+        if !self.stopped.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            self.wake.notify_all();
+        }
+    }
+
+    /// Wait until cancelled or `timeout` expires, returning whether cancelled.
+    pub fn wait_timeout(&self, timeout: std::time::Duration) -> bool {
+        if self.is_stopped() {
+            return true;
+        }
+        let guard = self.mutex.lock().unwrap_or_else(|error| error.into_inner());
+        if self.is_stopped() {
+            return true;
+        }
+        let (_guard, _wait_result) = self
+            .wake
+            .wait_timeout(guard, timeout)
+            .unwrap_or_else(|error| error.into_inner());
+        self.is_stopped()
+    }
+}
+
+impl Default for DescendantMonitorStop {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Identifies one captured child output stream.
 #[derive(Clone, Copy)]
