@@ -2102,7 +2102,6 @@ crates/running-process/src/window_icon/mod.rs	native_import	std::os::windows	1
 crates/running-process/src/windows.rs	attr_cfg	windows	0
 crates/running-process/src/windows.rs	native_import	std::os::windows	0
 crates/running-process/src/windows.rs	native_import	std::os::windows	1
-crates/running-process/src/windows.rs	native_import	windows_sys	0
 crates/test-watchdog/src/lib.rs	attr_cfg	target_os	0
 crates/test-watchdog/src/lib.rs	attr_cfg	target_os	1
 crates/test-watchdog/src/lib.rs	attr_cfg	target_os	2

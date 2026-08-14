@@ -96,6 +96,8 @@ pub fn configure_sync_contained_command(command: &mut std::process::Command) -> 
     Ok(())
 }
 
+pub fn parent_has_console() -> bool { false }
+
 unsafe fn mark_fds_from_directory_or_range() {
     let dir = libc::opendir(c"/dev/fd".as_ptr());
     if !dir.is_null() {

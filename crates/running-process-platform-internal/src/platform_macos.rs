@@ -144,6 +144,8 @@ pub fn configure_sync_contained_command(command: &mut std::process::Command) -> 
     Ok(())
 }
 
+pub fn parent_has_console() -> bool { false }
+
 unsafe fn set_cloexec(fd: libc::c_int) {
     let flags = libc::fcntl(fd, libc::F_GETFD);
     if flags != -1 { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC); }

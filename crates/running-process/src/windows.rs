@@ -333,10 +333,6 @@ pub(crate) fn windows_priority_flags(nice: Option<i32>) -> u32 {
 /// agent harnesses), where the window handle is null but CTRL_C delivery
 /// across the shared console works — exactly the case the #622 gate must
 /// treat as console-attached.
-pub(crate) fn parent_has_console() -> bool {
-    unsafe { windows_sys::Win32::System::Console::GetConsoleCP() != 0 }
-}
-
 /// Compute the full Windows `creation_flags` for a spawned child.
 ///
 /// # `CREATE_NO_WINDOW` default (#584), gated on a console-less parent (#622)
