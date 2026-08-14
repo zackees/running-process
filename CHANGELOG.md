@@ -1,5 +1,26 @@
 # Changelog
 
+## 4.10.2 — preserve client environments across daemon spawn boundaries
+
+Fixes daemon and broker child launches that accidentally used the long-lived
+daemon's ambient environment instead of the requesting client's serialized
+session environment. This was especially disruptive for build wrappers: a
+correct client environment could be lost at the daemon boundary, causing every
+child process to fail in ways that looked unrelated to process spawning.
+
+- Client environment context is serialized over the session protocol and
+  applied consistently to pipe and PTY child processes.
+- `EnvironmentPolicy::Inherit` now means the requesting client's environment;
+  `UserBaseline` remains an explicitly reconstructed login baseline. Daemon
+  values do not leak into children by default.
+- Only allowlisted daemon-owned metadata is injected after policy resolution,
+  with coverage for Unix case-sensitive keys and old/new client-server
+  interoperability.
+- End-to-end tests cover leakage prevention and policy behavior across every
+  spawn path on Linux, macOS, and Windows.
+- Native process operations were consolidated behind the internal platform
+  facade, with boundary linting and the full platform matrix restored to green.
+
 ## 4.10.1 — unblock PyPI publishing (raise combined native-payload cap)
 
 Fixes a **pre-existing release-pipeline break**: the Windows wheel's native
