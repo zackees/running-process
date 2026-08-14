@@ -5,4 +5,6 @@ pub use crate::{
     SpawnSpec, StreamMode,
 };
 
+pub use crate::platform_imp::exit_code;
+
 pub use crate::platform_imp::kill_tree;

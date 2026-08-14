@@ -1864,6 +1864,7 @@ crates/running-process/src/probe/mod.rs	cfg_macro	windows	1
 crates/running-process/src/process_runtime.rs	attr_cfg	windows	0
 crates/running-process/src/process_runtime.rs	attr_cfg	windows	1
 crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	0
+crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	1
 crates/running-process/src/pty/async_pty.rs	attr_cfg	windows	0
 crates/running-process/src/pty/async_pty.rs	attr_cfg	windows	1
 crates/running-process/src/pty/backend.rs	attr_cfg	unix	0
@@ -2126,7 +2127,6 @@ crates/running-process/src/spawn.rs	attr_cfg	unix	11
 crates/running-process/src/spawn.rs	attr_cfg	unix	12
 crates/running-process/src/spawn.rs	attr_cfg	unix	13
 crates/running-process/src/spawn.rs	attr_cfg	unix	14
-crates/running-process/src/spawn.rs	attr_cfg	unix	15
 crates/running-process/src/spawn.rs	attr_cfg	windows	0
 crates/running-process/src/spawn.rs	attr_cfg	windows	1
 crates/running-process/src/spawn.rs	attr_cfg	windows	2
@@ -2142,7 +2142,6 @@ crates/running-process/src/spawn.rs	attr_cfg	windows	11
 crates/running-process/src/spawn.rs	attr_cfg	windows	12
 crates/running-process/src/spawn.rs	attr_cfg	windows	13
 crates/running-process/src/spawn.rs	attr_cfg	windows	14
-crates/running-process/src/spawn.rs	native_import	std::os::unix	0
 crates/running-process/src/spawn.rs	native_import	std::os::windows	0
 crates/running-process/src/spawn_imp_unix.rs	attr_cfg	target_arch	0
 crates/running-process/src/spawn_imp_unix.rs	attr_cfg	target_arch	1
