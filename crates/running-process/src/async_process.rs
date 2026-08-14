@@ -370,9 +370,30 @@ fn run_output(output: Output) -> RunOutput {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::time::Duration;
 
     use super::AsyncProcess;
+
+    fn fixture_program() -> OsString {
+        let exe = std::env::current_exe().expect("test executable path");
+        let dir = exe
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("test binary should live in <profile>/deps/");
+        dir.join(format!(
+            "testbin-stdio-scripted{}",
+            std::env::consts::EXE_SUFFIX
+        ))
+        .into_os_string()
+    }
+
+    fn fixture(directives: &[&str]) -> AsyncProcess {
+        directives.iter().fold(
+            AsyncProcess::new(fixture_program()),
+            |process, directive| process.arg(*directive),
+        )
+    }
 
     #[test]
     fn async_process_owner_death_is_opt_in() {
@@ -381,37 +402,16 @@ mod tests {
 
     #[tokio::test]
     async fn async_process_captures_stdout_and_stderr() {
-        #[cfg(windows)]
-        let process = AsyncProcess::new("cmd.exe")
-            .arg("/C")
-            .arg("echo out && echo err 1>&2");
-        #[cfg(not(windows))]
-        let process = AsyncProcess::new("/bin/sh")
-            .arg("-c")
-            .arg("printf out; printf err >&2");
-
+        let process = fixture(&["out:out", "err:err"]);
         let output = process.output_after_start().await.expect("async output");
-        let expected_stdout = if cfg!(windows) {
-            b"out \r\n".as_slice()
-        } else {
-            b"out".as_slice()
-        };
-        let expected_stderr = if cfg!(windows) {
-            b"err \r\n".as_slice()
-        } else {
-            b"err".as_slice()
-        };
-        assert_eq!(output.stdout, expected_stdout);
-        assert_eq!(output.stderr, expected_stderr);
+        assert_eq!(output.stdout, b"out");
+        assert_eq!(output.stderr, b"err");
         assert_eq!(output.exit_code, 0);
     }
 
     #[tokio::test]
     async fn async_process_rejects_double_start() {
-        #[cfg(windows)]
-        let mut process = AsyncProcess::new("cmd.exe").arg("/C").arg("exit 0");
-        #[cfg(not(windows))]
-        let mut process = AsyncProcess::new("/bin/sh").arg("-c").arg("exit 0");
+        let mut process = fixture(&["exit:0"]);
         process.start().await.expect("first start");
         assert!(matches!(
             process.start().await,
@@ -422,13 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn async_process_bounded_output_drains_and_reports_overflow() {
-        #[cfg(windows)]
-        let mut process = AsyncProcess::new("cmd.exe").arg("/C").arg("echo 123456789");
-        #[cfg(not(windows))]
-        let mut process = AsyncProcess::new("/bin/sh")
-            .arg("-c")
-            .arg("printf 123456789");
-
+        let mut process = fixture(&["out:123456789"]);
         process.start().await.expect("async process starts");
         assert!(matches!(
             process.output_bounded(4).await,
@@ -438,30 +432,17 @@ mod tests {
 
     #[tokio::test]
     async fn async_process_run_bounded_captures_within_limit() {
-        #[cfg(windows)]
-        let args = vec!["/C".into(), "echo ok".into()];
-        #[cfg(not(windows))]
-        let args = vec!["-c".into(), "printf ok".into()];
-        let program = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
-
-        let output = AsyncProcess::run_bounded(program, &args, 16)
+        let args = vec![OsString::from("out:ok")];
+        let output = AsyncProcess::run_bounded(fixture_program(), &args, 16)
             .await
             .expect("bounded run");
         assert_eq!(output.exit_code, 0);
-        assert!(!output.stdout.is_empty());
+        assert_eq!(output.stdout, b"ok");
     }
 
     #[tokio::test]
     async fn async_process_output_cursor_observes_actor_capture() {
-        #[cfg(windows)]
-        let mut process = AsyncProcess::new("cmd.exe")
-            .arg("/C")
-            .arg("echo cursor-out && echo cursor-err 1>&2");
-        #[cfg(not(windows))]
-        let mut process = AsyncProcess::new("/bin/sh")
-            .arg("-c")
-            .arg("printf cursor-out; printf cursor-err >&2");
-
+        let mut process = fixture(&["out:cursor-out", "err:cursor-err"]);
         process.start().await.expect("async process starts");
         let mut cursor = process.output_cursor().expect("output cursor");
         process.output().await.expect("capture output");
@@ -482,11 +463,7 @@ mod tests {
 
     #[tokio::test]
     async fn async_output_cursor_reaches_terminal_eof_without_polling() {
-        #[cfg(windows)]
-        let mut process = AsyncProcess::new("cmd.exe").arg("/C").arg("echo cursor");
-        #[cfg(not(windows))]
-        let mut process = AsyncProcess::new("/bin/sh").arg("-c").arg("printf cursor");
-
+        let mut process = fixture(&["out:cursor"]);
         process.start().await.expect("async process starts");
         let mut cursor = process.output_cursor().expect("output cursor");
         process.output().await.expect("capture output");
@@ -496,24 +473,16 @@ mod tests {
 
     #[test]
     fn blocking_adapter_uses_the_actor_engine() {
-        #[cfg(windows)]
-        let args = vec!["/C".into(), "echo blocking".into()];
-        #[cfg(not(windows))]
-        let args = vec!["-c".into(), "printf blocking".into()];
-        let program = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
-
-        let output = AsyncProcess::run_blocking(program, &args).expect("blocking actor adapter");
+        let args = vec![OsString::from("out:blocking")];
+        let output =
+            AsyncProcess::run_blocking(fixture_program(), &args).expect("blocking actor adapter");
         assert_eq!(output.exit_code, 0);
         assert!(output.stdout.starts_with(b"blocking"));
     }
 
     #[tokio::test]
     async fn blocking_adapter_rejects_tokio_context_without_deadlocking() {
-        let mut process = if cfg!(windows) {
-            AsyncProcess::new("cmd.exe").arg("/C").arg("exit 0")
-        } else {
-            AsyncProcess::new("/bin/true")
-        };
+        let mut process = fixture(&["exit:0"]);
         assert!(matches!(
             process.start_blocking(),
             Err(crate::ProcessError::RuntimeContext)
@@ -522,14 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn async_process_timeout_is_explicit_and_kill_remains_available() {
-        #[cfg(windows)]
-        let mut process = AsyncProcess::new("ping.exe")
-            .arg("-n")
-            .arg("30")
-            .arg("127.0.0.1");
-        #[cfg(not(windows))]
-        let mut process = AsyncProcess::new("/bin/sh").arg("-c").arg("sleep 30");
-
+        let mut process = fixture(&["sleep-ms:30000"]);
         process.start().await.expect("async process starts");
         assert!(matches!(
             process.wait_timeout(Duration::from_millis(20)).await,
@@ -540,16 +502,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn async_process_writes_then_closes_stdin_through_the_actor() {
-        #[cfg(windows)]
-        let mut process = AsyncProcess::new("cmd.exe")
-            .arg("/V:ON")
-            .arg("/C")
-            .arg("set /p input= & echo got:!input!");
-        #[cfg(not(windows))]
-        let mut process = AsyncProcess::new("/bin/sh")
-            .arg("-c")
-            .arg("IFS= read -r input; printf 'got:%s' \"$input\"");
-
+        let mut process = fixture(&["echo"]);
         process.start().await.expect("async process starts");
         process
             .write_stdin(b"actor-input")
@@ -562,12 +515,7 @@ mod tests {
             .expect("stdin close is idempotent");
 
         let output = process.output().await.expect("actor captures output");
-        let expected = if cfg!(windows) {
-            b"got:actor-input\r\n".as_slice()
-        } else {
-            b"got:actor-input".as_slice()
-        };
-        assert_eq!(output.stdout, expected);
+        assert_eq!(output.stdout, b"actor-input");
         assert_eq!(output.exit_code, 0);
     }
 }
