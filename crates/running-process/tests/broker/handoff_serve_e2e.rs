@@ -571,7 +571,11 @@ fn connect_backend_with_retry(
     serve_errors: &mpsc::Receiver<String>,
 ) -> BackendConnection {
     let started = Instant::now();
-    let deadline = started + Duration::from_secs(15);
+    // A broker first verifies the configured backend before binding its own
+    // socket.  On the single-core ARM runners that setup can be delayed by
+    // concurrently scheduled integration tests; use a bounded, cooperative
+    // wait rather than spinning hard enough to delay the serving thread.
+    let deadline = started + Duration::from_secs(30);
     let mut history = ErrorHistory::default();
     loop {
         let mut request =
@@ -602,7 +606,7 @@ fn connect_backend_with_retry(
                         history.render()
                     );
                 }
-                thread::sleep(Duration::from_millis(10));
+                thread::sleep(Duration::from_millis(25));
             }
         }
     }

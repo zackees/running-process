@@ -67,7 +67,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
           components: clippy, rustfmt
           targets: ${{ inputs.target }}
 
@@ -94,7 +94,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
           components: clippy, rustfmt
           targets: ${{ inputs.target }}
       - name: Rust build cache (restore warm)
@@ -120,7 +120,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
           components: clippy, rustfmt
           targets: ${{ inputs.target }}
       - name: Install cargo-nextest

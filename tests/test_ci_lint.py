@@ -55,6 +55,17 @@ def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> Non
             "--",
             python,
             "-m",
+            "ci.platform_boundary",
+        ],
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            python,
+            "-m",
             "ci.async_compliance_guard",
         ],
         [

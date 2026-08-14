@@ -5,6 +5,7 @@
 //! async process API. Higher layers receive typed operations and never name
 //! `tokio::process::Command` directly.
 
+use std::cfg_select;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::PathBuf;
@@ -13,10 +14,28 @@ use std::process::{ExitStatus, Output, Stdio};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
-/// `CREATE_NEW_PROCESS_GROUP`. Spelled out rather than pulled from
-/// `windows-sys` so the constant sits next to the one place that applies it.
-#[cfg(windows)]
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+/// Neutral capability indexes for the eventual workspace-wide host boundary.
+///
+/// The indexes intentionally expose no operations yet: phase 2 establishes
+/// ownership names before later phases move a capability behind them.
+pub mod platform;
+
+// This is deliberately the crate's only host selector.  Facade modules are
+// neutral; native details live behind the selected private root.
+cfg_select! {
+    target_os = "windows" => {
+        mod platform_win;
+        pub(crate) use platform_win as platform_imp;
+    }
+    target_os = "linux" => {
+        mod platform_linux;
+        pub(crate) use platform_linux as platform_imp;
+    }
+    target_os = "macos" => {
+        mod platform_macos;
+        pub(crate) use platform_macos as platform_imp;
+    }
+}
 
 /// Stdio policy for one child stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,215 +173,15 @@ impl SpawnSpec {
             .stdin(self.stdin.apply())
             .stdout(self.stdout.apply())
             .stderr(self.stderr.apply());
-        if self.create_process_group {
-            #[cfg(unix)]
-            command.process_group(0);
-            #[cfg(windows)]
-            command.creation_flags(CREATE_NEW_PROCESS_GROUP);
-        }
-        #[cfg(target_os = "linux")]
-        if self.kill_when_owner_dies {
-            let owner_pid = unsafe { libc::getpid() };
-            // SAFETY: the closure invokes only async-signal-safe libc calls.
-            unsafe {
-                command.pre_exec(move || {
-                    if libc::prctl(
-                        libc::PR_SET_PDEATHSIG,
-                        libc::SIGTERM as libc::c_ulong,
-                        0,
-                        0,
-                        0,
-                    ) == -1
-                    {
-                        return Err(io::Error::last_os_error());
-                    }
-                    // Close the fork/exec race: if the owner died before the
-                    // child installed the death signal, terminate ourselves.
-                    if libc::getppid() != owner_pid {
-                        libc::kill(libc::getpid(), libc::SIGTERM);
-                    }
-                    Ok(())
-                });
-            }
-        }
-        #[cfg(target_os = "macos")]
-        if self.kill_when_owner_dies {
-            let owner_pid = unsafe { libc::getpid() };
-            // SAFETY: the closure only installs the async-signal-safe fork
-            // supervisor before exec. The supervisor owns all kqueue work in
-            // its independent process.
-            unsafe {
-                command.pre_exec(move || {
-                    let supervisor = libc::fork();
-                    if supervisor < 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    if supervisor == 0 {
-                        macos_owner_death_supervisor(owner_pid);
-                    }
-                    Ok(())
-                });
-            }
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let _ = self.kill_when_owner_dies;
+        platform_imp::configure_command(
+            &mut command,
+            self.create_process_group,
+            self.kill_when_owner_dies,
+        )?;
 
         let child = command.spawn()?;
-        #[cfg(windows)]
-        if self.kill_when_owner_dies {
-            windows_owner_death_job::assign(child.raw_handle());
-        }
+        platform_imp::after_spawn(&child, self.kill_when_owner_dies);
         Ok(PlatformChild::new(child, self.create_process_group))
-    }
-}
-
-/// Watch the spawning process and the exec child from a short-lived helper.
-///
-/// macOS has no Linux-style parent-death signal. A helper process can register
-/// both PIDs with `EVFILT_PROC` before the target execs: if the owner exits it
-/// sends `SIGTERM` to the target; if the target exits first the helper exits.
-/// This is the concrete implementation of the kqueue supervisor contract in
-/// `broker::lifecycle::process_tree`.
-#[cfg(target_os = "macos")]
-fn macos_owner_death_supervisor(owner_pid: libc::pid_t) -> ! {
-    let target_pid = unsafe { libc::getppid() };
-    unsafe {
-        // `closefrom` is not exposed by every libc target supported by the
-        // `libc` crate. The supervisor has no descriptors to preserve, so a
-        // bounded close sweep is the portable equivalent here.
-        for fd in 3..1024 {
-            libc::close(fd);
-        }
-    }
-
-    let queue = unsafe { libc::kqueue() };
-    if queue < 0 {
-        unsafe { libc::_exit(127) };
-    }
-
-    let mut watches = [
-        libc::kevent {
-            ident: owner_pid as libc::uintptr_t,
-            filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD | libc::EV_ONESHOT,
-            fflags: libc::NOTE_EXIT,
-            data: 0,
-            udata: std::ptr::null_mut(),
-        },
-        libc::kevent {
-            ident: target_pid as libc::uintptr_t,
-            filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD | libc::EV_ONESHOT,
-            fflags: libc::NOTE_EXIT,
-            data: 0,
-            udata: std::ptr::null_mut(),
-        },
-    ];
-    let registered = unsafe {
-        libc::kevent(
-            queue,
-            watches.as_mut_ptr(),
-            watches.len() as i32,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null(),
-        )
-    };
-    if registered < 0 {
-        unsafe {
-            libc::close(queue);
-            libc::_exit(127);
-        }
-    }
-
-    // Close the fork/registration race: if the owner died before the watch
-    // was installed, do not leave the target orphaned.
-    if unsafe { libc::kill(owner_pid, 0) } < 0
-        && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-    {
-        unsafe {
-            libc::kill(target_pid, libc::SIGTERM);
-            libc::close(queue);
-            libc::_exit(0);
-        }
-    }
-
-    let mut events = [unsafe { std::mem::zeroed::<libc::kevent>() }];
-    loop {
-        let count = unsafe {
-            libc::kevent(
-                queue,
-                std::ptr::null(),
-                0,
-                events.as_mut_ptr(),
-                1,
-                std::ptr::null(),
-            )
-        };
-        if count <= 0 {
-            if count < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            break;
-        }
-        if events[0].ident == owner_pid as libc::uintptr_t {
-            unsafe {
-                libc::kill(target_pid, libc::SIGTERM);
-            }
-        }
-        break;
-    }
-    unsafe {
-        libc::close(queue);
-        libc::_exit(0);
-    }
-}
-
-#[cfg(windows)]
-mod windows_owner_death_job {
-    use std::sync::OnceLock;
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-
-    struct Job(HANDLE);
-    unsafe impl Send for Job {}
-    unsafe impl Sync for Job {}
-
-    static JOB: OnceLock<Option<Job>> = OnceLock::new();
-
-    fn create() -> Option<Job> {
-        unsafe {
-            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if handle.is_null() {
-                return None;
-            }
-            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                &info as *const _ as *const _,
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            ) == 0
-            {
-                return None;
-            }
-            Some(Job(handle))
-        }
-    }
-
-    pub(super) fn assign(child: Option<HANDLE>) {
-        let Some(child) = child else { return };
-        let Some(job) = JOB.get_or_init(create).as_ref() else {
-            return;
-        };
-        unsafe {
-            AssignProcessToJobObject(job.0, child);
-        }
     }
 }
 
@@ -508,7 +327,7 @@ pub struct PlatformEmergencySignal {
 impl PlatformEmergencySignal {
     /// Request immediate termination without waiting for process reaping.
     pub fn kill(&self) -> io::Result<()> {
-        signal_process(self.target()?)
+        platform_imp::signal_process(self.target()?)
     }
 
     /// Ask the child's whole process group to shut down gracefully.
@@ -523,7 +342,7 @@ impl PlatformEmergencySignal {
         if !self.own_process_group {
             return Ok(false);
         }
-        signal_process_group(self.target()?).map(|()| true)
+        platform_imp::signal_process_group(self.target()?).map(|()| true)
     }
 
     fn target(&self) -> io::Result<u32> {
@@ -616,90 +435,9 @@ where
     Ok(bytes)
 }
 
-#[cfg(unix)]
-fn signal_process(pid: u32) -> io::Result<()> {
-    unix_kill(pid as i32, libc::SIGKILL)
-}
-
-/// SIGTERM the whole group. The negative PID is the group selector, which is
-/// only safe because the child was spawned into a group of its own.
-#[cfg(unix)]
-fn signal_process_group(pid: u32) -> io::Result<()> {
-    unix_kill(-(pid as i32), libc::SIGTERM)
-}
-
-#[cfg(unix)]
-fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
-    // SAFETY: `kill` takes plain integers and borrows no Rust state.
-    let result = unsafe { libc::kill(target, signal) };
-    if result == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err(error)
-    }
-}
-
-#[cfg(windows)]
-fn signal_process(pid: u32) -> io::Result<()> {
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
-    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
-
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-    if handle.is_null() {
-        let error = io::Error::last_os_error();
-        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
-            Ok(())
-        } else {
-            Err(error)
-        };
-    }
-    let terminated = unsafe { TerminateProcess(handle, 1) };
-    let termination_error = if terminated == 0 {
-        Some(io::Error::last_os_error())
-    } else {
-        None
-    };
-    unsafe { CloseHandle(handle) };
-    termination_error.map_or(Ok(()), Err)
-}
-
-/// Deliver Ctrl+Break to the child's process group.
-///
-/// `GenerateConsoleCtrlEvent` addresses a group id, and the child's group id
-/// is its own pid because it was spawned with `CREATE_NEW_PROCESS_GROUP`.
-#[cfg(windows)]
-fn signal_process_group(pid: u32) -> io::Result<()> {
-    use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
-    use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
-
-    // SAFETY: the FFI call takes plain integers and borrows no Rust state.
-    if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) } != 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    // The child already exited or detached from the console. The soft step
-    // only exists to offer a live child a graceful exit, so this is success.
-    if error.raw_os_error() == Some(ERROR_INVALID_HANDLE as i32) {
-        Ok(())
-    } else {
-        Err(error)
-    }
-}
-
 /// Build a shell command using the host platform's supported shell.
 pub fn shell_spec(command: impl AsRef<OsStr>) -> SpawnSpec {
-    #[cfg(windows)]
-    {
-        SpawnSpec::new("cmd.exe").arg("/C").arg(command.as_ref())
-    }
-    #[cfg(not(windows))]
-    {
-        SpawnSpec::new("/bin/sh").arg("-c").arg(command.as_ref())
-    }
+    platform_imp::shell_spec(command.as_ref())
 }
 
 #[cfg(test)]
