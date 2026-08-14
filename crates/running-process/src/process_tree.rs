@@ -3,6 +3,7 @@
 //! Native process-table inspection and platform-specific identity verification
 //! are owned by `running-process-platform-internal::platform::process`.
 
+#[cfg(any(test, feature = "async-process"))]
 use std::time::Duration;
 
 pub use running_process_platform_internal::platform::process::kill_tree;
