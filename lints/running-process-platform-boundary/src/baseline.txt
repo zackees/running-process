@@ -1863,12 +1863,7 @@ crates/running-process/src/probe/mod.rs	cfg_macro	windows	0
 crates/running-process/src/probe/mod.rs	cfg_macro	windows	1
 crates/running-process/src/process_runtime.rs	attr_cfg	windows	0
 crates/running-process/src/process_runtime.rs	attr_cfg	windows	1
-crates/running-process/src/process_tree.rs	attr_cfg	windows	0
-crates/running-process/src/process_tree.rs	attr_cfg	windows	1
-crates/running-process/src/process_tree.rs	native_import	windows_sys	0
-crates/running-process/src/process_tree.rs	native_import	windows_sys	1
-crates/running-process/src/process_tree.rs	native_import	windows_sys	2
-crates/running-process/src/process_tree.rs	native_import	windows_sys	3
+crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	0
 crates/running-process/src/pty/async_pty.rs	attr_cfg	windows	0
 crates/running-process/src/pty/async_pty.rs	attr_cfg	windows	1
 crates/running-process/src/pty/backend.rs	attr_cfg	unix	0

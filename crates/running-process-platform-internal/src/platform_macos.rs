@@ -7,6 +7,13 @@ use tokio::process::{Child, Command};
 
 use crate::SpawnSpec;
 
+#[path = "platform/process_tree.rs"]
+mod process_tree;
+
+pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
+    process_tree::kill_tree(pid, timeout, |_pid, process| Ok(process.start_time()))
+}
+
 pub(crate) fn configure_command(
     command: &mut Command,
     create_process_group: bool,
