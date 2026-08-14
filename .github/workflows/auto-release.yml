@@ -530,7 +530,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -695,7 +695,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
 
       # #447: stage the manifest so `cargo publish`'s implicit verify
       # build reads the per-arch SHAs that match the tarballs uploaded

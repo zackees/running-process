@@ -1,0 +1,28 @@
+error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/running-process-platform-internal/src/lib.rs cfg_select!
+  --> $DIR/research_red_pass.rs:3:7
+   |
+LL | #[cfg(windows)]
+   |       ^^^^^^^
+   |
+   = note: `#[deny(enforce_platform_boundary)]` on by default
+
+error: native path (std::os::unix) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
+  --> $DIR/research_red_pass.rs:7:5
+   |
+LL | use std::os::unix::ffi::OsStrExt as _;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/running-process-platform-internal/src/lib.rs cfg_select!
+  --> $DIR/research_red_pass.rs:6:11
+   |
+LL | #[cfg(not(windows))]
+   |           ^^^^^^^
+
+error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/running-process-platform-internal/src/lib.rs cfg_select!
+  --> $DIR/research_red_pass.rs:10:23
+   |
+LL |     let _is_windows = cfg!(windows);
+   |                       ^^^^^^^^^^^^^
+
+error: aborting due to 4 previous errors
+

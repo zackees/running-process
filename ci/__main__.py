@@ -42,6 +42,7 @@ STAGES: dict[str, str] = {
     "guard-cross-compiler": "ci.cross_compiler_guard",
     "guard-jemalloc": "ci.jemalloc_guard",
     "guard-spawn-path": "ci.spawn_path_guard",
+    "guard-platform-boundary": "ci.platform_boundary",
     "guard-docker-manifest": "ci.docker_manifest_guard",
 }
 

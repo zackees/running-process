@@ -264,7 +264,7 @@ uv run --no-sync python -m ci.lint_python.keyboard_interrupt_checker src --exclu
 
 ## Workspace Config
 
-- Rust edition 2021, version 1.85+, shared workspace dependencies: `pyo3 0.29`, `rusqlite 0.32` (bundled), `thiserror 2`
+- Rust edition 2021, version 1.95+, shared workspace dependencies: `pyo3 0.29`, `rusqlite 0.32` (bundled), `thiserror 2`
 - Python requires >= 3.10, uses ABI3 stable API (`abi3-py310`)
 - Release profile: line-tables-only debug info for workspace members, no debug
   info for dependencies (`[profile.release.package."*"] debug = false`), no

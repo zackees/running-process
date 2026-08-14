@@ -89,7 +89,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
           components: clippy, rustfmt
 
       - name: Install cargo-nextest
@@ -151,14 +151,14 @@ jobs:
         if: ${{ inputs.dylint && steps.dylint-tools.outputs.cache-hit != 'true' }}
         env:
           CARGO_BIN: cargo
-        run: rustup run 1.94.1 "$CARGO_BIN" install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked
+        run: rustup run 1.95.0 "$CARGO_BIN" install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked
 
       - name: Cache Dylint target
         if: ${{ inputs.dylint }}
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/running-process-dylint-target
-          key: dylint-target-v1-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'Cargo.lock') }}
+          key: dylint-target-v3-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
 
       - name: Dylint negative fixture
         if: ${{ inputs.dylint }}
@@ -180,7 +180,9 @@ jobs:
         env:
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
-        run: rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --all --workspace
+        run: |
+          rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --path lints --pattern running-process-platform-boundary --workspace
+          rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --all --workspace
 
       - name: Terminal graphics capability matrix
         timeout-minutes: 10

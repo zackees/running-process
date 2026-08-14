@@ -1,8 +1,22 @@
-error: direct process creation is forbidden; use the blessed platform-internal capability
-  --> $DIR/main.rs:2:13
+error: native path (std::os::windows) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
+  --> $DIR/main.rs:3:9
    |
-LL |     let _ = std::process::Command::new("echo");
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+LL |     use std::os::windows::process::CommandExt as _;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(enforce_platform_boundary)]` on by default
 
-error: aborting due to 1 previous error
+error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/running-process-platform-internal/src/lib.rs cfg_select!
+  --> $DIR/main.rs:2:15
+   |
+LL |     #[cfg(any(windows, not(target_os = "linux")))]
+   |               ^^^^^^^
+
+error: host-platform cfg selection (target_os) is not allowed here; host selection belongs in crates/running-process-platform-internal/src/lib.rs cfg_select!
+  --> $DIR/main.rs:2:28
+   |
+LL |     #[cfg(any(windows, not(target_os = "linux")))]
+   |                            ^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 3 previous errors
 
