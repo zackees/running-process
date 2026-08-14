@@ -6,11 +6,20 @@ pub use crate::{
 };
 
 pub use crate::platform_imp::{
-    configure_sync_contained_command, configure_sync_daemon_command, configure_trampoline_command,
-    enable_descendant_subreaper, exit_code, parent_has_console, process_snapshot,
-    process_snapshot_for_pid, set_process_name, spawn_sync, spawn_sync_daemon,
-    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
+    canonical_environment_pairs, configure_sync_contained_command, configure_sync_daemon_command,
+    configure_trampoline_command, enable_descendant_subreaper, exit_code, monitor_console_windows,
+    parent_has_console, process_snapshot, process_snapshot_for_pid, set_process_name,
+    shell_command, spawn_sync, spawn_sync_daemon, sync_child_native_handle, trampoline_exit_code,
+    unix_mark_extra_fds_close_on_exec,
 };
+
+/// Metadata about one visible window observed by console-popup monitoring.
+#[derive(Debug, Clone)]
+pub struct ConsoleWindowInfo {
+    pub pid: u32,
+    pub title: String,
+    pub hwnd: u64,
+}
 
 /// A platform-owned identity record used when observing a process tree.
 /// The timestamp fields are opaque host-native creation-time components and

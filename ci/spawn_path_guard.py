@@ -21,6 +21,11 @@ ALLOWED_RUST_COMMAND_NEW = {
     # process primitive. Higher layers may call its typed operations but may
     # not construct a platform command themselves.
     Path("crates/running-process-platform-internal/src/lib.rs"),
+    # Concrete process roots own the platform shell constructor selected by
+    # the neutral daemon-launch facade.
+    Path("crates/running-process-platform-internal/src/platform_linux.rs"),
+    Path("crates/running-process-platform-internal/src/platform_macos.rs"),
+    Path("crates/running-process-platform-internal/src/platform_win.rs"),
     # The selected Windows sync-spawn boundary owns CreateProcessW. Its
     # reused-command regression constructs a Command and routes it through
     # that boundary twice; no higher-level caller bypass is introduced.

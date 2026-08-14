@@ -1422,9 +1422,6 @@ crates/running-process/src/client/telemetry.rs	native_import	std::os::unix	0
 crates/running-process/src/client/telemetry.rs	native_import	std::os::unix	1
 crates/running-process/src/client/telemetry.rs	native_import	std::os::windows	0
 crates/running-process/src/client/telemetry.rs	native_import	std::os::windows	1
-crates/running-process/src/console_detect.rs	attr_cfg	windows	0
-crates/running-process/src/console_detect.rs	attr_cfg	windows	1
-crates/running-process/src/console_detect.rs	attr_cfg	windows	2
 crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	1
 crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	2
@@ -1445,10 +1442,6 @@ crates/running-process/src/daemon/emergency_reserve.rs	attr_cfg	windows	1
 crates/running-process/src/daemon/emergency_reserve.rs	native_import	libc	0
 crates/running-process/src/daemon/emergency_reserve.rs	native_import	libc	1
 crates/running-process/src/daemon/emergency_reserve.rs	native_import	libc	2
-crates/running-process/src/daemon/handlers/spawn.rs	attr_cfg	windows	0
-crates/running-process/src/daemon/handlers/spawn.rs	attr_cfg	windows	1
-crates/running-process/src/daemon/handlers/spawn.rs	attr_cfg	windows	2
-crates/running-process/src/daemon/handlers/spawn.rs	attr_cfg	windows	3
 crates/running-process/src/daemon/handlers/telemetry.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/handlers/telemetry.rs	attr_cfg	unix	1
 crates/running-process/src/daemon/handlers/telemetry.rs	attr_cfg	windows	0
@@ -2018,12 +2011,6 @@ crates/running-process/src/tests.rs	native_import	libc	14
 crates/running-process/src/tests.rs	native_import	libc	15
 crates/running-process/src/tests.rs	native_import	libc	16
 crates/running-process/src/tests.rs	native_import	std::os::windows	0
-crates/running-process/src/unix.rs	attr_cfg	unix	0
-crates/running-process/src/unix.rs	attr_cfg	unix	1
-crates/running-process/src/unix.rs	attr_cfg	unix	2
-crates/running-process/src/unix.rs	attr_cfg	unix	3
-crates/running-process/src/unix.rs	attr_cfg	unix	4
-crates/running-process/src/unix.rs	attr_cfg	unix	5
 crates/running-process/src/window_icon/mod.rs	attr_cfg	target_os	0
 crates/running-process/src/window_icon/mod.rs	attr_cfg	target_os	1
 crates/running-process/src/window_icon/mod.rs	attr_cfg	target_os	2

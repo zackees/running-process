@@ -22,38 +22,7 @@ struct SpawnedChild {
 }
 
 fn shell_command(command: &str) -> Command {
-    #[cfg(windows)]
-    {
-        // IMPORTANT: do NOT use `raw_arg` here. running_process's
-        // sanitized spawn rebuilds the Win32 command line from
-        // `cmd.get_program()` + `cmd.get_args()` (it can't reach
-        // Rust stdlib's internal `raw_arg` storage), so any
-        // raw_arg-only args are LOST and cmd.exe is launched with
-        // zero arguments — it exits immediately with no output and
-        // never appears in `list_active`. Use regular `arg()` and
-        // let Rust's CRT-escape rule + cmd's `/S` flag strip the
-        // outer quotes again on the cmd side.
-        let mut cmd = Command::new("cmd.exe");
-        cmd.arg("/D").arg("/S").arg("/C").arg(command);
-        cmd
-    }
-    #[cfg(not(windows))]
-    {
-        // Use absolute /bin/sh so callers that override PATH via
-        // SpawnCommandRequest::with_env (or with_env_replace) don't
-        // break shell resolution. POSIX mandates /bin/sh; both Linux
-        // and macOS satisfy this.
-        //
-        // `-c` (not `-lc`): we deliberately avoid login-shell mode so
-        // /etc/profile and /etc/profile.d/*.sh don't post-mutate the
-        // env the caller set. On Ubuntu CI runners /etc/profile.d
-        // prepends /snap/bin to PATH, which would silently override
-        // a caller's PATH override. Matches Python's
-        // subprocess.Popen(shell=True) behavior.
-        let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c").arg(command);
-        cmd
-    }
+    running_process_platform_internal::platform::process::shell_command(command)
 }
 
 fn process_created_at(pid: u32) -> Option<f64> {
@@ -79,24 +48,11 @@ fn process_created_at(pid: u32) -> Option<f64> {
 /// case-folded key, so the caller's intended override always wins
 /// regardless of upstream ordering.
 fn canonical_env_pairs(env: &[KeyValue]) -> Vec<(String, String)> {
-    #[cfg(windows)]
-    {
-        use std::collections::BTreeMap;
-        let mut seen: BTreeMap<String, (String, String)> = BTreeMap::new();
-        for kv in env {
-            seen.insert(
-                kv.key.to_ascii_uppercase(),
-                (kv.key.clone(), kv.value.clone()),
-            );
-        }
-        seen.into_values().collect()
-    }
-    #[cfg(not(windows))]
-    {
-        env.iter()
-            .map(|kv| (kv.key.clone(), kv.value.clone()))
-            .collect()
-    }
+    let pairs = env
+        .iter()
+        .map(|kv| (kv.key.clone(), kv.value.clone()))
+        .collect();
+    running_process_platform_internal::platform::process::canonical_environment_pairs(pairs)
 }
 
 fn spawn_and_track_detached(

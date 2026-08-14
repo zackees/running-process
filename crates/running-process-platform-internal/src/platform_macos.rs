@@ -1,5 +1,21 @@
 //! macOS implementation root for the process capability.
 
+pub fn shell_command(command: &str) -> std::process::Command {
+    let mut shell = std::process::Command::new("/bin/sh");
+    shell.arg("-c").arg(command);
+    shell
+}
+
+pub fn canonical_environment_pairs(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
+    pairs
+}
+
+pub fn monitor_console_windows(
+    _duration: std::time::Duration,
+) -> Vec<crate::platform::process::ConsoleWindowInfo> {
+    Vec::new()
+}
+
 use std::ffi::OsStr;
 use std::io;
 
