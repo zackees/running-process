@@ -148,10 +148,7 @@ fn decode_body(headers: &[String], raw: Vec<u8>) -> Vec<u8> {
     }
     let mut out = Vec::new();
     let mut rest = raw.as_slice();
-    loop {
-        let Some(split) = rest.windows(2).position(|w| w == b"\r\n") else {
-            break;
-        };
+    while let Some(split) = rest.windows(2).position(|w| w == b"\r\n") {
         let Ok(size_text) = std::str::from_utf8(&rest[..split]) else {
             break;
         };
