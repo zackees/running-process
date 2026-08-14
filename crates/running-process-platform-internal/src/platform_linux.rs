@@ -178,7 +178,9 @@ pub fn process_snapshot_for_pid(_pid: u32) -> Option<crate::platform::process::P
 }
 
 /// Mark inherited descriptors close-on-exec without breaking std's exec-error pipe.
-/// Safety: this is only called from a post-fork `pre_exec` closure.
+///
+/// # Safety
+/// This must only be called from a post-fork `pre_exec` closure.
 pub unsafe fn unix_mark_extra_fds_close_on_exec() {
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "x86", target_arch = "arm", target_arch = "riscv64", target_arch = "powerpc64"))]
     {

@@ -79,7 +79,8 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
         JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     };
 
-    let handle = running_process_platform_internal::platform::process::sync_child_native_handle(child);
+    let handle =
+        running_process_platform_internal::platform::process::sync_child_native_handle(child);
     let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
     if job.is_null() || job == INVALID_HANDLE_VALUE {
         return Err(std::io::Error::last_os_error());
