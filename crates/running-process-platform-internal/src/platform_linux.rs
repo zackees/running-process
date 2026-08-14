@@ -197,6 +197,109 @@ pub fn enable_descendant_subreaper() {
     let _ = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
 }
 
+/// Return the GNU build ID of the running executable without reading the
+/// executable from disk.
+///
+/// The dynamic loader has already mapped the main image's `PT_NOTE` segment,
+/// so callers that only need an image-generation identity do not need to hash
+/// a potentially large unoptimized binary. `None` preserves a clean fallback
+/// for binaries linked without a GNU build ID.
+pub fn current_executable_build_id() -> Option<Vec<u8>> {
+    unsafe extern "C" fn visit(
+        info: *mut libc::dl_phdr_info,
+        _size: libc::size_t,
+        output: *mut libc::c_void,
+    ) -> libc::c_int {
+        const MAX_NOTE_BYTES: usize = 1024 * 1024;
+
+        let info = unsafe { &*info };
+        let is_main_executable = info.dlpi_name.is_null()
+            || unsafe { std::ffi::CStr::from_ptr(info.dlpi_name) }
+                .to_bytes()
+                .is_empty();
+        if !is_main_executable || info.dlpi_phdr.is_null() || info.dlpi_phnum == 0 {
+            return 0;
+        }
+        let headers = unsafe {
+            std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum))
+        };
+        #[allow(clippy::unnecessary_cast)]
+        let load_bias = info.dlpi_addr as u64;
+        for header in headers {
+            if header.p_type != libc::PT_NOTE {
+                continue;
+            }
+            let Ok(length) = usize::try_from(header.p_memsz) else {
+                continue;
+            };
+            if length == 0 || length > MAX_NOTE_BYTES {
+                continue;
+            }
+            let Some(address) = load_bias.checked_add(header.p_vaddr) else {
+                continue;
+            };
+            let Some(note_end) = address.checked_add(length as u64) else {
+                continue;
+            };
+            let mapped_read_only = headers.iter().any(|load| {
+                if load.p_type != libc::PT_LOAD || load.p_flags & libc::PF_R == 0 {
+                    return false;
+                }
+                let Some(start) = load_bias.checked_add(load.p_vaddr) else {
+                    return false;
+                };
+                let Some(end) = start.checked_add(load.p_memsz) else {
+                    return false;
+                };
+                address >= start && note_end <= end
+            });
+            if address == 0 || !mapped_read_only {
+                continue;
+            }
+            let notes = unsafe { std::slice::from_raw_parts(address as *const u8, length) };
+            if let Some(build_id) = gnu_build_id_from_notes(notes) {
+                let output = unsafe { &mut *output.cast::<Option<Vec<u8>>>() };
+                *output = Some(build_id.to_vec());
+                return 1;
+            }
+        }
+        0
+    }
+
+    let mut output = None;
+    unsafe {
+        libc::dl_iterate_phdr(
+            Some(visit),
+            (&mut output as *mut Option<Vec<u8>>).cast::<libc::c_void>(),
+        );
+    }
+    output
+}
+
+fn gnu_build_id_from_notes(mut notes: &[u8]) -> Option<&[u8]> {
+    fn aligned(value: usize) -> Option<usize> {
+        value.checked_add(3).map(|value| value & !3)
+    }
+
+    while notes.len() >= 12 {
+        let name_len = usize::try_from(u32::from_ne_bytes(notes[0..4].try_into().ok()?)).ok()?;
+        let desc_len = usize::try_from(u32::from_ne_bytes(notes[4..8].try_into().ok()?)).ok()?;
+        let kind = u32::from_ne_bytes(notes[8..12].try_into().ok()?);
+        let name_end = 12usize.checked_add(name_len)?;
+        let desc_start = 12usize.checked_add(aligned(name_len)?)?;
+        let desc_end = desc_start.checked_add(desc_len)?;
+        let next = desc_start.checked_add(aligned(desc_len)?)?;
+        if next > notes.len() || name_end > notes.len() || desc_end > notes.len() {
+            return None;
+        }
+        if kind == 3 && notes.get(12..name_end)?.starts_with(b"GNU") && desc_len > 0 {
+            return notes.get(desc_start..desc_end);
+        }
+        notes = &notes[next..];
+    }
+    None
+}
+
 /// Request a graceful shutdown for a child-owned POSIX process group.
 pub fn soft_terminate_process_group(pid: u32) -> io::Result<()> {
     // SAFETY: `kill` receives only the numeric child-owned group id; no Rust
@@ -390,6 +493,16 @@ fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
 
 pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("/bin/sh").arg("-c").arg(command)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn current_executable_exposes_a_gnu_build_id() {
+        let build_id = super::current_executable_build_id()
+            .expect("Linux test executable should carry a GNU build ID");
+        assert!(!build_id.is_empty());
+    }
 }
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;
