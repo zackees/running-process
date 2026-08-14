@@ -77,6 +77,7 @@ async fn dumb_terminal_client_renders_output_and_returns_exit_code() {
         cwd: String::new(),
         env: Vec::new(),
         clear_inherited_env: false,
+        environment_policy: 0,
     };
 
     // Empty stdin: the client sends StdinEof immediately (rustc doesn't read it).
@@ -111,6 +112,7 @@ async fn dumb_terminal_client_forwards_stdin() {
         cwd: String::new(),
         env: Vec::new(),
         clear_inherited_env: false,
+        environment_policy: 0,
     };
 
     // `echo` reads stdin to EOF and writes it back; the client must forward the

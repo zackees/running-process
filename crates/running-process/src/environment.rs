@@ -37,6 +37,100 @@ pub fn user_baseline_environment() -> io::Result<Vec<(OsString, OsString)>> {
     }
 }
 
+/// Materialize a string environment for backends whose native API accepts
+/// either an inherited environment (`None`) or one complete replacement
+/// block (`Some`). Ordered explicit entries are applied after the selected
+/// base and win ties, case-insensitively on Windows.
+#[cfg(any(feature = "daemon", test))]
+pub(crate) fn materialize_environment(
+    policy: crate::EnvironmentPolicy,
+    explicit: &[(String, String)],
+) -> io::Result<Option<Vec<(String, String)>>> {
+    if policy == crate::EnvironmentPolicy::Inherit && explicit.is_empty() {
+        return Ok(None);
+    }
+
+    let mut output: Vec<(String, String)> = match policy {
+        crate::EnvironmentPolicy::Inherit => std::env::vars().collect(),
+        crate::EnvironmentPolicy::UserBaseline => user_baseline_environment()?
+            .into_iter()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.to_string_lossy().into_owned(),
+                )
+            })
+            .collect(),
+        crate::EnvironmentPolicy::Clear => Vec::new(),
+        crate::EnvironmentPolicy::Auto => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Auto environment policy must be resolved before materialization",
+            ));
+        }
+    };
+
+    for (key, value) in explicit {
+        #[cfg(windows)]
+        let existing = output
+            .iter_mut()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key));
+        #[cfg(not(windows))]
+        let existing = output.iter_mut().find(|(candidate, _)| candidate == key);
+        if let Some((existing_key, existing_value)) = existing {
+            *existing_key = key.clone();
+            *existing_value = value.clone();
+        } else {
+            output.push((key.clone(), value.clone()));
+        }
+    }
+    Ok(Some(output))
+}
+
+#[cfg(test)]
+mod materialize_tests {
+    use super::*;
+
+    #[test]
+    fn clear_uses_only_explicit_entries() {
+        let env = materialize_environment(
+            crate::EnvironmentPolicy::Clear,
+            &[("CLIENT_ONLY".into(), "forwarded".into())],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(env, vec![("CLIENT_ONLY".into(), "forwarded".into())]);
+    }
+
+    #[test]
+    fn empty_inherit_uses_native_inheritance() {
+        assert_eq!(
+            materialize_environment(crate::EnvironmentPolicy::Inherit, &[]).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn unresolved_auto_is_rejected() {
+        assert!(materialize_environment(crate::EnvironmentPolicy::Auto, &[]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_explicit_entries_replace_case_insensitively() {
+        let env = materialize_environment(
+            crate::EnvironmentPolicy::Clear,
+            &[
+                ("Path".into(), "first".into()),
+                ("PATH".into(), "second".into()),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(env, vec![("PATH".into(), "second".into())]);
+    }
+}
+
 /// The `PATH` a fresh login would start from. Matches `/etc/paths` order on
 /// macOS and the customary `login(1)` default elsewhere.
 #[cfg(unix)]

@@ -84,12 +84,13 @@ pub struct SpawnCommandRequest {
     pub env: Vec<(String, String)>,
     /// Caller-provided originator used for tracking and filtering.
     pub originator: Option<String>,
-    /// When `true`, the daemon clears the inherited env before applying
-    /// [`Self::env`], so the subprocess sees ONLY the supplied map.
-    /// Mirrors Python's `subprocess.Popen(env=…)` replace semantic.
-    /// Default `false` keeps the historic "layer on top of inherited"
-    /// behaviour.
+    /// Deprecated wire-compatibility bit. Prefer [`Self::environment_policy`].
+    /// New clients dual-write this for older daemons.
     pub clear_inherited_env: bool,
+    /// Base environment selected for the remote child. New requests default
+    /// to [`crate::EnvironmentPolicy::Clear`] with the caller snapshot in
+    /// [`Self::env`].
+    pub environment_policy: crate::EnvironmentPolicy,
 }
 
 impl SpawnCommandRequest {
@@ -113,7 +114,8 @@ impl SpawnCommandRequest {
             cwd: std::env::current_dir().ok(),
             env: std::env::vars().collect(),
             originator: Some(Self::default_originator()),
-            clear_inherited_env: false,
+            clear_inherited_env: true,
+            environment_policy: crate::EnvironmentPolicy::Clear,
         }
     }
 
@@ -123,9 +125,8 @@ impl SpawnCommandRequest {
         self
     }
 
-    /// Replace the environment block sent to the daemon (layered on top
-    /// of the daemon's inherited env, unless [`Self::with_env_replace`]
-    /// is used instead).
+    /// Replace the explicit environment entries sent to the daemon. Their
+    /// base is controlled independently by [`Self::environment_policy`].
     pub fn with_envs<I, K, V>(mut self, env: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -162,6 +163,21 @@ impl SpawnCommandRequest {
             .map(|(key, value)| (key.into(), value.into()))
             .collect();
         self.clear_inherited_env = true;
+        self.environment_policy = crate::EnvironmentPolicy::Clear;
+        self
+    }
+
+    /// Select the base environment for the remote child. `Auto` resolves to
+    /// `UserBaseline` because this API creates a detached daemon child.
+    pub fn with_environment_policy(mut self, policy: crate::EnvironmentPolicy) -> Self {
+        self.environment_policy = match policy {
+            crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::UserBaseline,
+            explicit => explicit,
+        };
+        self.clear_inherited_env = self
+            .environment_policy
+            .legacy_clear_fallback()
+            .expect("resolved environment policy");
         self
     }
 
@@ -436,6 +452,10 @@ impl DaemonClient {
         &mut self,
         request: &SpawnCommandRequest,
     ) -> Result<SpawnedDaemon, ClientError> {
+        let policy = match request.environment_policy {
+            crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::UserBaseline,
+            explicit => explicit,
+        };
         let daemon_request = DaemonRequest {
             id: self.next_request_id(),
             r#type: RequestType::SpawnDaemon.into(),
@@ -457,7 +477,12 @@ impl DaemonClient {
                     })
                     .collect(),
                 originator: request.originator.clone().unwrap_or_default(),
-                clear_inherited_env: request.clear_inherited_env,
+                clear_inherited_env: policy
+                    .legacy_clear_fallback()
+                    .map_err(|message| ClientError::Io(std::io::Error::other(message)))?,
+                environment_policy: policy
+                    .wire_value()
+                    .map_err(|message| ClientError::Io(std::io::Error::other(message)))?,
             }),
             ..Default::default()
         };
@@ -888,5 +913,26 @@ mod tests {
             ]
         );
         assert_eq!(request.originator.as_deref(), Some("tool:123"));
+        assert_eq!(request.environment_policy, crate::EnvironmentPolicy::Clear);
+        assert!(request.clear_inherited_env);
+    }
+
+    #[test]
+    fn spawn_command_request_dual_writes_explicit_policy() {
+        let inherit = SpawnCommandRequest::shell("echo hello")
+            .with_environment_policy(crate::EnvironmentPolicy::Inherit);
+        assert_eq!(
+            inherit.environment_policy,
+            crate::EnvironmentPolicy::Inherit
+        );
+        assert!(!inherit.clear_inherited_env);
+
+        let baseline = SpawnCommandRequest::shell("echo hello")
+            .with_environment_policy(crate::EnvironmentPolicy::UserBaseline);
+        assert_eq!(
+            baseline.environment_policy,
+            crate::EnvironmentPolicy::UserBaseline
+        );
+        assert!(baseline.clear_inherited_env);
     }
 }

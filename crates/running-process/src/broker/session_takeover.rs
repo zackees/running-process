@@ -44,7 +44,7 @@ use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 use crate::broker::protocol_v2::{session_frame, SessionExit, SessionFrame, SessionStart};
 use crate::broker::session_codec::{encode_session_frame, try_decode_session_frame};
 use crate::broker::session_pump::{run_child_session, FrameSink};
-use crate::broker::session_server::spawn_contained_session;
+use crate::broker::session_server::spawn_contained_session_with_environment;
 use crate::containment::ContainedProcessGroup;
 
 /// Bounded async sink for the pump's outbound frames. `blocking_send` stalls the
@@ -114,10 +114,11 @@ const OUTBOUND_FRAME_CAPACITY: usize = 64;
 
 /// Build the compiler [`Command`] from a session's opening [`SessionStart`].
 ///
-/// Mirrors the daemon's `SpawnPipeSession` env semantics: `clear_inherited_env`
-/// wipes the inherited environment first; `env` entries are then layered in
-/// order (later entries win case collisions the way `Command::env` does).
-fn command_from_start(start: &SessionStart) -> Command {
+/// Resolves the wire-compatible environment policy and layers the explicit
+/// client entries into the command. The selected base is applied at spawn.
+fn command_from_start(
+    start: &SessionStart,
+) -> std::io::Result<(Command, crate::EnvironmentPolicy)> {
     // allow-raw-command-new: the command is spawned only through the sanitized
     // `spawn_contained_session` layer below; this just describes it.
     let mut command = Command::new(&start.program);
@@ -125,13 +126,13 @@ fn command_from_start(start: &SessionStart) -> Command {
     if !start.cwd.is_empty() {
         command.current_dir(&start.cwd);
     }
-    if start.clear_inherited_env {
-        command.env_clear();
-    }
     for entry in &start.env {
         command.env(&entry.key, &entry.value);
     }
-    command
+    let policy =
+        crate::EnvironmentPolicy::from_wire(start.environment_policy, start.clear_inherited_env)
+            .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+    Ok((command, policy))
 }
 
 /// Take over `io` — an async transport whose read side may already hold
@@ -192,8 +193,8 @@ where
             )))
         }
     };
-    let command = command_from_start(&start);
-    run_compile_session(framed, command, group).await
+    let (command, policy) = command_from_start(&start)?;
+    run_compile_session_with_environment(framed, command, group, policy).await
 }
 
 /// Run a compile session over `framed`: spawn `command` as a contained child,
@@ -209,14 +210,27 @@ where
 /// Propagates a spawn failure, a transport write/read error, or a failure to reap
 /// the child. Never errors on stdio content.
 pub async fn run_compile_session<T>(
-    mut framed: Framed<T, SessionFrameCodec>,
-    mut command: Command,
+    framed: Framed<T, SessionFrameCodec>,
+    command: Command,
     group: Arc<ContainedProcessGroup>,
 ) -> std::io::Result<SessionExit>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let child = spawn_contained_session(&group, &mut command)?;
+    run_compile_session_with_environment(framed, command, group, crate::EnvironmentPolicy::Inherit)
+        .await
+}
+
+async fn run_compile_session_with_environment<T>(
+    mut framed: Framed<T, SessionFrameCodec>,
+    mut command: Command,
+    group: Arc<ContainedProcessGroup>,
+    environment_policy: crate::EnvironmentPolicy,
+) -> std::io::Result<SessionExit>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let child = spawn_contained_session_with_environment(&group, &mut command, environment_policy)?;
 
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<SessionFrame>(OUTBOUND_FRAME_CAPACITY);
     let (stdin_tx, stdin_rx) = std::sync::mpsc::channel::<SessionFrame>();

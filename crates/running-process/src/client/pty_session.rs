@@ -41,10 +41,12 @@ pub struct PtySpawnRequest {
     pub argv: Vec<String>,
     /// Working directory for the spawned process.
     pub cwd: Option<PathBuf>,
-    /// Environment variables to add or override for the spawned process.
+    /// Explicit environment variables applied after the selected base.
     pub env: Vec<(String, String)>,
-    /// Whether to start from an empty environment instead of inheriting the daemon's environment.
+    /// Deprecated wire-compatibility bit. Prefer [`Self::environment_policy`].
     pub clear_inherited_env: bool,
+    /// Base environment used before applying [`Self::env`].
+    pub environment_policy: crate::EnvironmentPolicy,
     /// Initial terminal row count.
     pub rows: u16,
     /// Initial terminal column count.
@@ -54,13 +56,15 @@ pub struct PtySpawnRequest {
 }
 
 impl PtySpawnRequest {
-    /// Create a spawn request with default size and inherited environment.
+    /// Create a request with default size that snapshots the caller
+    /// environment and replaces the daemon environment.
     pub fn new<S: Into<String>>(argv: impl IntoIterator<Item = S>) -> Self {
         Self {
             argv: argv.into_iter().map(Into::into).collect(),
             cwd: None,
-            env: Vec::new(),
-            clear_inherited_env: false,
+            env: std::env::vars().collect(),
+            clear_inherited_env: true,
+            environment_policy: crate::EnvironmentPolicy::Clear,
             rows: 24,
             cols: 80,
             originator: None,
@@ -96,6 +100,20 @@ impl PtySpawnRequest {
         self.env = env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
         self
     }
+
+    /// Select the base environment for this contained remote child. `Auto`
+    /// resolves to the contained-process default, `Inherit`.
+    pub fn with_environment_policy(mut self, policy: crate::EnvironmentPolicy) -> Self {
+        self.environment_policy = match policy {
+            crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::Inherit,
+            explicit => explicit,
+        };
+        self.clear_inherited_env = self
+            .environment_policy
+            .legacy_clear_fallback()
+            .expect("resolved environment policy");
+        self
+    }
 }
 
 /// Reply summary for a successful spawn.
@@ -115,6 +133,10 @@ impl DaemonClient {
         &mut self,
         request: &PtySpawnRequest,
     ) -> Result<SpawnedPtySession, ClientError> {
+        let policy = match request.environment_policy {
+            crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::Inherit,
+            explicit => explicit,
+        };
         let proto = SpawnPtySessionRequest {
             argv: request.argv.clone(),
             cwd: request
@@ -130,10 +152,15 @@ impl DaemonClient {
                     value: v.clone(),
                 })
                 .collect(),
-            clear_inherited_env: request.clear_inherited_env,
+            clear_inherited_env: policy
+                .legacy_clear_fallback()
+                .map_err(|message| ClientError::Io(std::io::Error::other(message)))?,
             rows: request.rows as u32,
             cols: request.cols as u32,
             originator: request.originator.clone().unwrap_or_default(),
+            environment_policy: policy
+                .wire_value()
+                .map_err(|message| ClientError::Io(std::io::Error::other(message)))?,
         };
 
         let daemon_request = DaemonRequest {
@@ -511,5 +538,27 @@ mod tests {
         assert_eq!(req.rows, 40);
         assert_eq!(req.cols, 100);
         assert_eq!(req.originator.as_deref(), Some("test:1"));
+        assert_eq!(req.environment_policy, crate::EnvironmentPolicy::Clear);
+        assert!(req.clear_inherited_env);
+        assert!(!req.env.is_empty());
+    }
+
+    #[test]
+    fn pty_spawn_request_dual_writes_explicit_policy() {
+        let inherit = PtySpawnRequest::new(["echo"])
+            .with_environment_policy(crate::EnvironmentPolicy::Inherit);
+        assert_eq!(
+            inherit.environment_policy,
+            crate::EnvironmentPolicy::Inherit
+        );
+        assert!(!inherit.clear_inherited_env);
+
+        let baseline = PtySpawnRequest::new(["echo"])
+            .with_environment_policy(crate::EnvironmentPolicy::UserBaseline);
+        assert_eq!(
+            baseline.environment_policy,
+            crate::EnvironmentPolicy::UserBaseline
+        );
+        assert!(baseline.clear_inherited_env);
     }
 }

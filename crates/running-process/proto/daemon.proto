@@ -235,6 +235,17 @@ message KeyValue {
   string value = 2;
 }
 
+// Selects the base environment for a remotely spawned child. The ordered
+// request env entries are applied after this base and therefore win ties.
+// AUTO is intentionally absent: clients must resolve lifetime-dependent
+// defaults before serializing a request.
+enum EnvironmentPolicy {
+  ENVIRONMENT_POLICY_UNSPECIFIED   = 0;
+  ENVIRONMENT_POLICY_INHERIT       = 1;
+  ENVIRONMENT_POLICY_USER_BASELINE = 2;
+  ENVIRONMENT_POLICY_CLEAR         = 3;
+}
+
 message TerminalGraphicsCapability {
   GraphicsProtocol protocol = 1;
   CapabilityStatus status   = 2;
@@ -269,16 +280,9 @@ message UnregisterResponse {}
 message SpawnDaemonRequest {
   string command = 1;
   string cwd = 2;
-  // Environment variables to apply to the spawned subprocess. Default
-  // behaviour (clear_inherited_env=false) is to LAYER these on top of
-  // the daemon's own inherited env — the subprocess sees
-  // the daemon environment plus these entries, with these entries winning ties.
-  //
-  // When clear_inherited_env=true, the subprocess sees ONLY these
-  // entries, nothing inherited from the daemon. This mirrors Python's
-  // `subprocess.Popen(env=…)` semantic: `env=None` (this field empty +
-  // clear_inherited_env=false) inherits, `env=<dict>` (with
-  // clear_inherited_env=true) replaces.
+  // Environment variables applied after `environment_policy` selects the
+  // base. Legacy requests that omit that enum retain the old boolean
+  // semantics: false inherits the daemon environment; true starts empty.
   //
   // Ordering: this is `repeated KeyValue`, not a `map`, because the
   // daemon needs to dedup case-insensitively on Windows where Rust's
@@ -287,13 +291,13 @@ message SpawnDaemonRequest {
   // ordering protobuf provides and race the dedup against HashMap
   // iteration order.
   //
-  // Practical note for Windows callers: `cmd.exe` needs SystemRoot in
-  // its env to load DLLs; when using replace mode on Windows you'll
-  // typically want to copy SystemRoot (and any other essentials) into
-  // this list yourself.
+  // Practical note for Windows callers: a clear base generally needs the
+  // client snapshot (including SystemRoot) serialized into this list.
   repeated KeyValue env = 3;
   string originator = 4;
+  // Deprecated compatibility field. New clients dual-write it for old servers.
   bool clear_inherited_env = 5;
+  EnvironmentPolicy environment_policy = 6;
 }
 
 message SpawnDaemonResponse {
@@ -520,12 +524,14 @@ message SpawnPtySessionRequest {
   // SpawnDaemonRequest.env: ordered repeated KeyValue with case-insensitive
   // last-wins dedup on Windows.
   repeated KeyValue env = 3;
+  // Deprecated compatibility field. New clients dual-write it for old servers.
   bool clear_inherited_env = 4;
   // Initial terminal size. 0 = use daemon defaults (24x80).
   uint32 rows = 5;
   uint32 cols = 6;
   // Originator tag, e.g. "clud". Stored in registry for discovery.
   string originator = 7;
+  EnvironmentPolicy environment_policy = 8;
 }
 
 message SpawnPtySessionResponse {
@@ -703,10 +709,12 @@ message SpawnPipeSessionRequest {
   repeated string argv = 1;
   string cwd = 2;
   repeated KeyValue env = 3;
+  // Deprecated compatibility field. New clients dual-write it for old servers.
   bool clear_inherited_env = 4;
   string originator = 5;
   // Capture stderr separately (default) or merge into stdout.
   bool merge_stderr_into_stdout = 6;
+  EnvironmentPolicy environment_policy = 7;
 }
 
 message SpawnPipeSessionResponse {
