@@ -279,7 +279,7 @@ fn frame_pointer_fallback(
     let mut frames = Vec::new();
 
     let read_word = |address: u64| -> Option<u64> {
-        if address % 8 != 0 {
+        if !address.is_multiple_of(8) {
             return None;
         }
         let offset = usize::try_from(address.checked_sub(stack_start)?).ok()?;
