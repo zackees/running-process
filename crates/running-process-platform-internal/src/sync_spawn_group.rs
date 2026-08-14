@@ -291,29 +291,6 @@ fn apply_environment(
     }
 }
 
-/// Async-signal-safe fd sweep used in pre_exec. See sanitized.rs (now
-/// merged here) for the rationale.
-///
-/// # Marked close-on-exec, not closed
-///
-/// The goal is that the child inherits nothing past `exec`, and `FD_CLOEXEC`
-/// delivers exactly that — the kernel closes the descriptors as part of the
-/// `exec` itself.
-///
-/// Closing them here instead used to break a protocol we do not own. Rust's
-/// `Command::spawn` reports `exec` failure through a `CLOEXEC` pipe: the child
-/// writes its `errno` to it, and the parent turns that into
-/// `Err(io::Error)`. That pipe is an fd ≥ 3, so this sweep closed it. When
-/// `exec` then failed — a mistyped program path being the ordinary case — the
-/// child could not report why, and std's internal
-/// `assert!(output.write(&bytes).is_ok())` aborted it. The caller saw a child
-/// that died with `SIGABRT` rather than `Err(NotFound)`, and the two demand
-/// completely different responses from an operator. See #716.
-///
-/// `CLOEXEC` keeps the descriptors usable for the instant between here and
-/// `exec`, which is all std needs, while still guaranteeing the child that
-/// actually starts inherits none of them.
-
 #[cfg(test)]
 mod tests {
     use super::*;
