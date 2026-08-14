@@ -129,6 +129,27 @@ mod materialize_tests {
         .unwrap();
         assert_eq!(env, vec![("PATH".into(), "second".into())]);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_explicit_entries_preserve_case_distinct_keys() {
+        let env = materialize_environment(
+            crate::EnvironmentPolicy::Clear,
+            &[
+                ("Path".into(), "mixed".into()),
+                ("PATH".into(), "upper".into()),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            env,
+            vec![
+                ("Path".into(), "mixed".into()),
+                ("PATH".into(), "upper".into())
+            ]
+        );
+    }
 }
 
 /// The `PATH` a fresh login would start from. Matches `/etc/paths` order on
