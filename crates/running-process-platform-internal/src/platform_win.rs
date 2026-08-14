@@ -18,6 +18,9 @@ use crate::SpawnSpec;
 #[path = "platform_win_file_handles.rs"]
 mod file_handles;
 pub use file_handles::read_process_file_handles;
+#[path = "platform_win_cmdline.rs"]
+mod cmdline;
+pub use cmdline::read_process_cmdline;
 
 #[path = "platform/process_tree.rs"]
 mod process_tree;
