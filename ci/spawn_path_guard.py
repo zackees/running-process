@@ -21,6 +21,10 @@ ALLOWED_RUST_COMMAND_NEW = {
     # process primitive. Higher layers may call its typed operations but may
     # not construct a platform command themselves.
     Path("crates/running-process-platform-internal/src/lib.rs"),
+    # The selected Windows sync-spawn boundary owns CreateProcessW. Its
+    # reused-command regression constructs a Command and routes it through
+    # that boundary twice; no higher-level caller bypass is introduced.
+    Path("crates/running-process-platform-internal/src/platform_win/sync_spawn.rs"),
     # #648 `rpprobe dump --force`: invokes the external capture tools
     # (py-spy, gdb/lldb, ProcDump, gcore) against an unenrolled target.
     # These are the whole point of the subcommand — the cooperative path

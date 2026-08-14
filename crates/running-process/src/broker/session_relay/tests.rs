@@ -32,9 +32,13 @@ fn frame(kind: session_frame::Kind) -> SessionFrame {
     SessionFrame { kind: Some(kind) }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn relay_session_proxies_client_to_daemon_endpoint() {
+    if std::env::consts::OS == "windows" {
+        // This transport oracle uses filesystem local-socket names. Windows
+        // exercises the same relay through its named-pipe integration tests.
+        return;
+    }
     let pid = std::process::id();
     let daemon_path = std::env::temp_dir().join(format!("rp-relay-d-{pid}.sock"));
     let broker_path = std::env::temp_dir().join(format!("rp-relay-b-{pid}.sock"));

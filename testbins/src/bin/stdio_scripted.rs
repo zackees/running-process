@@ -10,6 +10,7 @@
 //! - `errhex:<hex>`    — write the hex-decoded raw bytes to stderr
 //! - `flush`           — flush stdout then stderr (control interleaving)
 //! - `echo`           — copy all of stdin to stdout verbatim, then flush
+//! - `sleep-ms:<n>`   — sleep for `<n>` milliseconds
 //! - `exit:<code>`     — exit immediately with `<code>`
 //!
 //! With no `exit:` directive the process exits 0 after the last directive.
@@ -64,6 +65,12 @@ fn main() {
                 .expect("read stdin");
             stdout.write_all(&input).expect("echo stdin to stdout");
             stdout.flush().expect("flush stdout");
+        } else if let Some(milliseconds) = arg.strip_prefix("sleep-ms:") {
+            std::thread::sleep(std::time::Duration::from_millis(
+                milliseconds
+                    .parse::<u64>()
+                    .expect("sleep duration is an integer"),
+            ));
         } else if let Some(code) = arg.strip_prefix("exit:") {
             stdout.flush().ok();
             stderr.flush().ok();
