@@ -10,6 +10,9 @@ use crate::SpawnSpec;
 #[path = "platform_macos_file_handles.rs"]
 mod file_handles;
 pub use file_handles::read_process_file_handles;
+#[path = "platform_macos_cmdline.rs"]
+mod cmdline;
+pub use cmdline::read_process_cmdline;
 
 #[path = "platform/process_tree.rs"]
 mod process_tree;
