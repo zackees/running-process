@@ -12,8 +12,8 @@
 //! client's *OS process* goes away (not just its tokio task).
 //!
 //! Notes:
-//!   * The daemon binary is built via `cargo build -p running-process-daemon`
-//!     in test setup; we then locate it via the cargo-emitted JSON.
+//!   * The suite driver builds the daemon and sleeper fixtures once; each
+//!     isolated test process locates them beside the compiled test binaries.
 //!   * Each test uses a unique `--scope` so the socket/db paths do not
 //!     collide.
 //!   * The `DaemonGuard` struct ensures the spawned daemon is killed when
@@ -31,86 +31,33 @@ use std::time::{Duration, Instant};
 // Build / spawn helpers
 // ---------------------------------------------------------------------------
 
-// Fix Wave T2 of #165: post-mono-crate, the daemon binary lives inside
-// `running-process` and is selected by `--bin running-process-daemon`
-// (under `--features daemon`); the testbin lives inside `testbins`.
-// This helper takes the cargo args directly so each caller can pin the
-// right package + bin selector + feature set.
-fn build_artifact(cargo_args: &[&str], bin_name: &str) -> PathBuf {
-    let output = Command::new(env!("CARGO"))
-        .args(cargo_args)
-        .arg("--message-format=json")
-        .stderr(Stdio::inherit())
-        .output()
-        .unwrap_or_else(|e| panic!("failed to invoke cargo build {cargo_args:?}: {e}"));
-    assert!(
-        output.status.success(),
-        "cargo build {cargo_args:?} exited with {:?}",
-        output.status
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if !line.contains("\"compiler-artifact\"") || !line.contains(bin_name) {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if v["reason"] != "compiler-artifact" {
-            continue;
-        }
-        let target_name = v["target"]["name"].as_str().unwrap_or("");
-        if target_name != bin_name {
-            continue;
-        }
-        let is_bin = v["target"]["kind"]
-            .as_array()
-            .is_some_and(|a| a.iter().any(|k| k == "bin"));
-        if !is_bin {
-            continue;
-        }
-        if let Some(exe) = v["executable"].as_str() {
-            let path = PathBuf::from(exe);
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while !path.exists() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            assert!(
-                path.exists(),
-                "cargo emitted {path:?} but it does not exist"
-            );
-            return path;
-        }
-    }
-    panic!("cargo build {cargo_args:?} produced no bin artifact named {bin_name}");
-}
-
 fn daemon_binary() -> PathBuf {
-    build_artifact(
-        &[
-            "build",
-            "-p",
-            "running-process",
-            "--features",
-            "daemon",
-            "--bin",
-            "running-process-daemon",
-        ],
-        "running-process-daemon",
-    )
+    fixture_binary("running-process-daemon")
 }
 
 fn sleeper_binary() -> PathBuf {
-    build_artifact(
-        &["build", "-p", "testbins", "--bin", "testbin-sleeper"],
-        "testbin-sleeper",
-    )
+    fixture_binary("testbin-sleeper")
+}
+
+fn fixture_binary(name: &str) -> PathBuf {
+    let test_exe = std::env::current_exe().expect("current test executable");
+    let profile_dir = test_exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("test executable should live in <profile>/deps/");
+    let path = profile_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        path.is_file(),
+        "required fixture `{name}` is missing at {}; build daemon binaries and testbins before running this test",
+        path.display()
+    );
+    path
 }
 
 struct DaemonGuard {
     child: Option<Child>,
     socket: String,
+    shutdown_requested: bool,
 }
 
 impl DaemonGuard {
@@ -145,6 +92,7 @@ impl DaemonGuard {
                 return Self {
                     child: Some(child),
                     socket,
+                    shutdown_requested: false,
                 };
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -152,6 +100,7 @@ impl DaemonGuard {
         let mut g = Self {
             child: Some(child),
             socket,
+            shutdown_requested: false,
         };
         g.shutdown();
         panic!("daemon did not become ready within 10s");
@@ -161,10 +110,17 @@ impl DaemonGuard {
         &self.socket
     }
 
+    fn note_shutdown_requested(&mut self) {
+        self.shutdown_requested = true;
+    }
+
     /// Best-effort polite shutdown then SIGKILL fallback.
     fn shutdown(&mut self) {
-        if let Ok(mut client) = DaemonClient::connect_to(&self.socket) {
-            let _ = client.shutdown(true, 2.0);
+        if !self.shutdown_requested {
+            if let Ok(mut client) = DaemonClient::connect_to(&self.socket) {
+                let _ = client.shutdown(true, 2.0);
+            }
+            self.shutdown_requested = true;
         }
         if let Some(mut child) = self.child.take() {
             // Brief grace.
@@ -263,7 +219,6 @@ fn pty_session_survives_first_client_disconnect_then_second_client_attaches() {
 
     guard.shutdown();
 }
-
 #[test]
 fn daemon_shutdown_reaps_sessions_no_orphans() {
     // #130 M8: when the daemon shuts down, every session it owns must
@@ -299,6 +254,7 @@ fn daemon_shutdown_reaps_sessions_no_orphans() {
         let mut client = DaemonClient::connect_to(&socket).expect("connect");
         let _ = client.shutdown(true, 5.0);
     }
+    guard.note_shutdown_requested();
 
     // Give the daemon a moment to finish reaping + exit.
     let deadline = Instant::now() + Duration::from_secs(10);

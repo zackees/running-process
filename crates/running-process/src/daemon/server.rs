@@ -510,8 +510,22 @@ async fn handle_connection_inner(
             }
         };
 
-        if let Err(e) = send_response(&mut framed, &response).await {
+        let shutdown_requested = RequestType::try_from(request.r#type) == Ok(RequestType::Shutdown);
+        let send_result = send_response(&mut framed, &response).await;
+
+        // A shutdown request is still a request/response RPC. Acknowledge it
+        // before stopping the runtime; otherwise the runtime can tear down
+        // this detached connection task before the response reaches the
+        // client, leaving the client parked until its RPC deadline.
+        if shutdown_requested {
+            let _ = state.shutdown_tx.send(true);
+        }
+
+        if let Err(e) = send_result {
             warn!("failed to send response for request_id={request_id}: {e}");
+            break;
+        }
+        if shutdown_requested {
             break;
         }
     }

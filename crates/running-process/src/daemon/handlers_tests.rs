@@ -88,7 +88,7 @@ fn status_returns_daemon_info() {
 }
 
 #[test]
-fn shutdown_signals_channel() {
+fn shutdown_builds_acknowledgement_without_signalling_early() {
     let (state, _tmp) = test_state();
     // Keep a receiver to check the shutdown signal.
     let rx = state.shutdown_tx.subscribe();
@@ -104,8 +104,10 @@ fn shutdown_signals_channel() {
     assert_eq!(resp.code, StatusCode::Ok as i32);
     assert_eq!(resp.message, "shutting down");
     assert!(resp.shutdown.is_some());
-    // The channel should now hold `true`.
-    assert!(rx.has_changed().unwrap_or(false) || *rx.borrow());
+    // The server sends this response before signalling shutdown, ensuring
+    // the runtime cannot disappear while the acknowledgement is in flight.
+    assert!(!rx.has_changed().unwrap_or(false));
+    assert!(!*rx.borrow());
 }
 
 // -----------------------------------------------------------------------

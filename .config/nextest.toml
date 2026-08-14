@@ -70,6 +70,16 @@ pty-mitm-substrate = { max-threads = 1 }
 filter = 'binary(pty_mitm_stdin_test) or binary(pty_mitm_paste_test)'
 test-group = 'pty-mitm-substrate'
 
+[[profile.default.overrides]]
+filter = 'binary(daemon_cross_process_pty_attach_test)'
+slow-timeout = { period = "10s", terminate-after = 1, grace-period = "1s" }
+retries = 0
+
 [[profile.ci.overrides]]
 filter = 'binary(pty_mitm_stdin_test) or binary(pty_mitm_paste_test)'
 test-group = 'pty-mitm-substrate'
+
+[[profile.ci.overrides]]
+filter = 'binary(daemon_cross_process_pty_attach_test)'
+slow-timeout = { period = "10s", terminate-after = 1, grace-period = "1s" }
+retries = 0

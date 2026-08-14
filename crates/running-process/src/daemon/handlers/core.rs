@@ -49,10 +49,11 @@ pub fn handle_status(request: &DaemonRequest, state: &DaemonState) -> DaemonResp
     }
 }
 
-/// Handle a `Shutdown` request by signalling the server to stop.
-pub fn handle_shutdown(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
-    let _ = state.shutdown_tx.send(true);
-
+/// Build the acknowledgement for a `Shutdown` request.
+///
+/// The server sends this response before signalling shutdown so the
+/// connection task cannot be torn down with the acknowledgement in flight.
+pub fn handle_shutdown(request: &DaemonRequest, _state: &DaemonState) -> DaemonResponse {
     DaemonResponse {
         request_id: request.id,
         code: StatusCode::Ok as i32,
