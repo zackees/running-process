@@ -15,6 +15,36 @@ use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCE
 
 use crate::SpawnSpec;
 
+#[path = "platform/process_tree.rs"]
+mod process_tree;
+
+pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
+    process_tree::kill_tree(pid, timeout, process_start_key)
+}
+
+fn process_start_key(pid: sysinfo::Pid, _process: &sysinfo::Process) -> io::Result<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.as_u32()) };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let mut creation: FILETIME = unsafe { std::mem::zeroed() };
+    let mut exit: FILETIME = unsafe { std::mem::zeroed() };
+    let mut kernel: FILETIME = unsafe { std::mem::zeroed() };
+    let mut user: FILETIME = unsafe { std::mem::zeroed() };
+    let queried = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    let query_error = if queried == 0 { Some(io::Error::last_os_error()) } else { None };
+    unsafe { CloseHandle(handle); }
+    if let Some(error) = query_error {
+        return Err(error);
+    }
+    Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+}
+
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 pub(crate) fn configure_command(

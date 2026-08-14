@@ -4,3 +4,5 @@ pub use crate::{
     PlatformChild, PlatformEmergencySignal, PlatformLifecycle, PlatformOutput, PlatformStdin,
     SpawnSpec, StreamMode,
 };
+
+pub use crate::platform_imp::kill_tree;
