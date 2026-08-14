@@ -91,6 +91,7 @@ async fn relay_session_proxies_client_to_daemon_endpoint() {
             cwd: String::new(),
             env: Vec::new(),
             clear_inherited_env: false,
+            environment_policy: 0,
         })))
         .await
         .expect("send start");
@@ -195,6 +196,7 @@ async fn relay_session_preserves_session_exit_metadata() {
             cwd: String::new(),
             env: Vec::new(),
             clear_inherited_env: false,
+            environment_policy: 0,
         })))
         .await
         .expect("send start");

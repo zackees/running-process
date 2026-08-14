@@ -103,7 +103,7 @@ fn spawn_and_track_detached(
     command_text: &str,
     cwd: &str,
     env: &[KeyValue],
-    clear_inherited_env: bool,
+    environment_policy: crate::EnvironmentPolicy,
     originator: &str,
     state: &DaemonState,
 ) -> Result<SpawnedChild, String> {
@@ -112,21 +112,8 @@ fn spawn_and_track_detached(
     if !cwd.is_empty() {
         command.current_dir(cwd);
     }
-    // Two env modes, gated on `clear_inherited_env`:
-    //
-    // - false (default, backward-compatible): LAYER the caller's env on
-    //   top of the daemon's inherited env. The subprocess sees
-    //   <daemon env> ∪ <env>, the caller's entries winning ties.
-    //
-    // - true: REPLACE — the subprocess sees ONLY the caller's env. The
-    //   daemon's env is not inherited. Mirrors Python's
-    //   `subprocess.Popen(env=…)` semantic; useful for sandbox-style
-    //   compiler wrapping where you want a deterministic env. Windows
-    //   callers will typically still need SystemRoot in this list so
-    //   `cmd.exe` can load its DLLs (see #115/PR review for context).
-    if clear_inherited_env {
-        command.env_clear();
-    }
+    // The resolved base policy is applied by the centralized spawn boundary;
+    // these ordered entries are explicit client overrides applied afterward.
     if !env.is_empty() {
         command.envs(canonical_env_pairs(env));
     }
@@ -134,14 +121,13 @@ fn spawn_and_track_detached(
         command.env(ORIGINATOR_ENV_VAR, originator);
     }
 
-    // Route through `spawn_daemon_with_clear_env` so the child gets the
+    // Route through the environment-policy spawn boundary so the child gets the
     // structurally-safe sanitized handle list (no orphan inheritable
     // handles), NUL stdio, CREATE_NO_WINDOW + CREATE_NEW_PROCESS_GROUP
     // on Windows (no console popup, ignores parent's Ctrl-C), and setsid
-    // + close-extra-fds on Unix. The `clear_env` flag is the bit that
-    // makes Rust stdlib's `command.env_clear()` actually observable
-    // through our manual CreateProcessW path on Windows.
-    let mut detached = crate::spawn_daemon_with_clear_env(&mut command, clear_inherited_env)
+    // + close-extra-fds on Unix. The policy is resolved before reaching the
+    // platform spawn path, including the manual CreateProcessW path.
+    let mut detached = crate::spawn_daemon_with_env_policy(&mut command, environment_policy)
         .map_err(|e| format!("failed to spawn detached command: {e}"))?;
 
     let pid = detached.id();
@@ -198,12 +184,21 @@ pub fn handle_spawn_daemon(request: &DaemonRequest, state: &DaemonState) -> Daem
     } else {
         req.originator.clone()
     };
+    let environment_policy = match crate::EnvironmentPolicy::from_wire(
+        req.environment_policy,
+        req.clear_inherited_env,
+    ) {
+        Ok(policy) => policy,
+        Err(message) => {
+            return error_response(request.id, StatusCode::InvalidArgument, message.into())
+        }
+    };
 
     match spawn_and_track_detached(
         command_text,
         &req.cwd,
         &req.env,
-        req.clear_inherited_env,
+        environment_policy,
         &effective_originator,
         state,
     ) {

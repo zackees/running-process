@@ -68,6 +68,7 @@ async fn session_endpoint_serves_a_session_from_start_frame() {
             cwd: String::new(),
             env: Vec::new(),
             clear_inherited_env: false,
+            environment_policy: 0,
         })))
         .await
         .expect("send start");

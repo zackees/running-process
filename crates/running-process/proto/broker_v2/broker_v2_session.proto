@@ -16,6 +16,16 @@
 syntax = "proto3";
 package running_process.broker.v2;
 
+// Selects the base environment for the session child. AUTO is deliberately
+// not a wire value: the client resolves lifetime-dependent defaults before
+// opening the session.
+enum EnvironmentPolicy {
+  ENVIRONMENT_POLICY_UNSPECIFIED   = 0;
+  ENVIRONMENT_POLICY_INHERIT       = 1;
+  ENVIRONMENT_POLICY_USER_BASELINE = 2;
+  ENVIRONMENT_POLICY_CLEAR         = 3;
+}
+
 // One frame on a proxied compile session's stdio stream. Exactly one field is
 // set per frame (proto3 oneof). Directionality is by field, not a flag:
 // `stdin` / `stdin_eof` flow client -> daemon; `stdout` / `stderr` / `exit`
@@ -43,17 +53,17 @@ message SessionFrame {
 }
 
 // The command a compile session runs, carried on the session's opening `start`
-// frame. Mirrors the daemon's `SpawnPipeSessionRequest` env semantics: with
-// `clear_inherited_env` false the `env` entries layer over the daemon's
-// inherited environment (later entries win); with it true they are the whole
-// environment. `env` is ordered (repeated, not a map) so key-case collisions
-// resolve deterministically the way `std::process::Command::env` does.
+// frame. `environment_policy` selects the base; `env` is then applied in
+// order (repeated, not a map) so key-case collisions resolve deterministically
+// the way `std::process::Command::env` does.
 message SessionStart {
   string program = 1;
   repeated string args = 2;
   string cwd = 3;
   repeated SessionEnvVar env = 4;
+  // Deprecated compatibility field. New clients dual-write it for old servers.
   bool clear_inherited_env = 5;
+  EnvironmentPolicy environment_policy = 6;
 }
 
 // One ordered environment entry for `SessionStart.env`. (The `broker.v2`

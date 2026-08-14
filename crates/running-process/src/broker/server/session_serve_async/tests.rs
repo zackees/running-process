@@ -261,6 +261,7 @@ async fn async_broker_negotiates_hello_then_proxies_session() {
             cwd: String::new(),
             env: Vec::new(),
             clear_inherited_env: false,
+            environment_policy: 0,
         })))
         .await
         .expect("send start");
@@ -433,6 +434,7 @@ async fn async_broker_session_socket_entry_binds_and_proxies() {
             cwd: String::new(),
             env: Vec::new(),
             clear_inherited_env: false,
+            environment_policy: 0,
         })))
         .await
         .expect("send start");

@@ -2,9 +2,9 @@ use super::*;
 use crate::proto::daemon::{
     BulkTerminateSessionsRequest, DetachPipeStreamRequest, DetachPtySessionRequest,
     GetSessionBacklogRequest, ListByOriginatorRequest, PingRequest, RegisterRequest, RequestType,
-    ResizePtySessionRequest, ShutdownRequest, SpawnDaemonRequest, StatusRequest,
-    TerminatePipeSessionRequest, TerminatePtySessionRequest, UnregisterRequest,
-    WritePipeStdinRequest,
+    ResizePtySessionRequest, ShutdownRequest, SpawnDaemonRequest, SpawnPipeSessionRequest,
+    SpawnPtySessionRequest, StatusRequest, TerminatePipeSessionRequest, TerminatePtySessionRequest,
+    UnregisterRequest, WritePipeStdinRequest,
 };
 
 /// Build a minimal `DaemonState` for testing.
@@ -259,6 +259,44 @@ fn test_spawn_daemon_empty_command() {
     let resp = handle_spawn_daemon(&req, &state);
     assert_eq!(resp.code, StatusCode::InvalidArgument as i32);
     assert!(resp.message.contains("command must not be empty"));
+}
+
+#[test]
+fn spawn_handlers_reject_unknown_environment_policy() {
+    let (state, _tmp) = test_state();
+
+    let mut daemon = make_request(36, RequestType::SpawnDaemon);
+    daemon.spawn_daemon = Some(SpawnDaemonRequest {
+        command: "echo unreachable".into(),
+        environment_policy: 99,
+        ..Default::default()
+    });
+    assert_eq!(
+        handle_spawn_daemon(&daemon, &state).code,
+        StatusCode::InvalidArgument as i32
+    );
+
+    let mut pty = make_request(37, RequestType::SpawnPtySession);
+    pty.spawn_pty_session = Some(SpawnPtySessionRequest {
+        argv: vec!["unreachable".into()],
+        environment_policy: 99,
+        ..Default::default()
+    });
+    assert_eq!(
+        handle_spawn_pty_session(&pty, &state).code,
+        StatusCode::InvalidArgument as i32
+    );
+
+    let mut pipe = make_request(38, RequestType::SpawnPipeSession);
+    pipe.spawn_pipe_session = Some(SpawnPipeSessionRequest {
+        argv: vec!["unreachable".into()],
+        environment_policy: 99,
+        ..Default::default()
+    });
+    assert_eq!(
+        handle_spawn_pipe_session(&pipe, &state).code,
+        StatusCode::InvalidArgument as i32
+    );
 }
 
 #[test]

@@ -37,28 +37,31 @@ pub fn handle_spawn_pty_session(request: &DaemonRequest, state: &DaemonState) ->
         Some(req.cwd.clone())
     };
 
-    // Build env. If `clear_inherited_env` is false, layer the supplied env
-    // on top of the daemon's; otherwise use only the supplied entries. The
-    // case-insensitive dedup that `SpawnDaemon` does on Windows is not
-    // re-implemented here because `NativePtyProcess` does not collapse env
-    // keys the way `Command::env` does — every KV pair survives.
-    let env = if req.env.is_empty() && !req.clear_inherited_env {
-        None
-    } else {
-        let mut pairs: Vec<(String, String)> = if req.clear_inherited_env {
-            Vec::new()
-        } else {
-            std::env::vars().collect()
-        };
-        for KeyValue { key, value } in &req.env {
-            // Overwrite if key already present.
-            if let Some((_, v)) = pairs.iter_mut().find(|(k, _)| k == key) {
-                *v = value.clone();
-            } else {
-                pairs.push((key.clone(), value.clone()));
-            }
+    // Resolve the additive policy (or its legacy boolean fallback) once, then
+    // materialize the environment expected by the native PTY backend.
+    let policy = match crate::EnvironmentPolicy::from_wire(
+        req.environment_policy,
+        req.clear_inherited_env,
+    ) {
+        Ok(policy) => policy,
+        Err(message) => {
+            return error_pty_response(request.id, StatusCode::InvalidArgument, message.into())
         }
-        Some(pairs)
+    };
+    let explicit: Vec<(String, String)> = req
+        .env
+        .iter()
+        .map(|KeyValue { key, value }| (key.clone(), value.clone()))
+        .collect();
+    let env = match crate::environment::materialize_environment(policy, &explicit) {
+        Ok(env) => env,
+        Err(error) => {
+            return error_pty_response(
+                request.id,
+                StatusCode::Internal,
+                format!("environment policy failed: {error}"),
+            )
+        }
     };
 
     let command_display = req.argv.join(" ");

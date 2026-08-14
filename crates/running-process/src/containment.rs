@@ -106,6 +106,17 @@ impl ContainedProcessGroup {
         free_spawn(command, stdio)
     }
 
+    /// Spawn a contained child using an explicit base environment policy.
+    pub fn spawn_with_environment_policy(
+        &self,
+        command: &mut Command,
+        stdio: SpawnStdio<'_>,
+        policy: crate::EnvironmentPolicy,
+    ) -> Result<SpawnedChild, std::io::Error> {
+        self.inject_originator_env(command);
+        crate::spawn_with_env_policy(command, stdio, policy)
+    }
+
     /// Spawn a detached daemon child. The child has NUL stdio, a sanitized
     /// handle list, and survives the returned [`DaemonChild`] being
     /// dropped. To terminate, call [`DaemonChild::kill`].

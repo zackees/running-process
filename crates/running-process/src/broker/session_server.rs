@@ -87,6 +87,21 @@ pub fn spawn_contained_session(
     group.spawn(command, stdio)
 }
 
+/// [`spawn_contained_session`] with an explicit environment base policy.
+pub fn spawn_contained_session_with_environment(
+    group: &ContainedProcessGroup,
+    command: &mut Command,
+    environment_policy: crate::EnvironmentPolicy,
+) -> io::Result<SpawnedChild> {
+    let stdio = SpawnStdio {
+        stdin: StdioSource::Pipe,
+        stdout: StdioSource::Pipe,
+        stderr: StdioSource::Pipe,
+        ..SpawnStdio::default()
+    };
+    group.spawn_with_environment_policy(command, stdio, environment_policy)
+}
+
 /// Drive `child` as a proxied session over a byte transport.
 ///
 /// Inbound `SessionFrame`s are decoded off `inbound` and applied to the child's

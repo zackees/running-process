@@ -15,6 +15,43 @@ mod prost_generated {
 
 pub use prost_generated::*;
 
+impl SessionStart {
+    /// Build a contained SESSION request from the caller's current process
+    /// context. Only Unicode environment entries can be represented by this
+    /// protobuf string vocabulary; `std::env::vars()` retains that existing
+    /// limitation explicitly.
+    pub fn from_current_process(
+        program: impl Into<String>,
+        args: impl IntoIterator<Item = impl Into<String>>,
+        cwd: impl Into<String>,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args: args.into_iter().map(Into::into).collect(),
+            cwd: cwd.into(),
+            env: std::env::vars()
+                .map(|(key, value)| SessionEnvVar { key, value })
+                .collect(),
+            clear_inherited_env: true,
+            environment_policy: crate::EnvironmentPolicy::Clear
+                .wire_value()
+                .expect("Clear is serializable"),
+        }
+    }
+
+    /// Select the base environment. `Auto` resolves to the contained-child
+    /// default (`Inherit`) before serialization.
+    pub fn with_environment_policy(mut self, policy: crate::EnvironmentPolicy) -> Self {
+        let policy = match policy {
+            crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::Inherit,
+            explicit => explicit,
+        };
+        self.environment_policy = policy.wire_value().expect("resolved policy");
+        self.clear_inherited_env = policy.legacy_clear_fallback().expect("resolved policy");
+        self
+    }
+}
+
 mod io;
 pub use io::{
     service_definition_dir_v2, service_definition_path_v2, write_service_definition_v2,
@@ -83,6 +120,7 @@ mod tests {
                     value: "1".to_owned(),
                 }],
                 clear_inherited_env: true,
+                environment_policy: 3,
             }),
         ];
         for kind in cases {
@@ -93,6 +131,18 @@ mod tests {
                 .expect("SessionFrame decodes");
             assert_eq!(decoded, original, "variant did not round-trip: {kind:?}");
         }
+    }
+
+    #[test]
+    fn session_start_captures_context_and_dual_writes_policy() {
+        let start = SessionStart::from_current_process("rustc", ["--version"], "work");
+        assert_eq!(start.environment_policy, 3);
+        assert!(start.clear_inherited_env);
+        assert!(!start.env.is_empty());
+
+        let inherit = start.with_environment_policy(crate::EnvironmentPolicy::Inherit);
+        assert_eq!(inherit.environment_policy, 1);
+        assert!(!inherit.clear_inherited_env);
     }
 
     /// Signal death carries a non-zero `signal`; consumers read it first.

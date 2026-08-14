@@ -79,6 +79,43 @@ impl EnvironmentPolicy {
             (explicit, _) => explicit,
         }
     }
+
+    /// Decode the additive wire policy, falling back to the deprecated
+    /// `clear_inherited_env` bit for older clients.
+    #[cfg(any(feature = "daemon", feature = "client-async", test))]
+    pub(crate) fn from_wire(value: i32, legacy_clear: bool) -> Result<Self, &'static str> {
+        match value {
+            0 => Ok(if legacy_clear {
+                Self::Clear
+            } else {
+                Self::Inherit
+            }),
+            1 => Ok(Self::Inherit),
+            2 => Ok(Self::UserBaseline),
+            3 => Ok(Self::Clear),
+            _ => Err("unknown environment policy"),
+        }
+    }
+
+    /// Encode a resolved policy for either daemon or broker-v2 protobufs.
+    pub(crate) fn wire_value(self) -> Result<i32, &'static str> {
+        match self {
+            Self::Inherit => Ok(1),
+            Self::UserBaseline => Ok(2),
+            Self::Clear => Ok(3),
+            Self::Auto => Err("Auto environment policy must be resolved before serialization"),
+        }
+    }
+
+    /// Compatibility bit written for servers that predate the wire enum.
+    /// `UserBaseline` deliberately degrades to `Clear`, never ambient inherit.
+    pub(crate) fn legacy_clear_fallback(self) -> Result<bool, &'static str> {
+        match self {
+            Self::Inherit => Ok(false),
+            Self::UserBaseline | Self::Clear => Ok(true),
+            Self::Auto => Err("Auto environment policy must be resolved before serialization"),
+        }
+    }
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -773,6 +810,36 @@ mod tests {
             assert_eq!(policy.resolve(SpawnLifetime::Contained), policy);
             assert_eq!(policy.resolve(SpawnLifetime::Daemon), policy);
         }
+    }
+
+    #[test]
+    fn wire_environment_policy_preserves_legacy_and_fails_closed() {
+        assert_eq!(
+            EnvironmentPolicy::from_wire(0, false),
+            Ok(EnvironmentPolicy::Inherit)
+        );
+        assert_eq!(
+            EnvironmentPolicy::from_wire(0, true),
+            Ok(EnvironmentPolicy::Clear)
+        );
+        assert_eq!(
+            EnvironmentPolicy::from_wire(1, true),
+            Ok(EnvironmentPolicy::Inherit)
+        );
+        assert_eq!(
+            EnvironmentPolicy::from_wire(2, false),
+            Ok(EnvironmentPolicy::UserBaseline)
+        );
+        assert_eq!(
+            EnvironmentPolicy::from_wire(3, false),
+            Ok(EnvironmentPolicy::Clear)
+        );
+        assert!(EnvironmentPolicy::from_wire(99, false).is_err());
+        assert_eq!(
+            EnvironmentPolicy::UserBaseline.legacy_clear_fallback(),
+            Ok(true)
+        );
+        assert!(EnvironmentPolicy::Auto.wire_value().is_err());
     }
 
     #[cfg(feature = "client-async")]

@@ -33,10 +33,12 @@ pub struct PipeSpawnRequest {
     pub argv: Vec<String>,
     /// Working directory for the child. `None` leaves the daemon default in effect.
     pub cwd: Option<PathBuf>,
-    /// Environment variables to overlay onto the inherited environment.
+    /// Explicit environment variables applied after the selected base.
     pub env: Vec<(String, String)>,
-    /// Start from an empty environment before applying [`Self::env`].
+    /// Deprecated wire-compatibility bit. Prefer [`Self::environment_policy`].
     pub clear_inherited_env: bool,
+    /// Base environment used before applying [`Self::env`].
+    pub environment_policy: crate::EnvironmentPolicy,
     /// Optional label used by list filters. `None` lets the daemon assign one.
     pub originator: Option<String>,
     /// Merge stderr into stdout instead of keeping a separately attachable stderr stream.
@@ -44,13 +46,15 @@ pub struct PipeSpawnRequest {
 }
 
 impl PipeSpawnRequest {
-    /// Create a spawn request from argv with inherited environment and separate stderr.
+    /// Create a request that snapshots the caller environment and replaces
+    /// the daemon environment, with separate stderr.
     pub fn new<S: Into<String>>(argv: impl IntoIterator<Item = S>) -> Self {
         Self {
             argv: argv.into_iter().map(Into::into).collect(),
             cwd: None,
-            env: Vec::new(),
-            clear_inherited_env: false,
+            env: std::env::vars().collect(),
+            clear_inherited_env: true,
+            environment_policy: crate::EnvironmentPolicy::Clear,
             originator: None,
             merge_stderr_into_stdout: false,
         }
@@ -84,6 +88,20 @@ impl PipeSpawnRequest {
         self.env = env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
         self
     }
+
+    /// Select the base environment for this contained remote child. `Auto`
+    /// resolves to the contained-process default, `Inherit`.
+    pub fn with_environment_policy(mut self, policy: crate::EnvironmentPolicy) -> Self {
+        self.environment_policy = match policy {
+            crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::Inherit,
+            explicit => explicit,
+        };
+        self.clear_inherited_env = self
+            .environment_policy
+            .legacy_clear_fallback()
+            .expect("resolved environment policy");
+        self
+    }
 }
 
 /// Reply summary for a successful pipe session spawn.
@@ -103,6 +121,10 @@ impl DaemonClient {
         &mut self,
         request: &PipeSpawnRequest,
     ) -> Result<SpawnedPipeSession, ClientError> {
+        let policy = match request.environment_policy {
+            crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::Inherit,
+            explicit => explicit,
+        };
         let proto = SpawnPipeSessionRequest {
             argv: request.argv.clone(),
             cwd: request
@@ -118,9 +140,14 @@ impl DaemonClient {
                     value: v.clone(),
                 })
                 .collect(),
-            clear_inherited_env: request.clear_inherited_env,
+            clear_inherited_env: policy
+                .legacy_clear_fallback()
+                .map_err(|message| ClientError::Io(std::io::Error::other(message)))?,
             originator: request.originator.clone().unwrap_or_default(),
             merge_stderr_into_stdout: request.merge_stderr_into_stdout,
+            environment_policy: policy
+                .wire_value()
+                .map_err(|message| ClientError::Io(std::io::Error::other(message)))?,
         };
         let daemon_request = DaemonRequest {
             id: self.next_request_id(),
@@ -414,4 +441,36 @@ fn read_length_prefixed<R: Read>(r: &mut R) -> Result<Vec<u8>, std::io::Error> {
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipe_spawn_request_defaults_to_client_snapshot_replacement() {
+        let request = PipeSpawnRequest::new(["echo", "hi"]);
+        assert_eq!(request.environment_policy, crate::EnvironmentPolicy::Clear);
+        assert!(request.clear_inherited_env);
+        assert!(!request.env.is_empty());
+    }
+
+    #[test]
+    fn pipe_spawn_request_dual_writes_explicit_policy() {
+        let inherit = PipeSpawnRequest::new(["echo"])
+            .with_environment_policy(crate::EnvironmentPolicy::Inherit);
+        assert_eq!(
+            inherit.environment_policy,
+            crate::EnvironmentPolicy::Inherit
+        );
+        assert!(!inherit.clear_inherited_env);
+
+        let baseline = PipeSpawnRequest::new(["echo"])
+            .with_environment_policy(crate::EnvironmentPolicy::UserBaseline);
+        assert_eq!(
+            baseline.environment_policy,
+            crate::EnvironmentPolicy::UserBaseline
+        );
+        assert!(baseline.clear_inherited_env);
+    }
 }

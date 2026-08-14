@@ -80,6 +80,7 @@ async fn mux_backend_endpoint_serves_a_session_compile() {
             cwd: String::new(),
             env: Vec::new(),
             clear_inherited_env: false,
+            environment_policy: 0,
         })))
         .await
         .expect("send start");
@@ -247,6 +248,7 @@ async fn full_vertical_client_broker_relay_daemon_mux_compile() {
             cwd: String::new(),
             env: Vec::new(),
             clear_inherited_env: false,
+            environment_policy: 0,
         })))
         .await
         .expect("send start");

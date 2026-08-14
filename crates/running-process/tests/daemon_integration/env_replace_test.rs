@@ -1,12 +1,7 @@
-//! Tests for `SpawnCommandRequest::clear_inherited_env` — the daemon's
-//! equivalent of Python's `subprocess.Popen(env=…)` replace semantic.
-//!
-//! Two modes:
-//!
-//! | clear_inherited_env | Subprocess sees                         |
-//! |---------------------|-----------------------------------------|
-//! | `false` (default)   | <daemon inherited env> ∪ <caller env>   |
-//! | `true`              | only <caller env>                       |
+//! Tests for the remote-child environment contract. New requests serialize
+//! the client's snapshot and select a clear daemon-side base. Explicit policy
+//! opt-ins retain inheritance and user-baseline behavior, while the legacy
+//! boolean remains a compatibility fallback for old wire messages.
 //!
 //! Subject of the probes is a small Rust testbin (`testbin-env-dump`)
 //! that writes its full env to a file in argv[1]. We invoke it via
@@ -92,11 +87,10 @@ fn shell_quote_path(path: &Path) -> String {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-/// **Default (inherit).** With `clear_inherited_env=false` (the
-/// default), the subprocess sees the daemon's inherited env layered
-/// with anything the caller adds.
+/// The default serializes the client snapshot and does not leak ambient values
+/// that exist only in the daemon at spawn time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn default_inherits_daemon_env_and_layers_caller_env() {
+async fn default_forwards_client_snapshot_without_daemon_leakage() {
     let scope = format!("envrep-inherit-{}", line!());
     let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
     tokio::time::sleep(scaled(std::time::Duration::from_millis(300))).await;
@@ -113,7 +107,14 @@ async fn default_inherits_daemon_env_and_layers_caller_env() {
     let task = tokio::task::spawn_blocking(move || {
         let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
         let req = SpawnCommandRequest::shell(command).with_env("RP_TEST_LAYERED", "from-caller");
+        const DAEMON_ONLY: &str = "RP_TEST_DETACHED_DAEMON_ONLY";
+        let previous = std::env::var_os(DAEMON_ONLY);
+        std::env::set_var(DAEMON_ONLY, "must-not-leak");
         let _ = client.spawn_command(&req).expect("spawn_command");
+        match previous {
+            Some(value) => std::env::set_var(DAEMON_ONLY, value),
+            None => std::env::remove_var(DAEMON_ONLY),
+        }
 
         let env_map = read_env_file(&out_for_client);
         assert_eq!(
@@ -121,13 +122,16 @@ async fn default_inherits_daemon_env_and_layers_caller_env() {
             Some("from-caller"),
             "caller-supplied env var must reach the subprocess"
         );
-        // The daemon inherits the runtime's PATH, so the subprocess
-        // should see one too (this is what makes shell invocations
-        // work).
+        assert!(
+            !env_map.contains_key(DAEMON_ONLY),
+            "daemon-only environment must not reach the child"
+        );
+        // PATH comes from the serialized client snapshot, so shell invocations
+        // retain the client's executable lookup context.
         let has_path_like = env_map.contains_key("PATH") || env_map.contains_key("Path");
         assert!(
             has_path_like,
-            "subprocess should inherit a PATH/Path var via the daemon, env was: {env_map:?}"
+            "subprocess should receive a PATH/Path var from the client snapshot"
         );
 
         let _ = client.shutdown(true, 5.0);
