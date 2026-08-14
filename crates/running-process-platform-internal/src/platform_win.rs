@@ -25,6 +25,15 @@ pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
 pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
+pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
+    use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
+    match (scope, category) {
+        (S::SystemWide, C::File) | (S::SystemWide, C::Network) | (S::SystemWide, C::Process) => B { support:P::Unavailable, backend:"etw", reason:"Phase 3: Windows ETW backend not yet implemented" },
+        (S::LaunchedProcessTree, C::File) => B { support:P::Partial, backend:"nt-handle-snapshot", reason:"Windows NtQuerySystemInformation + DuplicateHandle + NtQueryObject snapshot via read_process_file_handles (#539 slice 4; no streaming file events)" },
+        (S::LaunchedProcessTree, C::Network) => B { support:P::Unavailable, backend:"none", reason:"#539: no-admin per-child network backend deferred to a follow-up issue" },
+        (S::LaunchedProcessTree, C::Process) => B { support:P::Supported, backend:"job-object-iocp", reason:"Windows Job Object IOCP descendant lifecycle (#539 slice 2)" },
+    }
+}
 
 pub fn unix_set_priority(_pid: u32, _nice: i32) -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "Unix priority is unavailable on Windows")) }
 pub fn unix_signal_process(_pid: u32, _signal: crate::platform::process::UnixSignalKind) -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "Unix signals are unavailable on Windows")) }

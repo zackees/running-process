@@ -7,6 +7,16 @@ pub use crate::{
 
 pub use crate::platform_imp::exit_code;
 
+#[derive(Clone, Copy)]
+pub enum ObserverScope { SystemWide, LaunchedProcessTree }
+#[derive(Clone, Copy)]
+pub enum ObserverCategory { File, Network, Process }
+#[derive(Clone, Copy)]
+pub enum ObserverSupport { Supported, Partial, Unavailable }
+#[derive(Clone, Copy)]
+pub struct ObserverBackend { pub support: ObserverSupport, pub backend: &'static str, pub reason: &'static str }
+pub use crate::platform_imp::observer_backend;
+
 /// Platform-neutral Unix signal selectors used by the compatibility facade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnixSignalKind { Interrupt, Terminate, Kill }
