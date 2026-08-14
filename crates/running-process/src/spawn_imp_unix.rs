@@ -119,8 +119,6 @@ pub fn spawn_daemon(
     stdio: super::DaemonStdio<'_>,
     policy: super::EnvironmentPolicy,
 ) -> io::Result<super::DaemonChild> {
-    use std::os::unix::process::CommandExt;
-
     apply_environment_policy(command, policy)?;
 
     command
@@ -128,15 +126,7 @@ pub fn spawn_daemon(
         .stdout(daemon_slot_to_stdio(&stdio.stdout)?)
         .stderr(daemon_slot_to_stdio(&stdio.stderr)?);
 
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                // Already a session leader — not fatal.
-            }
-            running_process_platform_internal::platform::process::unix_mark_extra_fds_close_on_exec();
-            Ok(())
-        });
-    }
+    running_process_platform_internal::platform::process::configure_sync_daemon_command(command)?;
 
     let child = command.spawn()?;
     let pid = child.id();
@@ -148,31 +138,12 @@ pub fn spawn(
     stdio: super::SpawnStdio<'_>,
     policy: super::EnvironmentPolicy,
 ) -> io::Result<super::SpawnedChild> {
-    use std::os::unix::process::CommandExt;
-
     apply_environment_policy(command, policy)?;
     command.stdin(slot_to_stdio(&stdio.stdin)?);
     command.stdout(slot_to_stdio(&stdio.stdout)?);
     command.stderr(slot_to_stdio(&stdio.stderr)?);
 
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            #[cfg(target_os = "linux")]
-            {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                if libc::getppid() == 1 {
-                    libc::_exit(1);
-                }
-            }
-            running_process_platform_internal::platform::process::unix_mark_extra_fds_close_on_exec();
-            Ok(())
-        });
-    }
+    running_process_platform_internal::platform::process::configure_sync_contained_command(command)?;
 
     let mut child = command.spawn()?;
     let pid = child.id();

@@ -68,6 +68,34 @@ pub unsafe fn unix_mark_extra_fds_close_on_exec() {
     mark_fds_from_directory_or_range();
 }
 
+pub fn configure_sync_daemon_command(command: &mut std::process::Command) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        command.pre_exec(|| {
+            let _ = libc::setsid();
+            unix_mark_extra_fds_close_on_exec();
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+pub fn configure_sync_contained_command(command: &mut std::process::Command) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 { return Err(io::Error::last_os_error()); }
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::getppid() == 1 { libc::_exit(1); }
+            unix_mark_extra_fds_close_on_exec();
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 unsafe fn mark_fds_from_directory_or_range() {
     let dir = libc::opendir(c"/dev/fd".as_ptr());
     if !dir.is_null() {

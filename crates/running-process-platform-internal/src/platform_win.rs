@@ -55,6 +55,10 @@ pub fn process_snapshot_for_pid(_pid: u32) -> Option<crate::platform::process::P
 }
 
 pub unsafe fn unix_mark_extra_fds_close_on_exec() {}
+
+pub fn configure_sync_daemon_command(_command: &mut std::process::Command) -> io::Result<()> { Ok(()) }
+
+pub fn configure_sync_contained_command(_command: &mut std::process::Command) -> io::Result<()> { Ok(()) }
 pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
     use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
     match (scope, category) {
