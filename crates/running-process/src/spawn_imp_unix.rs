@@ -102,20 +102,15 @@ fn slot_to_stdio(slot: &super::StdioSource<'_>) -> io::Result<Stdio> {
     match slot {
         super::StdioSource::Null => Ok(Stdio::null()),
         super::StdioSource::Parent => Ok(Stdio::inherit()),
-        super::StdioSource::Fd(fd) => {
-            let owned = fd.try_clone_to_owned()?;
-            Ok(Stdio::from(owned))
-        }
+        super::StdioSource::File(file) => Ok(Stdio::from(file.try_clone()?)),
         super::StdioSource::Pipe => Ok(Stdio::piped()),
-        super::StdioSource::_Phantom(_) => unreachable!(),
     }
 }
 
 fn daemon_slot_to_stdio(slot: &super::DaemonStdioSource<'_>) -> io::Result<Stdio> {
     match slot {
         super::DaemonStdioSource::Null => Ok(Stdio::null()),
-        super::DaemonStdioSource::Fd(fd) => Ok(Stdio::from(fd.try_clone_to_owned()?)),
-        super::DaemonStdioSource::_Phantom(_) => unreachable!(),
+        super::DaemonStdioSource::File(file) => Ok(Stdio::from(file.try_clone()?)),
     }
 }
 

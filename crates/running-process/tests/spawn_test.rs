@@ -445,24 +445,13 @@ fn test_spawn_child_exit_bounded_drain() {
 /// streams or retaining the caller's handles.
 #[test]
 fn test_spawn_daemon_file_stdio_is_preserved() {
-    #[cfg(unix)]
-    use std::os::fd::AsFd;
-    #[cfg(windows)]
-    use std::os::windows::io::AsHandle;
-
     let log = tempfile::NamedTempFile::new().expect("temp log");
     let stdout = log.reopen().expect("open stdout log");
     let stderr = log.reopen().expect("open stderr log");
     let mut command = shell_echo_cmd("daemon-file-stdio");
     let stdio = DaemonStdio {
-        #[cfg(windows)]
-        stdout: DaemonStdioSource::Handle(stdout.as_handle()),
-        #[cfg(unix)]
-        stdout: DaemonStdioSource::Fd(stdout.as_fd()),
-        #[cfg(windows)]
-        stderr: DaemonStdioSource::Handle(stderr.as_handle()),
-        #[cfg(unix)]
-        stderr: DaemonStdioSource::Fd(stderr.as_fd()),
+        stdout: DaemonStdioSource::File(&stdout),
+        stderr: DaemonStdioSource::File(&stderr),
     };
 
     let mut child = spawn_daemon_with_stdio(&mut command, stdio).expect("spawn daemon");
