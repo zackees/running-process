@@ -24,7 +24,6 @@ use running_process::daemon::server::DaemonServer;
 use running_process::proto::daemon::{pty_stream_frame::Frame as StreamOneof, StatusCode};
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// Locate (and build, if needed) the path of a `testbin-*` binary.

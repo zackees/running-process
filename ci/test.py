@@ -693,8 +693,10 @@ def main(argv: list[str] | None = None) -> int:
             # soldr#2365 Phase 3: the daemon-side compile-session handler lives
             # behind the `daemon` feature, which the default workspace nextest
             # run does not enable. Exercise its byte-fidelity tests in a scoped
-            # pass so the SESSION data-plane handler is covered, without turning
-            # on the whole (never-CI-run) daemon test suite here.
+            # pass for every local/default CI invocation. The Linux x86-musl
+            # lane additionally runs the complete daemon-feature unit and
+            # integration suite; macOS and Windows will follow in their staged
+            # platform branches.
             compile_session_args = cargo_command(
                 "nextest",
                 "run",

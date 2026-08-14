@@ -331,9 +331,18 @@ fn serve_launching_backends_launches_distinct_services_concurrently() {
     let tmp = tempfile::tempdir().unwrap();
     let service_root = tmp.path().join("services");
     ensure_service_definition_dir(&service_root).unwrap();
+    // Hello routing hashes the configured daemon before it invokes the
+    // launcher. Hashing this (potentially coverage-instrumented) test binary
+    // can take longer than the launch-overlap rendezvous on loaded CI hosts,
+    // even though the broker is processing both requests concurrently. The
+    // injected launcher never executes this path, so use a tiny deterministic
+    // fixture and keep the assertion focused on launcher serialization.
+    let daemon_fixture = tmp.path().join("daemon-fixture");
+    fs::write(&daemon_fixture, b"daemon fixture").unwrap();
     for service_name in ["service-a", "service-b"] {
         let mut definition = service_definition();
         definition.service_name = service_name.into();
+        definition.binary_path = daemon_fixture.to_string_lossy().into_owned();
         write_definition_for(&service_root, service_name, &definition);
     }
 
@@ -575,7 +584,10 @@ impl BackendLauncher for CurrentProcessLauncher {
 fn connect_with_retry(
     name: interprocess::local_socket::Name<'static>,
 ) -> interprocess::local_socket::Stream {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // Coverage and emulated musl runners can leave the freshly spawned server
+    // thread descheduled for more than 15 seconds. This is only a test-fixture
+    // startup allowance; production connect deadlines are unchanged.
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         match LocalSocketStream::connect(name.borrow()) {
             Ok(stream) => return stream,

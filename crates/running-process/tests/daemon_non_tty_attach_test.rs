@@ -14,8 +14,7 @@ use running_process::proto::daemon::AttachPtySessionRequest;
 
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
-use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn testbin_path(name: &str) -> PathBuf {
     // Fixtures are built once, before the suite runs (see `ci/test.py`).

@@ -18,9 +18,8 @@ use running_process::daemon::pty_sessions::PtySessionRegistry;
 use running_process::daemon::registry::Registry;
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn testbin_path(name: &str) -> PathBuf {
     // Fixtures are built once, before the suite runs (see `ci/test.py`).

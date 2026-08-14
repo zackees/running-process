@@ -15,8 +15,7 @@ use running_process::daemon::server::DaemonServer;
 use running_process::proto::daemon::PipeStreamKind;
 
 use std::path::PathBuf;
-use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn testbin_path(name: &str) -> PathBuf {
     // Fixtures are built once, before the suite runs (see `ci/test.py`).
