@@ -63,6 +63,11 @@ pub fn configure_sync_contained_command(_command: &mut std::process::Command) ->
 pub fn parent_has_console() -> bool {
     unsafe { windows_sys::Win32::System::Console::GetConsoleCP() != 0 }
 }
+
+pub fn sync_child_native_handle(child: &std::process::Child) -> usize {
+    use std::os::windows::io::AsRawHandle;
+    child.as_raw_handle() as usize
+}
 pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
     use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
     match (scope, category) {
