@@ -59,6 +59,10 @@ pub unsafe fn unix_mark_extra_fds_close_on_exec() {}
 pub fn configure_sync_daemon_command(_command: &mut std::process::Command) -> io::Result<()> { Ok(()) }
 
 pub fn configure_sync_contained_command(_command: &mut std::process::Command) -> io::Result<()> { Ok(()) }
+
+pub fn parent_has_console() -> bool {
+    unsafe { windows_sys::Win32::System::Console::GetConsoleCP() != 0 }
+}
 pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
     use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
     match (scope, category) {

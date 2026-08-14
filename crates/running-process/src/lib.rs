@@ -1350,7 +1350,7 @@ impl NativeProcess {
                 self.config.creationflags,
                 self.config.create_process_group,
                 self.config.nice,
-                crate::windows::parent_has_console(),
+                running_process_platform_internal::platform::process::parent_has_console(),
             );
             if flags != 0 {
                 command.creation_flags(flags);
