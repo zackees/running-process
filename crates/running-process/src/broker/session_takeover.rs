@@ -15,7 +15,8 @@
 //! command, stream its stdio); do not route soldr compiles through it.
 //!
 //! This is the byte-transparent handler (the proxy pump [`run_child_session`]
-//! driving a **contained** child, [`spawn_contained_session`]) bridged onto the
+//! driving a **contained** child,
+//! [`crate::broker::session_server::spawn_contained_session`]) bridged onto the
 //! async transport. It lived under the `daemon` feature as
 //! `daemon::compile_session`; it moved here so `client-async` consumers can
 //! reach it (`daemon::compile_session` re-exports it unchanged).
