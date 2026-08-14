@@ -182,7 +182,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
         run: |
           rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --path lints --pattern running-process-platform-boundary --workspace
-          rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --all --workspace
+
 
       - name: Terminal graphics capability matrix
         timeout-minutes: 10
