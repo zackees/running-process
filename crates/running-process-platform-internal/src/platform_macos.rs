@@ -14,6 +14,16 @@ pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
     process_tree::kill_tree(pid, timeout, |_pid, process| Ok(process.start_time()))
 }
 
+pub fn configure_compat_tokio_command(
+    command: &mut Command,
+    _show_console: bool,
+    kill_when_owner_dies: bool,
+) -> io::Result<()> {
+    configure_command(command, false, kill_when_owner_dies)
+}
+
+pub fn after_compat_tokio_spawn(_child: &Child, _kill_when_owner_dies: bool) {}
+
 pub(crate) fn configure_command(
     command: &mut Command,
     create_process_group: bool,
