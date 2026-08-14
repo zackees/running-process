@@ -7,7 +7,7 @@ pub use crate::{
 
 pub use crate::platform_imp::{
     configure_trampoline_command, enable_descendant_subreaper, exit_code, set_process_name,
-    trampoline_exit_code, process_snapshot, process_snapshot_for_pid,
+    trampoline_exit_code, process_snapshot, process_snapshot_for_pid, unix_mark_extra_fds_close_on_exec,
 };
 
 /// A platform-owned identity record used when observing a process tree.

@@ -133,7 +133,7 @@ pub fn spawn_daemon(
             if libc::setsid() == -1 {
                 // Already a session leader — not fatal.
             }
-            close_extra_fds();
+            running_process_platform_internal::platform::process::unix_mark_extra_fds_close_on_exec();
             Ok(())
         });
     }
@@ -169,7 +169,7 @@ pub fn spawn(
                     libc::_exit(1);
                 }
             }
-            close_extra_fds();
+            running_process_platform_internal::platform::process::unix_mark_extra_fds_close_on_exec();
             Ok(())
         });
     }
@@ -297,88 +297,6 @@ fn apply_environment_policy(
 /// `CLOEXEC` keeps the descriptors usable for the instant between here and
 /// `exec`, which is all std needs, while still guaranteeing the child that
 /// actually starts inherits none of them.
-unsafe fn close_extra_fds() {
-    #[cfg(target_os = "linux")]
-    {
-        #[cfg(any(
-            target_arch = "x86_64",
-            target_arch = "aarch64",
-            target_arch = "x86",
-            target_arch = "arm",
-            target_arch = "riscv64",
-            target_arch = "powerpc64",
-        ))]
-        {
-            const SYS_CLOSE_RANGE: libc::c_long = 436;
-            // CLOSE_RANGE_CLOEXEC (Linux 5.11+): mark the range close-on-exec
-            // instead of closing it now.
-            const CLOSE_RANGE_CLOEXEC: libc::c_uint = 4;
-            let rc = libc::syscall(
-                SYS_CLOSE_RANGE,
-                3u32,
-                libc::c_uint::MAX,
-                CLOSE_RANGE_CLOEXEC,
-            );
-            if rc == 0 {
-                return;
-            }
-            // Older kernels reject the flag (EINVAL); fall through to the
-            // per-descriptor sweep rather than closing the range outright.
-        }
-    }
-
-    let dir = libc::opendir(c"/dev/fd".as_ptr());
-    if !dir.is_null() {
-        let dir_fd = libc::dirfd(dir);
-        loop {
-            let ent = libc::readdir(dir);
-            if ent.is_null() {
-                break;
-            }
-            let name_ptr = (*ent).d_name.as_ptr();
-            let mut fd: libc::c_int = 0;
-            let mut p = name_ptr;
-            let mut ok = false;
-            while *p != 0 {
-                let c = *p as u8;
-                if !c.is_ascii_digit() {
-                    ok = false;
-                    break;
-                }
-                fd = fd * 10 + (c - b'0') as libc::c_int;
-                p = p.add(1);
-                ok = true;
-            }
-            if !ok {
-                continue;
-            }
-            if fd > 2 && fd != dir_fd {
-                set_cloexec(fd);
-            }
-        }
-        libc::closedir(dir);
-        return;
-    }
-
-    let max = libc::sysconf(libc::_SC_OPEN_MAX);
-    let max = if max < 0 { 4096 } else { max as libc::c_int };
-    for fd in 3..max {
-        set_cloexec(fd);
-    }
-}
-
-/// Mark one descriptor close-on-exec, preserving any other flags.
-///
-/// `fcntl` is async-signal-safe, which matters because this runs in the
-/// forked child. Failures are ignored: the descriptor may simply not be open,
-/// which is the common case in a sweep over a range.
-unsafe fn set_cloexec(fd: libc::c_int) {
-    let flags = libc::fcntl(fd, libc::F_GETFD);
-    if flags == -1 {
-        return;
-    }
-    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
-}
 
 #[cfg(test)]
 mod tests {
