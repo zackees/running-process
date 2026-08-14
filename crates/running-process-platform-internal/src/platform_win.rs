@@ -15,6 +15,10 @@ use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCE
 
 use crate::SpawnSpec;
 
+#[path = "platform_win_file_handles.rs"]
+mod file_handles;
+pub use file_handles::read_process_file_handles;
+
 #[path = "platform/process_tree.rs"]
 mod process_tree;
 
