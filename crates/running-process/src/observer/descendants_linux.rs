@@ -2,7 +2,7 @@
 //!
 //! No-admin Linux primitive: enable `PR_SET_CHILD_SUBREAPER` so orphaned
 //! descendants reparent to us (not to init), and run a background pump
-//! that snapshots `/proc/<pid>/task/<pid>/children` every 50 ms,
+//! that snapshots `/proc/<pid>/task/<pid>/children` every 20 ms,
 //! diffing against the previous snapshot to emit
 //! [`DescendantStarted`](crate::observer::ObserverEventKind::DescendantStarted)
 //! / [`DescendantExited`](crate::observer::ObserverEventKind::DescendantExited)
@@ -13,7 +13,7 @@
 //! - **No CAP_BPF / no CAP_NET_ADMIN required.** Works on stock kernels
 //!   from any non-elevated process.
 //! - **Polling-based**: short-lived descendants that spawn and exit
-//!   within the same 50 ms window may be missed. This is the same
+//!   within the same 20 ms window may be missed. This is the same
 //!   tradeoff `proc_pidinfo`-based macOS snapshots make and is the only
 //!   honest no-admin option on Linux.
 //! - **Subreaper is process-wide**: `prctl(PR_SET_CHILD_SUBREAPER, 1)`
@@ -28,10 +28,10 @@ use std::time::Duration;
 use crate::observer::pid_identity;
 use crate::observer::{DescendantPumpStop, EventCategory, ObserverEvent, ObserverEventKind};
 
-/// Poll interval for the /proc descendant snapshot. 50 ms is the same
-/// cadence we'd expect a debug UI to refresh at, and matches the
-/// short-lived-descendant honesty caveat in this module's docs.
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Poll interval for the /proc descendant snapshot. Twenty milliseconds
+/// keeps process-tree diagnostics responsive enough to expose short compiler
+/// probes while retaining the no-admin `/proc` backend.
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Enable `PR_SET_CHILD_SUBREAPER` so orphaned descendants of any
 /// process this process spawns reparent to us instead of init. Safe to
@@ -209,6 +209,11 @@ fn emit_diff(prev: &HashSet<u32>, current: &HashSet<u32>, sink: &Sender<Observer
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn descendant_sampling_cadence_is_twenty_milliseconds() {
+        assert_eq!(POLL_INTERVAL, Duration::from_millis(20));
+    }
 
     #[test]
     fn emit_diff_fires_one_started_per_new_pid() {
