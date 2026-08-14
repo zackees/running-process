@@ -5,7 +5,9 @@ pub use crate::{
     SpawnSpec, StreamMode,
 };
 
-pub use crate::platform_imp::exit_code;
+pub use crate::platform_imp::{
+    configure_trampoline_command, exit_code, set_process_name, trampoline_exit_code,
+};
 
 #[derive(Clone, Copy)]
 pub enum ObserverScope { SystemWide, LaunchedProcessTree }
