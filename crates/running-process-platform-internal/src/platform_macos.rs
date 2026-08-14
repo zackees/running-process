@@ -91,6 +91,39 @@ pub fn process_snapshot_for_pid(pid: u32) -> Option<crate::platform::process::Pr
         },
     )
 }
+
+/// Mark inherited descriptors close-on-exec without breaking std's exec-error pipe.
+/// Safety: this is only called from a post-fork `pre_exec` closure.
+pub unsafe fn unix_mark_extra_fds_close_on_exec() {
+    let dir = libc::opendir(c"/dev/fd".as_ptr());
+    if !dir.is_null() {
+        let dir_fd = libc::dirfd(dir);
+        loop {
+            let entry = libc::readdir(dir);
+            if entry.is_null() { break; }
+            let mut fd: libc::c_int = 0;
+            let mut cursor = (*entry).d_name.as_ptr();
+            let mut numeric = false;
+            while *cursor != 0 {
+                let byte = *cursor as u8;
+                if !byte.is_ascii_digit() { numeric = false; break; }
+                fd = fd * 10 + (byte - b'0') as libc::c_int;
+                cursor = cursor.add(1);
+                numeric = true;
+            }
+            if numeric && fd > 2 && fd != dir_fd { set_cloexec(fd); }
+        }
+        libc::closedir(dir);
+        return;
+    }
+    let maximum = libc::sysconf(libc::_SC_OPEN_MAX);
+    for fd in 3..if maximum < 0 { 4096 } else { maximum as libc::c_int } { set_cloexec(fd); }
+}
+
+unsafe fn set_cloexec(fd: libc::c_int) {
+    let flags = libc::fcntl(fd, libc::F_GETFD);
+    if flags != -1 { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC); }
+}
 pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
     use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
     match (scope, category) {
