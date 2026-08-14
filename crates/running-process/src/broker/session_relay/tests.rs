@@ -125,6 +125,103 @@ async fn relay_session_proxies_client_to_daemon_endpoint() {
     assert_eq!(code, Some(9), "exit code proxied across both real sockets");
 }
 
+/// The broker must not decode, normalize, or rebuild the opening request.
+/// In particular, the additive environment policy and the ordered environment
+/// entries have to reach the daemon byte-for-byte as the client sent them.
+#[cfg(unix)]
+#[tokio::test]
+async fn relay_session_preserves_start_environment_policy_and_order() {
+    let pid = std::process::id();
+    let daemon_path = std::env::temp_dir().join(format!("rp-relay-env-d-{pid}.sock"));
+    let broker_path = std::env::temp_dir().join(format!("rp-relay-env-b-{pid}.sock"));
+    let _ = std::fs::remove_file(&daemon_path);
+    let _ = std::fs::remove_file(&broker_path);
+
+    let daemon_listener = ListenerOptions::new()
+        .name(
+            daemon_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("daemon fs name"),
+        )
+        .create_tokio()
+        .expect("bind daemon endpoint");
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+    let daemon = tokio::spawn(async move {
+        let conn = daemon_listener.accept().await.expect("daemon accept");
+        let mut framed = session_framed(conn);
+        let start = framed
+            .next()
+            .await
+            .expect("client sent an opening frame")
+            .expect("opening frame decodes");
+        start_tx.send(start).expect("return opening frame");
+    });
+
+    let broker_listener = ListenerOptions::new()
+        .name(
+            broker_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("broker fs name"),
+        )
+        .create_tokio()
+        .expect("bind broker endpoint");
+    let daemon_path_str = daemon_path.to_string_lossy().into_owned();
+    let broker = tokio::spawn(async move {
+        let client_conn = broker_listener.accept().await.expect("broker accept");
+        let _ = relay_session(client_conn, &daemon_path_str).await;
+    });
+
+    let stream = interprocess::local_socket::tokio::Stream::connect(
+        broker_path
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("client fs name"),
+    )
+    .await
+    .expect("client dials broker");
+    let mut client = session_framed(stream);
+    let expected = SessionStart {
+        program: "env-probe".to_owned(),
+        args: vec!["--ordered".to_owned()],
+        cwd: "/client/work".to_owned(),
+        env: vec![
+            crate::broker::protocol_v2::SessionEnvVar {
+                key: "Path".to_owned(),
+                value: "first".to_owned(),
+            },
+            crate::broker::protocol_v2::SessionEnvVar {
+                key: "PATH".to_owned(),
+                value: "second".to_owned(),
+            },
+        ],
+        clear_inherited_env: true,
+        environment_policy: 3,
+    };
+    client
+        .send(frame(session_frame::Kind::Start(expected.clone())))
+        .await
+        .expect("send start");
+
+    let relayed = tokio::time::timeout(std::time::Duration::from_secs(5), start_rx)
+        .await
+        .expect("daemon receives opening frame")
+        .expect("daemon returns opening frame");
+
+    drop(client);
+    daemon.abort();
+    broker.abort();
+    let _ = std::fs::remove_file(&daemon_path);
+    let _ = std::fs::remove_file(&broker_path);
+
+    assert_eq!(
+        relayed.kind,
+        Some(session_frame::Kind::Start(expected)),
+        "broker must preserve the policy field and ordered environment entries"
+    );
+}
+
 /// The opaque `SessionExit.metadata` map (soldr#2365 Q3) must cross the relay
 /// untouched — `relay_session` never decodes the frame, so a consumer daemon's
 /// `cache_outcome` / `compile_id` reach the client verbatim.
