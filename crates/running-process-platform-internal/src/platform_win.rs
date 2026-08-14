@@ -10,6 +10,30 @@ pub fn shell_command(command: &str) -> std::process::Command {
     shell
 }
 
+pub fn compat_shell_command(command: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+
+    let mut shell = std::process::Command::new("cmd");
+    shell.raw_arg("/D /S /C \"");
+    shell.raw_arg(command);
+    shell.raw_arg("\"");
+    shell
+}
+
+pub fn configure_native_command(
+    command: &mut std::process::Command,
+    windows_creation_flags: u32,
+    _create_process_group: bool,
+    _nice: Option<i32>,
+    _address_space_limit_bytes: Option<u64>,
+) {
+    use std::os::windows::process::CommandExt;
+
+    if windows_creation_flags != 0 {
+        command.creation_flags(windows_creation_flags);
+    }
+}
+
 pub fn canonical_environment_pairs(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut seen = std::collections::BTreeMap::new();
     for (key, value) in pairs {
