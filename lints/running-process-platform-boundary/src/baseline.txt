@@ -2146,6 +2146,7 @@ crates/running-process/src/spawn.rs	attr_cfg	windows	12
 crates/running-process/src/spawn.rs	attr_cfg	windows	13
 crates/running-process/src/spawn.rs	attr_cfg	windows	14
 crates/running-process/src/spawn.rs	native_import	std::os::windows	0
+crates/running-process/src/spawn.rs	native_import	std::os::windows	1
 crates/running-process/src/spawn_imp_unix.rs	attr_cfg	target_arch	0
 crates/running-process/src/spawn_imp_unix.rs	attr_cfg	target_arch	1
 crates/running-process/src/spawn_imp_unix.rs	attr_cfg	target_arch	2
