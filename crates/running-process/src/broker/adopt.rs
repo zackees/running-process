@@ -21,7 +21,7 @@
 //! ```
 //!
 //! The blocking [`BrokerSession`] is the wire-of-record; the async
-//! [`crate::broker::adopt::AsyncBrokerSession`] (feature `client-async`, #433 R3) is a thin
+//! `AsyncBrokerSession` (feature `client-async`, #433 R3) is a thin
 //! `spawn_blocking` wrapper so tokio daemons get the same one-call adoption
 //! without re-implementing the negotiation against `AsyncRead`/`AsyncWrite`.
 
@@ -131,7 +131,7 @@ impl BrokerSession {
 /// A live negotiated backend socket handed back as an owned OS handle (#720).
 ///
 /// Produced by [`BrokerSession::into_backend_io`] /
-/// [`crate::broker::adopt::AsyncBrokerSession::into_backend_io`]. On Unix it owns an `OwnedFd` the
+/// `AsyncBrokerSession::into_backend_io`. On Unix it owns an `OwnedFd` the
 /// consumer can wrap in its own transport (e.g.
 /// `std::os::unix::net::UnixStream::from`); the Windows `OwnedHandle` path is
 /// deferred (#720), so the type is never constructed on Windows.
@@ -178,7 +178,7 @@ impl std::os::fd::AsFd for OwnedBackendIo {
 }
 
 /// Errors from [`BrokerSession::into_backend_io`] /
-/// [`crate::broker::adopt::AsyncBrokerSession::into_backend_io`].
+/// `AsyncBrokerSession::into_backend_io`.
 #[derive(Debug, thiserror::Error)]
 pub enum IntoBackendIoError {
     /// The frame reader still holds buffered response bytes that the bare
