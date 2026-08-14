@@ -20,6 +20,9 @@ pub fn canonical_environment_pairs(pairs: Vec<(String, String)>) -> Vec<(String,
 
 use std::ffi::OsStr;
 use std::io;
+use std::io::Read;
+use std::os::windows::io::AsRawHandle;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use tokio::process::{Child, Command};
@@ -32,6 +35,30 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
 use crate::SpawnSpec;
+
+#[derive(Default)]
+pub struct CaptureCancellation { handles: Mutex<CaptureHandles> }
+#[derive(Default)]
+struct CaptureHandles { stdout: Option<usize>, stderr: Option<usize> }
+pub fn prepare_capture_reader<R>(reader: R, cancellation: &CaptureCancellation, stream: crate::platform::process::CaptureStream) -> io::Result<Box<dyn Read + Send>>
+where R: Read + AsRawHandle + Send + 'static {
+    let mut handles = cancellation.handles.lock().expect("capture pipe handles mutex poisoned");
+    match stream { crate::platform::process::CaptureStream::Stdout => handles.stdout = Some(reader.as_raw_handle() as usize), crate::platform::process::CaptureStream::Stderr => handles.stderr = Some(reader.as_raw_handle() as usize) }
+    Ok(Box::new(reader))
+}
+pub fn capture_reader_done(cancellation: &CaptureCancellation, stream: crate::platform::process::CaptureStream) {
+    let mut handles = cancellation.handles.lock().expect("capture pipe handles mutex poisoned");
+    match stream { crate::platform::process::CaptureStream::Stdout => handles.stdout = None, crate::platform::process::CaptureStream::Stderr => handles.stderr = None }
+}
+pub fn cancel_capture_reader(cancellation: &CaptureCancellation) {
+    use winapi::shared::ntdef::HANDLE;
+    use winapi::um::ioapiset::CancelIoEx;
+    let handles = cancellation.handles.lock().expect("capture pipe handles mutex poisoned");
+    for handle in [handles.stdout, handles.stderr].into_iter().flatten() {
+        // SAFETY: the slot remains populated until its reader completion callback runs.
+        unsafe { CancelIoEx(handle as HANDLE, std::ptr::null_mut()); }
+    }
+}
 
 #[path = "platform_win_file_handles.rs"]
 mod file_handles;

@@ -30,20 +30,6 @@ impl Drop for WindowsJobHandle {
     }
 }
 
-/// Parent-side handles for the captured stdout/stderr pipes, kept so
-/// that `kill_impl` can call `CancelIoEx` to interrupt a reader thread
-/// blocked in `read()`. Stored as `usize` because `RawHandle` (a raw
-/// pointer) is not `Send` and we share this via `Arc<Mutex<...>>`.
-///
-/// The reader thread clears its slot (under the mutex) immediately
-/// before dropping its `ChildStd*`, so `kill_impl` never calls
-/// `CancelIoEx` on a closed (and potentially reused) handle.
-#[derive(Default)]
-pub(crate) struct CapturePipeHandles {
-    pub(crate) stdout: Option<usize>,
-    pub(crate) stderr: Option<usize>,
-}
-
 pub(crate) fn assign_child_to_windows_kill_on_close_job_impl(
     child: &Child,
     address_space_limit_bytes: Option<u64>,

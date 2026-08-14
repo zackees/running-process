@@ -18,10 +18,73 @@ pub fn monitor_console_windows(
 
 use std::ffi::OsStr;
 use std::io;
+use std::io::Read;
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
+use std::sync::Mutex;
 
 use tokio::process::{Child, Command};
 
 use crate::SpawnSpec;
+
+#[derive(Default)]
+pub struct CaptureCancellation { wakers: Mutex<CaptureWakers> }
+#[derive(Default)]
+struct CaptureWakers { stdout: Option<UnixStream>, stderr: Option<UnixStream> }
+struct CancelableCaptureReader<R> { reader: R, wake_reader: UnixStream }
+impl<R: Read + AsRawFd> Read for CancelableCaptureReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() { return Ok(0); }
+        loop {
+            let mut fds = [
+                libc::pollfd { fd: self.reader.as_raw_fd(), events: libc::POLLIN | libc::POLLHUP | libc::POLLERR, revents: 0 },
+                libc::pollfd { fd: self.wake_reader.as_raw_fd(), events: libc::POLLIN | libc::POLLHUP | libc::POLLERR, revents: 0 },
+            ];
+            // SAFETY: both descriptors remain owned by this reader for the call.
+            if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) } < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted { continue; }
+                return Err(error);
+            }
+            if fds[1].revents != 0 { return Err(io::Error::new(io::ErrorKind::Interrupted, "capture reader cancelled")); }
+            if fds[0].revents != 0 {
+                match self.reader.read(buf) {
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                    result => return result,
+                }
+            }
+        }
+    }
+}
+pub fn prepare_capture_reader<R>(reader: R, cancellation: &CaptureCancellation, stream: crate::platform::process::CaptureStream) -> io::Result<Box<dyn Read + Send>>
+where R: Read + AsRawFd + Send + 'static {
+    set_nonblocking(reader.as_raw_fd())?;
+    let (wake_reader, wake_writer) = UnixStream::pair()?;
+    wake_writer.set_nonblocking(true)?;
+    let mut wakers = cancellation.wakers.lock().expect("capture wakers mutex poisoned");
+    match stream { crate::platform::process::CaptureStream::Stdout => wakers.stdout = Some(wake_writer), crate::platform::process::CaptureStream::Stderr => wakers.stderr = Some(wake_writer) }
+    Ok(Box::new(CancelableCaptureReader { reader, wake_reader }))
+}
+pub fn capture_reader_done(cancellation: &CaptureCancellation, stream: crate::platform::process::CaptureStream) {
+    let mut wakers = cancellation.wakers.lock().expect("capture wakers mutex poisoned");
+    match stream { crate::platform::process::CaptureStream::Stdout => wakers.stdout = None, crate::platform::process::CaptureStream::Stderr => wakers.stderr = None }
+}
+pub fn cancel_capture_reader(cancellation: &CaptureCancellation) {
+    let wakers = cancellation.wakers.lock().expect("capture wakers mutex poisoned");
+    let byte = [1_u8; 1];
+    for writer in [&wakers.stdout, &wakers.stderr].into_iter().flatten() {
+        // SAFETY: the stored wake socket stays alive while the mutex is held.
+        let _ = unsafe { libc::write(writer.as_raw_fd(), byte.as_ptr().cast(), byte.len()) };
+    }
+}
+fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    // SAFETY: `fd` is borrowed from a live reader for both calls.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 { return Err(io::Error::last_os_error()); }
+    // SAFETY: `fd` is borrowed from a live reader for both calls.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 { return Err(io::Error::last_os_error()); }
+    Ok(())
+}
 
 #[path = "platform_macos_file_handles.rs"]
 mod file_handles;
