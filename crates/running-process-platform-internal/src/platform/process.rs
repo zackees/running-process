@@ -6,7 +6,8 @@ pub use crate::{
 };
 
 pub use crate::platform_imp::{
-    configure_trampoline_command, exit_code, set_process_name, trampoline_exit_code,
+    configure_trampoline_command, enable_descendant_subreaper, exit_code, set_process_name,
+    trampoline_exit_code,
 };
 
 #[derive(Clone, Copy)]

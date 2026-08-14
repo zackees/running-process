@@ -38,6 +38,13 @@ pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     status.signal().map_or_else(|| status.code().unwrap_or(1), |signal| 128 + signal)
 }
+
+/// Enable Linux's process-wide orphan reparenting for launched-tree observation.
+/// Failure is intentionally best-effort: the observer can still track descendants
+/// whose immediate parents remain alive.
+pub fn enable_descendant_subreaper() {
+    let _ = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
+}
 pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
     use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
     match (scope, category) {

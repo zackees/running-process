@@ -45,9 +45,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// orphaned descendants. The matrix advertised behavior is still
 /// honored.
 pub(crate) fn enable_subreaper() {
-    // SAFETY: `prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)` is a leaf
-    // syscall with no pointer arguments; cannot violate Rust aliasing.
-    let _ = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
+    running_process_platform_internal::platform::process::enable_descendant_subreaper();
 }
 
 /// Spawn the descendant-tracking pump thread for `root_pid`. Returns
