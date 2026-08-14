@@ -762,6 +762,19 @@ mod unix_impl;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prost::Message;
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyClearAtTag4 {
+        #[prost(bool, tag = "4")]
+        clear_inherited_env: bool,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyClearAtTag5 {
+        #[prost(bool, tag = "5")]
+        clear_inherited_env: bool,
+    }
 
     #[cfg(feature = "client-async")]
     #[test]
@@ -840,6 +853,116 @@ mod tests {
             Ok(true)
         );
         assert!(EnvironmentPolicy::Auto.wire_value().is_err());
+    }
+
+    #[test]
+    fn old_clients_and_new_servers_interoperate_on_all_spawn_messages() {
+        use crate::broker::protocol_v2::SessionStart;
+        use crate::proto::daemon::{
+            SpawnDaemonRequest, SpawnPipeSessionRequest, SpawnPtySessionRequest,
+        };
+
+        for legacy_clear in [false, true] {
+            let tag5 = LegacyClearAtTag5 {
+                clear_inherited_env: legacy_clear,
+            }
+            .encode_to_vec();
+            let daemon = SpawnDaemonRequest::decode(tag5.as_slice()).unwrap();
+            let session = SessionStart::decode(tag5.as_slice()).unwrap();
+            let expected = if legacy_clear {
+                EnvironmentPolicy::Clear
+            } else {
+                EnvironmentPolicy::Inherit
+            };
+            assert_eq!(
+                EnvironmentPolicy::from_wire(daemon.environment_policy, daemon.clear_inherited_env),
+                Ok(expected)
+            );
+            assert_eq!(
+                EnvironmentPolicy::from_wire(
+                    session.environment_policy,
+                    session.clear_inherited_env
+                ),
+                Ok(expected)
+            );
+
+            let tag4 = LegacyClearAtTag4 {
+                clear_inherited_env: legacy_clear,
+            }
+            .encode_to_vec();
+            let pipe = SpawnPipeSessionRequest::decode(tag4.as_slice()).unwrap();
+            let pty = SpawnPtySessionRequest::decode(tag4.as_slice()).unwrap();
+            assert_eq!(
+                EnvironmentPolicy::from_wire(pipe.environment_policy, pipe.clear_inherited_env),
+                Ok(expected)
+            );
+            assert_eq!(
+                EnvironmentPolicy::from_wire(pty.environment_policy, pty.clear_inherited_env),
+                Ok(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn new_clients_dual_write_fallback_for_old_servers_on_all_spawn_messages() {
+        use crate::broker::protocol_v2::SessionStart;
+        use crate::proto::daemon::{
+            SpawnDaemonRequest, SpawnPipeSessionRequest, SpawnPtySessionRequest,
+        };
+
+        for policy in [
+            EnvironmentPolicy::Inherit,
+            EnvironmentPolicy::UserBaseline,
+            EnvironmentPolicy::Clear,
+        ] {
+            let legacy_clear = policy.legacy_clear_fallback().unwrap();
+            let wire_policy = policy.wire_value().unwrap();
+            let daemon = SpawnDaemonRequest {
+                clear_inherited_env: legacy_clear,
+                environment_policy: wire_policy,
+                ..Default::default()
+            };
+            let pipe = SpawnPipeSessionRequest {
+                clear_inherited_env: legacy_clear,
+                environment_policy: wire_policy,
+                ..Default::default()
+            };
+            let pty = SpawnPtySessionRequest {
+                clear_inherited_env: legacy_clear,
+                environment_policy: wire_policy,
+                ..Default::default()
+            };
+            let session = SessionStart {
+                clear_inherited_env: legacy_clear,
+                environment_policy: wire_policy,
+                ..Default::default()
+            };
+
+            assert_eq!(
+                LegacyClearAtTag5::decode(daemon.encode_to_vec().as_slice())
+                    .unwrap()
+                    .clear_inherited_env,
+                legacy_clear
+            );
+            assert_eq!(
+                LegacyClearAtTag4::decode(pipe.encode_to_vec().as_slice())
+                    .unwrap()
+                    .clear_inherited_env,
+                legacy_clear
+            );
+            assert_eq!(
+                LegacyClearAtTag4::decode(pty.encode_to_vec().as_slice())
+                    .unwrap()
+                    .clear_inherited_env,
+                legacy_clear
+            );
+            assert_eq!(
+                LegacyClearAtTag5::decode(session.encode_to_vec().as_slice())
+                    .unwrap()
+                    .clear_inherited_env,
+                legacy_clear
+            );
+        }
     }
 
     #[cfg(feature = "client-async")]

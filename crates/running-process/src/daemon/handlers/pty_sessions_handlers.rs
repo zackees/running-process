@@ -12,6 +12,7 @@ use crate::proto::daemon::{
     StatusCode, TerminatePtySessionResponse,
 };
 use crate::terminal_graphics::terminal_graphics_capabilities_to_proto;
+use crate::ORIGINATOR_ENV_VAR;
 
 use super::util::{error_pty_response, termination_outcome_to_proto};
 use super::DaemonState;
@@ -48,11 +49,17 @@ pub fn handle_spawn_pty_session(request: &DaemonRequest, state: &DaemonState) ->
             return error_pty_response(request.id, StatusCode::InvalidArgument, message.into())
         }
     };
-    let explicit: Vec<(String, String)> = req
+    let originator = if req.originator.is_empty() {
+        format!("client:{}", request.client_name)
+    } else {
+        req.originator.clone()
+    };
+    let mut explicit: Vec<(String, String)> = req
         .env
         .iter()
         .map(|KeyValue { key, value }| (key.clone(), value.clone()))
         .collect();
+    explicit.push((ORIGINATOR_ENV_VAR.to_owned(), originator.clone()));
     let env = match crate::environment::materialize_environment(policy, &explicit) {
         Ok(env) => env,
         Err(error) => {
@@ -65,12 +72,6 @@ pub fn handle_spawn_pty_session(request: &DaemonRequest, state: &DaemonState) ->
     };
 
     let command_display = req.argv.join(" ");
-    let originator = if req.originator.is_empty() {
-        format!("client:{}", request.client_name)
-    } else {
-        req.originator.clone()
-    };
-
     match state.pty_sessions.spawn(
         req.argv.clone(),
         cwd,

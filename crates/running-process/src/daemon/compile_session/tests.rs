@@ -17,6 +17,31 @@ use super::{run_compile_session, serve_session, session_framed};
 use crate::broker::protocol_v2::{session_frame, SessionFrame, SessionStart};
 use crate::containment::ContainedProcessGroup;
 
+struct TestEnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl TestEnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let guard = Self {
+            key,
+            previous: std::env::var_os(key),
+        };
+        std::env::set_var(key, value);
+        guard
+    }
+}
+
+impl Drop for TestEnvVarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 /// The fixture binary's path as the string a `SessionStart.program` carries.
 fn fixture_program() -> String {
     let exe = std::env::current_exe().expect("test executable path");
@@ -648,71 +673,91 @@ async fn serve_session_runs_command_from_start_frame() {
 }
 
 /// A remote SESSION child is owned by the client context, not by the
-/// long-lived daemon's ambient environment. The client snapshot must replace
-/// that ambient base while still reaching the child intact.
+/// long-lived daemon's ambient environment. Exercise every policy at the real
+/// spawn boundary, including both legacy boolean fallbacks.
 #[tokio::test]
-async fn serve_session_replaces_daemon_environment_with_client_snapshot() {
+async fn serve_session_enforces_all_environment_policies_and_metadata() {
     const DAEMON_ONLY: &str = "RUNNING_PROCESS_TEST_DAEMON_ONLY_ENV";
     const CLIENT_ONLY: &str = "RUNNING_PROCESS_TEST_CLIENT_ONLY_ENV";
-    let previous_daemon_value = std::env::var_os(DAEMON_ONLY);
-    std::env::set_var(DAEMON_ONLY, "must-not-leak");
-
-    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-    let server = session_framed(server_io);
-    let mut client = session_framed(client_io);
-    let group = Arc::new(ContainedProcessGroup::new().expect("contained group"));
-    let handler = tokio::spawn(serve_session(server, group));
-
     #[cfg(windows)]
-    let (program, args) = (
-        "cmd.exe".to_owned(),
-        vec!["/D".to_owned(), "/C".to_owned(), "set".to_owned()],
-    );
-    #[cfg(not(windows))]
-    let (program, args) = ("/usr/bin/env".to_owned(), Vec::new());
+    const BASELINE_KEY: &str = "USERNAME";
+    #[cfg(unix)]
+    const BASELINE_KEY: &str = "HOME";
 
-    client
-        .send(frame(session_frame::Kind::Start(SessionStart {
-            program,
-            args,
-            cwd: String::new(),
-            env: vec![crate::broker::protocol_v2::SessionEnvVar {
-                key: CLIENT_ONLY.to_owned(),
-                value: "forwarded".to_owned(),
-            }],
-            clear_inherited_env: true,
-            environment_policy: 3,
-        })))
-        .await
-        .expect("send start");
-    client
-        .send(frame(session_frame::Kind::StdinEof(true)))
-        .await
-        .expect("send stdin eof");
+    for (name, wire_policy, legacy_clear, inherits, baseline) in [
+        ("legacy-inherit", 0, false, true, false),
+        ("legacy-clear", 0, true, false, false),
+        ("explicit-inherit", 1, false, true, false),
+        ("user-baseline", 2, true, false, true),
+        ("client-snapshot", 3, true, false, false),
+    ] {
+        let _daemon_guard = TestEnvVarGuard::set(DAEMON_ONLY, "daemon-only");
 
-    let mut stdout = Vec::new();
-    while let Some(Ok(sf)) = client.next().await {
-        match sf.kind {
-            Some(session_frame::Kind::Stdout(bytes)) => stdout.extend_from_slice(&bytes),
-            Some(session_frame::Kind::Exit(_)) => break,
-            _ => {}
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let server = session_framed(server_io);
+        let mut client = session_framed(client_io);
+        let group = Arc::new(
+            ContainedProcessGroup::with_originator("SESSION-POLICY").expect("contained group"),
+        );
+        let handler = tokio::spawn(serve_session(server, group));
+
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd.exe".to_owned(),
+            vec!["/D".to_owned(), "/C".to_owned(), "set".to_owned()],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = ("/usr/bin/env".to_owned(), Vec::new());
+
+        client
+            .send(frame(session_frame::Kind::Start(SessionStart {
+                program,
+                args,
+                cwd: String::new(),
+                env: vec![crate::broker::protocol_v2::SessionEnvVar {
+                    key: CLIENT_ONLY.to_owned(),
+                    value: "forwarded".to_owned(),
+                }],
+                clear_inherited_env: legacy_clear,
+                environment_policy: wire_policy,
+            })))
+            .await
+            .expect("send start");
+        client
+            .send(frame(session_frame::Kind::StdinEof(true)))
+            .await
+            .expect("send stdin eof");
+
+        let mut stdout = Vec::new();
+        while let Some(Ok(sf)) = client.next().await {
+            match sf.kind {
+                Some(session_frame::Kind::Stdout(bytes)) => stdout.extend_from_slice(&bytes),
+                Some(session_frame::Kind::Exit(_)) => break,
+                _ => {}
+            }
+        }
+        handler.await.expect("handler task").expect("serve session");
+        let output = String::from_utf8_lossy(&stdout);
+        assert!(
+            output.contains(&format!("{CLIENT_ONLY}=forwarded")),
+            "{name}: client environment did not reach child"
+        );
+        assert_eq!(
+            output.contains(DAEMON_ONLY),
+            inherits,
+            "{name}: daemon ambient environment visibility"
+        );
+        assert!(
+            output.contains("RUNNING_PROCESS_ORIGINATOR=SESSION-POLICY:"),
+            "{name}: allowlisted originator metadata missing"
+        );
+        if baseline {
+            assert!(
+                output.contains(&format!("{BASELINE_KEY}=")),
+                "{name}: baseline identity key missing"
+            );
         }
     }
-    handler.await.expect("handler task").expect("serve session");
-    match previous_daemon_value {
-        Some(value) => std::env::set_var(DAEMON_ONLY, value),
-        None => std::env::remove_var(DAEMON_ONLY),
-    }
-
-    let output = String::from_utf8_lossy(&stdout);
-    assert!(
-        output.contains(&format!("{CLIENT_ONLY}=forwarded")),
-        "client environment did not reach child"
-    );
-    assert!(
-        !output.contains(DAEMON_ONLY),
-        "daemon-only environment leaked into SESSION child"
-    );
 }
 
 /// A session that does not open with `SessionStart` is a protocol error, not a
