@@ -22,6 +22,10 @@ pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
     process_tree::kill_tree(pid, timeout, process_start_key)
 }
 
+pub fn exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
+}
+
 pub fn configure_compat_tokio_command(
     command: &mut Command,
     show_console: bool,

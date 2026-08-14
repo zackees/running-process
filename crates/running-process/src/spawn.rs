@@ -309,7 +309,7 @@ impl DaemonChild {
         #[cfg(unix)]
         {
             let status = self.child.wait()?;
-            Ok(unix_exit_code(status))
+            Ok(running_process_platform_internal::platform::process::exit_code(status))
         }
     }
 
@@ -321,7 +321,9 @@ impl DaemonChild {
         }
         #[cfg(unix)]
         {
-            Ok(self.child.try_wait()?.map(unix_exit_code))
+            Ok(self.child.try_wait()?.map(
+                running_process_platform_internal::platform::process::exit_code,
+            ))
         }
     }
 }
@@ -640,14 +642,6 @@ pub fn spawn_tokio(
     );
 
     Ok(child)
-}
-
-#[cfg(unix)]
-fn unix_exit_code(status: std::process::ExitStatus) -> i32 {
-    use std::os::unix::process::ExitStatusExt;
-    status
-        .code()
-        .unwrap_or_else(|| -status.signal().unwrap_or(1))
 }
 
 // ── Windows implementation ──────────────────────────────────────────────────
