@@ -254,10 +254,13 @@ pub enum StdioSource<'a> {
 /// Call [`DaemonChild::kill`] to terminate.
 pub struct DaemonChild {
     pid: u32,
-    #[cfg(windows)]
-    handle: imp::OwnedHandle,
-    #[cfg(unix)]
-    child: std::process::Child,
+    inner: Box<dyn DaemonChildControl>,
+}
+
+trait DaemonChildControl: Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe {
+    fn kill(&mut self) -> std::io::Result<()>;
+    fn wait(&mut self) -> std::io::Result<i32>;
+    fn try_wait(&mut self) -> std::io::Result<Option<i32>>;
 }
 
 impl DaemonChild {
@@ -268,41 +271,17 @@ impl DaemonChild {
 
     /// Forcibly terminate the child. Best-effort.
     pub fn kill(&mut self) -> std::io::Result<()> {
-        #[cfg(windows)]
-        {
-            imp::terminate(&self.handle)
-        }
-        #[cfg(unix)]
-        {
-            self.child.kill()
-        }
+        self.inner.kill()
     }
 
     /// Block until the child exits and return its exit code.
     pub fn wait(&mut self) -> std::io::Result<i32> {
-        #[cfg(windows)]
-        {
-            imp::wait(&self.handle)
-        }
-        #[cfg(unix)]
-        {
-            let status = self.child.wait()?;
-            Ok(running_process_platform_internal::platform::process::exit_code(status))
-        }
+        self.inner.wait()
     }
 
     /// Non-blocking variant of [`Self::wait`].
     pub fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
-        #[cfg(windows)]
-        {
-            imp::try_wait(&self.handle)
-        }
-        #[cfg(unix)]
-        {
-            Ok(self.child.try_wait()?.map(
-                running_process_platform_internal::platform::process::exit_code,
-            ))
-        }
+        self.inner.try_wait()
     }
 }
 
@@ -325,10 +304,14 @@ pub struct SpawnedChild {
     /// Parent-side pipe for reading child stderr when requested.
     pub stderr: Option<std::process::ChildStderr>,
     pid: u32,
-    #[cfg(windows)]
-    inner: imp::SpawnedInner,
-    #[cfg(unix)]
-    inner: unix_impl::SpawnedInner,
+    inner: Box<dyn SpawnedChildControl>,
+}
+
+trait SpawnedChildControl: Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe {
+    fn kill(&mut self) -> std::io::Result<()>;
+    fn wait(&mut self) -> std::io::Result<i32>;
+    fn try_wait(&mut self) -> std::io::Result<Option<i32>>;
+    fn shutdown(&mut self);
 }
 
 impl SpawnedChild {
@@ -339,51 +322,23 @@ impl SpawnedChild {
 
     /// Forcibly terminate the child. Best-effort.
     pub fn kill(&mut self) -> std::io::Result<()> {
-        #[cfg(windows)]
-        {
-            self.inner.kill()
-        }
-        #[cfg(unix)]
-        {
-            self.inner.kill()
-        }
+        self.inner.kill()
     }
 
     /// Block until the child exits and return its exit code.
     pub fn wait(&mut self) -> std::io::Result<i32> {
-        #[cfg(windows)]
-        {
-            self.inner.wait()
-        }
-        #[cfg(unix)]
-        {
-            self.inner.wait()
-        }
+        self.inner.wait()
     }
 
     /// Non-blocking variant of [`Self::wait`].
     pub fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
-        #[cfg(windows)]
-        {
-            self.inner.try_wait()
-        }
-        #[cfg(unix)]
-        {
-            self.inner.try_wait()
-        }
+        self.inner.try_wait()
     }
 }
 
 impl Drop for SpawnedChild {
     fn drop(&mut self) {
-        #[cfg(windows)]
-        {
-            self.inner.shutdown();
-        }
-        #[cfg(unix)]
-        {
-            self.inner.shutdown();
-        }
+        self.inner.shutdown();
     }
 }
 
@@ -635,6 +590,18 @@ mod unix_impl;
 mod tests {
     use super::*;
     use prost::Message;
+
+    fn assert_child_auto_traits<T>()
+    where
+        T: Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe,
+    {
+    }
+
+    #[test]
+    fn child_handles_preserve_thread_and_unwind_auto_traits() {
+        assert_child_auto_traits::<DaemonChild>();
+        assert_child_auto_traits::<SpawnedChild>();
+    }
 
     #[derive(Clone, PartialEq, Message)]
     struct LegacyClearAtTag4 {
