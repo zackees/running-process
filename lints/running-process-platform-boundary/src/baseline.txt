@@ -1866,6 +1866,7 @@ crates/running-process/src/process_runtime.rs	attr_cfg	windows	1
 crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	0
 crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	1
 crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	2
+crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	3
 crates/running-process-platform-internal/src/platform/process.rs	attr_cfg	unix	0
 crates/running-process-platform-internal/src/platform/process.rs	attr_cfg	unix	1
 crates/running-process/src/pty/async_pty.rs	attr_cfg	windows	0

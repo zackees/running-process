@@ -18,6 +18,17 @@ pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     status.code().unwrap_or_else(|| -status.signal().unwrap_or(1))
 }
+pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
+    use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
+    match (scope, category) {
+        (S::SystemWide, C::File) => B { support:P::Unavailable, backend:"seccomp-user-notify", reason:"Phase 3: Linux seccomp user-notify file backend not yet implemented" },
+        (S::SystemWide, C::Network) => B { support:P::Unavailable, backend:"ebpf", reason:"Phase 3: Linux eBPF network backend not yet implemented" },
+        (S::SystemWide, C::Process) => B { support:P::Unavailable, backend:"seccomp-user-notify", reason:"Phase 3: Linux seccomp user-notify process backend not yet implemented" },
+        (S::LaunchedProcessTree, C::File) => B { support:P::Partial, backend:"proc-fd-snapshot", reason:"Linux /proc/<pid>/fd/* snapshot via read_process_file_handles (#539 slice 6 follow-up; no streaming file events)" },
+        (S::LaunchedProcessTree, C::Network) => B { support:P::Unavailable, backend:"none", reason:"#539: no-admin per-child network backend deferred to a follow-up issue" },
+        (S::LaunchedProcessTree, C::Process) => B { support:P::Supported, backend:"subreaper-proc-poll", reason:"Linux PR_SET_CHILD_SUBREAPER + /proc descendant polling (#539 slice 5)" },
+    }
+}
 
 pub fn unix_set_priority(pid: u32, nice: i32) -> io::Result<()> {
     if unsafe { libc::setpriority(libc::PRIO_PROCESS, pid, nice) } == -1 { Err(io::Error::last_os_error()) } else { Ok(()) }

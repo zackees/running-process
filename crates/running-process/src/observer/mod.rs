@@ -229,206 +229,36 @@ pub struct ObserverCapabilities {
 ///   (NT handle snapshot, `/proc/<pid>/fd/*`, `proc_pidinfo`). Tracked by
 ///   #539. Lands incrementally per slice.
 fn detect_file_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &'static str) {
-    match scope {
-        TraceScope::SystemWide => {
-            #[cfg(target_os = "linux")]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "seccomp-user-notify",
-                    "Phase 3: Linux seccomp user-notify file backend not yet implemented",
-                )
-            }
-            #[cfg(target_os = "windows")]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "etw",
-                    "Phase 3: Windows ETW file backend not yet implemented",
-                )
-            }
-            #[cfg(target_os = "macos")]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "kqueue",
-                    "Phase 3: macOS kqueue/EndpointSecurity file backend not yet implemented (entitlement-gated)",
-                )
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "none",
-                    "Phase 3: no file backend planned for this OS",
-                )
-            }
-        }
-        TraceScope::LaunchedProcessTree => {
-            #[cfg(target_os = "linux")]
-            {
-                (
-                    CapabilitySupport::Partial,
-                    "proc-fd-snapshot",
-                    "Linux /proc/<pid>/fd/* snapshot via read_process_file_handles (#539 slice 6 follow-up; no streaming file events)",
-                )
-            }
-            #[cfg(target_os = "windows")]
-            {
-                (
-                    CapabilitySupport::Partial,
-                    "nt-handle-snapshot",
-                    "Windows NtQuerySystemInformation + DuplicateHandle + NtQueryObject snapshot via read_process_file_handles (#539 slice 4; no streaming file events)",
-                )
-            }
-            #[cfg(target_os = "macos")]
-            {
-                (
-                    CapabilitySupport::Partial,
-                    "proc-pidinfo",
-                    "macOS proc_pidinfo(PROC_PIDLISTFDS) snapshot via read_process_file_handles (#539 slice 8 follow-up; no streaming file events)",
-                )
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "none",
-                    "#539: no launched-process-tree file backend planned for this OS",
-                )
-            }
-        }
-    }
+    detect_backend(scope, running_process_platform_internal::platform::process::ObserverCategory::File)
 }
 
-/// Detect the backend that would serve [`EventCategory::Network`] on this
-/// platform for the requested [`TraceScope`]. Mirrors [`detect_file_backend`].
-///
-/// Network observation is deferred to a future issue for the
-/// [`TraceScope::LaunchedProcessTree`] scope — there is no portable
-/// no-admin primitive for per-child connect/accept events comparable to the
-/// file/process primitives, so the backend is currently `none` everywhere
-/// for that scope.
 fn detect_network_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &'static str) {
-    match scope {
-        TraceScope::SystemWide => {
-            #[cfg(target_os = "linux")]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "ebpf",
-                    "Phase 3: Linux eBPF network backend not yet implemented",
-                )
-            }
-            #[cfg(target_os = "windows")]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "etw",
-                    "Phase 3: Windows ETW network backend not yet implemented",
-                )
-            }
-            #[cfg(target_os = "macos")]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "endpoint-security",
-                    "Phase 3: macOS EndpointSecurity network backend not yet implemented (entitlement-gated)",
-                )
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "none",
-                    "Phase 3: no network backend planned for this OS",
-                )
-            }
-        }
-        TraceScope::LaunchedProcessTree => (
-            CapabilitySupport::Unavailable,
-            "none",
-            "#539: no-admin per-child network backend deferred to a follow-up issue",
-        ),
-    }
+    detect_backend(scope, running_process_platform_internal::platform::process::ObserverCategory::Network)
 }
 
-/// Detect the backend that would serve [`EventCategory::Process`] (descendant
-/// process creation outside the crate's own spawn path) on this platform
-/// for the requested [`TraceScope`]. Mirrors [`detect_file_backend`].
 fn detect_process_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &'static str) {
-    match scope {
-        TraceScope::SystemWide => {
-            #[cfg(target_os = "linux")]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "seccomp-user-notify",
-                    "Phase 3: Linux seccomp user-notify process backend not yet implemented",
-                )
-            }
-            #[cfg(target_os = "windows")]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "etw",
-                    "Phase 3: Windows ETW process backend not yet implemented",
-                )
-            }
-            #[cfg(target_os = "macos")]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "endpoint-security",
-                    "Phase 3: macOS EndpointSecurity process backend not yet implemented (entitlement-gated)",
-                )
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "none",
-                    "Phase 3: no process backend planned for this OS",
-                )
-            }
-        }
-        TraceScope::LaunchedProcessTree => {
-            #[cfg(target_os = "linux")]
-            {
-                (
-                    CapabilitySupport::Supported,
-                    "subreaper-proc-poll",
-                    "Linux PR_SET_CHILD_SUBREAPER + /proc descendant polling (#539 slice 5)",
-                )
-            }
-            #[cfg(target_os = "windows")]
-            {
-                (
-                    CapabilitySupport::Supported,
-                    "job-object-iocp",
-                    "Windows Job Object IOCP descendant lifecycle (#539 slice 2)",
-                )
-            }
-            #[cfg(target_os = "macos")]
-            {
-                (
-                    CapabilitySupport::Supported,
-                    "sysctl-proc-poll",
-                    "macOS sysctl(KERN_PROC_ALL) descendant polling (#539 slice 7)",
-                )
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-            {
-                (
-                    CapabilitySupport::Unavailable,
-                    "none",
-                    "#539: no launched-process-tree process backend planned for this OS",
-                )
-            }
-        }
-    }
+    detect_backend(scope, running_process_platform_internal::platform::process::ObserverCategory::Process)
 }
 
+fn detect_backend(
+    scope: TraceScope,
+    category: running_process_platform_internal::platform::process::ObserverCategory,
+) -> (CapabilitySupport, &'static str, &'static str) {
+    use running_process_platform_internal::platform::process::{
+        observer_backend, ObserverScope, ObserverSupport,
+    };
+    let scope = match scope {
+        TraceScope::SystemWide => ObserverScope::SystemWide,
+        TraceScope::LaunchedProcessTree => ObserverScope::LaunchedProcessTree,
+    };
+    let backend = observer_backend(scope, category);
+    let support = match backend.support {
+        ObserverSupport::Supported => CapabilitySupport::Supported,
+        ObserverSupport::Partial => CapabilitySupport::Partial,
+        ObserverSupport::Unavailable => CapabilitySupport::Unavailable,
+    };
+    (support, backend.backend, backend.reason)
+}
 impl ObserverCapabilities {
     /// Negotiate the capability matrix for the current platform under the
     /// historical default scope ([`TraceScope::SystemWide`]).
