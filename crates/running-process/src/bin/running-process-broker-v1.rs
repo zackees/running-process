@@ -420,6 +420,7 @@ impl AdminCommand {
         AdminRequest {
             verb: self.verb as i32,
             json: self.json,
+            drain_deadline_ms: 0,
             service_name: self.service_name,
             output_path: self.output_path,
         }

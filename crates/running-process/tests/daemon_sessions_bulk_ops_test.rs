@@ -11,7 +11,6 @@ use running_process::daemon::pipe_session::PipeSpawnRequest;
 use running_process::daemon::server::DaemonServer;
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn testbin_path(name: &str) -> PathBuf {
