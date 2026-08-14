@@ -224,3 +224,6 @@ fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
 pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("/bin/sh").arg("-c").arg(command)
 }
+#[path = "sync_spawn_group.rs"]
+mod sync_spawn;
+pub use sync_spawn::{spawn_sync, spawn_sync_daemon};

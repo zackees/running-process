@@ -4,12 +4,39 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::helpers::{kill_drain_deadline, poll_until};
+const DEFAULT_KILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const KILL_DRAIN_TIMEOUT_ENV: &str = "RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS";
+
+fn kill_drain_deadline() -> Instant {
+    let timeout = std::env::var(KILL_DRAIN_TIMEOUT_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_KILL_DRAIN_TIMEOUT);
+    Instant::now() + timeout
+}
+
+fn poll_until<T>(
+    deadline: Instant,
+    interval: Duration,
+    mut poll: impl FnMut() -> io::Result<Option<T>>,
+) -> io::Result<Option<T>> {
+    loop {
+        if let Some(value) = poll()? {
+            return Ok(Some(value));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(interval.min(deadline.saturating_duration_since(now)));
+    }
+}
 
 trait UnixChild: Send {
     fn kill(&mut self) -> io::Result<()>;
-    fn wait(&mut self) -> io::Result<std::process::ExitStatus>;
-    fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>>;
+    fn wait(&mut self) -> io::Result<i32>;
+    fn try_wait(&mut self) -> io::Result<Option<i32>>;
 }
 
 impl UnixChild for std::process::Child {
@@ -17,28 +44,26 @@ impl UnixChild for std::process::Child {
         std::process::Child::kill(self)
     }
 
-    fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
-        std::process::Child::wait(self)
+    fn wait(&mut self) -> io::Result<i32> {
+        std::process::Child::wait(self).map(crate::platform::process::exit_code)
     }
 
-    fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
-        std::process::Child::try_wait(self)
+    fn try_wait(&mut self) -> io::Result<Option<i32>> {
+        Ok(std::process::Child::try_wait(self)?.map(crate::platform::process::exit_code))
     }
 }
 
-impl super::DaemonChildControl for std::process::Child {
+impl crate::platform::process::DaemonChildControl for std::process::Child {
     fn kill(&mut self) -> io::Result<()> {
         std::process::Child::kill(self)
     }
 
     fn wait(&mut self) -> io::Result<i32> {
-        std::process::Child::wait(self)
-            .map(running_process_platform_internal::platform::process::exit_code)
+        std::process::Child::wait(self).map(crate::platform::process::exit_code)
     }
 
     fn try_wait(&mut self) -> io::Result<Option<i32>> {
-        Ok(std::process::Child::try_wait(self)?
-            .map(running_process_platform_internal::platform::process::exit_code))
+        Ok(std::process::Child::try_wait(self)?.map(crate::platform::process::exit_code))
     }
 }
 
@@ -56,9 +81,9 @@ impl SpawnedInner {
             let _ = child.kill();
         }
         drop(guard);
-        let _ = running_process_platform_internal::platform::process::unix_signal_process_group(
+        let _ = crate::platform::process::unix_signal_process_group(
             self.pgid,
-            running_process_platform_internal::platform::process::UnixSignalKind::Kill,
+            crate::platform::process::UnixSignalKind::Kill,
         );
         Ok(())
     }
@@ -68,8 +93,7 @@ impl SpawnedInner {
         let Some(child) = guard.as_mut() else {
             return Err(io::Error::other("child handle absent"));
         };
-        let status = child.wait()?;
-        Ok(running_process_platform_internal::platform::process::exit_code(status))
+        child.wait()
     }
 
     pub fn try_wait(&self) -> io::Result<Option<i32>> {
@@ -77,9 +101,7 @@ impl SpawnedInner {
         let Some(child) = guard.as_mut() else {
             return Ok(None);
         };
-        Ok(child
-            .try_wait()?
-            .map(running_process_platform_internal::platform::process::exit_code))
+        child.try_wait()
     }
 
     pub fn shutdown(&mut self) {
@@ -87,9 +109,9 @@ impl SpawnedInner {
     }
 
     fn shutdown_with_deadline(&mut self, deadline: Instant) {
-        let group_signaled = running_process_platform_internal::platform::process::unix_signal_process_group(
+        let group_signaled = crate::platform::process::unix_signal_process_group(
             self.pgid,
-            running_process_platform_internal::platform::process::UnixSignalKind::Kill,
+            crate::platform::process::UnixSignalKind::Kill,
         )
         .is_ok();
         let Some(mut child) = self.child.lock().expect("child mutex poisoned").take() else {
@@ -105,7 +127,7 @@ impl SpawnedInner {
     }
 }
 
-impl super::SpawnedChildControl for SpawnedInner {
+impl crate::platform::process::SpawnedChildControl for SpawnedInner {
     fn kill(&mut self) -> io::Result<()> {
         SpawnedInner::kill(self)
     }
@@ -132,55 +154,59 @@ fn spawn_background_reaper(mut child: Box<dyn UnixChild>) {
     });
 }
 
-fn slot_to_stdio(slot: &super::StdioSource<'_>) -> io::Result<Stdio> {
+fn slot_to_stdio(slot: &crate::platform::process::StdioSource<'_>) -> io::Result<Stdio> {
     match slot {
-        super::StdioSource::Null => Ok(Stdio::null()),
-        super::StdioSource::Parent => Ok(Stdio::inherit()),
-        super::StdioSource::File(file) => Ok(Stdio::from(file.try_clone()?)),
-        super::StdioSource::Pipe => Ok(Stdio::piped()),
+        crate::platform::process::StdioSource::Null => Ok(Stdio::null()),
+        crate::platform::process::StdioSource::Parent => Ok(Stdio::inherit()),
+        crate::platform::process::StdioSource::File(file) => Ok(Stdio::from(file.try_clone()?)),
+        crate::platform::process::StdioSource::Pipe => Ok(Stdio::piped()),
     }
 }
 
-fn daemon_slot_to_stdio(slot: &super::DaemonStdioSource<'_>) -> io::Result<Stdio> {
+fn daemon_slot_to_stdio(
+    slot: &crate::platform::process::DaemonStdioSource<'_>,
+) -> io::Result<Stdio> {
     match slot {
-        super::DaemonStdioSource::Null => Ok(Stdio::null()),
-        super::DaemonStdioSource::File(file) => Ok(Stdio::from(file.try_clone()?)),
+        crate::platform::process::DaemonStdioSource::Null => Ok(Stdio::null()),
+        crate::platform::process::DaemonStdioSource::File(file) => {
+            Ok(Stdio::from(file.try_clone()?))
+        }
     }
 }
 
-pub fn spawn_daemon(
+pub fn spawn_sync_daemon(
     command: &mut Command,
-    stdio: super::DaemonStdio<'_>,
-    policy: super::EnvironmentPolicy,
-) -> io::Result<super::DaemonChild> {
-    apply_environment_policy(command, policy)?;
-
+    stdio: crate::platform::process::DaemonStdio<'_>,
+    environment: crate::platform::process::SyncEnvironment,
+    _breakaway: bool,
+) -> io::Result<crate::platform::process::DaemonChild> {
+    apply_environment(command, environment);
     command
         .stdin(Stdio::null())
         .stdout(daemon_slot_to_stdio(&stdio.stdout)?)
         .stderr(daemon_slot_to_stdio(&stdio.stderr)?);
 
-    running_process_platform_internal::platform::process::configure_sync_daemon_command(command)?;
+    crate::platform::process::configure_sync_daemon_command(command)?;
 
     let child = command.spawn()?;
     let pid = child.id();
-    Ok(super::DaemonChild {
+    Ok(crate::platform::process::DaemonChild {
         pid,
         inner: Box::new(child),
     })
 }
 
-pub fn spawn(
+pub fn spawn_sync(
     command: &mut Command,
-    stdio: super::SpawnStdio<'_>,
-    policy: super::EnvironmentPolicy,
-) -> io::Result<super::SpawnedChild> {
-    apply_environment_policy(command, policy)?;
+    stdio: crate::platform::process::SpawnStdio<'_>,
+    environment: crate::platform::process::SyncEnvironment,
+) -> io::Result<crate::platform::process::SpawnedChild> {
+    apply_environment(command, environment);
     command.stdin(slot_to_stdio(&stdio.stdin)?);
     command.stdout(slot_to_stdio(&stdio.stdout)?);
     command.stderr(slot_to_stdio(&stdio.stderr)?);
 
-    running_process_platform_internal::platform::process::configure_sync_contained_command(command)?;
+    crate::platform::process::configure_sync_contained_command(command)?;
 
     let mut child = command.spawn()?;
     let pid = child.id();
@@ -228,7 +254,7 @@ pub fn spawn(
         });
     }
 
-    Ok(super::SpawnedChild {
+    Ok(crate::platform::process::SpawnedChild {
         stdin,
         stdout,
         stderr,
@@ -237,50 +263,32 @@ pub fn spawn(
     })
 }
 
-fn apply_environment_policy(
+fn apply_environment(
     command: &mut Command,
-    policy: super::EnvironmentPolicy,
-) -> io::Result<()> {
-    match policy {
-        super::EnvironmentPolicy::Inherit => return Ok(()),
-        super::EnvironmentPolicy::Auto => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Auto environment policy must be resolved before platform spawn",
-            ));
-        }
-        super::EnvironmentPolicy::Clear | super::EnvironmentPolicy::UserBaseline => {
-            // Changing the base with env_clear() also clears Command's
-            // explicit mutation map. Snapshot additions, overrides, and
-            // removals so they can be replayed after the selected base.
-            let explicit: Vec<_> = command
-                .get_envs()
-                .map(|(key, value)| (key.to_os_string(), value.map(std::ffi::OsStr::to_os_string)))
-                .collect();
-            let baseline = match policy {
-                super::EnvironmentPolicy::UserBaseline => {
-                    crate::environment::user_baseline_environment()?
-                }
-                super::EnvironmentPolicy::Clear => Vec::new(),
-                _ => unreachable!(),
-            };
+    environment: crate::platform::process::SyncEnvironment,
+) {
+    let crate::platform::process::SyncEnvironment::Explicit(base) = environment else {
+        return;
+    };
 
-            command.env_clear();
-            command.envs(baseline);
-            for (key, value) in explicit {
-                match value {
-                    Some(value) => {
-                        command.env(key, value);
-                    }
-                    None => {
-                        command.env_remove(key);
-                    }
-                }
+    // `env_clear` also clears Command's mutation map. Preserve additions,
+    // overrides, and removals so they are replayed after the selected base.
+    let explicit: Vec<_> = command
+        .get_envs()
+        .map(|(key, value)| (key.to_os_string(), value.map(std::ffi::OsStr::to_os_string)))
+        .collect();
+    command.env_clear();
+    command.envs(base);
+    for (key, value) in explicit {
+        match value {
+            Some(value) => {
+                command.env(key, value);
+            }
+            None => {
+                command.env_remove(key);
             }
         }
     }
-
-    Ok(())
 }
 
 /// Async-signal-safe fd sweep used in pre_exec. See sanitized.rs (now
@@ -309,7 +317,6 @@ fn apply_environment_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::process::ExitStatusExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Condvar};
 
@@ -325,20 +332,20 @@ mod tests {
             Ok(())
         }
 
-        fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        fn wait(&mut self) -> io::Result<i32> {
             self.waits.fetch_add(1, Ordering::SeqCst);
             let (lock, condvar) = &*self.wait_gate;
             let mut released = lock.lock().expect("wait gate mutex poisoned");
             while !*released {
                 released = condvar.wait(released).expect("wait gate mutex poisoned");
             }
-            Ok(std::process::ExitStatus::from_raw(0))
+            Ok(0)
         }
 
-        fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        fn try_wait(&mut self) -> io::Result<Option<i32>> {
             self.waits.fetch_add(1, Ordering::SeqCst);
             let released = *self.wait_gate.0.lock().expect("wait gate mutex poisoned");
-            Ok(released.then(|| std::process::ExitStatus::from_raw(0)))
+            Ok(released.then_some(0))
         }
     }
 
@@ -468,14 +475,14 @@ mod tests {
             Ok(())
         }
 
-        fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        fn wait(&mut self) -> io::Result<i32> {
             self.waits.fetch_add(1, Ordering::SeqCst);
-            Ok(std::process::ExitStatus::from_raw(0))
+            Ok(0)
         }
 
-        fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        fn try_wait(&mut self) -> io::Result<Option<i32>> {
             self.polls.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(std::process::ExitStatus::from_raw(0)))
+            Ok(Some(0))
         }
     }
 

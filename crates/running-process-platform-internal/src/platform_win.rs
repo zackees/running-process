@@ -188,3 +188,6 @@ fn assign(child: Option<HANDLE>) {
     let Some(job) = JOB.get_or_init(create).as_ref() else { return };
     unsafe { AssignProcessToJobObject(job.0, child); }
 }
+#[path = "platform_win/sync_spawn.rs"]
+mod sync_spawn;
+pub use sync_spawn::{spawn_sync, spawn_sync_daemon};

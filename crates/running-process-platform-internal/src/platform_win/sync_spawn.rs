@@ -274,7 +274,7 @@ struct ResolvedSlot {
     /// (Null/Parent/Handle) produce ordinary inheritable handles whose
     /// overlapped-ness we don't track.
     child_handle: OwnedHandle,
-    /// Set only for [`super::StdioSource::Pipe`]: the parent-side end
+    /// Set only for [`crate::platform::process::StdioSource::Pipe`]: the parent-side end
     /// of a freshly-created pipe. Typed as [`OverlappedHandle`] so it
     /// can ONLY be turned into a `ChildStdin/Stdout/Stderr` (issue #115).
     parent_end: Option<OverlappedHandle>,
@@ -286,16 +286,19 @@ enum SlotDir {
     Stderr,
 }
 
-fn resolve_slot(slot: &super::StdioSource<'_>, dir: SlotDir) -> io::Result<ResolvedSlot> {
+fn resolve_slot(
+    slot: &crate::platform::process::StdioSource<'_>,
+    dir: SlotDir,
+) -> io::Result<ResolvedSlot> {
     match slot {
-        super::StdioSource::Null => {
+        crate::platform::process::StdioSource::Null => {
             let write = !matches!(dir, SlotDir::Stdin);
             Ok(ResolvedSlot {
                 child_handle: open_nul(write)?,
                 parent_end: None,
             })
         }
-        super::StdioSource::Parent => {
+        crate::platform::process::StdioSource::Parent => {
             let std_handle = match dir {
                 SlotDir::Stdin => STD_INPUT_HANDLE,
                 SlotDir::Stdout => STD_OUTPUT_HANDLE,
@@ -316,14 +319,14 @@ fn resolve_slot(slot: &super::StdioSource<'_>, dir: SlotDir) -> io::Result<Resol
                 parent_end: None,
             })
         }
-        super::StdioSource::File(file) => {
+        crate::platform::process::StdioSource::File(file) => {
             let raw = file.as_raw_handle() as HANDLE;
             Ok(ResolvedSlot {
                 child_handle: dup_inheritable(raw)?,
                 parent_end: None,
             })
         }
-        super::StdioSource::Pipe => {
+        crate::platform::process::StdioSource::Pipe => {
             // Use the typed pipe constructor: parent end is provably
             // `OverlappedHandle` (the only thing that can be turned into
             // a Rust `ChildStdin/Stdout/Stderr`); child end is provably
@@ -344,12 +347,16 @@ fn resolve_slot(slot: &super::StdioSource<'_>, dir: SlotDir) -> io::Result<Resol
 }
 
 fn resolve_daemon_slot(
-    slot: &super::DaemonStdioSource<'_>,
+    slot: &crate::platform::process::DaemonStdioSource<'_>,
     dir: SlotDir,
 ) -> io::Result<OwnedHandle> {
     match slot {
-        super::DaemonStdioSource::Null => open_nul(!matches!(dir, SlotDir::Stdin)),
-        super::DaemonStdioSource::File(file) => dup_inheritable(file.as_raw_handle() as HANDLE),
+        crate::platform::process::DaemonStdioSource::Null => {
+            open_nul(!matches!(dir, SlotDir::Stdin))
+        }
+        crate::platform::process::DaemonStdioSource::File(file) => {
+            dup_inheritable(file.as_raw_handle() as HANDLE)
+        }
     }
 }
 
@@ -398,7 +405,7 @@ impl SpawnedInner {
     }
 }
 
-impl super::SpawnedChildControl for SpawnedInner {
+impl crate::platform::process::SpawnedChildControl for SpawnedInner {
     fn kill(&mut self) -> io::Result<()> {
         SpawnedInner::kill(self)
     }
@@ -416,12 +423,12 @@ impl super::SpawnedChildControl for SpawnedInner {
     }
 }
 
-pub fn spawn_daemon(
+pub fn spawn_sync_daemon(
     command: &mut Command,
-    stdio: super::DaemonStdio<'_>,
-    policy: super::EnvironmentPolicy,
+    stdio: crate::platform::process::DaemonStdio<'_>,
+    environment: crate::platform::process::SyncEnvironment,
     breakaway: bool,
-) -> io::Result<super::DaemonChild> {
+) -> io::Result<crate::platform::process::DaemonChild> {
     let stdin = open_nul(false)?;
     let stdout = resolve_daemon_slot(&stdio.stdout, SlotDir::Stdout)?;
     let stderr = resolve_daemon_slot(&stdio.stderr, SlotDir::Stderr)?;
@@ -431,19 +438,19 @@ pub fn spawn_daemon(
         &stdout,
         &stderr,
         CreateMode::Daemon { breakaway },
-        policy,
+        environment,
     )?;
-    Ok(super::DaemonChild {
+    Ok(crate::platform::process::DaemonChild {
         pid,
         inner: Box::new(OwnedHandle(handle)),
     })
 }
 
-pub fn spawn(
+pub fn spawn_sync(
     command: &mut Command,
-    stdio: super::SpawnStdio<'_>,
-    policy: super::EnvironmentPolicy,
-) -> io::Result<super::SpawnedChild> {
+    stdio: crate::platform::process::SpawnStdio<'_>,
+    environment: crate::platform::process::SyncEnvironment,
+) -> io::Result<crate::platform::process::SpawnedChild> {
     let stdin_slot = resolve_slot(&stdio.stdin, SlotDir::Stdin)?;
     let stdout_slot = resolve_slot(&stdio.stdout, SlotDir::Stdout)?;
     let stderr_slot = resolve_slot(&stdio.stderr, SlotDir::Stderr)?;
@@ -456,7 +463,7 @@ pub fn spawn(
         CreateMode::Contained {
             show_console: stdio.show_console,
         },
-        policy,
+        environment,
     )?;
 
     // Build the per-spawn Job Object and assign BEFORE ResumeThread so
@@ -515,7 +522,7 @@ pub fn spawn(
         None
     };
 
-    Ok(super::SpawnedChild {
+    Ok(crate::platform::process::SpawnedChild {
         stdin: stdin_pipe,
         stdout: stdout_pipe,
         stderr: stderr_pipe,
@@ -595,7 +602,7 @@ fn create_process_inner(
     stdout: &OwnedHandle,
     stderr: &OwnedHandle,
     mode: CreateMode,
-    policy: super::EnvironmentPolicy,
+    environment: crate::platform::process::SyncEnvironment,
 ) -> io::Result<(HANDLE, HANDLE, u32)> {
     let mut cmdline = build_command_line(command.get_program(), command.get_args());
 
@@ -603,14 +610,18 @@ fn create_process_inner(
         .get_envs()
         .map(|(k, v)| (k.to_os_string(), v.map(|v| v.to_os_string())))
         .collect();
-    let env_block = if envs.is_empty() && policy == super::EnvironmentPolicy::Inherit {
+    let env_block = if envs.is_empty()
+        && matches!(
+            &environment,
+            crate::platform::process::SyncEnvironment::Inherit
+        ) {
         // No overrides AND no clear → let the kernel inherit the
         // parent's env block (lpEnvironment=NULL).
         None
     } else {
         // Either we have overrides, or the caller selected a non-inherited
         // base. In both cases build and pass an explicit Unicode block.
-        Some(build_env_block(envs, policy)?)
+        Some(build_env_block(envs, environment)?)
     };
 
     let cwd_w: Option<Vec<u16>> = command.get_current_dir().map(|p| {
@@ -874,7 +885,7 @@ pub fn try_wait(handle: &OwnedHandle) -> io::Result<Option<i32>> {
     try_wait_inner(handle)
 }
 
-impl super::DaemonChildControl for OwnedHandle {
+impl crate::platform::process::DaemonChildControl for OwnedHandle {
     fn kill(&mut self) -> io::Result<()> {
         terminate(self)
     }
@@ -1015,7 +1026,7 @@ fn quote(arg: &str) -> String {
 
 fn build_env_block(
     overrides: Vec<(OsString, Option<OsString>)>,
-    policy: super::EnvironmentPolicy,
+    environment: crate::platform::process::SyncEnvironment,
 ) -> io::Result<Vec<u16>> {
     use std::collections::BTreeMap;
     // Windows env var names are case-INSENSITIVE at the kernel level
@@ -1045,16 +1056,9 @@ fn build_env_block(
             .collect()
     };
 
-    let base = match policy {
-        super::EnvironmentPolicy::Inherit => std::env::vars_os().collect(),
-        super::EnvironmentPolicy::UserBaseline => crate::environment::user_baseline_environment()?,
-        super::EnvironmentPolicy::Clear => Vec::new(),
-        super::EnvironmentPolicy::Auto => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Auto environment policy must be resolved before platform spawn",
-            ));
-        }
+    let base = match environment {
+        crate::platform::process::SyncEnvironment::Inherit => std::env::vars_os().collect(),
+        crate::platform::process::SyncEnvironment::Explicit(base) => base,
     };
 
     let mut env: BTreeMap<Vec<u16>, (OsString, OsString)> = BTreeMap::new();
@@ -1091,9 +1095,81 @@ fn build_env_block(
 mod tests {
     use super::*;
 
+    struct EnvRestore {
+        key: String,
+        value: Option<OsString>,
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.value {
+                Some(value) => std::env::set_var(&self.key, value),
+                None => std::env::remove_var(&self.key),
+            }
+        }
+    }
+
     #[test]
     fn empty_environment_block_has_double_nul_terminator() {
-        let block = build_env_block(Vec::new(), super::super::EnvironmentPolicy::Clear).unwrap();
+        let block = build_env_block(
+            Vec::new(),
+            crate::platform::process::SyncEnvironment::Explicit(Vec::new()),
+        )
+        .unwrap();
         assert_eq!(block, vec![0, 0]);
+    }
+
+    #[test]
+    fn reused_command_inherits_a_fresh_environment_after_explicit_spawn() {
+        let key = format!("RUNNING_PROCESS_REUSE_ENV_{}", std::process::id());
+        let _restore = EnvRestore {
+            value: std::env::var_os(&key),
+            key: key.clone(),
+        };
+        let output = std::env::temp_dir().join(format!(
+            "running-process-reused-command-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let shell = std::env::var_os("COMSPEC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows\System32\cmd.exe"));
+        let mut command = Command::new(shell);
+        command
+            .arg("/D")
+            .arg("/C")
+            .arg(format!("> \"{}\" echo %{}%", output.display(), key));
+
+        std::env::remove_var(&key);
+        let mut first = spawn_sync(
+            &mut command,
+            crate::platform::process::SpawnStdio::default(),
+            crate::platform::process::SyncEnvironment::Explicit(vec![(
+                OsString::from(&key),
+                OsString::from("stale-value"),
+            )]),
+        )
+        .expect("explicit spawn");
+        assert_eq!(first.wait().expect("wait for explicit spawn"), 0);
+        assert!(std::fs::read_to_string(&output)
+            .expect("read explicit environment output")
+            .contains("stale-value"));
+
+        std::env::set_var(&key, "fresh-value");
+        let mut second = spawn_sync(
+            &mut command,
+            crate::platform::process::SpawnStdio::default(),
+            crate::platform::process::SyncEnvironment::Inherit,
+        )
+        .expect("inherited spawn");
+        assert_eq!(second.wait().expect("wait for inherited spawn"), 0);
+        assert!(std::fs::read_to_string(&output)
+            .expect("read inherited environment output")
+            .contains("fresh-value"));
+
+        let _ = std::fs::remove_file(output);
     }
 }
