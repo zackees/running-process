@@ -27,10 +27,6 @@
 //!
 //! Issue: <https://github.com/zackees/running-process/issues/110>.
 
-#[cfg(unix)]
-use std::os::fd::BorrowedFd;
-#[cfg(windows)]
-use std::os::windows::io::BorrowedHandle;
 use std::process::Command;
 use std::time::Duration;
 
@@ -223,16 +219,10 @@ impl Default for DaemonStdio<'_> {
 pub enum DaemonStdioSource<'a> {
     /// Connect this slot to the platform null device (`NUL` / `/dev/null`).
     Null,
-    /// Bind this slot to a caller-owned OS handle. The wrapper duplicates the
-    /// handle into an inheritable copy for the child.
-    #[cfg(windows)]
-    Handle(BorrowedHandle<'a>),
-    /// Bind this slot to a caller-owned file descriptor. Equivalent to
-    /// `DaemonStdioSource::Handle` on Windows.
-    #[cfg(unix)]
-    Fd(BorrowedFd<'a>),
-    #[doc(hidden)]
-    _Phantom(std::marker::PhantomData<&'a ()>),
+    /// Bind this slot to a caller-owned file. The wrapper duplicates the
+    /// underlying platform resource for the child, so the caller retains its
+    /// file and may close it after spawning.
+    File(&'a std::fs::File),
 }
 
 /// Per-slot source describing what the child should inherit for one of
@@ -244,27 +234,15 @@ pub enum StdioSource<'a> {
     /// receives a fresh inheritable duplicate; the parent's original slot
     /// is untouched.
     Parent,
-    /// Bind this slot to a caller-owned OS handle. The wrapper duplicates
-    /// the handle into an inheritable copy for the child; the caller
-    /// retains its own handle and is responsible for closing it.
-    #[cfg(windows)]
-    Handle(BorrowedHandle<'a>),
-    /// Bind this slot to a caller-owned file descriptor. Equivalent to
-    /// `StdioSource::Handle` on Unix.
-    #[cfg(unix)]
-    Fd(BorrowedFd<'a>),
+    /// Bind this slot to a caller-owned file. The wrapper duplicates the
+    /// underlying platform resource for the child; the caller retains its
+    /// file and is responsible for closing it.
+    File(&'a std::fs::File),
     /// Create a fresh anonymous pipe. The child gets one end; the parent
     /// gets the other via [`SpawnedChild`]'s `stdin` / `stdout` / `stderr`
     /// fields.
     Pipe,
-    #[doc(hidden)]
-    _Phantom(std::marker::PhantomData<&'a ()>),
 }
-
-// _Phantom is uninhabitable from outside: PhantomData<&'a ()> is a private
-// constructor in practice (the variant is doc(hidden) and not constructed
-// anywhere in this crate). It's only here so the `'a` lifetime is always
-// used regardless of which cfg branch is active.
 
 /// Handle to a detached daemon spawned via [`spawn_daemon`].
 ///

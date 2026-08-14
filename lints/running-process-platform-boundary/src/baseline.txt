@@ -2003,9 +2003,6 @@ crates/running-process/src/spawn.rs	attr_cfg	unix	8
 crates/running-process/src/spawn.rs	attr_cfg	unix	9
 crates/running-process/src/spawn.rs	attr_cfg	unix	10
 crates/running-process/src/spawn.rs	attr_cfg	unix	11
-crates/running-process/src/spawn.rs	attr_cfg	unix	12
-crates/running-process/src/spawn.rs	attr_cfg	unix	13
-crates/running-process/src/spawn.rs	attr_cfg	unix	14
 crates/running-process/src/spawn.rs	attr_cfg	windows	0
 crates/running-process/src/spawn.rs	attr_cfg	windows	1
 crates/running-process/src/spawn.rs	attr_cfg	windows	2
@@ -2018,11 +2015,6 @@ crates/running-process/src/spawn.rs	attr_cfg	windows	8
 crates/running-process/src/spawn.rs	attr_cfg	windows	9
 crates/running-process/src/spawn.rs	attr_cfg	windows	10
 crates/running-process/src/spawn.rs	attr_cfg	windows	11
-crates/running-process/src/spawn.rs	attr_cfg	windows	12
-crates/running-process/src/spawn.rs	attr_cfg	windows	13
-crates/running-process/src/spawn.rs	attr_cfg	windows	14
-crates/running-process/src/spawn.rs	native_import	std::os::windows	0
-crates/running-process/src/spawn.rs	native_import	std::os::windows	1
 crates/running-process/src/spawn_imp_unix.rs	native_import	std::os::unix	0
 crates/running-process/src/spawn_imp_windows.rs	native_import	std::os::windows	0
 crates/running-process/src/spawn_imp_windows.rs	native_import	std::os::windows	1

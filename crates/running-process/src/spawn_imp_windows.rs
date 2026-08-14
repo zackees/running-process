@@ -316,8 +316,8 @@ fn resolve_slot(slot: &super::StdioSource<'_>, dir: SlotDir) -> io::Result<Resol
                 parent_end: None,
             })
         }
-        super::StdioSource::Handle(borrowed) => {
-            let raw = borrowed.as_raw_handle() as HANDLE;
+        super::StdioSource::File(file) => {
+            let raw = file.as_raw_handle() as HANDLE;
             Ok(ResolvedSlot {
                 child_handle: dup_inheritable(raw)?,
                 parent_end: None,
@@ -340,7 +340,6 @@ fn resolve_slot(slot: &super::StdioSource<'_>, dir: SlotDir) -> io::Result<Resol
                 parent_end: Some(parent_end),
             })
         }
-        super::StdioSource::_Phantom(_) => unreachable!(),
     }
 }
 
@@ -350,10 +349,7 @@ fn resolve_daemon_slot(
 ) -> io::Result<OwnedHandle> {
     match slot {
         super::DaemonStdioSource::Null => open_nul(!matches!(dir, SlotDir::Stdin)),
-        super::DaemonStdioSource::Handle(borrowed) => {
-            dup_inheritable(borrowed.as_raw_handle() as HANDLE)
-        }
-        super::DaemonStdioSource::_Phantom(_) => unreachable!(),
+        super::DaemonStdioSource::File(file) => dup_inheritable(file.as_raw_handle() as HANDLE),
     }
 }
 
