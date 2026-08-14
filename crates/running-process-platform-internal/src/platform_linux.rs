@@ -1,13 +1,13 @@
 //! Linux implementation root for the process capability.
 
 pub fn shell_command(command: &str) -> std::process::Command {
-    let mut shell = std::process::Command::new("sh");
+    let mut shell = std::process::Command::new("/bin/sh");
     shell.arg("-lc").arg(command);
     shell
 }
 
 pub fn compat_shell_command(command: &str) -> std::process::Command {
-    let mut shell = std::process::Command::new("sh");
+    let mut shell = std::process::Command::new("/bin/sh");
     shell.arg("-lc").arg(command);
     shell
 }
@@ -270,6 +270,22 @@ pub fn current_executable_build_id() -> Option<Vec<u8>> {
     output
 }
 
+/// Placeholder for the Windows-only Job Object capability.
+pub struct WindowsJobHandle;
+
+/// Reject the Windows-only Job Object operation on Linux.
+pub fn assign_child_to_windows_job(
+    _child: &std::process::Child,
+    _direct_pid: u32,
+    _address_space_limit_bytes: Option<u64>,
+    _emit: Option<Box<dyn Fn(crate::platform::process::DescendantEvent) + Send>>,
+) -> Result<WindowsJobHandle, std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Windows Job Objects are unavailable on Linux",
+    ))
+}
+
 fn gnu_build_id_from_notes(mut notes: &[u8]) -> Option<&[u8]> {
     fn aligned(value: usize) -> Option<usize> {
         value.checked_add(3).map(|value| value & !3)
@@ -492,6 +508,28 @@ pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn shell_command_preserves_login_shell_contract_and_ignores_child_path() {
+        use std::ffi::OsStr;
+
+        let command_text = "printf '%s' 'alpha beta;\"gamma\"'";
+        let mut command = super::shell_command(command_text);
+        assert_eq!(command.get_program(), OsStr::new("/bin/sh"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [OsStr::new("-lc"), OsStr::new(command_text)]
+        );
+        command
+            .env_clear()
+            .env("PATH", "/caller-supplied-path-override");
+        let output = command
+            .output()
+            .expect("absolute shell command should execute independently of child PATH");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"alpha beta;\"gamma\"");
+    }
+
+    #[test]
+    #[cfg(not(target_env = "musl"))]
     fn current_executable_exposes_a_gnu_build_id() {
         let build_id = super::current_executable_build_id()
             .expect("Linux test executable should carry a GNU build ID");

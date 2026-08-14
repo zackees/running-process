@@ -574,6 +574,61 @@ fn windows_iocp_pump_emits_descendant_lifecycle_for_subprocess_chain() {
 }
 
 #[test]
+fn end_to_end_descendant_started_and_exited_for_spawned_chain() {
+    if std::env::consts::OS == "windows" {
+        // The Windows Job Object/IOCP equivalent is covered above.
+        return;
+    }
+    let cfg = ProcessConfig {
+        command: CommandSpec::Argv(vec![
+            "sh".into(),
+            "-c".into(),
+            "sleep 0.5 & sleep 0.5 & sleep 0.5 & wait".into(),
+        ]),
+        cwd: None,
+        env: None,
+        capture: false,
+        stderr_mode: StderrMode::Stdout,
+        creationflags: None,
+        create_process_group: false,
+        stdin_mode: StdinMode::Inherit,
+        nice: None,
+        address_space_limit_bytes: None,
+    };
+    let (process, subscriber) = NativeProcess::with_observer(
+        cfg,
+        ObserverConfig::with_categories([EventCategory::Process]),
+    );
+    process.start().expect("spawn shell chain");
+    let _ = process
+        .wait(Some(Duration::from_secs(30)))
+        .expect("shell chain exits");
+    process.close().ok();
+    std::thread::sleep(Duration::from_millis(250));
+
+    let events = subscriber.drain();
+    let started = events
+        .iter()
+        .filter(|event| matches!(event.kind, ObserverEventKind::DescendantStarted))
+        .count();
+    let exited = events
+        .iter()
+        .filter(|event| matches!(event.kind, ObserverEventKind::DescendantExited))
+        .count();
+    assert!(
+        started >= 3,
+        "expected at least 3 DescendantStarted events, got {started}: {events:?}"
+    );
+    assert!(
+        exited >= 3,
+        "expected at least 3 DescendantExited events, got {exited}: {events:?}"
+    );
+    assert!(events
+        .iter()
+        .all(|event| event.category == EventCategory::Process));
+}
+
+#[test]
 fn windows_iocp_pump_inert_when_only_lifecycle_requested() {
     if std::env::consts::OS != "windows" {
         return;

@@ -183,10 +183,10 @@ pub(crate) use helpers::{
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
+#[cfg(all(windows, test))]
+pub(crate) use windows::windows_creation_flags;
 #[cfg(windows)]
-pub(crate) use windows::{
-    assign_child_to_windows_kill_on_close_job_impl, windows_creation_flags, WindowsJobHandle,
-};
+pub(crate) use windows::{assign_child_to_windows_kill_on_close_job_impl, WindowsJobHandle};
 
 #[macro_export]
 /// Create a scoped Rust debug trace label for the current function body.

@@ -246,11 +246,11 @@ async fn replace_mode_subprocess_sees_only_caller_env() {
     let _ = tokio::time::timeout(scaled(std::time::Duration::from_secs(5)), server_handle).await;
 }
 
-/// **Caller env wins ties under default (layer) mode.** When a key
-/// exists in both the inherited env AND the caller's map, the
-/// subprocess sees the caller's value.
+/// **Caller overrides win ties in the serialized snapshot.** When a key
+/// already exists in the caller's captured environment, `with_env` replaces
+/// it and the subprocess sees the replacement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn layer_mode_caller_env_wins_ties_against_inherited() {
+async fn serialized_snapshot_caller_override_wins_ties() {
     let scope = format!("envrep-layer-tie-{}", line!());
     let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
     tokio::time::sleep(scaled(std::time::Duration::from_millis(300))).await;
@@ -261,33 +261,30 @@ async fn layer_mode_caller_env_wins_ties_against_inherited() {
 
     let command = format!("{} {}", shell_quote_path(&dump_bin), shell_quote_path(&out));
 
-    // PATH almost certainly exists in the daemon's inherited env.
-    // We override it with a deterministic value via the caller env.
-    let caller_path_override = if cfg!(windows) {
-        "C:\\caller-supplied-path-override"
-    } else {
-        "/caller-supplied-path-override"
-    };
+    // Use a synthetic entry so the test does not depend on OS variables that
+    // the login shell may transform or interpret (PATH, HOME, TEMP, etc.).
+    const ENV_KEY: &str = "RP_TEST_SNAPSHOT_TIE";
+    const CALLER_OVERRIDE: &str = "caller-supplied-override";
 
     let socket_for_client = socket.clone();
     let out_for_client = out.clone();
-    let path_override = caller_path_override.to_string();
     let task = tokio::task::spawn_blocking(move || {
         let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
-        let path_key = if cfg!(windows) { "Path" } else { "PATH" };
-        let req = SpawnCommandRequest::shell(command).with_env(path_key, path_override.clone());
+        let req = SpawnCommandRequest::shell(command)
+            .with_env(ENV_KEY, "captured-snapshot-value")
+            .with_env(ENV_KEY, CALLER_OVERRIDE);
+        assert_eq!(
+            req.env.iter().filter(|(key, _)| key == ENV_KEY).count(),
+            1,
+            "the caller override must replace, not duplicate, the snapshot entry"
+        );
         let _ = client.spawn_command(&req).expect("spawn_command");
 
         let env_map = read_env_file(&out_for_client);
-        let observed = env_map
-            .get(path_key)
-            .or_else(|| env_map.get("PATH"))
-            .or_else(|| env_map.get("Path"))
-            .cloned()
-            .unwrap_or_default();
+        let observed = env_map.get(ENV_KEY).cloned().unwrap_or_default();
         assert_eq!(
-            observed, path_override,
-            "caller's env override must beat the inherited value"
+            observed, CALLER_OVERRIDE,
+            "caller's override must replace the serialized snapshot value"
         );
 
         let _ = client.shutdown(true, 5.0);
@@ -300,7 +297,7 @@ async fn layer_mode_caller_env_wins_ties_against_inherited() {
 
 /// **Windows case-insensitive override regression.** Drives the dual-key
 /// scenario directly: feed `with_envs` an explicit list that contains BOTH
-/// `("PATH", inherited_marker)` and `("Path", override_marker)`, then assert
+/// `("PATH", earlier_marker)` and `("Path", override_marker)`, then assert
 /// the subprocess sees the override.
 ///
 /// Without the daemon-side case-insensitive dedup, this is flaky because
@@ -315,7 +312,7 @@ async fn layer_mode_caller_env_wins_ties_against_inherited() {
 /// can't exist there.
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn windows_case_insensitive_override_beats_inherited_path() {
+async fn windows_case_insensitive_override_beats_earlier_path() {
     let scope = format!("envrep-winci-{}", line!());
     let (server_handle, socket, _tmp_dir) = start_server_with_tempdb(&scope);
     tokio::time::sleep(scaled(std::time::Duration::from_millis(300))).await;
@@ -326,7 +323,7 @@ async fn windows_case_insensitive_override_beats_inherited_path() {
 
     let command = format!("{} {}", shell_quote_path(&dump_bin), shell_quote_path(&out));
 
-    let inherited_marker = "C:\\should-not-win-marker";
+    let earlier_marker = "C:\\should-not-win-marker";
     let override_marker = "C:\\override-marker";
 
     let socket_for_client = socket.clone();
@@ -335,12 +332,11 @@ async fn windows_case_insensitive_override_beats_inherited_path() {
         let mut client = DaemonClient::connect_to(&socket_for_client).expect("connect");
         // Explicit env list with both case variants, override last. We
         // bypass `with_env`'s case-sensitive lookup by going through
-        // `with_envs` directly. `clear_inherited_env` is left default
-        // (false) so the daemon ALSO layers its own env on top, but our
-        // explicit `Path` should still beat both the inherited
-        // daemon-side `Path` and the explicit `PATH` we put in.
+        // `with_envs` directly. The request keeps its default clear base, so
+        // the child sees only these explicit entries; the later `Path` must
+        // beat the earlier `PATH` after case-insensitive canonicalization.
         let req = SpawnCommandRequest::shell(command).with_envs([
-            ("PATH".to_string(), inherited_marker.to_string()),
+            ("PATH".to_string(), earlier_marker.to_string()),
             ("Path".to_string(), override_marker.to_string()),
             // Include cmd.exe essentials so the shell invocation runs.
             (

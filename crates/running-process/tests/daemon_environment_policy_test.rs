@@ -204,7 +204,7 @@ async fn detached_child_enforces_all_environment_policies_and_metadata() {
             let output = output_dir.path().join(format!("{name}.env"));
             let command = format!("{} {}", shell_quote(&dump), shell_quote(&output));
             let request = SpawnCommandRequest::shell(command)
-                .with_envs([(CLIENT_KEY, CLIENT_VALUE)])
+                .with_env(CLIENT_KEY, CLIENT_VALUE)
                 .with_originator("detached-policy");
             let request = policy
                 .map(|value| request.clone().with_environment_policy(value))

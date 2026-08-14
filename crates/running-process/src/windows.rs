@@ -53,6 +53,7 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn windows_priority_flags(nice: Option<i32>) -> u32 {
     const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
     const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
@@ -73,6 +74,7 @@ pub(crate) fn windows_priority_flags(nice: Option<i32>) -> u32 {
 /// The default hides consoles only for console-less parents and never
 /// overrides an explicit caller console policy. Priority and process-group
 /// flags are additive.
+#[cfg(test)]
 pub(crate) fn windows_creation_flags(
     creationflags: Option<u32>,
     create_process_group: bool,

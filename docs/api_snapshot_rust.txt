@@ -7,12 +7,14 @@
 
     pub use async_process::AsyncProcess;
     pub use blocking_island::dispatch_blocking as blocking_island_dispatch;
+    pub use bounded::{run_command, run_command_bounded, run_std_command_bounded};
     pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
     pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
     pub use content_hash::blake3_file;
     pub use observer::{ CapabilitySupport, CategoryCapability, EventCategory, ObserverCapabilities, ObserverConfig, ObserverEvent, ObserverEventKind, ObserverSubscriber, };
     pub use originator::{ find_declared_daemon_pids, find_processes_by_originator, OriginatorProcessInfo, };
     pub use output_log::{ CursorRead, OutputCursor, OutputLog, OutputRecord, SharedOutputCursor, SharedOutputLog, };
+    pub use running_process_platform_internal::platform::process::current_executable_build_id;
     pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
     pub use spawn::{ spawn, spawn_daemon, spawn_daemon_breaking_away_from_job, spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env, spawn_daemon_with_env_policy, spawn_daemon_with_stdio, spawn_daemon_with_stdio_and_env_policy, spawn_with_env_policy, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy, SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR, };
     pub use spawn::{spawn_tokio, TokioSpawnOptions};

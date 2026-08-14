@@ -155,6 +155,12 @@ ALLOWED_RUST_SPAWN = {
     # Public async process construction delegates only to the blessed typed
     # operation above and does not own a second platform spawn path.
     Path("crates/running-process/src/async_process.rs"),
+    # #1013 Windows descendant lifecycle delivery: this is an in-process
+    # thread that drains Job Object IOCP notifications and emits typed
+    # Started/Exited events. It never starts a child process.
+    Path(
+        "crates/running-process-platform-internal/src/platform_win_descendants.rs"
+    ),
     # #636 crash capture sampler: `thread::Builder::spawn` starts an
     # in-process thread that refreshes the preallocated, bounded all-thread
     # snapshot consumed by the native crash callback. It never starts a

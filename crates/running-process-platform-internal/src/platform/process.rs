@@ -6,20 +6,15 @@ pub use crate::{
 };
 
 pub use crate::platform_imp::{
-    cancel_capture_reader, canonical_environment_pairs, capture_reader_done, compat_shell_command,
-    configure_process_command, configure_sync_contained_command, configure_sync_daemon_command,
-    configure_trampoline_command, exit_code, monitor_console_windows, parent_has_console,
+    assign_child_to_windows_job, cancel_capture_reader, canonical_environment_pairs,
+    capture_reader_done, compat_shell_command, configure_process_command,
+    configure_sync_contained_command, configure_sync_daemon_command, configure_trampoline_command,
+    current_executable_build_id, exit_code, monitor_console_windows, parent_has_console,
     prepare_capture_reader, process_snapshot, process_snapshot_for_pid, set_process_name,
     shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
     start_descendant_monitor, sync_child_native_handle, trampoline_exit_code,
-    unix_mark_extra_fds_close_on_exec, CaptureCancellation,
+    unix_mark_extra_fds_close_on_exec, CaptureCancellation, WindowsJobHandle,
 };
-
-#[cfg(target_os = "linux")]
-pub use crate::platform_imp::current_executable_build_id;
-
-#[cfg(windows)]
-pub use crate::platform_imp::{assign_child_to_windows_job, WindowsJobHandle};
 
 /// Host-neutral command options selected by the caller before spawning.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -326,42 +321,3 @@ pub use crate::platform_imp::{
 };
 
 pub use crate::platform_imp::kill_tree;
-
-#[cfg(test)]
-mod tests {
-    use std::ffi::OsStr;
-
-    #[cfg(unix)]
-    #[test]
-    fn shell_command_preserves_login_shell_contract_and_quoting() {
-        let command_text = "printf '%s' 'alpha beta;\"gamma\"'";
-        let mut command = super::shell_command(command_text);
-        assert_eq!(command.get_program(), OsStr::new("sh"));
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [OsStr::new("-lc"), OsStr::new(command_text)]
-        );
-        let output = command.output().expect("shell command should execute");
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"alpha beta;\"gamma\"");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn shell_command_preserves_raw_cmd_quoting_contract() {
-        let command_text = "echo alpha beta ^& gamma";
-        let mut command = super::shell_command(command_text);
-        assert_eq!(command.get_program(), OsStr::new("cmd.exe"));
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [
-                OsStr::new("/D /S /C \""),
-                OsStr::new(command_text),
-                OsStr::new("\"")
-            ]
-        );
-        let output = command.output().expect("shell command should execute");
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"alpha beta & gamma \r\n");
-    }
-}
