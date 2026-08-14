@@ -45,6 +45,14 @@ pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
 pub fn enable_descendant_subreaper() {
     let _ = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
 }
+
+pub fn process_snapshot() -> Vec<crate::platform::process::ProcessSnapshot> {
+    Vec::new()
+}
+
+pub fn process_snapshot_for_pid(_pid: u32) -> Option<crate::platform::process::ProcessSnapshot> {
+    None
+}
 pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
     use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
     match (scope, category) {

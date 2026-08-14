@@ -7,8 +7,19 @@ pub use crate::{
 
 pub use crate::platform_imp::{
     configure_trampoline_command, enable_descendant_subreaper, exit_code, set_process_name,
-    trampoline_exit_code,
+    trampoline_exit_code, process_snapshot, process_snapshot_for_pid,
 };
+
+/// A platform-owned identity record used when observing a process tree.
+/// The timestamp fields are opaque host-native creation-time components and
+/// must only be compared for equality.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessSnapshot {
+    pub pid: u32,
+    pub parent_pid: u32,
+    pub start_time_a: u64,
+    pub start_time_b: u64,
+}
 
 #[derive(Clone, Copy)]
 pub enum ObserverScope { SystemWide, LaunchedProcessTree }

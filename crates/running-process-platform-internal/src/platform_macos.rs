@@ -39,6 +39,58 @@ pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
 }
 
 pub fn enable_descendant_subreaper() {}
+
+const PROC_ALL_PIDS: u32 = 1;
+const PROC_PIDTBSDINFO: libc::c_int = 3;
+
+pub fn process_snapshot() -> Vec<crate::platform::process::ProcessSnapshot> {
+    let size = unsafe { libc::proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0) };
+    if size <= 0 {
+        return Vec::new();
+    }
+    let pid_count = (size as usize) / std::mem::size_of::<libc::pid_t>();
+    if pid_count == 0 {
+        return Vec::new();
+    }
+    let mut pids: Vec<libc::pid_t> = vec![0; pid_count];
+    let written_bytes = unsafe {
+        libc::proc_listpids(
+            PROC_ALL_PIDS,
+            0,
+            pids.as_mut_ptr() as *mut libc::c_void,
+            (pid_count * std::mem::size_of::<libc::pid_t>()) as libc::c_int,
+        )
+    };
+    if written_bytes <= 0 {
+        return Vec::new();
+    }
+    pids.truncate((written_bytes as usize) / std::mem::size_of::<libc::pid_t>());
+    pids.into_iter()
+        .filter(|pid| *pid > 0)
+        .filter_map(|pid| process_snapshot_for_pid(pid as u32))
+        .collect()
+}
+
+pub fn process_snapshot_for_pid(pid: u32) -> Option<crate::platform::process::ProcessSnapshot> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut libc::proc_bsdinfo as *mut libc::c_void,
+            std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
+        )
+    };
+    (written as usize == std::mem::size_of::<libc::proc_bsdinfo>()).then_some(
+        crate::platform::process::ProcessSnapshot {
+            pid: info.pbi_pid,
+            parent_pid: info.pbi_ppid,
+            start_time_a: info.pbi_start_tvsec,
+            start_time_b: info.pbi_start_tvusec,
+        },
+    )
+}
 pub fn observer_backend(scope: crate::platform::process::ObserverScope, category: crate::platform::process::ObserverCategory) -> crate::platform::process::ObserverBackend {
     use crate::platform::process::{ObserverBackend as B, ObserverCategory as C, ObserverScope as S, ObserverSupport as P};
     match (scope, category) {

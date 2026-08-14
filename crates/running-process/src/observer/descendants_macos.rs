@@ -42,13 +42,6 @@ use crate::observer::{DescendantPumpStop, EventCategory, ObserverEvent, Observer
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-// libc 0.2 exposes the `proc_listpids` / `proc_pidinfo` functions and
-// the `proc_bsdinfo` struct on macOS targets but does NOT export the
-// integer constants below, so we declare them inline. The values are
-// from Apple's `<sys/proc_info.h>` and have been ABI-stable for years.
-const PROC_ALL_PIDS: u32 = 1;
-const PROC_PIDTBSDINFO: libc::c_int = 3;
-
 /// Spawn the descendant-tracking pump thread for `root_pid`. Returns
 /// silently after spawning — the thread terminates when `root_pid`
 /// disappears from the global process table or its creation-time identity
@@ -133,64 +126,30 @@ fn pump_loop_with(
 /// 0.2 does not export on macOS targets) and is the documented
 /// Apple API for cross-process introspection.
 fn list_all_processes() -> Vec<ProcessInfo> {
-    // proc_listpids size probe — pass null buffer to learn the
-    // required size in bytes.
-    let size = unsafe { libc::proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0) };
-    if size <= 0 {
-        return Vec::new();
-    }
-    let pid_count = (size as usize) / std::mem::size_of::<libc::pid_t>();
-    if pid_count == 0 {
-        return Vec::new();
-    }
-    let mut pids: Vec<libc::pid_t> = vec![0; pid_count];
-    let written_bytes = unsafe {
-        libc::proc_listpids(
-            PROC_ALL_PIDS,
-            0,
-            pids.as_mut_ptr() as *mut libc::c_void,
-            (pid_count * std::mem::size_of::<libc::pid_t>()) as libc::c_int,
-        )
-    };
-    if written_bytes <= 0 {
-        return Vec::new();
-    }
-    let written = (written_bytes as usize) / std::mem::size_of::<libc::pid_t>();
-    pids.truncate(written);
-
-    let mut result = Vec::with_capacity(written);
-    for &pid in &pids {
-        if pid <= 0 {
-            continue;
-        }
-        if let Some(info) = process_info(pid as u32) {
-            result.push(info);
-        }
-    }
-    result
+    running_process_platform_internal::platform::process::process_snapshot()
+        .into_iter()
+        .map(process_info_from_snapshot)
+        .collect()
 }
 
 fn process_info(pid: u32) -> Option<ProcessInfo> {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let n = unsafe {
-        libc::proc_pidinfo(
-            pid as libc::c_int,
-            PROC_PIDTBSDINFO,
-            0,
-            &mut info as *mut libc::proc_bsdinfo as *mut libc::c_void,
-            std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
-        )
-    };
-    (n as usize == std::mem::size_of::<libc::proc_bsdinfo>()).then_some(ProcessInfo {
-        pid: info.pbi_pid,
-        ppid: info.pbi_ppid,
+    running_process_platform_internal::platform::process::process_snapshot_for_pid(pid)
+        .map(process_info_from_snapshot)
+}
+
+fn process_info_from_snapshot(
+    snapshot: running_process_platform_internal::platform::process::ProcessSnapshot,
+) -> ProcessInfo {
+    ProcessInfo {
+        pid: snapshot.pid,
+        ppid: snapshot.parent_pid,
         identity: ProcessIdentity {
             // Use the complete timeval: seconds alone can alias when a busy
             // host recycles a PID within the same second.
-            start_sec: info.pbi_start_tvsec,
-            start_usec: info.pbi_start_tvusec,
+            start_sec: snapshot.start_time_a,
+            start_usec: snapshot.start_time_b,
         },
-    })
+    }
 }
 
 #[cfg(test)]
