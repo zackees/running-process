@@ -1599,7 +1599,6 @@ crates/running-process/src/lib.rs	attr_cfg	unix	27
 crates/running-process/src/lib.rs	attr_cfg	unix	28
 crates/running-process/src/lib.rs	attr_cfg	unix	29
 crates/running-process/src/lib.rs	attr_cfg	unix	30
-crates/running-process/src/lib.rs	attr_cfg	unix	31
 crates/running-process/src/lib.rs	attr_cfg	windows	0
 crates/running-process/src/lib.rs	attr_cfg	windows	1
 crates/running-process/src/lib.rs	attr_cfg	windows	2
@@ -1625,7 +1624,6 @@ crates/running-process/src/lib.rs	attr_cfg	windows	21
 crates/running-process/src/lib.rs	attr_cfg	windows	22
 crates/running-process/src/lib.rs	attr_cfg	windows	23
 crates/running-process/src/lib.rs	attr_cfg	windows	24
-crates/running-process/src/lib.rs	attr_cfg	windows	25
 crates/running-process/src/lib.rs	native_import	libc	0
 crates/running-process/src/lib.rs	native_import	libc	1
 crates/running-process/src/lib.rs	native_import	libc	2
@@ -1647,9 +1645,6 @@ crates/running-process/src/lib.rs	native_import	libc	17
 crates/running-process/src/lib.rs	native_import	libc	18
 crates/running-process/src/lib.rs	native_import	libc	19
 crates/running-process/src/lib.rs	native_import	libc	20
-crates/running-process/src/lib.rs	native_import	libc	21
-crates/running-process/src/lib.rs	native_import	libc	22
-crates/running-process/src/lib.rs	native_import	libc	23
 crates/running-process/src/lib.rs	native_import	std::os::unix	0
 crates/running-process/src/lib.rs	native_import	std::os::unix	1
 crates/running-process/src/lib.rs	native_import	std::os::unix	2

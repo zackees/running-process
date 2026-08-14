@@ -932,10 +932,7 @@ impl NativeProcess {
     }
 
     /// Send the OS-appropriate soft termination signal to the child's
-    /// process group (POSIX: SIGTERM to `-pid`; Windows: no soft path
-    /// implemented yet — returns Ok without doing anything so callers
-    /// can run the same code on both platforms and rely on the post-
-    /// grace hard kill).
+    /// process group (POSIX: SIGTERM to `-pid`; Windows: Ctrl+Break).
     ///
     /// Requires `ProcessConfig.create_process_group=true` on POSIX so
     /// that `-pid` resolves to the child's own group. With the default
@@ -946,59 +943,13 @@ impl NativeProcess {
     /// Used by the daemon-side pipe sessions (#130 M4 follow-up) so
     /// that `TerminationOutcome::SoftExit` becomes meaningful on POSIX.
     pub fn terminate_group_soft(&self) -> Result<(), ProcessError> {
-        #[cfg(unix)]
-        {
-            if !self.config.create_process_group {
-                return Ok(());
-            }
-            let pid = match self.pid() {
-                Some(p) => p as i32,
-                None => return Err(ProcessError::NotRunning),
-            };
-            let result = unsafe { libc::kill(-pid, libc::SIGTERM) };
-            if result != 0 {
-                let err = std::io::Error::last_os_error();
-                if err.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(ProcessError::Io(err));
-                }
-            }
-            Ok(())
+        if !self.config.create_process_group {
+            // A group signal would otherwise reach the caller's own group.
+            return Ok(());
         }
-        #[cfg(windows)]
-        {
-            if !self.config.create_process_group {
-                // GenerateConsoleCtrlEvent only routes to children
-                // spawned with CREATE_NEW_PROCESS_GROUP, and the
-                // event would otherwise hit the daemon's own group.
-                // No-op so the hard-kill schedule still wins.
-                return Ok(());
-            }
-            let pid = match self.pid() {
-                Some(p) => p,
-                None => return Err(ProcessError::NotRunning),
-            };
-            // GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT=1, pid).
-            // SAFETY: the FFI call is the standard Windows API; no
-            // borrowed Rust state is involved.
-            let ok = unsafe {
-                winapi::um::wincon::GenerateConsoleCtrlEvent(
-                    winapi::um::wincon::CTRL_BREAK_EVENT,
-                    pid,
-                )
-            };
-            if ok == 0 {
-                let err = std::io::Error::last_os_error();
-                // ERROR_INVALID_HANDLE means the child has already
-                // exited or has detached from the console — treat as
-                // success because the soft step's only goal is to
-                // give the child a chance to exit cleanly, and a
-                // dead/detached child does not need one.
-                if err.raw_os_error() != Some(6) {
-                    return Err(ProcessError::Io(err));
-                }
-            }
-            Ok(())
-        }
+        let pid = self.pid().ok_or(ProcessError::NotRunning)?;
+        running_process_platform_internal::platform::process::soft_terminate_process_group(pid)
+            .map_err(ProcessError::Io)
     }
 
     // Preserve a stable Rust frame here in release user dumps.
