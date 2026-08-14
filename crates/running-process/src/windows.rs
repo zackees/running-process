@@ -1,5 +1,3 @@
-#![cfg(windows)]
-
 use std::process::Child;
 use std::sync::mpsc::Sender;
 
