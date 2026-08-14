@@ -42,20 +42,9 @@ def _expected_cargo_build_tests_cmd() -> list[str]:
     return ["cargo", "nextest", "run", "--workspace", "--no-run"]
 
 
-def _expected_cargo_test_cmd(python: str) -> list[str]:
-    """Build the expected supervised nextest command for the current platform."""
-    timeout = (
-        str(ci_test.WINDOWS_RUST_TEST_TIMEOUT_SECONDS)
-        if ci_test.sys.platform == "win32"
-        else str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
-    )
+def _expected_cargo_test_cmd() -> list[str]:
+    """Build the nextest command; nextest owns per-test timeouts."""
     cmd = [
-        python,
-        "-m",
-        "running_process.cli",
-        "--timeout",
-        timeout,
-        "--",
         "cargo",
         "nextest",
         "run",
@@ -66,20 +55,9 @@ def _expected_cargo_test_cmd(python: str) -> list[str]:
     return cmd
 
 
-def _expected_compile_session_cmd(python: str) -> list[str]:
+def _expected_compile_session_cmd() -> list[str]:
     """Build the expected scoped daemon compile-session pass (soldr#2365)."""
-    timeout = (
-        str(ci_test.WINDOWS_RUST_TEST_TIMEOUT_SECONDS)
-        if ci_test.sys.platform == "win32"
-        else str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
-    )
     cmd = [
-        python,
-        "-m",
-        "running_process.cli",
-        "--timeout",
-        timeout,
-        "--",
         "cargo",
         "nextest",
         "run",
@@ -95,20 +73,9 @@ def _expected_compile_session_cmd(python: str) -> list[str]:
     return cmd
 
 
-def _expected_seam_test_cmd(python: str) -> list[str]:
-    """Build the expected supervised test-seams nextest pass (#433 R4)."""
-    timeout = (
-        str(ci_test.WINDOWS_RUST_TEST_TIMEOUT_SECONDS)
-        if ci_test.sys.platform == "win32"
-        else str(ci_test.DEFAULT_RUST_TEST_TIMEOUT_SECONDS)
-    )
+def _expected_seam_test_cmd() -> list[str]:
+    """Build the expected nextest-native test-seams pass (#433 R4)."""
     cmd = [
-        python,
-        "-m",
-        "running_process.cli",
-        "--timeout",
-        timeout,
-        "--",
         "cargo",
         "nextest",
         "run",
@@ -229,9 +196,9 @@ def test_main_runs_pytest_through_running_process_cli(monkeypatch) -> None:
         _expected_build_testbins_cmd(),
         _expected_build_tokio_fixture_cmd(),
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python),
-        _expected_seam_test_cmd(python),
-        _expected_compile_session_cmd(python),
+        _expected_cargo_test_cmd(),
+        _expected_seam_test_cmd(),
+        _expected_compile_session_cmd(),
         [
             python,
             "-m",
@@ -313,9 +280,9 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
         _expected_build_testbins_cmd(),
         _expected_build_tokio_fixture_cmd(),
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python),
-        _expected_seam_test_cmd(python),
-        _expected_compile_session_cmd(python),
+        _expected_cargo_test_cmd(),
+        _expected_seam_test_cmd(),
+        _expected_compile_session_cmd(),
         [
             python,
             "-m",
@@ -361,9 +328,9 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
         _expected_build_testbins_cmd(),
         _expected_build_tokio_fixture_cmd(),
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python),
-        _expected_seam_test_cmd(python),
-        _expected_compile_session_cmd(python),
+        _expected_cargo_test_cmd(),
+        _expected_seam_test_cmd(),
+        _expected_compile_session_cmd(),
         [
             python,
             "-m",
@@ -545,9 +512,9 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(
         _expected_build_testbins_cmd(),
         _expected_build_tokio_fixture_cmd(),
         _expected_cargo_build_tests_cmd(),
-        _expected_cargo_test_cmd(python),
-        _expected_seam_test_cmd(python),
-        _expected_compile_session_cmd(python),
+        _expected_cargo_test_cmd(),
+        _expected_seam_test_cmd(),
+        _expected_compile_session_cmd(),
         [
             python,
             "-m",
