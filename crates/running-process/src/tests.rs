@@ -995,15 +995,19 @@ fn unix_capture_wakeup_interrupts_blocked_reader_and_closes_fds() {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::sync::mpsc;
 
+    use running_process_platform_internal::platform::process::{
+        cancel_capture_reader, capture_reader_done, prepare_capture_reader, CaptureCancellation,
+        CaptureStream,
+    };
+
     let mut pipe_fds = [-1; 2];
     assert_eq!(unsafe { libc::pipe(pipe_fds.as_mut_ptr()) }, 0);
     let read_file = unsafe { File::from_raw_fd(pipe_fds[0]) };
     let _held_open_writer = unsafe { File::from_raw_fd(pipe_fds[1]) };
-    let (mut reader, wake_writer) =
-        NativeProcess::prepare_unix_capture_reader(read_file).expect("prepare reader");
-    let capture_fd = reader.reader.as_raw_fd();
-    let wake_read_fd = reader.wake_reader.as_raw_fd();
-    let wake_write_fd = wake_writer.as_raw_fd();
+    let capture_fd = read_file.as_raw_fd();
+    let cancellation = CaptureCancellation::default();
+    let mut reader = prepare_capture_reader(read_file, &cancellation, CaptureStream::Stdout)
+        .expect("prepare reader");
 
     let (done_tx, done_rx) = mpsc::channel();
     let reader_thread = std::thread::spawn(move || {
@@ -1014,11 +1018,7 @@ fn unix_capture_wakeup_interrupts_blocked_reader_and_closes_fds() {
     });
 
     std::thread::sleep(Duration::from_millis(20));
-    let byte = [1_u8; 1];
-    assert_eq!(
-        unsafe { libc::write(wake_write_fd, byte.as_ptr().cast(), byte.len()) },
-        1
-    );
+    cancel_capture_reader(&cancellation);
     let result = done_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("blocked reader must exit after wakeup");
@@ -1031,9 +1031,7 @@ fn unix_capture_wakeup_interrupts_blocked_reader_and_closes_fds() {
     reader_thread.join().expect("reader thread joins");
 
     assert_eq!(unsafe { libc::fcntl(capture_fd, libc::F_GETFD) }, -1);
-    assert_eq!(unsafe { libc::fcntl(wake_read_fd, libc::F_GETFD) }, -1);
-    drop(wake_writer);
-    assert_eq!(unsafe { libc::fcntl(wake_write_fd, libc::F_GETFD) }, -1);
+    capture_reader_done(&cancellation, CaptureStream::Stdout);
 }
 
 #[cfg(unix)]
@@ -1079,19 +1077,12 @@ fn unix_natural_exit_cancels_both_orphaned_capture_readers() {
         .expect("direct shell exits");
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
-        let cleared = {
-            let wakers = process
-                .capture_wakers
-                .lock()
-                .expect("capture wakers mutex poisoned");
-            wakers.stdout.is_none() && wakers.stderr.is_none()
-        };
-        if cleared {
+        if Arc::strong_count(&process.capture_cancellation) == 1 {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "stdout/stderr reader wake FDs remained owned after bounded teardown"
+            "capture cancellation state remained owned after bounded teardown"
         );
         std::thread::sleep(Duration::from_millis(5));
     }

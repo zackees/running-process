@@ -94,7 +94,9 @@ fn run() -> i32 {
 
     // 9. Spawn, wait, and exit with child's status code.
     match cmd.status() {
-        Ok(status) => running_process_platform_internal::platform::process::trampoline_exit_code(status),
+        Ok(status) => {
+            running_process_platform_internal::platform::process::trampoline_exit_code(status)
+        }
         Err(e) => {
             eprintln!("daemon-trampoline: failed to spawn '{}': {e}", cfg.command);
             1

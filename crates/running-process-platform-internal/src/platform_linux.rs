@@ -6,6 +6,48 @@ pub fn shell_command(command: &str) -> std::process::Command {
     shell
 }
 
+pub fn compat_shell_command(command: &str) -> std::process::Command {
+    let mut shell = std::process::Command::new("sh");
+    shell.arg("-lc").arg(command);
+    shell
+}
+
+pub fn configure_native_command(
+    command: &mut std::process::Command,
+    _windows_creation_flags: u32,
+    create_process_group: bool,
+    nice: Option<i32>,
+    address_space_limit_bytes: Option<u64>,
+) {
+    use std::os::unix::process::CommandExt;
+
+    if create_process_group || nice.is_some() || address_space_limit_bytes.is_some() {
+        unsafe {
+            command.pre_exec(move || {
+                if create_process_group && libc::setpgid(0, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if let Some(nice) = nice {
+                    let result = libc::setpriority(libc::PRIO_PROCESS, 0, nice);
+                    if result == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                if let Some(limit) = address_space_limit_bytes {
+                    let rlim = libc::rlimit {
+                        rlim_cur: limit,
+                        rlim_max: limit,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_AS, &rlim) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+}
+
 pub fn canonical_environment_pairs(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
     pairs
 }
@@ -178,7 +220,9 @@ pub fn process_snapshot_for_pid(_pid: u32) -> Option<crate::platform::process::P
 }
 
 /// Mark inherited descriptors close-on-exec without breaking std's exec-error pipe.
-/// Safety: this is only called from a post-fork `pre_exec` closure.
+///
+/// # Safety
+/// This must only be called from a post-fork `pre_exec` closure.
 pub unsafe fn unix_mark_extra_fds_close_on_exec() {
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "x86", target_arch = "arm", target_arch = "riscv64", target_arch = "powerpc64"))]
     {

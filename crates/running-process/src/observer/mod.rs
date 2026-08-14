@@ -227,15 +227,24 @@ pub struct ObserverCapabilities {
 ///   (NT handle snapshot, `/proc/<pid>/fd/*`, `proc_pidinfo`). Tracked by
 ///   #539. Lands incrementally per slice.
 fn detect_file_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &'static str) {
-    detect_backend(scope, running_process_platform_internal::platform::process::ObserverCategory::File)
+    detect_backend(
+        scope,
+        running_process_platform_internal::platform::process::ObserverCategory::File,
+    )
 }
 
 fn detect_network_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &'static str) {
-    detect_backend(scope, running_process_platform_internal::platform::process::ObserverCategory::Network)
+    detect_backend(
+        scope,
+        running_process_platform_internal::platform::process::ObserverCategory::Network,
+    )
 }
 
 fn detect_process_backend(scope: TraceScope) -> (CapabilitySupport, &'static str, &'static str) {
-    detect_backend(scope, running_process_platform_internal::platform::process::ObserverCategory::Process)
+    detect_backend(
+        scope,
+        running_process_platform_internal::platform::process::ObserverCategory::Process,
+    )
 }
 
 fn detect_backend(

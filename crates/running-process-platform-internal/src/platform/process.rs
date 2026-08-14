@@ -6,13 +6,13 @@ pub use crate::{
 };
 
 pub use crate::platform_imp::{
-    cancel_capture_reader, canonical_environment_pairs, capture_reader_done,
-    configure_sync_contained_command, configure_sync_daemon_command, configure_trampoline_command,
-    enable_descendant_subreaper, exit_code, monitor_console_windows,
-    parent_has_console, process_snapshot, process_snapshot_for_pid, set_process_name,
-    prepare_capture_reader, shell_command, soft_terminate_process_group, spawn_sync,
-    spawn_sync_daemon, sync_child_native_handle, trampoline_exit_code,
-    unix_mark_extra_fds_close_on_exec, CaptureCancellation,
+    cancel_capture_reader, canonical_environment_pairs, capture_reader_done, compat_shell_command,
+    configure_native_command, configure_sync_contained_command, configure_sync_daemon_command,
+    configure_trampoline_command, enable_descendant_subreaper, exit_code, monitor_console_windows,
+    parent_has_console, prepare_capture_reader, process_snapshot, process_snapshot_for_pid,
+    set_process_name, shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
+    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
+    CaptureCancellation,
 };
 
 /// Identifies one captured child output stream.

@@ -20,8 +20,6 @@
 //!   affects the whole calling process. Setting it idempotently is
 //!   safe; we never clear it.
 
-#![cfg(target_os = "linux")]
-
 use std::collections::HashSet;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;

@@ -10,6 +10,30 @@ pub fn shell_command(command: &str) -> std::process::Command {
     shell
 }
 
+pub fn compat_shell_command(command: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+
+    let mut shell = std::process::Command::new("cmd");
+    shell.raw_arg("/D /S /C \"");
+    shell.raw_arg(command);
+    shell.raw_arg("\"");
+    shell
+}
+
+pub fn configure_native_command(
+    command: &mut std::process::Command,
+    windows_creation_flags: u32,
+    _create_process_group: bool,
+    _nice: Option<i32>,
+    _address_space_limit_bytes: Option<u64>,
+) {
+    use std::os::windows::process::CommandExt;
+
+    if windows_creation_flags != 0 {
+        command.creation_flags(windows_creation_flags);
+    }
+}
+
 pub fn canonical_environment_pairs(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut seen = std::collections::BTreeMap::new();
     for (key, value) in pairs {
@@ -114,6 +138,11 @@ pub fn process_snapshot_for_pid(_pid: u32) -> Option<crate::platform::process::P
     None
 }
 
+/// Windows compatibility stub for the Unix post-fork descriptor hook.
+///
+/// # Safety
+/// This shares the Unix API contract and may only be called from the spawn
+/// layer's post-fork/pre-exec boundary, even though it is a no-op on Windows.
 pub unsafe fn unix_mark_extra_fds_close_on_exec() {}
 
 pub fn configure_sync_daemon_command(_command: &mut std::process::Command) -> io::Result<()> { Ok(()) }
@@ -148,10 +177,19 @@ pub fn configure_compat_tokio_command(
     show_console: bool,
     _kill_when_owner_dies: bool,
 ) -> io::Result<()> {
-    if !show_console {
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let flags = compat_tokio_creation_flags(show_console);
+    if flags != 0 {
+        command.creation_flags(flags);
     }
     Ok(())
+}
+
+fn compat_tokio_creation_flags(show_console: bool) -> u32 {
+    if show_console {
+        0
+    } else {
+        0x0800_0000 // CREATE_NO_WINDOW
+    }
 }
 
 pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) {
@@ -251,3 +289,14 @@ fn assign(child: Option<HANDLE>) {
 #[path = "platform_win/sync_spawn.rs"]
 mod sync_spawn;
 pub use sync_spawn::{spawn_sync, spawn_sync_daemon};
+
+#[cfg(test)]
+mod tests {
+    use super::compat_tokio_creation_flags;
+
+    #[test]
+    fn tokio_spawn_owns_console_creation_flags() {
+        assert_eq!(compat_tokio_creation_flags(false), 0x0800_0000);
+        assert_eq!(compat_tokio_creation_flags(true), 0);
+    }
+}

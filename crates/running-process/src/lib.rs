@@ -325,7 +325,8 @@ pub struct NativeProcess {
     shared: Arc<SharedState>,
     #[cfg(test)]
     stdin_write_active: AtomicBool,
-    capture_cancellation: Arc<running_process_platform_internal::platform::process::CaptureCancellation>,
+    capture_cancellation:
+        Arc<running_process_platform_internal::platform::process::CaptureCancellation>,
 }
 
 impl NativeProcess {
@@ -475,32 +476,34 @@ impl NativeProcess {
         if self.config.capture {
             let stdout = child.stdout.take().expect("stdout pipe missing");
             let stderr = child.stderr.take().expect("stderr pipe missing");
-            let stdout = match running_process_platform_internal::platform::process::prepare_capture_reader(
-                stdout,
-                &self.capture_cancellation,
-                running_process_platform_internal::platform::process::CaptureStream::Stdout,
-            ) {
-                Ok(stdout) => stdout,
-                Err(error) => {
-                    cleanup_child_after_start_error(child);
-                    return Err(ProcessError::Spawn(error));
-                }
-            };
-            let stderr = match running_process_platform_internal::platform::process::prepare_capture_reader(
-                stderr,
-                &self.capture_cancellation,
-                running_process_platform_internal::platform::process::CaptureStream::Stderr,
-            ) {
-                Ok(stderr) => stderr,
-                Err(error) => {
-                    running_process_platform_internal::platform::process::capture_reader_done(
+            let stdout =
+                match running_process_platform_internal::platform::process::prepare_capture_reader(
+                    stdout,
+                    &self.capture_cancellation,
+                    running_process_platform_internal::platform::process::CaptureStream::Stdout,
+                ) {
+                    Ok(stdout) => stdout,
+                    Err(error) => {
+                        cleanup_child_after_start_error(child);
+                        return Err(ProcessError::Spawn(error));
+                    }
+                };
+            let stderr =
+                match running_process_platform_internal::platform::process::prepare_capture_reader(
+                    stderr,
+                    &self.capture_cancellation,
+                    running_process_platform_internal::platform::process::CaptureStream::Stderr,
+                ) {
+                    Ok(stderr) => stderr,
+                    Err(error) => {
+                        running_process_platform_internal::platform::process::capture_reader_done(
                         &self.capture_cancellation,
                         running_process_platform_internal::platform::process::CaptureStream::Stdout,
                     );
-                    cleanup_child_after_start_error(child);
-                    return Err(ProcessError::Spawn(error));
-                }
-            };
+                        cleanup_child_after_start_error(child);
+                        return Err(ProcessError::Spawn(error));
+                    }
+                };
             self.spawn_reader(
                 stdout,
                 StreamKind::Stdout,
@@ -1192,70 +1195,35 @@ impl NativeProcess {
                 command
             }
         };
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-
-            // #584: defaults to CREATE_NO_WINDOW so a console child spawned
-            // by the window-less daemon does not flash a console window,
-            // while preserving the caller's console opinion, priority, and
-            // CREATE_NEW_PROCESS_GROUP bits. Gated on the parent being
-            // console-less (#622): a console-attached parent's child must
-            // share its console so CTRL_C delivery keeps working.
-            // See `windows_creation_flags`.
-            let flags = windows_creation_flags(
-                self.config.creationflags,
-                self.config.create_process_group,
-                self.config.nice,
-                running_process_platform_internal::platform::process::parent_has_console(),
-            );
-            if flags != 0 {
-                command.creation_flags(flags);
+        let windows_creation_flags = {
+            #[cfg(windows)]
+            {
+                // #584: defaults to CREATE_NO_WINDOW so a console child spawned
+                // by the window-less daemon does not flash a console window,
+                // while preserving the caller's console opinion, priority, and
+                // CREATE_NEW_PROCESS_GROUP bits. Gated on the parent being
+                // console-less (#622): a console-attached parent's child must
+                // share its console so CTRL_C delivery keeps working.
+                // See `windows_creation_flags`.
+                windows_creation_flags(
+                    self.config.creationflags,
+                    self.config.create_process_group,
+                    self.config.nice,
+                    running_process_platform_internal::platform::process::parent_has_console(),
+                )
             }
-        }
-        #[cfg(unix)]
-        {
-            let create_process_group = self.config.create_process_group;
-            let nice = self.config.nice;
-            let address_space_limit_bytes = self.config.address_space_limit_bytes;
-
-            if create_process_group || nice.is_some() || address_space_limit_bytes.is_some() {
-                use std::os::unix::process::CommandExt;
-
-                unsafe {
-                    command.pre_exec(move || {
-                        if create_process_group && libc::setpgid(0, 0) == -1 {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                        if let Some(nice) = nice {
-                            let result = libc::setpriority(libc::PRIO_PROCESS, 0, nice);
-                            if result == -1 {
-                                return Err(std::io::Error::last_os_error());
-                            }
-                        }
-                        // RLIMIT_AS is a Linux resource; macOS defines
-                        // the constant but returns EINVAL for typical
-                        // values (the limit is advisory there). Other
-                        // Unixes may not support it at all. Gate to
-                        // Linux so the typed parameter degrades to a
-                        // no-op rather than failing the spawn.
-                        #[cfg(target_os = "linux")]
-                        if let Some(limit) = address_space_limit_bytes {
-                            let rlim = libc::rlimit {
-                                rlim_cur: limit,
-                                rlim_max: limit,
-                            };
-                            if libc::setrlimit(libc::RLIMIT_AS, &rlim) == -1 {
-                                return Err(std::io::Error::last_os_error());
-                            }
-                        }
-                        #[cfg(not(target_os = "linux"))]
-                        let _ = address_space_limit_bytes;
-                        Ok(())
-                    });
-                }
+            #[cfg(not(windows))]
+            {
+                0
             }
-        }
+        };
+        running_process_platform_internal::platform::process::configure_native_command(
+            &mut command,
+            windows_creation_flags,
+            self.config.create_process_group,
+            self.config.nice,
+            self.config.address_space_limit_bytes,
+        );
         command
     }
 
@@ -1315,10 +1283,17 @@ impl NativeProcess {
         let cancellation = Arc::clone(&self.capture_cancellation);
         Box::new(move || {
             let stream = match stream {
-                StreamKind::Stdout => running_process_platform_internal::platform::process::CaptureStream::Stdout,
-                StreamKind::Stderr => running_process_platform_internal::platform::process::CaptureStream::Stderr,
+                StreamKind::Stdout => {
+                    running_process_platform_internal::platform::process::CaptureStream::Stdout
+                }
+                StreamKind::Stderr => {
+                    running_process_platform_internal::platform::process::CaptureStream::Stderr
+                }
             };
-            running_process_platform_internal::platform::process::capture_reader_done(&cancellation, stream);
+            running_process_platform_internal::platform::process::capture_reader_done(
+                &cancellation,
+                stream,
+            );
         })
     }
 
@@ -1648,22 +1623,7 @@ pub fn run_std_command_bounded(
 }
 
 pub(crate) fn shell_command(command: &str) -> Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-
-        let mut cmd = Command::new("cmd");
-        cmd.raw_arg("/D /S /C \"");
-        cmd.raw_arg(command);
-        cmd.raw_arg("\"");
-        cmd
-    }
-    #[cfg(not(windows))]
-    {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-lc").arg(command);
-        cmd
-    }
+    running_process_platform_internal::platform::process::compat_shell_command(command)
 }
 
 #[cfg(test)]
