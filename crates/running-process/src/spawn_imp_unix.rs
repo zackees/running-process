@@ -40,9 +40,10 @@ impl SpawnedInner {
             let _ = child.kill();
         }
         drop(guard);
-        unsafe {
-            libc::killpg(self.pgid, libc::SIGKILL);
-        }
+        let _ = running_process_platform_internal::platform::process::unix_signal_process_group(
+            self.pgid,
+            running_process_platform_internal::platform::process::UnixSignalKind::Kill,
+        );
         Ok(())
     }
 
@@ -70,7 +71,11 @@ impl SpawnedInner {
     }
 
     fn shutdown_with_deadline(&mut self, deadline: Instant) {
-        let group_signaled = unsafe { libc::killpg(self.pgid, libc::SIGKILL) == 0 };
+        let group_signaled = running_process_platform_internal::platform::process::unix_signal_process_group(
+            self.pgid,
+            running_process_platform_internal::platform::process::UnixSignalKind::Kill,
+        )
+        .is_ok();
         let Some(mut child) = self.child.lock().expect("child mutex poisoned").take() else {
             return;
         };

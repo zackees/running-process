@@ -2023,10 +2023,6 @@ crates/running-process/src/spawn.rs	attr_cfg	windows	13
 crates/running-process/src/spawn.rs	attr_cfg	windows	14
 crates/running-process/src/spawn.rs	native_import	std::os::windows	0
 crates/running-process/src/spawn.rs	native_import	std::os::windows	1
-crates/running-process/src/spawn_imp_unix.rs	native_import	libc	0
-crates/running-process/src/spawn_imp_unix.rs	native_import	libc	1
-crates/running-process/src/spawn_imp_unix.rs	native_import	libc	2
-crates/running-process/src/spawn_imp_unix.rs	native_import	libc	3
 crates/running-process/src/spawn_imp_unix.rs	native_import	std::os::unix	0
 crates/running-process/src/spawn_imp_windows.rs	native_import	std::os::windows	0
 crates/running-process/src/spawn_imp_windows.rs	native_import	std::os::windows	1
