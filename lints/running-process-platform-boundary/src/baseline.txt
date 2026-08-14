@@ -1865,6 +1865,9 @@ crates/running-process/src/process_runtime.rs	attr_cfg	windows	0
 crates/running-process/src/process_runtime.rs	attr_cfg	windows	1
 crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	0
 crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	1
+crates/running-process-platform-internal/src/platform/process.rs	module_ref	platform_imp	2
+crates/running-process-platform-internal/src/platform/process.rs	attr_cfg	unix	0
+crates/running-process-platform-internal/src/platform/process.rs	attr_cfg	unix	1
 crates/running-process/src/pty/async_pty.rs	attr_cfg	windows	0
 crates/running-process/src/pty/async_pty.rs	attr_cfg	windows	1
 crates/running-process/src/pty/backend.rs	attr_cfg	unix	0
@@ -2244,13 +2247,7 @@ crates/running-process/src/unix.rs	attr_cfg	unix	1
 crates/running-process/src/unix.rs	attr_cfg	unix	2
 crates/running-process/src/unix.rs	attr_cfg	unix	3
 crates/running-process/src/unix.rs	attr_cfg	unix	4
-crates/running-process/src/unix.rs	native_import	libc	0
-crates/running-process/src/unix.rs	native_import	libc	1
-crates/running-process/src/unix.rs	native_import	libc	2
-crates/running-process/src/unix.rs	native_import	libc	3
-crates/running-process/src/unix.rs	native_import	libc	4
-crates/running-process/src/unix.rs	native_import	libc	5
-crates/running-process/src/unix.rs	native_import	libc	6
+crates/running-process/src/unix.rs	attr_cfg	unix	5
 crates/running-process/src/window_icon/mod.rs	attr_cfg	target_os	0
 crates/running-process/src/window_icon/mod.rs	attr_cfg	target_os	1
 crates/running-process/src/window_icon/mod.rs	attr_cfg	target_os	2
