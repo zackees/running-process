@@ -32,7 +32,6 @@ use running_process::daemon::server::DaemonServer;
 use running_process::proto::daemon::pty_stream_frame::Frame as StreamOneof;
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// True when `bytes` contains a *tick repaint*: a cursor-home escape

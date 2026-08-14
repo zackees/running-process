@@ -20,7 +20,6 @@ use running_process::daemon::pty_session::PtySpawnRequest;
 use running_process::daemon::server::DaemonServer;
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// Wall-clock budget for the client side of `TerminateSession`. Anything

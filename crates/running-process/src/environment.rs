@@ -115,11 +115,10 @@ fn unix_login_baseline_environment() -> Option<Vec<(OsString, OsString)>> {
     // request then missed the socket (zackees/soldr#2442). TMPDIR was already
     // carried; XDG_RUNTIME_DIR is its Linux counterpart and must be too.
     for (key, value) in std::env::vars_os() {
-        let carry = key == "LANG"
-            || key == "TZ"
-            || key == "TMPDIR"
-            || key == "XDG_RUNTIME_DIR"
-            || { key.to_str().is_some_and(|k| k.starts_with("LC_")) };
+        let carry =
+            key == "LANG" || key == "TZ" || key == "TMPDIR" || key == "XDG_RUNTIME_DIR" || {
+                key.to_str().is_some_and(|k| k.starts_with("LC_"))
+            };
         if carry {
             env.push((key, value));
         }
