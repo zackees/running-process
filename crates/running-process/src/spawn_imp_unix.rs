@@ -52,7 +52,7 @@ impl SpawnedInner {
             return Err(io::Error::other("child handle absent"));
         };
         let status = child.wait()?;
-        Ok(super::unix_exit_code(status))
+        Ok(running_process_platform_internal::platform::process::exit_code(status))
     }
 
     pub fn try_wait(&self) -> io::Result<Option<i32>> {
@@ -60,7 +60,9 @@ impl SpawnedInner {
         let Some(child) = guard.as_mut() else {
             return Ok(None);
         };
-        Ok(child.try_wait()?.map(super::unix_exit_code))
+        Ok(child
+            .try_wait()?
+            .map(running_process_platform_internal::platform::process::exit_code))
     }
 
     pub fn shutdown(&mut self) {
