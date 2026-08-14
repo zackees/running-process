@@ -626,120 +626,20 @@ pub fn spawn_tokio(
     options: TokioSpawnOptions,
 ) -> std::io::Result<tokio::process::Child> {
     command.kill_on_drop(options.kill_on_drop);
-    #[cfg(windows)]
-    command.creation_flags(tokio_creation_flags(options.show_console));
-    #[cfg(not(windows))]
-    let _ = options.show_console;
-
-    // Linux: link the child's death to the spawner's via PR_SET_PDEATHSIG,
-    // installed in the child just before exec. macOS/other Unix have no
-    // equivalent primitive, so this is a no-op there (running-process#885).
-    #[cfg(target_os = "linux")]
-    if options.kill_when_owner_dies {
-        // `tokio::process::Command::pre_exec` is an inherent Unix method — no
-        // `std::os::unix::process::CommandExt` import needed here.
-        // SAFETY: the closure calls only prctl(2), which is async-signal-safe.
-        unsafe {
-            command.pre_exec(|| {
-                let rc = libc::prctl(
-                    libc::PR_SET_PDEATHSIG,
-                    libc::SIGTERM as libc::c_ulong,
-                    0,
-                    0,
-                    0,
-                );
-                if rc == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
+    running_process_platform_internal::configure_compat_tokio_command(
+        command,
+        options.show_console,
+        options.kill_when_owner_dies,
+    )?;
 
     let child = command.spawn()?;
 
-    // Windows: place the child in the process-wide kill-on-close job so the OS
-    // reaps it (and its descendants) when the spawner exits — including a
-    // SIGKILL/taskkill that skips `Drop`/`kill_on_drop`.
-    #[cfg(windows)]
-    if options.kill_when_owner_dies {
-        if let Some(handle) = child.raw_handle() {
-            owner_death_job::assign(handle);
-        }
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    let _ = options.kill_when_owner_dies;
+    running_process_platform_internal::after_compat_tokio_spawn(
+        &child,
+        options.kill_when_owner_dies,
+    );
 
     Ok(child)
-}
-
-/// Process-wide `KILL_ON_JOB_CLOSE` job used by
-/// [`TokioSpawnOptions::kill_when_owner_dies`] on Windows. Children assigned to
-/// it die when this process's handle to the job closes, i.e. when this process
-/// exits — the crash/taskkill path that `kill_on_drop` cannot cover.
-#[cfg(all(windows, feature = "client-async"))]
-mod owner_death_job {
-    use std::os::windows::io::RawHandle;
-    use std::sync::OnceLock;
-    use winapi::shared::minwindef::DWORD;
-    use winapi::um::jobapi2::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-    };
-    use winapi::um::winnt::{
-        JobObjectExtendedLimitInformation, HANDLE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-
-    struct Job(HANDLE);
-    // The handle is used only via AssignProcessToJobObject and is never freed
-    // (its closure on process exit is the whole point).
-    unsafe impl Send for Job {}
-    unsafe impl Sync for Job {}
-
-    static JOB: OnceLock<Option<Job>> = OnceLock::new();
-
-    fn create() -> Option<Job> {
-        unsafe {
-            let handle = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
-            if handle.is_null() {
-                return None;
-            }
-            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let ok = SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                &mut info as *mut _ as *mut _,
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as DWORD,
-            );
-            if ok == 0 {
-                return None;
-            }
-            Some(Job(handle))
-        }
-    }
-
-    pub(super) fn assign(child: RawHandle) {
-        let Some(job) = JOB.get_or_init(create).as_ref() else {
-            return;
-        };
-        // Best-effort: a child that already belongs to a no-breakaway job, or
-        // has exited, cannot be assigned — neither is worth failing the spawn.
-        unsafe {
-            AssignProcessToJobObject(job.0, child as HANDLE);
-        }
-    }
-}
-
-#[cfg(all(feature = "client-async", windows))]
-fn tokio_creation_flags(show_console: bool) -> u32 {
-    if show_console {
-        0
-    } else {
-        // CREATE_NO_WINDOW. Keep this policy private so consumers cannot
-        // duplicate or partially apply Windows creation flags.
-        0x0800_0000
-    }
 }
 
 #[cfg(unix)]
@@ -978,10 +878,4 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "client-async", windows))]
-    #[test]
-    fn tokio_spawn_owns_console_creation_flags() {
-        assert_eq!(tokio_creation_flags(false), 0x0800_0000);
-        assert_eq!(tokio_creation_flags(true), 0);
-    }
 }

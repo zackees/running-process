@@ -22,6 +22,23 @@ pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
     process_tree::kill_tree(pid, timeout, process_start_key)
 }
 
+pub fn configure_compat_tokio_command(
+    command: &mut Command,
+    show_console: bool,
+    _kill_when_owner_dies: bool,
+) -> io::Result<()> {
+    if !show_console {
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    Ok(())
+}
+
+pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) {
+    if kill_when_owner_dies {
+        assign(child.raw_handle());
+    }
+}
+
 fn process_start_key(pid: sysinfo::Pid, _process: &sysinfo::Process) -> io::Result<u64> {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
     use windows_sys::Win32::System::Threading::{

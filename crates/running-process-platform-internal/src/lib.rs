@@ -37,6 +37,23 @@ cfg_select! {
     }
 }
 
+/// Apply host-owned setup for the legacy Tokio-command compatibility surface.
+///
+/// The public wrapper retains its policy type, while console suppression and
+/// owner-death primitives stay inside the selected platform root.
+pub fn configure_compat_tokio_command(
+    command: &mut Command,
+    show_console: bool,
+    kill_when_owner_dies: bool,
+) -> io::Result<()> {
+    platform_imp::configure_compat_tokio_command(command, show_console, kill_when_owner_dies)
+}
+
+/// Complete host-owned setup after a legacy Tokio child has been spawned.
+pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) {
+    platform_imp::after_compat_tokio_spawn(child, kill_when_owner_dies)
+}
+
 /// Stdio policy for one child stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamMode {
