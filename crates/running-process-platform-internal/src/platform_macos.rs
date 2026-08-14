@@ -120,6 +120,30 @@ pub unsafe fn unix_mark_extra_fds_close_on_exec() {
     for fd in 3..if maximum < 0 { 4096 } else { maximum as libc::c_int } { set_cloexec(fd); }
 }
 
+pub fn configure_sync_daemon_command(command: &mut std::process::Command) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        command.pre_exec(|| {
+            let _ = libc::setsid();
+            unix_mark_extra_fds_close_on_exec();
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+pub fn configure_sync_contained_command(command: &mut std::process::Command) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 { return Err(io::Error::last_os_error()); }
+            unix_mark_extra_fds_close_on_exec();
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 unsafe fn set_cloexec(fd: libc::c_int) {
     let flags = libc::fcntl(fd, libc::F_GETFD);
     if flags != -1 { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC); }
