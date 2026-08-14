@@ -104,8 +104,10 @@ fn shutdown_signals_channel() {
     assert_eq!(resp.code, StatusCode::Ok as i32);
     assert_eq!(resp.message, "shutting down");
     assert!(resp.shutdown.is_some());
-    // The channel should now hold `true`.
-    assert!(rx.has_changed().unwrap_or(false) || *rx.borrow());
+    // The server sends this response before signalling shutdown, ensuring
+    // the runtime cannot disappear while the acknowledgement is in flight.
+    assert!(!rx.has_changed().unwrap_or(false));
+    assert!(!*rx.borrow());
 }
 
 // -----------------------------------------------------------------------
