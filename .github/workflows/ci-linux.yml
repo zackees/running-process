@@ -26,6 +26,9 @@ concurrency:
 
 jobs:
   x86:
+    # Platform-fix PRs run only their selected native workflow. Keep the
+    # workflow itself subscribed so skipped jobs remain visible to GitHub.
+    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     uses: ./.github/workflows/ci-preflight.yml
     with:
       os: ubuntu-24.04
@@ -35,6 +38,7 @@ jobs:
       dylint: true
 
   arm:
+    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     uses: ./.github/workflows/ci-preflight.yml
     with:
       os: ubuntu-24.04-arm
@@ -43,13 +47,16 @@ jobs:
       integration-test: true
 
   x86-musl:
+    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     uses: ./.github/workflows/ci-preflight-rust.yml
     with:
       os: ubuntu-24.04
       label: linux-x86-musl
       target: x86_64-unknown-linux-musl
+      features: daemon
 
   arm-musl:
+    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     uses: ./.github/workflows/ci-preflight-rust.yml
     with:
       os: ubuntu-24.04-arm
@@ -62,6 +69,7 @@ jobs:
   # Moved here from linux-x86-build.yml when that workflow became
   # dispatch-only. See docs/reproducible-builds.md for the recipe.
   reproducible-spot-check:
+    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:

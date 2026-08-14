@@ -17,6 +17,9 @@ concurrency:
 
 jobs:
   x86:
+    # Platform-fix PRs run only their selected native workflow. Keep the
+    # workflow itself subscribed so skipped jobs remain visible to GitHub.
+    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/linux' || startsWith(github.head_ref, 'fix/linux/') || github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/')) }}
     uses: ./.github/workflows/ci-preflight.yml
     with:
       os: windows-latest
@@ -25,6 +28,7 @@ jobs:
       integration-test: true
 
   arm:
+    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/linux' || startsWith(github.head_ref, 'fix/linux/') || github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/')) }}
     uses: ./.github/workflows/ci-preflight.yml
     with:
       os: windows-11-arm

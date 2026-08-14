@@ -8,6 +8,8 @@ on:
 
 jobs:
   coverage:
+    # Coverage is part of the Linux lane for platform-scoped fix branches.
+    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:

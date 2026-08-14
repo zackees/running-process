@@ -40,6 +40,10 @@ on:
         description: Rust target triple to cross-compile for (e.g. x86_64-unknown-linux-musl).
         type: string
         required: true
+      features:
+        description: running-process feature set exercised by build, lint, and Rust unit/integration tests.
+        type: string
+        default: client
 
 permissions:
   contents: read
@@ -74,7 +78,7 @@ jobs:
           cache-on-failure: true
 
       - name: cargo build --target ${{ inputs.target }}
-        run: cargo build --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }}
+        run: cargo build --workspace --exclude running-process-py --all-targets --features ${{ inputs.features }} --target ${{ inputs.target }}
 
   lint:
     name: lint (${{ inputs.label }})
@@ -99,7 +103,7 @@ jobs:
           key: ${{ inputs.label }}-shared
           cache-on-failure: true
       - name: cargo clippy --target ${{ inputs.target }}
-        run: cargo clippy --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }} -- -D warnings
+        run: cargo clippy --workspace --exclude running-process-py --all-targets --features ${{ inputs.features }} --target ${{ inputs.target }} -- -D warnings
 
   unit-test:
     name: unit-test (${{ inputs.label }})
@@ -148,5 +152,5 @@ jobs:
       # coverage rather than failing. The six `ci-preflight.yml` lanes go
       # through `ci.test`, which does build it — so the subscription is
       # exercised on every host platform, just not on the musl cross targets.
-      - name: cargo nextest run --target ${{ inputs.target }}
-        run: cargo nextest run --workspace --exclude running-process-py --features client --target ${{ inputs.target }}
+      - name: Rust unit and integration tests (${{ inputs.features }})
+        run: cargo nextest run --workspace --exclude running-process-py --features ${{ inputs.features }} --target ${{ inputs.target }}
