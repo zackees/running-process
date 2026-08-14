@@ -19,7 +19,6 @@ use running_process::daemon::server::DaemonServer;
 use running_process::proto::daemon::TerminationOutcome;
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn testbin_path(name: &str) -> PathBuf {
