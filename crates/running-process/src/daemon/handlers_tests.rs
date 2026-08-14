@@ -88,7 +88,7 @@ fn status_returns_daemon_info() {
 }
 
 #[test]
-fn shutdown_builds_acknowledgement_without_signalling_early() {
+fn shutdown_signals_channel() {
     let (state, _tmp) = test_state();
     // Keep a receiver to check the shutdown signal.
     let rx = state.shutdown_tx.subscribe();
