@@ -15,7 +15,6 @@ use running_process::proto::daemon::PipeStreamKind;
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn testbin_path(name: &str) -> PathBuf {
