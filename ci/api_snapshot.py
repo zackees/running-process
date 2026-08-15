@@ -94,7 +94,7 @@ def _class_members(source: str, symbol: str) -> list[str]:
             continue
         rendered = []
         for child in node.body:
-            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
             if child.name.startswith("_") and child.name != "__init__":
                 continue

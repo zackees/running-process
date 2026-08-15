@@ -13,7 +13,64 @@ pub fn exact_trace_capability() -> crate::platform::process::ExactTraceCapabilit
         available: false,
         backend: "windows-debug-process",
         reason: "the exact DEBUG_PROCESS supervisor is not available in this build",
+        non_invasive_backend: "job-object-iocp",
+        non_invasive_grade:
+            crate::platform::process::NonInvasiveObservationGrade::KernelNotification,
     }
+}
+
+pub fn current_executable_build_id() -> Option<Vec<u8>> {
+    None
+}
+
+pub struct TracedChild(std::process::Child);
+
+impl TracedChild {
+    pub fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    pub fn try_wait_code(&mut self) -> std::io::Result<Option<i32>> {
+        self.0.try_wait().map(|status| status.map(exit_code))
+    }
+
+    pub fn kill(&mut self) -> std::io::Result<()> {
+        self.0.kill()
+    }
+
+    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        self.0.stdin.take()
+    }
+
+    pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        self.0.stdout.take()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        self.0.stderr.take()
+    }
+
+    pub fn wait_code(&mut self) -> std::io::Result<i32> {
+        self.0.wait().map(exit_code)
+    }
+}
+
+pub fn configure_exact_trace(_command: &mut std::process::Command) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        exact_trace_capability().reason,
+    ))
+}
+
+pub fn start_exact_trace(
+    _command: std::process::Command,
+    _emit: Box<dyn Fn(crate::platform::process::ExactTraceEvent) + Send>,
+    _complete: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<TracedChild> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        exact_trace_capability().reason,
+    ))
 }
 
 pub fn shell_command(command: &str) -> std::process::Command {
@@ -49,7 +106,8 @@ pub fn start_descendant_monitor(
     _root_pid: u32,
     _stop: std::sync::Arc<crate::platform::process::DescendantMonitorStop>,
     _emit: Box<dyn Fn(crate::platform::process::DescendantEvent) + Send>,
-) {
+) -> std::io::Result<()> {
+    Ok(())
 }
 
 use std::ffi::OsStr;

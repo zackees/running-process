@@ -236,15 +236,14 @@ class AsyncRunningProcess:
 
     async def run(self) -> tuple[int, bytes, bytes]:
         if self._watched is not None:
-            await asyncio.to_thread(self._watched.start)
-            code = await asyncio.to_thread(self._watched.wait)
-            return code, bytes(self._watched.stdout), bytes(self._watched.stderr)
+            await self._watched._proc.start_async()
+            return await self._watched._proc.output_async()
         assert self._native is not None
         return await self._native.run()
 
     async def start(self) -> None:
         if self._watched is not None:
-            await asyncio.to_thread(self._watched.start)
+            await self._watched._proc.start_async()
             return
         assert self._native is not None
         await self._native.start()
@@ -260,41 +259,40 @@ class AsyncRunningProcess:
 
     async def wait(self) -> int:
         if self._watched is not None:
-            return await asyncio.to_thread(self._watched.wait)
+            return await self._watched._proc.wait_async()
         assert self._native is not None
         return await self._native.wait()
 
     async def wait_timeout(self, timeout: float) -> int:
         if self._watched is not None:
-            return await asyncio.to_thread(self._watched.wait, False, timeout)
+            return await self._watched._proc.wait_async(timeout)
         assert self._native is not None
         return await self._native.wait_timeout(timeout)
 
     async def kill(self) -> None:
         if self._watched is not None:
-            await asyncio.to_thread(self._watched.kill)
+            await self._watched._proc.kill_async()
             return
         assert self._native is not None
         await self._native.kill()
 
     async def write_stdin(self, data: bytes) -> None:
         if self._watched is not None:
-            await asyncio.to_thread(self._watched.write_stdin, data)
+            await self._watched._proc.write_stdin_async(data)
             return
         assert self._native is not None
         await self._native.write_stdin(data)
 
     async def close_stdin(self) -> None:
         if self._watched is not None:
-            await asyncio.to_thread(self._watched.close_stdin)
+            await self._watched._proc.close_stdin_async()
             return
         assert self._native is not None
         await self._native.close_stdin()
 
     async def output(self) -> tuple[int, bytes, bytes]:
         if self._watched is not None:
-            code = await asyncio.to_thread(self._watched.wait)
-            return code, bytes(self._watched.stdout), bytes(self._watched.stderr)
+            return await self._watched._proc.output_async()
         assert self._native is not None
         return await self._native.output()
 
@@ -310,20 +308,20 @@ class AsyncRunningProcess:
         Never waits, matching ``RunningProcess.poll``.
         """
         if self._watched is not None:
-            return await asyncio.to_thread(self._watched.poll)
+            return await self._watched._proc.poll_async()
         assert self._native is not None
         return await self._native.poll()
 
     async def returncode(self) -> int | None:
         """Exit code if the child has already exited, else ``None``."""
         if self._watched is not None:
-            return self._watched.returncode
+            return await self._watched._proc.poll_async()
         assert self._native is not None
         return await self._native.returncode()
 
     async def terminate(self) -> None:
         if self._watched is not None:
-            await asyncio.to_thread(self._watched.terminate)
+            await self._watched._proc.terminate_async()
             return
         assert self._native is not None
         await self._native.terminate()
@@ -335,7 +333,7 @@ class AsyncRunningProcess:
         ``RunningProcess.close``. Call :meth:`kill` first if you need it gone.
         """
         if self._watched is not None:
-            await asyncio.to_thread(self._watched.close)
+            await self._watched._proc.close_async()
             return
         assert self._native is not None
         await self._native.close()
@@ -348,8 +346,7 @@ class AsyncRunningProcess:
         nothing was signalled. An already-exited child is also ``False``.
         """
         if self._watched is not None:
-            await asyncio.to_thread(self._watched.terminate)
-            return True
+            return await self._watched._proc.terminate_group_soft_async()
         assert self._native is not None
         return await self._native.terminate_group_soft()
 
@@ -359,8 +356,7 @@ class AsyncRunningProcess:
         Returns how many process instances the OS accepted a kill for.
         """
         if self._watched is not None:
-            await asyncio.to_thread(self._watched.kill)
-            return 1
+            return await self._watched._proc.kill_tree_async(timeout)
         assert self._native is not None
         return await self._native.kill_tree(timeout)
 

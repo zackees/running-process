@@ -83,7 +83,7 @@ class TestAsyncOutputCursor(unittest.IsolatedAsyncioTestCase):
         seen = [read async for read in cursor]
         await capture
         self.assertTrue(seen)
-        self.assertTrue(all(isinstance(r, (OutputRecord, OutputGap)) for r in seen))
+        self.assertTrue(all(isinstance(r, OutputRecord | OutputGap) for r in seen))
 
     async def test_records_carry_a_sequence_and_a_stream_name(self) -> None:
         import asyncio

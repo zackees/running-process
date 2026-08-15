@@ -58,7 +58,8 @@ pub use process_watch::{
     CaptureSource, DumpResult, ObservationGrade, ObservationPolicy, ProcessEvent, ProcessEventKind,
     ProcessIdentity, ProcessObservation, ProcessObservationCapabilities, ProcessObservationError,
     ProcessWatch, ProcessWatchConfigurationError, ProcessWatchCursor, ProcessWatchGap,
-    ProcessWatchMatch, ProcessWatchRead, ProcessWatchSubscriber, StackCapture, StackDump,
+    ProcessWatchLoss, ProcessWatchMatch, ProcessWatchRead, ProcessWatchSubscriber, StackCapture,
+    StackDump,
 };
 
 pub(crate) type DescendantPumpStop =

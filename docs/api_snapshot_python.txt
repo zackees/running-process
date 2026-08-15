@@ -59,6 +59,7 @@
     ProcessWatchConfigurationError
     ProcessWatchCursor
     ProcessWatchGap
+    ProcessWatchLoss
     ProcessWatchMatch
     PseudoTerminalProcess
     PtyIdleDetection

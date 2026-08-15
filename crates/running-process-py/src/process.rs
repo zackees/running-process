@@ -159,49 +159,15 @@ fn event_kind_name(kind: ProcessEventKind) -> &'static str {
     }
 }
 
-fn watch_match_to_python(py: Python<'_>, item: &ProcessWatchMatch) -> PyResult<Py<PyAny>> {
+pub(crate) fn watch_match_to_python(
+    py: Python<'_>,
+    item: &ProcessWatchMatch,
+) -> PyResult<Py<PyAny>> {
     let result = PyDict::new(py);
     result.set_item("type", "match")?;
     result.set_item("sequence", item.sequence)?;
     result.set_item("watch_label", &item.watch.label)?;
-    let event = PyDict::new(py);
-    event.set_item("kind", event_kind_name(item.event.kind))?;
-    event.set_item("pid", item.event.process.pid)?;
-    event.set_item("start_key", item.event.process.start_key)?;
-    event.set_item(
-        "parent_pid",
-        item.event.parent.as_ref().map(|parent| parent.pid),
-    )?;
-    event.set_item(
-        "parent_start_key",
-        item.event
-            .parent
-            .as_ref()
-            .and_then(|parent| parent.start_key),
-    )?;
-    let timestamp = item
-        .event
-        .timestamp
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-    event.set_item("timestamp", timestamp)?;
-    event.set_item(
-        "executable",
-        item.event
-            .executable
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
-    )?;
-    event.set_item("argv", item.event.argv.as_ref())?;
-    event.set_item("exit_code", item.event.exit_code)?;
-    event.set_item("signal", item.event.signal)?;
-    event.set_item("raw_exit_status", item.event.raw_exit_status)?;
-    event.set_item("backend", item.event.backend)?;
-    event.set_item("observation_grade", item.event.observation_grade.as_str())?;
-    event.set_item("coverage_complete", item.event.coverage_complete)?;
-    event.set_item("loss_detected", item.event.loss_detected)?;
-    result.set_item("event", event)?;
+    result.set_item("event", watch_event_to_python(py, &item.event)?)?;
     if let Some(dump) = item.dump.as_ref() {
         let value = PyDict::new(py);
         value.set_item("capture_source", dump.capture_source.as_str())?;
@@ -221,9 +187,53 @@ fn watch_match_to_python(py: Python<'_>, item: &ProcessWatchMatch) -> PyResult<P
     Ok(result.into_any().unbind())
 }
 
-fn watch_read_to_python(py: Python<'_>, read: ProcessWatchRead) -> PyResult<Py<PyAny>> {
+fn watch_event_to_python(
+    py: Python<'_>,
+    item: &running_process::ProcessEvent,
+) -> PyResult<Py<PyAny>> {
+    let event = PyDict::new(py);
+    event.set_item("kind", event_kind_name(item.kind))?;
+    event.set_item("pid", item.process.pid)?;
+    event.set_item("start_key", item.process.start_key)?;
+    event.set_item("parent_pid", item.parent.as_ref().map(|parent| parent.pid))?;
+    event.set_item(
+        "parent_start_key",
+        item.parent.as_ref().and_then(|parent| parent.start_key),
+    )?;
+    let timestamp = item
+        .timestamp
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    event.set_item("timestamp", timestamp)?;
+    event.set_item(
+        "executable",
+        item.executable
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+    )?;
+    event.set_item("argv", item.argv.as_ref())?;
+    event.set_item("exit_code", item.exit_code)?;
+    event.set_item("signal", item.signal)?;
+    event.set_item("raw_exit_status", item.raw_exit_status)?;
+    event.set_item("backend", item.backend)?;
+    event.set_item("observation_grade", item.observation_grade.as_str())?;
+    event.set_item("coverage_complete", item.coverage_complete)?;
+    event.set_item("loss_detected", item.loss_detected)?;
+    Ok(event.into_any().unbind())
+}
+
+pub(crate) fn watch_read_to_python(py: Python<'_>, read: ProcessWatchRead) -> PyResult<Py<PyAny>> {
     match read {
         ProcessWatchRead::Match(item) => watch_match_to_python(py, &item),
+        ProcessWatchRead::Loss(item) => {
+            let result = PyDict::new(py);
+            result.set_item("type", "loss")?;
+            result.set_item("sequence", item.sequence)?;
+            result.set_item("reason", &item.reason)?;
+            result.set_item("event", watch_event_to_python(py, &item.event)?)?;
+            Ok(result.into_any().unbind())
+        }
         ProcessWatchRead::Gap(gap) => {
             let result = PyDict::new(py);
             result.set_item("type", "gap")?;
@@ -248,7 +258,8 @@ fn watch_read_to_python(py: Python<'_>, read: ProcessWatchRead) -> PyResult<Py<P
 pub(crate) struct NativeRunningProcess {
     pub(crate) inner: NativeProcess,
     process_watch_subscriber: Option<ProcessWatchSubscriber>,
-    process_watch_cursors: std::sync::Mutex<HashMap<u64, ProcessWatchCursor>>,
+    process_watch_cursors:
+        std::sync::Mutex<HashMap<u64, std::sync::Arc<std::sync::Mutex<ProcessWatchCursor>>>>,
     next_process_watch_cursor: AtomicU64,
     pub(crate) text: bool,
     pub(crate) encoding: Option<String>,
@@ -257,6 +268,28 @@ pub(crate) struct NativeRunningProcess {
     pub(crate) creationflags: Option<u32>,
     #[cfg(unix)]
     pub(crate) create_process_group: bool,
+    pub(crate) owns_process_group: bool,
+}
+
+impl NativeRunningProcess {
+    pub(crate) fn read_process_watch_native(
+        &self,
+        cursor_id: u64,
+        timeout: Option<Duration>,
+    ) -> Result<ProcessWatchRead, String> {
+        let cursor = self
+            .process_watch_cursors
+            .lock()
+            .expect("process watch cursors mutex poisoned")
+            .get(&cursor_id)
+            .cloned()
+            .ok_or_else(|| "unknown process watch cursor".to_owned())?;
+        let read = cursor
+            .lock()
+            .expect("process watch cursor mutex poisoned")
+            .read_next(timeout);
+        Ok(read)
+    }
 }
 
 #[pymethods]
@@ -331,6 +364,7 @@ impl NativeRunningProcess {
             creationflags,
             #[cfg(unix)]
             create_process_group,
+            owns_process_group: create_process_group,
         })
     }
 
@@ -341,6 +375,8 @@ impl NativeRunningProcess {
         result.set_item("exact_available", capability.exact_available)?;
         result.set_item("exact_backend", capability.exact_backend)?;
         result.set_item("reason", capability.reason)?;
+        result.set_item("non_invasive_backend", capability.non_invasive_backend)?;
+        result.set_item("non_invasive_grade", capability.non_invasive_grade.as_str())?;
         Ok(result.into_any().unbind())
     }
 
@@ -375,7 +411,10 @@ impl NativeRunningProcess {
         self.process_watch_cursors
             .lock()
             .expect("process watch cursors mutex poisoned")
-            .insert(id, subscriber.cursor());
+            .insert(
+                id,
+                std::sync::Arc::new(std::sync::Mutex::new(subscriber.cursor())),
+            );
         Some(id)
     }
 
@@ -392,17 +431,8 @@ impl NativeRunningProcess {
             ));
         }
         let timeout = timeout.map(Duration::from_secs_f64);
-        let read = py.detach(|| {
-            let mut cursors = self
-                .process_watch_cursors
-                .lock()
-                .expect("process watch cursors mutex poisoned");
-            cursors
-                .get_mut(&cursor_id)
-                .ok_or_else(|| PyValueError::new_err("unknown process watch cursor"))
-                .map(|cursor| cursor.read_next(timeout))
-        });
-        watch_read_to_python(py, read?)
+        let read = py.detach(|| self.read_process_watch_native(cursor_id, timeout));
+        watch_read_to_python(py, read.map_err(PyValueError::new_err)?)
     }
 
     #[inline(never)]

@@ -1,6 +1,6 @@
 //! Launch-time Linux `ptrace` process-tree supervision.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::ffi::OsStringExt;
@@ -12,11 +12,15 @@ use std::time::Duration;
 use crate::platform::process::{ExactTraceEvent, ExactTraceEventKind, TraceOriginArtifact};
 
 const STACK_CAPTURE_BYTES: usize = 16 * 1024;
+const MODULE_MAP_CAPTURE_BYTES: usize = 256 * 1024;
 
 /// Arrange for a successful `exec` to stop the child before user code runs.
 /// No pre-exec SIGSTOP is used: that would deadlock `Command::spawn`'s exec
 /// error pipe.
 pub fn configure_exact_trace(command: &mut std::process::Command) -> io::Result<()> {
+    // SAFETY: this closure runs in the single-threaded post-fork child before
+    // exec. PTRACE_TRACEME takes only scalar/null arguments and reports errors
+    // through errno; it does not retain borrowed Rust memory.
     unsafe {
         command.pre_exec(|| {
             let result = libc::ptrace(
@@ -50,6 +54,9 @@ struct Shared {
 pub struct TracedChild {
     pid: u32,
     shared: Arc<Shared>,
+    stdin: Option<std::process::ChildStdin>,
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
 }
 
 impl TracedChild {
@@ -65,7 +72,9 @@ impl TracedChild {
         Ok(state.exit_code)
     }
 
-    pub fn kill(&self) -> io::Result<()> {
+    pub fn kill(&mut self) -> io::Result<()> {
+        // SAFETY: `pid` is the positive PID returned by `Command::spawn`; no
+        // pointer arguments are involved and ESRCH is handled as already gone.
         if unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) } == -1 {
             let error = io::Error::last_os_error();
             if error.raw_os_error() != Some(libc::ESRCH) {
@@ -74,13 +83,26 @@ impl TracedChild {
         }
         Ok(())
     }
+
+    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        self.stdin.take()
+    }
+
+    pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        self.stdout.take()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        self.stderr.take()
+    }
 }
 
 pub fn start_exact_trace(
-    child: Child,
+    mut command: std::process::Command,
     emit: Box<dyn Fn(ExactTraceEvent) + Send>,
+    complete: Box<dyn FnOnce() + Send>,
 ) -> io::Result<TracedChild> {
-    let pid = child.id();
+    configure_exact_trace(&mut command)?;
     let shared = Arc::new(Shared {
         state: Mutex::new(RootState::default()),
         wake: Condvar::new(),
@@ -89,23 +111,38 @@ pub fn start_exact_trace(
     let (setup_tx, setup_rx) = std::sync::mpsc::sync_channel(1);
     let spawned = std::thread::Builder::new()
         .name("rp-linux-ptrace".to_owned())
-        .spawn(move || trace_loop(child, thread_shared, emit, setup_tx));
+        .spawn(move || {
+            let child = match command.spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    let _ = setup_tx.send(Err(error));
+                    return;
+                }
+            };
+            trace_loop(child, thread_shared, emit, complete, setup_tx);
+        });
     if let Err(error) = spawned {
-        // The child has already reached its TRACEME exec stop. If the one
-        // thread that can own its wait/continue loop cannot be created, do
-        // not strand a permanently stopped process.
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGKILL);
-            libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::__WALL);
-        }
         return Err(io::Error::other(format!(
             "spawn ptrace supervisor: {error}"
         )));
     }
-    setup_rx
+    let setup = setup_rx
         .recv()
         .map_err(|_| io::Error::other("ptrace supervisor ended during launch setup"))??;
-    Ok(TracedChild { pid, shared })
+    Ok(TracedChild {
+        pid: setup.pid,
+        shared,
+        stdin: setup.stdin,
+        stdout: setup.stdout,
+        stderr: setup.stderr,
+    })
+}
+
+struct TraceSetup {
+    pid: u32,
+    stdin: Option<std::process::ChildStdin>,
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
 }
 
 #[derive(Clone)]
@@ -123,10 +160,13 @@ fn trace_loop(
     mut child: Child,
     shared: Arc<Shared>,
     emit: Box<dyn Fn(ExactTraceEvent) + Send>,
-    setup: std::sync::mpsc::SyncSender<io::Result<()>>,
+    complete: Box<dyn FnOnce() + Send>,
+    setup: std::sync::mpsc::SyncSender<io::Result<TraceSetup>>,
 ) {
     let root_pid = child.id();
     let mut initial_status = 0;
+    // SAFETY: `root_pid` was spawned by this same supervisor task after
+    // PTRACE_TRACEME, and `initial_status` is valid writable storage.
     if unsafe { libc::waitpid(root_pid as libc::pid_t, &mut initial_status, libc::__WALL) } == -1
         || !libc::WIFSTOPPED(initial_status)
     {
@@ -164,12 +204,6 @@ fn trace_loop(
             origin: None,
         },
     )]);
-    let root_exec = event_for(
-        sequence,
-        root_pid,
-        &tracees[&root_pid],
-        ExactTraceEventKind::Exec,
-    );
     if ptrace_value(libc::PTRACE_CONT, root_pid, 0, 0).is_err() {
         let message = "failed to continue root after initial exec stop";
         let _ = setup.send(Err(io::Error::other(message)));
@@ -177,16 +211,25 @@ fn trace_loop(
         cleanup_failed_setup(&mut child);
         return;
     }
-    let _ = setup.send(Ok(()));
-    emit(root_exec);
-    sequence += 1;
+    let setup_result = TraceSetup {
+        pid: root_pid,
+        stdin: child.stdin.take(),
+        stdout: child.stdout.take(),
+        stderr: child.stderr.take(),
+    };
+    if setup.send(Ok(setup_result)).is_err() {
+        cleanup_failed_setup(&mut child);
+        return;
+    }
 
-    let mut fresh_children = HashSet::new();
     while !tracees.is_empty() {
         let pids: Vec<u32> = tracees.keys().copied().collect();
         let mut progressed = false;
         for pid in pids {
             let mut status = 0;
+            // SAFETY: `status` is valid writable storage and `pid` is a
+            // tracee owned by this supervisor thread. `WNOHANG` keeps the
+            // event pump responsive across the complete tracee set.
             let waited = unsafe {
                 libc::waitpid(
                     pid as libc::pid_t,
@@ -198,35 +241,31 @@ fn trace_loop(
                 continue;
             }
             if waited == -1 {
-                if io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
+                let error = io::Error::last_os_error();
+                let tracee = tracees.get(&pid).cloned();
+                if error.raw_os_error() == Some(libc::ECHILD)
+                    && tracee.as_ref().is_some_and(|item| !item.process_leader)
+                {
+                    // A non-leader thread can disappear with its process
+                    // leader and leave a stale TID in the local set. Losing
+                    // wait ownership for a process leader is different: it
+                    // destroys exit coverage (and for the root would leave
+                    // TracedChild waiting forever), so that is fatal below.
                     tracees.remove(&pid);
                     continue;
                 }
-                let error = io::Error::last_os_error();
-                emit(ExactTraceEvent {
+                abort_runtime_trace(
+                    &mut child,
+                    &shared,
+                    &emit,
                     sequence,
                     pid,
-                    parent_pid: tracees.get(&pid).and_then(|tracee| tracee.parent_pid),
-                    parent_start_key: tracees
-                        .get(&pid)
-                        .and_then(|tracee| tracee.parent_start_key),
-                    start_key: tracees.get(&pid).and_then(|tracee| tracee.start_key),
-                    timestamp: std::time::SystemTime::now(),
-                    kind: ExactTraceEventKind::Loss {
-                        reason: error.to_string(),
-                    },
-                    executable: None,
-                    argv: None,
-                    origin: None,
-                });
-                sequence += 1;
-                let _ = ptrace_value(libc::PTRACE_DETACH, pid, 0, 0);
-                tracees.remove(&pid);
-                if pid == root_pid {
-                    finish_untraced(&mut child, &shared, "ptrace wait failed");
-                    return;
-                }
-                continue;
+                    tracee.as_ref(),
+                    &tracees,
+                    format!("ptrace wait ownership lost: {error}"),
+                );
+                complete();
+                return;
             }
             progressed = true;
             if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
@@ -234,20 +273,21 @@ fn trace_loop(
                     if tracee.process_leader {
                         let exit_code = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
                         let signal = libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status));
-                        emit(event_for(
-                            sequence,
-                            pid,
-                            &tracee,
-                            ExactTraceEventKind::Exit {
-                                exit_code,
-                                signal,
-                                raw_status: i64::from(status),
-                            },
-                        ));
-                        sequence += 1;
                         if pid == root_pid {
-                            let normalized = exit_code.unwrap_or_else(|| 128 + signal.unwrap_or(0));
+                            let normalized = exit_code.unwrap_or_else(|| -signal.unwrap_or(0));
                             finish_root(&shared, normalized);
+                        } else {
+                            emit(event_for(
+                                sequence,
+                                pid,
+                                &tracee,
+                                ExactTraceEventKind::Exit {
+                                    exit_code,
+                                    signal,
+                                    raw_status: i64::from(status),
+                                },
+                            ));
+                            sequence += 1;
                         }
                     }
                 }
@@ -262,16 +302,55 @@ fn trace_loop(
             match ptrace_event {
                 libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE => {
                     let mut child_pid = 0usize;
-                    if ptrace_value(
+                    match ptrace_value(
                         libc::PTRACE_GETEVENTMSG,
                         pid,
                         0,
                         (&raw mut child_pid) as usize,
-                    )
-                    .is_ok()
-                    {
+                    ) {
+                        Ok(_) => {
                         let child_pid = child_pid as u32;
-                        let process_leader = thread_group_id(child_pid) == Some(child_pid);
+                        let process_leader = if matches!(
+                            ptrace_event,
+                            libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK
+                        ) {
+                            true
+                        } else {
+                            match thread_group_id(child_pid) {
+                                Some(thread_group) => thread_group == child_pid,
+                                None => {
+                                    // The auto-attached child is stopped but
+                                    // cannot safely be classified as a thread
+                                    // or process. Include it in fatal cleanup;
+                                    // defaulting to a thread would later hide
+                                    // process-leader ECHILD as a stale TID.
+                                    tracees.insert(
+                                        child_pid,
+                                        Tracee {
+                                            parent_pid: None,
+                                            parent_start_key: None,
+                                            start_key: process_start_key(child_pid),
+                                            process_leader: true,
+                                            executable: None,
+                                            argv: None,
+                                            origin: None,
+                                        },
+                                    );
+                                    abort_runtime_trace(
+                                        &mut child,
+                                        &shared,
+                                        &emit,
+                                        sequence,
+                                        child_pid,
+                                        tracees.get(&child_pid),
+                                        &tracees,
+                                        "cannot classify PTRACE_EVENT_CLONE child".to_owned(),
+                                    );
+                                    complete();
+                                    return;
+                                }
+                            }
+                        };
                         let parent_pid =
                             process_leader.then(|| thread_group_id(pid).unwrap_or(pid));
                         let tracee = Tracee {
@@ -292,16 +371,82 @@ fn trace_loop(
                             )
                         });
                         tracees.insert(child_pid, tracee);
-                        fresh_children.insert(child_pid);
-                        // Resume the spawning thread before delivery, file I/O,
-                        // or symbolization can run in a consumer.
-                        let _ = ptrace_value(libc::PTRACE_CONT, pid, 0, 0);
+                        if let Err(error) = ptrace_value(libc::PTRACE_CONT, pid, 0, 0) {
+                            abort_runtime_trace(
+                                &mut child,
+                                &shared,
+                                &emit,
+                                sequence,
+                                pid,
+                                tracees.get(&pid),
+                                &tracees,
+                                format!("continue spawning tracee: {error}"),
+                            );
+                            complete();
+                            return;
+                        }
+                        let mut child_status = 0;
+                        // SAFETY: the kernel has just reported this auto-attached
+                        // child and guarantees an initial ptrace stop. This
+                        // supervisor thread is its tracer and owns the wait.
+                        let waited = unsafe {
+                            libc::waitpid(
+                                child_pid as libc::pid_t,
+                                &mut child_status,
+                                libc::__WALL,
+                            )
+                        };
+                        if waited != child_pid as libc::pid_t
+                            || !libc::WIFSTOPPED(child_status)
+                        {
+                            abort_runtime_trace(
+                                &mut child,
+                                &shared,
+                                &emit,
+                                sequence,
+                                child_pid,
+                                tracees.get(&child_pid),
+                                &tracees,
+                                "new tracee did not reach its initial stop".to_owned(),
+                            );
+                            complete();
+                            return;
+                        }
+                        if let Err(error) = ptrace_value(libc::PTRACE_CONT, child_pid, 0, 0) {
+                            abort_runtime_trace(
+                                &mut child,
+                                &shared,
+                                &emit,
+                                sequence,
+                                child_pid,
+                                tracees.get(&child_pid),
+                                &tracees,
+                                format!("continue new tracee: {error}"),
+                            );
+                            complete();
+                            return;
+                        }
+                        // Both stopped tasks are running before delivery can do
+                        // any file I/O or deferred-symbolization queueing.
                         if let Some(spawn_event) = spawn_event {
                             emit(spawn_event);
                             sequence += 1;
                         }
-                    } else {
-                        let _ = ptrace_value(libc::PTRACE_CONT, pid, 0, 0);
+                        }
+                        Err(error) => {
+                            abort_runtime_trace(
+                                &mut child,
+                                &shared,
+                                &emit,
+                                sequence,
+                                pid,
+                                tracees.get(&pid),
+                                &tracees,
+                                format!("read fork/clone event child pid: {error}"),
+                            );
+                            complete();
+                            return;
+                        }
                     }
                 }
                 libc::PTRACE_EVENT_EXEC => {
@@ -314,24 +459,63 @@ fn trace_loop(
                     } else {
                         None
                     };
-                    let _ = ptrace_value(libc::PTRACE_CONT, pid, 0, 0);
+                    if let Err(error) = ptrace_value(libc::PTRACE_CONT, pid, 0, 0) {
+                        abort_runtime_trace(
+                            &mut child,
+                            &shared,
+                            &emit,
+                            sequence,
+                            pid,
+                            tracees.get(&pid),
+                            &tracees,
+                            format!("continue after exec event: {error}"),
+                        );
+                        complete();
+                        return;
+                    }
                     if let Some(exec_event) = exec_event {
                         emit(exec_event);
                         sequence += 1;
                     }
                 }
                 libc::PTRACE_EVENT_EXIT => {
-                    let _ = ptrace_value(libc::PTRACE_CONT, pid, 0, 0);
+                    if let Err(error) = ptrace_value(libc::PTRACE_CONT, pid, 0, 0) {
+                        abort_runtime_trace(
+                            &mut child,
+                            &shared,
+                            &emit,
+                            sequence,
+                            pid,
+                            tracees.get(&pid),
+                            &tracees,
+                            format!("continue after exit event: {error}"),
+                        );
+                        complete();
+                        return;
+                    }
                 }
                 _ => {
-                    let forwarded = if fresh_children.remove(&pid) && signal == libc::SIGSTOP {
-                        0
-                    } else if signal == libc::SIGTRAP {
+                    let forwarded = if signal == libc::SIGTRAP {
                         0
                     } else {
                         signal
                     };
-                    let _ = ptrace_value(libc::PTRACE_CONT, pid, 0, forwarded as usize);
+                    if let Err(error) =
+                        ptrace_value(libc::PTRACE_CONT, pid, 0, forwarded as usize)
+                    {
+                        abort_runtime_trace(
+                            &mut child,
+                            &shared,
+                            &emit,
+                            sequence,
+                            pid,
+                            tracees.get(&pid),
+                            &tracees,
+                            format!("continue after signal stop: {error}"),
+                        );
+                        complete();
+                        return;
+                    }
                 }
             }
         }
@@ -340,9 +524,13 @@ fn trace_loop(
         }
     }
     drop(child);
+    complete();
 }
 
 fn ptrace_value(request: u32, pid: u32, address: usize, data: usize) -> io::Result<libc::c_long> {
+    // SAFETY: callers provide a live tracee owned by this supervisor. Pointer
+    // values are either null, kernel-defined scalar payloads, or addresses of
+    // writable storage whose lifetime covers this synchronous syscall.
     let value = unsafe {
         libc::ptrace(
             request,
@@ -358,7 +546,58 @@ fn ptrace_value(request: u32, pid: u32, address: usize, data: usize) -> io::Resu
     }
 }
 
+fn emit_loss(
+    emit: &dyn Fn(ExactTraceEvent),
+    sequence: u64,
+    pid: u32,
+    tracee: Option<&Tracee>,
+    reason: String,
+) {
+    emit(ExactTraceEvent {
+        sequence,
+        pid,
+        parent_pid: tracee.and_then(|tracee| tracee.parent_pid),
+        parent_start_key: tracee.and_then(|tracee| tracee.parent_start_key),
+        start_key: tracee.and_then(|tracee| tracee.start_key),
+        timestamp: std::time::SystemTime::now(),
+        kind: ExactTraceEventKind::Loss { reason },
+        executable: None,
+        argv: None,
+        origin: None,
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn abort_runtime_trace(
+    child: &mut Child,
+    shared: &Shared,
+    emit: &dyn Fn(ExactTraceEvent),
+    sequence: u64,
+    pid: u32,
+    tracee: Option<&Tracee>,
+    tracees: &HashMap<u32, Tracee>,
+    reason: String,
+) {
+    emit_loss(emit, sequence, pid, tracee, reason.clone());
+    for tracee_pid in tracees.keys().copied().filter(|item| *item != child.id()) {
+        // SAFETY: each value is a positive kernel-reported tracee PID. Fatal
+        // supervision failure chooses deterministic termination over leaving
+        // an unserviced ptrace stop that can wedge indefinitely.
+        unsafe {
+            libc::kill(tracee_pid as libc::pid_t, libc::SIGKILL);
+            libc::waitpid(tracee_pid as libc::pid_t, std::ptr::null_mut(), libc::__WALL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut state = shared.state.lock().unwrap_or_else(|error| error.into_inner());
+    state.tracer_error = Some(reason);
+    state.done = true;
+    shared.wake.notify_all();
+}
+
 fn capture_origin(thread_id: u32) -> TraceOriginArtifact {
+    let origin_pid = thread_group_id(thread_id).unwrap_or(thread_id);
     let mut registers = vec![0u8; 1024];
     let mut iov = libc::iovec {
         iov_base: registers.as_mut_ptr().cast(),
@@ -387,6 +626,9 @@ fn capture_origin(thread_id: u32) -> TraceOriginArtifact {
             iov_base: stack_pointer as *mut libc::c_void,
             iov_len: stack.len(),
         };
+        // SAFETY: local points to the owned `stack` allocation for its full
+        // lifetime; remote is a bounded address range in the stopped tracee.
+        // `process_vm_readv` copies at most the declared local length.
         let read = unsafe {
             libc::process_vm_readv(thread_id as libc::pid_t, &local, 1, &remote, 1, 0)
         };
@@ -398,13 +640,22 @@ fn capture_origin(thread_id: u32) -> TraceOriginArtifact {
     } else {
         stack.clear();
     }
+    let mut module_map = std::fs::read(format!("/proc/{origin_pid}/maps")).unwrap_or_default();
+    let module_map_truncated = module_map.len() > MODULE_MAP_CAPTURE_BYTES;
+    module_map.truncate(MODULE_MAP_CAPTURE_BYTES);
     TraceOriginArtifact {
+        origin_pid,
         thread_id,
+        architecture: std::env::consts::ARCH.to_owned(),
+        register_format: format!("linux-nt-prstatus-{}", std::env::consts::ARCH),
+        executable: read_executable(origin_pid),
         registers,
         stack_pointer,
         instruction_pointer,
         truncated: stack.len() == STACK_CAPTURE_BYTES,
         stack,
+        module_map,
+        module_map_truncated,
     }
 }
 
@@ -475,17 +726,6 @@ fn detach_all(tracees: impl IntoIterator<Item = u32>) {
     for pid in tracees {
         let _ = ptrace_value(libc::PTRACE_DETACH, pid, 0, 0);
     }
-}
-
-fn finish_untraced(child: &mut Child, shared: &Shared, message: &str) {
-    let result = child.wait();
-    let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-    match result {
-        Ok(status) => state.exit_code = Some(super::exit_code(status)),
-        Err(error) => state.tracer_error = Some(format!("{message}: {error}")),
-    }
-    state.done = true;
-    shared.wake.notify_all();
 }
 
 fn cleanup_failed_setup(child: &mut Child) {

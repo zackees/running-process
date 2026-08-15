@@ -38,6 +38,12 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
                 DescendantEvent::Exited(pid) => {
                     (crate::observer::ObserverEventKind::DescendantExited, pid)
                 }
+                DescendantEvent::Completed => {
+                    if let Some(watch) = process_watch.as_ref() {
+                        watch.finish_delivery();
+                    }
+                    return;
+                }
             };
             if let Some(sink) = descendant_sink.as_ref() {
                 let _ = sink.send(ObserverEvent::new_now(

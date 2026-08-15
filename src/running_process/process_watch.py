@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import math
 import signal as signal_module
 import sys
@@ -66,6 +65,10 @@ class StackDump:
             raise ProcessWatchConfigurationError(
                 "symbolize must be 'deferred' or 'immediate'"
             )
+        if self.symbolize == "immediate":
+            raise ProcessWatchConfigurationError(
+                "immediate remote symbolization is not implemented; use 'deferred'"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,20 +84,57 @@ class ProcessWatch:
     label: str = ""
 
     def __post_init__(self) -> None:
-        if self.limit is not None and (not isinstance(self.limit, int) or self.limit < 1):
+        if self._kind not in {"spawn", "exec", "exit", "failure"}:
+            raise ProcessWatchConfigurationError(f"unknown watch kind: {self._kind!r}")
+        if self.limit is not None and (
+            not isinstance(self.limit, int)
+            or isinstance(self.limit, bool)
+            or self.limit < 1
+        ):
             raise ProcessWatchConfigurationError("limit must be positive or None")
-        if not math.isfinite(self.cooldown_seconds) or self.cooldown_seconds < 0:
+        if (
+            not isinstance(self.cooldown_seconds, int | float)
+            or isinstance(self.cooldown_seconds, bool)
+            or not math.isfinite(self.cooldown_seconds)
+            or self.cooldown_seconds < 0
+        ):
             raise ProcessWatchConfigurationError(
                 "cooldown_seconds must be a finite non-negative number"
             )
-        if not self.label.strip():
+        if not isinstance(self.label, str) or not self.label.strip():
             raise ProcessWatchConfigurationError("label must not be empty")
+        if self.dump is not None and not isinstance(self.dump, StackDump):
+            raise ProcessWatchConfigurationError("dump must be StackDump or None")
         if self.basename == "":
             raise ProcessWatchConfigurationError("basename must not be empty")
+        if self.basename is not None and not isinstance(self.basename, str):
+            raise ProcessWatchConfigurationError("basename must be a string or None")
+        if self.path is not None and not isinstance(self.path, Path):
+            raise ProcessWatchConfigurationError("path must be pathlib.Path or None")
         if self.basename is not None and self.path is not None:
             raise ProcessWatchConfigurationError("provide basename or path, not both")
         if self.code is not None and self.signal is not None:
             raise ProcessWatchConfigurationError("provide code or signal, not both")
+        if self.code is not None and (
+            not isinstance(self.code, int) or isinstance(self.code, bool)
+        ):
+            raise ProcessWatchConfigurationError("code must be an integer or None")
+        if self.signal is not None and (
+            not isinstance(self.signal, int) or isinstance(self.signal, bool)
+        ):
+            raise ProcessWatchConfigurationError("signal must be an integer or None")
+        if self._kind == "spawn" and any(
+            value is not None for value in (self.basename, self.path, self.code, self.signal)
+        ):
+            raise ProcessWatchConfigurationError("spawn watches do not accept selectors")
+        if self._kind == "exec" and (self.code is not None or self.signal is not None):
+            raise ProcessWatchConfigurationError("exec watches do not accept exit selectors")
+        if self._kind in {"exit", "failure"} and self.path is not None:
+            raise ProcessWatchConfigurationError("exit watches do not accept path")
+        if self.dump is not None and self.dump.capture is StackCapture.OWNER_ALL_THREADS:
+            raise ProcessWatchConfigurationError(
+                "owner all-thread event-time capture is not implemented"
+            )
 
     @classmethod
     def on_exec(
@@ -146,6 +186,8 @@ class ProcessWatch:
         cooldown_seconds: float = 0.0,
         label: str | None = None,
     ) -> ProcessWatch:
+        if isinstance(signal, bool):
+            raise ProcessWatchConfigurationError("signal must be an integer signal or None")
         signal_number = int(signal) if signal is not None else None
         selector = f"code={code}" if code is not None else f"signal={signal_number}"
         if code is None and signal is None:
@@ -245,10 +287,19 @@ class ProcessWatchGap:
 
 
 @dataclass(frozen=True, slots=True)
+class ProcessWatchLoss:
+    sequence: int
+    event: ProcessEvent
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessObservationCapabilities:
     exact_available: bool
     exact_backend: str
     reason: str
+    non_invasive_backend: str
+    non_invasive_grade: ObservationGrade
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,29 +326,11 @@ def _match_from_native(
     raw: dict[str, Any], watches: dict[str, ProcessWatch]
 ) -> ProcessWatchMatch:
     event = raw["event"]
-    parent_pid = event.get("parent_pid")
     dump_raw = raw.get("dump")
     return ProcessWatchMatch(
         sequence=raw["sequence"],
         watch=watches[raw["watch_label"]],
-        event=ProcessEvent(
-            kind=ProcessEventKind(event["kind"]),
-            process=ProcessIdentity(event["pid"], event.get("start_key")),
-            parent=(
-                ProcessIdentity(parent_pid, event.get("parent_start_key"))
-                if parent_pid is not None
-                else None
-            ),
-            timestamp=datetime.fromtimestamp(event["timestamp"], timezone.utc),
-            executable=Path(event["executable"]) if event.get("executable") else None,
-            argv=tuple(event["argv"]) if event.get("argv") is not None else None,
-            exit_status=_exit_status(event),
-            raw_exit_status=event.get("raw_exit_status"),
-            backend=event["backend"],
-            observation_grade=ObservationGrade(event["observation_grade"]),
-            coverage_complete=event["coverage_complete"],
-            loss_detected=event["loss_detected"],
-        ),
+        event=_event_from_native(event),
         dump=(
             DumpResult(
                 capture_source=CaptureSource(dump_raw["capture_source"]),
@@ -311,6 +344,36 @@ def _match_from_native(
     )
 
 
+def _event_from_native(event: dict[str, Any]) -> ProcessEvent:
+    parent_pid = event.get("parent_pid")
+    return ProcessEvent(
+        kind=ProcessEventKind(event["kind"]),
+        process=ProcessIdentity(event["pid"], event.get("start_key")),
+        parent=(
+            ProcessIdentity(parent_pid, event.get("parent_start_key"))
+            if parent_pid is not None
+            else None
+        ),
+        timestamp=datetime.fromtimestamp(event["timestamp"], timezone.utc),
+        executable=Path(event["executable"]) if event.get("executable") else None,
+        argv=tuple(event["argv"]) if event.get("argv") is not None else None,
+        exit_status=_exit_status(event),
+        raw_exit_status=event.get("raw_exit_status"),
+        backend=event["backend"],
+        observation_grade=ObservationGrade(event["observation_grade"]),
+        coverage_complete=event["coverage_complete"],
+        loss_detected=event["loss_detected"],
+    )
+
+
+def _loss_from_native(raw: dict[str, Any]) -> ProcessWatchLoss:
+    return ProcessWatchLoss(
+        sequence=raw["sequence"],
+        event=_event_from_native(raw["event"]),
+        reason=raw["reason"],
+    )
+
+
 class ProcessWatchCursor:
     def __init__(self, native_process: Any, watches: dict[str, ProcessWatch]) -> None:
         self._native_process = native_process
@@ -321,7 +384,7 @@ class ProcessWatchCursor:
 
     def read_next(
         self, timeout: float | None = None
-    ) -> ProcessWatchMatch | ProcessWatchGap | None:
+    ) -> ProcessWatchMatch | ProcessWatchGap | ProcessWatchLoss | None:
         raw = self._native_process.take_process_watch_match(self._cursor_id, timeout)
         if raw["type"] == "eof":
             return None
@@ -329,12 +392,14 @@ class ProcessWatchCursor:
             raise TimeoutError("no process-watch match available before timeout")
         if raw["type"] == "gap":
             return ProcessWatchGap(raw["first_missing"], raw["last_missing"])
+        if raw["type"] == "loss":
+            return _loss_from_native(raw)
         return _match_from_native(raw, self._watches)
 
     def __iter__(self) -> ProcessWatchCursor:
         return self
 
-    def __next__(self) -> ProcessWatchMatch | ProcessWatchGap:
+    def __next__(self) -> ProcessWatchMatch | ProcessWatchGap | ProcessWatchLoss:
         item = self.read_next()
         if item is None:
             raise StopIteration
@@ -345,13 +410,24 @@ class AsyncProcessWatchCursor:
     def __init__(self, cursor: ProcessWatchCursor) -> None:
         self._cursor = cursor
 
-    async def read_next(self) -> ProcessWatchMatch | ProcessWatchGap | None:
-        return await asyncio.to_thread(self._cursor.read_next)
+    async def read_next(
+        self,
+    ) -> ProcessWatchMatch | ProcessWatchGap | ProcessWatchLoss | None:
+        raw = await self._cursor._native_process.take_process_watch_match_async(
+            self._cursor._cursor_id
+        )
+        if raw["type"] == "eof":
+            return None
+        if raw["type"] == "gap":
+            return ProcessWatchGap(raw["first_missing"], raw["last_missing"])
+        if raw["type"] == "loss":
+            return _loss_from_native(raw)
+        return _match_from_native(raw, self._cursor._watches)
 
     def __aiter__(self) -> AsyncProcessWatchCursor:
         return self
 
-    async def __anext__(self) -> ProcessWatchMatch | ProcessWatchGap:
+    async def __anext__(self) -> ProcessWatchMatch | ProcessWatchGap | ProcessWatchLoss:
         item = await self.read_next()
         if item is None:
             raise StopAsyncIteration

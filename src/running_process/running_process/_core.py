@@ -220,7 +220,7 @@ class RunningProcess:
             try:
                 self._proc = NativeProcess(command, **self._native_process_kwargs)
             except RuntimeError as error:
-                if self.process_observation_policy is ObservationPolicy.REQUIRE_EXACT:
+                if self._process_watches:
                     raise ProcessObservationUnavailableError(str(error)) from error
                 raise
         self._output_formatter: OutputFormatter = (
@@ -240,6 +240,8 @@ class RunningProcess:
             exact_available=raw["exact_available"],
             exact_backend=raw["exact_backend"],
             reason=raw["reason"],
+            non_invasive_backend=raw["non_invasive_backend"],
+            non_invasive_grade=ObservationGrade(raw["non_invasive_grade"]),
         )
 
     def add_process_watch(self, watch: ProcessWatch) -> None:
@@ -257,7 +259,7 @@ class RunningProcess:
         try:
             self._proc = NativeProcess(self.command, **self._native_process_kwargs)
         except RuntimeError as error:
-            if self.process_observation_policy is ObservationPolicy.REQUIRE_EXACT:
+            if self._process_watches:
                 raise ProcessObservationUnavailableError(str(error)) from error
             raise
 

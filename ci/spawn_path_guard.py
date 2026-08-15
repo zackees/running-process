@@ -292,10 +292,12 @@ ALLOWED_RUST_SPAWN = {
     Path("crates/running-process-platform-internal/src/platform_macos_descendants.rs"),
     # #539/#1015: these are dedicated in-process OS event-pump threads.
     # The Windows IOCP pump drains Job Object notifications; the Linux
-    # ptrace supervisor owns wait/continue for an already-created tracee.
-    # Neither call constructs or spawns another child process.
+    # ptrace supervisor owns both launch and every wait/continue operation so
+    # PTRACE_TRACEME remains attached to the same Linux task. The watch writer
+    # performs bounded artifact I/O away from stopped tracees.
     Path("crates/running-process-platform-internal/src/platform_win_descendants.rs"),
     Path("crates/running-process-platform-internal/src/platform_linux_trace.rs"),
+    Path("crates/running-process/src/observer/process_watch.rs"),
     # Testbins: bare std::Command::spawn on Unix only (see comment in
     # testbins/src/bin/spawner.rs — sanitized spawn isn't usable there
     # because of the setpgid-vs-killpg interaction the containment test

@@ -1,25 +1,17 @@
 //! Process spawning, containment, inspection, termination, and stdio.
 
 pub use crate::{
-    PlatformChild, PlatformEmergencySignal, PlatformLifecycle, PlatformOutput, PlatformStdin,
-    SpawnSpec, StreamMode,
+    assign_child_to_windows_job, cancel_capture_reader, canonical_environment_pairs,
+    capture_reader_done, compat_shell_command, configure_exact_trace, configure_process_command,
+    configure_sync_contained_command, configure_sync_daemon_command, configure_trampoline_command,
+    current_executable_build_id, exact_trace_capability, exit_code, monitor_console_windows,
+    parent_has_console, prepare_capture_reader, process_snapshot, process_snapshot_for_pid,
+    set_process_name, shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
+    start_descendant_monitor, start_exact_trace, sync_child_native_handle, trampoline_exit_code,
+    unix_mark_extra_fds_close_on_exec, CaptureCancellation, PlatformChild, PlatformEmergencySignal,
+    PlatformLifecycle, PlatformOutput, PlatformStdin, SpawnSpec, StreamMode, TracedChild,
+    WindowsJobHandle,
 };
-
-pub use crate::platform_imp::{
-    cancel_capture_reader, canonical_environment_pairs, capture_reader_done, compat_shell_command,
-    configure_process_command, configure_sync_contained_command, configure_sync_daemon_command,
-    configure_trampoline_command, exit_code, monitor_console_windows, parent_has_console,
-    prepare_capture_reader, process_snapshot, process_snapshot_for_pid, set_process_name,
-    shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
-    start_descendant_monitor, sync_child_native_handle, trampoline_exit_code,
-    unix_mark_extra_fds_close_on_exec, CaptureCancellation,
-};
-
-#[cfg(target_os = "linux")]
-pub use crate::platform_imp::current_executable_build_id;
-
-#[cfg(windows)]
-pub use crate::platform_imp::{assign_child_to_windows_job, WindowsJobHandle};
 
 /// Host-neutral command options selected by the caller before spawning.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -36,22 +28,32 @@ pub struct ExactTraceCapability {
     pub available: bool,
     pub backend: &'static str,
     pub reason: &'static str,
+    pub non_invasive_backend: &'static str,
+    pub non_invasive_grade: NonInvasiveObservationGrade,
 }
 
-pub use crate::platform_imp::exact_trace_capability;
-
-#[cfg(target_os = "linux")]
-pub use crate::platform_imp::{configure_exact_trace, start_exact_trace, TracedChild};
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NonInvasiveObservationGrade {
+    KernelNotification,
+    KernelHintReconciled,
+    SnapshotInferred,
+}
 
 /// A raw, bounded spawning-thread capture collected while a tracee is stopped.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TraceOriginArtifact {
+    pub origin_pid: u32,
     pub thread_id: u32,
+    pub architecture: String,
+    pub register_format: String,
+    pub executable: Option<std::path::PathBuf>,
     pub registers: Vec<u8>,
     pub stack_pointer: Option<u64>,
     pub instruction_pointer: Option<u64>,
     pub stack: Vec<u8>,
     pub truncated: bool,
+    pub module_map: Vec<u8>,
+    pub module_map_truncated: bool,
 }
 
 /// Native launched-tree event produced by an exact trace backend.
@@ -88,6 +90,9 @@ pub enum ExactTraceEventKind {
 pub enum DescendantEvent {
     Started(u32),
     Exited(u32),
+    /// The platform backend has completed its final reconciliation and no
+    /// further descendant events can arrive.
+    Completed,
 }
 
 /// Shared cancellation handle for a host-native descendant monitor.
@@ -374,47 +379,6 @@ pub enum UnixSignalKind {
     Kill,
 }
 
-pub use crate::platform_imp::{
-    unix_set_priority, unix_signal_process, unix_signal_process_group, unix_signal_raw,
+pub use crate::{
+    kill_tree, unix_set_priority, unix_signal_process, unix_signal_process_group, unix_signal_raw,
 };
-
-pub use crate::platform_imp::kill_tree;
-
-#[cfg(test)]
-mod tests {
-    use std::ffi::OsStr;
-
-    #[cfg(unix)]
-    #[test]
-    fn shell_command_preserves_login_shell_contract_and_quoting() {
-        let command_text = "printf '%s' 'alpha beta;\"gamma\"'";
-        let mut command = super::shell_command(command_text);
-        assert_eq!(command.get_program(), OsStr::new("sh"));
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [OsStr::new("-lc"), OsStr::new(command_text)]
-        );
-        let output = command.output().expect("shell command should execute");
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"alpha beta;\"gamma\"");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn shell_command_preserves_raw_cmd_quoting_contract() {
-        let command_text = "echo alpha beta ^& gamma";
-        let mut command = super::shell_command(command_text);
-        assert_eq!(command.get_program(), OsStr::new("cmd.exe"));
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [
-                OsStr::new("/D /S /C \""),
-                OsStr::new(command_text),
-                OsStr::new("\"")
-            ]
-        );
-        let output = command.output().expect("shell command should execute");
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"alpha beta & gamma \r\n");
-    }
-}

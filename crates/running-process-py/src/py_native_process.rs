@@ -1,21 +1,47 @@
-use pyo3::exceptions::PyRuntimeError;
+use std::sync::Arc;
+use std::time::Duration;
+
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use pyo3_async_runtimes::tokio::future_into_py;
 
 use running_process::pty::NativePtyProcess as CoreNativePtyProcess;
 
-use crate::process::NativeRunningProcess;
+use crate::helpers::to_py_err;
+use crate::process::{watch_read_to_python, NativeRunningProcess};
 use crate::pty_process::NativePtyProcess;
 use crate::registry::ExpectResult;
 
 pub(crate) enum NativeProcessBackend {
-    Running(Box<NativeRunningProcess>),
+    Running(Arc<NativeRunningProcess>),
     Pty(Box<NativePtyProcess>),
 }
 
 #[pyclass(name = "NativeProcess")]
 pub(crate) struct PyNativeProcess {
     pub(crate) backend: NativeProcessBackend,
+}
+
+impl PyNativeProcess {
+    fn running_arc(&self) -> PyResult<Arc<NativeRunningProcess>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => Ok(Arc::clone(process)),
+            NativeProcessBackend::Pty(_) => Err(PyRuntimeError::new_err(
+                "pipe-backed async operation is unavailable for a PTY process",
+            )),
+        }
+    }
+}
+
+fn validate_timeout(timeout: Option<f64>) -> PyResult<()> {
+    if timeout.is_some_and(|value| !value.is_finite() || value < 0.0) {
+        Err(PyValueError::new_err(
+            "timeout must be a finite non-negative number or None",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -42,7 +68,7 @@ impl PyNativeProcess {
         process_observation: &str,
     ) -> PyResult<Self> {
         Ok(Self {
-            backend: NativeProcessBackend::Running(Box::new(NativeRunningProcess::new(
+            backend: NativeProcessBackend::Running(Arc::new(NativeRunningProcess::new(
                 command,
                 cwd,
                 shell,
@@ -87,6 +113,166 @@ impl PyNativeProcess {
             NativeProcessBackend::Running(process) => process.open_process_watch_cursor(),
             NativeProcessBackend::Pty(_) => None,
         }
+    }
+
+    fn start_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || process.inner.start())
+                .await
+                .map_err(to_py_err)?
+                .map_err(to_py_err)
+        })
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn wait_async<'py>(
+        &self,
+        py: Python<'py>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        validate_timeout(timeout)?;
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || {
+                process.inner.wait(timeout.map(Duration::from_secs_f64))
+            })
+            .await
+            .map_err(to_py_err)?
+            .map_err(to_py_err)
+        })
+    }
+
+    fn kill_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || process.inner.kill())
+                .await
+                .map_err(to_py_err)?
+                .map_err(to_py_err)
+        })
+    }
+
+    fn terminate_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || process.inner.terminate())
+                .await
+                .map_err(to_py_err)?
+                .map_err(to_py_err)
+        })
+    }
+
+    fn close_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || process.inner.close())
+                .await
+                .map_err(to_py_err)?
+                .map_err(to_py_err)
+        })
+    }
+
+    fn write_stdin_async<'py>(
+        &self,
+        py: Python<'py>,
+        data: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || process.inner.write_stdin(&data))
+                .await
+                .map_err(to_py_err)?
+                .map_err(to_py_err)
+        })
+    }
+
+    fn close_stdin_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || process.inner.close_stdin())
+                .await
+                .map_err(to_py_err)?
+                .map_err(to_py_err)
+        })
+    }
+
+    fn poll_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || process.inner.poll())
+                .await
+                .map_err(to_py_err)?
+                .map_err(to_py_err)
+        })
+    }
+
+    fn output_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || {
+                let code = process.inner.wait(None)?;
+                let stdout = process.inner.captured_stdout().join(&b'\n');
+                let stderr = process.inner.captured_stderr().join(&b'\n');
+                Ok::<_, running_process::ProcessError>((code, stdout, stderr))
+            })
+            .await
+            .map_err(to_py_err)?
+            .map_err(to_py_err)
+        })
+    }
+
+    fn terminate_group_soft_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let process = self.running_arc()?;
+        let owns_group = process.owns_process_group;
+        future_into_py(py, async move {
+            if !owns_group {
+                return Ok(false);
+            }
+            running_process::blocking_island_dispatch(move || process.inner.terminate_group_soft())
+                .await
+                .map_err(to_py_err)?
+                .map(|()| true)
+                .map_err(to_py_err)
+        })
+    }
+
+    #[pyo3(signature = (timeout=5.0))]
+    fn kill_tree_async<'py>(&self, py: Python<'py>, timeout: f64) -> PyResult<Bound<'py, PyAny>> {
+        validate_timeout(Some(timeout))?;
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            running_process::blocking_island_dispatch(move || {
+                let Some(pid) = process.inner.pid() else {
+                    return Ok(0);
+                };
+                running_process::process_tree::kill_tree(pid, Duration::from_secs_f64(timeout))
+                    .map_err(running_process::ProcessError::Io)
+            })
+            .await
+            .map_err(to_py_err)?
+            .map_err(to_py_err)
+        })
+    }
+
+    #[pyo3(signature = (cursor_id, timeout=None))]
+    fn take_process_watch_match_async<'py>(
+        &self,
+        py: Python<'py>,
+        cursor_id: u64,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        validate_timeout(timeout)?;
+        let process = self.running_arc()?;
+        future_into_py(py, async move {
+            let read = running_process::blocking_island_dispatch(move || {
+                process.read_process_watch_native(cursor_id, timeout.map(Duration::from_secs_f64))
+            })
+            .await
+            .map_err(to_py_err)?
+            .map_err(PyValueError::new_err)?;
+            Python::attach(|py| watch_read_to_python(py, read))
+        })
     }
 
     #[pyo3(signature = (cursor_id, timeout=None))]

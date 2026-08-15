@@ -142,8 +142,8 @@ pub use observer::{
     ObservationGrade, ObservationPolicy, ObserverCapabilities, ObserverConfig, ObserverEvent,
     ObserverEventKind, ObserverSubscriber, ProcessEvent, ProcessEventKind, ProcessIdentity,
     ProcessObservation, ProcessObservationCapabilities, ProcessObservationError, ProcessWatch,
-    ProcessWatchConfigurationError, ProcessWatchCursor, ProcessWatchGap, ProcessWatchMatch,
-    ProcessWatchRead, ProcessWatchSubscriber, StackCapture, StackDump,
+    ProcessWatchConfigurationError, ProcessWatchCursor, ProcessWatchGap, ProcessWatchLoss,
+    ProcessWatchMatch, ProcessWatchRead, ProcessWatchSubscriber, StackCapture, StackDump,
 };
 #[cfg(feature = "originator-scan")]
 pub use originator::{
@@ -243,7 +243,6 @@ struct ChildState {
 
 enum ChildHandle {
     Standard(Child),
-    #[cfg(target_os = "linux")]
     ExactTrace(running_process_platform_internal::platform::process::TracedChild),
 }
 
@@ -251,7 +250,6 @@ impl ChildHandle {
     fn id(&self) -> u32 {
         match self {
             Self::Standard(child) => child.id(),
-            #[cfg(target_os = "linux")]
             Self::ExactTrace(child) => child.id(),
         }
     }
@@ -259,7 +257,6 @@ impl ChildHandle {
     fn try_wait_code(&mut self) -> std::io::Result<Option<i32>> {
         match self {
             Self::Standard(child) => child.try_wait().map(|status| status.map(exit_code)),
-            #[cfg(target_os = "linux")]
             Self::ExactTrace(child) => child.try_wait_code(),
         }
     }
@@ -267,8 +264,28 @@ impl ChildHandle {
     fn kill(&mut self) -> std::io::Result<()> {
         match self {
             Self::Standard(child) => child.kill(),
-            #[cfg(target_os = "linux")]
             Self::ExactTrace(child) => child.kill(),
+        }
+    }
+
+    fn take_stdin(&mut self) -> Option<ChildStdin> {
+        match self {
+            Self::Standard(child) => child.stdin.take(),
+            Self::ExactTrace(child) => child.take_stdin(),
+        }
+    }
+
+    fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        match self {
+            Self::Standard(child) => child.stdout.take(),
+            Self::ExactTrace(child) => child.take_stdout(),
+        }
+    }
+
+    fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        match self {
+            Self::Standard(child) => child.stderr.take(),
+            Self::ExactTrace(child) => child.take_stderr(),
         }
     }
 
@@ -276,6 +293,7 @@ impl ChildHandle {
     fn wait_code(&mut self) -> std::io::Result<i32> {
         match self {
             Self::Standard(child) => child.wait().map(exit_code),
+            Self::ExactTrace(child) => child.wait_code(),
         }
     }
 }
@@ -299,13 +317,21 @@ fn capture_poll_action(capture_revents: i16, wake_revents: i16) -> CapturePollAc
     }
 }
 
-fn cleanup_child_after_start_error(mut child: Child) {
-    let _ = child.kill();
-    // Keep start() bounded while retaining ownership until the child is
-    // eventually reaped, even if the OS takes time to deliver SIGKILL.
-    thread::spawn(move || {
-        let _ = child.wait();
-    });
+fn cleanup_child_after_start_error(child: ChildHandle) {
+    match child {
+        ChildHandle::Standard(mut child) => {
+            let _ = child.kill();
+            // Keep start bounded while retaining ownership until the child is
+            // eventually reaped, even if SIGKILL delivery takes time.
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        ChildHandle::ExactTrace(mut child) => {
+            // The dedicated tracer remains the sole waiter and will reap it.
+            let _ = child.kill();
+        }
+    }
 }
 
 impl SharedState {
@@ -470,17 +496,10 @@ impl NativeProcess {
         }
 
         let mut command = self.build_command();
-        #[cfg(target_os = "linux")]
-        if self
+        let exact_trace = self
             .process_watch
             .as_ref()
-            .is_some_and(|watch| watch.uses_exact_trace())
-        {
-            running_process_platform_internal::platform::process::configure_exact_trace(
-                &mut command,
-            )
-            .map_err(ProcessError::Spawn)?;
-        }
+            .is_some_and(|watch| watch.uses_exact_trace());
         match self.config.stdin_mode {
             StdinMode::Inherit => {}
             StdinMode::Piped => {
@@ -495,7 +514,25 @@ impl NativeProcess {
             command.stderr(Stdio::piped());
         }
 
-        let mut child = command.spawn().map_err(ProcessError::Spawn)?;
+        let mut child = if exact_trace {
+            let event_watch = Arc::clone(self.process_watch.as_ref().expect("exact watch checked"));
+            let completion_watch = Arc::clone(&event_watch);
+            match running_process_platform_internal::platform::process::start_exact_trace(
+                command,
+                Box::new(move |event| event_watch.emit_exact(event)),
+                Box::new(move || completion_watch.close()),
+            ) {
+                Ok(child) => ChildHandle::ExactTrace(child),
+                Err(error) => {
+                    if let Some(watch) = self.process_watch.as_ref() {
+                        watch.close();
+                    }
+                    return Err(ProcessError::Spawn(error));
+                }
+            }
+        } else {
+            ChildHandle::Standard(command.spawn().map_err(ProcessError::Spawn)?)
+        };
         log_spawned_child_pid(child.id()).map_err(ProcessError::Spawn)?;
         // Phase 1 of #221: emit the lifecycle `started` event. No-op when
         // observation is off (the common, off-by-default path).
@@ -513,21 +550,31 @@ impl NativeProcess {
                 .observer
                 .as_ref()
                 .and_then(|e| e.descendant_sink());
-            let direct_pid = child.id();
-            public_symbols::rp_assign_child_to_windows_kill_on_close_job_with_observer_public(
-                &child,
-                descendant_sink,
-                self.process_watch.clone(),
-                direct_pid,
-                self.config.address_space_limit_bytes,
-            )
-            .map_err(ProcessError::Spawn)?
+            let job_result = match &child {
+                ChildHandle::Standard(standard_child) => {
+                    let direct_pid = standard_child.id();
+                    public_symbols::rp_assign_child_to_windows_kill_on_close_job_with_observer_public(
+                        standard_child,
+                        descendant_sink,
+                        self.process_watch.clone(),
+                        direct_pid,
+                        self.config.address_space_limit_bytes,
+                    )
+                }
+                ChildHandle::ExactTrace(_) => unreachable!("Windows exact tracing is unavailable"),
+            };
+            match job_result {
+                Ok(job) => job,
+                Err(error) => {
+                    if let Some(watch) = self.process_watch.as_ref() {
+                        watch.close();
+                    }
+                    cleanup_child_after_start_error(child);
+                    return Err(ProcessError::Spawn(error));
+                }
+            }
         };
-        if !self
-            .process_watch
-            .as_ref()
-            .is_some_and(|watch| watch.uses_exact_trace())
-        {
+        if !exact_trace {
             descendant_monitor::start(
                 child.id(),
                 self.shared.observer.as_ref(),
@@ -535,8 +582,8 @@ impl NativeProcess {
             );
         }
         if self.config.capture {
-            let stdout = child.stdout.take().expect("stdout pipe missing");
-            let stderr = child.stderr.take().expect("stderr pipe missing");
+            let stdout = child.take_stdout().expect("stdout pipe missing");
+            let stderr = child.take_stderr().expect("stderr pipe missing");
             let stdout =
                 match running_process_platform_internal::platform::process::prepare_capture_reader(
                     stdout,
@@ -581,32 +628,7 @@ impl NativeProcess {
                 self.pipe_done_callback(StreamKind::Stderr),
             );
         }
-        *self.stdin.lock().expect("stdin mutex poisoned") = child.stdin.take();
-        #[cfg(target_os = "linux")]
-        let child = if let Some(watch) = self
-            .process_watch
-            .as_ref()
-            .filter(|watch| watch.uses_exact_trace())
-        {
-            let watch = Arc::clone(watch);
-            let traced = running_process_platform_internal::platform::process::start_exact_trace(
-                child,
-                Box::new(move |event| watch.emit_exact(event)),
-            );
-            match traced {
-                Ok(child) => ChildHandle::ExactTrace(child),
-                Err(error) => {
-                    if let Some(watch) = self.process_watch.as_ref() {
-                        watch.close();
-                    }
-                    return Err(ProcessError::Spawn(error));
-                }
-            }
-        } else {
-            ChildHandle::Standard(child)
-        };
-        #[cfg(not(target_os = "linux"))]
-        let child = ChildHandle::Standard(child);
+        *self.stdin.lock().expect("stdin mutex poisoned") = child.take_stdin();
         *guard = Some(ChildState {
             child,
             #[cfg(windows)]
@@ -624,7 +646,6 @@ impl NativeProcess {
         let shared = Arc::clone(&self.shared);
         let capture = self.config.capture;
         let capture_cancellation = Arc::clone(&self.capture_cancellation);
-        let process_watch = self.process_watch.clone();
         thread::spawn(move || {
             loop {
                 if shared.returncode.load(Ordering::Acquire) != RETURNCODE_NOT_SET {
@@ -683,9 +704,11 @@ impl NativeProcess {
                             );
                         }
                     }
-                    if let Some(watch) = process_watch.as_ref() {
-                        watch.close();
-                    }
+                    // Non-invasive watch EOF is owned by the platform
+                    // descendant backend: Linux/macOS perform one final
+                    // reconciliation and Windows waits for
+                    // ACTIVE_PROCESS_ZERO. Closing here would race those
+                    // final descendant notifications.
                     return;
                 }
                 // #199: intentional — capture thread polling for

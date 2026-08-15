@@ -5,10 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
 
-use running_process_platform_internal::platform::process::exact_trace_capability;
-#[cfg(target_os = "linux")]
 use running_process_platform_internal::platform::process::{
-    ExactTraceEvent, ExactTraceEventKind, TraceOriginArtifact,
+    exact_trace_capability, ExactTraceEvent, ExactTraceEventKind, NonInvasiveObservationGrade,
+    TraceOriginArtifact,
 };
 
 const DEFAULT_RETAINED_MATCHES: usize = 256;
@@ -215,6 +214,23 @@ impl ProcessWatch {
                 "watch limit must be positive or None".to_owned(),
             ));
         }
+        if dump
+            .as_ref()
+            .is_some_and(|request| request.symbolize_immediately)
+        {
+            return Err(ProcessWatchConfigurationError(
+                "immediate remote symbolization is not implemented; use deferred artifacts"
+                    .to_owned(),
+            ));
+        }
+        if dump
+            .as_ref()
+            .is_some_and(|request| request.capture == StackCapture::OwnerAllThreads)
+        {
+            return Err(ProcessWatchConfigurationError(
+                "owner all-thread event-time capture is not implemented".to_owned(),
+            ));
+        }
         Ok(Self {
             selector,
             dump,
@@ -222,6 +238,27 @@ impl ProcessWatch {
             cooldown,
             label,
         })
+    }
+
+    fn non_invasive_unsupported_requirement(&self) -> Option<&'static str> {
+        if self
+            .dump
+            .as_ref()
+            .is_some_and(|dump| dump.capture != StackCapture::OriginPreferred)
+        {
+            return Some("the selected stack capture provenance is unavailable non-invasively");
+        }
+        match &self.selector {
+            WatchSelector::Exit {
+                code,
+                signal,
+                basename,
+                failure_only,
+            } if code.is_some() || signal.is_some() || basename.is_some() || *failure_only => Some(
+                "the exit selector needs status or executable fields this backend cannot provide",
+            ),
+            _ => None,
+        }
     }
 }
 
@@ -298,8 +335,16 @@ pub struct ProcessWatchGap {
 }
 
 #[derive(Clone, Debug)]
+pub struct ProcessWatchLoss {
+    pub sequence: u64,
+    pub event: ProcessEvent,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug)]
 pub enum ProcessWatchRead {
     Match(Box<ProcessWatchMatch>),
+    Loss(Box<ProcessWatchLoss>),
     Gap(ProcessWatchGap),
     Timeout,
     Eof,
@@ -310,6 +355,8 @@ pub struct ProcessObservationCapabilities {
     pub exact_available: bool,
     pub exact_backend: &'static str,
     pub reason: &'static str,
+    pub non_invasive_backend: &'static str,
+    pub non_invasive_grade: ObservationGrade,
 }
 
 impl ProcessObservationCapabilities {
@@ -319,6 +366,16 @@ impl ProcessObservationCapabilities {
             exact_available: capability.available,
             exact_backend: capability.backend,
             reason: capability.reason,
+            non_invasive_backend: capability.non_invasive_backend,
+            non_invasive_grade: match capability.non_invasive_grade {
+                NonInvasiveObservationGrade::KernelNotification => {
+                    ObservationGrade::KernelNotification
+                }
+                NonInvasiveObservationGrade::KernelHintReconciled => {
+                    ObservationGrade::KernelHintReconciled
+                }
+                NonInvasiveObservationGrade::SnapshotInferred => ObservationGrade::SnapshotInferred,
+            },
         }
     }
 }
@@ -348,17 +405,69 @@ struct WatchRuntime {
 }
 
 struct LogState {
-    entries: VecDeque<ProcessWatchMatch>,
+    entries: VecDeque<ProcessWatchRecord>,
     first_sequence: u64,
     next_sequence: u64,
     closed: bool,
-    #[cfg(target_os = "linux")]
     coverage_complete: bool,
+}
+
+#[derive(Clone, Debug)]
+enum ProcessWatchRecord {
+    Match(ProcessWatchMatch),
+    Loss(ProcessWatchLoss),
 }
 
 struct SharedLog {
     state: Mutex<LogState>,
     wake: Condvar,
+}
+
+struct PendingMatch {
+    watch: ProcessWatch,
+    event: ProcessEvent,
+    dump_request: Option<StackDump>,
+    native: ExactTraceEvent,
+}
+
+enum PendingDelivery {
+    Match(Box<PendingMatch>),
+    Loss { event: ProcessEvent, reason: String },
+}
+
+struct PendingOverflow {
+    event: ProcessEvent,
+    reason: String,
+    additional_dropped: usize,
+    native_loss_reasons: Vec<String>,
+}
+
+impl PendingDelivery {
+    fn into_overflow(self) -> PendingOverflow {
+        match self {
+            Self::Match(pending) => PendingOverflow {
+                event: pending.event,
+                reason: "process-watch delivery queue overflow".to_owned(),
+                additional_dropped: 0,
+                native_loss_reasons: Vec::new(),
+            },
+            Self::Loss { event, reason } => PendingOverflow {
+                event,
+                reason: "process-watch delivery queue overflow".to_owned(),
+                additional_dropped: 0,
+                native_loss_reasons: vec![reason],
+            },
+        }
+    }
+
+    fn merge_into(self, overflow: &mut PendingOverflow) {
+        overflow.additional_dropped = overflow.additional_dropped.saturating_add(1);
+        if let Self::Loss { reason, .. } = self {
+            if !overflow.native_loss_reasons.contains(&reason) {
+                overflow.native_loss_reasons.push(reason);
+            }
+        }
+    }
 }
 
 pub(crate) struct ProcessWatchEmitter {
@@ -367,8 +476,10 @@ pub(crate) struct ProcessWatchEmitter {
     observation: ProcessObservation,
     descendant_stop:
         Arc<running_process_platform_internal::platform::process::DescendantMonitorStop>,
-    #[cfg(target_os = "linux")]
     exact_delivery_active: std::sync::atomic::AtomicBool,
+    delivery_tx: std::sync::mpsc::SyncSender<PendingDelivery>,
+    delivery_overflow: Arc<Mutex<Option<PendingOverflow>>>,
+    delivery_closing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ProcessWatchEmitter {
@@ -384,6 +495,16 @@ impl ProcessWatchEmitter {
             )));
         }
         let exact = policy != ObservationPolicy::NonInvasive && capabilities.exact_available;
+        if !exact {
+            for watch in &watches {
+                if let Some(requirement) = watch.non_invasive_unsupported_requirement() {
+                    return Err(ProcessObservationError(format!(
+                        "process watch '{}': {requirement}; select an exact tracing backend",
+                        watch.label
+                    )));
+                }
+            }
+        }
         let observation = if exact {
             ProcessObservation {
                 backend: capabilities.exact_backend,
@@ -391,18 +512,8 @@ impl ProcessWatchEmitter {
                 fallback_reason: None,
             }
         } else {
-            #[cfg(target_os = "windows")]
-            let (backend, grade) = ("job-object-iocp", ObservationGrade::KernelNotification);
-            #[cfg(target_os = "macos")]
-            let (backend, grade) = (
-                "kqueue-proc-snapshot",
-                ObservationGrade::KernelHintReconciled,
-            );
-            #[cfg(target_os = "linux")]
-            let (backend, grade) = (
-                "proc-descendant-snapshot",
-                ObservationGrade::SnapshotInferred,
-            );
+            let backend = capabilities.non_invasive_backend;
+            let grade = capabilities.non_invasive_grade;
             ProcessObservation {
                 backend,
                 grade,
@@ -417,11 +528,24 @@ impl ProcessWatchEmitter {
                 first_sequence: 1,
                 next_sequence: 1,
                 closed: false,
-                #[cfg(target_os = "linux")]
                 coverage_complete: true,
             }),
             wake: Condvar::new(),
         });
+        let (delivery_tx, delivery_rx) = std::sync::mpsc::sync_channel(DEFAULT_RETAINED_MATCHES);
+        let delivery_closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let delivery_overflow = Arc::new(Mutex::new(None));
+        let worker_log = Arc::clone(&log);
+        let worker_closing = Arc::clone(&delivery_closing);
+        let worker_overflow = Arc::clone(&delivery_overflow);
+        std::thread::Builder::new()
+            .name("rp-watch-writer".to_owned())
+            .spawn(move || {
+                delivery_loop(delivery_rx, worker_log, worker_closing, worker_overflow);
+            })
+            .map_err(|error| {
+                ProcessObservationError(format!("spawn process-watch artifact writer: {error}"))
+            })?;
         let emitter = Arc::new(Self {
             watches: Mutex::new(
                 watches
@@ -438,8 +562,10 @@ impl ProcessWatchEmitter {
             descendant_stop: Arc::new(
                 running_process_platform_internal::platform::process::DescendantMonitorStop::new(),
             ),
-            #[cfg(target_os = "linux")]
             exact_delivery_active: std::sync::atomic::AtomicBool::new(false),
+            delivery_tx,
+            delivery_overflow,
+            delivery_closing,
         });
         Ok((emitter, ProcessWatchSubscriber { log, observation }))
     }
@@ -448,7 +574,6 @@ impl ProcessWatchEmitter {
         self.observation.grade == ObservationGrade::ExactTrace
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn emit_exact(&self, native: ExactTraceEvent) {
         if self
             .exact_delivery_active
@@ -471,9 +596,16 @@ impl ProcessWatchEmitter {
             }
         }
         let _delivery_guard = DeliveryGuard(&self.exact_delivery_active);
-        if matches!(native.kind, ExactTraceEventKind::Loss { .. }) {
+        if let ExactTraceEventKind::Loss { reason } = &native.kind {
             let mut log = self.log.state.lock().unwrap_or_else(|e| e.into_inner());
             log.coverage_complete = false;
+            drop(log);
+            let event = event_from_exact(&native, self.observation.clone(), false);
+            self.queue_delivery(PendingDelivery::Loss {
+                event,
+                reason: reason.clone(),
+            });
+            return;
         }
         let event = event_from_exact(&native, self.observation.clone(), self.coverage_complete());
         let now = SystemTime::now();
@@ -492,12 +624,13 @@ impl ProcessWatchEmitter {
             }
             runtime.matched += 1;
             runtime.last_match = Some(now);
-            let dump = runtime
-                .watch
-                .dump
-                .as_ref()
-                .map(|request| write_dump(request, &runtime.watch.label, &native));
-            self.push(runtime.watch.clone(), event.clone(), dump);
+            let pending = PendingMatch {
+                watch: runtime.watch.clone(),
+                event: event.clone(),
+                dump_request: runtime.watch.dump.clone(),
+                native: native.clone(),
+            };
+            self.queue_delivery(PendingDelivery::Match(Box::new(pending)));
         }
     }
 
@@ -530,6 +663,16 @@ impl ProcessWatchEmitter {
             coverage_complete: false,
             loss_detected: false,
         };
+        self.emit_inferred_event(event.clone());
+        if started {
+            self.emit_inferred_event(ProcessEvent {
+                kind: ProcessEventKind::Exec,
+                ..event
+            });
+        }
+    }
+
+    fn emit_inferred_event(&self, event: ProcessEvent) {
         let mut watches = self.watches.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemTime::now();
         for runtime in &mut *watches {
@@ -568,12 +711,16 @@ impl ProcessWatchEmitter {
     }
 
     pub(crate) fn close(&self) {
-        let mut log = self.log.state.lock().unwrap_or_else(|e| e.into_inner());
-        log.closed = true;
+        self.descendant_stop.stop();
+        self.finish_delivery();
+    }
+
+    pub(crate) fn finish_delivery(&self) {
+        self.delivery_closing
+            .store(true, std::sync::atomic::Ordering::Release);
         self.log.wake.notify_all();
     }
 
-    #[cfg(target_os = "linux")]
     fn coverage_complete(&self) -> bool {
         self.log
             .state
@@ -583,20 +730,141 @@ impl ProcessWatchEmitter {
     }
 
     fn push(&self, watch: ProcessWatch, event: ProcessEvent, dump: Option<DumpResult>) {
-        let mut log = self.log.state.lock().unwrap_or_else(|e| e.into_inner());
-        let sequence = log.next_sequence;
-        log.next_sequence += 1;
-        log.entries.push_back(ProcessWatchMatch {
+        push_match(&self.log, watch, event, dump);
+    }
+
+    fn queue_delivery(&self, delivery: PendingDelivery) {
+        // This mutex is an ordering gate, not a blocking delivery path. Once
+        // one bounded-channel overflow occurs, producers aggregate subsequent
+        // drops here until the worker has drained every earlier accepted item
+        // and publishes exactly one ordered loss record.
+        let mut overflow = self
+            .delivery_overflow
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(pending) = overflow.as_mut() {
+            delivery.merge_into(pending);
+            self.mark_coverage_incomplete();
+            return;
+        }
+        match self.delivery_tx.try_send(delivery) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::TrySendError::Full(delivery)) => {
+                *overflow = Some(delivery.into_overflow());
+                self.mark_coverage_incomplete();
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(delivery)) => {
+                self.mark_coverage_incomplete();
+                let pending = delivery.into_overflow();
+                push_loss(&self.log, pending.event, pending.reason);
+            }
+        }
+    }
+
+    fn mark_coverage_incomplete(&self) {
+        self.log
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .coverage_complete = false;
+    }
+}
+
+fn delivery_loop(
+    receiver: std::sync::mpsc::Receiver<PendingDelivery>,
+    log: Arc<SharedLog>,
+    closing: Arc<std::sync::atomic::AtomicBool>,
+    overflow: Arc<Mutex<Option<PendingOverflow>>>,
+) {
+    loop {
+        match receiver.recv_timeout(Duration::from_millis(10)) {
+            Ok(PendingDelivery::Match(pending)) => {
+                let pending = *pending;
+                let dump = pending
+                    .dump_request
+                    .as_ref()
+                    .map(|request| write_dump(request, &pending.watch.label, &pending.native));
+                push_match(&log, pending.watch, pending.event, dump);
+            }
+            Ok(PendingDelivery::Loss { event, reason }) => {
+                push_loss(&log, event, reason);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let pending = overflow
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                if let Some(mut pending) = pending {
+                    if pending.additional_dropped != 0 {
+                        pending.reason.push_str(&format!(
+                            "; {} additional deliveries dropped",
+                            pending.additional_dropped
+                        ));
+                    }
+                    for reason in pending.native_loss_reasons {
+                        pending.reason.push_str("; native trace loss: ");
+                        pending.reason.push_str(&reason);
+                    }
+                    push_loss(&log, pending.event, pending.reason);
+                }
+                if closing.load(std::sync::atomic::Ordering::Acquire) {
+                    let mut state = log.state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.closed = true;
+                    log.wake.notify_all();
+                    return;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let mut state = log.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.closed = true;
+                log.wake.notify_all();
+                return;
+            }
+        }
+    }
+}
+
+fn push_loss(log: &SharedLog, event: ProcessEvent, reason: String) {
+    let mut state = log.state.lock().unwrap_or_else(|e| e.into_inner());
+    if state.closed {
+        return;
+    }
+    let sequence = state.next_sequence;
+    state.next_sequence += 1;
+    state
+        .entries
+        .push_back(ProcessWatchRecord::Loss(ProcessWatchLoss {
+            sequence,
+            event,
+            reason,
+        }));
+    trim_log(&mut state);
+    log.wake.notify_all();
+}
+
+fn push_match(log: &SharedLog, watch: ProcessWatch, event: ProcessEvent, dump: Option<DumpResult>) {
+    let mut state = log.state.lock().unwrap_or_else(|e| e.into_inner());
+    if state.closed {
+        return;
+    }
+    let sequence = state.next_sequence;
+    state.next_sequence += 1;
+    state
+        .entries
+        .push_back(ProcessWatchRecord::Match(ProcessWatchMatch {
             sequence,
             watch,
             event,
             dump,
-        });
-        while log.entries.len() > DEFAULT_RETAINED_MATCHES {
-            log.entries.pop_front();
-            log.first_sequence += 1;
-        }
-        self.log.wake.notify_all();
+        }));
+    trim_log(&mut state);
+    log.wake.notify_all();
+}
+
+fn trim_log(log: &mut LogState) {
+    while log.entries.len() > DEFAULT_RETAINED_MATCHES {
+        log.entries.pop_front();
+        log.first_sequence += 1;
     }
 }
 
@@ -617,7 +885,10 @@ impl ProcessWatchSubscriber {
             .unwrap_or_else(|e| e.into_inner())
             .entries
             .iter()
-            .cloned()
+            .filter_map(|record| match record {
+                ProcessWatchRecord::Match(item) => Some(item.clone()),
+                ProcessWatchRecord::Loss(_) => None,
+            })
             .collect()
     }
 
@@ -657,7 +928,10 @@ impl ProcessWatchCursor {
                 let index = (self.next_sequence - state.first_sequence) as usize;
                 let item = state.entries[index].clone();
                 self.next_sequence += 1;
-                return ProcessWatchRead::Match(Box::new(item));
+                return match item {
+                    ProcessWatchRecord::Match(item) => ProcessWatchRead::Match(Box::new(item)),
+                    ProcessWatchRecord::Loss(item) => ProcessWatchRead::Loss(Box::new(item)),
+                };
             }
             if state.closed {
                 return ProcessWatchRead::Eof;
@@ -683,7 +957,6 @@ impl ProcessWatchCursor {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn event_from_exact(
     native: &ExactTraceEvent,
     observation: ProcessObservation,
@@ -784,7 +1057,6 @@ fn exit_code_matches(requested: i32, observed: Option<i32>) -> bool {
     observed == Some(requested)
 }
 
-#[cfg(target_os = "linux")]
 fn write_dump(request: &StackDump, label: &str, event: &ExactTraceEvent) -> DumpResult {
     if request.capture == StackCapture::OwnerAllThreads {
         return DumpResult {
@@ -843,7 +1115,6 @@ fn write_dump(request: &StackDump, label: &str, event: &ExactTraceEvent) -> Dump
     }
 }
 
-#[cfg(target_os = "linux")]
 fn dump_error(error: std::io::Error) -> DumpResult {
     DumpResult {
         capture_source: CaptureSource::None,
@@ -853,25 +1124,31 @@ fn dump_error(error: std::io::Error) -> DumpResult {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn render_origin(origin: &TraceOriginArtifact) -> Vec<u8> {
     let mut text = format!(
-        "format=running-process-origin-v1\nthread_id={}\nstack_pointer={:?}\ninstruction_pointer={:?}\nregister_bytes={}\nstack_bytes={}\ntruncated={}\nregisters=",
+        "format=running-process-origin-v2\norigin_pid={}\nthread_id={}\narchitecture={}\nregister_format={}\norigin_executable={:?}\nstack_pointer={:?}\ninstruction_pointer={:?}\nregister_bytes={}\nstack_bytes={}\nstack_truncated={}\nmodule_map_bytes={}\nmodule_map_truncated={}\nregisters=",
+        origin.origin_pid,
         origin.thread_id,
+        origin.architecture,
+        origin.register_format,
+        origin.executable,
         origin.stack_pointer,
         origin.instruction_pointer,
         origin.registers.len(),
         origin.stack.len(),
         origin.truncated,
+        origin.module_map.len(),
+        origin.module_map_truncated,
     );
     push_hex(&mut text, &origin.registers);
     text.push_str("\nstack=");
     push_hex(&mut text, &origin.stack);
+    text.push_str("\nmodule_map=");
+    push_hex(&mut text, &origin.module_map);
     text.push('\n');
     text.into_bytes()
 }
 
-#[cfg(target_os = "linux")]
 fn push_hex(output: &mut String, bytes: &[u8]) {
     use std::fmt::Write;
     for byte in bytes {
@@ -947,77 +1224,31 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn exact_trace_observes_rapid_execs_and_normalizes_minus_one() {
-        use crate::{CommandSpec, NativeProcess, ProcessConfig, StderrMode, StdinMode};
-
-        let exec_watch = ProcessWatch::on_exec(
-            Some("true".to_owned()),
-            None,
-            None,
-            None,
-            Duration::ZERO,
-            "rapid-true",
-        )
-        .unwrap();
-        let exit_watch = ProcessWatch::on_exit(
-            Some(-1),
-            None,
-            None,
-            None,
-            Some(1),
-            Duration::ZERO,
-            "minus-one",
-        )
-        .unwrap();
-        let config = ProcessConfig {
-            command: CommandSpec::Argv(vec![
-                "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                "i=0; while [ $i -lt 20 ]; do /bin/true; i=$((i+1)); done; exit 255".to_owned(),
-            ]),
-            cwd: None,
-            env: None,
-            capture: false,
-            stderr_mode: StderrMode::Stdout,
-            creationflags: None,
-            create_process_group: false,
-            stdin_mode: StdinMode::Null,
-            nice: None,
-            address_space_limit_bytes: None,
-        };
-        let (process, subscriber) = NativeProcess::with_process_watches(
-            config,
-            vec![exec_watch, exit_watch],
-            ObservationPolicy::RequireExact,
-        )
-        .unwrap();
+    fn native_loss_is_delivered_without_a_matching_selector() {
+        let watch = ProcessWatch::on_spawn(None, Some(1), Duration::ZERO, "spawn").unwrap();
+        let (emitter, subscriber) =
+            ProcessWatchEmitter::new(vec![watch], ObservationPolicy::NonInvasive).unwrap();
         let mut cursor = subscriber.cursor();
-        process.start().unwrap();
-        assert_eq!(process.wait(Some(Duration::from_secs(10))).unwrap(), 255);
-
-        let matches = subscriber.snapshot();
-        let execs = matches
-            .iter()
-            .filter(|item| item.watch.label == "rapid-true")
-            .count();
-        assert_eq!(execs, 20, "exact tracing lost a rapid /bin/true exec");
-        assert!(matches.iter().any(|item| item.watch.label == "minus-one"));
-        assert!(matches
-            .iter()
-            .filter(|item| item.watch.label == "rapid-true")
-            .all(|item| item.event.observation_grade == ObservationGrade::ExactTrace));
-
-        let mut cursor_matches = 0;
-        loop {
-            match cursor.read_next(Some(Duration::from_secs(1))) {
-                ProcessWatchRead::Match(_) => cursor_matches += 1,
-                ProcessWatchRead::Eof => break,
-                ProcessWatchRead::Gap(gap) => panic!("unexpected cursor gap: {gap:?}"),
-                ProcessWatchRead::Timeout => panic!("watch cursor did not reach EOF"),
-            }
-        }
-        assert_eq!(cursor_matches, matches.len());
+        emitter.emit_exact(ExactTraceEvent {
+            sequence: 7,
+            pid: 42,
+            parent_pid: None,
+            parent_start_key: None,
+            start_key: Some(11),
+            timestamp: SystemTime::now(),
+            kind: ExactTraceEventKind::Loss {
+                reason: "resume failed".to_owned(),
+            },
+            executable: None,
+            argv: None,
+            origin: None,
+        });
+        let ProcessWatchRead::Loss(loss) = cursor.read_next(Some(Duration::from_secs(1))) else {
+            panic!("expected an explicit loss record");
+        };
+        assert_eq!(loss.reason, "resume failed");
+        assert!(loss.event.loss_detected);
+        assert!(!loss.event.coverage_complete);
     }
 }

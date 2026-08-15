@@ -18,26 +18,43 @@ pub(crate) fn start(
     if observer_pump.is_none() && watcher.is_none() {
         return;
     }
-    let stop = observer_pump.as_ref().map_or_else(
-        || watcher.expect("watcher checked").descendant_stop(),
-        |(_, stop)| Arc::clone(stop),
+    // A process watch owns the monitor lifetime when both APIs are attached;
+    // dropping the independent observer subscriber must not truncate the
+    // watch's launched-tree coverage.
+    let stop = watcher.map_or_else(
+        || Arc::clone(&observer_pump.as_ref().expect("observer checked").1),
+        |watcher| watcher.descendant_stop(),
     );
-    let observer_sink = observer_pump.map(|(sink, _)| sink);
+    let observer_sink = observer_pump;
     let watcher = watcher.cloned();
-    start_descendant_monitor(
+    let failure_watcher = watcher.clone();
+    let result = start_descendant_monitor(
         root_pid,
         stop,
         Box::new(move |event| {
             let (kind, pid) = match event {
                 DescendantEvent::Started(pid) => (ObserverEventKind::DescendantStarted, pid),
                 DescendantEvent::Exited(pid) => (ObserverEventKind::DescendantExited, pid),
+                DescendantEvent::Completed => {
+                    if let Some(watcher) = watcher.as_ref() {
+                        watcher.finish_delivery();
+                    }
+                    return;
+                }
             };
-            if let Some(sink) = observer_sink.as_ref() {
-                let _ = sink.send(ObserverEvent::new_now(EventCategory::Process, kind, pid));
+            if let Some((sink, observer_stop)) = observer_sink.as_ref() {
+                if !observer_stop.is_stopped() {
+                    let _ = sink.send(ObserverEvent::new_now(EventCategory::Process, kind, pid));
+                }
             }
             if let Some(watcher) = watcher.as_ref() {
                 watcher.emit_inferred(pid, matches!(event, DescendantEvent::Started(_)));
             }
         }),
     );
+    if result.is_err() {
+        if let Some(watcher) = failure_watcher.as_ref() {
+            watcher.close();
+        }
+    }
 }

@@ -238,7 +238,7 @@ def _python_members(source: str, symbol: str) -> set[str]:
             return {
                 child.name
                 for child in node.body
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
                 and not child.name.startswith("_")
             }
     raise ValueError(f"no `class {symbol}` found")
@@ -285,7 +285,7 @@ def _python_tests() -> set[str]:
         except SyntaxError:  # pragma: no cover - a broken test file fails pytest
             continue
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 if node.name.startswith("test_"):
                     names.add(node.name)
     return names

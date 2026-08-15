@@ -49,6 +49,14 @@ class ProcessWatchConfigurationTests(unittest.TestCase):
             ):
                 ProcessWatch.on_spawn(cooldown_seconds=value)
 
+    def test_immediate_symbolization_is_rejected_up_front(self) -> None:
+        with self.assertRaises(ProcessWatchConfigurationError):
+            StackDump(symbolize="immediate")
+
+    def test_unimplemented_owner_capture_is_rejected_up_front(self) -> None:
+        with self.assertRaises(ProcessWatchConfigurationError):
+            ProcessWatch.on_exit(dump=StackDump(capture=StackCapture.OWNER_ALL_THREADS))
+
 
 class ProcessWatchNativeTests(unittest.TestCase):
     def test_capability_report_is_honest_for_host(self) -> None:
@@ -82,6 +90,14 @@ class ProcessWatchNativeTests(unittest.TestCase):
             (ObservationGrade.EXACT_TRACE, ObservationGrade.EXACT_EVENT),
         )
 
+    def test_non_invasive_status_watch_is_rejected_instead_of_inert(self) -> None:
+        with self.assertRaises(ProcessObservationUnavailableError):
+            RunningProcess(
+                [sys.executable, "-c", "pass"],
+                auto_run=False,
+                process_watches=[ProcessWatch.on_exit(code=1)],
+            )
+
     def test_add_watch_is_pre_start_only(self) -> None:
         process = RunningProcess([sys.executable, "-c", "pass"], auto_run=False)
         process.add_process_watch(ProcessWatch.on_exec(basename=Path(sys.executable).name))
@@ -96,8 +112,16 @@ class AsyncProcessWatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_cursor_is_opened_before_exact_launch(self) -> None:
         process = AsyncRunningProcess(
             sys.executable,
-            ("-c", "pass"),
-            process_watches=[ProcessWatch.on_exec(label="root-exec")],
+            (
+                "-c",
+                "import subprocess, sys; subprocess.run([sys.executable, '-c', 'pass'])",
+            ),
+            process_watches=[
+                ProcessWatch.on_exec(
+                    basename=Path(sys.executable).name,
+                    label="descendant-exec",
+                )
+            ],
             process_observation=ObservationPolicy.REQUIRE_EXACT,
         )
         cursor = process.process_watch_cursor()
@@ -107,7 +131,7 @@ class AsyncProcessWatchTests(unittest.IsolatedAsyncioTestCase):
         match = await cursor.read_next()
         self.assertIsNotNone(match)
         assert match is not None
-        self.assertEqual(match.watch.label, "root-exec")
+        self.assertEqual(match.watch.label, "descendant-exec")
         second_match = await second_cursor.read_next()
         self.assertIsNotNone(second_match)
         assert second_match is not None

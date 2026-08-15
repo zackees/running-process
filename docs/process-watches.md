@@ -53,11 +53,13 @@ then inspect `process.process_observation` for the backend actually selected.
 | Windows | Job Object/IOCP (`KernelNotification`) | unavailable until the dedicated `DEBUG_PROCESS` supervisor is enabled |
 
 Linux origin capture is a bounded register and stack-memory artifact from the
-actual spawning tracee thread at fork/clone time. The tracee is resumed before
-the artifact is written or delivered to Python. Deferred `.rpstack` artifacts
-are intentionally raw and report `REMOTE_SPAWNING_THREAD`; unavailable owner or
-origin captures return an honest `DumpResult.error` and `CaptureSource.NONE`
-instead of substituting a misleading stack.
+actual spawning tracee thread at fork/clone time. It also records the origin
+PID/image, architecture, register schema, and a bounded `/proc/<pid>/maps`
+snapshot so deferred symbolizers can distinguish the spawning parent from the
+new child and recover module load addresses. Both stopped tracees are resumed
+before artifact I/O. Deferred `.rpstack` artifacts report
+`REMOTE_SPAWNING_THREAD`; immediate symbolization is rejected at configuration
+time until an out-of-pump symbolizer is available.
 
 `ALLOW_TRACING` uses exact tracing when available and records a fallback reason
 otherwise. `REQUIRE_EXACT` fails before `start()` on unsupported platforms.
@@ -68,7 +70,8 @@ container policy, or another debugger.
 
 Open the cursor before starting for lossless-from-launch consumption. Cursors
 return immutable matches, explicit `ProcessWatchGap` values if their bounded
-retention window is overrun, and `None` at terminal EOF.
+retention window is overrun, `ProcessWatchLoss` when native supervision loses
+coverage, and `None` at terminal EOF.
 
 ```python
 process = RunningProcess(command, auto_run=False, process_watches=[watch])
@@ -83,3 +86,9 @@ for item in cursor:
 `async for`. There is intentionally no Python callback in the native event
 pump: slow Python, GIL contention, or callback exceptions cannot keep a traced
 process stopped.
+
+The watched async path preserves lifecycle, stdin, output, process-group, and
+tree operations through native bounded blocking islands. Streaming
+`output_cursor()` and construction-time `output_bounded()` remain unavailable
+when watches are enabled; those methods raise `RuntimeError` instead of
+silently changing their contract.
