@@ -17,14 +17,17 @@ pub fn start_descendant_monitor(
     root_pid: u32,
     stop: Arc<DescendantMonitorStop>,
     emit: Box<dyn Fn(DescendantEvent) + Send>,
-) {
+) -> std::io::Result<()> {
     let Some(root_identity) = process_identity(root_pid) else {
-        return;
+        emit(DescendantEvent::Completed);
+        return Ok(());
     };
     enable_subreaper();
-    let _ = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("rp-linux-descpump".to_string())
-        .spawn(move || pump_loop(root_pid, root_identity, stop, emit));
+        .spawn(move || pump_loop(root_pid, root_identity, stop, emit))
+        .map(|_| ())
+        .map_err(|error| std::io::Error::other(format!("spawn descendant monitor: {error}")))
 }
 
 fn enable_subreaper() {
@@ -109,17 +112,20 @@ fn pump_loop_with(
     let mut known = HashSet::new();
     loop {
         if stop.is_stopped() {
+            emit(DescendantEvent::Completed);
             return;
         }
         let Some(current) = take_snapshot() else {
             for pid in known {
                 emit(DescendantEvent::Exited(pid));
             }
+            emit(DescendantEvent::Completed);
             return;
         };
         emit_diff(&known, &current, emit);
         known = current;
         if wait() {
+            emit(DescendantEvent::Completed);
             return;
         }
     }
@@ -165,7 +171,7 @@ mod tests {
             .into_iter()
             .filter_map(|event| match event {
                 DescendantEvent::Started(pid) => Some(pid),
-                DescendantEvent::Exited(_) => None,
+                DescendantEvent::Exited(_) | DescendantEvent::Completed => None,
             })
             .collect();
         assert_eq!(started, [30, 40].into_iter().collect());
@@ -180,7 +186,7 @@ mod tests {
             .into_iter()
             .filter_map(|event| match event {
                 DescendantEvent::Exited(pid) => Some(pid),
-                DescendantEvent::Started(_) => None,
+                DescendantEvent::Started(_) | DescendantEvent::Completed => None,
             })
             .collect();
         assert_eq!(exited, [20, 30].into_iter().collect());
@@ -228,6 +234,7 @@ mod tests {
             || panic!("terminated pump must not wait"),
         );
         assert_eq!(polls, 1);
+        assert_eq!(rx.try_recv(), Ok(DescendantEvent::Completed));
         assert!(rx.try_recv().is_err());
     }
 
@@ -265,7 +272,11 @@ mod tests {
         drop(tx);
         assert_eq!(
             rx.iter().collect::<Vec<_>>(),
-            [DescendantEvent::Started(42), DescendantEvent::Exited(42)]
+            [
+                DescendantEvent::Started(42),
+                DescendantEvent::Exited(42),
+                DescendantEvent::Completed,
+            ]
         );
     }
 
@@ -275,6 +286,7 @@ mod tests {
         let pump_stop = Arc::clone(&stop);
         let (waiting_tx, waiting_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
         let pump = std::thread::spawn(move || {
             let mut announced = false;
             pump_loop_with(
@@ -286,7 +298,7 @@ mod tests {
                     }
                     Some(HashSet::new())
                 },
-                &|_| {},
+                &|event| event_tx.send(event).unwrap(),
                 || pump_stop.wait_timeout(Duration::from_secs(30)),
             );
             done_tx.send(()).unwrap();
@@ -295,5 +307,7 @@ mod tests {
         stop.stop();
         done_rx.recv_timeout(Duration::from_millis(250)).unwrap();
         pump.join().unwrap();
+        assert_eq!(event_rx.try_recv(), Ok(DescendantEvent::Completed));
+        assert!(event_rx.try_recv().is_err());
     }
 }

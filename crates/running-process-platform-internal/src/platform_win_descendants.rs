@@ -173,6 +173,7 @@ fn iocp_pump_loop(
             )
         };
         if ok == FALSE {
+            emit(DescendantEvent::Completed);
             break;
         }
         let pid = overlapped as usize as u32;
@@ -181,7 +182,10 @@ fn iocp_pump_loop(
             EXIT_PROCESS | ABNORMAL_EXIT_PROCESS if pid != direct_pid => {
                 emit(DescendantEvent::Exited(pid));
             }
-            ACTIVE_PROCESS_ZERO => break,
+            ACTIVE_PROCESS_ZERO => {
+                emit(DescendantEvent::Completed);
+                break;
+            }
             _ => {}
         }
     }

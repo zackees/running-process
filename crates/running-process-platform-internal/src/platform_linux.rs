@@ -37,6 +37,35 @@ use crate::SpawnSpec;
 mod descendants;
 pub use descendants::start_descendant_monitor;
 
+#[path = "platform_linux_trace.rs"]
+mod exact_trace;
+pub use exact_trace::{configure_exact_trace, start_exact_trace, TracedChild};
+
+pub fn exact_trace_capability() -> crate::platform::process::ExactTraceCapability {
+    crate::platform::process::ExactTraceCapability {
+        available: true,
+        backend: "linux-ptrace",
+        reason: "launch-time PTRACE_TRACEME with follow-fork/clone/exec/exit supervision",
+        non_invasive_backend: "proc-descendant-snapshot",
+        non_invasive_grade:
+            crate::platform::process::NonInvasiveObservationGrade::SnapshotInferred,
+    }
+}
+
+pub struct WindowsJobHandle;
+
+pub fn assign_child_to_windows_job(
+    _child: &std::process::Child,
+    _direct_pid: u32,
+    _address_space_limit_bytes: Option<u64>,
+    _emit: Option<Box<dyn Fn(crate::platform::process::DescendantEvent) + Send>>,
+) -> io::Result<WindowsJobHandle> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Windows Job Objects are unavailable on Linux",
+    ))
+}
+
 #[derive(Default)]
 pub struct CaptureCancellation {
     wakers: Mutex<CaptureWakers>,
@@ -268,22 +297,6 @@ pub fn current_executable_build_id() -> Option<Vec<u8>> {
         );
     }
     output
-}
-
-/// Placeholder for the Windows-only Job Object capability.
-pub struct WindowsJobHandle;
-
-/// Reject the Windows-only Job Object operation on Linux.
-pub fn assign_child_to_windows_job(
-    _child: &std::process::Child,
-    _direct_pid: u32,
-    _address_space_limit_bytes: Option<u64>,
-    _emit: Option<Box<dyn Fn(crate::platform::process::DescendantEvent) + Send>>,
-) -> Result<WindowsJobHandle, std::io::Error> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Windows Job Objects are unavailable on Linux",
-    ))
 }
 
 fn gnu_build_id_from_notes(mut notes: &[u8]) -> Option<&[u8]> {

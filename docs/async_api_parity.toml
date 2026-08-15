@@ -24,6 +24,76 @@
 # new `planned` row is now a hard failure rather than a tracked to-do.
 require_no_planned = true
 
+[[row]]
+id = "rust-process.process_observation_capabilities"
+surface = "rust-process"
+member = "process_observation_capabilities"
+status = "implemented"
+rust_sync = "exact_trace_observes_rapid_execs_and_normalizes_minus_one"
+rust_async = "n/a: capability discovery is an immediate host fact shared by both process facades"
+python_sync = "test_capability_report_is_honest_for_host"
+python_async = "test_async_cursor_is_opened_before_exact_launch"
+
+[[row]]
+id = "rust-process.with_process_watches"
+surface = "rust-process"
+member = "with_process_watches"
+status = "implemented"
+rust_sync = "exact_trace_observes_rapid_execs_and_normalizes_minus_one"
+rust_async = "n/a: the watched async Python facade dispatches this same NativeProcess through the bounded blocking island"
+python_sync = "test_add_watch_is_pre_start_only"
+python_async = "test_async_cursor_is_opened_before_exact_launch"
+
+[[row]]
+id = "python-process.add_process_watch"
+surface = "python-process"
+member = "add_process_watch"
+status = "implemented"
+rust_sync = "exact_trace_observes_rapid_execs_and_normalizes_minus_one"
+rust_async = "n/a: watch mutation is deliberately pre-start and synchronous on both facades"
+python_sync = "test_add_watch_is_pre_start_only"
+python_async = "n/a: AsyncRunningProcess takes its immutable watch sequence at construction"
+
+[[row]]
+id = "python-process.process_observation"
+surface = "python-process"
+member = "process_observation"
+status = "implemented"
+rust_sync = "exact_trace_observes_rapid_execs_and_normalizes_minus_one"
+rust_async = "n/a: observation metadata is an immediate immutable value shared by both facades"
+python_sync = "test_non_invasive_selection_never_claims_exact"
+python_async = "test_async_cursor_is_opened_before_exact_launch"
+
+[[row]]
+id = "python-process.process_observation_capabilities"
+surface = "python-process"
+member = "process_observation_capabilities"
+status = "implemented"
+rust_sync = "exact_trace_observes_rapid_execs_and_normalizes_minus_one"
+rust_async = "n/a: capability discovery is an immediate host fact shared by both process facades"
+python_sync = "test_capability_report_is_honest_for_host"
+python_async = "test_async_cursor_is_opened_before_exact_launch"
+
+[[row]]
+id = "python-process.process_watch_cursor"
+surface = "python-process"
+member = "process_watch_cursor"
+status = "implemented"
+rust_sync = "bounded_log_reports_an_explicit_cursor_gap"
+rust_async = "n/a: the async Python cursor awaits the same Rust watch log through the bounded blocking island"
+python_sync = "test_add_watch_is_pre_start_only"
+python_async = "test_async_cursor_is_opened_before_exact_launch"
+
+[[row]]
+id = "python-process.watch_matches"
+surface = "python-process"
+member = "watch_matches"
+status = "implemented"
+rust_sync = "exact_trace_observes_rapid_execs_and_normalizes_minus_one"
+rust_async = "n/a: retained matches are an immediate immutable snapshot shared by both facades"
+python_sync = "test_non_invasive_selection_never_claims_exact"
+python_async = "test_async_cursor_is_opened_before_exact_launch"
+
 # ---- Rust `NativeProcess` ----
 
 [[row]]
@@ -1645,4 +1715,3 @@ rust_sync = "sync_kill_tree_terminates_the_started_child"
 rust_async = "missing_pid_is_a_successful_noop_on_the_async_form"
 python_sync = "test_terminate_process_tree_matches_the_sync_helper_on_a_dead_pid"
 python_async = "test_terminate_process_tree_ends_a_real_child"
-

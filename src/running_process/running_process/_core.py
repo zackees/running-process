@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, ClassVar
@@ -31,6 +31,17 @@ from running_process.expect import (
 from running_process.line_iterator import _RunningProcessLineIterator
 from running_process.output_formatter import NullOutputFormatter, OutputFormatter
 from running_process.priority import CpuPriority, normalize_nice
+from running_process.process_watch import (
+    ObservationGrade,
+    ObservationPolicy,
+    ProcessObservation,
+    ProcessObservationCapabilities,
+    ProcessObservationUnavailableError,
+    ProcessWatch,
+    ProcessWatchCursor,
+    ProcessWatchMatch,
+    _match_from_native,
+)
 from running_process.pty import (
     Expect,
     IdleDetector,
@@ -101,6 +112,8 @@ class RunningProcess:
         on_complete: Callable[[], None] | None = None,
         allows_child_ctrl_c_interruption: bool = True,
         address_space_limit_bytes: int | None = None,
+        process_watches: Sequence[ProcessWatch] | None = None,
+        process_observation: ObservationPolicy = ObservationPolicy.NON_INVASIVE,
         **_popen_kwargs: Any,
     ) -> None:
         if isinstance(command, str) and shell is False:
@@ -132,12 +145,21 @@ class RunningProcess:
         self.relay_terminal_input = bool(relay_terminal_input)
         self.arm_idle_timeout_on_submit = bool(arm_idle_timeout_on_submit)
         self._allows_child_ctrl_c_interruption = bool(allows_child_ctrl_c_interruption)
+        self._process_watches = list(process_watches or ())
+        self._process_watch_by_label = {
+            watch.label: watch for watch in self._process_watches
+        }
+        if len(self._process_watch_by_label) != len(self._process_watches):
+            raise ValueError("process watch labels must be unique")
+        self.process_observation_policy = ObservationPolicy(process_observation)
         if stderr not in (None, PIPE, STDOUT):
             raise ValueError("stderr must be None, PIPE, or STDOUT")
         if capture is False and stderr is PIPE:
             raise ValueError("stderr=PIPE requires capture=True")
         self._stderr_mode_name = "pipe" if stderr is PIPE else "stdout"
         if use_pty:
+            if self._process_watches:
+                raise ValueError("process_watches are not yet supported with use_pty=True")
             if address_space_limit_bytes is not None:
                 raise ValueError(
                     "address_space_limit_bytes is not yet supported with use_pty=True"
@@ -178,8 +200,7 @@ class RunningProcess:
                     ) | CREATE_NEW_PROCESS_GROUP
                 else:
                     effective_create_process_group = True
-            self._proc = NativeProcess(
-                command,
+            self._native_process_kwargs = dict(
                 cwd=str(cwd) if cwd is not None else None,
                 shell=self.shell,
                 capture=self.capture,
@@ -193,7 +214,15 @@ class RunningProcess:
                 nice=self.nice,
                 create_process_group=effective_create_process_group,
                 address_space_limit_bytes=address_space_limit_bytes,
+                process_watches=[watch._native() for watch in self._process_watches],
+                process_observation=self.process_observation_policy.value,
             )
+            try:
+                self._proc = NativeProcess(command, **self._native_process_kwargs)
+            except RuntimeError as error:
+                if self._process_watches:
+                    raise ProcessObservationUnavailableError(str(error)) from error
+                raise
         self._output_formatter: OutputFormatter = (
             output_formatter or NullOutputFormatter()
         )
@@ -203,6 +232,65 @@ class RunningProcess:
         self._exit_status: ExitStatus | None = None
         if auto_run:
             self.start()
+
+    @staticmethod
+    def process_observation_capabilities() -> ProcessObservationCapabilities:
+        raw = NativeProcess.process_observation_capabilities()
+        return ProcessObservationCapabilities(
+            exact_available=raw["exact_available"],
+            exact_backend=raw["exact_backend"],
+            reason=raw["reason"],
+            non_invasive_backend=raw["non_invasive_backend"],
+            non_invasive_grade=ObservationGrade(raw["non_invasive_grade"]),
+        )
+
+    def add_process_watch(self, watch: ProcessWatch) -> None:
+        if self.is_started:
+            raise RuntimeError("process watches must be configured before start()")
+        if self._pty_process is not None:
+            raise ValueError("process_watches are not yet supported with use_pty=True")
+        if watch.label in self._process_watch_by_label:
+            raise ValueError(f"duplicate process watch label: {watch.label}")
+        self._process_watches.append(watch)
+        self._process_watch_by_label[watch.label] = watch
+        self._native_process_kwargs["process_watches"] = [
+            item._native() for item in self._process_watches
+        ]
+        try:
+            self._proc = NativeProcess(self.command, **self._native_process_kwargs)
+        except RuntimeError as error:
+            if self._process_watches:
+                raise ProcessObservationUnavailableError(str(error)) from error
+            raise
+
+    @property
+    def process_observation(self) -> ProcessObservation | None:
+        if self._proc is None:
+            return None
+        raw = self._proc.process_observation()
+        if raw is None:
+            return None
+        return ProcessObservation(
+            backend=raw["backend"],
+            observation_grade=ObservationGrade(raw["observation_grade"]),
+            fallback_reason=raw.get("fallback_reason"),
+        )
+
+    @property
+    def watch_matches(self) -> tuple[ProcessWatchMatch, ...]:
+        if self._proc is None:
+            return ()
+        return tuple(
+            _match_from_native(raw, self._process_watch_by_label)
+            for raw in self._proc.process_watch_snapshot()
+        )
+
+    def process_watch_cursor(self) -> ProcessWatchCursor:
+        if self._proc is None:
+            raise RuntimeError("process watch cursors require a pipe-backed process")
+        if not self._process_watches:
+            raise RuntimeError("this process has no process watches")
+        return ProcessWatchCursor(self._proc, self._process_watch_by_label)
 
     def _format(self, line: EchoValue) -> EchoValue:
         if isinstance(line, str):

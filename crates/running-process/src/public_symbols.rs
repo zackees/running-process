@@ -255,12 +255,14 @@ pub extern "C" fn rp_assign_child_to_windows_kill_on_close_job_public(
 pub fn rp_assign_child_to_windows_kill_on_close_job_with_observer_public(
     child: &Child,
     descendant_sink: Option<std::sync::mpsc::Sender<crate::observer::ObserverEvent>>,
+    process_watch: Option<std::sync::Arc<crate::observer::ProcessWatchEmitter>>,
     direct_pid: u32,
     address_space_limit_bytes: Option<u64>,
 ) -> Result<WindowsJobHandle, std::io::Error> {
     crate::windows::assign_child_to_windows_kill_on_close_job_with_observer_impl(
         child,
         descendant_sink,
+        process_watch,
         direct_pid,
         address_space_limit_bytes,
     )
