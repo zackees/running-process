@@ -118,7 +118,9 @@ class AsyncProcessWatchTests(unittest.IsolatedAsyncioTestCase):
             ),
             process_watches=[
                 ProcessWatch.on_exec(
-                    basename=Path(sys.executable).name,
+                    # Linux reports the executed image through /proc/<pid>/exe,
+                    # which resolves virtualenv and toolcache symlinks.
+                    basename=Path(sys.executable).resolve().name,
                     label="descendant-exec",
                 )
             ],
