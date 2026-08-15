@@ -41,7 +41,7 @@ fn exact_trace_observes_rapid_execs_and_normalizes_minus_one() {
         command: CommandSpec::Argv(vec![
             "/bin/sh".to_owned(),
             "-c".to_owned(),
-            "i=0; while [ $i -lt 20 ]; do /bin/true; i=$((i+1)); done; /bin/sh -c 'exit 255'"
+            "i=0; while [ $i -lt 20 ]; do /bin/true; i=$((i+1)); done; /bin/sh -c 'exit 255'; exit 0"
                 .to_owned(),
         ]),
         cwd: None,
