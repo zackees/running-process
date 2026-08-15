@@ -20,6 +20,8 @@ pub(crate) fn make_test_running_process(py: Python<'_>) -> NativeRunningProcess 
         None,
         false,
         None,
+        None,
+        "non_invasive",
     )
     .unwrap()
 }

@@ -6,21 +6,35 @@ use std::time::Duration;
 
 use crate::platform::process::{DescendantEvent, DescendantMonitorStop};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const RECONCILE_INTERVAL: Duration = Duration::from_millis(50);
+const STOP_EVENT_IDENT: libc::uintptr_t = libc::uintptr_t::MAX;
 
 type Identity = (u64, u64);
+
+struct Kqueue(libc::c_int);
+
+impl Drop for Kqueue {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper uniquely owns the descriptor returned by
+        // `kqueue`; Drop runs once and ignores an already-invalid descriptor.
+        unsafe { libc::close(self.0) };
+    }
+}
 
 pub fn start_descendant_monitor(
     root_pid: u32,
     stop: Arc<DescendantMonitorStop>,
     emit: Box<dyn Fn(DescendantEvent) + Send>,
-) {
+) -> std::io::Result<()> {
     let Some(identity) = process_identity(root_pid) else {
-        return;
+        emit(DescendantEvent::Completed);
+        return Ok(());
     };
-    let _ = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("rp-macos-descpump".to_string())
-        .spawn(move || pump_loop(root_pid, identity, stop, emit));
+        .spawn(move || pump_loop(root_pid, identity, stop, emit))
+        .map(|_| ())
+        .map_err(|error| std::io::Error::other(format!("spawn descendant monitor: {error}")))
 }
 
 fn process_identity(pid: u32) -> Option<Identity> {
@@ -64,15 +78,35 @@ fn pump_loop(
     stop: Arc<DescendantMonitorStop>,
     emit: Box<dyn Fn(DescendantEvent) + Send>,
 ) {
+    // SAFETY: `kqueue` takes no pointers and returns a newly owned descriptor.
+    let queue = unsafe { libc::kqueue() };
+    let queue = (queue >= 0).then(|| Arc::new(Kqueue(queue)));
+    if let Some(queue) = queue.as_ref() {
+        register_stop_event(queue.0);
+        let notifier_queue = Arc::clone(queue);
+        let notifier_stop = Arc::clone(&stop);
+        let _ = std::thread::Builder::new()
+            .name("rp-macos-kqueue-stop".to_owned())
+            .spawn(move || {
+                while !notifier_stop.wait_timeout(Duration::from_secs(24 * 60 * 60)) {}
+                trigger_stop_event(notifier_queue.0);
+            });
+    }
     let mut known = HashSet::new();
     loop {
         if stop.is_stopped() {
+            emit(DescendantEvent::Completed);
             return;
         }
         let Some(current) = snapshot(root_pid, root_identity) else {
             for pid in known {
                 emit(DescendantEvent::Exited(pid));
             }
+            // Wake and retire the queue notifier before the last Arc<Kqueue>
+            // can be dropped. The notifier itself also owns an Arc, so the
+            // descriptor can never be closed and reused beneath kevent().
+            stop.stop();
+            emit(DescendantEvent::Completed);
             return;
         };
         for &pid in current.difference(&known) {
@@ -81,9 +115,115 @@ fn pump_loop(
         for &pid in known.difference(&current) {
             emit(DescendantEvent::Exited(pid));
         }
+        if let Some(queue) = queue.as_ref() {
+            register_process_hint(queue.0, root_pid);
+            for &pid in &current {
+                register_process_hint(queue.0, pid);
+            }
+        }
         known = current;
-        if stop.wait_timeout(POLL_INTERVAL) {
+        if wait_for_hint(queue.as_ref(), &stop) {
+            emit(DescendantEvent::Completed);
             return;
         }
     }
+}
+
+fn register_stop_event(queue: libc::c_int) {
+    let change = libc::kevent {
+        ident: STOP_EVENT_IDENT,
+        filter: libc::EVFILT_USER,
+        flags: libc::EV_ADD | libc::EV_CLEAR,
+        fflags: 0,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // SAFETY: `change` remains valid for the synchronous registration call;
+    // no output buffer is requested and the queue descriptor is live.
+    unsafe {
+        libc::kevent(
+            queue,
+            &raw const change,
+            1,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        );
+    }
+}
+
+fn trigger_stop_event(queue: libc::c_int) {
+    let change = libc::kevent {
+        ident: STOP_EVENT_IDENT,
+        filter: libc::EVFILT_USER,
+        flags: 0,
+        fflags: libc::NOTE_TRIGGER,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // SAFETY: `change` remains valid for the synchronous trigger call. The
+    // notifier owns an Arc<Kqueue>, so this descriptor cannot close or be
+    // reused until kevent returns.
+    unsafe {
+        libc::kevent(
+            queue,
+            &raw const change,
+            1,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        );
+    }
+}
+
+fn register_process_hint(queue: libc::c_int, pid: u32) {
+    let change = libc::kevent {
+        ident: pid as libc::uintptr_t,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
+        fflags: libc::NOTE_FORK | libc::NOTE_EXEC | libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // ESRCH is expected when a very short-lived process disappears between
+    // reconciliation and registration. The snapshot grade remains explicitly
+    // best-effort, so registration failure is only a missed wake-up hint.
+    // SAFETY: `change` remains valid for the synchronous registration call;
+    // no output buffer is requested and the queue descriptor is live.
+    unsafe {
+        libc::kevent(
+            queue,
+            &raw const change,
+            1,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        );
+    }
+}
+
+fn wait_for_hint(queue: Option<&Arc<Kqueue>>, stop: &DescendantMonitorStop) -> bool {
+    let Some(queue) = queue else {
+        return stop.wait_timeout(RECONCILE_INTERVAL);
+    };
+    let timeout = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: RECONCILE_INTERVAL.as_nanos() as libc::c_long,
+    };
+    // SAFETY: `kevent` is a plain C record for which all-zero is a valid
+    // output-buffer initialization.
+    let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+    // SAFETY: `event` and `timeout` are valid for this synchronous call and
+    // the queue wrapper keeps the descriptor open for the duration.
+    unsafe {
+        libc::kevent(
+            queue.0,
+            std::ptr::null(),
+            0,
+            &raw mut event,
+            1,
+            &raw const timeout,
+        );
+    }
+    stop.is_stopped()
 }

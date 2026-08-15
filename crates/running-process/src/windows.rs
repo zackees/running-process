@@ -24,11 +24,12 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_impl(
 pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
     child: &Child,
     descendant_sink: Option<Sender<ObserverEvent>>,
+    process_watch: Option<std::sync::Arc<crate::observer::ProcessWatchEmitter>>,
     direct_pid: u32,
     address_space_limit_bytes: Option<u64>,
 ) -> Result<WindowsJobHandle, std::io::Error> {
     crate::rp_rust_debug_scope!("running_process::assign_child_to_windows_kill_on_close_job");
-    let emit = descendant_sink.map(|sink| {
+    let emit = (descendant_sink.is_some() || process_watch.is_some()).then(|| {
         Box::new(move |event| {
             let (kind, pid) = match event {
                 DescendantEvent::Started(pid) => {
@@ -37,12 +38,23 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
                 DescendantEvent::Exited(pid) => {
                     (crate::observer::ObserverEventKind::DescendantExited, pid)
                 }
+                DescendantEvent::Completed => {
+                    if let Some(watch) = process_watch.as_ref() {
+                        watch.finish_delivery();
+                    }
+                    return;
+                }
             };
-            let _ = sink.send(ObserverEvent::new_now(
-                crate::observer::EventCategory::Process,
-                kind,
-                pid,
-            ));
+            if let Some(sink) = descendant_sink.as_ref() {
+                let _ = sink.send(ObserverEvent::new_now(
+                    crate::observer::EventCategory::Process,
+                    kind,
+                    pid,
+                ));
+            }
+            if let Some(watch) = process_watch.as_ref() {
+                watch.emit_inferred(pid, matches!(event, DescendantEvent::Started(_)));
+            }
         }) as Box<dyn Fn(DescendantEvent) + Send>
     });
     running_process_platform_internal::platform::process::assign_child_to_windows_job(
@@ -53,6 +65,7 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn windows_priority_flags(nice: Option<i32>) -> u32 {
     const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
     const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
@@ -73,6 +86,7 @@ pub(crate) fn windows_priority_flags(nice: Option<i32>) -> u32 {
 /// The default hides consoles only for console-less parents and never
 /// overrides an explicit caller console policy. Priority and process-group
 /// flags are additive.
+#[cfg(test)]
 pub(crate) fn windows_creation_flags(
     creationflags: Option<u32>,
     create_process_group: bool,

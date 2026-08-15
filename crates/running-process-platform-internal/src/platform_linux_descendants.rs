@@ -17,14 +17,17 @@ pub fn start_descendant_monitor(
     root_pid: u32,
     stop: Arc<DescendantMonitorStop>,
     emit: Box<dyn Fn(DescendantEvent) + Send>,
-) {
+) -> std::io::Result<()> {
     let Some(root_identity) = process_identity(root_pid) else {
-        return;
+        emit(DescendantEvent::Completed);
+        return Ok(());
     };
     enable_subreaper();
-    let _ = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("rp-linux-descpump".to_string())
-        .spawn(move || pump_loop(root_pid, root_identity, stop, emit));
+        .spawn(move || pump_loop(root_pid, root_identity, stop, emit))
+        .map(|_| ())
+        .map_err(|error| std::io::Error::other(format!("spawn descendant monitor: {error}")))
 }
 
 fn enable_subreaper() {
@@ -85,12 +88,14 @@ fn pump_loop(
     let mut known = HashSet::new();
     loop {
         if stop.is_stopped() {
+            emit(DescendantEvent::Completed);
             return;
         }
         let Some(current) = snapshot(root_pid, root_identity) else {
             for pid in known {
                 emit(DescendantEvent::Exited(pid));
             }
+            emit(DescendantEvent::Completed);
             return;
         };
         for &pid in current.difference(&known) {
@@ -101,6 +106,7 @@ fn pump_loop(
         }
         known = current;
         if stop.wait_timeout(POLL_INTERVAL) {
+            emit(DescendantEvent::Completed);
             return;
         }
     }

@@ -37,6 +37,81 @@ use crate::SpawnSpec;
 mod descendants;
 pub use descendants::start_descendant_monitor;
 
+pub fn exact_trace_capability() -> crate::platform::process::ExactTraceCapability {
+    crate::platform::process::ExactTraceCapability {
+        available: false,
+        backend: "macos-endpoint-security",
+        reason: "exact recursive events require an entitled Endpoint Security provider",
+        non_invasive_backend: "kqueue-proc-snapshot",
+        non_invasive_grade:
+            crate::platform::process::NonInvasiveObservationGrade::KernelHintReconciled,
+    }
+}
+
+pub fn current_executable_build_id() -> Option<Vec<u8>> {
+    None
+}
+
+pub struct WindowsJobHandle;
+
+pub fn assign_child_to_windows_job(
+    _child: &std::process::Child,
+    _direct_pid: u32,
+    _address_space_limit_bytes: Option<u64>,
+    _emit: Option<Box<dyn Fn(crate::platform::process::DescendantEvent) + Send>>,
+) -> io::Result<WindowsJobHandle> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Windows Job Objects are unavailable on macOS",
+    ))
+}
+
+pub struct TracedChild(std::process::Child);
+
+impl TracedChild {
+    pub fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    pub fn try_wait_code(&mut self) -> io::Result<Option<i32>> {
+        self.0.try_wait().map(|status| status.map(exit_code))
+    }
+
+    pub fn kill(&mut self) -> io::Result<()> {
+        self.0.kill()
+    }
+
+    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        self.0.stdin.take()
+    }
+
+    pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        self.0.stdout.take()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        self.0.stderr.take()
+    }
+}
+
+pub fn configure_exact_trace(_command: &mut std::process::Command) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        exact_trace_capability().reason,
+    ))
+}
+
+pub fn start_exact_trace(
+    _command: std::process::Command,
+    _emit: Box<dyn Fn(crate::platform::process::ExactTraceEvent) + Send>,
+    _complete: Box<dyn FnOnce() + Send>,
+) -> io::Result<TracedChild> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        exact_trace_capability().reason,
+    ))
+}
+
 #[derive(Default)]
 pub struct CaptureCancellation { wakers: Mutex<CaptureWakers> }
 #[derive(Default)]

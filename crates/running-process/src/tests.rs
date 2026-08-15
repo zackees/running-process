@@ -480,8 +480,7 @@ fn exit_code_from_nonzero() {
 
 #[cfg(windows)]
 mod windows_tests {
-    use super::*;
-    use crate::windows::windows_priority_flags;
+    use crate::windows::{windows_creation_flags, windows_priority_flags};
 
     const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
     const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
