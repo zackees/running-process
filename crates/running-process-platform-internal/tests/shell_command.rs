@@ -9,7 +9,7 @@ use running_process_platform_internal::platform::process::shell_command;
 fn shell_command_preserves_login_shell_contract_and_quoting() {
     let command_text = "printf '%s' 'alpha beta;\"gamma\"'";
     let mut command = shell_command(command_text);
-    assert_eq!(command.get_program(), OsStr::new("sh"));
+    assert_eq!(command.get_program(), OsStr::new("/bin/sh"));
     assert_eq!(
         command.get_args().collect::<Vec<_>>(),
         [OsStr::new("-lc"), OsStr::new(command_text)]
