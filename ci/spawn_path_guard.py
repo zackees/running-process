@@ -284,16 +284,12 @@ ALLOWED_RUST_SPAWN = {
     # observer events. No process spawn happens here — same rationale as
     # the broker thread-spawn allowlist entries above.
     Path("crates/running-process/src/windows.rs"),
-    # #539 slice 5: Linux descendant pump uses `thread::Builder::spawn`
-    # (a thread, not a process) to poll /proc/<pid>/task/<pid>/children
-    # and forward descendant-lifecycle observer events. Same rationale
-    # as the IOCP pump entry above.
-    Path("crates/running-process/src/observer/descendants_linux.rs"),
-    # #539 slice 7: macOS descendant pump uses `thread::Builder::spawn`
-    # (a thread, not a process) to drain kqueue/EVFILT_PROC events and
-    # forward descendant-lifecycle observer events. Same rationale as
-    # the IOCP/proc-poll pump entries above.
-    Path("crates/running-process/src/observer/descendants_macos.rs"),
+    # #539: platform-native descendant pumps use `thread::Builder::spawn`
+    # (a thread, not a process) to collect no-admin child-tree lifecycle
+    # facts and send them to the neutral facade. Same rationale as the IOCP
+    # pump entry above.
+    Path("crates/running-process-platform-internal/src/platform_linux_descendants.rs"),
+    Path("crates/running-process-platform-internal/src/platform_macos_descendants.rs"),
     # Testbins: bare std::Command::spawn on Unix only (see comment in
     # testbins/src/bin/spawner.rs — sanitized spawn isn't usable there
     # because of the setpgid-vs-killpg interaction the containment test
