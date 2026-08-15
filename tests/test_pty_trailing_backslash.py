@@ -14,9 +14,9 @@ import time
 import unittest
 
 import pytest
+from running_process._native import native_windows_terminal_input_bytes
 
 from running_process import RunningProcess
-from running_process._native import native_windows_terminal_input_bytes
 
 BACKSLASH = 0x5C  # ord("\\")
 live = pytest.mark.live

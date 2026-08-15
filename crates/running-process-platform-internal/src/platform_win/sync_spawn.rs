@@ -1120,6 +1120,30 @@ mod tests {
     }
 
     #[test]
+    fn shell_command_round_trips_through_sanitized_spawn() {
+        let output = std::env::temp_dir().join(format!(
+            "running-process shell command {}.txt",
+            std::process::id()
+        ));
+        let command_text = format!("> \"{}\" echo alpha beta ^& gamma", output.display());
+        let mut command = crate::platform_win::shell_command(&command_text);
+
+        let mut child = spawn_sync(
+            &mut command,
+            crate::platform::process::SpawnStdio::default(),
+            crate::platform::process::SyncEnvironment::Inherit,
+        )
+        .expect("sanitized shell spawn");
+        assert_eq!(child.wait().expect("wait for sanitized shell spawn"), 0);
+        assert_eq!(
+            std::fs::read_to_string(&output).expect("read shell output"),
+            "alpha beta & gamma\r\n"
+        );
+
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
     fn reused_command_inherits_a_fresh_environment_after_explicit_spawn() {
         let key = format!("RUNNING_PROCESS_REUSE_ENV_{}", std::process::id());
         let _restore = EnvRestore {

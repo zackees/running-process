@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 
 import pytest
-
 from running_process._native import native_test_capture_rust_debug_trace
 
 live = pytest.mark.live

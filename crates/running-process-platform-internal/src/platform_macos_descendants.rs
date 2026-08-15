@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::platform::process::{DescendantEvent, DescendantMonitorStop};
+use crate::platform::process::{DescendantEvent, DescendantMonitorStop, ProcessSnapshot};
 
 const RECONCILE_INTERVAL: Duration = Duration::from_millis(50);
 const STOP_EVENT_IDENT: libc::uintptr_t = libc::uintptr_t::MAX;
@@ -43,8 +43,12 @@ fn process_identity(pid: u32) -> Option<Identity> {
 }
 
 fn descendants(root_pid: u32) -> HashSet<u32> {
+    descendants_of(root_pid, &super::process_snapshot())
+}
+
+fn descendants_of(root_pid: u32, snapshots: &[ProcessSnapshot]) -> HashSet<u32> {
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-    for snapshot in super::process_snapshot() {
+    for snapshot in snapshots {
         children
             .entry(snapshot.parent_pid)
             .or_default()
@@ -65,11 +69,18 @@ fn descendants(root_pid: u32) -> HashSet<u32> {
 }
 
 fn snapshot(root_pid: u32, expected: Identity) -> Option<HashSet<u32>> {
-    if process_identity(root_pid) != Some(expected) {
-        return None;
-    }
+    let before = process_identity(root_pid);
     let descendants = descendants(root_pid);
-    (process_identity(root_pid) == Some(expected)).then_some(descendants)
+    verified_snapshot(expected, before, descendants, process_identity(root_pid))
+}
+
+fn verified_snapshot(
+    expected: Identity,
+    before: Option<Identity>,
+    descendants: HashSet<u32>,
+    after: Option<Identity>,
+) -> Option<HashSet<u32>> {
+    (before == Some(expected) && after == Some(expected)).then_some(descendants)
 }
 
 fn pump_loop(
@@ -226,4 +237,84 @@ fn wait_for_hint(queue: Option<&Arc<Kqueue>>, stop: &DescendantMonitorStop) -> b
         );
     }
     stop.is_stopped()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn process(pid: u32, parent_pid: u32, start_time_b: u64) -> ProcessSnapshot {
+        ProcessSnapshot {
+            pid,
+            parent_pid,
+            start_time_a: 100,
+            start_time_b,
+        }
+    }
+
+    fn descendants_if_root_matches(
+        root_pid: u32,
+        expected: Identity,
+        snapshots: &[ProcessSnapshot],
+    ) -> Option<HashSet<u32>> {
+        snapshots
+            .iter()
+            .find(|snapshot| snapshot.pid == root_pid)
+            .and_then(|snapshot| {
+                ((snapshot.start_time_a, snapshot.start_time_b) == expected)
+                    .then(|| descendants_of(root_pid, snapshots))
+            })
+    }
+
+    #[test]
+    fn descendants_of_handles_branching_tree() {
+        let snapshots = [
+            process(100, 0, 1),
+            process(200, 100, 2),
+            process(201, 200, 3),
+            process(300, 100, 4),
+            process(999, 1, 5),
+        ];
+        assert_eq!(
+            descendants_of(100, &snapshots),
+            [200, 201, 300].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn descendants_of_for_unknown_root_returns_empty() {
+        let snapshots = [process(100, 0, 1), process(200, 100, 2)];
+        assert!(descendants_of(0x7fff_fffe, &snapshots).is_empty());
+    }
+
+    #[test]
+    fn list_all_processes_returns_non_empty_on_real_macos() {
+        let snapshots = super::super::process_snapshot();
+        assert!(snapshots.len() > 5);
+        assert!(snapshots
+            .iter()
+            .any(|snapshot| snapshot.pid == std::process::id()));
+    }
+
+    #[test]
+    fn reused_root_pid_identity_mismatch_terminates_snapshot() {
+        let expected = (100, 1);
+        let recycled = [process(100, 0, 99), process(200, 100, 2)];
+        assert_eq!(descendants_if_root_matches(100, expected, &recycled), None);
+    }
+
+    #[test]
+    fn root_identity_change_after_walk_rejects_mixed_snapshot() {
+        let expected = (100, 1);
+        let recycled = (100, 99);
+        assert_eq!(
+            verified_snapshot(
+                expected,
+                Some(expected),
+                [42].into_iter().collect(),
+                Some(recycled),
+            ),
+            None
+        );
+    }
 }

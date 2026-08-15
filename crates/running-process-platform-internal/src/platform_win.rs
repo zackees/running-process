@@ -74,12 +74,8 @@ pub fn start_exact_trace(
 }
 
 pub fn shell_command(command: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-
     let mut shell = std::process::Command::new("cmd.exe");
-    shell.raw_arg("/D /S /C \"");
-    shell.raw_arg(command);
-    shell.raw_arg("\"");
+    shell.args(["/D", "/S", "/C", command]);
     shell
 }
 
@@ -387,10 +383,48 @@ pub use sync_spawn::{spawn_sync, spawn_sync_daemon};
 #[cfg(test)]
 mod tests {
     use super::compat_tokio_creation_flags;
+    use std::ffi::OsStr;
 
     #[test]
     fn tokio_spawn_owns_console_creation_flags() {
         assert_eq!(compat_tokio_creation_flags(false), 0x0800_0000);
         assert_eq!(compat_tokio_creation_flags(true), 0);
+    }
+
+    #[test]
+    fn shell_command_preserves_round_trippable_cmd_quoting_contract() {
+        let command_text = "echo alpha beta ^& gamma";
+        let mut command = super::shell_command(command_text);
+        assert_eq!(command.get_program(), OsStr::new("cmd.exe"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                OsStr::new("/D"),
+                OsStr::new("/S"),
+                OsStr::new("/C"),
+                OsStr::new(command_text)
+            ]
+        );
+        let output = command.output().expect("shell command should execute");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"alpha beta & gamma\r\n");
+    }
+
+    #[test]
+    fn compat_shell_command_preserves_nested_quotes_for_standard_spawn() {
+        let command_text = "if \"alpha beta\"==\"alpha beta\" (echo shell-ok)";
+        let mut command = super::compat_shell_command(command_text);
+        assert_eq!(command.get_program(), OsStr::new("cmd"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                OsStr::new("/D /S /C \""),
+                OsStr::new(command_text),
+                OsStr::new("\"")
+            ]
+        );
+        let output = command.output().expect("compat shell command should execute");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"shell-ok\r\n");
     }
 }

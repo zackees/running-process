@@ -6,6 +6,7 @@ import sys
 import time
 
 import pytest
+from running_process._native import native_windows_terminal_input_bytes
 
 # NOTE: After the #151 monolith split, the symbols these tests patch live
 # in sub-modules rather than the package namespace. Aim each monkeypatch
@@ -14,7 +15,6 @@ import pytest
 import running_process.pty._pseudo_terminal as pty_module
 import running_process.running_process._core as running_process_module
 from running_process import RunningProcess
-from running_process._native import native_windows_terminal_input_bytes
 from running_process.pty import PseudoTerminalProcess
 
 
