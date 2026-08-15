@@ -1,26 +1,5 @@
 //! macOS implementation root for the process capability.
 
-/// macOS executables do not expose a GNU build ID.
-pub fn current_executable_build_id() -> Option<Vec<u8>> {
-    None
-}
-
-/// Placeholder for the Windows-only Job Object capability.
-pub struct WindowsJobHandle;
-
-/// Reject the Windows-only Job Object operation on macOS.
-pub fn assign_child_to_windows_job(
-    _child: &std::process::Child,
-    _direct_pid: u32,
-    _address_space_limit_bytes: Option<u64>,
-    _emit: Option<Box<dyn Fn(crate::platform::process::DescendantEvent) + Send>>,
-) -> Result<WindowsJobHandle, std::io::Error> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Windows Job Objects are unavailable on macOS",
-    ))
-}
-
 pub fn shell_command(command: &str) -> std::process::Command {
     let mut shell = std::process::Command::new("/bin/sh");
     shell.arg("-lc").arg(command);
