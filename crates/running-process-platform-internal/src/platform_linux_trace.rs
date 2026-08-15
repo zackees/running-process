@@ -14,6 +14,14 @@ use crate::platform::process::{ExactTraceEvent, ExactTraceEventKind, TraceOrigin
 const STACK_CAPTURE_BYTES: usize = 16 * 1024;
 const MODULE_MAP_CAPTURE_BYTES: usize = 256 * 1024;
 
+// libc follows the host C ABI here: glibc declares ptrace's request as an
+// unsigned enum, while musl declares it as c_int. Keeping the wrapper's
+// parameter identical to libc also keeps every PTRACE_* constant type-correct.
+#[cfg(target_env = "musl")]
+type PtraceRequest = libc::c_int;
+#[cfg(not(target_env = "musl"))]
+type PtraceRequest = libc::c_uint;
+
 /// Arrange for a successful `exec` to stop the child before user code runs.
 /// No pre-exec SIGSTOP is used: that would deadlock `Command::spawn`'s exec
 /// error pipe.
@@ -527,7 +535,12 @@ fn trace_loop(
     complete();
 }
 
-fn ptrace_value(request: u32, pid: u32, address: usize, data: usize) -> io::Result<libc::c_long> {
+fn ptrace_value(
+    request: PtraceRequest,
+    pid: u32,
+    address: usize,
+    data: usize,
+) -> io::Result<libc::c_long> {
     // SAFETY: callers provide a live tracee owned by this supervisor. Pointer
     // values are either null, kernel-defined scalar payloads, or addresses of
     // writable storage whose lifetime covers this synchronous syscall.
