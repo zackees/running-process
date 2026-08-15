@@ -37,6 +37,64 @@ This libary is design for speed and correctness and portability. Usually termina
 
 For launched-tree diagnostics, see [process watches](docs/process-watches.md).
 
+## Process watches
+
+Process watches diagnose recursive tool launches and short-lived failing
+descendants. Configure them before `start()` to observe the launched tree from
+its first event:
+
+```python
+from pathlib import Path
+
+from running_process import (
+    ObservationPolicy,
+    ProcessWatch,
+    RunningProcess,
+    StackDump,
+)
+
+process = RunningProcess(
+    ["soldr", "build"],
+    auto_run=False,
+    process_observation=ObservationPolicy.REQUIRE_EXACT,
+    process_watches=[
+        ProcessWatch.on_exec(
+            basename="soldr",
+            dump=StackDump(directory=Path("trace-dumps")),
+            limit=None,
+            label="recursive-soldr",
+        ),
+        # -1 deliberately matches Unix exit status 255.
+        ProcessWatch.on_exit(code=-1, limit=None, label="minus-one-exit"),
+    ],
+)
+
+cursor = process.process_watch_cursor()  # Open before start for no launch gap.
+process.start()
+for match_or_loss in cursor:
+    print(match_or_loss)
+```
+
+Watches return immutable matches with an explicit observation grade. Cursors
+also return explicit loss records or retention gaps rather than silently
+claiming complete coverage. `AsyncRunningProcess.process_watch_cursor()`
+provides the same contract through `async for`.
+
+| Platform | Best available backend | `REQUIRE_EXACT` |
+|---|---|---|
+| Linux | ptrace for the tree launched by this instance | supported (`ExactTrace`) |
+| macOS | kqueue plus snapshot reconciliation | unavailable pending an authorized Endpoint Security provider |
+| Windows | Job Object/IOCP | unavailable pending the invasive `DEBUG_PROCESS` supervisor |
+
+Linux exact watches are for a newly launched tree, not an arbitrary
+system-wide process-name watch. Attaching to an already-running process with
+`PTRACE_SEIZE` is a distinct API with different permission, lifecycle, and
+race semantics. `LD_PRELOAD` can support cooperative hooks, but cannot provide
+the same coverage for static binaries, secure-exec/setuid programs, direct
+syscalls, or programs that clear their environment. See
+[process watches](docs/process-watches.md) for stack artifacts, capability
+discovery, exact selector semantics, and the full platform model.
+
 ## PTY Support Matrix
 
 PTY support is a guaranteed part of the package contract on:
