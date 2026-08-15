@@ -148,6 +148,8 @@ pub use originator::{
 pub use output_log::{
     CursorRead, OutputCursor, OutputLog, OutputRecord, SharedOutputCursor, SharedOutputLog,
 };
+#[cfg(target_os = "linux")]
+pub use running_process_platform_internal::platform::process::current_executable_build_id;
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
@@ -156,8 +158,6 @@ pub use spawn::{
     spawn_with_env_policy, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy,
     SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR,
 };
-#[cfg(target_os = "linux")]
-pub use running_process_platform_internal::platform::process::current_executable_build_id;
 #[cfg(feature = "client-async")]
 pub use spawn::{spawn_tokio, TokioSpawnOptions};
 pub use terminal_graphics::{
@@ -1178,35 +1178,16 @@ impl NativeProcess {
                 command
             }
         };
-        let windows_creation_flags = {
-            #[cfg(windows)]
-            {
-                // #584: defaults to CREATE_NO_WINDOW so a console child spawned
-                // by the window-less daemon does not flash a console window,
-                // while preserving the caller's console opinion, priority, and
-                // CREATE_NEW_PROCESS_GROUP bits. Gated on the parent being
-                // console-less (#622): a console-attached parent's child must
-                // share its console so CTRL_C delivery keeps working.
-                // See `windows_creation_flags`.
-                windows_creation_flags(
-                    self.config.creationflags,
-                    self.config.create_process_group,
-                    self.config.nice,
-                    running_process_platform_internal::platform::process::parent_has_console(),
-                )
-            }
-            #[cfg(not(windows))]
-            {
-                0
-            }
-        };
-        running_process_platform_internal::platform::process::configure_native_command(
+        running_process_platform_internal::platform::process::configure_process_command(
             &mut command,
-            windows_creation_flags,
-            self.config.create_process_group,
-            self.config.nice,
-            self.config.address_space_limit_bytes,
-        );
+            running_process_platform_internal::platform::process::ProcessCommandConfig {
+                creation_flags: self.config.creationflags,
+                create_process_group: self.config.create_process_group,
+                nice: self.config.nice,
+                address_space_limit_bytes: self.config.address_space_limit_bytes,
+            },
+        )
+        .expect("platform command configuration must be valid");
         command
     }
 

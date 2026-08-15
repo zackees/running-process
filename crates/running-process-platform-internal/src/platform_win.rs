@@ -4,9 +4,17 @@
 mod console;
 pub use console::monitor_console_windows;
 
+#[path = "platform_win_descendants.rs"]
+mod descendants;
+pub use descendants::{assign_child_to_windows_job, WindowsJobHandle};
+
 pub fn shell_command(command: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+
     let mut shell = std::process::Command::new("cmd.exe");
-    shell.arg("/D").arg("/S").arg("/C").arg(command);
+    shell.raw_arg("/D /S /C \"");
+    shell.raw_arg(command);
+    shell.raw_arg("\"");
     shell
 }
 
@@ -18,20 +26,6 @@ pub fn compat_shell_command(command: &str) -> std::process::Command {
     shell.raw_arg(command);
     shell.raw_arg("\"");
     shell
-}
-
-pub fn configure_native_command(
-    command: &mut std::process::Command,
-    windows_creation_flags: u32,
-    _create_process_group: bool,
-    _nice: Option<i32>,
-    _address_space_limit_bytes: Option<u64>,
-) {
-    use std::os::windows::process::CommandExt;
-
-    if windows_creation_flags != 0 {
-        command.creation_flags(windows_creation_flags);
-    }
 }
 
 pub fn canonical_environment_pairs(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
@@ -117,11 +111,37 @@ pub fn configure_trampoline_command(command: &mut std::process::Command) {
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 }
 
+pub fn configure_process_command(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let caller = config.creation_flags.unwrap_or(0);
+    let group = if config.create_process_group { CREATE_NEW_PROCESS_GROUP } else { 0 };
+    let caller_has_console_opinion =
+        caller & (CREATE_NO_WINDOW | CREATE_NEW_CONSOLE | DETACHED_PROCESS) != 0;
+    let no_window = if caller_has_console_opinion || parent_has_console() { 0 } else { CREATE_NO_WINDOW };
+    let priority = match config.nice {
+        Some(value) if value >= 15 => 0x0000_0040,
+        Some(value) if value >= 1 => 0x0000_4000,
+        Some(value) if value <= -15 => 0x0000_0080,
+        Some(value) if value <= -1 => 0x0000_8000,
+        _ => 0,
+    };
+    let flags = caller | group | no_window | priority;
+    if flags != 0 {
+        command.creation_flags(flags);
+    }
+    Ok(())
+}
+
 pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
-
-pub fn enable_descendant_subreaper() {}
 
 /// Request a Ctrl+Break event for a child-owned Windows process group.
 pub fn soft_terminate_process_group(pid: u32) -> io::Result<()> {

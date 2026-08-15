@@ -1,8 +1,8 @@
 //! Linux implementation root for the process capability.
 
 pub fn shell_command(command: &str) -> std::process::Command {
-    let mut shell = std::process::Command::new("/bin/sh");
-    shell.arg("-c").arg(command);
+    let mut shell = std::process::Command::new("sh");
+    shell.arg("-lc").arg(command);
     shell
 }
 
@@ -10,42 +10,6 @@ pub fn compat_shell_command(command: &str) -> std::process::Command {
     let mut shell = std::process::Command::new("sh");
     shell.arg("-lc").arg(command);
     shell
-}
-
-pub fn configure_native_command(
-    command: &mut std::process::Command,
-    _windows_creation_flags: u32,
-    create_process_group: bool,
-    nice: Option<i32>,
-    address_space_limit_bytes: Option<u64>,
-) {
-    use std::os::unix::process::CommandExt;
-
-    if create_process_group || nice.is_some() || address_space_limit_bytes.is_some() {
-        unsafe {
-            command.pre_exec(move || {
-                if create_process_group && libc::setpgid(0, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if let Some(nice) = nice {
-                    let result = libc::setpriority(libc::PRIO_PROCESS, 0, nice);
-                    if result == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-                if let Some(limit) = address_space_limit_bytes {
-                    let rlim = libc::rlimit {
-                        rlim_cur: limit,
-                        rlim_max: limit,
-                    };
-                    if libc::setrlimit(libc::RLIMIT_AS, &rlim) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-                Ok(())
-            });
-        }
-    }
 }
 
 pub fn canonical_environment_pairs(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
@@ -189,16 +153,42 @@ pub fn set_process_name(name: &str) {
 
 pub fn configure_trampoline_command(_command: &mut std::process::Command) {}
 
+pub fn configure_process_command(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+) -> io::Result<()> {
+    let create_process_group = config.create_process_group;
+    let nice = config.nice;
+    let address_space_limit_bytes = config.address_space_limit_bytes;
+    if !(create_process_group || nice.is_some() || address_space_limit_bytes.is_some()) {
+        return Ok(());
+    }
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        command.pre_exec(move || {
+            if create_process_group && libc::setpgid(0, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if let Some(nice) = nice {
+                if libc::setpriority(libc::PRIO_PROCESS, 0, nice) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            if let Some(limit) = address_space_limit_bytes {
+                let rlim = libc::rlimit { rlim_cur: limit, rlim_max: limit };
+                if libc::setrlimit(libc::RLIMIT_AS, &rlim) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     status.signal().map_or_else(|| status.code().unwrap_or(1), |signal| 128 + signal)
-}
-
-/// Enable Linux's process-wide orphan reparenting for launched-tree observation.
-/// Failure is intentionally best-effort: the observer can still track descendants
-/// whose immediate parents remain alive.
-pub fn enable_descendant_subreaper() {
-    let _ = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
 }
 
 /// Return the GNU build ID of the running executable without reading the
