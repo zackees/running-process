@@ -20,8 +20,12 @@ pub fn shell_command(command: &str) -> std::process::Command {
 }
 
 pub fn compat_shell_command(command: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+
     let mut shell = std::process::Command::new("cmd");
-    shell.args(["/D", "/S", "/C", command]);
+    shell.raw_arg("/D /S /C \"");
+    shell.raw_arg(command);
+    shell.raw_arg("\"");
     shell
 }
 
@@ -343,5 +347,23 @@ mod tests {
         let output = command.output().expect("shell command should execute");
         assert!(output.status.success());
         assert_eq!(output.stdout, b"alpha beta & gamma\r\n");
+    }
+
+    #[test]
+    fn compat_shell_command_preserves_nested_quotes_for_standard_spawn() {
+        let command_text = "if \"alpha beta\"==\"alpha beta\" (echo shell-ok)";
+        let mut command = super::compat_shell_command(command_text);
+        assert_eq!(command.get_program(), OsStr::new("cmd"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                OsStr::new("/D /S /C \""),
+                OsStr::new(command_text),
+                OsStr::new("\"")
+            ]
+        );
+        let output = command.output().expect("compat shell command should execute");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"shell-ok\r\n");
     }
 }
