@@ -37,6 +37,18 @@ use crate::SpawnSpec;
 mod descendants;
 pub use descendants::start_descendant_monitor;
 
+#[path = "platform_linux_trace.rs"]
+mod exact_trace;
+pub use exact_trace::{configure_exact_trace, start_exact_trace, TracedChild};
+
+pub fn exact_trace_capability() -> crate::platform::process::ExactTraceCapability {
+    crate::platform::process::ExactTraceCapability {
+        available: true,
+        backend: "linux-ptrace",
+        reason: "launch-time PTRACE_TRACEME with follow-fork/clone/exec/exit supervision",
+    }
+}
+
 #[derive(Default)]
 pub struct CaptureCancellation {
     wakers: Mutex<CaptureWakers>,

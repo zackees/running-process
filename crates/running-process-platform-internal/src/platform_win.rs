@@ -8,6 +8,14 @@ pub use console::monitor_console_windows;
 mod descendants;
 pub use descendants::{assign_child_to_windows_job, WindowsJobHandle};
 
+pub fn exact_trace_capability() -> crate::platform::process::ExactTraceCapability {
+    crate::platform::process::ExactTraceCapability {
+        available: false,
+        backend: "windows-debug-process",
+        reason: "the exact DEBUG_PROCESS supervisor is not available in this build",
+    }
+}
+
 pub fn shell_command(command: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
 

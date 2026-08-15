@@ -35,6 +35,8 @@ This project started off as a fix for python's sub process module. It was in pyt
 
 This libary is design for speed and correctness and portability. Usually terminal utilities are for windows or linux/mac. This is designed to run everywhere.
 
+For launched-tree diagnostics, see [process watches](docs/process-watches.md).
+
 ## PTY Support Matrix
 
 PTY support is a guaranteed part of the package contract on:

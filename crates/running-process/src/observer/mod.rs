@@ -52,6 +52,15 @@ pub use cmdline::read_process_cmdline;
 mod file_handles;
 pub use file_handles::read_process_file_handles;
 
+mod process_watch;
+pub(crate) use process_watch::ProcessWatchEmitter;
+pub use process_watch::{
+    CaptureSource, DumpResult, ObservationGrade, ObservationPolicy, ProcessEvent, ProcessEventKind,
+    ProcessIdentity, ProcessObservation, ProcessObservationCapabilities, ProcessObservationError,
+    ProcessWatch, ProcessWatchConfigurationError, ProcessWatchCursor, ProcessWatchGap,
+    ProcessWatchMatch, ProcessWatchRead, ProcessWatchSubscriber, StackCapture, StackDump,
+};
+
 pub(crate) type DescendantPumpStop =
     running_process_platform_internal::platform::process::DescendantMonitorStop;
 

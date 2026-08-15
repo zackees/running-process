@@ -5,14 +5,17 @@
 
 ## running_process.__all__
 
+    AsyncProcessWatchCursor
     CREATE_NEW_PROCESS_GROUP
     Callback
     CalledProcessError
+    CaptureSource
     CompletedProcess
     ContainedProcessGroup
     CpuPriority
     DEVNULL
     DetachedProcess
+    DumpResult
     EOS
     EchoCallback
     EndOfStream
@@ -37,13 +40,26 @@
     NativeTerminalInput
     NativeTerminalInputEvent
     NullOutputFormatter
+    ObservationGrade
+    ObservationPolicy
     OriginatorProcessInfo
     OutputFormatter
     PIPE
     ProcessAbnormalExit
+    ProcessEvent
+    ProcessEventKind
+    ProcessIdentity
     ProcessIdleDetection
     ProcessInfo
+    ProcessObservation
+    ProcessObservationCapabilities
+    ProcessObservationUnavailableError
     ProcessOutputEvent
+    ProcessWatch
+    ProcessWatchConfigurationError
+    ProcessWatchCursor
+    ProcessWatchGap
+    ProcessWatchMatch
     PseudoTerminalProcess
     PtyIdleDetection
     PtyNotAvailableError
@@ -52,6 +68,8 @@
     RunningProcessManagerSingleton
     STDOUT
     SignalBool
+    StackCapture
+    StackDump
     TimeDeltaFormatter
     TimeoutExpired
     WaitCallbackResult
@@ -79,18 +97,22 @@
     [property] def is_started(self)
     [property] def pid(self)
     [property] def proc(self)
+    [property] def process_observation(self)
     [property] def returncode(self)
     [property] def start_time(self)
     [property] def stderr(self)
     [property] def stderr_stream(self)
     [property] def stdout(self)
     [property] def stdout_stream(self)
+    [property] def watch_matches(self)
     [staticmethod] def exec_script(script, *script_args, cwd=None, timeout=None, check=False, capture_output=True, text=True, env=None, nice=None)
     [staticmethod] def interactive(command, *, mode=InteractiveMode.CONSOLE_SHARED, cwd=None, shell=None, env=None, text=False, encoding='utf-8', errors='replace', rows=24, cols=80, nice=None, restore_terminal=None, auto_run=True)
     [staticmethod] def interactive_launch_spec(mode)
+    [staticmethod] def process_observation_capabilities()
     [staticmethod] def pseudo_terminal(command, *, cwd=None, shell=None, env=None, capture=True, text=False, encoding='utf-8', errors='replace', rows=24, cols=80, nice=None, restore_terminal=True, auto_run=True, expect=None, expect_timeout=None, idle_detector=None, relay_terminal_input=False, arm_idle_timeout_on_submit=False)
     [staticmethod] def run(args, *, bufsize=_BUFSIZE_NOT_SET, executable=None, input=None, stdin=None, stdout=None, stderr=None, capture_output=False, shell=False, cwd=None, timeout=None, check=False, encoding=None, errors=None, text=True, env=None, universal_newlines=False, on_timeout=None, raise_on_abnormal_exit=False, nice=None, address_space_limit_bytes=None, **_other_popen_kwargs)
-    def __init__(self, command, cwd=None, check=False, auto_run=True, shell=None, timeout=None, on_timeout=None, use_pty=False, env=None, creationflags=None, capture=None, stdin=None, nice=None, text=True, encoding=None, errors=None, universal_newlines=False, relay_terminal_input=False, arm_idle_timeout_on_submit=False, stderr=None, output_formatter=None, on_complete=None, allows_child_ctrl_c_interruption=True, address_space_limit_bytes=None, **_popen_kwargs)
+    def __init__(self, command, cwd=None, check=False, auto_run=True, shell=None, timeout=None, on_timeout=None, use_pty=False, env=None, creationflags=None, capture=None, stdin=None, nice=None, text=True, encoding=None, errors=None, universal_newlines=False, relay_terminal_input=False, arm_idle_timeout_on_submit=False, stderr=None, output_formatter=None, on_complete=None, allows_child_ctrl_c_interruption=True, address_space_limit_bytes=None, process_watches=None, process_observation=ObservationPolicy.NON_INVASIVE, **_popen_kwargs)
+    def add_process_watch(self, watch)
     def captured_output_bytes(self, stream='combined')
     def checkpoint(self)
     def close(self)
@@ -112,6 +134,7 @@
     def kill(self)
     def line_iter(self, timeout)
     def poll(self)
+    def process_watch_cursor(self)
     def send_interrupt(self)
     def start(self)
     def stream_iter(self, timeout=None)

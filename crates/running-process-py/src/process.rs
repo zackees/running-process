@@ -1,14 +1,19 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use std::{collections::HashMap, sync::atomic::AtomicU64};
 
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyString};
 use regex::Regex;
 
 #[cfg(unix)]
 use running_process::{unix_signal_process, unix_signal_process_group, UnixSignal};
-use running_process::{NativeProcess, ProcessConfig, ReadStatus, StreamEvent, StreamKind};
+use running_process::{
+    NativeProcess, ObservationPolicy, ProcessConfig, ProcessEventKind, ProcessWatch,
+    ProcessWatchCursor, ProcessWatchMatch, ProcessWatchRead, ProcessWatchSubscriber, ReadStatus,
+    StackCapture, StackDump, StreamEvent, StreamKind,
+};
 
 use crate::helpers::{
     parse_command, process_err_to_py, stderr_mode, stdin_mode, stream_kind, to_py_err,
@@ -16,9 +21,235 @@ use crate::helpers::{
 use crate::public_symbols;
 use crate::registry::{ExpectDetails, ExpectResult};
 
+fn parse_observation_policy(value: &str) -> PyResult<ObservationPolicy> {
+    match value {
+        "non_invasive" => Ok(ObservationPolicy::NonInvasive),
+        "allow_tracing" => Ok(ObservationPolicy::AllowTracing),
+        "require_exact" => Ok(ObservationPolicy::RequireExact),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown process observation policy: {value}"
+        ))),
+    }
+}
+
+fn optional_string(mapping: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<String>> {
+    let Some(value) = mapping.get_item(key)? else {
+        return Ok(None);
+    };
+    if value.is_none() {
+        Ok(None)
+    } else {
+        value.extract().map(Some)
+    }
+}
+
+fn optional_i32(mapping: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<i32>> {
+    let Some(value) = mapping.get_item(key)? else {
+        return Ok(None);
+    };
+    if value.is_none() {
+        Ok(None)
+    } else {
+        value.extract().map(Some)
+    }
+}
+
+fn optional_limit(mapping: &Bound<'_, PyDict>) -> PyResult<Option<usize>> {
+    let Some(value) = mapping.get_item("limit")? else {
+        return Ok(Some(1));
+    };
+    if value.is_none() {
+        Ok(None)
+    } else {
+        value.extract().map(Some)
+    }
+}
+
+fn parse_stack_dump(mapping: &Bound<'_, PyDict>) -> PyResult<Option<StackDump>> {
+    let Some(capture) = optional_string(mapping, "dump_capture")? else {
+        return Ok(None);
+    };
+    let capture = match capture.as_str() {
+        "origin_preferred" => StackCapture::OriginPreferred,
+        "origin_required" => StackCapture::OriginRequired,
+        "owner_all_threads" => StackCapture::OwnerAllThreads,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unknown stack capture policy: {capture}"
+            )))
+        }
+    };
+    let symbolize =
+        optional_string(mapping, "dump_symbolize")?.unwrap_or_else(|| "deferred".to_owned());
+    if !matches!(symbolize.as_str(), "deferred" | "immediate") {
+        return Err(PyValueError::new_err(
+            "dump symbolize must be 'deferred' or 'immediate'",
+        ));
+    }
+    Ok(Some(StackDump {
+        capture,
+        directory: optional_string(mapping, "dump_directory")?.map(PathBuf::from),
+        symbolize_immediately: symbolize == "immediate",
+    }))
+}
+
+fn parse_process_watch(mapping: &Bound<'_, PyDict>) -> PyResult<ProcessWatch> {
+    let kind = mapping
+        .get_item("kind")?
+        .ok_or_else(|| PyValueError::new_err("process watch is missing kind"))?
+        .extract::<String>()?;
+    let label = mapping
+        .get_item("label")?
+        .ok_or_else(|| PyValueError::new_err("process watch is missing label"))?
+        .extract::<String>()?;
+    let cooldown_seconds = mapping
+        .get_item("cooldown_seconds")?
+        .map(|value| value.extract::<f64>())
+        .transpose()?
+        .unwrap_or(0.0);
+    if !cooldown_seconds.is_finite() || cooldown_seconds < 0.0 {
+        return Err(PyValueError::new_err(
+            "cooldown_seconds must be a finite non-negative number",
+        ));
+    }
+    let cooldown = Duration::from_secs_f64(cooldown_seconds);
+    let limit = optional_limit(mapping)?;
+    let dump = parse_stack_dump(mapping)?;
+    let result = match kind.as_str() {
+        "spawn" => ProcessWatch::on_spawn(dump, limit, cooldown, label),
+        "exec" => ProcessWatch::on_exec(
+            optional_string(mapping, "basename")?,
+            optional_string(mapping, "path")?.map(PathBuf::from),
+            dump,
+            limit,
+            cooldown,
+            label,
+        ),
+        "exit" => ProcessWatch::on_exit(
+            optional_i32(mapping, "code")?,
+            optional_i32(mapping, "signal")?,
+            optional_string(mapping, "basename")?,
+            dump,
+            limit,
+            cooldown,
+            label,
+        ),
+        "failure" => ProcessWatch::on_failure(
+            optional_string(mapping, "basename")?,
+            dump,
+            limit,
+            cooldown,
+            label,
+        ),
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unknown process watch kind: {kind}"
+            )))
+        }
+    };
+    result.map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+fn event_kind_name(kind: ProcessEventKind) -> &'static str {
+    match kind {
+        ProcessEventKind::Spawn => "spawn",
+        ProcessEventKind::Exec => "exec",
+        ProcessEventKind::Exit => "exit",
+        ProcessEventKind::Loss => "loss",
+    }
+}
+
+fn watch_match_to_python(py: Python<'_>, item: &ProcessWatchMatch) -> PyResult<Py<PyAny>> {
+    let result = PyDict::new(py);
+    result.set_item("type", "match")?;
+    result.set_item("sequence", item.sequence)?;
+    result.set_item("watch_label", &item.watch.label)?;
+    let event = PyDict::new(py);
+    event.set_item("kind", event_kind_name(item.event.kind))?;
+    event.set_item("pid", item.event.process.pid)?;
+    event.set_item("start_key", item.event.process.start_key)?;
+    event.set_item(
+        "parent_pid",
+        item.event.parent.as_ref().map(|parent| parent.pid),
+    )?;
+    event.set_item(
+        "parent_start_key",
+        item.event
+            .parent
+            .as_ref()
+            .and_then(|parent| parent.start_key),
+    )?;
+    let timestamp = item
+        .event
+        .timestamp
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    event.set_item("timestamp", timestamp)?;
+    event.set_item(
+        "executable",
+        item.event
+            .executable
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+    )?;
+    event.set_item("argv", item.event.argv.as_ref())?;
+    event.set_item("exit_code", item.event.exit_code)?;
+    event.set_item("signal", item.event.signal)?;
+    event.set_item("raw_exit_status", item.event.raw_exit_status)?;
+    event.set_item("backend", item.event.backend)?;
+    event.set_item("observation_grade", item.event.observation_grade.as_str())?;
+    event.set_item("coverage_complete", item.event.coverage_complete)?;
+    event.set_item("loss_detected", item.event.loss_detected)?;
+    result.set_item("event", event)?;
+    if let Some(dump) = item.dump.as_ref() {
+        let value = PyDict::new(py);
+        value.set_item("capture_source", dump.capture_source.as_str())?;
+        value.set_item(
+            "artifacts",
+            dump.artifacts
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+        )?;
+        value.set_item("symbolized", dump.symbolized)?;
+        value.set_item("error", dump.error.as_deref())?;
+        result.set_item("dump", value)?;
+    } else {
+        result.set_item("dump", py.None())?;
+    }
+    Ok(result.into_any().unbind())
+}
+
+fn watch_read_to_python(py: Python<'_>, read: ProcessWatchRead) -> PyResult<Py<PyAny>> {
+    match read {
+        ProcessWatchRead::Match(item) => watch_match_to_python(py, &item),
+        ProcessWatchRead::Gap(gap) => {
+            let result = PyDict::new(py);
+            result.set_item("type", "gap")?;
+            result.set_item("first_missing", gap.first_missing)?;
+            result.set_item("last_missing", gap.last_missing)?;
+            Ok(result.into_any().unbind())
+        }
+        ProcessWatchRead::Timeout => {
+            let result = PyDict::new(py);
+            result.set_item("type", "timeout")?;
+            Ok(result.into_any().unbind())
+        }
+        ProcessWatchRead::Eof => {
+            let result = PyDict::new(py);
+            result.set_item("type", "eof")?;
+            Ok(result.into_any().unbind())
+        }
+    }
+}
+
 #[pyclass]
 pub(crate) struct NativeRunningProcess {
     pub(crate) inner: NativeProcess,
+    process_watch_subscriber: Option<ProcessWatchSubscriber>,
+    process_watch_cursors: std::sync::Mutex<HashMap<u64, ProcessWatchCursor>>,
+    next_process_watch_cursor: AtomicU64,
     pub(crate) text: bool,
     pub(crate) encoding: Option<String>,
     pub(crate) errors: Option<String>,
@@ -32,7 +263,7 @@ pub(crate) struct NativeRunningProcess {
 impl NativeRunningProcess {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false, address_space_limit_bytes=None))]
+    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false, address_space_limit_bytes=None, process_watches=None, process_observation="non_invasive"))]
     pub(crate) fn new(
         command: &Bound<'_, PyAny>,
         cwd: Option<String>,
@@ -48,6 +279,8 @@ impl NativeRunningProcess {
         nice: Option<i32>,
         create_process_group: bool,
         address_space_limit_bytes: Option<u64>,
+        process_watches: Option<Vec<Bound<'_, PyDict>>>,
+        process_observation: &str,
     ) -> PyResult<Self> {
         let parsed = parse_command(command, shell)?;
         let env_pairs = env
@@ -59,19 +292,38 @@ impl NativeRunningProcess {
             })
             .transpose()?;
 
+        let config = ProcessConfig {
+            command: parsed,
+            cwd: cwd.map(PathBuf::from),
+            env: env_pairs,
+            capture,
+            stderr_mode: stderr_mode(stderr_mode_name)?,
+            creationflags,
+            create_process_group,
+            stdin_mode: stdin_mode(stdin_mode_name)?,
+            nice,
+            address_space_limit_bytes,
+        };
+        let watches = process_watches
+            .unwrap_or_default()
+            .iter()
+            .map(parse_process_watch)
+            .collect::<PyResult<Vec<_>>>()?;
+        let policy = parse_observation_policy(process_observation)?;
+        let (inner, process_watch_subscriber) = if watches.is_empty() {
+            (NativeProcess::new(config), None)
+        } else {
+            let (process, subscriber) =
+                NativeProcess::with_process_watches(config, watches, policy)
+                    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+            (process, Some(subscriber))
+        };
+
         Ok(Self {
-            inner: NativeProcess::new(ProcessConfig {
-                command: parsed,
-                cwd: cwd.map(PathBuf::from),
-                env: env_pairs,
-                capture,
-                stderr_mode: stderr_mode(stderr_mode_name)?,
-                creationflags,
-                create_process_group,
-                stdin_mode: stdin_mode(stdin_mode_name)?,
-                nice,
-                address_space_limit_bytes,
-            }),
+            inner,
+            process_watch_subscriber,
+            process_watch_cursors: std::sync::Mutex::new(HashMap::new()),
+            next_process_watch_cursor: AtomicU64::new(1),
             text,
             encoding,
             errors,
@@ -80,6 +332,77 @@ impl NativeRunningProcess {
             #[cfg(unix)]
             create_process_group,
         })
+    }
+
+    #[staticmethod]
+    pub(crate) fn process_observation_capabilities(py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let capability = NativeProcess::process_observation_capabilities();
+        let result = PyDict::new(py);
+        result.set_item("exact_available", capability.exact_available)?;
+        result.set_item("exact_backend", capability.exact_backend)?;
+        result.set_item("reason", capability.reason)?;
+        Ok(result.into_any().unbind())
+    }
+
+    pub(crate) fn process_observation(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.process_watch_subscriber
+            .as_ref()
+            .map(|subscriber| {
+                let observation = subscriber.observation();
+                let result = PyDict::new(py);
+                result.set_item("backend", observation.backend)?;
+                result.set_item("observation_grade", observation.grade.as_str())?;
+                result.set_item("fallback_reason", observation.fallback_reason.as_deref())?;
+                Ok(result.into_any().unbind())
+            })
+            .transpose()
+    }
+
+    pub(crate) fn process_watch_snapshot(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        self.process_watch_subscriber
+            .as_ref()
+            .map_or_else(Vec::new, ProcessWatchSubscriber::snapshot)
+            .iter()
+            .map(|item| watch_match_to_python(py, item))
+            .collect()
+    }
+
+    pub(crate) fn open_process_watch_cursor(&self) -> Option<u64> {
+        let subscriber = self.process_watch_subscriber.as_ref()?;
+        let id = self
+            .next_process_watch_cursor
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.process_watch_cursors
+            .lock()
+            .expect("process watch cursors mutex poisoned")
+            .insert(id, subscriber.cursor());
+        Some(id)
+    }
+
+    #[pyo3(signature = (cursor_id, timeout=None))]
+    pub(crate) fn take_process_watch_match(
+        &self,
+        py: Python<'_>,
+        cursor_id: u64,
+        timeout: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        if timeout.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            return Err(PyValueError::new_err(
+                "timeout must be a finite non-negative number or None",
+            ));
+        }
+        let timeout = timeout.map(Duration::from_secs_f64);
+        let read = py.detach(|| {
+            let mut cursors = self
+                .process_watch_cursors
+                .lock()
+                .expect("process watch cursors mutex poisoned");
+            cursors
+                .get_mut(&cursor_id)
+                .ok_or_else(|| PyValueError::new_err("unknown process watch cursor"))
+                .map(|cursor| cursor.read_next(timeout))
+        });
+        watch_read_to_python(py, read?)
     }
 
     #[inline(never)]

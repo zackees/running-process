@@ -9,8 +9,8 @@ use crate::pty_process::NativePtyProcess;
 use crate::registry::ExpectResult;
 
 pub(crate) enum NativeProcessBackend {
-    Running(NativeRunningProcess),
-    Pty(NativePtyProcess),
+    Running(Box<NativeRunningProcess>),
+    Pty(Box<NativePtyProcess>),
 }
 
 #[pyclass(name = "NativeProcess")]
@@ -22,7 +22,7 @@ pub(crate) struct PyNativeProcess {
 impl PyNativeProcess {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false, address_space_limit_bytes=None))]
+    #[pyo3(signature = (command, cwd=None, shell=false, capture=true, env=None, creationflags=None, text=true, encoding=None, errors=None, stdin_mode_name="inherit", stderr_mode_name="stdout", nice=None, create_process_group=false, address_space_limit_bytes=None, process_watches=None, process_observation="non_invasive"))]
     fn new(
         command: &Bound<'_, PyAny>,
         cwd: Option<String>,
@@ -38,9 +38,11 @@ impl PyNativeProcess {
         nice: Option<i32>,
         create_process_group: bool,
         address_space_limit_bytes: Option<u64>,
+        process_watches: Option<Vec<Bound<'_, PyDict>>>,
+        process_observation: &str,
     ) -> PyResult<Self> {
         Ok(Self {
-            backend: NativeProcessBackend::Running(NativeRunningProcess::new(
+            backend: NativeProcessBackend::Running(Box::new(NativeRunningProcess::new(
                 command,
                 cwd,
                 shell,
@@ -55,8 +57,55 @@ impl PyNativeProcess {
                 nice,
                 create_process_group,
                 address_space_limit_bytes,
-            )?),
+                process_watches,
+                process_observation,
+            )?)),
         })
+    }
+
+    #[staticmethod]
+    fn process_observation_capabilities(py: Python<'_>) -> PyResult<Py<PyAny>> {
+        NativeRunningProcess::process_observation_capabilities(py)
+    }
+
+    fn process_observation(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.process_observation(py),
+            NativeProcessBackend::Pty(_) => Ok(None),
+        }
+    }
+
+    fn process_watch_snapshot(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.process_watch_snapshot(py),
+            NativeProcessBackend::Pty(_) => Ok(Vec::new()),
+        }
+    }
+
+    fn open_process_watch_cursor(&self) -> Option<u64> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => process.open_process_watch_cursor(),
+            NativeProcessBackend::Pty(_) => None,
+        }
+    }
+
+    #[pyo3(signature = (cursor_id, timeout=None))]
+    fn take_process_watch_match(
+        &self,
+        py: Python<'_>,
+        cursor_id: u64,
+        timeout: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        match &self.backend {
+            NativeProcessBackend::Running(process) => {
+                process.take_process_watch_match(py, cursor_id, timeout)
+            }
+            NativeProcessBackend::Pty(_) => {
+                let result = PyDict::new(py);
+                result.set_item("type", "eof")?;
+                Ok(result.into_any().unbind())
+            }
+        }
     }
 
     #[staticmethod]
@@ -80,7 +129,7 @@ impl PyNativeProcess {
         let inner = CoreNativePtyProcess::new(argv, cwd, env_pairs, rows, cols, nice)
             .map_err(NativePtyProcess::pty_err_to_py)?;
         Ok(Self {
-            backend: NativeProcessBackend::Pty(NativePtyProcess { inner }),
+            backend: NativeProcessBackend::Pty(Box::new(NativePtyProcess { inner })),
         })
     }
 

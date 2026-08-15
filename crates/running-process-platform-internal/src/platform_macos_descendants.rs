@@ -6,9 +6,17 @@ use std::time::Duration;
 
 use crate::platform::process::{DescendantEvent, DescendantMonitorStop};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const RECONCILE_INTERVAL: Duration = Duration::from_millis(50);
 
 type Identity = (u64, u64);
+
+struct Kqueue(libc::c_int);
+
+impl Drop for Kqueue {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.0) };
+    }
+}
 
 pub fn start_descendant_monitor(
     root_pid: u32,
@@ -64,6 +72,8 @@ fn pump_loop(
     stop: Arc<DescendantMonitorStop>,
     emit: Box<dyn Fn(DescendantEvent) + Send>,
 ) {
+    let queue = unsafe { libc::kqueue() };
+    let queue = (queue >= 0).then_some(Kqueue(queue));
     let mut known = HashSet::new();
     loop {
         if stop.is_stopped() {
@@ -81,9 +91,61 @@ fn pump_loop(
         for &pid in known.difference(&current) {
             emit(DescendantEvent::Exited(pid));
         }
+        if let Some(queue) = queue.as_ref() {
+            register_process_hint(queue.0, root_pid);
+            for &pid in &current {
+                register_process_hint(queue.0, pid);
+            }
+        }
         known = current;
-        if stop.wait_timeout(POLL_INTERVAL) {
+        if wait_for_hint(queue.as_ref(), &stop) {
             return;
         }
     }
+}
+
+fn register_process_hint(queue: libc::c_int, pid: u32) {
+    let change = libc::kevent {
+        ident: pid as libc::uintptr_t,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
+        fflags: libc::NOTE_FORK | libc::NOTE_EXEC | libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // ESRCH is expected when a very short-lived process disappears between
+    // reconciliation and registration. The snapshot grade remains explicitly
+    // best-effort, so registration failure is only a missed wake-up hint.
+    unsafe {
+        libc::kevent(
+            queue,
+            &raw const change,
+            1,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        );
+    }
+}
+
+fn wait_for_hint(queue: Option<&Kqueue>, stop: &DescendantMonitorStop) -> bool {
+    let Some(queue) = queue else {
+        return stop.wait_timeout(RECONCILE_INTERVAL);
+    };
+    let timeout = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: RECONCILE_INTERVAL.as_nanos() as libc::c_long,
+    };
+    let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::kevent(
+            queue.0,
+            std::ptr::null(),
+            0,
+            &raw mut event,
+            1,
+            &raw const timeout,
+        );
+    }
+    stop.is_stopped()
 }

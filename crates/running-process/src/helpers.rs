@@ -58,7 +58,7 @@ pub(crate) fn poll_mutex_until<S, T>(
     })
 }
 
-#[cfg(any(test, unix))]
+#[cfg(test)]
 pub(crate) fn completed_reap_after_signal<T>(result: std::io::Result<Option<T>>) -> Option<T> {
     // Once termination was successfully delivered, reaping is best effort on
     // the caller's bounded path. The dedicated waiter remains responsible for
@@ -71,7 +71,7 @@ pub(crate) fn child_try_wait_error_is_retryable(error: &std::io::Error) -> bool 
     error.kind() == std::io::ErrorKind::Interrupted
 }
 
-#[cfg(any(test, unix))]
+#[cfg(test)]
 pub(crate) fn with_child_lock_for_signal<S, T>(
     state: &Mutex<S>,
     signal: impl FnOnce(&mut S) -> T,
@@ -80,14 +80,14 @@ pub(crate) fn with_child_lock_for_signal<S, T>(
     signal(&mut guard)
 }
 
-#[cfg(any(test, unix))]
 #[derive(Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(crate) enum ChildSignalDisposition<T> {
     AlreadyExited(T),
     Signal,
 }
 
-#[cfg(any(test, unix))]
+#[cfg(test)]
 pub(crate) fn child_signal_disposition<T>(
     status: std::io::Result<Option<T>>,
 ) -> std::io::Result<ChildSignalDisposition<T>> {

@@ -30,6 +30,59 @@ pub struct ProcessCommandConfig {
     pub address_space_limit_bytes: Option<u64>,
 }
 
+/// Availability of an invasive, lossless launched-tree trace backend.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactTraceCapability {
+    pub available: bool,
+    pub backend: &'static str,
+    pub reason: &'static str,
+}
+
+pub use crate::platform_imp::exact_trace_capability;
+
+#[cfg(target_os = "linux")]
+pub use crate::platform_imp::{configure_exact_trace, start_exact_trace, TracedChild};
+
+/// A raw, bounded spawning-thread capture collected while a tracee is stopped.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TraceOriginArtifact {
+    pub thread_id: u32,
+    pub registers: Vec<u8>,
+    pub stack_pointer: Option<u64>,
+    pub instruction_pointer: Option<u64>,
+    pub stack: Vec<u8>,
+    pub truncated: bool,
+}
+
+/// Native launched-tree event produced by an exact trace backend.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactTraceEvent {
+    pub sequence: u64,
+    pub pid: u32,
+    pub parent_pid: Option<u32>,
+    pub parent_start_key: Option<u64>,
+    pub start_key: Option<u64>,
+    pub timestamp: std::time::SystemTime,
+    pub kind: ExactTraceEventKind,
+    pub executable: Option<std::path::PathBuf>,
+    pub argv: Option<Vec<std::ffi::OsString>>,
+    pub origin: Option<TraceOriginArtifact>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactTraceEventKind {
+    Spawn,
+    Exec,
+    Exit {
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+        raw_status: i64,
+    },
+    Loss {
+        reason: String,
+    },
+}
+
 /// A descendant lifecycle fact reported by the host monitor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescendantEvent {

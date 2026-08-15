@@ -37,6 +37,14 @@ use crate::SpawnSpec;
 mod descendants;
 pub use descendants::start_descendant_monitor;
 
+pub fn exact_trace_capability() -> crate::platform::process::ExactTraceCapability {
+    crate::platform::process::ExactTraceCapability {
+        available: false,
+        backend: "macos-endpoint-security",
+        reason: "exact recursive events require an entitled Endpoint Security provider",
+    }
+}
+
 #[derive(Default)]
 pub struct CaptureCancellation { wakers: Mutex<CaptureWakers> }
 #[derive(Default)]
