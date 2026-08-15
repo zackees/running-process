@@ -14,22 +14,14 @@ mod descendants;
 pub use descendants::{assign_child_to_windows_job, WindowsJobHandle};
 
 pub fn shell_command(command: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-
     let mut shell = std::process::Command::new("cmd.exe");
-    shell.raw_arg("/D /S /C \"");
-    shell.raw_arg(command);
-    shell.raw_arg("\"");
+    shell.args(["/D", "/S", "/C", command]);
     shell
 }
 
 pub fn compat_shell_command(command: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-
     let mut shell = std::process::Command::new("cmd");
-    shell.raw_arg("/D /S /C \"");
-    shell.raw_arg(command);
-    shell.raw_arg("\"");
+    shell.args(["/D", "/S", "/C", command]);
     shell
 }
 
@@ -335,20 +327,21 @@ mod tests {
     }
 
     #[test]
-    fn shell_command_preserves_raw_cmd_quoting_contract() {
+    fn shell_command_preserves_round_trippable_cmd_quoting_contract() {
         let command_text = "echo alpha beta ^& gamma";
         let mut command = super::shell_command(command_text);
         assert_eq!(command.get_program(), OsStr::new("cmd.exe"));
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             [
-                OsStr::new("/D /S /C \""),
-                OsStr::new(command_text),
-                OsStr::new("\"")
+                OsStr::new("/D"),
+                OsStr::new("/S"),
+                OsStr::new("/C"),
+                OsStr::new(command_text)
             ]
         );
         let output = command.output().expect("shell command should execute");
         assert!(output.status.success());
-        assert_eq!(output.stdout, b"alpha beta & gamma \r\n");
+        assert_eq!(output.stdout, b"alpha beta & gamma\r\n");
     }
 }
