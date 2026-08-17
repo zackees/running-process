@@ -9,7 +9,7 @@
 //! | Platform | Hash input |
 //! |----------|------------|
 //! | Windows  | The current process token user SID, in `S-1-...` text form, obtained via `OpenProcessToken(GetCurrentProcess())` → `GetTokenInformation(TokenUser)` → `ConvertSidToStringSidW`. |
-//! | Linux    | `format!("{uid}:{machine_id}")` where `machine_id` is the contents of `/etc/machine-id`, falling back to `/var/lib/dbus/machine-id`. |
+//! | Linux    | `format!("{uid}:{machine_id}")` where `machine_id` is the contents of `/etc/machine-id`, falling back to `/var/lib/dbus/machine-id`, then to a boot-scoped `boot:<boot_id>` kernel identity when neither file exists (minimal containers). |
 //! | macOS    | `format!("{uid}:{machine_uuid}")` where `machine_uuid` comes from `ioreg -d2 -c IOPlatformExpertDevice` (the `IOPlatformUUID` field). |
 //!
 //! ## Why a hash?
@@ -203,8 +203,22 @@ unsafe fn sid_to_string(sid: winapi::um::winnt::PSID) -> Result<String, SidError
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn linux_machine_id() -> Result<String, SidError> {
-    const PATHS: &[&str] = &["/etc/machine-id", "/var/lib/dbus/machine-id"];
-    for path in PATHS {
+    linux_machine_id_from(
+        &["/etc/machine-id", "/var/lib/dbus/machine-id"],
+        "/proc/sys/kernel/random/boot_id",
+    )
+}
+
+// Pure path-driven resolution, compiled on every host so the unit tests
+// exercise it everywhere and no new host-platform cfg selection appears
+// outside the platform crate. Only the Linux `linux_machine_id` wrapper
+// above calls it, so other hosts see it as dead code.
+#[allow(dead_code)]
+fn linux_machine_id_from(
+    machine_id_paths: &[&str],
+    boot_id_path: &str,
+) -> Result<String, SidError> {
+    for path in machine_id_paths {
         match std::fs::read_to_string(path) {
             Ok(s) => {
                 let trimmed = s.trim();
@@ -213,13 +227,31 @@ fn linux_machine_id() -> Result<String, SidError> {
                 }
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            // An unreadable machine-id stays a hard error rather than
+            // falling through: sibling processes of the same user may
+            // read the file fine, and deriving a different identity here
+            // would split the user across two SIDs — two brokers, each
+            // believing it is the singleton.
             Err(err) => {
                 return Err(SidError::PlatformLookup(format!("read {path}: {err}")));
             }
         }
     }
+    // Read-only fallback for hosts that ship no machine-id file at all
+    // (minimal containers, machine-id-less musl distros): a boot-scoped
+    // identity from the kernel's boot_id. Every process in the same boot
+    // derives the same value — exactly the lifetime a broker SID must
+    // cover — and file *absence*, unlike readability, cannot differ
+    // between one user's processes, so the fallback stays consistent.
+    if let Ok(s) = std::fs::read_to_string(boot_id_path) {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return Ok(format!("boot:{trimmed}"));
+        }
+    }
     Err(SidError::PlatformLookup(
-        "no /etc/machine-id or /var/lib/dbus/machine-id found".into(),
+        "no /etc/machine-id or /var/lib/dbus/machine-id found, and no usable boot_id fallback"
+            .into(),
     ))
 }
 
@@ -286,6 +318,91 @@ mod tests {
         let a = hash_to_16_hex(b"alice:machine-1");
         let b = hash_to_16_hex(b"alice:machine-1");
         assert_eq!(a, b);
+    }
+
+    mod linux_machine_id_sources {
+        use super::super::linux_machine_id_from;
+
+        fn temp_dir(label: &str) -> std::path::PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "rp-sid-{label}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id(),
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            dir
+        }
+
+        fn write(dir: &std::path::Path, name: &str, content: &str) -> String {
+            let path = dir.join(name);
+            std::fs::write(&path, content).expect("write fixture file");
+            path.to_string_lossy().into_owned()
+        }
+
+        #[test]
+        fn machine_id_file_wins_over_boot_fallback() {
+            let dir = temp_dir("file-wins");
+            let etc = write(&dir, "machine-id", "abc123\n");
+            let boot = write(&dir, "boot_id", "boot-uuid\n");
+            let id = linux_machine_id_from(&[&etc], &boot).expect("resolve");
+            assert_eq!(id, "abc123");
+        }
+
+        #[test]
+        fn second_path_is_consulted_when_first_is_missing() {
+            let dir = temp_dir("second-path");
+            let missing = dir.join("absent").to_string_lossy().into_owned();
+            let dbus = write(&dir, "dbus-machine-id", "dbus456\n");
+            let boot = write(&dir, "boot_id", "boot-uuid\n");
+            let id = linux_machine_id_from(&[&missing, &dbus], &boot).expect("resolve");
+            assert_eq!(id, "dbus456");
+        }
+
+        #[test]
+        fn missing_machine_id_files_fall_back_to_boot_id() {
+            let dir = temp_dir("boot-fallback");
+            let missing_a = dir.join("absent-a").to_string_lossy().into_owned();
+            let missing_b = dir.join("absent-b").to_string_lossy().into_owned();
+            let boot = write(&dir, "boot_id", "0b1a-boot-uuid\n");
+            let id = linux_machine_id_from(&[&missing_a, &missing_b], &boot).expect("resolve");
+            assert_eq!(id, "boot:0b1a-boot-uuid");
+        }
+
+        #[test]
+        fn empty_machine_id_file_falls_through_to_boot_id() {
+            let dir = temp_dir("empty-file");
+            let empty = write(&dir, "machine-id", "\n");
+            let boot = write(&dir, "boot_id", "boot-uuid\n");
+            let id = linux_machine_id_from(&[&empty], &boot).expect("resolve");
+            assert_eq!(id, "boot:boot-uuid");
+        }
+
+        #[test]
+        fn everything_missing_is_an_error() {
+            let dir = temp_dir("all-missing");
+            let missing = dir.join("absent").to_string_lossy().into_owned();
+            let missing_boot = dir.join("absent-boot").to_string_lossy().into_owned();
+            let err = linux_machine_id_from(&[&missing], &missing_boot)
+                .expect_err("must not invent an identity");
+            let rendered = format!("{err:?}");
+            assert!(
+                rendered.contains("boot_id"),
+                "error must name the exhausted fallback: {rendered}"
+            );
+        }
+
+        #[test]
+        fn unreadable_machine_id_stays_a_hard_error_despite_boot_fallback() {
+            let dir = temp_dir("unreadable");
+            // A directory in the machine-id slot yields a non-NotFound
+            // read error — the split-SID hazard the hard error protects.
+            let as_dir = dir.join("machine-id-dir");
+            std::fs::create_dir_all(&as_dir).expect("create dir fixture");
+            let as_dir = as_dir.to_string_lossy().into_owned();
+            let boot = write(&dir, "boot_id", "boot-uuid\n");
+            linux_machine_id_from(&[&as_dir], &boot)
+                .expect_err("unreadable machine-id must not fall through");
+        }
     }
 
     #[test]
