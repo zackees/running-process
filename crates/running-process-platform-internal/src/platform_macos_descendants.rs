@@ -320,7 +320,7 @@ mod tests {
             verified_snapshot(
                 expected,
                 Some(expected),
-                [42].into_iter().collect(),
+                [(42, 7)].into_iter().collect(),
                 Some(recycled),
             ),
             None

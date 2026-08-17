@@ -1,6 +1,6 @@
 //! Linux implementation of launched-tree descendant monitoring.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -158,6 +158,7 @@ fn pump_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::sync::mpsc;
 
     fn collect_diff(
