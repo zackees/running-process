@@ -428,6 +428,30 @@ impl NativeProcess {
         (process, subscriber)
     }
 
+    /// Create a process wrapper from a caller-configured
+    /// [`std::process::Command`] with process observation enabled.
+    ///
+    /// [`ProcessConfig`]'s declarative surface deliberately cannot represent
+    /// everything a `Command` can carry — `env_remove` scrubs of inherited
+    /// variables, non-Unicode (`OsString`) argv/env values, a pre-resolved
+    /// working directory — so a caller that already owns a fully configured
+    /// `Command` (a compiler front door wrapping cargo, zackees/soldr#2546)
+    /// would otherwise have to lossily re-encode it. This pairs the observer
+    /// machinery with the same command-override seam the capture-limit
+    /// constructors use: `command` is spawned verbatim, while `config` still
+    /// governs stdio routing, capture, containment, and limits (its
+    /// `command` / `cwd` / `env` fields are ignored in favor of the
+    /// override, matching `build_command`).
+    pub fn with_observer_and_command(
+        command: Command,
+        config: ProcessConfig,
+        observer: crate::observer::ObserverConfig,
+    ) -> (Self, ObserverSubscriber) {
+        let (emitter, subscriber) = ObserverEmitter::new(observer);
+        let process = Self::new_with_options(config, Some(emitter), None, Some(command), None);
+        (process, subscriber)
+    }
+
     /// Create a process with launched-tree watch matching configured before
     /// spawn. Exact tracing, when selected, owns the launch-time wait events.
     pub fn with_process_watches(

@@ -182,3 +182,57 @@ fn the_process_category_is_usable_for_this_scope() {
          mean anything if the backend is unavailable"
     );
 }
+
+/// The observer must compose with a caller-configured `std::process::Command`
+/// (`with_observer_and_command`, zackees/soldr#2546): `ProcessConfig` cannot
+/// express `env_remove` scrubs or non-Unicode argv/env, so callers that
+/// already own a configured `Command` hand it over verbatim.
+#[test]
+fn an_observed_configured_command_spawns_verbatim_and_reports_lifecycle() {
+    let spawner = testbin_path("testbin-spawner");
+    let sleeper = testbin_path("testbin-sleeper");
+    let mut command = std::process::Command::new(&spawner);
+    command.arg("1").arg(sleeper.display().to_string());
+    // The shaping ProcessConfig cannot express: a scrub of an inherited
+    // variable plus an explicit addition, on the caller's own Command.
+    command.env_remove("RP_SEAM_TEST_SCRUBBED");
+    command.env("RP_SEAM_TEST_ADDED", "1");
+
+    // The config's own command points at a binary that cannot exist. If the
+    // override were not spawned verbatim, start() would fail loudly instead
+    // of producing the direct child's exact lifecycle events below.
+    let mut config = spawn_tree_config(1);
+    config.command = CommandSpec::Argv(vec!["rp-seam-test-not-a-real-binary".to_string()]);
+
+    let (process, subscriber) =
+        NativeProcess::with_observer_and_command(command, config, tree_observer());
+    process.start().expect("spawn the configured command");
+    let pid = process.pid().expect("configured command has a pid");
+
+    std::thread::sleep(Duration::from_millis(500));
+    process.kill().expect("kill the tree");
+    let _ = process.wait(Some(OBSERVE_WINDOW));
+    process.close().ok();
+
+    let events = subscriber.drain();
+    let started = events
+        .iter()
+        .filter(|e| matches!(e.kind, ObserverEventKind::Started))
+        .count();
+    let exited = events
+        .iter()
+        .filter(|e| matches!(e.kind, ObserverEventKind::Exited { .. }))
+        .count();
+    assert_eq!(
+        started, 1,
+        "expected exactly one Started for the configured command, got {started} in {events:?}"
+    );
+    assert_eq!(
+        exited, 1,
+        "expected exactly one Exited for the configured command, got {exited} in {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| e.pid == pid),
+        "no event carried the root pid {pid}: {events:?}"
+    );
+}
