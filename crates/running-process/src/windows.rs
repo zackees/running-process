@@ -31,13 +31,17 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
     crate::rp_rust_debug_scope!("running_process::assign_child_to_windows_kill_on_close_job");
     let emit = (descendant_sink.is_some() || process_watch.is_some()).then(|| {
         Box::new(move |event| {
-            let (kind, pid) = match event {
-                DescendantEvent::Started(pid) => {
-                    (crate::observer::ObserverEventKind::DescendantStarted, pid)
-                }
-                DescendantEvent::Exited(pid) => {
-                    (crate::observer::ObserverEventKind::DescendantExited, pid)
-                }
+            let (kind, pid, ppid) = match event {
+                DescendantEvent::Started { pid, parent_pid } => (
+                    crate::observer::ObserverEventKind::DescendantStarted,
+                    pid,
+                    parent_pid,
+                ),
+                DescendantEvent::Exited(pid) => (
+                    crate::observer::ObserverEventKind::DescendantExited,
+                    pid,
+                    None,
+                ),
                 DescendantEvent::Completed => {
                     if let Some(watch) = process_watch.as_ref() {
                         watch.finish_delivery();
@@ -46,14 +50,15 @@ pub(crate) fn assign_child_to_windows_kill_on_close_job_with_observer_impl(
                 }
             };
             if let Some(sink) = descendant_sink.as_ref() {
-                let _ = sink.send(ObserverEvent::new_now(
+                let _ = sink.send(ObserverEvent::new_now_with_parent(
                     crate::observer::EventCategory::Process,
                     kind,
                     pid,
+                    ppid,
                 ));
             }
             if let Some(watch) = process_watch.as_ref() {
-                watch.emit_inferred(pid, matches!(event, DescendantEvent::Started(_)));
+                watch.emit_inferred(pid, matches!(event, DescendantEvent::Started { .. }));
             }
         }) as Box<dyn Fn(DescendantEvent) + Send>
     });

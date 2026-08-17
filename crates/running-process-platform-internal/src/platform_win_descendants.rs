@@ -178,7 +178,13 @@ fn iocp_pump_loop(
         }
         let pid = overlapped as usize as u32;
         match message {
-            NEW_PROCESS if pid != direct_pid => emit(DescendantEvent::Started(pid)),
+            // The job-object IOCP notification is PID-only; resolving the
+            // parent would need a toolhelp scan per event, racy for
+            // short-lived processes. Report unknown instead.
+            NEW_PROCESS if pid != direct_pid => emit(DescendantEvent::Started {
+                pid,
+                parent_pid: None,
+            }),
             EXIT_PROCESS | ABNORMAL_EXIT_PROCESS if pid != direct_pid => {
                 emit(DescendantEvent::Exited(pid));
             }

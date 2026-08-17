@@ -1,6 +1,6 @@
 //! macOS implementation of launched-tree descendant monitoring.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,11 +42,13 @@ fn process_identity(pid: u32) -> Option<Identity> {
         .map(|snapshot| (snapshot.start_time_a, snapshot.start_time_b))
 }
 
-fn descendants(root_pid: u32) -> HashSet<u32> {
+fn descendants(root_pid: u32) -> HashMap<u32, u32> {
     descendants_of(root_pid, &super::process_snapshot())
 }
 
-fn descendants_of(root_pid: u32, snapshots: &[ProcessSnapshot]) -> HashSet<u32> {
+/// Map of live descendant pid -> immediate parent pid, from the same
+/// process snapshot that already carries each entry's `parent_pid`.
+fn descendants_of(root_pid: u32, snapshots: &[ProcessSnapshot]) -> HashMap<u32, u32> {
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for snapshot in snapshots {
         children
@@ -54,12 +56,12 @@ fn descendants_of(root_pid: u32, snapshots: &[ProcessSnapshot]) -> HashSet<u32> 
             .or_default()
             .push(snapshot.pid);
     }
-    let mut result = HashSet::new();
+    let mut result = HashMap::new();
     let mut stack = vec![root_pid];
     while let Some(pid) = stack.pop() {
         if let Some(child_pids) = children.get(&pid) {
             for &child in child_pids {
-                if result.insert(child) {
+                if result.insert(child, pid).is_none() {
                     stack.push(child);
                 }
             }
@@ -68,7 +70,7 @@ fn descendants_of(root_pid: u32, snapshots: &[ProcessSnapshot]) -> HashSet<u32> 
     result
 }
 
-fn snapshot(root_pid: u32, expected: Identity) -> Option<HashSet<u32>> {
+fn snapshot(root_pid: u32, expected: Identity) -> Option<HashMap<u32, u32>> {
     let before = process_identity(root_pid);
     let descendants = descendants(root_pid);
     verified_snapshot(expected, before, descendants, process_identity(root_pid))
@@ -77,9 +79,9 @@ fn snapshot(root_pid: u32, expected: Identity) -> Option<HashSet<u32>> {
 fn verified_snapshot(
     expected: Identity,
     before: Option<Identity>,
-    descendants: HashSet<u32>,
+    descendants: HashMap<u32, u32>,
     after: Option<Identity>,
-) -> Option<HashSet<u32>> {
+) -> Option<HashMap<u32, u32>> {
     (before == Some(expected) && after == Some(expected)).then_some(descendants)
 }
 
@@ -103,14 +105,14 @@ fn pump_loop(
                 trigger_stop_event(notifier_queue.0);
             });
     }
-    let mut known = HashSet::new();
+    let mut known = HashMap::new();
     loop {
         if stop.is_stopped() {
             emit(DescendantEvent::Completed);
             return;
         }
         let Some(current) = snapshot(root_pid, root_identity) else {
-            for pid in known {
+            for pid in known.into_keys() {
                 emit(DescendantEvent::Exited(pid));
             }
             // Wake and retire the queue notifier before the last Arc<Kqueue>
@@ -120,15 +122,22 @@ fn pump_loop(
             emit(DescendantEvent::Completed);
             return;
         };
-        for &pid in current.difference(&known) {
-            emit(DescendantEvent::Started(pid));
+        for (&pid, &parent_pid) in &current {
+            if !known.contains_key(&pid) {
+                emit(DescendantEvent::Started {
+                    pid,
+                    parent_pid: Some(parent_pid),
+                });
+            }
         }
-        for &pid in known.difference(&current) {
-            emit(DescendantEvent::Exited(pid));
+        for &pid in known.keys() {
+            if !current.contains_key(&pid) {
+                emit(DescendantEvent::Exited(pid));
+            }
         }
         if let Some(queue) = queue.as_ref() {
             register_process_hint(queue.0, root_pid);
-            for &pid in &current {
+            for &pid in current.keys() {
                 register_process_hint(queue.0, pid);
             }
         }
@@ -256,7 +265,7 @@ mod tests {
         root_pid: u32,
         expected: Identity,
         snapshots: &[ProcessSnapshot],
-    ) -> Option<HashSet<u32>> {
+    ) -> Option<HashMap<u32, u32>> {
         snapshots
             .iter()
             .find(|snapshot| snapshot.pid == root_pid)
@@ -277,7 +286,7 @@ mod tests {
         ];
         assert_eq!(
             descendants_of(100, &snapshots),
-            [200, 201, 300].into_iter().collect()
+            [(200, 100), (201, 200), (300, 100)].into_iter().collect()
         );
     }
 
@@ -311,7 +320,7 @@ mod tests {
             verified_snapshot(
                 expected,
                 Some(expected),
-                [42].into_iter().collect(),
+                [(42, 7)].into_iter().collect(),
                 Some(recycled),
             ),
             None
