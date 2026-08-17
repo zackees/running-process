@@ -640,6 +640,30 @@ impl ObserverConfig {
     }
 }
 
+/// Observe the launched process tree of an already-running process.
+///
+/// Attaches the per-OS descendant monitor to `root_pid` without owning its
+/// spawn: callers that manage their own child (custom pipe plumbing, an
+/// adopted pid) get the same `DescendantStarted` / `DescendantExited`
+/// stream that [`NativeProcess::with_observer`](crate::NativeProcess::with_observer)
+/// wires at spawn time. The monitor ends when the subscriber is dropped or
+/// [`ObserverSubscriber::stop`] is called, or when the root's tree fully
+/// drains — the channel then simply closes and `recv` returns `None`.
+///
+/// The `config` must observe [`EventCategory::Process`] for any events to
+/// flow; direct-child `Started`/`Exited` lifecycle events are the spawn
+/// owner's to report and are never synthesized here.
+///
+/// Platform note: Windows discovers descendants through the Job Object
+/// IOCP attached at spawn, so this post-hoc attach observes nothing there
+/// today; Linux (subreaper + `/proc` children walk) and macOS (process
+/// snapshots + kqueue hints) work for any live pid.
+pub fn observe_launched_tree(root_pid: u32, config: ObserverConfig) -> ObserverSubscriber {
+    let (emitter, subscriber) = ObserverEmitter::new(config);
+    crate::descendant_monitor::start(root_pid, Some(&emitter), None);
+    subscriber
+}
+
 /// Receiver handle for observation events.
 ///
 /// Returned by
