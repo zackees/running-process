@@ -209,7 +209,11 @@ fn linux_machine_id() -> Result<String, SidError> {
     )
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+// Pure path-driven resolution, compiled on every host so the unit tests
+// exercise it everywhere and no new host-platform cfg selection appears
+// outside the platform crate. Only the Linux `linux_machine_id` wrapper
+// above calls it, so other hosts see it as dead code.
+#[allow(dead_code)]
 fn linux_machine_id_from(
     machine_id_paths: &[&str],
     boot_id_path: &str,
@@ -316,7 +320,6 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
     mod linux_machine_id_sources {
         use super::super::linux_machine_id_from;
 
