@@ -536,6 +536,14 @@ pub struct ObserverEvent {
     pub kind: ObserverEventKind,
     /// OS process id of the observed child.
     pub pid: u32,
+    /// Immediate parent of `pid`, when the producing backend knows it.
+    ///
+    /// Populated for [`ObserverEventKind::DescendantStarted`] on Linux
+    /// (the `/proc` children walk names the parent) and macOS (the
+    /// process snapshot carries it); `None` on Windows, whose job-object
+    /// notification is PID-only, and for every non-descendant event,
+    /// where the parent is the observed root itself.
+    pub ppid: Option<u32>,
     /// Milliseconds since the Unix epoch when the event was recorded.
     pub timestamp_ms: u128,
 }
@@ -543,6 +551,15 @@ pub struct ObserverEvent {
 impl ObserverEvent {
     /// Construct an event, stamping it with the current wall-clock time.
     fn now(category: EventCategory, kind: ObserverEventKind, pid: u32) -> Self {
+        Self::now_with_parent(category, kind, pid, None)
+    }
+
+    fn now_with_parent(
+        category: EventCategory,
+        kind: ObserverEventKind,
+        pid: u32,
+        ppid: Option<u32>,
+    ) -> Self {
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -551,6 +568,7 @@ impl ObserverEvent {
             category,
             kind,
             pid,
+            ppid,
             timestamp_ms,
         }
     }
@@ -563,6 +581,17 @@ impl ObserverEvent {
     /// `ObserverEmitter`.
     pub fn new_now(category: EventCategory, kind: ObserverEventKind, pid: u32) -> Self {
         Self::now(category, kind, pid)
+    }
+
+    /// Construct an event carrying the descendant's parent pid, stamping
+    /// it with the current wall-clock time.
+    pub fn new_now_with_parent(
+        category: EventCategory,
+        kind: ObserverEventKind,
+        pid: u32,
+        ppid: Option<u32>,
+    ) -> Self {
+        Self::now_with_parent(category, kind, pid, ppid)
     }
 }
 

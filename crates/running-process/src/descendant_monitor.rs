@@ -32,9 +32,11 @@ pub(crate) fn start(
         root_pid,
         stop,
         Box::new(move |event| {
-            let (kind, pid) = match event {
-                DescendantEvent::Started(pid) => (ObserverEventKind::DescendantStarted, pid),
-                DescendantEvent::Exited(pid) => (ObserverEventKind::DescendantExited, pid),
+            let (kind, pid, ppid) = match event {
+                DescendantEvent::Started { pid, parent_pid } => {
+                    (ObserverEventKind::DescendantStarted, pid, parent_pid)
+                }
+                DescendantEvent::Exited(pid) => (ObserverEventKind::DescendantExited, pid, None),
                 DescendantEvent::Completed => {
                     if let Some(watcher) = watcher.as_ref() {
                         watcher.finish_delivery();
@@ -44,11 +46,16 @@ pub(crate) fn start(
             };
             if let Some((sink, observer_stop)) = observer_sink.as_ref() {
                 if !observer_stop.is_stopped() {
-                    let _ = sink.send(ObserverEvent::new_now(EventCategory::Process, kind, pid));
+                    let _ = sink.send(ObserverEvent::new_now_with_parent(
+                        EventCategory::Process,
+                        kind,
+                        pid,
+                        ppid,
+                    ));
                 }
             }
             if let Some(watcher) = watcher.as_ref() {
-                watcher.emit_inferred(pid, matches!(event, DescendantEvent::Started(_)));
+                watcher.emit_inferred(pid, matches!(event, DescendantEvent::Started { .. }));
             }
         }),
     );

@@ -88,7 +88,15 @@ pub enum ExactTraceEventKind {
 /// A descendant lifecycle fact reported by the host monitor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescendantEvent {
-    Started(u32),
+    Started {
+        pid: u32,
+        /// Immediate parent of the new descendant, when the discovery
+        /// mechanism knows it: the Linux `children`-file walk and the
+        /// macOS process-snapshot inversion both do; the Windows job
+        /// IOCP notification is PID-only, so it reports `None` rather
+        /// than paying a racy toolhelp scan per event.
+        parent_pid: Option<u32>,
+    },
     Exited(u32),
     /// The platform backend has completed its final reconciliation and no
     /// further descendant events can arrive.
