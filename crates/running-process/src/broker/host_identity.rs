@@ -42,6 +42,15 @@ fn machine_id() -> String {
     {
         read_trimmed("/etc/machine-id")
             .or_else(|| read_trimmed("/var/lib/dbus/machine-id"))
+            // Boot-scoped read-only fallback, mirroring the broker SID's
+            // derivation: minimal containers ship no machine-id file, and
+            // a shared "unknown" would make every such host compare as
+            // the same machine. Identity consumers already pair this with
+            // boot_id, so a per-boot value only strengthens mismatch
+            // detection.
+            .or_else(|| {
+                read_trimmed("/proc/sys/kernel/random/boot_id").map(|id| format!("boot:{id}"))
+            })
             .unwrap_or_else(|| "unknown".to_string())
     }
     #[cfg(target_os = "macos")]
