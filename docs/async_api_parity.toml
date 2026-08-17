@@ -347,6 +347,16 @@ python_sync = "n/a: not exposed to Python on either surface; it is internal plum
 python_async = "n/a: not exposed to Python on either surface; it is internal plumbing of the Rust engine"
 
 [[row]]
+id = "rust-process.with_observer_and_command"
+surface = "rust-process"
+member = "with_observer_and_command"
+status = "implemented"
+rust_sync = "an_observed_configured_command_spawns_verbatim_and_reports_lifecycle"
+rust_async = "n/a: the observer subscription is a sync-capture notification channel; the async engine reports the same events through the output cursor"
+python_sync = "n/a: not exposed to Python on either surface; a caller-configured std::process::Command has no Python spelling"
+python_async = "n/a: not exposed to Python on either surface; a caller-configured std::process::Command has no Python spelling"
+
+[[row]]
 id = "rust-process.write_stdin"
 surface = "rust-process"
 member = "write_stdin"
