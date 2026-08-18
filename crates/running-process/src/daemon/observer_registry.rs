@@ -320,6 +320,7 @@ mod tests {
             category: EventCategory::Lifecycle,
             kind: ObserverEventKind::Started,
             pid,
+            ppid: None,
             timestamp_ms: 0,
         }
     }
@@ -329,6 +330,7 @@ mod tests {
             category: EventCategory::File,
             kind: ObserverEventKind::Started,
             pid,
+            ppid: None,
             timestamp_ms: 0,
         }
     }

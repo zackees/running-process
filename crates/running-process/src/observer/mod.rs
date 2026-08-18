@@ -536,6 +536,14 @@ pub struct ObserverEvent {
     pub kind: ObserverEventKind,
     /// OS process id of the observed child.
     pub pid: u32,
+    /// Immediate parent of `pid`, when the producing backend knows it.
+    ///
+    /// Populated for [`ObserverEventKind::DescendantStarted`] on Linux
+    /// (the `/proc` children walk names the parent) and macOS (the
+    /// process snapshot carries it); `None` on Windows, whose job-object
+    /// notification is PID-only, and for every non-descendant event,
+    /// where the parent is the observed root itself.
+    pub ppid: Option<u32>,
     /// Milliseconds since the Unix epoch when the event was recorded.
     pub timestamp_ms: u128,
 }
@@ -543,6 +551,15 @@ pub struct ObserverEvent {
 impl ObserverEvent {
     /// Construct an event, stamping it with the current wall-clock time.
     fn now(category: EventCategory, kind: ObserverEventKind, pid: u32) -> Self {
+        Self::now_with_parent(category, kind, pid, None)
+    }
+
+    fn now_with_parent(
+        category: EventCategory,
+        kind: ObserverEventKind,
+        pid: u32,
+        ppid: Option<u32>,
+    ) -> Self {
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -551,6 +568,7 @@ impl ObserverEvent {
             category,
             kind,
             pid,
+            ppid,
             timestamp_ms,
         }
     }
@@ -563,6 +581,17 @@ impl ObserverEvent {
     /// `ObserverEmitter`.
     pub fn new_now(category: EventCategory, kind: ObserverEventKind, pid: u32) -> Self {
         Self::now(category, kind, pid)
+    }
+
+    /// Construct an event carrying the descendant's parent pid, stamping
+    /// it with the current wall-clock time.
+    pub fn new_now_with_parent(
+        category: EventCategory,
+        kind: ObserverEventKind,
+        pid: u32,
+        ppid: Option<u32>,
+    ) -> Self {
+        Self::now_with_parent(category, kind, pid, ppid)
     }
 }
 
@@ -609,6 +638,30 @@ impl ObserverConfig {
     pub fn categories(&self) -> &[EventCategory] {
         &self.categories
     }
+}
+
+/// Observe the launched process tree of an already-running process.
+///
+/// Attaches the per-OS descendant monitor to `root_pid` without owning its
+/// spawn: callers that manage their own child (custom pipe plumbing, an
+/// adopted pid) get the same `DescendantStarted` / `DescendantExited`
+/// stream that [`NativeProcess::with_observer`](crate::NativeProcess::with_observer)
+/// wires at spawn time. The monitor ends when the subscriber is dropped or
+/// [`ObserverSubscriber::stop`] is called, or when the root's tree fully
+/// drains — the channel then simply closes and `recv` returns `None`.
+///
+/// The `config` must observe [`EventCategory::Process`] for any events to
+/// flow; direct-child `Started`/`Exited` lifecycle events are the spawn
+/// owner's to report and are never synthesized here.
+///
+/// Platform note: Windows discovers descendants through the Job Object
+/// IOCP attached at spawn, so this post-hoc attach observes nothing there
+/// today; Linux (subreaper + `/proc` children walk) and macOS (process
+/// snapshots + kqueue hints) work for any live pid.
+pub fn observe_launched_tree(root_pid: u32, config: ObserverConfig) -> ObserverSubscriber {
+    let (emitter, subscriber) = ObserverEmitter::new(config);
+    crate::descendant_monitor::start(root_pid, Some(&emitter), None);
+    subscriber
 }
 
 /// Receiver handle for observation events.

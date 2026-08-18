@@ -51,6 +51,7 @@
     pub fn terminate_group_soft(&self) -> Result<(), ProcessError>
     pub fn wait(&self, timeout: Option<Duration>) -> Result<i32, ProcessError>
     pub fn with_observer( config: ProcessConfig, observer: crate::observer::ObserverConfig, ) -> (Self, ObserverSubscriber)
+    pub fn with_observer_and_command( command: Command, config: ProcessConfig, observer: crate::observer::ObserverConfig, ) -> (Self, ObserverSubscriber)
     pub fn with_process_watches( config: ProcessConfig, watches: Vec<ProcessWatch>, policy: ObservationPolicy, ) -> Result<(Self, ProcessWatchSubscriber), ProcessObservationError>
     pub fn write_stdin(&self, data: &[u8]) -> Result<(), ProcessError>
     pub fn write_stdin_streaming(&self, data: &[u8]) -> Result<(), ProcessError>

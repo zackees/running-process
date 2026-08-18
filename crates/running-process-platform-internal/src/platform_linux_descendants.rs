@@ -1,6 +1,6 @@
 //! Linux implementation of launched-tree descendant monitoring.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,8 +51,11 @@ fn process_identity(pid: u32) -> Option<ProcessIdentity> {
     })
 }
 
-fn descendant_pids(root_pid: u32) -> HashSet<u32> {
-    let mut result = HashSet::new();
+/// Map of live descendant pid -> immediate parent pid. The parent is a
+/// free by-product of the `children`-file walk: the pid whose children
+/// file listed the entry.
+fn descendant_pids(root_pid: u32) -> HashMap<u32, u32> {
+    let mut result = HashMap::new();
     let mut stack = vec![root_pid];
     while let Some(pid) = stack.pop() {
         let path = format!("/proc/{pid}/task/{pid}/children");
@@ -60,8 +63,8 @@ fn descendant_pids(root_pid: u32) -> HashSet<u32> {
             continue;
         };
         for token in contents.split_ascii_whitespace() {
-            if let Ok(child) = token.parse() {
-                if result.insert(child) {
+            if let Ok(child) = token.parse::<u32>() {
+                if result.insert(child, pid).is_none() {
                     stack.push(child);
                 }
             }
@@ -70,7 +73,7 @@ fn descendant_pids(root_pid: u32) -> HashSet<u32> {
     result
 }
 
-fn snapshot(root_pid: u32, expected: ProcessIdentity) -> Option<HashSet<u32>> {
+fn snapshot(root_pid: u32, expected: ProcessIdentity) -> Option<HashMap<u32, u32>> {
     let before = process_identity(root_pid);
     let descendants = descendant_pids(root_pid);
     verified_snapshot(
@@ -84,39 +87,46 @@ fn snapshot(root_pid: u32, expected: ProcessIdentity) -> Option<HashSet<u32>> {
 fn verified_snapshot(
     expected: ProcessIdentity,
     before: Option<ProcessIdentity>,
-    descendants: HashSet<u32>,
+    descendants: HashMap<u32, u32>,
     after: Option<ProcessIdentity>,
-) -> Option<HashSet<u32>> {
+) -> Option<HashMap<u32, u32>> {
     (before == Some(expected) && after == Some(expected)).then_some(descendants)
 }
 
 fn emit_diff(
-    previous: &HashSet<u32>,
-    current: &HashSet<u32>,
+    previous: &HashMap<u32, u32>,
+    current: &HashMap<u32, u32>,
     emit: &dyn Fn(DescendantEvent),
 ) {
-    for &pid in current.difference(previous) {
-        emit(DescendantEvent::Started(pid));
+    for (&pid, &parent_pid) in current {
+        if !previous.contains_key(&pid) {
+            emit(DescendantEvent::Started {
+                pid,
+                parent_pid: Some(parent_pid),
+            });
+        }
     }
-    for &pid in previous.difference(current) {
-        emit(DescendantEvent::Exited(pid));
+    for &pid in previous.keys() {
+        if !current.contains_key(&pid) {
+            emit(DescendantEvent::Exited(pid));
+        }
     }
 }
 
 fn pump_loop_with(
     stop: &DescendantMonitorStop,
-    mut take_snapshot: impl FnMut() -> Option<HashSet<u32>>,
+    mut take_snapshot: impl FnMut() -> Option<HashMap<u32, u32>>,
     emit: &dyn Fn(DescendantEvent),
     mut wait: impl FnMut() -> bool,
 ) {
-    let mut known = HashSet::new();
+    let mut known = HashMap::new();
     loop {
         if stop.is_stopped() {
             emit(DescendantEvent::Completed);
             return;
         }
         let Some(current) = take_snapshot() else {
-            for pid in known {
+            for pid in known.into_keys() {
                 emit(DescendantEvent::Exited(pid));
             }
             emit(DescendantEvent::Completed);
@@ -148,9 +158,13 @@ fn pump_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::sync::mpsc;
 
-    fn collect_diff(previous: &HashSet<u32>, current: &HashSet<u32>) -> Vec<DescendantEvent> {
+    fn collect_diff(
+        previous: &HashMap<u32, u32>,
+        current: &HashMap<u32, u32>,
+    ) -> Vec<DescendantEvent> {
         let (tx, rx) = mpsc::channel();
         emit_diff(previous, current, &|event| tx.send(event).unwrap());
         drop(tx);
@@ -163,30 +177,33 @@ mod tests {
     }
 
     #[test]
-    fn emit_diff_fires_one_started_per_new_pid() {
-        let previous = [10, 20].into_iter().collect();
-        let current = [10, 20, 30, 40].into_iter().collect();
+    fn emit_diff_fires_one_started_per_new_pid_with_its_parent() {
+        let previous = [(10, 1), (20, 10)].into_iter().collect();
+        let current = [(10, 1), (20, 10), (30, 20), (40, 10)].into_iter().collect();
         let events = collect_diff(&previous, &current);
-        let started: HashSet<_> = events
+        let started: HashMap<_, _> = events
             .into_iter()
             .filter_map(|event| match event {
-                DescendantEvent::Started(pid) => Some(pid),
+                DescendantEvent::Started { pid, parent_pid } => Some((pid, parent_pid)),
                 DescendantEvent::Exited(_) | DescendantEvent::Completed => None,
             })
             .collect();
-        assert_eq!(started, [30, 40].into_iter().collect());
+        assert_eq!(
+            started,
+            [(30, Some(20)), (40, Some(10))].into_iter().collect()
+        );
     }
 
     #[test]
     fn emit_diff_fires_one_exited_per_gone_pid() {
-        let previous = [10, 20, 30].into_iter().collect();
-        let current = [10].into_iter().collect();
+        let previous = [(10, 1), (20, 10), (30, 20)].into_iter().collect();
+        let current = [(10, 1)].into_iter().collect();
         let events = collect_diff(&previous, &current);
         let exited: HashSet<_> = events
             .into_iter()
             .filter_map(|event| match event {
                 DescendantEvent::Exited(pid) => Some(pid),
-                DescendantEvent::Started(_) | DescendantEvent::Completed => None,
+                DescendantEvent::Started { .. } | DescendantEvent::Completed => None,
             })
             .collect();
         assert_eq!(exited, [20, 30].into_iter().collect());
@@ -194,7 +211,7 @@ mod tests {
 
     #[test]
     fn emit_diff_no_events_when_steady_state() {
-        let current = [10, 20].into_iter().collect();
+        let current = [(10, 1), (20, 10)].into_iter().collect();
         assert!(collect_diff(&current, &current).is_empty());
     }
 
@@ -207,7 +224,7 @@ mod tests {
     fn descendant_pids_for_self_includes_no_phantom_entries() {
         assert!(descendant_pids(std::process::id())
             .into_iter()
-            .all(|pid| pid > 1));
+            .all(|(pid, parent_pid)| pid > 1 && parent_pid > 0));
     }
 
     #[test]
@@ -246,7 +263,7 @@ mod tests {
             verified_snapshot(
                 expected,
                 Some(recycled),
-                [42].into_iter().collect(),
+                [(42, 7)].into_iter().collect(),
                 Some(recycled),
             ),
             None
@@ -258,8 +275,8 @@ mod tests {
         let stop = DescendantMonitorStop::new();
         let (tx, rx) = mpsc::channel();
         let mut snapshots = [
-            Some([42].into_iter().collect()),
-            Some(HashSet::new()),
+            Some([(42, 7)].into_iter().collect()),
+            Some(HashMap::new()),
             None,
         ]
         .into_iter();
@@ -273,7 +290,10 @@ mod tests {
         assert_eq!(
             rx.iter().collect::<Vec<_>>(),
             [
-                DescendantEvent::Started(42),
+                DescendantEvent::Started {
+                    pid: 42,
+                    parent_pid: Some(7),
+                },
                 DescendantEvent::Exited(42),
                 DescendantEvent::Completed,
             ]
@@ -296,7 +316,7 @@ mod tests {
                         announced = true;
                         waiting_tx.send(()).unwrap();
                     }
-                    Some(HashSet::new())
+                    Some(HashMap::new())
                 },
                 &|event| event_tx.send(event).unwrap(),
                 || pump_stop.wait_timeout(Duration::from_secs(30)),
