@@ -4,7 +4,38 @@
 
 `running-process` is what you wished python's subprocess was. Blazing fast, highly concurrent, huge feature list, dead process tracking, pty support. Built in Rust with a thin python api.
 
-## v1 Broker Docs
+## Why?
+
+This project started off as a fix for python's sub process module. It was in python originally, but then moved to OS specific rust. Now it's blazing fast: using OS threads, atomics and proper signaling back to the python api. This library also allows stderr and stdout stream reading in parallel, something `subprocess` lacks. It also has cross platform process tracking, pty generation. It has zombie process tracking. It also has builtin `expect` for keyword event triggers, `idle tracking` (great for agent CLI's that dont' notifiy when they are done, they just stop sending data).
+
+This libary is design for speed and correctness and portability. Usually terminal utilities are for windows or linux/mac. This is designed to run everywhere.
+
+For launched-tree diagnostics, see [process watches](docs/process-watches.md).
+
+## Start here
+
+**Just want to run or supervise a command?** Start with `subprocess_run`,
+`RunningProcess`, `InteractiveProcess`, or `ContainedProcessGroup`. They work
+on a bare installation: no broker, daemon, service, or additional setup is
+required.
+
+**Need a brokered process that can be supervised across sessions?** That is the
+v1 broker framework. Its client APIs use the broker daemon and its deployment
+and operational documentation is collected below.
+
+### Does this API use the v1 broker?
+
+| API | Uses the v1 broker? |
+| --- | --- |
+| `subprocess_run`, `RunningProcess`, `InteractiveProcess`, PTY/expect/idle APIs | No |
+| `ContainedProcessGroup`, `find_processes_by_originator`, `kill_process_tree` | No |
+| `launch_detached` (and `running_process.asyncio.launch_detached`) | **Yes** — it connects to the broker, starting it when it is not already running |
+| `running_process.daemon.spawn_daemon` | No broker connection, but it uses the separately packaged binary trampoline and is intended for daemon infrastructure rather than ordinary process use |
+
+### v1 broker documentation
+
+<details>
+<summary>Architecture, operations, schemas, rollout, and deployment references</summary>
 
 The v1 broker work is documented as a stable spec alongside the implementation:
 
@@ -16,6 +47,8 @@ The v1 broker work is documented as a stable spec alongside the implementation:
 - Examples: [minimal consumer](examples/minimal-consumer/), [release-handles CLI](examples/release-handles-cli/), [custom isolation](examples/custom-isolation/)
 - Contrib service templates: [systemd](contrib/systemd/running-process-broker-v1.service), [launchd](contrib/launchd/com.zackees.running-process-broker-v1.plist), [Windows service installer](contrib/windows-service/install.ps1)
 
+</details>
+
 | Platform | CI |
 |----------|----|
 | Linux | [![Linux](https://github.com/zackees/running-process/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/ci-linux.yml) |
@@ -25,17 +58,6 @@ The v1 broker work is documented as a stable spec alongside the implementation:
 
 Each `ci-*` workflow fans out to that platform's x86 and ARM lanes (and
 musl on Linux), running build, lint, unit and integration stages per lane.
-
-
-
-
-## Why?
-
-This project started off as a fix for python's sub process module. It was in python originally, but then moved to OS specific rust. Now it's blazing fast: using OS threads, atomics and proper signaling back to the python api. This library also allows stderr and stdout stream reading in parallel, something `subprocess` lacks. It also has cross platform process tracking, pty generation. It has zombie process tracking. It also has builtin `expect` for keyword event triggers, `idle tracking` (great for agent CLI's that dont' notifiy when they are done, they just stop sending data).
-
-This libary is design for speed and correctness and portability. Usually terminal utilities are for windows or linux/mac. This is designed to run everywhere.
-
-For launched-tree diagnostics, see [process watches](docs/process-watches.md).
 
 ## Process watches
 
@@ -94,7 +116,6 @@ the same coverage for static binaries, secure-exec/setuid programs, direct
 syscalls, or programs that clear their environment. See
 [process watches](docs/process-watches.md) for stack artifacts, capability
 discovery, exact selector semantics, and the full platform model.
-
 ## PTY Support Matrix
 
 PTY support is a guaranteed part of the package contract on:
@@ -614,7 +635,19 @@ The env var `RUNNING_PROCESS_ORIGINATOR=TOOL:PID` is inherited by all descendant
 
 ## Detached Launches
 
-Use `launch_detached(...)` when a caller needs to start a daemon-tracked shell command and return immediately:
+> **Uses the v1 broker.** `launch_detached(...)` is not a plain subprocess
+> launcher: it connects to the running-process broker so the broker can own
+> tracking after the caller returns. It reuses a running broker or starts one
+> with `running-process-daemon start`; if a daemon binary next to the current
+> executable or a `running-process-daemon` executable on `PATH` cannot start
+> it, the call fails.
+>
+> For a command that only needs normal process supervision while its caller is
+> alive, use `RunningProcess`, `InteractiveProcess`, or `subprocess_run`
+> instead. They do not use the broker.
+
+Use `launch_detached(...)` when a caller needs a broker-tracked shell command
+and return immediately:
 
 ```python
 from running_process import launch_detached
@@ -628,7 +661,9 @@ handle = launch_detached(
 print(handle.pid)
 ```
 
-This path uses the running-process daemon for launch/tracking. It is separate from `running_process.daemon.spawn_daemon(...)`, which keeps the trampoline-based process-name behavior.
+`launch_detached` is separate from `running_process.daemon.spawn_daemon(...)`,
+which uses the binary trampoline for process-name behavior. The trampoline API
+is daemon infrastructure, not a prerequisite for the ordinary process APIs.
 
 ## Tracked PID Cleanup
 
