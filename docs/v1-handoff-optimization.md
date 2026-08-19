@@ -273,7 +273,7 @@ warmup + 50 measured iterations, nearest-rank P50/P99.
 **Topology constraint discovered during the rollout attempt:** the
 registered-backend serve mode verifies its startup endpoint probe
 against the serving process's OWN identity (pid / exe_path /
-exe_sha256 in `build_registered_backend`, serve.rs). A standalone
+exe_hash in `build_registered_backend`, serve.rs). A standalone
 `running-process-broker-v1 --serve` process fronting a *separate*
 backend process therefore fails startup with
 `endpoint probe response identity did not match expected daemon

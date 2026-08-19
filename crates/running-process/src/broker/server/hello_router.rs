@@ -156,7 +156,7 @@ impl<'a> HelloRouter<'a> {
         // It becomes part of the routing key so a rebuilt daemon (same version,
         // different bytes) is a registry miss and gets its own daemon instead
         // of being handed the resident stale-code one (running-process#894).
-        let expected_exe = on_disk_exe_sha256_hex(&service_definition.binary_path);
+        let expected_exe = on_disk_exe_hash_hex(&service_definition.binary_path);
 
         if let Some(registered) = self.registered_backend_for(
             &instance,
@@ -182,14 +182,14 @@ impl<'a> HelloRouter<'a> {
         instance: &BrokerInstanceKey,
         service_definition: &ServiceDefinition,
         service_version: &str,
-        expected_exe_sha256: &str,
+        expected_exe_hash: &str,
     ) -> Option<RegisteredBackend> {
         match self.backends {
             BackendRegistryView::Static(registry) => registry.registered_backend_for(
                 instance,
                 service_definition,
                 service_version,
-                expected_exe_sha256,
+                expected_exe_hash,
             ),
             BackendRegistryView::Live(registry) => {
                 let mut registry = registry
@@ -200,7 +200,7 @@ impl<'a> HelloRouter<'a> {
                     instance,
                     service_definition,
                     service_version,
-                    expected_exe_sha256,
+                    expected_exe_hash,
                 )
             }
         }
@@ -429,7 +429,7 @@ fn refused_reply(refused: Refused) -> HelloReply {
     }
 }
 
-/// Content hash (lowercase-hex SHA-256) of the daemon binary at `binary_path`,
+/// BLAKE3 content hash (lowercase hex) of the daemon binary at `binary_path`,
 /// memoized on `(path, mtime, size)` so a hot broker does not re-hash a large,
 /// unchanged executable on every Hello. A rebuild bumps mtime (and usually
 /// size), which invalidates the cache entry and yields the new build's hash —
@@ -440,8 +440,8 @@ fn refused_reply(refused: Refused) -> HelloReply {
 /// 64-hex hash from its verified identity), so the caller treats it as a miss
 /// and proceeds to launch — where the real spawn error surfaces — rather than
 /// silently reusing a stale daemon.
-fn on_disk_exe_sha256_hex(binary_path: &str) -> String {
-    use crate::broker::backend_lifecycle::identity::sha256_file;
+fn on_disk_exe_hash_hex(binary_path: &str) -> String {
+    use crate::broker::backend_lifecycle::identity::executable_hash_file;
     use crate::broker::server::backend_registry::hex_lower;
     use std::path::PathBuf;
     use std::sync::OnceLock;
@@ -475,7 +475,7 @@ fn on_disk_exe_sha256_hex(binary_path: &str) -> String {
         }
     }
 
-    let hash = match sha256_file(&path) {
+    let hash = match executable_hash_file(&path) {
         Ok(bytes) => hex_lower(&bytes),
         Err(_) => return String::new(),
     };

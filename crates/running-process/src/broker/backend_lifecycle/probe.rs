@@ -395,8 +395,8 @@ fn identity_mismatch(expected: &DaemonProcess, actual: &DaemonProcess) -> Endpoi
         "pid"
     } else if actual.exe_path != expected.exe_path {
         "exe_path"
-    } else if actual.exe_sha256 != expected.exe_sha256 {
-        "exe_sha256"
+    } else if actual.exe_hash != expected.exe_hash {
+        "exe_hash"
     } else if actual.boot_id != expected.boot_id {
         "boot_id"
     } else if !same_endpoint(&actual.ipc_endpoint, &expected.ipc_endpoint) {
@@ -410,7 +410,7 @@ fn identity_mismatch(expected: &DaemonProcess, actual: &DaemonProcess) -> Endpoi
 fn same_daemon_identity(left: &DaemonProcess, right: &DaemonProcess) -> bool {
     left.pid == right.pid
         && left.exe_path == right.exe_path
-        && left.exe_sha256 == right.exe_sha256
+        && left.exe_hash == right.exe_hash
         && left.boot_id == right.boot_id
         && same_endpoint(&left.ipc_endpoint, &right.ipc_endpoint)
 }

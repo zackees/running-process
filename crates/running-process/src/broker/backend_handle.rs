@@ -82,7 +82,7 @@ impl BackendHandle {
     ///
     /// This probe verifies the endpoint identity tuple, requires the endpoint
     /// to answer the nonce-based IPC identity probe, then verifies current boot
-    /// ID, process liveness, executable path, and executable SHA-256. It
+    /// ID, process liveness, executable path, and executable BLAKE3 hash. It
     /// returns `None` for stale manifests, dead PIDs, mismatched daemon
     /// binaries, or endpoints that do not answer as the expected backend.
     ///
@@ -164,7 +164,7 @@ impl BackendHandle {
     /// Async counterpart of [`Self::probe_with_service`] (#414).
     ///
     /// Performs the same identity checks (endpoint tuple, PID, exe
-    /// path, exe SHA-256, boot ID, and the live nonce probe) but all
+    /// path, executable BLAKE3 hash, boot ID, and the live nonce probe) but all
     /// I/O runs on the current tokio runtime. This is the preferred
     /// entry point for tokio daemons (zccache, soldr, clud) — calling
     /// the blocking [`Self::probe_with_service`] from an async

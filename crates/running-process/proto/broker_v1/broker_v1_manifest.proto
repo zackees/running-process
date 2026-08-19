@@ -152,11 +152,16 @@ message Ownership {
 message DaemonProcess {
   uint32 pid = 1;
   string exe_path = 2;
-  bytes exe_sha256 = 3;
+  // Tag 3 carried SHA-256 in releases before running-process#946. It is
+  // deliberately reserved rather than reused so old and new peers reject the
+  // identity contract instead of silently comparing different algorithms.
+  reserved 3;
   Endpoint ipc_endpoint = 4;              // structured (namespace_id, path)
   uint64 started_at_unix_ms = 5;
   string boot_id = 6;                     // copy of HostIdentity.boot_id at start
   optional uint32 idle_timeout_secs = 7;
+  string exe_hash_algorithm = 8;          // currently "blake3"
+  bytes exe_hash = 9;
 }
 
 message CleanupPolicy {

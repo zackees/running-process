@@ -7,7 +7,6 @@ use running_process::broker::backend_lifecycle::verify_pid::{
     process_is_alive, verify_daemon_process, VerifyPidError,
 };
 use running_process::broker::protocol::Endpoint;
-use sha2::{Digest, Sha256};
 
 use crate::backend_handle_common::{current_daemon, impossible_pid};
 
@@ -42,7 +41,7 @@ fn macos_process_handle_latches_exit_after_event_is_consumed() {
     let handle = verify_daemon_process(&DaemonProcess {
         pid: child.id(),
         exe_path: sleeper.into(),
-        exe_sha256: sha256_file(sleeper),
+        exe_hash: executable_hash_file(sleeper),
         boot_id: running_process::broker::host_identity::current().boot_id,
         ipc_endpoint: Endpoint {
             namespace_id: "test-namespace".into(),
@@ -60,10 +59,8 @@ fn macos_process_handle_latches_exit_after_event_is_consumed() {
     assert!(!handle.is_alive());
 }
 
-fn sha256_file(path: &str) -> [u8; 32] {
-    let bytes = std::fs::read(path).unwrap();
-    let digest = Sha256::digest(&bytes);
-    let mut out = [0_u8; 32];
-    out.copy_from_slice(&digest);
-    out
+fn executable_hash_file(path: &str) -> [u8; 32] {
+    *running_process::blake3_file(std::path::Path::new(path))
+        .unwrap()
+        .as_bytes()
 }

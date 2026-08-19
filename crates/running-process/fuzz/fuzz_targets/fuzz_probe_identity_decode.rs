@@ -31,7 +31,7 @@ fuzz_target!(|data: &[u8]| {
             "accepted probe identity must carry an endpoint"
         );
         assert_eq!(
-            proto.exe_sha256.len(),
+            proto.exe_hash.len(),
             32,
             "accepted probe identity must carry a 32-byte digest"
         );

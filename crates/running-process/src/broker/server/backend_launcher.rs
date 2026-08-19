@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::broker::backend_handle::{BackendHandle, BackendHandleError, DaemonProcess};
-use crate::broker::backend_lifecycle::identity::{sha256_file, IdentityError};
+use crate::broker::backend_lifecycle::identity::{executable_hash_file, IdentityError};
 use crate::broker::host_identity;
 use crate::broker::lifecycle::sid::{user_sid_hash, SidError};
 use crate::broker::protocol::{Endpoint, ServiceDefinition};
@@ -331,11 +331,11 @@ fn daemon_identity_for_spawned_process(
     ipc_endpoint: Endpoint,
     idle_timeout_secs: Option<u32>,
 ) -> Result<DaemonProcess, IdentityError> {
-    let exe_sha256 = sha256_file(&exe_path)?;
+    let exe_hash = executable_hash_file(&exe_path)?;
     Ok(DaemonProcess {
         pid,
         exe_path: exe_path.clone(),
-        exe_sha256,
+        exe_hash,
         boot_id: host_identity::current_for_path(&exe_path).boot_id,
         ipc_endpoint,
         started_at_unix_ms: unix_now_ms(),
