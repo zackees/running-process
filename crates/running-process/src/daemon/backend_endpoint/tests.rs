@@ -191,9 +191,9 @@ async fn mux_backend_connection_rejects_non_session_first_party_frame() {
 #[tokio::test]
 async fn full_vertical_client_broker_relay_daemon_mux_compile() {
     // The whole SESSION vertical over two real sockets: client -> broker relay
-    // -> daemon mux endpoint. The broker is transparent (`relay_session` /
-    // `copy_bidirectional`); the daemon serves 0x5350 via the mux.
-    use crate::broker::session_relay::relay_session;
+    // -> daemon mux endpoint. The broker is transparent (platform SESSION
+    // relay); the daemon serves 0x5350 via the mux.
+    use crate::broker::session_relay::relay_local_socket_session;
 
     let pid = std::process::id();
     let daemon_path = std::env::temp_dir().join(format!("rp-vert-d-{pid}.sock"));
@@ -227,7 +227,7 @@ async fn full_vertical_client_broker_relay_daemon_mux_compile() {
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
         let client_conn = broker_listener.accept().await.expect("broker accept");
-        let _ = relay_session(client_conn, &daemon_path_str).await;
+        let _ = relay_local_socket_session(client_conn, &daemon_path_str).await;
     });
 
     // Client dials ONLY the broker and speaks the SESSION wire.

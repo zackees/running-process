@@ -53,6 +53,9 @@ pub use platform_imp::{
     CaptureCancellation, TracedChild, WindowsJobHandle,
 };
 
+#[cfg(feature = "session-relay")]
+pub use platform_imp::relay_local_socket_session;
+
 /// Apply host-owned setup for the legacy Tokio-command compatibility surface.
 ///
 /// The public wrapper retains its policy type, while console suppression and

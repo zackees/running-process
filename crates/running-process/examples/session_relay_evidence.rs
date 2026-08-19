@@ -65,6 +65,7 @@ enum Workload {
     Duplex,
     PingPong,
     Disconnect,
+    DaemonDisconnect,
 }
 
 impl Workload {
@@ -75,6 +76,7 @@ impl Workload {
             Self::Duplex => "full-duplex",
             Self::PingPong => "ping-pong",
             Self::Disconnect => "disconnect",
+            Self::DaemonDisconnect => "daemon-disconnect",
         }
     }
 }
@@ -172,6 +174,7 @@ fn parse_topologies() -> io::Result<ParsedArgs> {
                     "full-duplex" | "duplex" => Workload::Duplex,
                     "ping-pong" | "pingpong" => Workload::PingPong,
                     "disconnect" => Workload::Disconnect,
+                    "daemon-disconnect" => Workload::DaemonDisconnect,
                     _ => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
@@ -181,7 +184,7 @@ fn parse_topologies() -> io::Result<ParsedArgs> {
                 });
             }
             "--help" | "-h" => {
-                println!("usage: session_relay_evidence [--quick|--smoke] [--topology direct|current|tuned|splice|all] [--sessions N] [--workload stdout|stalled-stdout|full-duplex|ping-pong|disconnect] [--bytes-mib N] [--chunk-kib N]");
+                println!("usage: session_relay_evidence [--quick|--smoke] [--topology direct|current|tuned|splice|all] [--sessions N] [--workload stdout|stalled-stdout|full-duplex|ping-pong|disconnect|daemon-disconnect] [--bytes-mib N] [--chunk-kib N]");
                 std::process::exit(0);
             }
             other => {
@@ -407,6 +410,7 @@ where
             }
             Ok(())
         }
+        Workload::DaemonDisconnect => Ok(()),
     }
 }
 
@@ -495,6 +499,19 @@ where
             transferred_bytes: 0,
             latencies_us: Vec::new(),
         }),
+        Workload::DaemonDisconnect => {
+            let mut trailing = [0_u8; 1];
+            if stream.read(&mut trailing).await? != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "daemon disconnect produced unexpected payload",
+                ));
+            }
+            Ok(Outcome {
+                transferred_bytes: 0,
+                latencies_us: Vec::new(),
+            })
+        }
     }
 }
 
@@ -521,7 +538,10 @@ async fn run_relay(
             Ok(())
         }
         #[cfg(target_os = "linux")]
-        Topology::Splice => splice_linux::relay(client, daemon_path).await,
+        Topology::Splice => {
+            running_process::broker::session_relay::relay_local_socket_session(client, daemon_path)
+                .await
+        }
     }
 }
 
@@ -932,140 +952,6 @@ fn process_usage() -> io::Result<Usage> {
         // rather than conflating an unavailable counter with a real zero.
         context_switches: None,
     })
-}
-
-#[cfg(target_os = "linux")]
-mod splice_linux {
-    use std::io;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-
-    use interprocess::local_socket::tokio::prelude::*;
-    use tokio::io::unix::AsyncFd;
-
-    use super::name;
-
-    fn duplicate(fd: i32) -> io::Result<OwnedFd> {
-        // SAFETY: fd is borrowed from a live socket half. fcntl either returns
-        // a new independently owned descriptor or a negative error sentinel.
-        let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
-        if duplicated < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            // SAFETY: a nonnegative F_DUPFD_CLOEXEC result is a fresh descriptor
-            // whose ownership is transferred exactly once to OwnedFd.
-            Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
-        }
-    }
-
-    fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-        let mut fds = [-1; 2];
-        // SAFETY: fds points to space for the two descriptors pipe2 writes.
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: successful pipe2 initialized two distinct owned descriptors,
-        // each transferred exactly once into OwnedFd.
-        Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
-    }
-
-    fn splice_once(from: i32, to: i32, count: usize) -> io::Result<usize> {
-        // SAFETY: from/to are live descriptors, offsets are null as required
-        // for pipes/sockets, and count names readable/writable kernel buffers.
-        let result = unsafe {
-            libc::splice(
-                from,
-                std::ptr::null_mut(),
-                to,
-                std::ptr::null_mut(),
-                count,
-                libc::SPLICE_F_MOVE | libc::SPLICE_F_NONBLOCK,
-            )
-        };
-        if result < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(result as usize)
-        }
-    }
-
-    async fn one_way<R: std::os::fd::AsFd, W: std::os::fd::AsFd>(
-        reader: R,
-        writer: W,
-    ) -> io::Result<u64> {
-        let source = AsyncFd::new(duplicate(reader.as_fd().as_raw_fd())?)?;
-        let destination = AsyncFd::new(duplicate(writer.as_fd().as_raw_fd())?)?;
-        let (pipe_read, pipe_write) = pipe()?;
-        let mut total = 0_u64;
-
-        loop {
-            let moved = loop {
-                let mut ready = source.readable().await?;
-                match ready.try_io(|fd| {
-                    splice_once(fd.get_ref().as_raw_fd(), pipe_write.as_raw_fd(), 64 * 1024)
-                }) {
-                    Ok(result) => break result?,
-                    Err(_) => continue,
-                }
-            };
-            if moved == 0 {
-                // SAFETY: destination is a duplicated live socket descriptor;
-                // shutdown does not take ownership and SHUT_WR is valid.
-                unsafe {
-                    libc::shutdown(destination.get_ref().as_raw_fd(), libc::SHUT_WR);
-                }
-                return Ok(total);
-            }
-            let mut remaining = moved;
-            while remaining != 0 {
-                let written = loop {
-                    let mut ready = destination.writable().await?;
-                    match ready.try_io(|fd| {
-                        splice_once(pipe_read.as_raw_fd(), fd.get_ref().as_raw_fd(), remaining)
-                    }) {
-                        Ok(result) => break result?,
-                        Err(_) => continue,
-                    }
-                };
-                if written == 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "splice destination made no progress",
-                    ));
-                }
-                remaining -= written;
-                total += written as u64;
-            }
-        }
-    }
-
-    pub async fn relay(
-        client: interprocess::local_socket::tokio::Stream,
-        daemon_path: &str,
-    ) -> io::Result<()> {
-        let daemon = interprocess::local_socket::tokio::Stream::connect(name(daemon_path)?).await?;
-        let (client_read, client_write) = client.split();
-        let (daemon_read, daemon_write) = daemon.split();
-        // The portable dispatch enums intentionally omit raw-fd traits. On
-        // Unix, extract their sole concrete implementation as documented by
-        // interprocess before handing descriptors to splice(2).
-        let client_read = match client_read {
-            interprocess::local_socket::tokio::RecvHalf::UdSocket(value) => value,
-        };
-        let client_write = match client_write {
-            interprocess::local_socket::tokio::SendHalf::UdSocket(value) => value,
-        };
-        let daemon_read = match daemon_read {
-            interprocess::local_socket::tokio::RecvHalf::UdSocket(value) => value,
-        };
-        let daemon_write = match daemon_write {
-            interprocess::local_socket::tokio::SendHalf::UdSocket(value) => value,
-        };
-        tokio::try_join!(
-            one_way(client_read, daemon_write),
-            one_way(daemon_read, client_write)
-        )?;
-        Ok(())
-    }
 }
 
 #[tokio::main(flavor = "multi_thread")]

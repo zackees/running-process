@@ -1,8 +1,9 @@
 # SESSION relay copy-avoidance evaluation (#949)
 
-Status: **evaluation complete**. Pursue the measured Linux `splice(2)` win in
-[follow-up #1030](https://github.com/zackees/running-process/issues/1030), and
-keep the current buffered relay on Windows and macOS.
+Status: **evaluation complete; Linux production path validated**. The measured
+Linux `splice(2)` win is implemented by
+[follow-up #1030](https://github.com/zackees/running-process/issues/1030), while
+Windows and macOS keep the current buffered relay.
 
 This result does not question Soldr's daemon/broker architecture. Soldr's stable
 singleton broker successfully routes compile sessions to matching daemon
@@ -41,6 +42,38 @@ The 64 KiB buffered control is a Linux no-go. Its three-trial stdout median was
 595.588 MiB/s and 1,129.816 ms CPU/GiB, versus 600.958 MiB/s and 895.428 ms for
 current. Full-duplex throughput also fell from 739.380 to 501.729 MiB/s without
 a CPU threshold win.
+
+#### Production confirmation (#1030)
+
+The evidence example's `splice` topology now calls the production
+`relay_local_socket_session` function rather than carrying a private prototype.
+Five new interleaved production trials strengthened the original result:
+
+| Workload | Current | Production splice | Throughput change | Current CPU/GiB | Splice CPU/GiB | CPU change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| full duplex | 559.368 MiB/s | 746.197 MiB/s | +33.4% | 1,032.331 ms | 531.928 ms | **-48.5%** |
+
+Median 8 KiB ping-pong P99 improved from 3,224 us to 1,529 us (-52.6%). A
+64-session reader stalled for 250 ms remained byte-exact and bounded at
+3,940,352 bytes of broker RSS. Both client-initiated and daemon-initiated
+disconnect cases complete within the harness cleanup bound.
+
+The production change was also cross-validated through a local Soldr build that
+embedded each `running-process` revision. Soldr's successful stable singleton
+broker remained PID 19655 throughout the comparison; it was not restarted or
+replaced. When the local CLI image changed, that broker routed work to the
+matching baseline and splice daemon generations behind it, whose PIDs then
+remained stable for their respective five-trial series.
+
+With `CARGO_BUILD_JOBS=2` and `SOLDR_JOBS=2`, five real warm
+`soldr cargo build -p soldr-cli --bin soldr` trials took 26.973, 10.330, 9.931,
+9.022, and 13.472 seconds on the baseline, versus 27.460, 9.727, 9.694, 10.247,
+and 12.350 seconds with production splice. The medians were 10.330 and 10.247
+seconds respectively, a 0.8% improvement and therefore no warm-build
+regression. One-time image/cache priming runs were excluded; two priming
+attempts were also discarded after compiler processes were killed under
+concurrent container memory pressure. Those failures were build-resource
+events, not broker replacement, routing, or relay failures.
 
 ### Windows: no-go for 64 KiB buffers
 
@@ -109,10 +142,11 @@ existing named-pipe full-proxy behavior rather than leaking a task or turning it
 into a false pass.
 
 Raw evidence is checked in as the [platform matrix](evidence/session-relay-platform-matrix.csv),
-[duration trials](evidence/session-relay-duration-trials.csv), and
-[semantics cases](evidence/session-relay-semantics.csv). The duration file labels
-the initial three-trial controls separately from the five-trial interleaved
-confirmation series used for the go/no-go decisions.
+[evaluation duration trials](evidence/session-relay-duration-trials.csv),
+[production trials](evidence/session-relay-production-trials.csv), and
+[semantics cases](evidence/session-relay-semantics.csv). The evaluation duration
+file labels the initial controls separately from the interleaved confirmation
+series used for the original go/no-go decision.
 
 ## Reproduction commands
 
@@ -143,9 +177,13 @@ not modify the host or repository):
 uv run --no-sync python ci/dev_docker.py -- sh -lc "apt-get update -qq && apt-get install -y -qq strace >/dev/null && strace -f -c -e trace=read,write,splice,shutdown,close target/release/examples/session_relay_evidence --smoke --topology splice"
 ```
 
-The trace recorded 32 `splice` calls (two nonblocking retries), 50 reads, 14
-writes, four shutdowns, and 37 closes. This proves that bulk relay traffic used
-the kernel splice path. The hardware-counter attempt was:
+The evaluation prototype trace recorded 32 `splice` calls. After #1030 wired
+the evidence topology to the production function, the same smoke trace recorded
+42 `splice` calls (two nonblocking retries), 71 reads, 18 writes, four
+shutdowns, and 55 closes across the complete client/broker/daemon harness. The
+broker's bulk relay is the only path in that harness that calls `splice`, which
+confirms the production selection rather than an example-local copy. The
+hardware-counter attempt was:
 
 ```powershell
 uv run --no-sync python ci/dev_docker.py -- sh -lc "apt-get update -qq && apt-get install -y -qq linux-perf >/dev/null && perf stat -e task-clock,cycles,instructions,context-switches target/release/examples/session_relay_evidence --smoke --topology splice"
@@ -177,11 +215,13 @@ so CPU-per-byte results—not the API name—drive the decision.
   portable buffered relay; normal macOS CI builds/tests it, but CI fallback
   preservation is not represented as zero-copy benchmark evidence.
 
-The spike is dev-only. It changes no production relay source, dependency,
-feature, wire type, or shipped binary, so it cannot itself regress Soldr warm
-builds or artifact size. Warm Docker reruns spent about 1.1-1.4 seconds in Cargo
-setup before launching the already-built example. Follow-up #1030 owns real
-Soldr warm-build validation for the production go decision.
+Follow-up #1030 changes the shipped Linux broker relay and adds a feature-gated
+`interprocess` dependency to the platform-internal crate; it does not change the
+SESSION wire, routing, or broker/daemon lifecycle. Its real Soldr cross-repo
+validation found a 10.247-second median warm build versus 10.330 seconds on the
+immediately preceding baseline (0.8% faster), within the predeclared 5% budget.
+The stable singleton broker stayed running while it selected each image's
+matching daemon generation behind it.
 
 ## Shared-memory feasibility details
 
@@ -205,7 +245,7 @@ That cost is unjustified by the current evidence.
 
 ## Follow-up disposition
 
-- Linux `splice`: **go**, tracked by
+- Linux `splice`: **go**, implemented by
   [#1030](https://github.com/zackees/running-process/issues/1030).
 - Linux 64 KiB buffered relay: **no-go** because it misses both bulk thresholds.
 - Windows 64 KiB buffered relay: **no-go** because P99 exceeds the latency

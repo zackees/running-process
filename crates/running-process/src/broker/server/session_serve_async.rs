@@ -2,8 +2,8 @@
 //! synchronous control-socket loop (soldr#2365).
 //!
 //! The owner-directed async reversal: the v2 broker's SESSION data plane is
-//! full-proxy (client → broker → daemon, every byte relayed), which needs
-//! [`tokio::io::copy_bidirectional`] and a tokio-`interprocess` accept loop.
+//! full-proxy (client → broker → daemon, every byte relayed), which needs the
+//! platform relay and a tokio-`interprocess` accept loop.
 //! Rather than flip the whole sync serve stack to `async fn` at once, this
 //! module adds a NEW async entry that **reuses the identical sync decision
 //! core** — the [`HelloResponder`] (`hello_router::HelloRouter` in production)
@@ -17,7 +17,7 @@
 //! 2. route it through the sync `responder` to a `HelloReply`;
 //! 3. write the framed reply back;
 //! 4. on a negotiated SESSION, hand the **same** connection to
-//!    [`relay_session`](crate::broker::session_relay::relay_session), which
+//!    [`relay_local_socket_session`](crate::broker::session_relay::relay_local_socket_session), which
 //!    dials the daemon SESSION endpoint and proxies bytes both ways.
 //!
 //! # Peer-credential enforcement
@@ -37,7 +37,7 @@ use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, ErrorCode, Frame, FrameKind, HelloReply, Negotiated,
     PayloadEncoding, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION, MAX_HELLO_BYTES, PROTOCOL_VERSION,
 };
-use crate::broker::session_relay::relay_session;
+use crate::broker::session_relay::relay_local_socket_session;
 
 use super::connection::{
     local_socket_name, peer_identity_from_tokio_stream, refused_reply, HelloResponder,
@@ -152,7 +152,7 @@ where
                     continue;
                 }
                 tokio::spawn(async move {
-                    if let Err(err) = relay_session(stream, &backend_pipe).await {
+                    if let Err(err) = relay_local_socket_session(stream, &backend_pipe).await {
                         eprintln!("running-process-broker: session relay ended: {err}");
                     }
                 });
@@ -212,7 +212,7 @@ where
             // soldr#2451: the permit must bound ONLY the negotiation (a fast
             // Hello round-trip whose `handle_frame` runs on the blocking pool),
             // NOT the relay below. `relay_session` is pure async
-            // `copy_bidirectional` that lives for the whole compile (seconds);
+            // splice/buffered proxy that lives for the whole compile (seconds);
             // holding the permit across it turned this negotiation-concurrency
             // bound into a hard cap on *concurrent compiles*. With cargo's
             // pipelining running far more than the cap's worth of rustc at once,
@@ -233,7 +233,7 @@ where
                         );
                         return;
                     }
-                    if let Err(err) = relay_session(stream, &backend_pipe).await {
+                    if let Err(err) = relay_local_socket_session(stream, &backend_pipe).await {
                         eprintln!("running-process-broker: session relay ended: {err}");
                     }
                 }

@@ -1,5 +1,6 @@
 platform,topology,workload,sessions,chunk_bytes,bytes,wall_ms,throughput_mib_s,broker_cpu_ms,broker_cpu_per_gib_ms,broker_rss_bytes,broker_context_switches,p50_us,p99_us,graceful_teardown
 windows,current,stalled-stdout,64,8192,16777216,299.198,53.476,109.375,7000.000,10330112,NA,0,0,true
 windows,current,disconnect,16,8192,0,1.892,0.000,0.000,0.000,7196672,NA,0,0,false
-linux,splice,stalled-stdout,64,8192,16777216,273.815,58.434,17.393,1113.152,3403776,468,0,0,true
-linux,splice,disconnect,16,8192,0,1.262,0.000,3.134,0.000,3497984,80,0,0,true
+linux,splice,stalled-stdout,64,8192,16777216,276.122,57.945,16.811,1075.904,3940352,197,0,0,true
+linux,splice,disconnect,16,8192,0,0.523,0.000,2.854,0.000,3510272,63,0,0,true
+linux,splice,daemon-disconnect,16,8192,0,102.380,0.000,4.568,0.000,3579904,96,0,0,true
