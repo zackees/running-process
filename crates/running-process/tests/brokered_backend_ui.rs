@@ -17,21 +17,25 @@
 
 #![cfg(feature = "client")]
 
-// trybuild emits the source-file path in its diagnostic relative to
-// whatever CWD it was invoked from. The recorded snapshot is therefore
-// pinned to ONE invocation shape (e.g. `soldr cargo nextest run -p
-// running-process` from the workspace root yields a different path prefix
-// than the coverage invocation from the same root). Both the `coverage`
-// job and the consolidated `unit-test` jobs (PR #514) ran this test under
-// different shapes and saw different actual paths, so neither single
-// recorded snapshot satisfied both. The absolute pattern below gives
-// trybuild one consistent source path under both invocation shapes.
+// trybuild intentionally normalizes absolute input spans differently on
+// Windows and Unix. Keep a snapshot for each rendering, while asserting that
+// the compile-fail source itself is byte-for-byte identical across both dirs.
 #[test]
 fn brokered_backend_compile_fail_ui_snapshots() {
-    let t = trybuild::TestCases::new();
-    let pattern = format!(
-        "{}/tests/ui/brokered_backend_*.rs",
-        env!("CARGO_MANIFEST_DIR")
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let windows_fixture = manifest.join("tests/ui/brokered_backend_state_in_bind.rs");
+    let unix_fixture = manifest.join("tests/ui-unix/brokered_backend_state_in_bind.rs");
+    assert_eq!(
+        std::fs::read(&windows_fixture).expect("read Windows trybuild fixture"),
+        std::fs::read(&unix_fixture).expect("read Unix trybuild fixture"),
+        "platform-specific trybuild fixtures must stay identical",
     );
+
+    let platform_dir = if cfg!(windows) { "ui" } else { "ui-unix" };
+    let pattern = format!(
+        "{}/tests/{platform_dir}/brokered_backend_*.rs",
+        manifest.display()
+    );
+    let t = trybuild::TestCases::new();
     t.compile_fail(pattern);
 }
