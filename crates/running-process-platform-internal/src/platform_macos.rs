@@ -565,15 +565,24 @@ fn owner_death_supervisor(
 
 fn close_supervisor_fds(handshake_fd: libc::c_int) -> Result<(), libc::c_int> {
     const BATCH_SIZE: usize = 64;
+    // XNU's bsd/kern/syscalls.master assigns `proc_info` syscall 336, and
+    // bsd/sys/proc_info_private.h assigns `PROC_INFO_CALL_PIDINFO` value 2.
+    // Enter the kernel directly here: unlike libproc's `proc_pidinfo` wrapper,
+    // this leaf syscall cannot acquire a process-global userspace lock after
+    // the multithreaded owner has forked.
+    const SYS_PROC_INFO: libc::c_int = 336;
+    const PROC_INFO_CALL_PIDINFO: libc::c_int = 2;
 
     loop {
         let mut entries: [libc::proc_fdinfo; BATCH_SIZE] = unsafe { std::mem::zeroed() };
         let bytes = unsafe {
-            libc::proc_pidinfo(
+            libc::syscall(
+                SYS_PROC_INFO,
+                PROC_INFO_CALL_PIDINFO,
                 libc::getpid(),
                 libc::PROC_PIDLISTFDS,
-                0,
-                entries.as_mut_ptr().cast(),
+                0_u64,
+                entries.as_mut_ptr().cast::<libc::c_void>(),
                 std::mem::size_of_val(&entries) as libc::c_int,
             )
         };
