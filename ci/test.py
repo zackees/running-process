@@ -39,9 +39,84 @@ _COV_PYTEST_FIRST = [
 _COV_PYTEST_APPEND = [
     "--cov=running_process",
     "--cov-report=term",
-    "--cov-report=xml:coverage-python.xml",
     "--cov-append",
 ]
+
+
+def _coverage_xml_command(python: Path) -> list[str]:
+    """Write the combined Python report after every selected pytest pass."""
+    return [
+        str(python),
+        "-m",
+        "coverage",
+        "xml",
+        "-o",
+        "coverage-python.xml",
+    ]
+
+
+def _rust_coverage_test_command() -> list[str]:
+    """Exercise every workspace feature under the external-test environment."""
+    return cargo_command(
+        "nextest",
+        "run",
+        "--workspace",
+        "--all-features",
+    )
+
+
+def _rust_coverage_report_command() -> list[str]:
+    """Write product coverage without counting executable test fixtures."""
+    return cargo_command(
+        "llvm-cov",
+        "report",
+        "--ignore-filename-regex",
+        r"[/\\]testbins[/\\]",
+        "--lcov",
+        "--output-path",
+        "coverage-rust.lcov",
+    )
+
+
+def _rust_coverage_clean_command() -> list[str]:
+    return cargo_command("llvm-cov", "clean", "--workspace")
+
+
+def _rust_coverage_environment() -> dict[str, str]:
+    """Return the instrumentation environment for external integration tests."""
+    command = cargo_command("llvm-cov", "show-env")
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(
+            f"coverage: environment command failed ({result.returncode}): {detail}"
+        )
+
+    coverage_env: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key and key.replace("_", "").isalnum():
+            coverage_env[key] = value
+
+    required = {"LLVM_PROFILE_FILE", "RUSTC_WRAPPER", "CARGO_LLVM_COV"}
+    missing = sorted(required - coverage_env.keys())
+    if missing:
+        raise RuntimeError(
+            "coverage: instrumentation environment omitted required variables: "
+            + ", ".join(missing)
+        )
+    return coverage_env
+
+
+def _rust_coverage_profile_dir(coverage_env: dict[str, str]) -> Path:
+    configured = coverage_env.get("CARGO_LLVM_COV_TARGET_DIR")
+    return Path(configured) if configured else ROOT / "target"
 
 
 def command_timeout_seconds() -> float | None:
@@ -484,9 +559,32 @@ def main(argv: list[str] | None = None) -> int:
         "RUNNING_PROCESS_TEST_TIMEOUT_SECONDS", DEFAULT_TEST_TIMEOUT_SECONDS
     )
     python = Path(sys.executable)
+    coverage_env: dict[str, str] = {}
+    if coverage:
+        unusable = llvm_profdata_preflight()
+        if unusable is not None:
+            print(unusable, file=sys.stderr, flush=True)
+            return 1
+        try:
+            coverage_env = _rust_coverage_environment()
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr, flush=True)
+            return 1
+        os.environ.update(coverage_env)
+        # The external-test contract requires cleaning after the environment
+        # is established and before any instrumented binary is built.
+        if run(_rust_coverage_clean_command()) != 0:
+            return 1
+
     if os.environ.get(IN_RUNNING_PROCESS_ENV) != IN_RUNNING_PROCESS_VALUE:
         try:
-            ensure_dev_wheel(python, root=ROOT)
+            # A cached wheel may have been built without LLVM instrumentation.
+            ensure_dev_wheel(
+                python,
+                root=ROOT,
+                force=coverage,
+                cache_result=not coverage,
+            )
         except RuntimeError as exc:
             print(str(exc), file=sys.stderr, flush=True)
             return 1
@@ -516,18 +614,11 @@ def main(argv: list[str] | None = None) -> int:
             # Fail fast on a toolchain that cannot merge profiles at all.
             # Without this the suite runs to completion and only then dies in
             # the merge, reporting a bare signal number (#626).
-            unusable = llvm_profdata_preflight()
-            if unusable is not None:
-                print(unusable, file=sys.stderr, flush=True)
-                return 1
-
             # Fixtures first, for the same reason as the non-coverage path
             # below: tests look the binaries up rather than building them.
             #
-            # `--target-dir` is not optional here. cargo-llvm-cov redirects
-            # the build into `target/llvm-cov-target`, so the test binary
-            # resolves fixtures relative to *that* tree; a plain build would
-            # put them in `target/debug` where nothing looks.
+            # The external-test environment keeps fixtures beside the other
+            # instrumented binaries in the shared target directory.
             if (
                 run(
                     cargo_command(
@@ -535,59 +626,24 @@ def main(argv: list[str] | None = None) -> int:
                         "-p",
                         "testbins",
                         "--target-dir",
-                        "target/llvm-cov-target",
+                        "target",
                     )
                 )
                 != 0
             ):
                 return 1
 
-            # Split run/report so individually unreadable profiles can be
-            # preserved and excluded before the final report. Historical
-            # LLVM 21.1.8 inputs have crashed llvm-profdata with SIGILL;
-            # pruning is retained as defense in depth while graceful daemon
-            # profile flushing soaks on main.
+            # Report generation is deferred until pytest has exercised the
+            # instrumented native extension too. Historical LLVM 21.1.8
+            # inputs can still be preserved and pruned before that merge.
             # nextest owns Rust per-test wall-clock limits through
             # `.config/nextest.toml`. An outer idle watchdog cannot tell a
             # hung test from a quiet compile and can kill the entire suite
             # before nextest gets a chance to name and terminate one test.
-            cargo_cmd = cargo_command(
-                "llvm-cov", "nextest", "--workspace", "--no-report"
-            )
+            cargo_cmd = _rust_coverage_test_command()
             if run(cargo_cmd) != 0:
                 return 1
 
-            _prune_invalid_profraw(ROOT / "target" / "llvm-cov-target")
-
-            report_cmd = cargo_command(
-                "llvm-cov",
-                "report",
-                "--lcov",
-                "--output-path",
-                "coverage-rust.lcov",
-            )
-            report_code = run(report_cmd)
-            if report_code != 0:
-                # The preflight clears the binary in isolation; a fault here
-                # means real profile data triggered it. Say so, rather than
-                # letting a signal number read as a coverage regression.
-                fault = describe_abnormal_exit(report_code)
-                if fault is not None:
-                    print(
-                        "\n".join(
-                            [
-                                f"coverage: the report step {fault} while merging "
-                                "real profiles (#626).",
-                                f"  command: {shlex.join(report_cmd)}",
-                                f"  cpu:     {_cpu_description()}",
-                                "  The tests themselves passed. Rejected inputs, if "
-                                "any, were preserved under logs/bad-profraw.",
-                            ]
-                        ),
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                return 1
         else:
             # Step 0: build the test fixtures.
             #
@@ -703,7 +759,11 @@ def main(argv: list[str] | None = None) -> int:
             pytest_args,
         ):
             return 1
-        if not running_on_github_actions() and not skip_linux_docker_preflight():
+        if (
+            not coverage
+            and not running_on_github_actions()
+            and not skip_linux_docker_preflight()
+        ):
             if run(_linux_unit_test_command(python, *pytest_args)) != 0:
                 return 1
         if require_symbols and sys.platform == "win32":
@@ -721,6 +781,33 @@ def main(argv: list[str] | None = None) -> int:
             ),
             pytest_args,
         ):
+            return 1
+    if coverage and run(_coverage_xml_command(python)) != 0:
+        return 1
+    if coverage:
+        _prune_invalid_profraw(_rust_coverage_profile_dir(coverage_env))
+        report_cmd = _rust_coverage_report_command()
+        report_code = run(report_cmd)
+        if report_code != 0:
+            # The preflight clears the binary in isolation; a fault here
+            # means real profile data triggered it. Say so, rather than
+            # letting a signal number read as a coverage regression.
+            fault = describe_abnormal_exit(report_code)
+            if fault is not None:
+                print(
+                    "\n".join(
+                        [
+                            f"coverage: the report step {fault} while merging "
+                            "real profiles (#626).",
+                            f"  command: {shlex.join(report_cmd)}",
+                            f"  cpu:     {_cpu_description()}",
+                            "  The tests themselves passed. Rejected inputs, if "
+                            "any, were preserved under logs/bad-profraw.",
+                        ]
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
             return 1
     return 0
 

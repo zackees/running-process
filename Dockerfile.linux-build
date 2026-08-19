@@ -71,6 +71,7 @@ RUN mkdir -p /work/crates/running-process/src/bin \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process/src/lib.rs \
  && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-platform-internal/src/lib.rs \
  && printf "fn main() {}\n" > /work/crates/running-process/examples/handoff_rollout_evidence.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process/examples/session_relay_evidence.rs \
  && for b in runpm daemon trampoline running-process-broker-v1 running-process-broker-v2 running-process-cleanup; do \
         printf "fn main() {}\n" > /work/crates/running-process/src/bin/$b.rs ; \
     done \

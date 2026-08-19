@@ -31,6 +31,16 @@ class TestCoverageWorkflowContract(unittest.TestCase):
         coverage_run = workflow_step(workflow, "Run tests with coverage")
         self.assertIn("ci.test --coverage", coverage_run)
 
+        python_upload = workflow_step(workflow, "Upload Python coverage artifact")
+        self.assertIn("if-no-files-found: error", python_upload)
+
+        rust_upload = workflow_step(workflow, "Upload Rust coverage artifact")
+        self.assertIn("if-no-files-found: error", rust_upload)
+
+        codecov_upload = workflow_step(workflow, "Upload to Codecov")
+        self.assertIn("fail_ci_if_error: true", codecov_upload)
+        self.assertNotIn("if: always()", codecov_upload)
+
         profraw_diagnostics = workflow_step(workflow, "Coverage profraw diagnostics")
         for retained_diagnostic in (
             "if: ${{ failure() }}",
@@ -59,7 +69,7 @@ class TestCoverageWorkflowContract(unittest.TestCase):
             '"github_commit"',
             '"rejected_profiles"',
             "profraw.unlink()",
-            '_prune_invalid_profraw(ROOT / "target" / "llvm-cov-target")',
+            "_rust_coverage_profile_dir(coverage_env)",
         ):
             self.assertIn(retained_runner_defense, coverage_runner)
 

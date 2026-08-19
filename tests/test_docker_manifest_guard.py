@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import unittest
 
+import tomllib
+
 from ci.docker_manifest_guard import (
     DOCKERFILE,
     MANIFEST_STAGE,
@@ -71,6 +73,19 @@ class TestCoverage(unittest.TestCase):
         member = "crates/running-process-probe"
         missing = missing_inputs([member], {f"{member}/Cargo.toml"})
         self.assertEqual(missing, [f"{member}/build.rs", f"{member}/proto"])
+
+    def test_manifest_cache_stubs_every_declared_example(self) -> None:
+        manifest = DOCKERFILE.parent / "crates" / "running-process" / "Cargo.toml"
+        with manifest.open("rb") as handle:
+            examples = tomllib.load(handle).get("example", [])
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+        for example in examples:
+            self.assertIn(
+                f"examples/{example['name']}.rs",
+                dockerfile,
+                f"missing cache-warmup stub for example {example['name']}",
+            )
 
 
 if __name__ == "__main__":

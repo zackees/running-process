@@ -93,6 +93,71 @@ def _expected_seam_test_cmd() -> list[str]:
     return cmd
 
 
+def test_coverage_xml_command_is_unconditional_on_live_tests() -> None:
+    python = Path("/tmp/fake-venv/bin/python")
+
+    assert ci_test._coverage_xml_command(python) == [
+        str(python),
+        "-m",
+        "coverage",
+        "xml",
+        "-o",
+        "coverage-python.xml",
+    ]
+
+
+def test_rust_coverage_runs_all_features_and_excludes_test_fixtures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
+
+    assert ci_test._rust_coverage_test_command() == [
+        "cargo",
+        "nextest",
+        "run",
+        "--workspace",
+        "--all-features",
+    ]
+    assert ci_test._rust_coverage_report_command() == [
+        "cargo",
+        "llvm-cov",
+        "report",
+        "--ignore-filename-regex",
+        r"[/\\]testbins[/\\]",
+        "--lcov",
+        "--output-path",
+        "coverage-rust.lcov",
+    ]
+
+
+def test_rust_coverage_environment_parses_external_test_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = "\n".join(
+        [
+            "LLVM_PROFILE_FILE=/tmp/target/process-%p.profraw",
+            "RUSTC_WRAPPER=/tmp/bin/coverage-wrapper",
+            "CARGO_LLVM_COV=1",
+            "CARGO_LLVM_COV_TARGET_DIR=/tmp/target",
+            "diagnostic text without an assignment",
+        ]
+    )
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["tool", *args])
+    monkeypatch.setattr(
+        ci_test.subprocess,
+        "run",
+        lambda *args, **kwargs: ci_test.subprocess.CompletedProcess(
+            args[0], 0, output, ""
+        ),
+    )
+
+    coverage_env = ci_test._rust_coverage_environment()
+
+    assert coverage_env["LLVM_PROFILE_FILE"].endswith("process-%p.profraw")
+    assert coverage_env["RUSTC_WRAPPER"] == "/tmp/bin/coverage-wrapper"
+    assert ci_test._rust_coverage_profile_dir(coverage_env) == Path("/tmp/target")
+
+
 def test_prune_invalid_profraw_preserves_evidence_before_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -708,13 +773,23 @@ def test_main_runs_coverage_when_the_preflight_passes(
     monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
     monkeypatch.delenv("RUNNING_PROCESS_LIVE_TESTS", raising=False)
-    monkeypatch.setenv(ci_test.SKIP_LINUX_DOCKER_ENV, "1")
+    monkeypatch.delenv(ci_test.SKIP_LINUX_DOCKER_ENV, raising=False)
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(ci_test, "_ensure_nextest_installed", lambda: True)
     monkeypatch.setattr(ci_test, "_prune_invalid_profraw", lambda *a, **k: 0)
     monkeypatch.setattr(ci_test, "llvm_profdata_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        ci_test,
+        "_rust_coverage_environment",
+        lambda: {
+            "LLVM_PROFILE_FILE": "/tmp/target/process-%p.profraw",
+            "RUSTC_WRAPPER": "/tmp/bin/coverage-wrapper",
+            "CARGO_LLVM_COV": "1",
+            "CARGO_LLVM_COV_TARGET_DIR": "/tmp/target",
+        },
+    )
     monkeypatch.setattr(
         ci_test,
         "run",
@@ -727,3 +802,4 @@ def test_main_runs_coverage_when_the_preflight_passes(
     assert any(
         "llvm-cov" in " ".join(cmd) for cmd in commands
     ), f"coverage should have run; issued {commands}"
+    assert not any("ci.linux_docker" in " ".join(cmd) for cmd in commands)
