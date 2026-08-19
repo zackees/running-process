@@ -595,28 +595,45 @@ mod tests {
 
     #[tokio::test]
     async fn kill_is_delivered_while_output_is_draining() {
-        let spec = long_lived_piped_child().stdin(StreamMode::Piped);
+        // The original coverage-only failure became easier to reproduce as
+        // more tests shared this runtime. Keep several captures pending at
+        // once so this regression exercises that scheduler/pipe pressure,
+        // rather than proving only the unloaded single-child case.
+        const CONCURRENT_CAPTURES: usize = 8;
+        let mut pending = Vec::with_capacity(CONCURRENT_CAPTURES);
+        for _ in 0..CONCURRENT_CAPTURES {
+            let spec = long_lived_piped_child().stdin(StreamMode::Piped);
+            let process = ActorProcess::start(spec).await.expect("actor starts");
+            let (output_tx, output_rx) = oneshot::channel();
+            process
+                .commands
+                .send(Command::Output {
+                    limit: None,
+                    reply: output_tx,
+                })
+                .await
+                .expect("output command is accepted");
+            pending.push((process, output_rx));
+        }
 
-        let process = ActorProcess::start(spec).await.expect("actor starts");
-        let (output_tx, output_rx) = oneshot::channel();
-        process
-            .commands
-            .send(Command::Output {
-                limit: None,
-                reply: output_tx,
-            })
-            .await
-            .expect("output command is accepted");
+        tokio::time::timeout(NOT_BLOCKED, async {
+            for (process, _) in &pending {
+                process.kill().await.expect("kill succeeds");
+            }
+        })
+        .await
+        .expect("kills are not blocked by concurrent output capture");
 
-        tokio::time::timeout(NOT_BLOCKED, process.kill())
-            .await
-            .expect("kill is not blocked by output capture")
-            .expect("kill succeeds");
-        let output = tokio::time::timeout(NOT_BLOCKED, output_rx)
-            .await
-            .expect("output capture completes")
-            .expect("actor replies")
-            .expect("capture succeeds");
-        assert!(!output.status.success());
+        tokio::time::timeout(NOT_BLOCKED, async {
+            for (_, output_rx) in pending {
+                let output = output_rx
+                    .await
+                    .expect("actor replies")
+                    .expect("capture succeeds");
+                assert!(!output.status.success());
+            }
+        })
+        .await
+        .expect("all output captures complete");
     }
 }
