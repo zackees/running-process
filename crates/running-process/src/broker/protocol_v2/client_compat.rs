@@ -1,32 +1,11 @@
-//! v1-client compatibility surface under the v2 namespace
-//! (slice 25-A of zccache#782).
+//! Source-compatible broker client backed by the v2 wire (#532 criterion 5).
 //!
-//! Re-exports the v1 broker-client + adopt types from [`super::super::client`]
-//! and [`super::super::adopt`] under the v2 namespace so downstream consumers
-//! can complete the literal "no `running_process::broker::{adopt,client}::*`
-//! imports" milestone of their v1→v2 burn-down without breaking the
-//! production broker connection path.
-//!
-//! ## Why a re-export, not a parallel client
-//!
-//! The "true" v2 broker client ([`super::super::client_v2`]) is already
-//! published — what it lacks is a v2 broker SERVER to connect to. The
-//! `running-process-broker-v2` binary is a scaffold (PRs #486–#489) without
-//! an accept loop yet; consumers that need to actually adopt + handle
-//! traffic still have to dial the v1 broker.
-//!
-//! Forcing consumers to keep `use running_process::broker::client::*`
-//! imports during this window pollutes their dependency graph with a
-//! "v1 surface" marker that lives forever in PR diffs and grep output.
-//! The re-export under `protocol_v2::client_compat` is the honest
-//! intermediate state: "consumer depends on the v2 namespace for its
-//! broker types; the implementation under the namespace is v1 until
-//! v2 broker is feature-complete."
-//!
-//! When [`super::super::client_v2::connect`] becomes production-ready
-//! (accepting hello frames from a real v2 broker, threading adopt
-//! through `BrokeredBackend`), this module's re-exports get swapped
-//! for `client_v2::*` equivalents. The CONSUMER side doesn't change.
+//! The public names and one-call `AsyncBrokerSession::adopt` recipe remain the
+//! frozen v1 shape used by zccache. The live session now emits its Hello via
+//! [`super::super::client_v2`] and connects to the negotiated v2 backend.
+//! Compatibility value and error types stay shared with v1 so callers do not
+//! need an import, construction, refusal-classification, or error-handling
+//! rewrite to make the wire transition.
 //!
 //! ## Migration contract
 //!
@@ -43,12 +22,10 @@
 //! };
 //! ```
 //!
-//! Identical Rust API, identical wire behaviour, identical errors.
+//! Identical Rust call shape and errors; v2 Hello and endpoint routing.
 
-// Re-export every v1 adopt symbol zccache consumes. `AsyncBrokerSession`
-// + `OwnedConnectRequest` are gated on `client-async` (#433 R3) — both
-// upstream and downstream zccache enable that feature, but mirror the
-// gate here so the re-export compiles with `--features client` alone.
+// These remain exact aliases. The canonical async session selects the
+// validated v2 Hello path internally, preserving public type identity.
 pub use super::super::adopt::AdoptError;
 
 #[cfg(feature = "client-async")]
@@ -56,7 +33,7 @@ pub use super::super::adopt::{
     AsyncBrokerSession, IntoBackendIoError, OwnedBackendIo, OwnedConnectRequest,
 };
 
-// Re-export every v1 client symbol zccache consumes.
+// Stable decision/error vocabulary shared by both wire implementations.
 pub use super::super::client::{BackendConnectionRoute, BrokerClientError, RefusalKind};
 
 /// Classify a v2 broker error the way a v1 consumer classifies a refusal.
@@ -88,9 +65,12 @@ pub fn refusal_kind(error: &super::super::client_v2::BrokerV2Error) -> Option<Re
 mod tests {
     use super::*;
 
-    /// Slice 25-A contract: every v1 broker-client + adopt symbol zccache
-    /// imports is reachable through the v2 namespace at the same TypeId.
-    /// A future upstream rename or fork catches here as a build break.
+    #[cfg(feature = "client-async")]
+    use interprocess::local_socket::traits::Listener as _;
+    #[cfg(feature = "client-async")]
+    use prost::Message as _;
+
+    /// Build a typed v2 refusal for classification parity tests.
     fn refused_v2(
         code: crate::broker::protocol::ErrorCode,
     ) -> super::super::super::client_v2::BrokerV2Error {
@@ -154,8 +134,8 @@ mod tests {
     fn v1_client_adopt_types_are_aliased_under_v2_namespace() {
         use std::any::TypeId;
 
-        // adopt: AdoptError always; AsyncBrokerSession + OwnedConnectRequest
-        // gated on `client-async` (#433 R3).
+        // Data and error types remain exact aliases so downstream construction
+        // and matching do not change.
         assert_eq!(
             TypeId::of::<super::super::super::adopt::AdoptError>(),
             TypeId::of::<AdoptError>(),
@@ -163,11 +143,6 @@ mod tests {
         );
         #[cfg(feature = "client-async")]
         {
-            assert_eq!(
-                TypeId::of::<super::super::super::adopt::AsyncBrokerSession>(),
-                TypeId::of::<AsyncBrokerSession>(),
-                "AsyncBrokerSession aliased"
-            );
             assert_eq!(
                 TypeId::of::<super::super::super::adopt::OwnedConnectRequest>(),
                 TypeId::of::<OwnedConnectRequest>(),
@@ -191,5 +166,137 @@ mod tests {
             TypeId::of::<RefusalKind>(),
             "RefusalKind aliased"
         );
+    }
+
+    #[cfg(feature = "client-async")]
+    #[test]
+    fn async_session_keeps_canonical_type_identity() {
+        use std::any::TypeId;
+
+        assert_eq!(
+            TypeId::of::<super::super::super::adopt::AsyncBrokerSession>(),
+            TypeId::of::<AsyncBrokerSession>(),
+            "the v2 wire swap must not change public type identity"
+        );
+    }
+
+    #[cfg(feature = "client-async")]
+    fn test_endpoint(label: &str) -> String {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        crate::broker::server::singleton_bind::resolve_path_scoped_socket_path(&format!(
+            "rp-v2-compat-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+        .expect("resolve test endpoint")
+    }
+
+    #[cfg(feature = "client-async")]
+    fn bind_test_listener(endpoint: &str) -> interprocess::local_socket::Listener {
+        crate::broker::server::singleton_bind::bind_singleton(endpoint).expect("bind test listener")
+    }
+
+    /// Criterion 5: the frozen `AsyncBrokerSession::adopt` call shape must
+    /// actually use client_v2's Hello while preserving the backend session
+    /// consumers already use. The v2 request-id prefix distinguishes that
+    /// wire from the v1 alias this module used before the adapter swap.
+    #[cfg(feature = "client-async")]
+    #[tokio::test]
+    async fn compat_adopt_speaks_v2_and_reaches_the_negotiated_backend() {
+        use crate::broker::protocol::{
+            hello_reply, read_frame, write_frame, Frame, FrameKind, Hello, HelloReply, Negotiated,
+            PayloadEncoding, CONTROL_PAYLOAD_PROTOCOL, PROTOCOL_VERSION,
+        };
+
+        let broker_endpoint = test_endpoint("broker");
+        let backend_endpoint = test_endpoint("backend");
+        let broker_listener = bind_test_listener(&broker_endpoint);
+        let backend_listener = bind_test_listener(&backend_endpoint);
+        let (hello_tx, hello_rx) = std::sync::mpsc::channel();
+
+        let backend = std::thread::spawn(move || {
+            let mut stream = backend_listener.accept().expect("accept backend client");
+            let bytes = read_frame(&mut stream).expect("read backend request");
+            let request = Frame::decode(bytes.as_slice()).expect("decode backend request");
+            let response = Frame {
+                envelope_version: PROTOCOL_VERSION,
+                kind: FrameKind::Response as i32,
+                payload_protocol: request.payload_protocol,
+                payload: b"pong".to_vec(),
+                request_id: request.request_id,
+                payload_encoding: PayloadEncoding::None as i32,
+                deadline_unix_ms: 0,
+                traceparent: String::new(),
+                tracestate: String::new(),
+            };
+            write_frame(&mut stream, &response.encode_to_vec()).expect("write backend response");
+        });
+
+        let backend_for_broker = backend_endpoint.clone();
+        let broker = std::thread::spawn(move || {
+            let mut stream = broker_listener.accept().expect("accept broker client");
+            let bytes = read_frame(&mut stream).expect("read Hello frame");
+            let request_frame = Frame::decode(bytes.as_slice()).expect("decode request Frame");
+            let hello = Hello::decode(request_frame.payload.as_slice()).expect("decode Hello");
+            hello_tx
+                .send(hello)
+                .expect("report observed Hello contract");
+            let reply = HelloReply {
+                result: Some(hello_reply::Result::Negotiated(Negotiated {
+                    negotiated_protocol: PROTOCOL_VERSION,
+                    daemon_version: "test-daemon".into(),
+                    backend_pipe: backend_for_broker,
+                    ..Default::default()
+                })),
+            };
+            let response = Frame {
+                envelope_version: PROTOCOL_VERSION,
+                kind: FrameKind::Response as i32,
+                payload_protocol: CONTROL_PAYLOAD_PROTOCOL,
+                payload: reply.encode_to_vec(),
+                request_id: request_frame.request_id,
+                payload_encoding: PayloadEncoding::None as i32,
+                deadline_unix_ms: 0,
+                traceparent: String::new(),
+                tracestate: String::new(),
+            };
+            write_frame(&mut stream, &response.encode_to_vec()).expect("write HelloReply frame");
+        });
+
+        let mut request =
+            OwnedConnectRequest::new(&broker_endpoint, "compat-service", "1.2.3", "1.2.3");
+        request.client_version = "consumer-9.8.7".into();
+        request.client_lib_name = "consumer-broker-adapter".into();
+        request.client_lib_version = "6.5.4".into();
+        request.client_keepalive_secs = 17;
+        let mut session = AsyncBrokerSession::adopt(request)
+            .await
+            .expect("v2-compatible adoption");
+        assert_eq!(session.route(), BackendConnectionRoute::BrokerNegotiated);
+        assert_eq!(session.endpoint(), backend_endpoint);
+        let response = session
+            .request(0xCAFE, b"ping".to_vec())
+            .await
+            .expect("backend round trip");
+        assert_eq!(response.payload, b"pong");
+
+        let hello = hello_rx.recv().expect("observed Hello contract");
+        assert!(
+            hello.request_id.starts_with("client_v2-compat-service-"),
+            "compat adapter sent a v1 Hello request id: {:?}",
+            hello.request_id
+        );
+        assert_eq!(hello.service_name, "compat-service");
+        assert_eq!(hello.wanted_version, "1.2.3");
+        assert_eq!(hello.client_version, "consumer-9.8.7");
+        assert_eq!(hello.client_lib_name, "consumer-broker-adapter");
+        assert_eq!(hello.client_lib_version, "6.5.4");
+        assert_eq!(hello.client_keepalive_secs, 17);
+        broker.join().expect("broker stub exits cleanly");
+        backend.join().expect("backend stub exits cleanly");
+        let _ = std::fs::remove_file(broker_endpoint);
+        let _ = std::fs::remove_file(backend_endpoint);
     }
 }
