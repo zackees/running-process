@@ -156,6 +156,24 @@ def test_rust_coverage_runs_all_features_and_excludes_test_fixtures(
             "--smoke",
         ],
     ]
+    assert ci_test._rust_coverage_binary_build_command() == [
+        "cargo",
+        "build",
+        "-p",
+        "running-process",
+        "--all-features",
+        "--bins",
+    ]
+    assert ci_test._rust_coverage_process_smoke_command(
+        Path("/tmp/fake-venv/bin/python"),
+        {"CARGO_LLVM_COV_TARGET_DIR": "/tmp/coverage-target"},
+    ) == [
+        str(Path("/tmp/fake-venv/bin/python")),
+        "-m",
+        "ci.coverage_process_smoke",
+        "--bin-dir",
+        str(Path("/tmp/coverage-target/debug")),
+    ]
     assert ci_test._rust_coverage_report_command() == [
         "cargo",
         "llvm-cov",

@@ -97,6 +97,25 @@ def _rust_coverage_example_commands() -> list[list[str]]:
     ]
 
 
+def _rust_coverage_binary_build_command() -> list[str]:
+    return cargo_command(
+        "build", "-p", "running-process", "--all-features", "--bins"
+    )
+
+
+def _rust_coverage_process_smoke_command(
+    python: Path, coverage_env: dict[str, str]
+) -> list[str]:
+    bin_dir = _rust_coverage_profile_dir(coverage_env) / "debug"
+    return [
+        str(python),
+        "-m",
+        "ci.coverage_process_smoke",
+        "--bin-dir",
+        str(bin_dir),
+    ]
+
+
 def _rust_coverage_report_command() -> list[str]:
     """Write product coverage without counting executable test fixtures."""
     return cargo_command(
@@ -723,6 +742,11 @@ def main(argv: list[str] | None = None) -> int:
             # same LLVM profile set instead of leaving those paths synthetic.
             for example_cmd in _rust_coverage_example_commands():
                 if run(example_cmd) != 0:
+                    return 1
+            if running_on_github_actions() and sys.platform.startswith("linux"):
+                if run(_rust_coverage_binary_build_command()) != 0:
+                    return 1
+                if run(_rust_coverage_process_smoke_command(python, coverage_env)) != 0:
                     return 1
 
         else:
