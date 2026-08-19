@@ -401,11 +401,25 @@ pub(crate) fn configure_command(
     create_process_group: bool,
     kill_when_owner_dies: bool,
 ) -> io::Result<()> {
+    let owner_pid = unsafe { libc::getpid() };
+    configure_command_for_owner(
+        command,
+        create_process_group,
+        kill_when_owner_dies,
+        owner_pid,
+    )
+}
+
+fn configure_command_for_owner(
+    command: &mut Command,
+    create_process_group: bool,
+    kill_when_owner_dies: bool,
+    owner_pid: libc::pid_t,
+) -> io::Result<()> {
     if create_process_group {
         command.process_group(0);
     }
     if kill_when_owner_dies {
-        let owner_pid = unsafe { libc::getpid() };
         // SAFETY: the helper is created before exec and owns the kqueue loop.
         unsafe {
             command.pre_exec(move || {
@@ -473,6 +487,25 @@ fn owner_death_supervisor(owner_pid: libc::pid_t) -> ! {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn owner_death_registration_failure_aborts_spawn() {
+        let mut command = tokio::process::Command::new("/usr/bin/true");
+        super::configure_command_for_owner(&mut command, false, true, libc::pid_t::MAX)
+            .expect("configure owner-death containment");
+
+        match command.spawn() {
+            Ok(mut child) => {
+                let _ = child.kill().await;
+                panic!("spawn succeeded before the owner watch was registered");
+            }
+            Err(error) => assert_ne!(
+                error.kind(),
+                std::io::ErrorKind::NotFound,
+                "the executable must exist so registration is the failing operation"
+            ),
+        }
+    }
+
     #[test]
     fn shell_command_preserves_login_shell_contract_and_ignores_child_path() {
         use std::ffi::OsStr;
