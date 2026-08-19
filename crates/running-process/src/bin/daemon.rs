@@ -709,3 +709,165 @@ fn publish_service_identity(
     write_daemon_identity_file(&path, &daemon)?;
     Ok(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use running_process::proto::daemon::{PipeSessionInfo, PtySessionInfo};
+
+    #[test]
+    fn duration_parser_accepts_units_whitespace_and_saturation() {
+        assert_eq!(parse_duration_secs("0").unwrap(), 0);
+        assert_eq!(parse_duration_secs(" 7s ").unwrap(), 7);
+        assert_eq!(parse_duration_secs("2m").unwrap(), 120);
+        assert_eq!(parse_duration_secs("3h").unwrap(), 10_800);
+        assert_eq!(parse_duration_secs("2d").unwrap(), 172_800);
+        assert_eq!(
+            parse_duration_secs("18446744073709551615d").unwrap(),
+            u64::MAX
+        );
+        assert!(parse_duration_secs("").is_err());
+        assert!(parse_duration_secs("wat").is_err());
+    }
+
+    #[test]
+    fn cli_parser_covers_top_level_and_session_shapes() {
+        let start = Cli::try_parse_from([
+            "daemon",
+            "start",
+            "--scope",
+            "test",
+            "--socket-path",
+            "sock",
+            "--db-path",
+            "db",
+            "--service",
+            "svc",
+        ])
+        .unwrap();
+        assert!(matches!(
+            start.command,
+            Commands::Start {
+                scope: Some(_),
+                socket_path: Some(_),
+                db_path: Some(_),
+                service: Some(_),
+            }
+        ));
+
+        assert!(matches!(
+            Cli::try_parse_from(["daemon", "list", "--json", "--originator", "tool"])
+                .unwrap()
+                .command,
+            Commands::List {
+                json: true,
+                originator: Some(_)
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["daemon", "kill", "42"])
+                .unwrap()
+                .command,
+            Commands::Kill { pid: 42 }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["daemon", "tree", "43"])
+                .unwrap()
+                .command,
+            Commands::Tree { pid: 43 }
+        ));
+        assert!(Cli::try_parse_from(["daemon", "sessions", "list", "--pty", "--pipe"]).is_err());
+        assert!(
+            Cli::try_parse_from(["daemon", "sessions", "kill-older", "--older-than", "1h"]).is_ok()
+        );
+        assert!(Cli::try_parse_from([
+            "daemon",
+            "sessions",
+            "terminate",
+            "session",
+            "--pipe",
+            "--grace-ms",
+            "5"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "daemon", "sessions", "log", "session", "--stream", "stderr"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn table_helpers_cover_empty_running_and_exited_rows() {
+        print_pty_session_table(&[]);
+        print_pty_session_table(&[
+            PtySessionInfo {
+                session_id: "pty-running".into(),
+                pid: 10,
+                command: "shell".into(),
+                attached: true,
+                ..Default::default()
+            },
+            PtySessionInfo {
+                session_id: "pty-exited".into(),
+                pid: 11,
+                command: "done".into(),
+                exited: true,
+                exit_code: 7,
+                ..Default::default()
+            },
+        ]);
+
+        print_pipe_session_table(&[]);
+        print_pipe_session_table(&[
+            PipeSessionInfo {
+                session_id: "pipe-running".into(),
+                pid: 12,
+                command: "worker".into(),
+                stdout_attached: true,
+                ..Default::default()
+            },
+            PipeSessionInfo {
+                session_id: "pipe-exited".into(),
+                pid: 13,
+                command: "done".into(),
+                stderr_attached: true,
+                exited: true,
+                exit_code: 9,
+                ..Default::default()
+            },
+        ]);
+    }
+
+    #[test]
+    fn process_rendering_covers_all_states_and_uptime_bands() {
+        assert_eq!(format_uptime(59.9), "59s");
+        assert_eq!(format_uptime(60.0), "1m 0s");
+        assert_eq!(format_uptime(3_661.0), "1h 1m");
+        assert_eq!(state_name(1), "alive");
+        assert_eq!(state_name(2), "dead");
+        assert_eq!(state_name(3), "zombie");
+        assert_eq!(state_name(0), "unknown");
+
+        print_table(&[]);
+        let processes = [TrackedProcess {
+            pid: 77,
+            state: 1,
+            kind: "managed".into(),
+            command: "python worker.py".into(),
+            cwd: "/tmp".into(),
+            originator: "test".into(),
+            containment: "group".into(),
+            uptime_seconds: 65.0,
+            parent_alive: true,
+            ..Default::default()
+        }];
+        print_table(&processes);
+        print_json(&processes);
+    }
+
+    #[test]
+    fn process_name_helper_accepts_valid_and_embedded_nul_names() {
+        set_daemon_process_name("runpm-daemon");
+        set_daemon_process_name("invalid\0name");
+    }
+}

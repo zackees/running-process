@@ -772,3 +772,112 @@ fn default_name_from(cmd: &str) -> Result<String> {
     stem.map(|s| s.to_string())
         .ok_or_else(|| anyhow!("could not derive default --name from `{cmd}`; pass --name"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use running_process::proto::daemon::{ServiceListResponse, StatusCode};
+
+    fn service(name: &str, status: &str, with_config: bool) -> ServiceState {
+        ServiceState {
+            id: 7,
+            name: name.into(),
+            status: status.into(),
+            pid: 42,
+            restart_count: 3,
+            last_started_at: 10.0,
+            last_exited_at: 20.0,
+            last_exit_code: 9,
+            config: with_config.then(|| ServiceConfig {
+                name: name.into(),
+                cmd: vec!["python".into(), "worker.py".into()],
+                cwd: "/tmp".into(),
+                env: HashMap::new(),
+                autorestart: true,
+                max_restarts: 4,
+                restart_delay_ms: 0,
+                kill_timeout_ms: 0,
+                min_uptime_ms: 0,
+            }),
+        }
+    }
+
+    #[test]
+    fn log_delta_handles_empty_append_duplicate_and_rotation() {
+        assert_eq!(compute_log_delta("old", ""), None);
+        assert_eq!(compute_log_delta("", "new"), Some("new".into()));
+        assert_eq!(compute_log_delta("old", "old"), None);
+        assert_eq!(compute_log_delta("old", "old-new"), Some("-new".into()));
+        assert_eq!(compute_log_delta("old", "rotated"), Some("rotated".into()));
+    }
+
+    #[test]
+    fn environment_and_default_name_validation_is_explicit() {
+        let parsed = parse_env(&["A=1".into(), "B=two=parts".into()]).unwrap();
+        assert_eq!(parsed["A"], "1");
+        assert_eq!(parsed["B"], "two=parts");
+        assert!(parse_env(&["missing".into()]).is_err());
+        assert!(parse_env(&["=empty".into()]).is_err());
+
+        assert_eq!(default_name_from("/usr/bin/python").unwrap(), "python");
+        assert!(default_name_from("/").is_err());
+    }
+
+    #[test]
+    fn status_helpers_preserve_server_detail_and_fallback() {
+        let ok = DaemonResponse {
+            code: StatusCode::Ok.into(),
+            ..Default::default()
+        };
+        assert!(ensure_ok("ping", &ok).is_ok());
+        assert!(print_status("ping", &ok).is_ok());
+
+        let detailed = DaemonResponse {
+            code: StatusCode::Internal.into(),
+            message: "specific failure".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            ensure_ok("start", &detailed).unwrap_err().to_string(),
+            "specific failure"
+        );
+
+        let fallback = DaemonResponse {
+            code: StatusCode::Internal.into(),
+            ..Default::default()
+        };
+        assert!(ensure_ok("start", &fallback)
+            .unwrap_err()
+            .to_string()
+            .contains("start failed"));
+
+        assert_eq!(run_to_exit(Ok(())), ExitCode::SUCCESS);
+        assert_eq!(run_to_exit(Err(anyhow!("broken"))), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn rendering_helpers_accept_empty_and_populated_services() {
+        let configured = service("worker", "errored", true);
+        let bare = service("bare", "online", false);
+        assert_eq!(render_status("errored"), "errored");
+        print_services_table(&[]);
+        print_services_table(&[configured.clone(), bare.clone()]);
+        print_service_detail(&configured);
+        print_service_detail(&bare);
+        print_services_json(&[configured, bare]);
+
+        let response = DaemonResponse {
+            code: StatusCode::Ok.into(),
+            service_list: Some(ServiceListResponse { services: vec![] }),
+            ..Default::default()
+        };
+        assert!(response.service_list.unwrap().services.is_empty());
+    }
+
+    #[test]
+    fn daemon_binary_resolution_prefers_the_built_sibling() {
+        let resolved = resolve_daemon_binary().unwrap();
+        let expected = format!("running-process-daemon{}", std::env::consts::EXE_SUFFIX);
+        assert!(resolved.ends_with(expected));
+    }
+}

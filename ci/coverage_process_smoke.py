@@ -27,13 +27,122 @@ def _run(binary: Path, *args: str, env: dict[str, str]) -> str:
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr, flush=True)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"{binary.name} {' '.join(args)} exited {result.returncode}"
-        )
+        raise RuntimeError(f"{binary.name} {' '.join(args)} exited {result.returncode}")
     return result.stdout
 
 
-def exercise_runpm(binary: Path) -> None:
+def exercise_daemon_cli(binary: Path, *, env: dict[str, str]) -> None:
+    """Exercise daemon-native inspection and session administration commands."""
+    _run(binary, "ping", env=env)
+    _run(binary, "status", env=env)
+    _run(binary, "list", env=env)
+    _run(binary, "list", "--json", env=env)
+    _run(binary, "list", "--originator", "coverage-smoke", env=env)
+    _run(binary, "kill-zombies", "--dry-run", env=env)
+    _run(binary, "tree", str(os.getpid()), env=env)
+    _run(binary, "sessions", "list", env=env)
+    _run(binary, "sessions", "list", "--pty", env=env)
+    _run(binary, "sessions", "list", "--pipe", env=env)
+    _run(binary, "sessions", "purge", env=env)
+    _run(
+        binary,
+        "sessions",
+        "kill-older",
+        "--older-than",
+        "999d",
+        "--originator",
+        "coverage-smoke",
+        env=env,
+    )
+
+
+def exercise_cleanup(binary: Path) -> None:
+    """Exercise read-only and dry-run cleanup commands in an empty registry."""
+    with tempfile.TemporaryDirectory(prefix="running-process-cleanup-coverage-") as raw:
+        registry = Path(raw) / "registry"
+        env = os.environ.copy()
+        _run(binary, "--registry-dir", str(registry), "list", env=env)
+        _run(binary, "--registry-dir", str(registry), "list", "--json", env=env)
+        _run(
+            binary,
+            "--registry-dir",
+            str(registry),
+            "prune",
+            "--dormant-after",
+            "1d",
+            "--json",
+            env=env,
+        )
+        _run(
+            binary,
+            "--registry-dir",
+            str(registry),
+            "uninstall",
+            "missing-service",
+            "--json",
+            env=env,
+        )
+        _run(binary, "--registry-dir", str(registry), "instances", env=env)
+        _run(
+            binary,
+            "--registry-dir",
+            str(registry),
+            "instances",
+            "--status",
+            "--json",
+            env=env,
+        )
+
+
+def exercise_brokers(v1_binary: Path, v2_binary: Path) -> None:
+    """Exercise the brokers' bounded operator and configuration surfaces."""
+    env = os.environ.copy()
+    env["RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED"] = "1"
+    for args in (
+        ("--version",),
+        ("--help",),
+        ("status",),
+        ("status", "--json"),
+        ("dump",),
+        ("list-instances",),
+        ("healthz",),
+        ("readyz",),
+        ("backend-health", "coverage-service"),
+        ("config",),
+        ("diagnose", "--output", "coverage-bundle.tar.gz"),
+        ("metrics",),
+    ):
+        _run(v1_binary, *args, env=env)
+
+    with tempfile.TemporaryDirectory(prefix="running-process-servicedef-coverage-") as raw:
+        _run(
+            v1_binary,
+            "servicedef",
+            "install",
+            "--service",
+            "coverage-service",
+            "--binary-path",
+            str(v1_binary),
+            "--isolation",
+            "explicit",
+            "--explicit-instance",
+            "coverage",
+            "--min-version",
+            "1.0.0",
+            "--allow-version",
+            "1.0.0",
+            "--allow-version",
+            "2.0.0",
+            "--service-def-dir",
+            raw,
+            "--json",
+            env=env,
+        )
+
+    _run(v2_binary, "--no-bind", "--program", "coverage-broker", env=env)
+
+
+def exercise_runpm(binary: Path, daemon_binary: Path | None = None) -> None:
     """Exercise safe lifecycle commands against an isolated real daemon."""
     with tempfile.TemporaryDirectory(prefix="running-process-coverage-") as raw_root:
         root = Path(raw_root)
@@ -51,14 +160,14 @@ def exercise_runpm(binary: Path) -> None:
 
         service = "coverage-smoke"
         sleeper = (
-            "import os,time; "
-            "print('coverage-child:' + os.environ['RP_COVERAGE']); "
-            "time.sleep(20)"
+            "import os,time; print('coverage-child:' + os.environ['RP_COVERAGE']); time.sleep(20)"
         )
         try:
             _run(binary, "kill", env=env)
             _run(binary, "--start-daemon", env=env)
             _run(binary, "ping", env=env)
+            if daemon_binary is not None:
+                exercise_daemon_cli(daemon_binary, env=env)
             _run(
                 binary,
                 "start",
@@ -112,7 +221,21 @@ def main() -> int:
     binary = args.bin_dir / "runpm"
     if not binary.is_file():
         raise RuntimeError(f"instrumented runpm binary not found at {binary}")
-    exercise_runpm(binary)
+    daemon_binary = args.bin_dir / "running-process-daemon"
+    cleanup_binary = args.bin_dir / "running-process-cleanup"
+    broker_v1_binary = args.bin_dir / "running-process-broker-v1"
+    broker_v2_binary = args.bin_dir / "running-process-broker-v2"
+    for required in (
+        daemon_binary,
+        cleanup_binary,
+        broker_v1_binary,
+        broker_v2_binary,
+    ):
+        if not required.is_file():
+            raise RuntimeError(f"instrumented binary not found at {required}")
+    exercise_cleanup(cleanup_binary)
+    exercise_brokers(broker_v1_binary, broker_v2_binary)
+    exercise_runpm(binary, daemon_binary)
     return 0
 
 
