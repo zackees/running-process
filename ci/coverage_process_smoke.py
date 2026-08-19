@@ -182,7 +182,11 @@ def exercise_brokers(v1_binary: Path, v2_binary: Path) -> None:
 
 def exercise_probe_cli(daemon_binary: Path, cli_binary: Path) -> None:
     """Query a real isolated probe daemon through socket and HTTP transports."""
-    with tempfile.TemporaryDirectory(prefix="running-process-probe-coverage-") as raw:
+    # The probe endpoint is a Unix-domain socket. GitHub's TMPDIR lives below a
+    # long workspace path, which can push the generated endpoint past
+    # sockaddr_un.sun_path even though the product path itself is valid. Keep
+    # this Linux-only smoke root deliberately short.
+    with tempfile.TemporaryDirectory(prefix="rpp-", dir="/tmp") as raw:
         root = Path(raw)
         runtime = root / "runtime"
         runtime.mkdir(mode=0o700)
