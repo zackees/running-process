@@ -82,6 +82,21 @@ def _brokered_backend_ui_test_command() -> list[str]:
     )
 
 
+def _rust_coverage_example_commands() -> list[list[str]]:
+    """Run the repository's real multi-process broker evidence harnesses."""
+    common = [
+        "run",
+        "-p",
+        "running-process",
+        "--all-features",
+        "--example",
+    ]
+    return [
+        cargo_command(*common, "handoff_rollout_evidence", "--", "driver"),
+        cargo_command(*common, "session_relay_evidence", "--", "--smoke"),
+    ]
+
+
 def _rust_coverage_report_command() -> list[str]:
     """Write product coverage without counting executable test fixtures."""
     return cargo_command(
@@ -702,6 +717,13 @@ def main(argv: list[str] | None = None) -> int:
             cargo_cmd = _rust_coverage_test_command()
             if run(cargo_cmd) != 0:
                 return 1
+            # nextest does not execute Cargo examples. These two checked-in
+            # evidence programs deploy real broker/backend processes and the
+            # production SESSION relay, so include their fast modes in the
+            # same LLVM profile set instead of leaving those paths synthetic.
+            for example_cmd in _rust_coverage_example_commands():
+                if run(example_cmd) != 0:
+                    return 1
 
         else:
             # Step 0: build the test fixtures.

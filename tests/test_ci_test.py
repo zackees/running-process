@@ -132,6 +132,30 @@ def test_rust_coverage_runs_all_features_and_excludes_test_fixtures(
         "brokered_backend_ui",
         "--no-capture",
     ]
+    assert ci_test._rust_coverage_example_commands() == [
+        [
+            "cargo",
+            "run",
+            "-p",
+            "running-process",
+            "--all-features",
+            "--example",
+            "handoff_rollout_evidence",
+            "--",
+            "driver",
+        ],
+        [
+            "cargo",
+            "run",
+            "-p",
+            "running-process",
+            "--all-features",
+            "--example",
+            "session_relay_evidence",
+            "--",
+            "--smoke",
+        ],
+    ]
     assert ci_test._rust_coverage_report_command() == [
         "cargo",
         "llvm-cov",
@@ -849,4 +873,6 @@ def test_main_runs_coverage_when_the_preflight_passes(
     ), f"coverage should have run; issued {commands}"
     assert ci_test._brokered_backend_ui_test_command() in commands
     assert ci_test._rust_coverage_test_command() in commands
+    for example_command in ci_test._rust_coverage_example_commands():
+        assert example_command in commands
     assert not any("ci.linux_docker" in " ".join(cmd) for cmd in commands)
