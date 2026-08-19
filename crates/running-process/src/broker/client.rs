@@ -127,7 +127,7 @@ impl<'a> ConnectBackendRequest<'a> {
         self.cached_backend_endpoint.is_some() && self.wanted_version == self.self_version
     }
 
-    fn hello(&self) -> Hello {
+    pub(crate) fn hello(&self) -> Hello {
         Hello {
             client_min_protocol: PROTOCOL_VERSION,
             client_max_protocol: PROTOCOL_VERSION,
@@ -402,7 +402,7 @@ fn parse_broker_client_timeout(raw: Option<&str>) -> Duration {
         .unwrap_or(DEFAULT_BROKER_CLIENT_TIMEOUT)
 }
 
-fn broker_client_deadline() -> Duration {
+pub(crate) fn broker_client_deadline() -> Duration {
     parse_broker_client_timeout(std::env::var(BROKER_CLIENT_TIMEOUT_ENV).ok().as_deref())
 }
 

@@ -39,9 +39,9 @@ use crate::broker::lifecycle::names_v2::{
 };
 use crate::broker::lifecycle::sid::{user_sid_hash, SidError};
 use crate::broker::protocol::{
-    hello_reply, read_frame, write_frame, Frame, FrameKind, FramingError, Hello, HelloReply,
-    Negotiated, PayloadEncoding, Refused, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION,
-    PROTOCOL_VERSION,
+    hello_reply, read_frame, validate_frame_envelope, write_frame, Frame, FrameKind,
+    FrameValidationError, FramingError, Hello, HelloReply, Negotiated, PayloadEncoding, Refused,
+    CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION, PROTOCOL_VERSION,
 };
 
 /// Errors surfaced by [`connect`].
@@ -120,6 +120,37 @@ pub enum BrokerPathConnectError {
     /// The derived endpoint could not complete the v2 broker handshake.
     #[error(transparent)]
     Connect(#[from] BrokerV2Error),
+}
+
+/// Internal error vocabulary for the compatibility adapter's explicit-Hello
+/// path. Keeping the additional validation stages here preserves exhaustive
+/// downstream matches on the established public [`BrokerV2Error`] enum.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ExplicitHelloError {
+    /// An error already represented by the stable v2 client API.
+    #[error(transparent)]
+    Broker(#[from] BrokerV2Error),
+
+    /// The outer response `Frame` failed to decode.
+    #[error("response Frame decode: {0}")]
+    DecodeFrame(prost::DecodeError),
+
+    /// The broker returned a decodable response with an invalid envelope or
+    /// request correlation.
+    #[error("unexpected broker response frame: {0}")]
+    UnexpectedResponseFrame(&'static str),
+}
+
+impl ExplicitHelloError {
+    fn into_broker_v2(self) -> BrokerV2Error {
+        match self {
+            Self::Broker(error) => error,
+            Self::DecodeFrame(error) => BrokerV2Error::Decode(error),
+            Self::UnexpectedResponseFrame(reason) => {
+                BrokerV2Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, reason))
+            }
+        }
+    }
 }
 
 /// Async counterpart of [`ClientSession`] for tokio callers.
@@ -484,6 +515,33 @@ pub fn connect_service_with_scope_hash_and_deadline(
     )
 }
 
+/// Connect to an explicit v2 broker endpoint with a caller-supplied Hello.
+///
+/// This is the compatibility-preserving form: callers that already own the
+/// complete Hello contract (client identity, capabilities, keepalive and
+/// request identity) can move to the v2 transport without those fields being
+/// replaced by `client_v2` defaults.
+#[cfg(feature = "client-async")]
+pub(crate) fn connect_hello_at_endpoint_with_deadline(
+    broker_endpoint: impl Into<String>,
+    hello: Hello,
+    deadline: Duration,
+) -> Result<ClientSession, ExplicitHelloError> {
+    let socket_path = broker_endpoint.into();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(connect_unbounded_with_hello(&socket_path, hello));
+    });
+    match rx.recv_timeout(deadline) {
+        Ok(result) => result,
+        Err(_) => Err(BrokerV2Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("v2 broker Hello did not complete within {deadline:?}"),
+        ))
+        .into()),
+    }
+}
+
 fn connect_service_at_socket_with_deadline(
     program: &str,
     socket_path: String,
@@ -528,17 +586,31 @@ fn connect_unbounded(
         socket_path: socket_path.to_string(),
         source,
     })?;
-    let negotiated = hello_round_trip(&mut stream, program, service_name, version_hint)?;
+    let hello = default_hello(program, service_name, version_hint);
+    let negotiated =
+        hello_round_trip(&mut stream, hello).map_err(ExplicitHelloError::into_broker_v2)?;
     Ok(ClientSession { stream, negotiated })
 }
 
-fn hello_round_trip<S: Read + Write>(
-    stream: &mut S,
-    program: &str,
-    service_name: &str,
-    version_hint: &str,
-) -> Result<Negotiated, BrokerV2Error> {
-    let hello = Hello {
+#[cfg(feature = "client-async")]
+fn connect_unbounded_with_hello(
+    socket_path: &str,
+    hello: Hello,
+) -> Result<ClientSession, ExplicitHelloError> {
+    let name = wrap_socket_name(socket_path).map_err(|err| BrokerV2Error::Dial {
+        socket_path: socket_path.to_string(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, err),
+    })?;
+    let mut stream = Stream::connect(name).map_err(|source| BrokerV2Error::Dial {
+        socket_path: socket_path.to_string(),
+        source,
+    })?;
+    let negotiated = hello_round_trip(&mut stream, hello)?;
+    Ok(ClientSession { stream, negotiated })
+}
+
+fn default_hello(program: &str, service_name: &str, version_hint: &str) -> Hello {
+    Hello {
         client_min_protocol: ENVELOPE_VERSION as u32,
         client_max_protocol: ENVELOPE_VERSION as u32,
         service_name: service_name.to_string(),
@@ -554,7 +626,13 @@ fn hello_round_trip<S: Read + Write>(
         peer_attestation_nonce: Vec::new(),
         capability_token: Vec::new(),
         client_keepalive_secs: 0,
-    };
+    }
+}
+
+fn hello_round_trip<S: Read + Write>(
+    stream: &mut S,
+    hello: Hello,
+) -> Result<Negotiated, ExplicitHelloError> {
     // The wire-level `write_frame`/`read_frame` pair is only the raw
     // length-prefixed byte framing (`protocol::framing`) -- v1's actual
     // message framing is the `Frame` protobuf envelope
@@ -576,27 +654,46 @@ fn hello_round_trip<S: Read + Write>(
         kind: FrameKind::Request as i32,
         payload_protocol: CONTROL_PAYLOAD_PROTOCOL,
         payload: hello_bytes,
-        request_id: 0,
+        request_id: 1,
         payload_encoding: PayloadEncoding::None as i32,
         deadline_unix_ms: 0,
         traceparent: String::new(),
         tracestate: String::new(),
     };
     let body = request_frame.encode_to_vec();
-    write_frame(stream, &body)?;
+    write_frame(stream, &body).map_err(BrokerV2Error::from)?;
 
-    let reply_frame_bytes = read_frame(stream)?;
-    let reply_frame = Frame::decode(reply_frame_bytes.as_slice())?;
-    let reply = HelloReply::decode(reply_frame.payload.as_slice())?;
+    let reply_frame_bytes = read_frame(stream).map_err(BrokerV2Error::from)?;
+    let reply_frame =
+        Frame::decode(reply_frame_bytes.as_slice()).map_err(ExplicitHelloError::DecodeFrame)?;
+    validate_frame_envelope(&reply_frame, FrameKind::Response, CONTROL_PAYLOAD_PROTOCOL)
+        .map_err(map_response_frame_validation)?;
+    if reply_frame.request_id != request_frame.request_id {
+        return Err(ExplicitHelloError::UnexpectedResponseFrame(
+            "request_id does not match the Hello request",
+        ));
+    }
+    let reply =
+        HelloReply::decode(reply_frame.payload.as_slice()).map_err(BrokerV2Error::Decode)?;
     match reply.result {
         Some(hello_reply::Result::Negotiated(n)) => Ok(n),
         Some(hello_reply::Result::Refused(r)) => Err(BrokerV2Error::Refused {
             reason: r.reason.clone(),
             retry_after_ms: r.retry_after_ms,
             details: Box::new(r),
-        }),
-        None => Err(BrokerV2Error::MissingResult),
+        }
+        .into()),
+        None => Err(BrokerV2Error::MissingResult.into()),
     }
+}
+
+fn map_response_frame_validation(error: FrameValidationError) -> ExplicitHelloError {
+    ExplicitHelloError::UnexpectedResponseFrame(match error {
+        FrameValidationError::EnvelopeVersion { .. } => "envelope_version is not v1",
+        FrameValidationError::Kind { .. } => "kind is not RESPONSE",
+        FrameValidationError::PayloadProtocol { .. } => "payload_protocol is not control-plane",
+        FrameValidationError::PayloadEncoding { .. } => "payload is compressed",
+    })
 }
 
 fn resolve_socket_path(bare_name: &str) -> String {
@@ -656,6 +753,102 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    struct ScriptedHelloIo {
+        response: std::io::Cursor<Vec<u8>>,
+        request: Vec<u8>,
+    }
+
+    impl Read for ScriptedHelloIo {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.response.read(buf)
+        }
+    }
+
+    impl Write for ScriptedHelloIo {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.request.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn scripted_response(body: &[u8]) -> ScriptedHelloIo {
+        let mut response = Vec::new();
+        write_frame(&mut response, body).expect("frame scripted response");
+        ScriptedHelloIo {
+            response: std::io::Cursor::new(response),
+            request: Vec::new(),
+        }
+    }
+
+    fn valid_negotiated_response() -> Frame {
+        let reply = HelloReply {
+            result: Some(hello_reply::Result::Negotiated(Negotiated {
+                backend_pipe: "backend".into(),
+                ..Default::default()
+            })),
+        };
+        Frame {
+            envelope_version: PROTOCOL_VERSION,
+            kind: FrameKind::Response as i32,
+            payload_protocol: CONTROL_PAYLOAD_PROTOCOL,
+            payload: reply.encode_to_vec(),
+            request_id: 1,
+            payload_encoding: PayloadEncoding::None as i32,
+            deadline_unix_ms: 0,
+            traceparent: String::new(),
+            tracestate: String::new(),
+        }
+    }
+
+    #[test]
+    fn hello_rejects_invalid_response_envelopes_and_correlation() {
+        let mut invalid = Vec::new();
+        let mut frame = valid_negotiated_response();
+        frame.envelope_version += 1;
+        invalid.push(frame);
+        let mut frame = valid_negotiated_response();
+        frame.kind = FrameKind::Event as i32;
+        invalid.push(frame);
+        let mut frame = valid_negotiated_response();
+        frame.payload_protocol += 1;
+        invalid.push(frame);
+        let mut frame = valid_negotiated_response();
+        frame.payload_encoding = PayloadEncoding::Zstd as i32;
+        invalid.push(frame);
+        let mut frame = valid_negotiated_response();
+        frame.request_id = 0;
+        invalid.push(frame);
+
+        for frame in invalid {
+            let mut io = scripted_response(&frame.encode_to_vec());
+            assert!(matches!(
+                hello_round_trip(&mut io, default_hello("test", "service", "1")),
+                Err(ExplicitHelloError::UnexpectedResponseFrame(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn hello_distinguishes_outer_frame_and_inner_reply_decode_errors() {
+        let mut bad_frame = scripted_response(&[0xff, 0xff, 0xff]);
+        assert!(matches!(
+            hello_round_trip(&mut bad_frame, default_hello("test", "service", "1")),
+            Err(ExplicitHelloError::DecodeFrame(_))
+        ));
+
+        let mut frame = valid_negotiated_response();
+        frame.payload = vec![0xff, 0xff, 0xff];
+        let mut bad_reply = scripted_response(&frame.encode_to_vec());
+        assert!(matches!(
+            hello_round_trip(&mut bad_reply, default_hello("test", "service", "1")),
+            Err(ExplicitHelloError::Broker(BrokerV2Error::Decode(_)))
+        ));
+    }
+
     /// Test-side counterpart of [`connect`]'s Frame-wrapping: reads a
     /// length-prefixed `Frame`-wrapped `Hello` off `stream` and decodes
     /// the inner `Hello`. These in-process stub brokers stand in for the
@@ -663,21 +856,24 @@ mod tests {
     /// the same on-wire shape the real server does (soldr#2364) -- a
     /// stub that reads/writes bare `Hello`/`HelloReply` bytes no longer
     /// matches what `connect` sends/expects.
-    fn read_hello_frame(stream: &mut impl Read) -> Hello {
+    fn read_hello_frame(stream: &mut impl Read) -> (Hello, u64) {
         let bytes = read_frame(stream).expect("read Hello frame");
         let frame = Frame::decode(bytes.as_slice()).expect("decode Frame");
-        Hello::decode(frame.payload.as_slice()).expect("decode Hello")
+        (
+            Hello::decode(frame.payload.as_slice()).expect("decode Hello"),
+            frame.request_id,
+        )
     }
 
     /// Test-side counterpart of [`connect`]'s Frame-wrapping: encodes
     /// `reply` as a `Frame`-wrapped `HelloReply` and writes it to `stream`.
-    fn write_hello_reply_frame(stream: &mut impl Write, reply: &HelloReply) {
+    fn write_hello_reply_frame(stream: &mut impl Write, request_id: u64, reply: &HelloReply) {
         let reply_frame = Frame {
             envelope_version: PROTOCOL_VERSION,
             kind: FrameKind::Response as i32,
             payload_protocol: CONTROL_PAYLOAD_PROTOCOL,
             payload: reply.encode_to_vec(),
-            request_id: 0,
+            request_id,
             payload_encoding: PayloadEncoding::None as i32,
             deadline_unix_ms: 0,
             traceparent: String::new(),
@@ -726,7 +922,7 @@ mod tests {
                 .expect("ListenerOptions create_sync");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
-            let hello = read_hello_frame(&mut stream);
+            let (hello, request_id) = read_hello_frame(&mut stream);
             let reply = HelloReply {
                 result: Some(hello_reply::Result::Negotiated(Negotiated {
                     negotiated_protocol: ENVELOPE_VERSION as u32,
@@ -739,7 +935,7 @@ mod tests {
                     connection_id: 0x00C0_FFEE,
                 })),
             };
-            write_hello_reply_frame(&mut stream, &reply);
+            write_hello_reply_frame(&mut stream, request_id, &reply);
             // RAII guard removes the socket on scope exit; the explicit
             // remove that lived here previously was a no-op leftover.
             let _ = hello.service_name;
@@ -807,12 +1003,13 @@ mod tests {
                 .expect("ListenerOptions create_sync");
             ready_tx.send(()).expect("ready");
             let mut stream = listener.accept().expect("accept");
-            let hello = read_hello_frame(&mut stream);
+            let (hello, request_id) = read_hello_frame(&mut stream);
             hello_tx
                 .send(hello.service_name.clone())
                 .expect("observed service name");
             write_hello_reply_frame(
                 &mut stream,
+                request_id,
                 &HelloReply {
                     result: Some(hello_reply::Result::Negotiated(Negotiated {
                         backend_pipe: "route-endpoint".into(),
@@ -918,7 +1115,7 @@ mod tests {
                 .expect("ListenerOptions create_sync");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
-            let _hello = read_hello_frame(&mut stream);
+            let (_hello, request_id) = read_hello_frame(&mut stream);
             let reply = HelloReply {
                 result: Some(hello_reply::Result::Refused(Refused {
                     code: 0,
@@ -927,7 +1124,7 @@ mod tests {
                     ..Refused::default()
                 })),
             };
-            write_hello_reply_frame(&mut stream, &reply);
+            write_hello_reply_frame(&mut stream, request_id, &reply);
         });
         rx
     }
@@ -957,7 +1154,7 @@ mod tests {
                     Ok(s) => s,
                     Err(_) => break,
                 };
-                let _hello = read_hello_frame(&mut stream);
+                let (_hello, request_id) = read_hello_frame(&mut stream);
                 let reply = HelloReply {
                     result: Some(hello_reply::Result::Negotiated(Negotiated {
                         negotiated_protocol: ENVELOPE_VERSION as u32,
@@ -970,7 +1167,7 @@ mod tests {
                         connection_id: 0x0FFF_F1EE,
                     })),
                 };
-                write_hello_reply_frame(&mut stream, &reply);
+                write_hello_reply_frame(&mut stream, request_id, &reply);
             }
         });
         rx
@@ -1039,9 +1236,9 @@ mod tests {
                 .expect("ListenerOptions create_sync");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
-            let _hello = read_hello_frame(&mut stream);
+            let (_hello, request_id) = read_hello_frame(&mut stream);
             let reply = HelloReply { result: None };
-            write_hello_reply_frame(&mut stream, &reply);
+            write_hello_reply_frame(&mut stream, request_id, &reply);
         });
         rx
     }

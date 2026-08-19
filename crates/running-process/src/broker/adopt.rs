@@ -20,10 +20,12 @@
 //! # Ok(()) }
 //! ```
 //!
-//! The blocking [`BrokerSession`] is the wire-of-record; the async
-//! `AsyncBrokerSession` (feature `client-async`, #433 R3) is a thin
-//! `spawn_blocking` wrapper so tokio daemons get the same one-call adoption
-//! without re-implementing the negotiation against `AsyncRead`/`AsyncWrite`.
+//! The blocking [`BrokerSession`] keeps the frozen v1 path. The async
+//! `AsyncBrokerSession` (feature `client-async`, #433 R3) keeps the same public
+//! type and one-call recipe while default negotiation uses the validated v2
+//! Hello exchange (#532); direct-cache, test-seam, and opt-in handoff policies
+//! retain their v1 behavior. All blocking socket work stays on
+//! `spawn_blocking`, so no second `AsyncRead`/`AsyncWrite` wire exists.
 
 use crate::broker::backend_sdk::{FrameClient, FrameClientError};
 use crate::broker::client::{
@@ -300,9 +302,10 @@ impl OwnedConnectRequest {
 
 /// Async counterpart of [`BrokerSession`] for tokio daemons (#433 R3).
 ///
-/// Runs the blocking negotiation on `tokio::task::spawn_blocking` and wraps the
-/// resulting [`FrameClient`] in an [`AsyncFrameClient`] so every later request
-/// is `.await`-able without a manual `spawn_blocking` at the call site.
+/// Runs negotiation and backend dial on `tokio::task::spawn_blocking`, then
+/// wraps the resulting [`FrameClient`] in an [`AsyncFrameClient`] so every
+/// later request is `.await`-able without a manual blocking worker at the call
+/// site. See [`Self::adopt`] for the v2/default and v1-policy split.
 ///
 /// [`AsyncFrameClient`]: crate::broker::backend_sdk::AsyncFrameClient
 #[cfg(feature = "client-async")]
@@ -318,18 +321,9 @@ impl AsyncBrokerSession {
     /// Negotiate through the broker on a blocking worker and return a
     /// ready-to-talk async session.
     pub async fn adopt(request: OwnedConnectRequest) -> Result<Self, AdoptError> {
-        let joined = tokio::task::spawn_blocking(move || {
-            BrokerSession::adopt(request.as_request()).map(|session| {
-                (
-                    session.route,
-                    session.endpoint,
-                    session.negotiated,
-                    session.client,
-                )
-            })
-        })
-        .await
-        .map_err(|err| AdoptError::AsyncJoin(err.to_string()))?;
+        let joined = tokio::task::spawn_blocking(move || adopt_async_blocking(request))
+            .await
+            .map_err(|err| AdoptError::AsyncJoin(err.to_string()))?;
         let (route, endpoint, negotiated, client) = joined?;
         Ok(Self {
             client: crate::broker::backend_sdk::AsyncFrameClient::from_blocking(client),
@@ -387,4 +381,132 @@ impl AsyncBrokerSession {
         }
         OwnedBackendIo::from_local_socket_stream(client.into_stream())
     }
+}
+
+#[cfg(feature = "client-async")]
+type AdoptedAsync = (
+    BackendConnectionRoute,
+    String,
+    Option<Negotiated>,
+    FrameClient,
+);
+
+/// Blocking half of async adoption.
+///
+/// The public async session retains its canonical type identity. Default
+/// broker negotiation uses client_v2's validated Hello exchange; the frozen
+/// direct-cache, fake-backend, and opt-in handoff paths retain their exact v1
+/// behavior because they are transport policies beyond a plain Hello.
+#[cfg(feature = "client-async")]
+fn adopt_async_blocking(request: OwnedConnectRequest) -> Result<AdoptedAsync, AdoptError> {
+    if broker_disabled_by_env()? {
+        return Err(AdoptError::BrokerDisabled);
+    }
+
+    #[cfg(feature = "test-seams")]
+    if std::env::var_os(crate::broker::client::RUNNING_PROCESS_FAKE_BACKEND_ENV)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return BrokerSession::adopt(request.as_request()).map(|session| {
+            (
+                session.route,
+                session.endpoint,
+                session.negotiated,
+                session.client,
+            )
+        });
+    }
+
+    if request.adopt_handed_off_connection {
+        return BrokerSession::adopt(request.as_request()).map(|session| {
+            (
+                session.route,
+                session.endpoint,
+                session.negotiated,
+                session.client,
+            )
+        });
+    }
+
+    if request.wanted_version == request.self_version {
+        if let Some(endpoint) = request.cached_backend_endpoint.as_deref() {
+            if let Ok(stream) = crate::broker::client::connect_local_socket(endpoint) {
+                return Ok((
+                    BackendConnectionRoute::HelloSkip,
+                    endpoint.to_owned(),
+                    None,
+                    FrameClient::from_stream(stream),
+                ));
+            }
+        }
+    }
+
+    let mut hello = request.as_request().hello();
+    hello.request_id = format!("client_v2-{}-{}", request.service_name, std::process::id());
+    let session = crate::broker::client_v2::connect_hello_at_endpoint_with_deadline(
+        request.broker_endpoint,
+        hello,
+        crate::broker::client::broker_client_deadline(),
+    )
+    .map_err(map_explicit_hello_error)?;
+    let negotiated = session.negotiated().clone();
+    let endpoint = negotiated.backend_pipe.clone();
+    let stream = session.connect_backend().map_err(map_v2_backend_error)?;
+    Ok((
+        BackendConnectionRoute::BrokerNegotiated,
+        endpoint,
+        Some(negotiated),
+        FrameClient::from_stream(stream),
+    ))
+}
+
+#[cfg(feature = "client-async")]
+fn map_v2_broker_error(error: crate::broker::client_v2::BrokerV2Error) -> AdoptError {
+    use crate::broker::client_v2::BrokerV2Error;
+    let mapped = match error {
+        BrokerV2Error::Dial { source, .. } | BrokerV2Error::Io(source) => {
+            BrokerClientError::BrokerConnect(source)
+        }
+        BrokerV2Error::Framing(source) => BrokerClientError::Framing(source),
+        BrokerV2Error::Decode(source) => BrokerClientError::DecodeHelloReply(source),
+        BrokerV2Error::MissingResult => BrokerClientError::MissingHelloReplyResult,
+        BrokerV2Error::Refused {
+            reason,
+            retry_after_ms,
+            details,
+        } => BrokerClientError::Refused {
+            code: details.code(),
+            reason,
+            retry_after_ms,
+        },
+        other => BrokerClientError::BrokerConnect(std::io::Error::other(other.to_string())),
+    };
+    AdoptError::Connect(mapped)
+}
+
+#[cfg(feature = "client-async")]
+fn map_explicit_hello_error(error: crate::broker::client_v2::ExplicitHelloError) -> AdoptError {
+    use crate::broker::client_v2::ExplicitHelloError;
+    match error {
+        ExplicitHelloError::Broker(error) => map_v2_broker_error(error),
+        ExplicitHelloError::DecodeFrame(source) => {
+            AdoptError::Connect(BrokerClientError::DecodeFrame(source))
+        }
+        ExplicitHelloError::UnexpectedResponseFrame(reason) => {
+            AdoptError::Connect(BrokerClientError::UnexpectedResponseFrame(reason))
+        }
+    }
+}
+
+#[cfg(feature = "client-async")]
+fn map_v2_backend_error(error: crate::broker::client_v2::BackendDialError) -> AdoptError {
+    use crate::broker::client_v2::BackendDialError;
+    let mapped = match error {
+        BackendDialError::EmptyBackendPipe => BrokerClientError::EmptyBackendPipe,
+        BackendDialError::Connect(source) => BrokerClientError::BackendConnect(source),
+        BackendDialError::IntoBackendIo(source) => {
+            BrokerClientError::BackendConnect(std::io::Error::other(source.to_string()))
+        }
+    };
+    AdoptError::Connect(mapped)
 }
