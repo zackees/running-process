@@ -203,18 +203,10 @@ pub async fn relay_local_socket_session(
     let (daemon_read, daemon_write) = daemon.split();
 
     // Linux's dispatch enums each have exactly one Unix-domain-socket variant.
-    let client_read = match client_read {
-        interprocess::local_socket::tokio::RecvHalf::UdSocket(value) => value,
-    };
-    let client_write = match client_write {
-        interprocess::local_socket::tokio::SendHalf::UdSocket(value) => value,
-    };
-    let daemon_read = match daemon_read {
-        interprocess::local_socket::tokio::RecvHalf::UdSocket(value) => value,
-    };
-    let daemon_write = match daemon_write {
-        interprocess::local_socket::tokio::SendHalf::UdSocket(value) => value,
-    };
+    let interprocess::local_socket::tokio::RecvHalf::UdSocket(client_read) = client_read;
+    let interprocess::local_socket::tokio::SendHalf::UdSocket(client_write) = client_write;
+    let interprocess::local_socket::tokio::RecvHalf::UdSocket(daemon_read) = daemon_read;
+    let interprocess::local_socket::tokio::SendHalf::UdSocket(daemon_write) = daemon_write;
 
     let committed = Arc::new(AtomicBool::new(false));
     let client_to_daemon = Direction::prepare(

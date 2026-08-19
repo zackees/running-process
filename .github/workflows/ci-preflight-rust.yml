@@ -62,7 +62,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install musl-tools
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: bash ci/install_musl_tools.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -90,7 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install musl-tools
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: bash ci/install_musl_tools.sh
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -116,7 +116,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install musl-tools
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: bash ci/install_musl_tools.sh
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
