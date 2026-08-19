@@ -44,7 +44,6 @@ async fn relay_session_proxies_client_to_daemon_endpoint() {
     let broker_path = std::env::temp_dir().join(format!("rp-relay-b-{pid}.sock"));
     let _ = std::fs::remove_file(&daemon_path);
     let _ = std::fs::remove_file(&broker_path);
-
     // Daemon SESSION endpoint (the real serve surface).
     let daemon_listener = ListenerOptions::new()
         .name(
@@ -144,6 +143,13 @@ async fn relay_session_preserves_start_environment_and_exit_metadata() {
     let broker_path = std::env::temp_dir().join(format!("rp-relay-md-b-{pid}.sock"));
     let _ = std::fs::remove_file(&daemon_path);
     let _ = std::fs::remove_file(&broker_path);
+    let expected_metadata = [
+        ("cache_outcome".to_owned(), "hit".to_owned()),
+        ("compile_id".to_owned(), "compile-934".to_owned()),
+    ]
+    .into_iter()
+    .collect::<std::collections::HashMap<_, _>>();
+    let daemon_metadata = expected_metadata.clone();
 
     // Stub daemon: accept, read the client's opening frame, reply with one Exit
     // carrying a metadata map, then close.
@@ -168,9 +174,7 @@ async fn relay_session_preserves_start_environment_and_exit_metadata() {
             .send(frame(session_frame::Kind::Exit(SessionExit {
                 code: 0,
                 signal: 0,
-                metadata: [("cache_outcome".to_owned(), "hit".to_owned())]
-                    .into_iter()
-                    .collect(),
+                metadata: daemon_metadata,
             })))
             .await;
         start
@@ -245,9 +249,8 @@ async fn relay_session_preserves_start_environment_and_exit_metadata() {
         "broker must preserve the policy field and ordered environment entries"
     );
     assert_eq!(
-        exit.metadata.get("cache_outcome").map(String::as_str),
-        Some("hit"),
-        "SessionExit.metadata must survive relay_session uninterpreted"
+        exit.metadata, expected_metadata,
+        "every SessionExit.metadata key/value must survive relay_session uninterpreted"
     );
 }
 

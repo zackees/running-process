@@ -153,9 +153,12 @@ mod tests {
             signal: 9,
             // Non-empty so the opaque metadata map (soldr#2365 Q3) is exercised
             // across the wire, not just defaulted away.
-            metadata: [("cache_outcome".to_owned(), "miss".to_owned())]
-                .into_iter()
-                .collect(),
+            metadata: [
+                ("cache_outcome".to_owned(), "miss".to_owned()),
+                ("compile_id".to_owned(), "compile-934".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
         };
         let decoded =
             SessionExit::decode(original.encode_to_vec().as_slice()).expect("SessionExit decodes");
