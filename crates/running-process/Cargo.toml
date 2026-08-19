@@ -58,6 +58,13 @@ required-features = ["client"]
 name = "handoff_rollout_evidence"
 required-features = ["client"]
 
+[[example]]
+# Reproducible copy-avoidance evidence for #949. Exercises the real local
+# socket transport and production SESSION relay alongside controls; it is not
+# shipped and does not change the broker wire.
+name = "session_relay_evidence"
+required-features = ["daemon"]
+
 [features]
 # Final feature scheme per #165:
 # * `core`   — always-available API (spawn / containment).
