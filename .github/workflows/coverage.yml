@@ -19,6 +19,11 @@ jobs:
       RUST_BACKTRACE: "full"
       RUST_LIB_BACKTRACE: "full"
       RUNNING_PROCESS_TEST_NOCAPTURE: "1"
+      # Coverage must exercise the same real process, signal, and PTY paths
+      # that gate releases. The Python pass appends these tests to its report,
+      # while the instrumented PyO3 wheel records their native Rust execution.
+      RUNNING_PROCESS_LIVE_TESTS: "1"
+      RUNNING_PROCESS_GH_PTY_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
 

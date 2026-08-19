@@ -18,6 +18,9 @@ class TestCoverageWorkflowContract(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         coverage_runner = COVERAGE_RUNNER.read_text(encoding="utf-8")
 
+        self.assertIn('RUNNING_PROCESS_LIVE_TESTS: "1"', workflow)
+        self.assertIn('RUNNING_PROCESS_GH_PTY_TESTS: "1"', workflow)
+
         for expensive_instrumentation in (
             "Enable core dumps",
             "kernel.core_pattern",
