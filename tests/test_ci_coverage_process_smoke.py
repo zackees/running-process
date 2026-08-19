@@ -64,7 +64,7 @@ def test_broker_smoke_covers_admin_servicedef_and_v2_no_bind(monkeypatch) -> Non
     monkeypatch.setattr(
         coverage_process_smoke,
         "_run",
-        lambda binary, *args, env: calls.append((binary.name, args)) or "",
+        lambda binary, *args, env, **_kwargs: calls.append((binary.name, args)) or "",
     )
 
     coverage_process_smoke.exercise_brokers(

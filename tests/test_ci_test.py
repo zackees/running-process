@@ -161,6 +161,8 @@ def test_rust_coverage_runs_all_features_and_excludes_test_fixtures(
         "build",
         "-p",
         "running-process",
+        "-p",
+        "running-process-probe-daemon",
         "--all-features",
         "--bins",
     ]
@@ -202,9 +204,7 @@ def test_rust_coverage_environment_parses_external_test_variables(
     monkeypatch.setattr(
         ci_test.subprocess,
         "run",
-        lambda *args, **kwargs: ci_test.subprocess.CompletedProcess(
-            args[0], 0, output, ""
-        ),
+        lambda *args, **kwargs: ci_test.subprocess.CompletedProcess(args[0], 0, output, ""),
     )
 
     coverage_env = ci_test._rust_coverage_environment()
@@ -416,12 +416,8 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(
-        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
-    )
-    monkeypatch.setattr(
-        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
-    )
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
 
     result = ci_test.main([])
 
@@ -464,12 +460,8 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(
-        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
-    )
-    monkeypatch.setattr(
-        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
-    )
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
 
     result = ci_test.main([])
 
@@ -597,12 +589,8 @@ def test_main_live_only_runs_only_live_pytest_through_cli(monkeypatch) -> None:
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(
-        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
-    )
-    monkeypatch.setattr(
-        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
-    )
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
 
     result = ci_test.main(["--live-only", "tests/test_pty_support.py"])
 
@@ -645,12 +633,8 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(
-        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
-    )
-    monkeypatch.setattr(
-        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
-    )
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
 
     result = ci_test.main(["--no-skip"])
 
@@ -886,9 +870,9 @@ def test_main_runs_coverage_when_the_preflight_passes(
     result = ci_test.main(["--coverage"])
 
     assert result == 0
-    assert any(
-        "llvm-cov" in " ".join(cmd) for cmd in commands
-    ), f"coverage should have run; issued {commands}"
+    assert any("llvm-cov" in " ".join(cmd) for cmd in commands), (
+        f"coverage should have run; issued {commands}"
+    )
     assert ci_test._brokered_backend_ui_test_command() in commands
     assert ci_test._rust_coverage_test_command() in commands
     for example_command in ci_test._rust_coverage_example_commands():

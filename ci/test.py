@@ -99,7 +99,13 @@ def _rust_coverage_example_commands() -> list[list[str]]:
 
 def _rust_coverage_binary_build_command() -> list[str]:
     return cargo_command(
-        "build", "-p", "running-process", "--all-features", "--bins"
+        "build",
+        "-p",
+        "running-process",
+        "-p",
+        "running-process-probe-daemon",
+        "--all-features",
+        "--bins",
     )
 
 
