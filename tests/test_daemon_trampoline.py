@@ -148,6 +148,31 @@ class TestTrampolineBinary(unittest.TestCase):
 class TestDaemonHelpers(unittest.TestCase):
     """Test the Python daemon helper functions."""
 
+    def test_trampoline_available_is_a_non_raising_capability_probe(self) -> None:
+        from running_process import daemon
+
+        with mock.patch.object(
+            daemon,
+            "_bundled_trampoline_path",
+            return_value=Path("missing-daemon-trampoline"),
+        ):
+            self.assertFalse(daemon.trampoline_available())
+
+        with tempfile.NamedTemporaryFile() as trampoline:
+            with mock.patch.object(
+                daemon,
+                "_bundled_trampoline_path",
+                return_value=Path(trampoline.name),
+            ):
+                self.assertTrue(daemon.trampoline_available())
+
+        with mock.patch.object(
+            daemon,
+            "_bundled_trampoline_path",
+            side_effect=PermissionError("access denied"),
+        ):
+            self.assertFalse(daemon.trampoline_available())
+
     def test_posix_process_state_parses_proc_stat(self) -> None:
         from running_process import daemon
 

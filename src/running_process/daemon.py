@@ -55,12 +55,25 @@ def _bundled_trampoline_path() -> Path:
     return assets / "daemon-trampoline"
 
 
+def trampoline_available() -> bool:
+    """Return whether this installation includes the daemon trampoline binary.
+
+    Unlike :func:`trampoline_source_path`, this is a non-raising capability
+    probe and does not copy the binary into the per-user application directory.
+    """
+    try:
+        return _bundled_trampoline_path().is_file()
+    except OSError:
+        return False
+
+
 def trampoline_source_path() -> Path:
     """Return the path to the trampoline binary in the app assets dir.
 
     On first call, copies from the bundled package assets to the app-level
     assets directory so that hard links from runtime/ always target a stable
-    location on the same filesystem as ~/.running-process/.
+    location on the same filesystem as ~/.running-process/. Use
+    :func:`trampoline_available` to probe availability without raising.
     """
     ext = ".exe" if sys.platform == "win32" else ""
     dest = assets_dir() / f"daemon-trampoline{ext}"
@@ -435,10 +448,13 @@ def spawn_daemon(
     env: dict[str, str] | None = None,
     log_path: str | Path | None = None,
 ) -> DaemonHandle:
-    """Spawn a daemon process via the binary trampoline.
+    """Spawn a daemon process via the separately packaged binary trampoline.
 
     The daemon runs detached from the caller — stdin is /dev/null, stdout/stderr
-    go to *log_path* (or are discarded if not specified).
+    go to *log_path* (or are discarded if not specified). This is daemon
+    infrastructure rather than the v1 broker client used by
+    :func:`running_process.launch_detached`. Call :func:`trampoline_available`
+    first when installation capabilities must be checked without an exception.
 
     Parameters
     ----------

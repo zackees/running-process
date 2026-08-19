@@ -1,11 +1,79 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 from ci import build_wheel
+
+
+class TrampolineWheelTest(unittest.TestCase):
+    def test_accepts_the_platform_trampoline_entry(self) -> None:
+        suffix = ".exe" if build_wheel.platform.system() == "Windows" else ""
+        expected = f"running_process/assets/daemon-trampoline{suffix}"
+        with tempfile.TemporaryDirectory() as directory:
+            wheel = Path(directory) / "running_process-test.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr(expected, b"trampoline")
+
+            self.assertEqual(build_wheel.verify_trampoline_in_wheel(wheel), expected)
+
+    def test_rejects_a_wheel_without_the_trampoline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            wheel = Path(directory) / "running_process-test.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("running_process/assets/example.txt", b"example")
+
+            with self.assertRaisesRegex(RuntimeError, "missing bundled trampoline"):
+                build_wheel.verify_trampoline_in_wheel(wheel)
+
+
+class BuildTrampolineTest(unittest.TestCase):
+    def test_uses_a_separate_target_tree_from_maturin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "built" / "daemon-trampoline.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"trampoline")
+            completed = subprocess.CompletedProcess(
+                args=["soldr", "cargo", "build"],
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "reason": "compiler-artifact",
+                        "target": {"name": "daemon-trampoline"},
+                        "executable": str(executable),
+                    }
+                ),
+                stderr="",
+            )
+            original_env = {"CARGO_TARGET_DIR": "shared-target"}
+            with (
+                patch.object(build_wheel, "ROOT", root),
+                patch.object(
+                    build_wheel,
+                    "TRAMPOLINE_ASSETS",
+                    root / "src" / "running_process" / "assets",
+                ),
+                patch.object(
+                    build_wheel.subprocess,
+                    "run",
+                    return_value=completed,
+                ) as run,
+            ):
+                self.assertEqual(
+                    build_wheel.build_trampoline("dev", env=original_env), 0
+                )
+
+            child_env = run.call_args.kwargs["env"]
+            self.assertEqual(
+                child_env["CARGO_TARGET_DIR"], str(root / "target" / "trampoline")
+            )
+            self.assertEqual(original_env["CARGO_TARGET_DIR"], "shared-target")
 
 
 class PreserveDevPdbTest(unittest.TestCase):

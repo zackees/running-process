@@ -41,7 +41,17 @@ def launch_detached(
     env: Mapping[str, str] | None = None,
     originator: str | None = None,
 ) -> DetachedProcess:
-    """Launch a daemon-tracked detached shell command and return its metadata."""
+    """Launch a broker-tracked detached shell command and return its metadata.
+
+    This is a v1 broker client, not a plain subprocess launcher. It connects to
+    the running-process daemon and automatically starts
+    ``running-process-daemon`` when needed. If that executable cannot be found
+    or the broker endpoint does not become reachable, the error identifies the
+    failed executable or endpoint and suggests the startup command.
+
+    Use :class:`RunningProcess`, :class:`InteractiveProcess`, or
+    :func:`subprocess_run` for ordinary broker-free process supervision.
+    """
     if not isinstance(command, str):
         raise TypeError("command must be a string")
 
