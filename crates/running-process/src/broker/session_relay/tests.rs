@@ -2,14 +2,14 @@
 //! proxied **client → broker → daemon** across TWO real `interprocess` local
 //! sockets, using the production daemon endpoint and the broker's full-proxy
 //! relay. The command is carried on the wire; the broker is transparent. This is
-//! the production form of the relay vertical (real transport, not the harness
-//! `copy_bidirectional` over `UnixStream` pairs). Unix-first.
+//! the production form of the relay vertical (real transport, including Linux
+//! splice rather than an in-memory `UnixStream` approximation). Unix-first.
 
 use futures_util::{SinkExt, StreamExt};
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 
-use super::relay_session;
+use super::relay_local_socket_session;
 use crate::broker::protocol_v2::{session_frame, SessionFrame, SessionStart};
 use crate::daemon::compile_session::session_framed;
 use crate::daemon::session_endpoint::serve_session_endpoint;
@@ -70,7 +70,7 @@ async fn relay_session_proxies_client_to_daemon_endpoint() {
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
         let client_conn = broker_listener.accept().await.expect("broker accept");
-        let _ = relay_session(client_conn, &daemon_path_str).await;
+        let _ = relay_local_socket_session(client_conn, &daemon_path_str).await;
     });
 
     // Client dials ONLY the broker and speaks the SESSION wire.
@@ -188,7 +188,7 @@ async fn relay_session_preserves_start_environment_and_exit_metadata() {
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
         let client_conn = broker_listener.accept().await.expect("broker accept");
-        let _ = relay_session(client_conn, &daemon_path_str).await;
+        let _ = relay_local_socket_session(client_conn, &daemon_path_str).await;
     });
 
     let stream = interprocess::local_socket::tokio::Stream::connect(
@@ -249,4 +249,80 @@ async fn relay_session_preserves_start_environment_and_exit_metadata() {
         Some("hit"),
         "SessionExit.metadata must survive relay_session uninterpreted"
     );
+}
+
+/// Cancelling the long-lived production relay must close every original and
+/// duplicated descriptor so neither peer waits forever on an orphaned pipe.
+#[tokio::test]
+async fn relay_session_cancellation_closes_both_peers() {
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+    use tokio::io::AsyncReadExt;
+
+    let pid = std::process::id();
+    let daemon_path = std::env::temp_dir().join(format!("rp-relay-cancel-d-{pid}.sock"));
+    let broker_path = std::env::temp_dir().join(format!("rp-relay-cancel-b-{pid}.sock"));
+    let _ = std::fs::remove_file(&daemon_path);
+    let _ = std::fs::remove_file(&broker_path);
+
+    let daemon_listener = ListenerOptions::new()
+        .name(
+            daemon_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("daemon fs name"),
+        )
+        .create_tokio()
+        .expect("bind daemon endpoint");
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+    let daemon = tokio::spawn(async move {
+        let mut conn = daemon_listener.accept().await.expect("daemon accept");
+        let _ = accepted_tx.send(());
+        let mut byte = [0_u8; 1];
+        tokio::time::timeout(std::time::Duration::from_secs(2), conn.read(&mut byte))
+            .await
+            .expect("daemon observes relay cancellation")
+            .expect("daemon read")
+    });
+
+    let broker_listener = ListenerOptions::new()
+        .name(
+            broker_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("broker fs name"),
+        )
+        .create_tokio()
+        .expect("bind broker endpoint");
+    let daemon_path_str = daemon_path.to_string_lossy().into_owned();
+    let broker = tokio::spawn(async move {
+        let client = broker_listener.accept().await.expect("broker accept");
+        relay_local_socket_session(client, &daemon_path_str).await
+    });
+
+    let mut client = interprocess::local_socket::tokio::Stream::connect(
+        broker_path
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("client fs name"),
+    )
+    .await
+    .expect("client dials broker");
+    accepted_rx.await.expect("relay connected to daemon");
+    broker.abort();
+    let _ = broker.await;
+
+    let mut byte = [0_u8; 1];
+    let client_read =
+        tokio::time::timeout(std::time::Duration::from_secs(2), client.read(&mut byte))
+            .await
+            .expect("client observes relay cancellation")
+            .expect("client read");
+    let daemon_read = daemon.await.expect("daemon task");
+
+    let _ = std::fs::remove_file(&daemon_path);
+    let _ = std::fs::remove_file(&broker_path);
+    assert_eq!(client_read, 0, "client must observe broker-side EOF");
+    assert_eq!(daemon_read, 0, "daemon must observe broker-side EOF");
 }

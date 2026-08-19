@@ -1,5 +1,11 @@
 //! Windows implementation root for the process capability.
 
+#[cfg(feature = "session-relay")]
+#[path = "platform_win_session_relay.rs"]
+mod session_relay;
+#[cfg(feature = "session-relay")]
+pub use session_relay::relay_local_socket_session;
+
 #[path = "platform_win/console.rs"]
 mod console;
 pub use console::monitor_console_windows;

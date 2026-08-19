@@ -41,10 +41,9 @@ pub mod session_codec;
 #[cfg(feature = "daemon")]
 pub mod session_client;
 pub mod session_pump;
-// The SESSION relay is a transparent byte proxy (no `SessionFrameCodec`); it
-// only needs `interprocess/tokio` + `copy_bidirectional`, both now under
-// `client-async`, so the standalone async v2 broker can use it without the
-// daemon runtime.
+// The SESSION relay is a transparent byte proxy (no `SessionFrameCodec`). It
+// uses Linux splice or portable buffered I/O under `client-async`, so the
+// standalone async v2 broker can use it without the daemon runtime.
 #[cfg(feature = "client-async")]
 pub mod session_relay;
 pub mod session_server;

@@ -1,5 +1,11 @@
 //! Linux implementation root for the process capability.
 
+#[cfg(feature = "session-relay")]
+#[path = "platform_linux_session_relay.rs"]
+mod session_relay;
+#[cfg(feature = "session-relay")]
+pub use session_relay::relay_local_socket_session;
+
 pub fn shell_command(command: &str) -> std::process::Command {
     let mut shell = std::process::Command::new("/bin/sh");
     shell.arg("-lc").arg(command);

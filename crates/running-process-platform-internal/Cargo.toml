@@ -12,9 +12,14 @@ publish = true
 [lints]
 workspace = true
 
+[features]
+default = []
+session-relay = ["dep:interprocess", "tokio/net"]
+
 [dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt"] }
 sysinfo = "0.30"
+interprocess = { version = "2", optional = true, features = ["tokio"] }
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }

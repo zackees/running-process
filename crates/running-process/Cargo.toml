@@ -130,6 +130,7 @@ client-async = [
     "tokio/time",
     "tokio/sync",
     "interprocess/tokio",
+    "running-process-platform-internal/session-relay",
     "dep:tokio-util",
     "dep:bytes",
     "dep:futures-util",
