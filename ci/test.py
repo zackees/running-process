@@ -393,12 +393,13 @@ def _prune_invalid_profraw(
     bad_dir: Path | None = None,
     profdata_command: Sequence[str] | None = None,
 ) -> int:
-    """Preserve, document, then remove profiles rejected by llvm-profdata.
+    """Preserve when readable, document, then remove rejected profiles.
 
     A nonzero probe proves only that the input is unusable by this LLVM
     build. It does not establish truncation or identify the process that
     produced the file. Rejected inputs are copied with a manifest before
-    removal so a green coverage run still leaves an upstream reproducer.
+    removal when permissions allow it. Unreadable profiles still get a
+    manifest entry so one inaccessible file cannot block the valid merge.
     """
     if profdata_command is None:
         profdata = _find_llvm_profdata()
@@ -437,14 +438,25 @@ def _prune_invalid_profraw(
         relative = profraw.relative_to(profile_dir)
         preserved = evidence_dir / relative
         preserved.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(profraw, preserved)
+        preserved_path: str | None = None
+        preservation_error: str | None = None
+        try:
+            shutil.copy2(profraw, preserved)
+            preserved_path = str(preserved.relative_to(evidence_dir))
+        except OSError as error:
+            preservation_error = f"{type(error).__name__}: {error}"
+        try:
+            size_bytes: int | None = profraw.stat().st_size
+        except OSError:
+            size_bytes = None
         command = [*command_prefix, "show", str(profraw)]
         entries.append(
             {
                 "filename": profraw.name,
                 "original_path": str(profraw),
-                "preserved_path": str(preserved.relative_to(evidence_dir)),
-                "size_bytes": profraw.stat().st_size,
+                "preserved_path": preserved_path,
+                "preservation_error": preservation_error,
+                "size_bytes": size_bytes,
                 "probe_command": command,
                 "probe_returncode": probe.returncode,
                 "probe_signal": -probe.returncode if probe.returncode < 0 else None,
@@ -466,11 +478,11 @@ def _prune_invalid_profraw(
         encoding="utf-8",
     )
 
-    # The copies and their manifest now exist; only at this point is it safe
-    # to keep the rejected inputs out of cargo-llvm-cov's merge set.
+    # The available copies and complete manifest now exist; only at this point
+    # is it safe to keep the rejected inputs out of cargo-llvm-cov's merge set.
     for profraw, probe in rejected:
         print(
-            f"coverage: preserving and pruning invalid profraw ({probe.returncode}): {profraw}",
+            f"coverage: pruning invalid profraw ({probe.returncode}): {profraw}",
             flush=True,
         )
         profraw.unlink()

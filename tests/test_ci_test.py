@@ -182,9 +182,11 @@ def test_decode_coverage_environment_value_removes_posix_shell_quotes() -> None:
     assert ci_test._decode_coverage_environment_value(encoded, posix=False) == encoded
 
 
+@pytest.mark.parametrize("copy_denied", [False, True])
 def test_prune_invalid_profraw_preserves_evidence_before_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    copy_denied: bool,
 ) -> None:
     profile_dir = tmp_path / "profiles"
     bad_dir = tmp_path / "logs" / "bad-profraw"
@@ -213,6 +215,14 @@ def test_prune_invalid_profraw_preserves_evidence_before_removal(
     monkeypatch.setenv("RUNNER_OS", "fake-linux")
     monkeypatch.setenv("GITHUB_RUN_ID", "123456")
     monkeypatch.setenv("GITHUB_SHA", "deadbeef")
+    if copy_denied:
+        monkeypatch.setattr(
+            ci_test.shutil,
+            "copy2",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                PermissionError("profile is unreadable")
+            ),
+        )
 
     count = ci_test._prune_invalid_profraw(
         profile_dir,
@@ -223,7 +233,11 @@ def test_prune_invalid_profraw_preserves_evidence_before_removal(
     assert count == 1
     assert valid.read_bytes() == b"valid-profile"
     assert not invalid.exists()
-    assert (bad_dir / "nested" / "invalid.profraw").read_bytes() == b"rejected-profile"
+    preserved = bad_dir / "nested" / "invalid.profraw"
+    if copy_denied:
+        assert not preserved.exists()
+    else:
+        assert preserved.read_bytes() == b"rejected-profile"
     manifest = json.loads((bad_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["llvm_version"] == "LLVM fake-profdata 21.1.8"
     assert manifest["runner_os"] == "fake-linux"
@@ -234,9 +248,16 @@ def test_prune_invalid_profraw_preserves_evidence_before_removal(
             "filename": "invalid.profraw",
             "original_path": str(invalid),
             "preserved_path": (
-                "nested\\invalid.profraw"
-                if sys.platform == "win32"
-                else "nested/invalid.profraw"
+                None
+                if copy_denied
+                else (
+                    "nested\\invalid.profraw"
+                    if sys.platform == "win32"
+                    else "nested/invalid.profraw"
+                )
+            ),
+            "preservation_error": (
+                "PermissionError: profile is unreadable" if copy_denied else None
             ),
             "probe_command": [
                 sys.executable,
