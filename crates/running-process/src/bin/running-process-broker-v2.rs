@@ -64,8 +64,9 @@ use running_process::broker::lifecycle::names_v2::{broker_v2_runtime_dir, v2_pro
 use running_process::broker::lifecycle::privilege::refuse_privileged_run;
 use running_process::broker::lifecycle::sid::user_sid_hash;
 use running_process::broker::protocol::{
-    hello_reply, read_frame, write_frame, ErrorCode, Hello, HelloReply, Negotiated, Refused,
-    ENVELOPE_VERSION,
+    hello_reply, read_frame_with_cap, validate_frame_envelope, write_frame, ErrorCode, Frame,
+    FrameKind, FrameValidationError, FramingError, Hello, HelloReply, Negotiated, PayloadEncoding,
+    Refused, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION, MAX_HELLO_BYTES, PROTOCOL_VERSION,
 };
 use running_process::broker::protocol_v2::ServiceDefinitionLoader;
 use running_process::broker::server::deadline_stream::{hello_read_deadline, DeadlineStream};
@@ -752,14 +753,19 @@ fn handle_hello_with_deadline(
         .map_err(|error| format!("set Hello stream nonblocking: {error}"))?;
     let read_result = {
         let mut deadline_stream = DeadlineStream::new(stream, hello_read_deadline());
-        read_frame(&mut deadline_stream).map_err(|error| format!("read Hello frame: {error}"))
+        read_frame_with_cap(&mut deadline_stream, MAX_HELLO_BYTES)
     };
-    let restore_result = stream
+    stream
         .set_nonblocking(false)
-        .map_err(|error| format!("restore Hello stream blocking mode: {error}"));
-    let bytes = read_result?;
-    restore_result?;
-    handle_hello_bytes(stream, loader, bytes)
+        .map_err(|error| format!("restore Hello stream blocking mode: {error}"))?;
+    match read_result {
+        Ok(bytes) => handle_hello_bytes(stream, loader, bytes),
+        Err(error) => {
+            let reply = reply_for_framing_error(&error);
+            write_hello_reply_frame(stream, None, &reply)?;
+            Err(format!("read Hello frame: {error}"))
+        }
+    }
 }
 
 /// Read a `Hello` frame, look up the registered service, and send
@@ -773,21 +779,105 @@ fn handle_hello_bytes<S: std::io::Write>(
     loader: &ServiceDefinitionLoader,
     bytes: Vec<u8>,
 ) -> Result<String, String> {
-    let hello = Hello::decode(bytes.as_slice()).map_err(|e| format!("decode Hello: {e}"))?;
+    let request_frame = match Frame::decode(bytes.as_slice()) {
+        Ok(frame) => frame,
+        Err(error) => {
+            let reply =
+                protocol_refused_reply(ErrorCode::ErrorPeerRejected, "malformed broker Frame", 0);
+            write_hello_reply_frame(stream, None, &reply)?;
+            return Err(format!("decode Hello Frame: {error}"));
+        }
+    };
+    if let Err(error) =
+        validate_frame_envelope(&request_frame, FrameKind::Request, CONTROL_PAYLOAD_PROTOCOL)
+    {
+        let (code, reason) = match error {
+            FrameValidationError::EnvelopeVersion { .. } => (
+                ErrorCode::ErrorVersionUnsupported,
+                "frame envelope_version is not v1",
+            ),
+            FrameValidationError::Kind { .. } => (
+                ErrorCode::ErrorPeerRejected,
+                "Hello frame kind must be REQUEST",
+            ),
+            FrameValidationError::PayloadProtocol { .. } => (
+                ErrorCode::ErrorPeerRejected,
+                "Hello frame payload_protocol must be control-plane",
+            ),
+            FrameValidationError::PayloadEncoding { .. } => (
+                ErrorCode::ErrorPeerRejected,
+                "Hello payload must not be compressed",
+            ),
+        };
+        let reply = protocol_refused_reply(code, reason, 0);
+        write_hello_reply_frame(stream, Some(&request_frame), &reply)?;
+        return Err(format!("validate Hello Frame: {error:?}"));
+    }
+    let hello = match Hello::decode(request_frame.payload.as_slice()) {
+        Ok(hello) => hello,
+        Err(error) => {
+            let reply =
+                protocol_refused_reply(ErrorCode::ErrorPeerRejected, "malformed Hello payload", 0);
+            write_hello_reply_frame(stream, Some(&request_frame), &reply)?;
+            return Err(format!("decode Hello payload: {error}"));
+        }
+    };
 
     let backend_pipe = resolve_backend_pipe(&hello.service_name);
     let reply = build_hello_reply(&hello, loader, &backend_pipe);
 
-    let mut body = Vec::with_capacity(reply.encoded_len());
-    reply
-        .encode(&mut body)
-        .map_err(|e| format!("encode HelloReply: {e}"))?;
-    write_frame(stream, &body).map_err(|e| format!("write HelloReply frame: {e}"))?;
+    write_hello_reply_frame(stream, Some(&request_frame), &reply)?;
 
     match reply.result {
         Some(hello_reply::Result::Negotiated(_)) => Ok(hello.service_name),
         Some(hello_reply::Result::Refused(r)) => Err(format!("refused: {}", r.reason)),
         None => Err("HelloReply missing result oneof".to_string()),
+    }
+}
+
+fn write_hello_reply_frame<S: std::io::Write>(
+    stream: &mut S,
+    request_frame: Option<&Frame>,
+    reply: &HelloReply,
+) -> Result<(), String> {
+    let response_frame = Frame {
+        envelope_version: PROTOCOL_VERSION,
+        kind: FrameKind::Response as i32,
+        payload_protocol: CONTROL_PAYLOAD_PROTOCOL,
+        payload: reply.encode_to_vec(),
+        request_id: request_frame.map_or(0, |frame| frame.request_id),
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: request_frame
+            .map(|frame| frame.traceparent.clone())
+            .unwrap_or_default(),
+        tracestate: request_frame
+            .map(|frame| frame.tracestate.clone())
+            .unwrap_or_default(),
+    };
+    write_frame(stream, &response_frame.encode_to_vec())
+        .map_err(|error| format!("write HelloReply Frame: {error}"))?;
+    Ok(())
+}
+
+fn reply_for_framing_error(error: &FramingError) -> HelloReply {
+    match error {
+        FramingError::UnsupportedFramingVersion { .. } => protocol_refused_reply(
+            ErrorCode::ErrorVersionUnsupported,
+            "unsupported framing version",
+            0,
+        ),
+        FramingError::FrameTooLarge { .. } => protocol_refused_reply(
+            ErrorCode::ErrorPeerRejected,
+            "initial Hello frame exceeds 64 KiB",
+            0,
+        ),
+        FramingError::UnexpectedEof { .. } | FramingError::Io(_) => {
+            protocol_refused_reply(ErrorCode::ErrorPeerRejected, "incomplete Hello frame", 0)
+        }
+        FramingError::Decode(_) => {
+            protocol_refused_reply(ErrorCode::ErrorPeerRejected, "malformed Hello frame", 0)
+        }
     }
 }
 
@@ -938,6 +1028,14 @@ fn refused_reply(
     reason: impl Into<String>,
     retry_after_ms: u64,
 ) -> HelloReply {
+    protocol_refused_reply(code, reason, retry_after_ms).with_connection_id(hello.connection_id)
+}
+
+fn protocol_refused_reply(
+    code: ErrorCode,
+    reason: impl Into<String>,
+    retry_after_ms: u64,
+) -> HelloReply {
     HelloReply {
         result: Some(hello_reply::Result::Refused(Refused {
             reason: reason.into(),
@@ -948,7 +1046,6 @@ fn refused_reply(
             retry_after_ms,
         })),
     }
-    .with_connection_id(hello.connection_id)
 }
 
 trait HelloReplyExt {

@@ -145,6 +145,7 @@ fn binary_binds_pipe_accepts_connection_and_exits() {
         .arg("--once")
         .arg("--program")
         .arg(&program)
+        .env("RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED", "1")
         .env("RUNNING_PROCESS_SERVICE_DEF_DIR", svc_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -192,7 +193,7 @@ fn binary_binds_pipe_accepts_connection_and_exits() {
         }
     }
 
-    let socket_path = match socket_path {
+    let _socket_path = match socket_path {
         Some(p) => p,
         None => {
             let _ = child.kill();
@@ -203,52 +204,22 @@ fn binary_binds_pipe_accepts_connection_and_exits() {
         }
     };
 
-    // Dial the same pipe, run the full Hello / Negotiated round-trip,
-    // and assert the binary echoes our connection_id back in its reply.
-    let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
-    let mut stream = Stream::connect(name).expect("connect to v2 broker pipe");
-
-    use prost::Message;
-    use running_process::broker::protocol::{
-        hello_reply, read_frame, write_frame, Hello, HelloReply, ENVELOPE_VERSION,
-    };
-
-    let hello = Hello {
-        client_min_protocol: ENVELOPE_VERSION as u32,
-        client_max_protocol: ENVELOPE_VERSION as u32,
-        service_name: program.clone(),
-        wanted_version: "0.0.0".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-        client_capabilities: 0,
-        auth_token: Vec::new(),
-        request_id: "slice-3d-integration-test".to_string(),
-        connection_id: 0xdead_beef,
-        peer_pid: std::process::id(),
-        client_lib_name: "slice-3d-test".to_string(),
-        client_lib_version: env!("CARGO_PKG_VERSION").to_string(),
-        peer_attestation_nonce: Vec::new(),
-        capability_token: Vec::new(),
-        client_keepalive_secs: 0,
-    };
-    let mut body = Vec::with_capacity(hello.encoded_len());
-    hello.encode(&mut body).expect("encode Hello");
-    write_frame(&mut stream, &body).expect("write Hello frame");
-
-    let reply_bytes = read_frame(&mut stream).expect("read HelloReply frame");
-    let reply = HelloReply::decode(reply_bytes.as_slice()).expect("decode HelloReply");
-    let negotiated = match reply.result {
-        Some(hello_reply::Result::Negotiated(n)) => n,
-        Some(hello_reply::Result::Refused(r)) => panic!("expected Negotiated, got Refused: {r:?}"),
-        None => panic!("HelloReply.result missing"),
-    };
-    assert_eq!(negotiated.negotiated_protocol, ENVELOPE_VERSION as u32);
-    assert_eq!(negotiated.connection_id, 0xdead_beef);
+    // Exercise the actual client used by Soldr, rather than duplicating its
+    // wire encoding in this test. This is the regression oracle for #930:
+    // both sides must agree on Frame-wrapped Hello and HelloReply payloads.
+    let session =
+        running_process::broker::client_v2::connect_with_deadline(&program, "0.0.0", DEADLINE)
+            .expect("real client_v2 Hello round-trip");
+    let negotiated = session.negotiated();
+    assert_eq!(
+        negotiated.negotiated_protocol,
+        running_process::broker::protocol::ENVELOPE_VERSION as u32
+    );
     assert!(
         !negotiated.daemon_version.is_empty(),
         "daemon_version should be populated"
     );
-
-    drop(stream);
+    drop(session);
 
     // Drain any remaining stdout so the binary can flush cleanly.
     let mut tail = String::new();
@@ -291,6 +262,7 @@ fn assert_once_stall_times_out(initial_bytes: &[u8]) {
             .arg("--once")
             .arg("--program")
             .arg(&program)
+            .env("RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED", "1")
             .env(
                 "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
                 TEST_HELLO_TIMEOUT_MS,
@@ -353,6 +325,7 @@ fn silent_peers_release_all_handler_slots_after_deadline() {
         Command::new(path)
             .arg("--program")
             .arg(&program)
+            .env("RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED", "1")
             .env("RUNNING_PROCESS_SERVICE_DEF_DIR", svc_dir.path())
             .env(
                 "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
@@ -448,7 +421,9 @@ fn read_bound_path_bounded(
 
 fn write_test_hello(stream: &mut Stream, program: &str) {
     use prost::Message;
-    use running_process::broker::protocol::{write_frame, Hello, ENVELOPE_VERSION};
+    use running_process::broker::protocol::{
+        write_frame, Frame, Hello, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION,
+    };
     let hello = Hello {
         client_min_protocol: ENVELOPE_VERSION as u32,
         client_max_protocol: ENVELOPE_VERSION as u32,
@@ -458,14 +433,22 @@ fn write_test_hello(stream: &mut Stream, program: &str) {
         connection_id: 0x609,
         ..Hello::default()
     };
-    write_frame(stream, &hello.encode_to_vec()).expect("write Hello");
+    let frame = Frame::request(CONTROL_PAYLOAD_PROTOCOL, hello.encode_to_vec())
+        .with_request_id(hello.connection_id);
+    write_frame(stream, &frame.encode_to_vec()).expect("write Hello Frame");
 }
 
 fn read_test_reply(stream: &mut Stream) -> running_process::broker::protocol::Negotiated {
     use prost::Message;
-    use running_process::broker::protocol::{hello_reply, read_frame, HelloReply};
+    use running_process::broker::protocol::{
+        hello_reply, read_frame, validate_frame_envelope, Frame, FrameKind, HelloReply,
+        CONTROL_PAYLOAD_PROTOCOL,
+    };
     let bytes = read_frame(stream).expect("read HelloReply");
-    let reply = HelloReply::decode(bytes.as_slice()).expect("decode HelloReply");
+    let frame = Frame::decode(bytes.as_slice()).expect("decode HelloReply Frame");
+    validate_frame_envelope(&frame, FrameKind::Response, CONTROL_PAYLOAD_PROTOCOL)
+        .expect("validate HelloReply Frame");
+    let reply = HelloReply::decode(frame.payload.as_slice()).expect("decode HelloReply payload");
     match reply.result {
         Some(hello_reply::Result::Negotiated(value)) => value,
         other => panic!("expected Negotiated, got {other:?}"),
