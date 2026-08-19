@@ -62,6 +62,23 @@ def _rust_coverage_test_command() -> list[str]:
         "run",
         "--workspace",
         "--all-features",
+        "-E",
+        "not binary(brokered_backend_ui)",
+    )
+
+
+def _brokered_backend_ui_test_command() -> list[str]:
+    """Run trybuild before LLVM instrumentation alters rustc diagnostics."""
+    return cargo_command(
+        "nextest",
+        "run",
+        "-p",
+        "running-process",
+        "--features",
+        "client",
+        "--test",
+        "brokered_backend_ui",
+        "--no-capture",
     )
 
 
@@ -585,6 +602,15 @@ def main(argv: list[str] | None = None) -> int:
         unusable = llvm_profdata_preflight()
         if unusable is not None:
             print(unusable, file=sys.stderr, flush=True)
+            return 1
+        if not _ensure_nextest_installed():
+            return 1
+        # trybuild snapshots describe normal rustc diagnostics. LLVM's
+        # instrumentation wrapper intentionally rewrites the nested compile
+        # and drops source line/column details, so validate this UI contract
+        # before exporting that environment and exclude only its test binary
+        # from the instrumented pass below.
+        if run(_brokered_backend_ui_test_command()) != 0:
             return 1
         try:
             coverage_env = _rust_coverage_environment()

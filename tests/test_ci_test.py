@@ -117,6 +117,20 @@ def test_rust_coverage_runs_all_features_and_excludes_test_fixtures(
         "run",
         "--workspace",
         "--all-features",
+        "-E",
+        "not binary(brokered_backend_ui)",
+    ]
+    assert ci_test._brokered_backend_ui_test_command() == [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "running-process",
+        "--features",
+        "client",
+        "--test",
+        "brokered_backend_ui",
+        "--no-capture",
     ]
     assert ci_test._rust_coverage_report_command() == [
         "cargo",
@@ -812,4 +826,6 @@ def test_main_runs_coverage_when_the_preflight_passes(
     assert any(
         "llvm-cov" in " ".join(cmd) for cmd in commands
     ), f"coverage should have run; issued {commands}"
+    assert ci_test._brokered_backend_ui_test_command() in commands
+    assert ci_test._rust_coverage_test_command() in commands
     assert not any("ci.linux_docker" in " ".join(cmd) for cmd in commands)
