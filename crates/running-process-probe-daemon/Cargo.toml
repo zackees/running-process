@@ -24,11 +24,11 @@ path = "src/bin/rpprobe.rs"
 # Broker primitives reused as libraries: framing codec, peer-cred/owner-only
 # ACL, privilege refusal, SID hashing, private-dir hardening. The probe daemon
 # is NOT a broker backend — it borrows the plumbing, not the wire.
-running-process = { path = "../running-process", version = "4.10.2", default-features = false, features = [
+running-process = { path = "../running-process", version = "4.10.3", default-features = false, features = [
     "client",
 ] }
 # probe_diag.v1 schema (S1 / #630).
-running-process-probe = { path = "../running-process-probe", version = "4.10.2" }
+running-process-probe = { path = "../running-process-probe", version = "4.10.3" }
 
 interprocess = "2"
 prost = "0.14"
