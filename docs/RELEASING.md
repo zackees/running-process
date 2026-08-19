@@ -69,6 +69,35 @@ These need to exist on the repo *before* the first real release runs:
    `crates_complete`. Either flag short-circuits its publish job, so
    re-runs after partial failures are idempotent.
 
+## Soldr release build architecture
+
+Standalone binaries are cross-compiled by the `build-binaries` matrix on one
+`ubuntu-24.04` runner family. The workflow installs the pinned
+`SOLDR_VERSION` and invokes only Soldr's supported surface:
+
+```
+soldr build --release --target <triple>
+```
+
+The matrix covers Linux GNU and musl, macOS, and Windows targets. Each output
+is checked for the expected machine type before it can be published; this is
+the executable-format proof for artifacts that cannot run on the Linux build
+host. `ci/cross_compiler_guard.py` enforces this boundary and rejects direct
+Zig, cargo-zigbuild, cargo-xwin, and equivalent competing cross-compiler
+paths.
+
+Release wheels deliberately remain on their native platform runner families.
+Soldr does not currently expose a wheel/maturin cross-build surface, and
+reintroducing a forbidden cross-compiler merely to collapse those runners
+would weaken the repository contract. Linux wheels use the manylinux2014
+containers; macOS and Windows wheels use their native hosts. A future wheel
+consolidation belongs in Soldr first, then can be adopted here through a
+separate reviewed migration.
+
+Manual dispatch with `dry_run: true` executes the full artifact matrix but
+skips every publish step. Use it for release-workflow changes; a dry run is a
+build validation, not a simulated upload.
+
 ## What gets published
 
 - **PyPI**: `running-process` wheels for linux x86/arm, macOS x86/arm,
@@ -125,8 +154,10 @@ verification recipe, and the Linux CI spot-check are documented in
 | Partial crates.io publish (some crates uploaded, later ones not) | Almost always a transient cargo / network issue; the workflow is idempotent. | Re-run the same workflow run. `preflight` skips crates already on crates.io and `publish-crates` skips them in its inner loop. |
 | `running-process` was published with a wire-format regression | The 3.2.x→3.3.0 wire change taught us this can happen (proto types now live inside `running-process` itself post-#165). | `cargo yank --version X.Y.Z -p running-process` to block new resolutions. Yank doesn't delete; existing lockfiles keep working. Then bump and publish a corrected version. |
 
-## Per-platform dev workflows
+## Per-platform fallback workflows
 
-The `linux-x86-build.yml`, `windows-x86-build.yml`, etc. workflows
-still run on every push to `main` in dev mode. They are independent
-of the release workflow and do not gate it.
+The `linux-x86-build.yml`, `windows-x86-build.yml`, and corresponding arm and
+macOS files are manual wheel-collection entry points used by
+`ci/publish.py`'s fallback path. They do not run on every push, build
+standalone release binaries, or gate `auto-release.yml`. Keep their filenames
+and artifact names stable: the fallback publisher maps one to the other.
