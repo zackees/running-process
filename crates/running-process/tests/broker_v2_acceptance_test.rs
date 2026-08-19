@@ -29,7 +29,8 @@ use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::Stream;
 use prost::Message as _;
 use running_process::broker::protocol::{
-    hello_reply, read_frame, write_frame, ErrorCode, Hello, HelloReply, ENVELOPE_VERSION,
+    hello_reply, read_frame, validate_frame_envelope, write_frame, ErrorCode, Frame, FrameKind,
+    Hello, HelloReply, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION,
 };
 
 const DEADLINE: Duration = Duration::from_secs(20);
@@ -130,6 +131,7 @@ fn start_broker_with_stdout(prefix: &str, policy: StdoutPolicy) -> Broker {
     let mut child = Command::new(env!("CARGO_BIN_EXE_running-process-broker-v2"))
         .arg("--program")
         .arg(&program)
+        .env("RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED", "1")
         .env("RUNNING_PROCESS_SERVICE_DEF_DIR", svc_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -224,7 +226,16 @@ fn hello_for(program: &str) -> Hello {
 
 fn read_reply(stream: &mut Stream) -> HelloReply {
     let bytes = read_frame(stream).expect("read HelloReply");
-    HelloReply::decode(bytes.as_slice()).expect("decode HelloReply")
+    let frame = Frame::decode(bytes.as_slice()).expect("decode HelloReply Frame");
+    validate_frame_envelope(&frame, FrameKind::Response, CONTROL_PAYLOAD_PROTOCOL)
+        .expect("validate HelloReply Frame");
+    HelloReply::decode(frame.payload.as_slice()).expect("decode HelloReply payload")
+}
+
+fn write_hello(stream: &mut Stream, hello: &Hello) {
+    let frame = Frame::request(CONTROL_PAYLOAD_PROTOCOL, hello.encode_to_vec())
+        .with_request_id(hello.connection_id);
+    write_frame(stream, &frame.encode_to_vec()).expect("write Hello Frame");
 }
 
 #[test]
@@ -245,12 +256,8 @@ fn a_hundred_concurrent_hellos_all_succeed_within_budget() {
                 .map_err(|e| format!("conn {index}: connect: {e}"))?;
                 let mut hello = hello_for(&program);
                 hello.connection_id = index as u64;
-                write_frame(&mut stream, &hello.encode_to_vec())
-                    .map_err(|e| format!("conn {index}: write: {e}"))?;
-                let bytes =
-                    read_frame(&mut stream).map_err(|e| format!("conn {index}: read: {e}"))?;
-                let reply = HelloReply::decode(bytes.as_slice())
-                    .map_err(|e| format!("conn {index}: decode: {e}"))?;
+                write_hello(&mut stream, &hello);
+                let reply = read_reply(&mut stream);
                 match reply.result {
                     Some(hello_reply::Result::Negotiated(_)) => Ok(()),
                     other => Err(format!("conn {index}: expected Negotiated, got {other:?}")),
@@ -292,7 +299,7 @@ fn an_unknown_service_is_refused_rather_than_dropped() {
 
     let mut hello = hello_for("no-such-service-anywhere");
     hello.connection_id = 1;
-    write_frame(&mut stream, &hello.encode_to_vec()).expect("write Hello");
+    write_hello(&mut stream, &hello);
 
     // A typed refusal, not a closed socket: a client can distinguish "you
     // asked for something that does not exist" from "the broker died".
@@ -327,7 +334,7 @@ fn a_nul_byte_in_the_service_name_is_refused_rather_than_crashing() {
     // name lookup into something worse.
     let mut hello = hello_for("bad\0name");
     hello.connection_id = 2;
-    write_frame(&mut stream, &hello.encode_to_vec()).expect("write Hello");
+    write_hello(&mut stream, &hello);
 
     match read_reply(&mut stream).result {
         Some(hello_reply::Result::Refused(_)) => {}
@@ -346,7 +353,7 @@ fn an_unsupported_protocol_version_is_refused_with_a_reason() {
     hello.client_min_protocol = 9_999;
     hello.client_max_protocol = 10_000;
     hello.connection_id = 3;
-    write_frame(&mut stream, &hello.encode_to_vec()).expect("write Hello");
+    write_hello(&mut stream, &hello);
 
     match read_reply(&mut stream).result {
         Some(hello_reply::Result::Refused(refused)) => {
@@ -386,7 +393,7 @@ fn a_garbage_frame_does_not_take_the_broker_down() {
     let program = broker.program.clone();
     let mut stream = connect(&broker.path);
     let hello = hello_for(&program);
-    write_frame(&mut stream, &hello.encode_to_vec()).expect("write Hello");
+    write_hello(&mut stream, &hello);
     match read_reply(&mut stream).result {
         Some(hello_reply::Result::Negotiated(_)) => {}
         other => panic!("broker did not serve a good Hello after a bad one: {other:?}"),
@@ -398,23 +405,33 @@ fn an_oversized_frame_is_rejected_without_allocating_it() {
     let broker = start_broker("v2acc-oversize");
 
     {
-        // A length prefix claiming far more than the frame cap, with no body
-        // behind it. A broker that trusts the prefix would try to allocate it.
+        // A valid framing-version byte followed by a length claiming more than
+        // the Hello cap, with no body behind it. A broker that trusts the
+        // prefix would try to allocate it.
         let mut stream = connect(&broker.path);
         use std::io::Write as _;
-        let bogus_len: u32 = u32::MAX;
+        let bogus_len = (running_process::broker::protocol::MAX_HELLO_BYTES as u32) + 1;
+        stream
+            .write_all(&[running_process::broker::protocol::ENVELOPE_VERSION])
+            .expect("write framing version");
         stream
             .write_all(&bogus_len.to_le_bytes())
             .expect("write len");
         stream.flush().expect("flush");
-        let _ = read_frame(&mut stream);
+        match read_reply(&mut stream).result {
+            Some(hello_reply::Result::Refused(refused)) => {
+                assert_eq!(refused.code, ErrorCode::ErrorPeerRejected as i32);
+                assert_eq!(refused.reason, "initial Hello frame exceeds 64 KiB");
+            }
+            other => panic!("expected oversized Hello refusal, got {other:?}"),
+        }
     }
 
     // Still serving.
     let program = broker.program.clone();
     let mut stream = connect(&broker.path);
     let hello = hello_for(&program);
-    write_frame(&mut stream, &hello.encode_to_vec()).expect("write Hello");
+    write_hello(&mut stream, &hello);
     match read_reply(&mut stream).result {
         Some(hello_reply::Result::Negotiated(_)) => {}
         other => panic!("broker did not survive an oversized length prefix: {other:?}"),
@@ -441,7 +458,7 @@ fn the_broker_serves_repeatedly_and_exits_cleanly_on_sigterm() {
     // serving did not consume it.
     for attempt in 0..2 {
         let mut stream = connect(&broker.path);
-        write_frame(&mut stream, &hello_for(&broker.program).encode_to_vec()).expect("write hello");
+        write_hello(&mut stream, &hello_for(&broker.program));
         let reply = read_reply(&mut stream);
         assert!(
             matches!(reply.result, Some(hello_reply::Result::Negotiated(_))),
@@ -522,7 +539,7 @@ fn a_closed_stdout_does_not_take_the_broker_down() {
     // Serving after the close. The Hello handler logs, so this is the first
     // write that meets the closed pipe.
     let mut stream = connect(&broker.path);
-    write_frame(&mut stream, &hello_for(&broker.program).encode_to_vec()).expect("write hello");
+    write_hello(&mut stream, &hello_for(&broker.program));
     let reply = read_reply(&mut stream);
     assert!(
         matches!(reply.result, Some(hello_reply::Result::Negotiated(_))),

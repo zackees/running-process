@@ -10,6 +10,7 @@
 //! binary target.
 
 use super::*;
+use running_process::broker::protocol::read_frame;
 use running_process::broker::protocol_v2::ServiceDefinitionBuilder;
 use tempfile::tempdir;
 
@@ -405,6 +406,99 @@ fn build_hello_reply_negotiates_registered_service() {
             assert!(n.backend_pipe.is_empty());
         }
         other => panic!("expected Negotiated, got {other:?}"),
+    }
+}
+
+#[test]
+fn hello_handler_round_trips_the_client_v2_frame_contract() {
+    let dir = tempdir().unwrap();
+    ServiceDefinitionBuilder::shared_broker("zccache", "/usr/bin/zccache-daemon")
+        .install_in(dir.path())
+        .unwrap();
+    let loader = ServiceDefinitionLoader::new(dir.path());
+    let hello = make_hello("zccache", "1.0.0");
+    let mut request =
+        Frame::request(CONTROL_PAYLOAD_PROTOCOL, hello.encode_to_vec()).with_request_id(0x930);
+    request.traceparent = "00-test-trace".to_string();
+    request.tracestate = "vendor=test".to_string();
+
+    let mut wire = Vec::new();
+    let service = handle_hello_bytes(&mut wire, &loader, request.encode_to_vec())
+        .expect("Frame-wrapped Hello negotiates");
+    assert_eq!(service, "zccache");
+
+    let response_bytes = read_frame(&mut std::io::Cursor::new(wire)).expect("framed response");
+    let response = Frame::decode(response_bytes.as_slice()).expect("response Frame");
+    validate_frame_envelope(&response, FrameKind::Response, CONTROL_PAYLOAD_PROTOCOL)
+        .expect("response envelope");
+    assert_eq!(response.request_id, 0x930);
+    assert_eq!(response.traceparent, request.traceparent);
+    assert_eq!(response.tracestate, request.tracestate);
+
+    let reply = HelloReply::decode(response.payload.as_slice()).expect("HelloReply payload");
+    assert!(matches!(
+        reply.result,
+        Some(hello_reply::Result::Negotiated(_))
+    ));
+}
+
+#[test]
+fn hello_handler_rejects_the_obsolete_raw_hello_contract() {
+    let dir = tempdir().unwrap();
+    let loader = ServiceDefinitionLoader::new(dir.path());
+    let hello = make_hello("zccache", "1.0.0");
+
+    let mut wire = Vec::new();
+    let error = handle_hello_bytes(&mut wire, &loader, hello.encode_to_vec())
+        .expect_err("raw Hello must not masquerade as a Frame");
+
+    assert!(
+        error.contains("Hello Frame"),
+        "error should identify the envelope boundary: {error}"
+    );
+
+    let response_bytes = read_frame(&mut std::io::Cursor::new(wire)).expect("framed refusal");
+    let response = Frame::decode(response_bytes.as_slice()).expect("response Frame");
+    validate_frame_envelope(&response, FrameKind::Response, CONTROL_PAYLOAD_PROTOCOL)
+        .expect("response envelope");
+    let reply = HelloReply::decode(response.payload.as_slice()).expect("HelloReply payload");
+    assert!(matches!(
+        reply.result,
+        Some(hello_reply::Result::Refused(_))
+    ));
+}
+
+#[test]
+fn hello_handler_returns_a_correlated_refusal_for_an_invalid_envelope() {
+    let dir = tempdir().unwrap();
+    let loader = ServiceDefinitionLoader::new(dir.path());
+    let hello = make_hello("zccache", "1.0.0");
+    let mut request =
+        Frame::request(CONTROL_PAYLOAD_PROTOCOL, hello.encode_to_vec()).with_request_id(0x931);
+    request.kind = FrameKind::Event as i32;
+    request.traceparent = "00-invalid-envelope".to_string();
+    request.tracestate = "vendor=invalid".to_string();
+
+    let mut wire = Vec::new();
+    let error = handle_hello_bytes(&mut wire, &loader, request.encode_to_vec())
+        .expect_err("invalid envelope must be refused");
+    assert!(error.contains("validate Hello Frame"), "got: {error}");
+
+    let response_bytes = read_frame(&mut std::io::Cursor::new(wire)).expect("framed refusal");
+    let response = Frame::decode(response_bytes.as_slice()).expect("response Frame");
+    validate_frame_envelope(&response, FrameKind::Response, CONTROL_PAYLOAD_PROTOCOL)
+        .expect("response envelope");
+    assert_eq!(response.request_id, request.request_id);
+    assert_eq!(response.traceparent, request.traceparent);
+    assert_eq!(response.tracestate, request.tracestate);
+
+    let reply = HelloReply::decode(response.payload.as_slice()).expect("HelloReply payload");
+    match reply.result {
+        Some(hello_reply::Result::Refused(refused)) => {
+            assert_eq!(refused.code, ErrorCode::ErrorPeerRejected as i32);
+            assert_eq!(refused.reason, "Hello frame kind must be REQUEST");
+        }
+        other => panic!("expected Refused, got {other:?}"),
     }
 }
 
