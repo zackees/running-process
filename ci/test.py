@@ -82,6 +82,24 @@ def _rust_coverage_clean_command() -> list[str]:
     return cargo_command("llvm-cov", "clean", "--workspace")
 
 
+def _decode_coverage_environment_value(value: str, *, posix: bool) -> str:
+    """Decode the shell-safe values emitted by ``cargo llvm-cov show-env``."""
+    if not posix:
+        return value
+
+    try:
+        decoded = shlex.split(value, posix=True)
+    except ValueError as error:
+        raise RuntimeError(
+            f"coverage: invalid shell-escaped environment value: {value!r}"
+        ) from error
+    if len(decoded) != 1:
+        raise RuntimeError(
+            f"coverage: ambiguous shell-escaped environment value: {value!r}"
+        )
+    return decoded[0]
+
+
 def _rust_coverage_environment() -> dict[str, str]:
     """Return the instrumentation environment for external integration tests."""
     command = cargo_command("llvm-cov", "show-env")
@@ -102,7 +120,10 @@ def _rust_coverage_environment() -> dict[str, str]:
     for line in result.stdout.splitlines():
         key, separator, value = line.partition("=")
         if separator and key and key.replace("_", "").isalnum():
-            coverage_env[key] = value
+            coverage_env[key] = _decode_coverage_environment_value(
+                value,
+                posix=os.name != "nt",
+            )
 
     required = {"LLVM_PROFILE_FILE", "RUSTC_WRAPPER", "CARGO_LLVM_COV"}
     missing = sorted(required - coverage_env.keys())

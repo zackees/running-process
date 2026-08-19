@@ -158,6 +158,16 @@ def test_rust_coverage_environment_parses_external_test_variables(
     assert ci_test._rust_coverage_profile_dir(coverage_env) == Path("/tmp/target")
 
 
+def test_decode_coverage_environment_value_removes_posix_shell_quotes() -> None:
+    unit_separator = "\x1f"
+    encoded = f"'-C{unit_separator}instrument-coverage{unit_separator}--cfg=coverage'"
+
+    assert ci_test._decode_coverage_environment_value(encoded, posix=True) == (
+        f"-C{unit_separator}instrument-coverage{unit_separator}--cfg=coverage"
+    )
+    assert ci_test._decode_coverage_environment_value(encoded, posix=False) == encoded
+
+
 def test_prune_invalid_profraw_preserves_evidence_before_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
