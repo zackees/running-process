@@ -401,23 +401,29 @@ pub(crate) fn configure_command(
     create_process_group: bool,
     kill_when_owner_dies: bool,
 ) -> io::Result<()> {
+    let owner_pid = unsafe { libc::getpid() };
+    configure_command_for_owner(
+        command,
+        create_process_group,
+        kill_when_owner_dies,
+        owner_pid,
+    )
+}
+
+fn configure_command_for_owner(
+    command: &mut Command,
+    create_process_group: bool,
+    kill_when_owner_dies: bool,
+    owner_pid: libc::pid_t,
+) -> io::Result<()> {
     if create_process_group {
         command.process_group(0);
     }
     if kill_when_owner_dies {
-        let owner_pid = unsafe { libc::getpid() };
-        // SAFETY: the helper is created before exec and owns the kqueue loop.
+        // SAFETY: the closure and supervisor use only libc operations that do
+        // not acquire process-global Rust state after Tokio forks the child.
         unsafe {
-            command.pre_exec(move || {
-                let supervisor = libc::fork();
-                if supervisor < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if supervisor == 0 {
-                    owner_death_supervisor(owner_pid);
-                }
-                Ok(())
-            });
+            command.pre_exec(move || install_owner_death_supervisor(owner_pid));
         }
     }
     Ok(())
@@ -444,56 +450,205 @@ pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("/bin/sh").arg("-c").arg(command)
 }
 
-fn owner_death_supervisor(owner_pid: libc::pid_t) -> ! {
+fn install_owner_death_supervisor(owner_pid: libc::pid_t) -> io::Result<()> {
+    let mut handshake = [-1; 2];
+    if unsafe { libc::pipe(handshake.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let supervisor = unsafe { libc::fork() };
+    if supervisor < 0 {
+        let error = io::Error::last_os_error();
+        unsafe {
+            libc::close(handshake[0]);
+            libc::close(handshake[1]);
+        }
+        return Err(error);
+    }
+    if supervisor == 0 {
+        unsafe { libc::close(handshake[0]) };
+        owner_death_supervisor(owner_pid, handshake[1]);
+    }
+
+    unsafe { libc::close(handshake[1]) };
+    let result = read_supervisor_status(handshake[0]);
+    unsafe { libc::close(handshake[0]) };
+    result
+}
+
+fn read_supervisor_status(fd: libc::c_int) -> io::Result<()> {
+    let mut status = 0_i32;
+    let bytes = unsafe {
+        std::slice::from_raw_parts_mut(
+            (&mut status as *mut i32).cast::<u8>(),
+            std::mem::size_of::<i32>(),
+        )
+    };
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let read = unsafe {
+            libc::read(
+                fd,
+                bytes[offset..].as_mut_ptr().cast(),
+                bytes.len() - offset,
+            )
+        };
+        if read > 0 {
+            offset += read as usize;
+            continue;
+        }
+        if read < 0 && last_errno() == libc::EINTR {
+            continue;
+        }
+        return Err(io::Error::from_raw_os_error(if read == 0 {
+            libc::EPIPE
+        } else {
+            last_errno()
+        }));
+    }
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(status))
+    }
+}
+
+fn owner_death_supervisor(
+    owner_pid: libc::pid_t,
+    handshake_fd: libc::c_int,
+) -> ! {
     let target_pid = unsafe { libc::getppid() };
-    unsafe { for fd in 3..1024 { libc::close(fd); } }
+    if let Err(error) = close_supervisor_fds(handshake_fd) {
+        report_supervisor_status(handshake_fd, error);
+        unsafe { libc::_exit(127) };
+    }
     let queue = unsafe { libc::kqueue() };
-    if queue < 0 { unsafe { libc::_exit(127) }; }
+    if queue < 0 {
+        report_supervisor_status(handshake_fd, last_errno());
+        unsafe { libc::_exit(127) };
+    }
     let mut watches = [
         libc::kevent { ident: owner_pid as libc::uintptr_t, filter: libc::EVFILT_PROC, flags: libc::EV_ADD | libc::EV_ONESHOT, fflags: libc::NOTE_EXIT, data: 0, udata: std::ptr::null_mut() },
         libc::kevent { ident: target_pid as libc::uintptr_t, filter: libc::EVFILT_PROC, flags: libc::EV_ADD | libc::EV_ONESHOT, fflags: libc::NOTE_EXIT, data: 0, udata: std::ptr::null_mut() },
     ];
     let registered = unsafe { libc::kevent(queue, watches.as_mut_ptr(), watches.len() as i32, std::ptr::null_mut(), 0, std::ptr::null()) };
-    if registered < 0 { unsafe { libc::close(queue); libc::_exit(127); } }
-    if unsafe { libc::kill(owner_pid, 0) } < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-        unsafe { libc::kill(target_pid, libc::SIGTERM); libc::close(queue); libc::_exit(0); }
+    if registered < 0 {
+        report_supervisor_status(handshake_fd, last_errno());
+        unsafe {
+            libc::close(queue);
+            libc::_exit(127);
+        }
     }
+    if unsafe { libc::kill(owner_pid, 0) } < 0 && last_errno() == libc::ESRCH {
+        report_supervisor_status(handshake_fd, libc::ESRCH);
+        unsafe {
+            libc::close(queue);
+            libc::_exit(127);
+        }
+    }
+    report_supervisor_status(handshake_fd, 0);
+    unsafe { libc::close(handshake_fd) };
+
     let mut events = [unsafe { std::mem::zeroed::<libc::kevent>() }];
     loop {
         let count = unsafe { libc::kevent(queue, std::ptr::null(), 0, events.as_mut_ptr(), 1, std::ptr::null()) };
         if count <= 0 {
-            if count < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) { continue; }
+            if count < 0 && last_errno() == libc::EINTR { continue; }
+            unsafe { libc::kill(target_pid, libc::SIGKILL); }
             break;
         }
-        if events[0].ident == owner_pid as libc::uintptr_t { unsafe { libc::kill(target_pid, libc::SIGTERM); } }
+        if events[0].ident == owner_pid as libc::uintptr_t { unsafe { libc::kill(target_pid, libc::SIGKILL); } }
         break;
     }
     unsafe { libc::close(queue); libc::_exit(0); }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn shell_command_preserves_login_shell_contract_and_ignores_child_path() {
-        use std::ffi::OsStr;
+fn close_supervisor_fds(handshake_fd: libc::c_int) -> Result<(), libc::c_int> {
+    const BATCH_SIZE: usize = 64;
+    // XNU's bsd/kern/syscalls.master assigns `proc_info` syscall 336, and
+    // bsd/sys/proc_info_private.h assigns `PROC_INFO_CALL_PIDINFO` value 2.
+    // Enter the kernel directly here: unlike libproc's `proc_pidinfo` wrapper,
+    // this leaf syscall cannot acquire a process-global userspace lock after
+    // the multithreaded owner has forked.
+    const SYS_PROC_INFO: libc::c_int = 336;
+    const PROC_INFO_CALL_PIDINFO: libc::c_int = 2;
 
-        let command_text = "printf '%s' 'alpha beta;\"gamma\"'";
-        let mut command = super::shell_command(command_text);
-        assert_eq!(command.get_program(), OsStr::new("/bin/sh"));
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [OsStr::new("-lc"), OsStr::new(command_text)]
-        );
-        command
-            .env_clear()
-            .env("PATH", "/caller-supplied-path-override");
-        let output = command
-            .output()
-            .expect("absolute shell command should execute independently of child PATH");
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"alpha beta;\"gamma\"");
+    loop {
+        let mut entries: [libc::proc_fdinfo; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+        let bytes = unsafe {
+            libc::syscall(
+                SYS_PROC_INFO,
+                PROC_INFO_CALL_PIDINFO,
+                libc::getpid(),
+                libc::PROC_PIDLISTFDS,
+                0_u64,
+                entries.as_mut_ptr().cast::<libc::c_void>(),
+                std::mem::size_of_val(&entries) as libc::c_int,
+            )
+        };
+        if bytes <= 0 {
+            let error = last_errno();
+            return Err(if error == 0 { libc::EIO } else { error });
+        }
+        let bytes = bytes as usize;
+        if bytes > std::mem::size_of_val(&entries) {
+            return Err(libc::EOVERFLOW);
+        }
+        if !bytes.is_multiple_of(std::mem::size_of::<libc::proc_fdinfo>()) {
+            return Err(libc::EIO);
+        }
+        let count = bytes / std::mem::size_of::<libc::proc_fdinfo>();
+        if count == 0 {
+            return Ok(());
+        }
+
+        let mut retained = 0;
+        for entry in &entries[..count] {
+            if entry.proc_fd == handshake_fd {
+                retained += 1;
+                continue;
+            }
+            if unsafe { libc::close(entry.proc_fd) } < 0 {
+                let error = last_errno();
+                if error != libc::EBADF {
+                    return Err(error);
+                }
+            }
+        }
+        if retained == count {
+            return Ok(());
+        }
     }
 }
+
+fn report_supervisor_status(fd: libc::c_int, status: libc::c_int) {
+    let bytes = status.to_ne_bytes();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let written = unsafe {
+            libc::write(
+                fd,
+                bytes[offset..].as_ptr().cast(),
+                bytes.len() - offset,
+            )
+        };
+        if written > 0 {
+            offset += written as usize;
+        } else if written < 0 && last_errno() == libc::EINTR {
+            continue;
+        } else {
+            break;
+        }
+    }
+}
+
+fn last_errno() -> libc::c_int {
+    unsafe { *libc::__error() }
+}
+
+#[cfg(test)]
+#[path = "platform_macos_tests.rs"]
+mod tests;
 
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;

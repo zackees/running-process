@@ -137,7 +137,8 @@ pub struct TokioSpawnOptions {
     /// - **Windows**: assigns the child to a process-wide `KILL_ON_JOB_CLOSE`
     ///   Job Object, so the child (and its descendants) die when the spawner's
     ///   handle to the job closes — i.e. when the spawner process exits.
-    /// - **macOS / other Unix**: best-effort no-op for now (running-process#885).
+    /// - **macOS**: forks a kqueue supervisor before exec and waits for its
+    ///   owner/child watches to be registered before reporting spawn success.
     ///
     /// `kill_on_drop` only fires if the spawner runs its `Drop`; this option
     /// covers the crash / SIGKILL / taskkill case where `Drop` never runs. Use

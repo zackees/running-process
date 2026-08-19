@@ -151,7 +151,7 @@ jobs:
         if: ${{ inputs.dylint && steps.dylint-tools.outputs.cache-hit != 'true' }}
         env:
           CARGO_BIN: cargo
-        run: rustup run 1.95.0 "$CARGO_BIN" install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked
+        run: rustup run 1.95.0 "$CARGO_BIN" install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked --force
 
       - name: Cache Dylint target
         if: ${{ inputs.dylint }}
