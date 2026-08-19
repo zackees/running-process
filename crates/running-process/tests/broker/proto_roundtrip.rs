@@ -203,7 +203,8 @@ fn cache_manifest_roundtrip() {
         current_daemon: Some(DaemonProcess {
             pid: 4321,
             exe_path: "/usr/local/bin/zccache".into(),
-            exe_sha256: vec![1; 32],
+            exe_hash_algorithm: "blake3".into(),
+            exe_hash: vec![1; 32],
             ipc_endpoint: Some(Endpoint {
                 namespace_id: "mntns:4026531840".into(),
                 path: "/tmp/zccache.sock".into(),

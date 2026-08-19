@@ -101,6 +101,11 @@ mod tests {
         let daemon = test_daemon();
         write_daemon_identity_file(&path, &daemon).expect("write");
         assert!(!path.with_extension("json.tmp").exists());
+        let json = std::fs::read_to_string(&path).expect("read identity JSON");
+        assert!(
+            json.contains(r#""exe_hash_algorithm": "blake3""#),
+            "persisted identities must self-describe the executable hash contract"
+        );
         assert_eq!(read_daemon_identity_file(&path), Some(daemon.clone()));
         assert_eq!(
             try_read_daemon_identity_file(&path).expect("try read"),

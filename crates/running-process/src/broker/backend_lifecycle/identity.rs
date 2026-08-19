@@ -51,8 +51,8 @@ pub struct DaemonProcess {
     pub pid: u32,
     /// Executable path recorded when the daemon identity was written.
     pub exe_path: PathBuf,
-    /// SHA-256 of the daemon executable.
-    pub exe_sha256: [u8; 32],
+    /// BLAKE3 content hash of the daemon executable.
+    pub exe_hash: [u8; 32],
     /// Host boot ID observed when the daemon started.
     pub boot_id: String,
     /// IPC endpoint used to connect to the daemon.
@@ -77,11 +77,11 @@ impl DaemonProcess {
         idle_timeout_secs: Option<u32>,
     ) -> Result<Self, IdentityError> {
         let exe_path = std::env::current_exe().map_err(IdentityError::CurrentExe)?;
-        let exe_sha256 = sha256_file(&exe_path)?;
+        let exe_hash = executable_hash_file(&exe_path)?;
         Ok(Self {
             pid: std::process::id(),
             exe_path,
-            exe_sha256,
+            exe_hash,
             boot_id: host_identity::current().boot_id,
             ipc_endpoint,
             started_at_unix_ms: unix_now_ms(),
@@ -91,13 +91,14 @@ impl DaemonProcess {
 
     /// Convert this identity into the protobuf form stored in `CacheManifest`.
     ///
-    /// The conversion preserves the fixed-width SHA-256 value as bytes for the
-    /// wire schema.
+    /// The conversion preserves the fixed-width BLAKE3 value as bytes and
+    /// names its algorithm explicitly on the wire.
     pub fn to_proto(&self) -> protocol::DaemonProcess {
         protocol::DaemonProcess {
             pid: self.pid,
             exe_path: self.exe_path.to_string_lossy().into_owned(),
-            exe_sha256: self.exe_sha256.to_vec(),
+            exe_hash_algorithm: EXECUTABLE_HASH_ALGORITHM.to_owned(),
+            exe_hash: self.exe_hash.to_vec(),
             ipc_endpoint: Some(self.ipc_endpoint.clone()),
             started_at_unix_ms: self.started_at_unix_ms,
             boot_id: self.boot_id.clone(),
@@ -126,12 +127,17 @@ impl TryFrom<protocol::DaemonProcess> for DaemonProcess {
 
     fn try_from(value: protocol::DaemonProcess) -> Result<Self, Self::Error> {
         let ipc_endpoint = value.ipc_endpoint.ok_or(IdentityError::MissingEndpoint)?;
-        let exe_sha256 =
-            vec_to_sha256(value.exe_sha256).map_err(IdentityError::InvalidSha256Length)?;
+        if value.exe_hash_algorithm != EXECUTABLE_HASH_ALGORITHM {
+            return Err(IdentityError::UnsupportedExecutableHashAlgorithm(
+                value.exe_hash_algorithm,
+            ));
+        }
+        let exe_hash =
+            vec_to_hash(value.exe_hash).map_err(IdentityError::InvalidExecutableHashLength)?;
         Ok(Self {
             pid: value.pid,
             exe_path: PathBuf::from(value.exe_path),
-            exe_sha256,
+            exe_hash,
             boot_id: value.boot_id,
             ipc_endpoint,
             started_at_unix_ms: value.started_at_unix_ms,
@@ -161,10 +167,16 @@ impl<'de> Deserialize<'de> for DaemonProcess {
         D: Deserializer<'de>,
     {
         let value = DaemonProcessSerde::deserialize(deserializer)?;
+        if value.exe_hash_algorithm != EXECUTABLE_HASH_ALGORITHM {
+            return Err(<D::Error as serde::de::Error>::custom(format!(
+                "unsupported daemon executable hash algorithm {:?}; expected blake3",
+                value.exe_hash_algorithm
+            )));
+        }
         Ok(Self {
             pid: value.pid,
             exe_path: value.exe_path,
-            exe_sha256: value.exe_sha256,
+            exe_hash: value.exe_hash,
             boot_id: value.boot_id,
             ipc_endpoint: value.ipc_endpoint.into(),
             started_at_unix_ms: value.started_at_unix_ms,
@@ -179,9 +191,12 @@ pub enum IdentityError {
     /// The protobuf daemon identity did not include an IPC endpoint.
     #[error("daemon process is missing ipc_endpoint")]
     MissingEndpoint,
+    /// The protobuf daemon identity used an unsupported or legacy hash contract.
+    #[error("unsupported daemon executable hash algorithm {0:?}; expected blake3")]
+    UnsupportedExecutableHashAlgorithm(String),
     /// The protobuf daemon identity had an executable digest with the wrong size.
-    #[error("daemon process exe_sha256 must be 32 bytes, got {0}")]
-    InvalidSha256Length(usize),
+    #[error("daemon process exe_hash must be 32 bytes, got {0}")]
+    InvalidExecutableHashLength(usize),
     /// The current executable path could not be read.
     #[error("failed to resolve current executable: {0}")]
     CurrentExe(io::Error),
@@ -194,7 +209,8 @@ pub enum IdentityError {
 struct DaemonProcessSerde {
     pid: u32,
     exe_path: PathBuf,
-    exe_sha256: [u8; 32],
+    exe_hash_algorithm: String,
+    exe_hash: [u8; 32],
     boot_id: String,
     ipc_endpoint: EndpointSerde,
     started_at_unix_ms: u64,
@@ -206,7 +222,8 @@ impl From<&DaemonProcess> for DaemonProcessSerde {
         Self {
             pid: value.pid,
             exe_path: value.exe_path.clone(),
-            exe_sha256: value.exe_sha256,
+            exe_hash_algorithm: EXECUTABLE_HASH_ALGORITHM.to_owned(),
+            exe_hash: value.exe_hash,
             boot_id: value.boot_id.clone(),
             ipc_endpoint: EndpointSerde::from(&value.ipc_endpoint),
             started_at_unix_ms: value.started_at_unix_ms,
@@ -239,6 +256,12 @@ impl From<EndpointSerde> for Endpoint {
     }
 }
 
+/// BLAKE3 content hash used by the daemon identity wire contract.
+pub fn executable_hash_file(path: &Path) -> Result<[u8; 32], io::Error> {
+    crate::content_hash::blake3_file(path).map(|hash| *hash.as_bytes())
+}
+
+/// SHA-256 helper retained for the independent process-probe wire contract.
 pub fn sha256_file(path: &Path) -> Result<[u8; 32], io::Error> {
     let bytes = fs::read(path)?;
     let digest = Sha256::digest(&bytes);
@@ -247,13 +270,15 @@ pub fn sha256_file(path: &Path) -> Result<[u8; 32], io::Error> {
     Ok(out)
 }
 
-fn vec_to_sha256(bytes: Vec<u8>) -> Result<[u8; 32], usize> {
+fn vec_to_hash(bytes: Vec<u8>) -> Result<[u8; 32], usize> {
     let len = bytes.len();
     let Ok(out) = bytes.try_into() else {
         return Err(len);
     };
     Ok(out)
 }
+
+const EXECUTABLE_HASH_ALGORITHM: &str = "blake3";
 
 fn unix_now_ms() -> u64 {
     SystemTime::now()
@@ -266,13 +291,24 @@ fn unix_now_ms() -> u64 {
 mod broker_dance_identity_tests {
     //! The broker owns the daemon "dance" (relocation / identity / lifecycle),
     //! and it keys a backend on its `DaemonProcess` identity — whose distinctive
-    //! field is `exe_sha256`, the content hash of the (relocated) executable.
+    //! field is `exe_hash`, the content hash of the (relocated) executable.
     //!
     //! These pin the invariant that lets the broker keep two *builds* apart
     //! instead of letting them displace each other as "stale-version" — the
     //! exact collision that spawn-stormed soldr's per-process self-managed
     //! daemon when the identity did NOT carry the hash (zackees/soldr#2352).
     use super::*;
+
+    #[test]
+    fn executable_identity_hash_uses_blake3() {
+        let path =
+            std::env::temp_dir().join(format!("running-process-946-hash-{}", std::process::id()));
+        std::fs::write(&path, b"daemon image bytes").expect("write fixture");
+        let actual = executable_hash_file(&path).expect("hash fixture");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(actual, *blake3::hash(b"daemon image bytes").as_bytes());
+    }
 
     fn endpoint(path: &str) -> Endpoint {
         Endpoint {
@@ -281,13 +317,13 @@ mod broker_dance_identity_tests {
         }
     }
 
-    fn identity(exe_sha256: [u8; 32]) -> DaemonProcess {
-        // Everything else is held constant so `exe_sha256` is the only variable:
+    fn identity(exe_hash: [u8; 32]) -> DaemonProcess {
+        // Everything else is held constant so `exe_hash` is the only variable:
         // a distinct *build* of the same daemon differs only in its bytes.
         DaemonProcess {
             pid: 1234,
             exe_path: PathBuf::from("runtime/soldr-self/v0.8.44-deadbeef/soldr.exe"),
-            exe_sha256,
+            exe_hash,
             boot_id: "boot-1".to_owned(),
             ipc_endpoint: endpoint("rpb-v2-soldr-daemon-0123456789abcdef-0"),
             started_at_unix_ms: 1,
@@ -326,15 +362,42 @@ mod broker_dance_identity_tests {
         // builds could collapse to one identity in transit.
         let original = identity([0x42; 32]);
         let proto = original.to_proto();
+        assert_eq!(proto.exe_hash_algorithm, "blake3");
         assert_eq!(
-            proto.exe_sha256.len(),
+            proto.exe_hash.len(),
             32,
-            "the wire form must carry the full 32-byte SHA-256"
+            "the wire form must carry the full 32-byte BLAKE3 hash"
         );
         let restored = DaemonProcess::try_from(proto).expect("identity round-trips");
         assert_eq!(
             restored, original,
-            "identity (including exe_sha256) must survive the manifest round-trip"
+            "identity (including exe_hash) must survive the manifest round-trip"
         );
+    }
+
+    #[test]
+    fn legacy_sha256_wire_identity_is_rejected_actionably() {
+        // Pre-#946 peers populated reserved field 3 and know nothing about the
+        // new algorithm/hash fields. Prost drops the unknown legacy field, so
+        // the explicit empty algorithm marker is what turns version skew into
+        // a contract error instead of a false executable mismatch.
+        let legacy = protocol::DaemonProcess {
+            pid: 1234,
+            exe_path: "legacy-daemon".to_owned(),
+            exe_hash_algorithm: String::new(),
+            exe_hash: Vec::new(),
+            ipc_endpoint: Some(endpoint("legacy.sock")),
+            started_at_unix_ms: 1,
+            boot_id: "boot-1".to_owned(),
+            idle_timeout_secs: None,
+        };
+
+        let error = DaemonProcess::try_from(legacy).expect_err("legacy SHA-256 must be fenced");
+        assert!(matches!(
+            error,
+            IdentityError::UnsupportedExecutableHashAlgorithm(ref algorithm)
+                if algorithm.is_empty()
+        ));
+        assert!(error.to_string().contains("expected blake3"));
     }
 }

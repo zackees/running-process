@@ -10,10 +10,10 @@
 //! Per the [broker-v2 coexistence design](https://github.com/zackees/running-process/issues/470),
 //! a small set of types is intentionally shared across both broker
 //! generations because they describe identity-level facts (PID,
-//! executable SHA-256, boot ID, IPC endpoint, started-at timestamp)
+//! executable BLAKE3 hash, boot ID, IPC endpoint, started-at timestamp)
 //! that v2 does not need to redefine:
 //!
-//! - `DaemonProcess` — the (pid, exe_path, exe_sha256, ipc_endpoint,
+//! - `DaemonProcess` — the (pid, exe_path, exe_hash, ipc_endpoint,
 //!   started_at_unix_ms, boot_id, idle_timeout_secs) tuple a broker
 //!   uses to probe daemon liveness. v2 inherits these field semantics
 //!   verbatim from v1; only the surrounding broker protocol (Hello,

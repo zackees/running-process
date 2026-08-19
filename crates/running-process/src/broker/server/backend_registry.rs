@@ -9,7 +9,7 @@ use crate::broker::server::instance::BrokerInstanceKey;
 
 /// Lookup key for one backend process.
 ///
-/// The key includes the daemon executable's content hash (`exe_sha256`, hex)
+/// The key includes the daemon executable's content hash (`exe_hash`, hex)
 /// so that two *different builds of the same version* — the ordinary
 /// edit-rebuild-the-daemon dev loop — are distinct registry entries rather
 /// than aliasing to one. Without it, a rebuilt daemon binary negotiates to the
@@ -23,13 +23,13 @@ pub struct BackendKey {
     pub service_name: String,
     /// Service version.
     pub service_version: String,
-    /// SHA-256 (lowercase hex) of the daemon executable this backend runs.
+    /// BLAKE3 hash (lowercase hex) of the daemon executable this backend runs.
     ///
     /// Derived on `insert` from the launched daemon's verified identity, and
     /// supplied on lookup as the hash of the on-disk `binary_path` the client
     /// would launch. A rebuild changes the bytes → changes this segment → the
     /// resident daemon is a lookup miss and the caller launches its own.
-    pub exe_sha256: String,
+    pub exe_hash: String,
 }
 
 impl BackendKey {
@@ -38,13 +38,13 @@ impl BackendKey {
         instance: BrokerInstanceKey,
         service_name: impl Into<String>,
         service_version: impl Into<String>,
-        exe_sha256: impl Into<String>,
+        exe_hash: impl Into<String>,
     ) -> Self {
         Self {
             instance,
             service_name: service_name.into(),
             service_version: service_version.into(),
-            exe_sha256: exe_sha256.into(),
+            exe_hash: exe_hash.into(),
         }
     }
 }
@@ -75,7 +75,7 @@ impl BackendRegistry {
 
     /// Insert or replace one verified backend handle.
     ///
-    /// The key's `exe_sha256` segment is taken from the handle's verified
+    /// The key's `exe_hash` segment is taken from the handle's verified
     /// daemon identity, so a backend is always registered under the content
     /// hash of the binary it actually launched.
     pub fn insert(
@@ -87,14 +87,14 @@ impl BackendRegistry {
             instance,
             handle.service_name.clone(),
             handle.service_version.clone(),
-            hex_lower(&handle.daemon_process.exe_sha256),
+            hex_lower(&handle.daemon_process.exe_hash),
         );
         self.entries.insert(key, handle)
     }
 
     /// Return one handle by exact instance/service/version/exe-hash key.
     ///
-    /// `exe_sha256` is the lowercase-hex content hash of the daemon binary the
+    /// `exe_hash` is the lowercase-hex content hash of the daemon binary the
     /// caller intends to reach. A handle registered under a different hash
     /// (i.e. an earlier build of the same version) does not match.
     pub fn get(
@@ -102,13 +102,13 @@ impl BackendRegistry {
         instance: &BrokerInstanceKey,
         service_name: &str,
         service_version: &str,
-        exe_sha256: &str,
+        exe_hash: &str,
     ) -> Option<&BackendHandle> {
         self.entries.get(&BackendKey::new(
             instance.clone(),
             service_name,
             service_version,
-            exe_sha256,
+            exe_hash,
         ))
     }
 
@@ -157,7 +157,7 @@ impl BackendRegistry {
 
     /// Return Hello negotiation metadata for one registered backend.
     ///
-    /// `expected_exe_sha256` is the lowercase-hex content hash of the on-disk
+    /// `expected_exe_hash` is the lowercase-hex content hash of the on-disk
     /// daemon binary the client would launch. A resident daemon of the same
     /// service+version but a *different* build hash is not returned, so the
     /// caller falls through to launching its own (running-process#894).
@@ -166,13 +166,13 @@ impl BackendRegistry {
         instance: &BrokerInstanceKey,
         service_definition: &ServiceDefinition,
         service_version: &str,
-        expected_exe_sha256: &str,
+        expected_exe_hash: &str,
     ) -> Option<RegisteredBackend> {
         let handle = self.get(
             instance,
             &service_definition.service_name,
             service_version,
-            expected_exe_sha256,
+            expected_exe_hash,
         )?;
         Some(RegisteredBackend {
             service_definition: service_definition.clone(),
@@ -244,7 +244,7 @@ mod tests {
         hex_lower(
             &handle("probe", "0.0.0", std::process::id())
                 .daemon_process
-                .exe_sha256,
+                .exe_hash,
         )
     }
 
@@ -296,9 +296,9 @@ mod tests {
         let mut registry = BackendRegistry::new();
 
         let mut a = handle("zccache", "1.11.20", std::process::id());
-        a.daemon_process.exe_sha256 = [0xAA; 32];
+        a.daemon_process.exe_hash = [0xAA; 32];
         let mut b = handle("zccache", "1.11.20", std::process::id());
-        b.daemon_process.exe_sha256 = [0xBB; 32];
+        b.daemon_process.exe_hash = [0xBB; 32];
         let a_pipe = a.daemon_process.ipc_endpoint.path.clone();
 
         registry.insert(BrokerInstanceKey::Shared, a);

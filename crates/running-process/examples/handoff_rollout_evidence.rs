@@ -18,7 +18,7 @@
 //! Broker and backend are co-located in the server process by
 //! architectural necessity, not convenience: `serve_registered_backend`
 //! verifies the startup endpoint probe against the serving process's OWN
-//! identity (pid / exe_path / exe_sha256), so the registered-backend
+//! identity (pid / exe_path / exe_hash), so the registered-backend
 //! serve mode only supports a backend that embeds the serve loop. A
 //! standalone broker binary fronting a separate backend process would
 //! fail startup verification with `IdentityMismatch { field: "pid" }`.

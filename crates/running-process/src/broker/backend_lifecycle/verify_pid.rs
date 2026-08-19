@@ -37,14 +37,14 @@ pub fn verify_daemon_process(expected: &DaemonProcess) -> Result<ProcessHandle, 
         });
     }
 
-    let actual_sha256 =
-        identity::sha256_file(&exe_path).map_err(|source| VerifyPidError::ExeHash {
+    let actual_hash =
+        identity::executable_hash_file(&exe_path).map_err(|source| VerifyPidError::ExeHash {
             pid: expected.pid,
             path: exe_path.clone(),
             source,
         })?;
-    if actual_sha256 != expected.exe_sha256 {
-        return Err(VerifyPidError::ExeSha256Mismatch { pid: expected.pid });
+    if actual_hash != expected.exe_hash {
+        return Err(VerifyPidError::ExecutableHashMismatch { pid: expected.pid });
     }
 
     Ok(handle)
@@ -118,8 +118,8 @@ pub enum VerifyPidError {
         actual: PathBuf,
     },
     /// The executable hash did not match the manifest identity.
-    #[error("daemon executable sha256 mismatch for pid {pid}")]
-    ExeSha256Mismatch {
+    #[error("daemon executable blake3 hash mismatch for pid {pid}")]
+    ExecutableHashMismatch {
         /// Process ID being verified.
         pid: u32,
     },
