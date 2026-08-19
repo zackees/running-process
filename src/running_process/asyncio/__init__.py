@@ -799,6 +799,10 @@ async def launch_detached(
 ) -> DetachedProcess:
     """Async counterpart of :func:`running_process.launch_detached`.
 
+    This is a v1 broker client and automatically starts
+    ``running-process-daemon`` when no broker is reachable. It is not a plain
+    broker-free subprocess launcher.
+
     Keyword-only after ``command``, matching the sync helper exactly, and
     returning the same `DetachedProcess`. The spawn is the only blocking part
     and runs on the bounded island; the child is detached, so there is

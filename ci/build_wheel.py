@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import platform
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Literal
 
@@ -121,11 +123,28 @@ def install_wheel(wheel: Path, *, env: dict[str, str]) -> int:
     return 0
 
 
+def verify_trampoline_in_wheel(wheel: Path) -> str:
+    """Return the packaged trampoline entry or reject an incomplete wheel."""
+    suffix = ".exe" if platform.system() == "Windows" else ""
+    entry = f"running_process/assets/daemon-trampoline{suffix}"
+    with zipfile.ZipFile(wheel) as archive:
+        if entry not in archive.namelist():
+            raise RuntimeError(
+                f"wheel {wheel.name} is missing bundled trampoline entry {entry}"
+            )
+    return entry
+
+
 def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> int:
     """Build the daemon-trampoline binary and copy it into package assets."""
     import json as json_mod
 
     profile_args = ["--release"] if mode == "release" else []
+    trampoline_env = dict(env) if env is not None else os.environ.copy()
+    # soldr/zccache materializes cache hits as read-only artifacts. Maturin
+    # subsequently invokes Cargo directly and must not try to overwrite those
+    # files, so the standalone trampoline owns a separate target subtree.
+    trampoline_env["CARGO_TARGET_DIR"] = str(ROOT / "target" / "trampoline")
     # Wave 7 of #165: daemon-trampoline is now a [[bin]] inside the
     # `running-process` crate; select it by binary name rather than
     # by the old standalone package name.
@@ -141,7 +160,7 @@ def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> i
         check=False,
         capture_output=True,
         text=True,
-        env=env,
+        env=trampoline_env,
     )
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr, flush=True)
@@ -212,6 +231,9 @@ def run_build(mode: BuildMode) -> int:
     result = subprocess.run(cmd, cwd=ROOT, check=False, env=env)
     if result.returncode != 0:
         return result.returncode
+    output_wheels = [path for path in built_wheels() if path.name not in before]
+    if not output_wheels:
+        output_wheels = [latest_wheel()]
     if mode == "dev" and platform.system() == "Windows":
         preserved = preserve_dev_pdb()
         print(
@@ -225,8 +247,7 @@ def run_build(mode: BuildMode) -> int:
             destination_pdb=filtered_pdb_path(ROOT),
             root=ROOT,
         )
-        new_wheels = [path for path in built_wheels() if path.name not in before]
-        for wheel in new_wheels or [latest_wheel()]:
+        for wheel in output_wheels:
             bundled = bundle_windows_tiny_pdb(wheel, tiny_pdb=tiny_pdb, root=ROOT)
             print(
                 f"bundled tiny PDB into {wheel.name}: {', '.join(bundled)}",
@@ -235,6 +256,13 @@ def run_build(mode: BuildMode) -> int:
             )
             report = verify_release_artifact(wheel)
             print(format_release_artifact_report(report), file=sys.stderr, flush=True)
+    for wheel in output_wheels:
+        trampoline_entry = verify_trampoline_in_wheel(wheel)
+        print(
+            f"bundled trampoline verified in {wheel.name}: {trampoline_entry}",
+            file=sys.stderr,
+            flush=True,
+        )
     if mode != "dev":
         return 0
 

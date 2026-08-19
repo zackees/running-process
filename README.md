@@ -21,7 +21,10 @@ required.
 
 **Need a brokered process that can be supervised across sessions?** That is the
 v1 broker framework. Its client APIs use the broker daemon and its deployment
-and operational documentation is collected below.
+and operational documentation is collected below. The same lifecycle building
+blocks already support [Soldr](https://github.com/zackees/soldr)'s successful
+managed-daemon and compiler-cache workflow through direct `BackendHandle`
+probing; full v1 `Hello` broker adoption there remains intentionally deferred.
 
 ### Does this API use the v1 broker?
 
@@ -664,6 +667,9 @@ print(handle.pid)
 `launch_detached` is separate from `running_process.daemon.spawn_daemon(...)`,
 which uses the binary trampoline for process-name behavior. The trampoline API
 is daemon infrastructure, not a prerequisite for the ordinary process APIs.
+Call `running_process.daemon.trampoline_available()` for a non-raising
+capability check before using it. Wheel builds now fail validation unless the
+platform trampoline is present in `running_process/assets/`.
 
 ## Tracked PID Cleanup
 

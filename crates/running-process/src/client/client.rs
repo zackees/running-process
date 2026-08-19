@@ -54,7 +54,11 @@ impl std::fmt::Display for ClientError {
             ClientError::Server { code, message } => {
                 write!(f, "daemon returned {:?}: {}", code, message)
             }
-            ClientError::DaemonNotRunning => write!(f, "daemon is not running"),
+            ClientError::DaemonNotRunning => write!(
+                f,
+                "running-process broker is not running; run `running-process-daemon start` or \
+                 use a non-broker process API"
+            ),
         }
     }
 }
@@ -836,7 +840,7 @@ pub fn connect_or_start(scope_hash: Option<&str>) -> Result<DaemonClient, Client
         }
     }
 
-    Err(ClientError::DaemonNotRunning)
+    Err(daemon_unavailable_error(scope_hash))
 }
 
 /// Launch a detached shell command through the running-process daemon.
@@ -862,8 +866,29 @@ fn spawn_daemon() -> Result<(), ClientError> {
     let exe = daemon_exe_path();
     let mut command = std::process::Command::new(&exe);
     command.arg("start");
-    crate::spawn_daemon(&mut command).map_err(ClientError::Io)?;
+    crate::spawn_daemon(&mut command).map_err(|source| daemon_start_error(&exe, source))?;
     Ok(())
+}
+
+fn daemon_start_error(executable: &str, source: std::io::Error) -> ClientError {
+    ClientError::Io(std::io::Error::new(
+        source.kind(),
+        format!(
+            "failed to start the running-process broker with `{executable}`: {source}; \
+             install the daemon executable or use a non-broker process API"
+        ),
+    ))
+}
+
+fn daemon_unavailable_error(scope_hash: Option<&str>) -> ClientError {
+    let endpoint = paths::socket_path_view(scope_hash);
+    ClientError::Io(std::io::Error::new(
+        std::io::ErrorKind::NotConnected,
+        format!(
+            "running-process broker endpoint `{endpoint}` did not become reachable after \
+             startup; run `running-process-daemon start` or use a non-broker process API"
+        ),
+    ))
 }
 
 /// Determine the path to the daemon executable.
@@ -889,6 +914,25 @@ fn daemon_exe_path() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn broker_start_errors_name_the_executable_and_remedy() {
+        let error = daemon_start_error(
+            "running-process-daemon",
+            std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        );
+        let message = error.to_string();
+        assert!(message.contains("running-process-daemon"));
+        assert!(message.contains("non-broker process API"));
+    }
+
+    #[test]
+    fn unavailable_broker_errors_name_the_endpoint_and_remedy() {
+        let error = daemon_unavailable_error(Some("test-broker-endpoint"));
+        let message = error.to_string();
+        assert!(message.contains("test-broker-endpoint"));
+        assert!(message.contains("running-process-daemon start"));
+    }
 
     #[test]
     fn launch_detached_has_public_sync_signature() {
