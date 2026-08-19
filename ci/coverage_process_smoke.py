@@ -67,6 +67,7 @@ def exercise_runpm(binary: Path) -> None:
                 "--env",
                 "RP_COVERAGE=live",
                 "--no-autorestart",
+                "--",
                 sys.executable,
                 "-u",
                 "-c",
