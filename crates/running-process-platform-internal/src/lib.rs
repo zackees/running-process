@@ -184,9 +184,9 @@ impl SpawnSpec {
     /// Kill this child when the spawning process exits unexpectedly.
     ///
     /// Linux uses `PR_SET_PDEATHSIG(SIGTERM)`. Windows assigns the child to a
-    /// process-wide kill-on-close Job Object. macOS retains the modeled
-    /// kqueue-supervisor contract; its concrete supervisor is not part of the
-    /// async platform spawn seam yet.
+    /// process-wide kill-on-close Job Object. macOS forks a kqueue supervisor
+    /// before exec and reports spawn success only after its owner and child
+    /// watches are registered.
     pub fn kill_when_owner_dies(mut self, kill: bool) -> Self {
         self.kill_when_owner_dies = kill;
         self

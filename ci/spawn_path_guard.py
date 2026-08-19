@@ -26,6 +26,9 @@ ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process-platform-internal/src/platform_linux.rs"),
     Path("crates/running-process-platform-internal/src/platform_macos.rs"),
     Path("crates/running-process-platform-internal/src/platform_win.rs"),
+    # macOS platform-boundary regression fixtures construct only fixed system
+    # commands and route them through configure_command_for_owner.
+    Path("crates/running-process-platform-internal/src/platform_macos_tests.rs"),
     # The selected Windows sync-spawn boundary owns CreateProcessW. Its
     # reused-command regression constructs a Command and routes it through
     # that boundary twice; no higher-level caller bypass is introduced.
@@ -147,10 +150,10 @@ ALLOWED_RUST_SPAWN = {
     # Phase 0 of #850: the internal platform crate is the canonical async
     # process boundary; its spawn call is the reviewed blessed operation.
     Path("crates/running-process-platform-internal/src/lib.rs"),
-    # macOS owner-death registration regression: the inline platform test
-    # deliberately spawns /usr/bin/true through configure_command_for_owner
-    # to prove a failed kqueue registration aborts the canonical spawn.
-    Path("crates/running-process-platform-internal/src/platform_macos.rs"),
+    # macOS owner-death regressions deliberately spawn fixed system fixtures
+    # through configure_command_for_owner to test the canonical boundary.
+    # Production platform_macos.rs remains outside this spawn allowlist.
+    Path("crates/running-process-platform-internal/src/platform_macos_tests.rs"),
     # #850 Phase 2: the process-global runtime starts one Tokio actor task
     # per child. The actor owns the blessed PlatformChild and exposes only
     # typed lifecycle commands; this is the canonical async engine, not a

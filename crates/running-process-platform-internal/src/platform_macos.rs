@@ -420,11 +420,10 @@ fn configure_command_for_owner(
         command.process_group(0);
     }
     if kill_when_owner_dies {
-        let max_fd = open_file_limit()?;
         // SAFETY: the closure and supervisor use only libc operations that do
         // not acquire process-global Rust state after Tokio forks the child.
         unsafe {
-            command.pre_exec(move || install_owner_death_supervisor(owner_pid, max_fd));
+            command.pre_exec(move || install_owner_death_supervisor(owner_pid));
         }
     }
     Ok(())
@@ -451,19 +450,7 @@ pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("/bin/sh").arg("-c").arg(command)
 }
 
-fn open_file_limit() -> io::Result<libc::c_int> {
-    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let limit = unsafe { limit.assume_init() }.rlim_cur;
-    Ok(limit.min(libc::c_int::MAX as libc::rlim_t) as libc::c_int)
-}
-
-fn install_owner_death_supervisor(
-    owner_pid: libc::pid_t,
-    max_fd: libc::c_int,
-) -> io::Result<()> {
+fn install_owner_death_supervisor(owner_pid: libc::pid_t) -> io::Result<()> {
     let mut handshake = [-1; 2];
     if unsafe { libc::pipe(handshake.as_mut_ptr()) } < 0 {
         return Err(io::Error::last_os_error());
@@ -480,7 +467,7 @@ fn install_owner_death_supervisor(
     }
     if supervisor == 0 {
         unsafe { libc::close(handshake[0]) };
-        owner_death_supervisor(owner_pid, handshake[1], max_fd);
+        owner_death_supervisor(owner_pid, handshake[1]);
     }
 
     unsafe { libc::close(handshake[1]) };
@@ -529,10 +516,12 @@ fn read_supervisor_status(fd: libc::c_int) -> io::Result<()> {
 fn owner_death_supervisor(
     owner_pid: libc::pid_t,
     handshake_fd: libc::c_int,
-    max_fd: libc::c_int,
 ) -> ! {
     let target_pid = unsafe { libc::getppid() };
-    close_supervisor_fds(handshake_fd, max_fd);
+    if let Err(error) = close_supervisor_fds(handshake_fd) {
+        report_supervisor_status(handshake_fd, error);
+        unsafe { libc::_exit(127) };
+    }
     let queue = unsafe { libc::kqueue() };
     if queue < 0 {
         report_supervisor_status(handshake_fd, last_errno());
@@ -574,10 +563,51 @@ fn owner_death_supervisor(
     unsafe { libc::close(queue); libc::_exit(0); }
 }
 
-fn close_supervisor_fds(handshake_fd: libc::c_int, max_fd: libc::c_int) {
-    for fd in 3..max_fd {
-        if fd != handshake_fd {
-            unsafe { libc::close(fd) };
+fn close_supervisor_fds(handshake_fd: libc::c_int) -> Result<(), libc::c_int> {
+    const BATCH_SIZE: usize = 64;
+
+    loop {
+        let mut entries: [libc::proc_fdinfo; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+        let bytes = unsafe {
+            libc::proc_pidinfo(
+                libc::getpid(),
+                libc::PROC_PIDLISTFDS,
+                0,
+                entries.as_mut_ptr().cast(),
+                std::mem::size_of_val(&entries) as libc::c_int,
+            )
+        };
+        if bytes <= 0 {
+            let error = last_errno();
+            return Err(if error == 0 { libc::EIO } else { error });
+        }
+        let bytes = bytes as usize;
+        if bytes > std::mem::size_of_val(&entries) {
+            return Err(libc::EOVERFLOW);
+        }
+        if !bytes.is_multiple_of(std::mem::size_of::<libc::proc_fdinfo>()) {
+            return Err(libc::EIO);
+        }
+        let count = bytes / std::mem::size_of::<libc::proc_fdinfo>();
+        if count == 0 {
+            return Ok(());
+        }
+
+        let mut retained = 0;
+        for entry in &entries[..count] {
+            if entry.proc_fd == handshake_fd {
+                retained += 1;
+                continue;
+            }
+            if unsafe { libc::close(entry.proc_fd) } < 0 {
+                let error = last_errno();
+                if error != libc::EBADF {
+                    return Err(error);
+                }
+            }
+        }
+        if retained == count {
+            return Ok(());
         }
     }
 }
@@ -608,47 +638,8 @@ fn last_errno() -> libc::c_int {
 }
 
 #[cfg(test)]
-mod tests {
-    #[tokio::test]
-    async fn owner_death_registration_failure_aborts_spawn() {
-        let mut command = tokio::process::Command::new("/usr/bin/true");
-        super::configure_command_for_owner(&mut command, false, true, libc::pid_t::MAX)
-            .expect("configure owner-death containment");
-
-        match command.spawn() {
-            Ok(mut child) => {
-                let _ = child.kill().await;
-                panic!("spawn succeeded before the owner watch was registered");
-            }
-            Err(error) => assert_ne!(
-                error.kind(),
-                std::io::ErrorKind::NotFound,
-                "the executable must exist so registration is the failing operation"
-            ),
-        }
-    }
-
-    #[test]
-    fn shell_command_preserves_login_shell_contract_and_ignores_child_path() {
-        use std::ffi::OsStr;
-
-        let command_text = "printf '%s' 'alpha beta;\"gamma\"'";
-        let mut command = super::shell_command(command_text);
-        assert_eq!(command.get_program(), OsStr::new("/bin/sh"));
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [OsStr::new("-lc"), OsStr::new(command_text)]
-        );
-        command
-            .env_clear()
-            .env("PATH", "/caller-supplied-path-override");
-        let output = command
-            .output()
-            .expect("absolute shell command should execute independently of child PATH");
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"alpha beta;\"gamma\"");
-    }
-}
+#[path = "platform_macos_tests.rs"]
+mod tests;
 
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;
