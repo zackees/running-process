@@ -70,6 +70,7 @@ use running_process::broker::client::{
 use running_process::broker::protocol::{
     BrokerIsolation, Endpoint, HandoffOffer, ServiceDefinition,
 };
+use running_process::broker::secure_dir::ensure_private_dir;
 use running_process::broker::server::handoff::{
     collect_latency_samples, summarize_latency_samples, HandoffLatencySummary,
 };
@@ -78,7 +79,6 @@ use running_process::broker::server::{
     service_definition_path, BrokerInstanceKey, BrokerServeConfig, HandoffToken, HandoffTokenStore,
     HANDOFF_TOKEN_BYTES,
 };
-use running_process::broker::secure_dir::ensure_private_dir;
 
 const SERVICE_NAME: &str = "zccache";
 const SERVICE_VERSION: &str = "1.11.20";
