@@ -555,6 +555,9 @@ mod tests {
         assert!(!build_id.is_empty());
     }
 }
+#[cfg(test)]
+#[path = "tests/platform_linux_coverage.rs"]
+mod coverage_tests;
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;
 pub use sync_spawn::{spawn_sync, spawn_sync_daemon};

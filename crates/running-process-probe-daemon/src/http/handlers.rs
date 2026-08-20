@@ -483,3 +483,7 @@ fn refusal(reply: ProbeReply) -> (StatusCode, Json<ApiError>) {
         ),
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/http_handlers_coverage.rs"]
+mod coverage_tests;

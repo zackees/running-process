@@ -29,6 +29,9 @@ ALLOWED_RUST_COMMAND_NEW = {
     # macOS platform-boundary regression fixtures construct only fixed system
     # commands and route them through configure_command_for_owner.
     Path("crates/running-process-platform-internal/src/platform_macos_tests.rs"),
+    # Linux platform coverage constructs fixed `/bin/true` commands solely to
+    # execute the selected platform root's reviewed pre-exec configuration.
+    Path("crates/running-process-platform-internal/src/tests/platform_linux_coverage.rs"),
     # The selected Windows sync-spawn boundary owns CreateProcessW. Its
     # reused-command regression constructs a Command and routes it through
     # that boundary twice; no higher-level caller bypass is introduced.

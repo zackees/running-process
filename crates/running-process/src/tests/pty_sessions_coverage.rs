@@ -236,10 +236,11 @@ fn unstarted_process_errors_and_termination_classification_cover_control_paths()
         TerminationOutcome::HardKilled
     );
     let termination = session.terminate(Duration::ZERO);
-    #[cfg(windows)]
-    assert!(termination.is_ok());
-    #[cfg(unix)]
-    assert!(matches!(termination, Err(crate::pty::PtyError::NotRunning)));
+    if std::env::consts::OS == "windows" {
+        assert!(termination.is_ok());
+    } else {
+        assert!(matches!(termination, Err(crate::pty::PtyError::NotRunning)));
+    }
 }
 
 #[test]
