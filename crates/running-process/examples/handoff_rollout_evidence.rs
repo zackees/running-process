@@ -137,9 +137,9 @@ fn measure_deployment(mode: Mode) -> HandoffLatencySummary {
         Mode::Handoff => "387ho",
         Mode::Reconnect => "387rc",
     };
-    let broker_socket = unique_socket_name(&format!("{label}-brk"));
-    let backend_endpoint = unique_socket_name(&format!("{label}-be"));
-    let handoff_endpoint = unique_socket_name(&format!("{label}-hoff"));
+    let broker_socket = unique_socket_name(tmp.path(), &format!("{label}-brk"));
+    let backend_endpoint = unique_socket_name(tmp.path(), &format!("{label}-be"));
+    let handoff_endpoint = unique_socket_name(tmp.path(), &format!("{label}-hoff"));
     let ready_file = tmp.path().join("server-ready");
 
     let self_exe = std::env::current_exe().expect("driver binary path");
@@ -654,9 +654,10 @@ fn recv_fd_and_token(
 // Socket plumbing (mirrors the broker test harness's socket_common).
 // ---------------------------------------------------------------------------
 
-/// Build a unique IPC endpoint name keyed by `label`. Short Unix leaf
+/// Build a unique IPC endpoint name keyed by `label`. Unix endpoints live
+/// inside the deployment's owner-private temp directory, and short leaf
 /// names keep the whole path inside `sun_path` limits.
-fn unique_socket_name(label: &str) -> String {
+fn unique_socket_name(deployment_dir: &Path, label: &str) -> String {
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")
@@ -664,13 +665,14 @@ fn unique_socket_name(label: &str) -> String {
 
     #[cfg(windows)]
     {
+        let _ = deployment_dir;
         format!("rpb-v1-{label}-{}-{suffix}", std::process::id())
     }
 
     #[cfg(unix)]
     {
         let short_suffix = suffix % 1_000_000_000;
-        std::env::temp_dir()
+        deployment_dir
             .join(format!(
                 "rp-{label}-{}-{short_suffix}.sock",
                 std::process::id()
