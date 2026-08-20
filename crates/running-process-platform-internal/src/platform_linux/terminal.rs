@@ -159,6 +159,11 @@ impl PtyProcessGuard {
 }
 
 #[cfg(feature = "pty")]
+impl Drop for PtyProcessGuard {
+    fn drop(&mut self) {}
+}
+
+#[cfg(feature = "pty")]
 #[derive(Debug, Clone)]
 pub struct ChildProcessInfo {
     pub pid: u32,
