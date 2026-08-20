@@ -292,7 +292,7 @@ impl ClientSession {
     ///
     /// This is v1's `BrokerNegotiated` route, step for step: `client.rs`
     /// reads the `HelloReply`, refuses an empty `backend_pipe`, then calls
-    /// [`connect_local_socket`] on it and treats *that* socket as the
+    /// [`crate::broker::client::connect_local_socket`] on it and treats *that* socket as the
     /// connection. Keeping the sequence identical is the point — a consumer
     /// moving from v1's `client_compat` re-exports to `client_v2` must not be
     /// able to tell, and the way to guarantee that is to do the same thing

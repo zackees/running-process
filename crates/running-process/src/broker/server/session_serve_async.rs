@@ -60,7 +60,7 @@ const MAX_CONCURRENT_SESSION_NEGOTIATIONS: usize = 256;
 /// hold a socket-path string and a [`HelloResponder`] (typically a
 /// `HelloRouter`) — not a pre-bound `interprocess::local_socket::tokio::Listener`.
 /// It resolves the platform local-socket name the same way the sync broker bind
-/// does ([`local_socket_name`]) and creates the tokio listener.
+/// does and creates the tokio listener.
 ///
 /// # Errors
 ///
