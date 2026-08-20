@@ -190,54 +190,16 @@ IPC peer-identity and Windows SID extraction now run behind the audited
 `running-process-platform-internal` IPC facade, so the shared broker connection
 path contains no native `unsafe` sites.
 
-The `broker_owned_bind.rs` inventory covers the Unix listener handover (#500,
-slice 32). Two sites call `fcntl` to read and clear `FD_CLOEXEC` on the one
-descriptor being handed to a spawned daemon; both operate on a live
-`BorrowedFd` held by the caller, and clearing the flag on exactly that
-descriptor is what makes the handover deliberate rather than incidental
-inheritance.
-
-The remaining two sites are the adoption path on the daemon side, and they are
-reviewed together. The descriptor number arrives as text in
-`RUNNING_PROCESS_BROKER_LISTENER_FD`, so `from_raw_fd` is preceded by a
-`getsockopt` check on what that number actually names. Without it, a value
-naming a descriptor the process already owns — `1` being the obvious case —
-would create a second owner of stdout and close it on drop.
-
-The portable half of that check is `SO_TYPE`: the descriptor must be a stream
-socket, so a plain file, a pipe, or a tty is rejected with `ENOTSOCK` and a
-closed descriptor with `EBADF`, in both cases before any ownership is taken.
-The errno is preserved rather than flattened into a generic refusal, because it
-tells an operator whether the handover named the wrong descriptor or none at
-all.
-
-`SO_ACCEPTCONN` additionally distinguishes a listening socket from a connected
-one. Linux implements it for `AF_UNIX`; macOS returns `ENOPROTOOPT`, which is
-treated as "cannot determine" rather than failing the handover on a platform
-that cannot answer. The residual difference is stated plainly because it is
-part of the reviewed surface: on macOS a connected stream socket would be
-accepted where Linux refuses it. It still cannot be a file, a pipe, or a closed
-descriptor, so the ownership hazard the check exists for is covered on both.
-This is a soundness
-guard rather than a trust boundary: anything able to set that variable already
-controls the daemon's execution, and the daemon's own peer authentication is
-unchanged by it. The corresponding `tests.rs` site reads the flag back and
-takes no ownership.
+The former `broker_owned_bind.rs` and `server/singleton_bind.rs` entries were
+retired by #971. Listener inheritance/adoption and host-specific endpoint
+construction now execute inside the audited platform IPC facade, while the
+broker retains the surrounding opt-in, retry, and diagnostics policy.
 
 The `server/handoff/unix.rs` inventory covers the Unix `SCM_RIGHTS` boundary:
 constructing and inspecting `msghdr` control messages, calling `sendmsg` and
 `recvmsg`, and closing the duplicated descriptor received by the compatibility
 test. The additional reviewed site for #614 closes only the descriptor returned
 by that test's successful `recvmsg`; production ownership remains unchanged.
-
-The `server/singleton_bind.rs` inventory (soldr#2361 Phase 2 prep,
-running-process#901) covers `unix_socket_dir`'s two `unsafe { libc::getuid() }`
-calls, reading the current process's own real user ID to build a per-user
-runtime-directory path. This is a relocation, not new surface: the same two
-call sites previously lived in `src/bin/running-process-broker-v2.rs`
-(untracked by this audit, since the scan is scoped to `src/broker/`) and moved
-verbatim when the bind/singleton logic was extracted into a reusable library
-module so a future soldr-side broker role can call it too.
 
 ## Fuzz Campaign And Reviewer Signoff
 
