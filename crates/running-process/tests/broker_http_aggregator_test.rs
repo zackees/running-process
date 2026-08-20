@@ -54,8 +54,34 @@ impl StubBackend {
             while !stop_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // The listener can accept as soon as the TCP handshake
+                        // completes, and one read is not guaranteed to contain
+                        // the complete request. Closing with unread request
+                        // bytes surfaces as ECONNRESET at the client
+                        // (reproducible on the Linux ARM CI runner).
+                        stream
+                            .set_nonblocking(false)
+                            .expect("set blocking stub stream");
+                        stream
+                            .set_read_timeout(Some(DEADLINE))
+                            .expect("set stub read timeout");
                         let mut scratch = [0u8; 1024];
-                        let _ = stream.read(&mut scratch);
+                        let mut request = Vec::new();
+                        loop {
+                            match stream.read(&mut scratch) {
+                                Ok(0) => break,
+                                Ok(read) => {
+                                    request.extend_from_slice(&scratch[..read]);
+                                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                        break;
+                                    }
+                                    if request.len() >= 16 * 1024 {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\
                              Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
