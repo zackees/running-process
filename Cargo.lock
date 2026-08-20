@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2106,7 +2106,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "dirs",
  "interprocess",
@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "blake3",
  "crash-handler",
@@ -2152,7 +2152,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe-daemon"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "axum",
  "blake3",
@@ -2186,21 +2186,21 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe-interposer-linux"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "running-process-probe-interposer-macos"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "running-process-probe-interposer-windows"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "retour",
  "windows-sys 0.61.2",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe-worker"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "addr2line",
  "lzma-rs",
@@ -2226,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "interprocess",
  "libc",
@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-win-gnu-bridge"
-version = "4.10.3"
+version = "4.10.4"
 dependencies = [
  "windows-sys 0.61.2",
 ]
