@@ -2,7 +2,7 @@
 
 #[cfg(feature = "ipc")]
 #[path = "platform_linux/ipc.rs"]
-mod ipc;
+pub(crate) mod ipc;
 #[cfg(feature = "ipc")]
 pub use ipc::{
     current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint, Listener as IpcListener,
@@ -12,7 +12,7 @@ pub use ipc::{
 #[cfg(feature = "ipc-async")]
 pub use ipc::{
     AsyncListener as IpcAsyncListener, AsyncStream as IpcAsyncStream,
-    IntoAsyncListener as IpcIntoAsyncListener,
+    IntoAsyncListener as IpcIntoAsyncListener, IntoAsyncStream as IpcIntoAsyncStream,
 };
 
 #[cfg(feature = "session-relay")]

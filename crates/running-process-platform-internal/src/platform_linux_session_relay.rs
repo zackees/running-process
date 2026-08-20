@@ -8,6 +8,8 @@ use std::sync::Arc;
 use interprocess::local_socket::tokio::prelude::*;
 use tokio::io::{unix::AsyncFd, AsyncRead, AsyncWrite, AsyncWriteExt};
 
+use crate::platform_linux::ipc::AsyncStream;
+
 const SPLICE_CHUNK_BYTES: usize = 64 * 1024;
 
 struct Direction {
@@ -196,9 +198,11 @@ where
 /// a safe buffered fallback; errors after bytes move or EOF shutdown begins are
 /// returned without replaying data.
 pub async fn relay_local_socket_session(
-    client: interprocess::local_socket::tokio::Stream,
-    daemon: interprocess::local_socket::tokio::Stream,
+    client: AsyncStream,
+    daemon: AsyncStream,
 ) -> io::Result<()> {
+    let client = client.0;
+    let daemon = daemon.0;
     let (client_read, client_write) = client.split();
     let (daemon_read, daemon_write) = daemon.split();
 

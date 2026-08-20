@@ -12,14 +12,10 @@
 //! Windows and macOS retain Tokio's buffered relay. [`relay_session`] remains
 //! the generic buffered reference and pre-transfer fallback.
 
-use interprocess::local_socket::tokio::prelude::*;
+use crate::platform::ipc::{AsyncStream, Endpoint};
 
-/// Resolve a daemon SESSION endpoint path into an `interprocess` name
-/// (filesystem path on Unix, pipe namespace on Windows), matching how the daemon
-/// binds it.
-fn daemon_endpoint_name(path: &str) -> std::io::Result<interprocess::local_socket::Name<'_>> {
-    crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(std::io::Error::other)
-}
+#[doc(hidden)]
+pub use running_process_platform_internal::platform::ipc::IntoAsyncStream as IntoRelayAsyncStream;
 
 /// Relay an arbitrary async client's SESSION connection with bounded userspace
 /// buffers.
@@ -37,8 +33,8 @@ pub async fn relay_session<C>(mut client: C, daemon_socket_path: &str) -> std::i
 where
     C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let name = daemon_endpoint_name(daemon_socket_path)?;
-    let mut daemon = interprocess::local_socket::tokio::Stream::connect(name).await?;
+    let endpoint = Endpoint::new(daemon_socket_path)?;
+    let mut daemon = AsyncStream::connect(&endpoint).await?;
     tokio::io::copy_bidirectional(&mut client, &mut daemon).await?;
     Ok(())
 }
@@ -56,13 +52,20 @@ where
 ///
 /// Fails if the daemon endpoint cannot be dialed, or on a fatal transport error
 /// during the relay.
-pub async fn relay_local_socket_session(
-    client: interprocess::local_socket::tokio::Stream,
+pub async fn relay_local_socket_session<C>(
+    client: C,
     daemon_socket_path: &str,
-) -> std::io::Result<()> {
-    let name = daemon_endpoint_name(daemon_socket_path)?;
-    let daemon = interprocess::local_socket::tokio::Stream::connect(name).await?;
-    running_process_platform_internal::relay_local_socket_session(client, daemon).await
+) -> std::io::Result<()>
+where
+    C: IntoRelayAsyncStream,
+{
+    let endpoint = Endpoint::new(daemon_socket_path)?;
+    let daemon = AsyncStream::connect(&endpoint).await?;
+    running_process_platform_internal::relay_local_socket_session(
+        client.into_async_stream(),
+        daemon,
+    )
+    .await
 }
 
 // The relay's e2e test dials a real daemon SESSION endpoint
