@@ -333,7 +333,9 @@ def exercise_live_v2_broker(binary: Path, *, env: dict[str, str]) -> None:
                 loop.communicate(timeout=5)
 
 
-def exercise_probe_cli(daemon_binary: Path, cli_binary: Path) -> None:
+def exercise_probe_cli(
+    daemon_binary: Path, cli_binary: Path, crash_binary: Path
+) -> None:
     """Query a real isolated probe daemon through socket and HTTP transports."""
     # The probe endpoint is a Unix-domain socket. GitHub's TMPDIR lives below a
     # long workspace path, which can push the generated endpoint past
@@ -467,20 +469,19 @@ time.sleep(300)
             ):
                 _run(cli_binary, "--discovery", str(discovery), *args, env=env)
 
+            crash_argv = [
+                str(crash_binary),
+                "--spool",
+                str(root / "spool"),
+                "--mode",
+                "abort",
+            ]
             crash_script = f"""
 import os
 import resource
-from running_process.probe import ProbeConfig, install
 
 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-guard = install(
-    ProbeConfig(
-        app_class="coverage-crash",
-        socket_override={discovery_info['control_socket']!r},
-    ),
-    required=True,
-)
-os.abort()
+os.execv({str(crash_binary)!r}, {crash_argv!r})
 """
             crashed = subprocess.run(
                 [sys.executable, "-c", crash_script],
@@ -503,7 +504,7 @@ os.abort()
                     "--json",
                     "crashes",
                     "--class",
-                    "coverage-crash",
+                    "crash-fixture",
                     "--limit",
                     "5",
                     env=env,
@@ -839,6 +840,7 @@ def main() -> int:
     broker_v2_binary = args.bin_dir / "running-process-broker-v2"
     probe_daemon_binary = args.bin_dir / "rpprobed"
     probe_cli_binary = args.bin_dir / "rpprobe"
+    crash_binary = args.bin_dir / "testbin-probe-crasher"
     trampoline_binary = args.bin_dir / "daemon-trampoline"
     for required in (
         daemon_binary,
@@ -847,13 +849,14 @@ def main() -> int:
         broker_v2_binary,
         probe_daemon_binary,
         probe_cli_binary,
+        crash_binary,
         trampoline_binary,
     ):
         if not required.is_file():
             raise RuntimeError(f"instrumented binary not found at {required}")
     exercise_cleanup(cleanup_binary)
     exercise_brokers(broker_v1_binary, broker_v2_binary)
-    exercise_probe_cli(probe_daemon_binary, probe_cli_binary)
+    exercise_probe_cli(probe_daemon_binary, probe_cli_binary, crash_binary)
     exercise_trampoline(trampoline_binary)
     exercise_runpm(binary, daemon_binary)
     return 0
