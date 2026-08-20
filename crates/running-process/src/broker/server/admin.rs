@@ -3,7 +3,6 @@
 use std::io::{self, Read, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use interprocess::local_socket::traits::Listener;
 use prost::Message;
 use serde::Serialize;
 use serde_json::json;

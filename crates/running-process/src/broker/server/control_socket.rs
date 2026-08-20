@@ -9,7 +9,6 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
 
-use interprocess::local_socket::traits::{Listener, Stream as _};
 use prost::Message;
 
 use crate::broker::protocol::{
@@ -19,9 +18,9 @@ use crate::broker::protocol::{
 
 use super::admin::{handle_admin_frame, AdminFrameError, AdminSnapshot, ADMIN_PAYLOAD_PROTOCOL};
 use super::connection::{
-    bind_local_socket, local_socket_name, peer_identity_from_stream, refused_reply,
-    reply_for_framing_error, write_response_frame, BrokerConnectionError, HelloResponder,
-    LocalSocketCleanup, PeerCredentialPolicy,
+    bind_local_socket, peer_identity_from_stream, refused_reply, reply_for_framing_error,
+    write_response_frame, BrokerConnectionError, HelloResponder, LocalSocketCleanup,
+    PeerCredentialPolicy,
 };
 use super::deadline_stream::{hello_read_deadline, DeadlineStream};
 use super::fd_pressure::{FdPressureDecision, FdPressureGuard};
@@ -54,9 +53,8 @@ fn admin_request_verb(frame: &Frame) -> Option<AdminVerb> {
 /// in a blocking `accept()`, so a shutdown flag set by a worker takes effect
 /// without waiting for the next real client (soldr#2442 Option B).
 fn wake_control_socket_accept(socket_path: &str) {
-    use interprocess::local_socket::Stream;
-    if let Ok(name) = local_socket_name(socket_path) {
-        let _ = Stream::connect(name);
+    if let Ok(endpoint) = crate::platform::ipc::Endpoint::new(socket_path.to_owned()) {
+        let _ = crate::platform::ipc::Stream::connect(&endpoint);
     }
 }
 
@@ -336,7 +334,9 @@ where
                 );
             }
             if let ControlSocketReply::Hello(hello_reply) = &reply {
-                post_hello(&mut stream, hello_reply);
+                let mut legacy_stream =
+                    running_process_platform_internal::into_legacy_ipc_stream(stream);
+                post_hello(&mut legacy_stream, hello_reply);
             }
         }
         Ok(())
@@ -500,7 +500,7 @@ where
 }
 
 fn handle_accepted_control_connection<R, F>(
-    stream: &mut interprocess::local_socket::Stream,
+    stream: &mut crate::platform::ipc::Stream,
     hello_responder: &R,
     snapshot_provider: &F,
     peer: PeerIdentity,

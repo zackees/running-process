@@ -7,8 +7,12 @@ pub(crate) mod ipc;
 pub use ipc::{
     current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint, Listener as IpcListener,
     ListenerNonblockingMode as IpcListenerNonblockingMode, PeerIdentity as IpcPeerIdentity,
-    Stream as IpcStream,
+    PeerIdentitySource as IpcPeerIdentitySource, Stream as IpcStream,
 };
+#[cfg(feature = "ipc")]
+pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
+    stream.0
+}
 #[cfg(feature = "ipc-async")]
 pub use ipc::{
     AsyncListener as IpcAsyncListener, AsyncStream as IpcAsyncStream,

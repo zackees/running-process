@@ -4,7 +4,6 @@ use crate::broker::protocol::{
     PayloadEncoding, Refused, ENVELOPE_VERSION, PROTOCOL_VERSION,
 };
 use crate::broker::server::admin::AdminInodePressure;
-use interprocess::local_socket::Stream;
 use std::io::{self, Cursor, Read, Write};
 use std::time::Duration;
 
@@ -133,9 +132,10 @@ fn temp_endpoint(tag: &str) -> (tempfile::TempDir, String) {
 
 fn request_over_socket(socket_path: &str, request: &Frame) -> Result<Frame, String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let endpoint =
+        crate::platform::ipc::Endpoint::new(socket_path.to_owned()).expect("local socket endpoint");
     let mut stream = loop {
-        let name = local_socket_name(socket_path).expect("local socket name");
-        match Stream::connect(name) {
+        match crate::platform::ipc::Stream::connect(&endpoint) {
             Ok(stream) => break stream,
             Err(error) if std::time::Instant::now() < deadline => {
                 let _ = error;

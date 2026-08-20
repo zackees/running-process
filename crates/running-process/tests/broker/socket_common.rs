@@ -30,16 +30,30 @@ pub fn unique_socket_name(label: &str) -> String {
     #[cfg(unix)]
     {
         use std::hash::{Hash, Hasher};
+        use std::os::unix::fs::DirBuilderExt as _;
+        use std::sync::OnceLock;
+
+        static PRIVATE_SOCKET_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+        let private_socket_dir = PRIVATE_SOCKET_DIR.get_or_init(|| {
+            let path = std::env::temp_dir().join(format!(
+                "rp-{}-{}",
+                std::process::id(),
+                unique_suffix() % 1_000_000
+            ));
+            let mut builder = std::fs::DirBuilder::new();
+            builder
+                .mode(0o700)
+                .create(&path)
+                .expect("create owner-private broker test socket directory");
+            path
+        });
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         label.hash(&mut hasher);
         let label_hash = hasher.finish() as u32;
-        let short_suffix = unique_suffix() % 1_000_000_000;
-        std::env::temp_dir()
-            .join(format!(
-                "rpb-{label_hash:08x}-{}-{short_suffix}.sock",
-                std::process::id()
-            ))
+        let short_suffix = unique_suffix() % 1_000_000;
+        private_socket_dir
+            .join(format!("s-{label_hash:08x}-{short_suffix}.sock"))
             .to_string_lossy()
             .into_owned()
     }
