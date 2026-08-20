@@ -17,10 +17,9 @@
 
 use std::sync::Arc;
 
-use interprocess::local_socket::tokio::prelude::*;
-
 use crate::containment::ContainedProcessGroup;
 use crate::daemon::compile_session::{serve_session, session_framed};
+use crate::daemon::IntoDaemonAsyncListener;
 
 /// Accept SESSION connections on `listener` and serve each as a compile session
 /// until the listener errors.
@@ -33,9 +32,11 @@ use crate::daemon::compile_session::{serve_session, session_framed};
 ///
 /// Returns the first fatal `accept()` error (the listener is unusable); per-
 /// connection errors never propagate here.
-pub async fn serve_session_endpoint(
-    listener: interprocess::local_socket::tokio::Listener,
-) -> std::io::Result<()> {
+pub async fn serve_session_endpoint<L>(listener: L) -> std::io::Result<()>
+where
+    L: IntoDaemonAsyncListener,
+{
+    let listener = listener.into_async_listener();
     loop {
         let stream = listener.accept().await?;
         tokio::spawn(async move {

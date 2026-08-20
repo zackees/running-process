@@ -10,7 +10,10 @@ pub use ipc::{
     Stream as IpcStream,
 };
 #[cfg(feature = "ipc-async")]
-pub use ipc::{AsyncListener as IpcAsyncListener, AsyncStream as IpcAsyncStream};
+pub use ipc::{
+    AsyncListener as IpcAsyncListener, AsyncStream as IpcAsyncStream,
+    IntoAsyncListener as IpcIntoAsyncListener,
+};
 
 #[cfg(feature = "session-relay")]
 #[path = "platform_macos_session_relay.rs"]

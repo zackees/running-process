@@ -1391,10 +1391,6 @@ crates/running-process/src/daemon/runtime_gc.rs	attr_cfg	target_os	0
 crates/running-process/src/daemon/runtime_gc.rs	attr_cfg	target_os	1
 crates/running-process/src/daemon/runtime_gc.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/runtime_gc.rs	attr_cfg	windows	0
-crates/running-process/src/daemon/server.rs	attr_cfg	unix	0
-crates/running-process/src/daemon/server.rs	attr_cfg	unix	1
-crates/running-process/src/daemon/server.rs	attr_cfg	unix	2
-crates/running-process/src/daemon/server.rs	native_import	std::os::unix	0
 crates/running-process/src/daemon/services.rs	attr_cfg	windows	0
 crates/running-process/src/daemon/services.rs	attr_cfg	windows	1
 crates/running-process/src/daemon/services.rs	attr_cfg	windows	2

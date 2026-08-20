@@ -5,8 +5,6 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use interprocess::local_socket::tokio::prelude::*;
-use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
@@ -25,6 +23,7 @@ use crate::daemon::pty_sessions::PtySessionRegistry;
 use crate::daemon::reaper;
 use crate::daemon::registry::Registry;
 use crate::daemon::runtime_gc;
+use crate::platform::ipc::{AsyncListener, Endpoint as IpcEndpoint};
 
 // ---------------------------------------------------------------------------
 // DaemonServer
@@ -97,28 +96,13 @@ impl DaemonServer {
     /// Run the IPC server, blocking until shutdown is signalled.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let socket_path = &self.state.socket_path;
+        let endpoint = IpcEndpoint::new(socket_path.clone())?;
 
-        // Platform-specific: create parent directory for Unix socket files.
-        #[cfg(unix)]
-        {
-            if let Some(parent) = std::path::Path::new(socket_path).parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            // Remove stale socket file if present.
-            let _ = std::fs::remove_file(socket_path);
-        }
+        // Retiring a stale endpoint is daemon lifecycle policy; the facade
+        // performs only the selected host's filesystem/pipe mechanic.
+        let _ = endpoint.retire();
 
-        let name = self.create_socket_name()?;
-
-        let listener = ListenerOptions::new().name(name).create_tokio()?;
-
-        // On Unix, set socket file permissions to owner-only (0o600).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(socket_path, perms)?;
-        }
+        let listener = AsyncListener::bind_owner_only(&endpoint)?;
 
         info!("daemon listening on {}", socket_path);
 
@@ -208,24 +192,11 @@ impl DaemonServer {
         let _ = runtime_gc_handle.await;
         let _ = supervisor_handle.await;
 
-        // Cleanup socket file on Unix.
-        #[cfg(unix)]
-        {
-            let _ = std::fs::remove_file(socket_path);
-        }
+        // Cleanup authorization remains with the daemon; the facade performs
+        // the host-specific retirement mechanic.
+        let _ = endpoint.retire();
 
         Ok(())
-    }
-
-    /// Convert the socket path string into an `interprocess::local_socket::Name`.
-    ///
-    /// Delegates to the broker's canonical conversion boundary so an already
-    /// resolved Windows `\\.\pipe\...` display path is never prefixed twice.
-    fn create_socket_name(
-        &self,
-    ) -> Result<interprocess::local_socket::Name<'_>, Box<dyn std::error::Error>> {
-        crate::broker::server::singleton_bind::wrap_socket_name(&self.state.socket_path)
-            .map_err(|error| std::io::Error::other(error).into())
     }
 }
 

@@ -18,8 +18,10 @@ use std::path::PathBuf;
 pub fn socket_path(scope_hash: Option<&str>) -> String {
     #[cfg(unix)]
     {
-        // Ensure the directory exists.
-        let _ = std::fs::create_dir_all(runtime_dir_unix());
+        // This is a product-owned, dedicated leaf, so the caller is allowed
+        // to repair legacy permissions before the platform bind verifies it.
+        let directory = runtime_dir_unix();
+        let _ = crate::broker::secure_dir::ensure_private_dir(&directory);
     }
     socket_path_view(scope_hash)
 }

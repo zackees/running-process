@@ -25,6 +25,7 @@ use crate::broker::server::connection::{HelloResponder, PeerCredentialPolicy};
 use crate::broker::server::hello_handler::PeerIdentity;
 use crate::daemon::compile_session::session_framed;
 use crate::daemon::session_endpoint::serve_session_endpoint;
+use crate::platform::ipc::{AsyncListener, Endpoint as IpcEndpoint};
 
 /// A permissive responder that negotiates every Hello, pointing the relay at a
 /// fixed `backend_pipe` — isolates the async transport under test from the
@@ -192,15 +193,9 @@ async fn async_broker_negotiates_hello_then_proxies_session() {
     let _ = std::fs::remove_file(&broker_path);
 
     // Daemon SESSION endpoint (the real serve surface).
-    let daemon_listener = ListenerOptions::new()
-        .name(
-            daemon_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("daemon fs name"),
-        )
-        .create_tokio()
-        .expect("bind daemon endpoint");
+    let daemon_endpoint =
+        IpcEndpoint::new(daemon_path.to_string_lossy().into_owned()).expect("daemon endpoint");
+    let daemon_listener = AsyncListener::bind(&daemon_endpoint).expect("bind daemon endpoint");
     let daemon = tokio::spawn(serve_session_endpoint(daemon_listener));
 
     // Broker: async Hello round-trip, then full-proxy to the daemon endpoint.
@@ -370,15 +365,9 @@ async fn async_broker_session_socket_entry_binds_and_proxies() {
     let _ = std::fs::remove_file(&daemon_path);
     let _ = std::fs::remove_file(&broker_path);
 
-    let daemon_listener = ListenerOptions::new()
-        .name(
-            daemon_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("daemon fs name"),
-        )
-        .create_tokio()
-        .expect("bind daemon endpoint");
+    let daemon_endpoint =
+        IpcEndpoint::new(daemon_path.to_string_lossy().into_owned()).expect("daemon endpoint");
+    let daemon_listener = AsyncListener::bind(&daemon_endpoint).expect("bind daemon endpoint");
     let daemon = tokio::spawn(serve_session_endpoint(daemon_listener));
 
     // The socket entry binds the broker path itself (the production shape:

@@ -12,13 +12,27 @@ pub use crate::{
 };
 
 #[cfg(feature = "ipc-async")]
-pub use crate::{IpcAsyncListener as AsyncListener, IpcAsyncStream as AsyncStream};
+pub use crate::{
+    IpcAsyncListener as AsyncListener, IpcAsyncStream as AsyncStream,
+    IpcIntoAsyncListener as IntoAsyncListener,
+};
 
 #[cfg(all(test, feature = "ipc"))]
 mod tests {
     use std::io::{Read, Write};
 
     use super::{current_user_id, Endpoint, Listener, Stream};
+
+    #[test]
+    fn endpoint_lifecycle_mechanics_are_facade_owned() {
+        let endpoint = Endpoint::test("lifecycle").expect("test endpoint");
+        endpoint.retire().expect("retire absent endpoint");
+
+        let listener = Listener::bind(&endpoint).expect("bind endpoint");
+
+        drop(listener);
+        endpoint.retire().expect("retire endpoint");
+    }
 
     #[test]
     fn sync_bind_accept_connect_and_peer_identity_round_trip() {

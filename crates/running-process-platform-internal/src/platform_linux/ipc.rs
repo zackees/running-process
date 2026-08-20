@@ -28,6 +28,14 @@ impl Endpoint {
         &self.0
     }
 
+    pub fn retire(&self) -> io::Result<()> {
+        match std::fs::remove_file(&self.0) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     #[cfg(test)]
     pub fn test(label: &str) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
@@ -46,6 +54,43 @@ impl Endpoint {
 fn name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
     path.to_fs_name::<GenericFilePath>()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+}
+
+#[cfg(feature = "ipc-async")]
+fn prepare_owner_private_parent(path: &str) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+
+    let parent = std::path::Path::new(path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "IPC endpoint has no parent"))?;
+    let mut builder = std::fs::DirBuilder::new();
+    match builder.mode(0o700).create(parent) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+
+    let metadata = std::fs::symlink_metadata(parent)?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "IPC endpoint parent is not a real directory",
+        ));
+    }
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "IPC endpoint parent is not owned by the current user",
+        ));
+    }
+    if metadata.permissions().mode() & 0o777 != 0o700 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "IPC endpoint parent is not owner-private",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -215,11 +260,108 @@ impl AsyncListener {
             .map(Self)
     }
 
+    pub fn bind_owner_only(endpoint: &Endpoint) -> io::Result<Self> {
+        use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+
+        prepare_owner_private_parent(endpoint.display())?;
+        ListenerOptions::new()
+            .name(name(endpoint.display())?)
+            .mode(0o600)
+            .create_tokio()
+            .map(Self)
+    }
+
     pub async fn accept(&self) -> io::Result<AsyncStream> {
         self.0.accept().await.map(AsyncStream)
     }
 
     pub fn do_not_reclaim_name_on_drop(&mut self) {
         self.0.do_not_reclaim_name_on_drop();
+    }
+}
+
+#[cfg(all(test, feature = "ipc-async"))]
+mod security_tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::{Endpoint, IntoAsyncListener};
+
+    #[test]
+    fn legacy_async_listener_keeps_its_conversion_contract() {
+        fn accepts<T: IntoAsyncListener>() {}
+        accepts::<interprocess::local_socket::tokio::Listener>();
+    }
+
+    #[tokio::test]
+    async fn owner_only_security_sets_socket_mode_0600() {
+        let directory = tempfile::tempdir().expect("private tempdir");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private tempdir permissions");
+        let endpoint = Endpoint::new(
+            directory
+                .path()
+                .join("owner-only.sock")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .expect("test endpoint");
+        endpoint.retire().expect("retire absent endpoint");
+        let listener = super::AsyncListener::bind_owner_only(&endpoint).expect("bind endpoint");
+        let mode = std::fs::metadata(endpoint.display())
+            .expect("endpoint metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        drop(listener);
+        endpoint.retire().expect("retire endpoint");
+    }
+
+    #[test]
+    fn owner_only_security_rejects_without_mutating_a_shared_parent() {
+        let directory = tempfile::tempdir().expect("private tempdir");
+        let shared = directory.path().join("shared");
+        std::fs::create_dir(&shared).expect("shared directory");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755))
+            .expect("shared permissions");
+        let endpoint = Endpoint::new(
+            shared
+                .join("owner-only.sock")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .expect("test endpoint");
+
+        let error = match super::AsyncListener::bind_owner_only(&endpoint) {
+            Ok(_) => panic!("shared parent must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        let mode = std::fs::metadata(&shared)
+            .expect("shared metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+}
+
+#[cfg(feature = "ipc-async")]
+pub trait IntoAsyncListener {
+    fn into_async_listener(self) -> AsyncListener;
+}
+
+#[cfg(feature = "ipc-async")]
+impl IntoAsyncListener for AsyncListener {
+    fn into_async_listener(self) -> AsyncListener {
+        self
+    }
+}
+
+#[cfg(feature = "ipc-async")]
+impl IntoAsyncListener for interprocess::local_socket::tokio::Listener {
+    fn into_async_listener(self) -> AsyncListener {
+        AsyncListener(self)
     }
 }

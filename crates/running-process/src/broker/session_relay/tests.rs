@@ -13,6 +13,7 @@ use super::relay_local_socket_session;
 use crate::broker::protocol_v2::{session_frame, SessionFrame, SessionStart};
 use crate::daemon::compile_session::session_framed;
 use crate::daemon::session_endpoint::serve_session_endpoint;
+use crate::platform::ipc::{AsyncListener, Endpoint as IpcEndpoint};
 
 fn fixture_program() -> String {
     let exe = std::env::current_exe().expect("test executable path");
@@ -45,15 +46,9 @@ async fn relay_session_proxies_client_to_daemon_endpoint() {
     let _ = std::fs::remove_file(&daemon_path);
     let _ = std::fs::remove_file(&broker_path);
     // Daemon SESSION endpoint (the real serve surface).
-    let daemon_listener = ListenerOptions::new()
-        .name(
-            daemon_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("daemon fs name"),
-        )
-        .create_tokio()
-        .expect("bind daemon endpoint");
+    let daemon_endpoint =
+        IpcEndpoint::new(daemon_path.to_string_lossy().into_owned()).expect("daemon endpoint");
+    let daemon_listener = AsyncListener::bind(&daemon_endpoint).expect("bind daemon endpoint");
     let daemon = tokio::spawn(serve_session_endpoint(daemon_listener));
 
     // Broker: accept the client and full-proxy it to the daemon endpoint.
