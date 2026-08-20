@@ -39,7 +39,7 @@ getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { workspace = true }
-blake3 = "1"
+blake3 = "1.8.7"
 sysinfo = "0.30"
 globset = "0.4"
 regex = "1"
