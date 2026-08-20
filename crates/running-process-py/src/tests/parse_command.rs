@@ -1,5 +1,4 @@
 use pyo3::IntoPyObject;
-use running_process::pty as core_pty;
 use running_process::{CommandSpec, StderrMode, StdinMode, StreamKind};
 
 use crate::helpers::{parse_command, stderr_mode, stdin_mode, stream_kind};
@@ -123,20 +122,4 @@ fn stderr_mode_pipe() {
 #[test]
 fn stderr_mode_invalid() {
     assert!(stderr_mode("invalid").is_err());
-}
-
-// ── command_builder_from_argv tests ──
-
-#[test]
-fn command_builder_from_argv_single_arg() {
-    let argv = vec!["echo".to_string()];
-    let _cmd = core_pty::command_builder_from_argv(&argv);
-    // Just ensure it doesn't panic
-}
-
-#[test]
-fn command_builder_from_argv_multi_args() {
-    let argv = vec!["echo".to_string(), "hello".to_string(), "world".to_string()];
-    let _cmd = core_pty::command_builder_from_argv(&argv);
-    // Just ensure it doesn't panic
 }

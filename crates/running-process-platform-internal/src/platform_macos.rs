@@ -6,6 +6,15 @@ mod session_relay;
 #[cfg(feature = "session-relay")]
 pub use session_relay::relay_local_socket_session;
 
+#[path = "platform_macos/terminal.rs"]
+pub mod terminal;
+pub use terminal::active_graphics_probe;
+pub use crate::platform::terminal_input;
+
+#[path = "platform_macos/window_icon.rs"]
+mod window_icon;
+pub use window_icon::{icon_support as window_icon_support_impl, set_icon as set_window_icon_impl};
+
 pub fn shell_command(command: &str) -> std::process::Command {
     let mut shell = std::process::Command::new("/bin/sh");
     shell.arg("-lc").arg(command);

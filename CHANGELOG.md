@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — 5.0.0 PTY platform-boundary migration
+
+**Breaking change for direct Rust PTY-backend consumers only.** The Python API
+and the high-level Rust `NativePtyProcess` API are unchanged.
+
+Issue #970 moves PTY/ConPTY mechanics behind the host-neutral internal platform
+facade. As required by that boundary, concrete `portable-pty` types and native
+file descriptors/handles no longer escape through the public PTY traits.
+
+### Migration for direct Rust consumers
+
+| Before | After |
+|---|---|
+| `pty::reexports::portable_pty` | Depend on `portable-pty` directly if the application itself owns a concrete backend; otherwise use `running_process::pty`'s neutral traits. |
+| `pty::command_builder_from_argv` | Pass argv to `NativePtyProcess`; concrete command construction is now a platform implementation detail. |
+| `pty::portable_exit_code` | Use the exit codes returned by `PtyChild::{try_wait, wait}`. |
+| `PtyMaster::{process_group_leader, as_raw_fd}` / `PtyChild::as_raw_handle` | Use `NativePtyProcess` lifecycle and interrupt operations; raw host-control values remain inside the platform implementation. |
+
+`PtyMaster`, `PtyChild`, `PtySlave`, `PtyBackend`, and `PtySize` remain public.
+Their required, host-neutral methods are unchanged, so downstream neutral
+backends can still implement the traits without target-specific methods.
+
 ## 4.10.2 — preserve client environments across daemon spawn boundaries
 
 Fixes daemon and broker child launches that accidentally used the long-lived

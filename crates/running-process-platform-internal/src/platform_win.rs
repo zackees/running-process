@@ -10,6 +10,17 @@ pub use session_relay::relay_local_socket_session;
 mod console;
 pub use console::monitor_console_windows;
 
+#[path = "platform_win/terminal.rs"]
+pub mod terminal;
+pub use terminal::active_graphics_probe;
+
+#[path = "platform_win/terminal_input.rs"]
+pub mod terminal_input;
+
+#[path = "platform_win/window_icon.rs"]
+mod window_icon;
+pub use window_icon::{icon_support as window_icon_support_impl, set_icon as set_window_icon_impl};
+
 #[path = "platform_win_descendants.rs"]
 mod descendants;
 pub use descendants::{assign_child_to_windows_job, WindowsJobHandle};

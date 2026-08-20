@@ -80,7 +80,7 @@ default = ["client", "pty", "conpty-sidecar"]
 async-process = ["dep:tokio"]
 core = []
 telemetry = []
-pty = ["dep:portable-pty"]
+pty = ["running-process-platform-internal/pty"]
 client = [
     "dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs",
     "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2", "dep:getrandom",
@@ -99,8 +99,7 @@ client = [
 # without pulling a second HTTP/TLS stack.
 conpty-sidecar = [
     "pty",
-    "dep:dirs", "dep:sha2",
-    "dep:ureq", "dep:zstd", "dep:tar",
+    "running-process-platform-internal/conpty-sidecar",
 ]
 # Opt-in async client surface for tokio daemons (#414). Adds async
 # variants of `BackendHandle::probe_with_service` and `FrameClient`
@@ -169,7 +168,6 @@ test-support = ["client"]
 
 [dependencies]
 libc = "0.2"
-portable-pty = { version = "0.9", optional = true }
 sysinfo = "0.30"
 thiserror = "2"
 winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi", "ioapiset", "jobapi2", "namedpipeapi", "processthreadsapi", "winnt", "minwindef", "windef", "winuser", "consoleapi", "processenv", "synchapi", "winbase", "wincon", "tlhelp32", "securitybaseapi", "winerror", "sysinfoapi"] }
@@ -223,11 +221,6 @@ serde_json = "1"
 # Compiles proto/daemon.proto into OUT_DIR.
 prost-build = "0.14"
 protox = "0.9"
-# #447: build.rs parses `conpty-sidecar.sha256.toml` (at workspace root)
-# to bake the per-arch SHA-256 verification table into the crate at
-# compile time. The runtime then verifies the fetched sidecar against
-# the table before decompression.
-toml = "0.8"
 
 [dev-dependencies]
 # Platform-default service-definition dir tests (#386) assert against
@@ -242,18 +235,8 @@ test-watchdog = { path = "../test-watchdog" }
 trybuild = "1"
 tokio = { version = "1", default-features = false, features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 
-# #150: ConPTY passthrough rewrite uses windows-sys directly for the
-# new conpty_passthrough module. Kept alongside (not replacing) the
-# existing winapi 0.3 dep because the rest of the crate's Windows
-# call sites are on winapi and migrating them is out of scope.
-# windows-sys 0.59 exposes CreatePseudoConsole / ResizePseudoConsole /
-# ClosePseudoConsole + PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE directly.
-# X11 window-icon backend (#577). Linux-only and pure Rust: x11rb speaks
-# the X protocol directly over the socket, so this adds no libxcb/libX11
-# system dependency to a crate that has to build in minimal containers.
-# `png` decodes the icon to the RGBA that _NET_WM_ICON requires — Windows
-# lets the OS decode, X11 does not.
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The public X11 round-trip test creates its own window and PNG fixture.
 x11rb = "0.13"
 png = "0.17"
 
@@ -274,22 +257,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Environment",
 ] }
-# #445: transparent Win10 ConPTY sidecar self-acquisition. The runtime
-# fetches a per-arch zstd-19 compressed tarball from this crate's
-# matching GitHub release on first ConPTY use, caches it, and loads
-# `conpty.dll` from there. Gated optional behind `conpty-sidecar`.
-# ureq uses rustls so we don't drag in a C OpenSSL build on Windows.
-ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
-zstd = { version = "0.13", default-features = false, optional = true }
-tar = { version = "0.4", default-features = false, optional = true }
-
 # Wave 5 of #165: extra dev-deps absorbed from `running-process-daemon`
 # for its windows-only and unix-only integration tests.
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-# The X11 round-trip test creates its own window and reads the property back,
-# so it needs the same client library the backend uses.
-x11rb = "0.13"
-png = "0.17"
-
 [target.'cfg(windows)'.dev-dependencies]
 winapi = { version = "0.3", features = ["handleapi", "processthreadsapi", "winnt"] }

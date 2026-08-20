@@ -362,23 +362,10 @@ ALLOWED_RUST_SPAWN = {
 }
 
 ALLOWED_PORTABLE_PTY = {
-    Path("crates/running-process-py/src/lib.rs"),
-    # PTY module moved to core crate
-    Path("crates/running-process/src/pty/mod.rs"),
-    # PTY backend abstraction: Unix remains the portable-pty backend while
-    # Windows routes through the reviewed ConPTY passthrough implementation.
-    Path("crates/running-process/src/pty/backend.rs"),
-    Path("crates/running-process/src/pty/conpty_passthrough/child.rs"),
-    Path("crates/running-process/src/pty/conpty_passthrough/mod.rs"),
-    # Native PTY process impl extracted from pty/mod.rs.
-    Path("crates/running-process/src/pty/native_pty_process.rs"),
-    # Daemon PTY session manager: holds NativePtyProcess handles and reads
-    # the child's pid via the underlying portable_pty::Child::process_id.
-    # Spawn itself routes through the native layer.
-    Path("crates/running-process/src/daemon/pty_sessions.rs"),
-    # External product-coverage tests construct portable-pty ExitStatus values
-    # only; process creation still goes through NativePtyProcess.
-    Path("crates/running-process/src/tests/pty_core_coverage.rs"),
+    # The selected Unix PTY implementations are the only production owners of
+    # the concrete portable-pty backend. Shared callers use facade-owned traits.
+    Path("crates/running-process-platform-internal/src/platform_linux/terminal.rs"),
+    Path("crates/running-process-platform-internal/src/platform_macos/terminal.rs"),
 }
 
 # `ChildStdin::from` / `ChildStdout::from` / `ChildStderr::from` consumes a
@@ -398,7 +385,10 @@ ALLOWED_RUST_CHILD_PIPE_FROM = {
 # wrapped in Rust `ChildStd*`, so they do not trigger the #115 mismatch this
 # guard blocks everywhere else.
 ALLOWED_RUST_CREATE_PIPE = {
-    Path("crates/running-process/src/pty/conpty_passthrough/pipes.rs"),
+    Path(
+        "crates/running-process-platform-internal/src/platform_win/terminal/"
+        "conpty_passthrough/pipes.rs"
+    ),
 }
 
 ALLOWED_PYTHON_POPEN = {
