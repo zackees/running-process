@@ -513,7 +513,7 @@ pub fn active_graphics_probe(
 #[cfg(all(test, feature = "pty"))]
 mod tests {
     use super::*;
-    use crate::platform::terminal::{PtyMaster, PtySize};
+    use crate::platform::terminal::{PtyMaster, PtyMasterControlToken, PtySize};
     use std::fs::File;
     use std::io::{self, Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
