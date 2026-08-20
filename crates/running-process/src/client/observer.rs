@@ -354,3 +354,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/client_observer_coverage.rs"]
+mod coverage_tests;

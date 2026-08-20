@@ -19,11 +19,13 @@ def _run(
     *args: str,
     env: dict[str, str],
     expected_codes: tuple[int, ...] = (0,),
+    cwd: Path | None = None,
 ) -> str:
     command = [str(binary), *args]
     result = subprocess.run(
         command,
         env=env,
+        cwd=cwd,
         capture_output=True,
         text=True,
         timeout=30,
@@ -51,7 +53,7 @@ def exercise_daemon_cli(binary: Path, *, env: dict[str, str]) -> None:
     _run(binary, "sessions", "list", env=env)
     _run(binary, "sessions", "list", "--pty", env=env)
     _run(binary, "sessions", "list", "--pipe", env=env)
-    _run(binary, "sessions", "purge", env=env)
+    _run(binary, "sessions", "purge", "--originator", "coverage-smoke", env=env)
     _run(
         binary,
         "sessions",
@@ -62,6 +64,37 @@ def exercise_daemon_cli(binary: Path, *, env: dict[str, str]) -> None:
         "coverage-smoke",
         env=env,
     )
+    _run(binary, "kill", str(2**31 - 1), env=env)
+    _run(
+        binary,
+        "sessions",
+        "kill-older",
+        "--older-than",
+        "not-a-duration",
+        env=env,
+        expected_codes=(2,),
+    )
+    for args in (
+        ("sessions", "log", "missing-session"),
+        ("sessions", "terminate", "missing-session", "--pipe"),
+        ("sessions", "terminate", "missing-session"),
+    ):
+        _run(binary, *args, env=env, expected_codes=(1,))
+
+
+def exercise_offline_daemon_cli(binary: Path, *, env: dict[str, str]) -> None:
+    """Exercise the operator diagnostics emitted when no daemon is running."""
+    for args in (
+        ("stop",),
+        ("ping",),
+        ("status",),
+        ("list",),
+        ("kill-zombies", "--dry-run"),
+        ("kill", str(2**31 - 1)),
+        ("tree", str(2**31 - 1)),
+    ):
+        _run(binary, *args, env=env)
+    _run(binary, "sessions", "list", env=env, expected_codes=(1,))
 
 
 def exercise_cleanup(binary: Path) -> None:
@@ -345,6 +378,7 @@ def exercise_runpm(binary: Path, daemon_binary: Path | None = None) -> None:
             "import os,time; print('coverage-child:' + os.environ['RP_COVERAGE']); time.sleep(20)"
         )
         try:
+            _run(binary, env=env, expected_codes=(2,), cwd=root)
             _run(binary, "kill", env=env)
             _run(binary, "--start-daemon", env=env)
             _run(binary, "ping", env=env)
@@ -365,16 +399,61 @@ def exercise_runpm(binary: Path, daemon_binary: Path | None = None) -> None:
                 sleeper,
                 env=env,
             )
+            _run(
+                binary,
+                "start",
+                "--env",
+                "missing-equals",
+                "--",
+                sys.executable,
+                "-c",
+                "pass",
+                env=env,
+                expected_codes=(1,),
+            )
+            _run(
+                binary,
+                "start",
+                "--cwd",
+                str(root),
+                "--no-autorestart",
+                "--",
+                sys.executable,
+                "-c",
+                "pass",
+                env=env,
+            )
+
+            empty_config = root / "empty-runpm.toml"
+            empty_config.write_text("", encoding="utf-8")
+            _run(binary, "start", "--config", str(empty_config), env=env)
+            live_config = root / "coverage-runpm.toml"
+            live_config.write_text(
+                "\n".join(
+                    (
+                        "[[app]]",
+                        'name = "coverage-config"',
+                        f"cmd = {json.dumps([sys.executable, '-c', 'pass'])}",
+                        "autorestart = false",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            _run(binary, "start", "--config", str(live_config), env=env)
             time.sleep(0.25)
             _run(binary, "list", env=env)
             _run(binary, "list", "--json", env=env)
             _run(binary, "show", service, env=env)
+            _run(binary, "show", "missing-service", env=env, expected_codes=(1,))
             _run(binary, "logs", service, "--lines", "20", env=env)
+            _run(binary, "logs", "missing-service", env=env, expected_codes=(1,))
             _run(binary, "flush", service, env=env)
+            _run(binary, "flush", env=env)
             _run(binary, "stop", service, env=env)
             _run(binary, "restart", service, env=env)
             _run(binary, "save", env=env)
             _run(binary, "delete", service, env=env)
+            _run(binary, "delete", "coverage-config", env=env)
             _run(binary, "resurrect", env=env)
             _run(binary, "stop", service, env=env)
             _run(binary, "delete", service, env=env)
@@ -387,11 +466,21 @@ def exercise_runpm(binary: Path, daemon_binary: Path | None = None) -> None:
                 "--json",
                 env=env,
             )
+            _run(
+                binary,
+                "maintenance",
+                "release-handles",
+                "--path",
+                str(root),
+                env=env,
+            )
         finally:
             _run(binary, "kill", env=env)
             # The shutdown acknowledgement precedes process exit. Give the
             # daemon time to return from main and flush its LLVM profile.
             time.sleep(0.5)
+            if daemon_binary is not None:
+                exercise_offline_daemon_cli(daemon_binary, env=env)
 
 
 def main() -> int:

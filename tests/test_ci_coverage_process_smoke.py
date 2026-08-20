@@ -8,18 +8,23 @@ from ci import coverage_process_smoke
 
 def test_runpm_smoke_covers_the_operator_lifecycle(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
+    working_dirs: list[Path | None] = []
+
+    def fake_run(_binary, *args, env, **kwargs):
+        del env
+        calls.append(args)
+        working_dirs.append(kwargs.get("cwd"))
+        return ""
 
     monkeypatch.setattr(coverage_process_smoke.time, "sleep", lambda _delay: None)
-    monkeypatch.setattr(
-        coverage_process_smoke,
-        "_run",
-        lambda _binary, *args, env: calls.append(args) or "",
-    )
+    monkeypatch.setattr(coverage_process_smoke, "_run", fake_run)
 
     coverage_process_smoke.exercise_runpm(Path("/tmp/runpm"))
 
-    assert calls[0] == ("kill",)
-    assert calls[1] == ("--start-daemon",)
+    assert calls[0] == ()
+    assert working_dirs[0] is not None
+    assert calls[1] == ("kill",)
+    assert calls[2] == ("--start-daemon",)
     assert ("list", "--json") in calls
     assert ("show", "coverage-smoke") in calls
     assert ("restart", "coverage-smoke") in calls
@@ -34,7 +39,7 @@ def test_daemon_cli_smoke_covers_inspection_and_session_commands(monkeypatch) ->
     monkeypatch.setattr(
         coverage_process_smoke,
         "_run",
-        lambda _binary, *args, env: calls.append(args) or "",
+        lambda _binary, *args, env, **_kwargs: calls.append(args) or "",
     )
 
     coverage_process_smoke.exercise_daemon_cli(Path("/tmp/daemon"), env={})
@@ -44,6 +49,7 @@ def test_daemon_cli_smoke_covers_inspection_and_session_commands(monkeypatch) ->
     assert ("kill-zombies", "--dry-run") in calls
     assert ("sessions", "list", "--pty") in calls
     assert any(call[:2] == ("sessions", "kill-older") for call in calls)
+    assert ("sessions", "log", "missing-session") in calls
 
 
 def test_cleanup_smoke_is_dry_run_and_isolated(monkeypatch) -> None:

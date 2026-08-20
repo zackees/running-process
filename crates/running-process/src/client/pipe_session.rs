@@ -474,3 +474,7 @@ mod tests {
         assert!(baseline.clear_inherited_env);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/client_pipe_session_coverage.rs"]
+mod coverage_tests;
