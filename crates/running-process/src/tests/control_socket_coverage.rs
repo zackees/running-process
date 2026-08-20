@@ -125,7 +125,11 @@ fn temp_endpoint(tag: &str) -> (tempfile::TempDir, String) {
     let path = if std::env::consts::OS == "windows" {
         format!(r"\\.\pipe\rp-control-coverage-{tag}-{}", std::process::id())
     } else {
-        dir.path().join(format!("{tag}.sock")).display().to_string()
+        dir.path()
+            .join("owner-private")
+            .join(format!("{tag}.sock"))
+            .display()
+            .to_string()
     };
     (dir, path)
 }
