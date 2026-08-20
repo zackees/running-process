@@ -272,6 +272,11 @@ ALLOWED_RUST_SPAWN = {
     # spawn layer in running-process.
     Path("crates/running-process/src/daemon/pty_sessions.rs"),
     Path("crates/running-process/src/daemon/pipe_sessions.rs"),
+    # Coverage fixtures exercise those same reviewed session-manager surfaces.
+    # They never construct a std::process::Command; the only `.spawn(...)`
+    # calls dispatch through PipeSessionRegistry/PtySessionRegistry.
+    Path("crates/running-process/src/tests/pty_sessions_coverage.rs"),
+    Path("crates/running-process/src/tests/pipe_sessions_coverage.rs"),
     # Daemon server: autostart dispatch invokes the session-manager
     # `.spawn(...)` methods listed above.
     Path("crates/running-process/src/daemon/server.rs"),

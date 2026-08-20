@@ -615,3 +615,7 @@ mod cluster_g_tests {
         assert_eq!(&buf, data);
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/control_socket_coverage.rs"]
+mod coverage_tests;
