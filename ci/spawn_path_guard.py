@@ -153,6 +153,11 @@ ALLOWED_RUST_COMMAND_NEW = {
         "crates/running-process-platform-internal/src/tests/"
         "platform_linux_trace_coverage.rs"
     ),
+    # Linux platform coverage executes only fixed `/bin/true` and `/bin/sh`
+    # fixtures after applying the selected platform configuration. The live
+    # children prove pre-exec process-group, owner-death, and signal behavior;
+    # no caller input reaches either command.
+    Path("crates/running-process-platform-internal/src/tests/platform_linux_coverage.rs"),
     # Fixed shell fixtures exercise the Python binding's real descendant-tree
     # discovery and bounded termination paths. No caller input reaches them.
     Path("crates/running-process-py/src/tests/process_tree.rs"),
@@ -174,6 +179,10 @@ ALLOWED_RUST_SPAWN = {
         "crates/running-process-platform-internal/src/tests/"
         "platform_linux_trace_coverage.rs"
     ),
+    # Linux platform coverage executes only fixed `/bin/true` and `/bin/sh`
+    # fixtures after applying the reviewed pre-exec and signal configuration.
+    # No caller input reaches either command.
+    Path("crates/running-process-platform-internal/src/tests/platform_linux_coverage.rs"),
     # #850 Phase 2: the process-global runtime starts one Tokio actor task
     # per child. The actor owns the blessed PlatformChild and exposes only
     # typed lifecycle commands; this is the canonical async engine, not a
@@ -256,6 +265,10 @@ ALLOWED_RUST_SPAWN = {
     # and calls into the reviewed HelloResponder; it never constructs a
     # Command or forks.
     Path("crates/running-process/src/broker/server/control_socket.rs"),
+    # Control-socket coverage uses `thread::scope(...).spawn` to host bounded
+    # local listeners while the test client performs real round trips. These
+    # are in-process threads and never construct or launch an OS process.
+    Path("crates/running-process/src/tests/control_socket_coverage.rs"),
     Path("crates/running-process-py/src/lib.rs"),
     # Python-bindings containment mirror of core's containment.rs.
     Path("crates/running-process-py/src/containment.rs"),

@@ -547,3 +547,145 @@ fn incomplete_record_remains_pending() {
     assert!(ingest_pending(&spool, &reports).unwrap().is_empty());
     assert!(pending.exists());
 }
+
+#[test]
+fn future_schema_debug_and_accessors_are_explicit() {
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("future.sqlite3");
+    let conn = Connection::open(&database).unwrap();
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+        .unwrap();
+    drop(conn);
+    let error = CrashStore::open(&database, &root.path().join("future-artifacts")).unwrap_err();
+    assert!(matches!(
+        error,
+        CrashStoreError::FutureSchema {
+            found,
+            supported
+        } if found == SCHEMA_VERSION + 1 && supported == SCHEMA_VERSION
+    ));
+
+    let store = open_store(root.path(), unbounded_policy());
+    let rendered = format!("{store:?}");
+    assert!(rendered.contains("CrashStore"));
+    assert!(rendered.contains("artifacts"));
+    assert!(std::ptr::eq(
+        store.connection_for_test(),
+        store.connection()
+    ));
+    assert_eq!(store.artifacts_dir_for_test(), store.artifacts_dir());
+}
+
+#[test]
+fn watcher_ingests_a_complete_record_and_stops_on_drop() {
+    let root = tempfile::tempdir().unwrap();
+    let spool = root.path().join("spool");
+    let reports = root.path().join("reports");
+    ensure_private_dir(&spool).unwrap();
+    let pending = spool.join("watcher.rpcrash");
+    fs::write(&pending, encode(&report(1))).unwrap();
+
+    let watcher = spawn_watcher(spool, reports.clone()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while pending.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!pending.exists(), "watcher did not ingest pending crash");
+    drop(watcher);
+
+    let store = CrashStore::open(&root.path().join("crashes.sqlite3"), &reports).unwrap();
+    assert_eq!(store.query_by_class("compiler", 10).unwrap().len(), 1);
+}
+
+#[test]
+fn ingest_quarantines_wrong_sized_and_malformed_complete_records() {
+    let root = tempfile::tempdir().unwrap();
+    let spool = root.path().join("spool");
+    let reports = root.path().join("reports");
+    ensure_private_dir(&spool).unwrap();
+    fs::write(spool.join("ignore.txt"), b"unrelated").unwrap();
+    fs::write(spool.join("oversized.rpcrash"), vec![0_u8; RECORD_SIZE + 1]).unwrap();
+    fs::write(spool.join("malformed.rpcrash"), vec![0_u8; RECORD_SIZE]).unwrap();
+
+    assert!(ingest_pending_with_store_and_worker(
+        &spool,
+        &open_store(root.path(), unbounded_policy()),
+        None,
+    )
+    .unwrap()
+    .is_empty());
+    assert!(spool.join("ignore.txt").exists());
+    assert!(spool.join("oversized.rpcrash.invalid").exists());
+    assert!(spool.join("malformed.rpcrash.invalid").exists());
+    assert!(!reports.exists());
+}
+
+#[test]
+fn fetch_refuses_missing_tampered_and_unsafe_artifacts() {
+    let root = tempfile::tempdir().unwrap();
+    let store = open_store(root.path(), unbounded_policy());
+    assert!(store.begin_fetch(i64::MAX).unwrap().is_none());
+
+    let row = store.record(&report(1)).unwrap();
+    fs::write(&row.artifact_path, b"wrong size").unwrap();
+    assert!(store.begin_fetch(row.id).unwrap().is_none());
+    assert!(
+        open_artifact_for_fetch(store.artifacts_dir(), &root.path().join("outside.json"), 0,)
+            .unwrap()
+            .is_none()
+    );
+    assert!(open_artifact_for_fetch(
+        store.artifacts_dir(),
+        &store
+            .artifacts_dir()
+            .join("crash-1-00000000000000000000000000000000.json"),
+        1,
+    )
+    .unwrap()
+    .is_none());
+}
+
+#[test]
+fn crash_identity_and_owned_path_helpers_cover_edge_shapes() {
+    let root = Path::new("artifact-root");
+    let owned = "crash-123-0123456789abcdef0123456789abcdef.json";
+    assert!(is_owned_artifact_name(owned));
+    assert!(!is_owned_artifact_name("crash-no-suffix.json"));
+    assert!(!is_owned_artifact_name("not-a-crash.json"));
+    assert!(is_owned_cleanup_path(&root.join(owned)));
+    assert!(is_owned_cleanup_path(
+        &root.join(".0123456789abcdef0123456789abcdef.tmp")
+    ));
+    assert!(!is_owned_cleanup_path(&root.join(".short.tmp")));
+    assert_eq!(resolve_artifact_path(root, ""), PathBuf::new());
+    assert_eq!(resolve_artifact_path(root, owned), root.join(owned));
+    assert!(is_safe_artifact_path(root, &root.join(owned)));
+    assert!(!is_safe_artifact_path(
+        root,
+        &Path::new("other").join(owned)
+    ));
+    assert_eq!(hex(&[0x00, 0xab, 0xff]), "00abff");
+    assert!(sqlite_u64(u64::MAX).is_err());
+
+    let mut empty = report(1);
+    empty.threads.clear();
+    assert_eq!(signature(&empty).len(), 64);
+    let mut missing_module = report(2);
+    missing_module.threads[0].frames[0].module_index = Some(u32::MAX);
+    assert_eq!(signature(&missing_module).len(), 64);
+
+    assert!(!fault_kind(test_fault_code()).is_empty());
+    assert!(!fault_kind(123_456).is_empty());
+
+    let session = process_session().unwrap();
+    assert!(session_is_alive(
+        session.pid,
+        session.process_start_ms,
+        &session.boot_id
+    ));
+    assert!(!session_is_alive(
+        session.pid,
+        session.process_start_ms,
+        "different-boot"
+    ));
+}
