@@ -14,7 +14,7 @@ pub use crate::{
 #[cfg(feature = "ipc-async")]
 pub use crate::{
     IpcAsyncListener as AsyncListener, IpcAsyncStream as AsyncStream,
-    IpcIntoAsyncListener as IntoAsyncListener,
+    IpcIntoAsyncListener as IntoAsyncListener, IpcIntoAsyncStream as IntoAsyncStream,
 };
 
 #[cfg(all(test, feature = "ipc"))]

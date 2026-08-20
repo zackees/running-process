@@ -312,6 +312,25 @@ impl AsyncWrite for AsyncStream {
 }
 
 #[cfg(feature = "ipc-async")]
+pub trait IntoAsyncStream {
+    fn into_async_stream(self) -> AsyncStream;
+}
+
+#[cfg(feature = "ipc-async")]
+impl IntoAsyncStream for AsyncStream {
+    fn into_async_stream(self) -> AsyncStream {
+        self
+    }
+}
+
+#[cfg(feature = "ipc-async")]
+impl IntoAsyncStream for interprocess::local_socket::tokio::Stream {
+    fn into_async_stream(self) -> AsyncStream {
+        AsyncStream(self)
+    }
+}
+
+#[cfg(feature = "ipc-async")]
 pub struct AsyncListener(interprocess::local_socket::tokio::Listener);
 
 #[cfg(feature = "ipc-async")]
@@ -365,12 +384,20 @@ impl IntoAsyncListener for interprocess::local_socket::tokio::Listener {
 mod security_tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-    use super::{AsyncListener, AsyncStream, Endpoint, IntoAsyncListener};
+    use super::{
+        AsyncListener, AsyncStream, Endpoint, IntoAsyncListener, IntoAsyncStream,
+    };
 
     #[test]
     fn legacy_async_listener_keeps_its_conversion_contract() {
         fn accepts<T: IntoAsyncListener>() {}
         accepts::<interprocess::local_socket::tokio::Listener>();
+    }
+
+    #[test]
+    fn legacy_async_stream_keeps_its_conversion_contract() {
+        fn accepts<T: IntoAsyncStream>() {}
+        accepts::<interprocess::local_socket::tokio::Stream>();
     }
 
     #[tokio::test]

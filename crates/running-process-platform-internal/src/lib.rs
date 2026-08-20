@@ -72,7 +72,9 @@ pub use platform_imp::{
 };
 
 #[cfg(feature = "ipc-async")]
-pub use platform_imp::{IpcAsyncListener, IpcAsyncStream, IpcIntoAsyncListener};
+pub use platform_imp::{
+    IpcAsyncListener, IpcAsyncStream, IpcIntoAsyncListener, IpcIntoAsyncStream,
+};
 
 #[cfg(feature = "pty")]
 pub use platform_imp::terminal::{
