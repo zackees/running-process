@@ -910,3 +910,7 @@ mod tests {
         assert!(text.contains("doctor: 2 checks — 1 pass, 1 warn, 0 fail"));
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/broker_doctor_coverage.rs"]
+mod coverage_tests;

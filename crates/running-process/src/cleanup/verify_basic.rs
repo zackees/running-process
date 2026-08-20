@@ -100,6 +100,10 @@ fn process_is_alive(pid: u32) -> bool {
     result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
+#[cfg(test)]
+#[path = "../tests/verify_basic_coverage.rs"]
+mod coverage_tests;
+
 #[cfg(windows)]
 fn process_is_alive(pid: u32) -> bool {
     if pid == 0 {
