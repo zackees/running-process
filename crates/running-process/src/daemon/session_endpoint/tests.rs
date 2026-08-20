@@ -5,12 +5,11 @@
 //! boundary through the production serve surface. Unix-first.
 
 use futures_util::{SinkExt, StreamExt};
-use interprocess::local_socket::tokio::prelude::*;
-use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 
 use super::serve_session_endpoint;
 use crate::broker::protocol_v2::{session_frame, SessionFrame, SessionStart};
 use crate::daemon::compile_session::session_framed;
+use crate::platform::ipc::{AsyncListener, AsyncStream, Endpoint};
 
 fn fixture_program() -> String {
     let exe = std::env::current_exe().expect("test executable path");
@@ -36,25 +35,15 @@ async fn session_endpoint_serves_a_session_from_start_frame() {
     let path = std::env::temp_dir().join(format!("rp-endpoint-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&path);
 
-    let listener = ListenerOptions::new()
-        .name(
-            path.as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("listener fs name"),
-        )
-        .create_tokio()
-        .expect("bind session endpoint");
+    let ipc_endpoint = Endpoint::new(path.to_string_lossy().into_owned()).expect("IPC endpoint");
+    let listener = AsyncListener::bind(&ipc_endpoint).expect("bind session endpoint");
 
     let endpoint = tokio::spawn(serve_session_endpoint(listener));
 
     // Client dials the real endpoint and speaks the SESSION wire.
-    let stream = interprocess::local_socket::tokio::Stream::connect(
-        path.as_path()
-            .to_fs_name::<GenericFilePath>()
-            .expect("client fs name"),
-    )
-    .await
-    .expect("connect session endpoint");
+    let stream = AsyncStream::connect(&ipc_endpoint)
+        .await
+        .expect("connect session endpoint");
     let mut client = session_framed(stream);
 
     client

@@ -28,6 +28,10 @@ impl Endpoint {
         &self.0
     }
 
+    pub fn retire(&self) -> io::Result<()> {
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn test(label: &str) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
@@ -67,6 +71,17 @@ fn peer_identity(creds: PeerCreds) -> PeerIdentity {
 }
 
 fn process_user_sid(pid: u32) -> io::Result<String> {
+    let bytes = process_user_sid_bytes(pid)?;
+    let mut out = String::with_capacity("windows-sid:".len() + bytes.len() * 2);
+    out.push_str("windows-sid:");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    Ok(out)
+}
+
+fn process_user_sid_bytes(pid: u32) -> io::Result<Vec<u8>> {
     use windows_sys::Win32::Security::{
         GetLengthSid, GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER,
     };
@@ -114,15 +129,35 @@ fn process_user_sid(pid: u32) -> io::Result<String> {
         if len == 0 || len > 1024 {
             return Err(io::Error::other("implausible Windows SID length"));
         }
-        let bytes = std::slice::from_raw_parts(sid.cast::<u8>(), len);
-        let mut out = String::with_capacity("windows-sid:".len() + len * 2);
-        out.push_str("windows-sid:");
-        for byte in bytes {
-            use std::fmt::Write as _;
-            let _ = write!(out, "{byte:02x}");
-        }
-        Ok(out)
+        Ok(std::slice::from_raw_parts(sid.cast::<u8>(), len).to_vec())
     }
+}
+
+#[cfg(feature = "ipc-async")]
+fn owner_only_security_descriptor(
+) -> io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+
+    let sid = process_user_sid_bytes(std::process::id())?;
+    let mut sid_string = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(sid.as_ptr().cast_mut().cast(), &mut sid_string) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let sid_text = unsafe {
+        let mut length = 0;
+        while *sid_string.add(length) != 0 {
+            length += 1;
+        }
+        let text = String::from_utf16(std::slice::from_raw_parts(sid_string, length))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+        LocalFree(sid_string.cast());
+        text?
+    };
+    let sddl = widestring::U16CString::from_str(format!("D:P(A;;GA;;;{sid_text})"))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    SecurityDescriptor::deserialize(&sddl)
 }
 
 struct OwnedHandle(windows_sys::Win32::Foundation::HANDLE);
@@ -288,11 +323,73 @@ impl AsyncListener {
             .map(Self)
     }
 
+    pub fn bind_owner_only(endpoint: &Endpoint) -> io::Result<Self> {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+
+        ListenerOptions::new()
+            .name(name(endpoint.display())?)
+            .security_descriptor(owner_only_security_descriptor()?)
+            .create_tokio()
+            .map(Self)
+    }
+
     pub async fn accept(&self) -> io::Result<AsyncStream> {
         self.0.accept().await.map(AsyncStream)
     }
 
     pub fn do_not_reclaim_name_on_drop(&mut self) {
         self.0.do_not_reclaim_name_on_drop();
+    }
+}
+
+#[cfg(feature = "ipc-async")]
+pub trait IntoAsyncListener {
+    fn into_async_listener(self) -> AsyncListener;
+}
+
+#[cfg(feature = "ipc-async")]
+impl IntoAsyncListener for AsyncListener {
+    fn into_async_listener(self) -> AsyncListener {
+        self
+    }
+}
+
+#[cfg(feature = "ipc-async")]
+impl IntoAsyncListener for interprocess::local_socket::tokio::Listener {
+    fn into_async_listener(self) -> AsyncListener {
+        AsyncListener(self)
+    }
+}
+
+#[cfg(all(test, feature = "ipc-async"))]
+mod security_tests {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    use super::{AsyncListener, AsyncStream, Endpoint, IntoAsyncListener};
+
+    #[test]
+    fn legacy_async_listener_keeps_its_conversion_contract() {
+        fn accepts<T: IntoAsyncListener>() {}
+        accepts::<interprocess::local_socket::tokio::Listener>();
+    }
+
+    #[tokio::test]
+    async fn owner_only_security_allows_the_current_user() {
+        let endpoint = Endpoint::test("owner-only").expect("test endpoint");
+        let listener = AsyncListener::bind_owner_only(&endpoint).expect("bind endpoint");
+        let server = tokio::spawn(async move {
+            let mut stream = listener.accept().await.expect("accept current user");
+            stream.write_all(b"ok").await.expect("write response");
+        });
+        let mut client = AsyncStream::connect(&endpoint)
+            .await
+            .expect("current user can connect");
+        let mut response = [0_u8; 2];
+        client
+            .read_exact(&mut response)
+            .await
+            .expect("read response");
+        assert_eq!(&response, b"ok");
+        server.await.expect("server task");
     }
 }

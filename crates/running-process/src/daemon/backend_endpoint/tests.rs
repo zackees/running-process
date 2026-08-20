@@ -3,14 +3,13 @@
 //! SESSION compile sessions on one endpoint. Unix-first.
 
 use futures_util::{SinkExt, StreamExt};
-use interprocess::local_socket::tokio::prelude::*;
-use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 
 use super::{serve_backend_connection, serve_backend_endpoint};
 use crate::broker::backend_handle::{BackendHandle, DaemonProcess};
 use crate::broker::protocol::Endpoint;
 use crate::broker::protocol_v2::{session_frame, SessionFrame, SessionStart};
 use crate::daemon::compile_session::session_framed;
+use crate::platform::ipc::{AsyncListener, AsyncStream, Endpoint as IpcEndpoint};
 
 fn fixture_program() -> String {
     let exe = std::env::current_exe().expect("test executable path");
@@ -40,6 +39,10 @@ fn identity_for(path: &std::path::Path) -> (Endpoint, DaemonProcess) {
     (endpoint, identity)
 }
 
+fn ipc_endpoint(path: &std::path::Path) -> IpcEndpoint {
+    IpcEndpoint::new(path.to_string_lossy().into_owned()).expect("IPC endpoint")
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn mux_backend_endpoint_serves_a_session_compile() {
@@ -48,25 +51,15 @@ async fn mux_backend_endpoint_serves_a_session_compile() {
     let _ = std::fs::remove_file(&path);
     let (_endpoint, identity) = identity_for(&path);
 
-    let listener = ListenerOptions::new()
-        .name(
-            path.as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("fs name"),
-        )
-        .create_tokio()
-        .expect("bind backend endpoint");
+    let ipc_endpoint = ipc_endpoint(&path);
+    let listener = AsyncListener::bind(&ipc_endpoint).expect("bind backend endpoint");
     let daemon = tokio::spawn(serve_backend_endpoint(listener, identity));
 
     // Client speaks the Model-B SESSION wire directly (the same wire the broker
     // relay carries transparently).
-    let stream = interprocess::local_socket::tokio::Stream::connect(
-        path.as_path()
-            .to_fs_name::<GenericFilePath>()
-            .expect("client fs name"),
-    )
-    .await
-    .expect("client dials backend endpoint");
+    let stream = AsyncStream::connect(&ipc_endpoint)
+        .await
+        .expect("client dials backend endpoint");
     let mut client = session_framed(stream);
 
     client
@@ -130,14 +123,8 @@ async fn mux_backend_endpoint_answers_identity_probe() {
     let _ = std::fs::remove_file(&path);
     let (endpoint, identity) = identity_for(&path);
 
-    let listener = ListenerOptions::new()
-        .name(
-            path.as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("fs name"),
-        )
-        .create_tokio()
-        .expect("bind backend endpoint");
+    let ipc_endpoint = ipc_endpoint(&path);
+    let listener = AsyncListener::bind(&ipc_endpoint).expect("bind backend endpoint");
     let daemon = tokio::spawn(serve_backend_endpoint(listener, identity.clone()));
 
     // The broker's `BackendHandle::probe_with_service` is the exact registration
@@ -194,6 +181,8 @@ async fn full_vertical_client_broker_relay_daemon_mux_compile() {
     // -> daemon mux endpoint. The broker is transparent (platform SESSION
     // relay); the daemon serves 0x5350 via the mux.
     use crate::broker::session_relay::relay_local_socket_session;
+    use interprocess::local_socket::tokio::prelude::*;
+    use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 
     let pid = std::process::id();
     let daemon_path = std::env::temp_dir().join(format!("rp-vert-d-{pid}.sock"));
@@ -203,15 +192,8 @@ async fn full_vertical_client_broker_relay_daemon_mux_compile() {
     let (_endpoint, identity) = identity_for(&daemon_path);
 
     // Daemon: the real mux SESSION endpoint.
-    let daemon_listener = ListenerOptions::new()
-        .name(
-            daemon_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("daemon fs name"),
-        )
-        .create_tokio()
-        .expect("bind daemon endpoint");
+    let daemon_ipc_endpoint = ipc_endpoint(&daemon_path);
+    let daemon_listener = AsyncListener::bind(&daemon_ipc_endpoint).expect("bind daemon endpoint");
     let daemon = tokio::spawn(serve_backend_endpoint(daemon_listener, identity));
 
     // Broker: accept the client and full-proxy it to the daemon endpoint.
