@@ -14,7 +14,9 @@ workspace = true
 
 [features]
 default = []
-session-relay = ["dep:interprocess", "tokio/net"]
+ipc = ["dep:interprocess"]
+ipc-async = ["ipc", "interprocess/tokio", "tokio/net"]
+session-relay = ["ipc-async"]
 pty = ["dep:portable-pty"]
 conpty-sidecar = [
     "pty",
@@ -28,7 +30,7 @@ conpty-sidecar = [
 [dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt"] }
 sysinfo = "0.30"
-interprocess = { version = "2", optional = true, features = ["tokio"] }
+interprocess = { version = "2", optional = true }
 thiserror = "2"
 portable-pty = { version = "0.9", optional = true }
 

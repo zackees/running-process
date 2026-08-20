@@ -5,6 +5,7 @@
 //! messages.
 
 use crate::client::paths;
+use crate::platform::ipc::Stream;
 use crate::proto::daemon::{
     BulkTerminateSessionsRequest, BulkTerminateSessionsResponse, DaemonRequest, DaemonResponse,
     GetProcessTreeRequest, GetSessionBacklogRequest, GetSessionBacklogResponse, KeyValue,
@@ -15,8 +16,6 @@ use crate::proto::daemon::{
     ServiceResurrectRequest, ServiceSaveRequest, ServiceStartRequest, ServiceStopRequest,
     ShutdownRequest, SpawnDaemonRequest as ProtoSpawnDaemonRequest, StatusCode, StatusRequest,
 };
-use interprocess::local_socket::Stream;
-use interprocess::TryClone;
 use prost::Message;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -270,7 +269,6 @@ impl DaemonClient {
         // reads/writes work. On Unix `try_clone` shares the file
         // description (so O_NONBLOCK carries), but on Windows each handle's
         // mode is independent — set both explicitly.
-        use interprocess::local_socket::traits::Stream as _;
         stream.set_nonblocking(true).map_err(ClientError::Connect)?;
         stream_clone
             .set_nonblocking(true)

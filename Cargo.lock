@@ -2228,7 +2228,6 @@ dependencies = [
 name = "running-process-py"
 version = "4.10.3"
 dependencies = [
- "interprocess",
  "libc",
  "prost",
  "pyo3",

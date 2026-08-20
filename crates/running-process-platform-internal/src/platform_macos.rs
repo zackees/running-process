@@ -1,5 +1,17 @@
 //! macOS implementation root for the process capability.
 
+#[cfg(feature = "ipc")]
+#[path = "platform_macos/ipc.rs"]
+mod ipc;
+#[cfg(feature = "ipc")]
+pub use ipc::{
+    current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint, Listener as IpcListener,
+    ListenerNonblockingMode as IpcListenerNonblockingMode, PeerIdentity as IpcPeerIdentity,
+    Stream as IpcStream,
+};
+#[cfg(feature = "ipc-async")]
+pub use ipc::{AsyncListener as IpcAsyncListener, AsyncStream as IpcAsyncStream};
+
 #[cfg(feature = "session-relay")]
 #[path = "platform_macos_session_relay.rs"]
 mod session_relay;

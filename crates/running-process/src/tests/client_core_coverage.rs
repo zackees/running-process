@@ -1,7 +1,6 @@
 use super::*;
+use crate::platform::ipc::{Listener, Stream};
 use crate::proto::daemon::SpawnDaemonResponse;
-use interprocess::local_socket::traits::Listener as _;
-use interprocess::local_socket::ListenerOptions;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -44,10 +43,8 @@ fn write_response(stream: &mut Stream, response: DaemonResponse) {
 fn core_client_maps_spawn_and_session_administration_responses() {
     let path = socket_path();
     let _ = std::fs::remove_file(&path);
-    let listener = ListenerOptions::new()
-        .name(paths::make_socket_name(&path).unwrap())
-        .create_sync()
-        .unwrap();
+    let endpoint = paths::make_socket_endpoint(&path).unwrap();
+    let listener = Listener::bind(&endpoint).unwrap();
     let server = thread::spawn(move || {
         let mut stream = listener.accept().unwrap();
         for sequence in 0..13 {

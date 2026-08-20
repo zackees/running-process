@@ -28,7 +28,7 @@ static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Cached connection to the daemon.  `None` means either never connected or
 /// the previous connection was broken and will be retried on next call.
-static CONNECTION: Mutex<Option<interprocess::local_socket::Stream>> = Mutex::new(None);
+static CONNECTION: Mutex<Option<running_process::client::IpcStream>> = Mutex::new(None);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -54,18 +54,16 @@ fn socket_path() -> String {
     running_process::client::paths::socket_path(None)
 }
 
-/// Build an `interprocess` local-socket [`Name`] using the same name-type
-/// dispatch as the daemon server.
-fn make_socket_name(path: &str) -> std::io::Result<interprocess::local_socket::Name<'_>> {
-    running_process::client::paths::make_socket_name(path)
+/// Build the same opaque local endpoint used by the daemon server.
+fn make_socket_name(path: &str) -> std::io::Result<running_process::client::IpcEndpoint> {
+    running_process::client::paths::make_socket_endpoint(path)
 }
 
 /// Attempt to open a connection to the daemon.
-fn try_connect() -> Option<interprocess::local_socket::Stream> {
+fn try_connect() -> Option<running_process::client::IpcStream> {
     let path = socket_path();
     let name = make_socket_name(&path).ok()?;
-    use interprocess::local_socket::traits::Stream as _;
-    interprocess::local_socket::Stream::connect(name).ok()
+    running_process::client::IpcStream::connect(&name).ok()
 }
 
 /// Send a length-prefixed protobuf message to the daemon.  Fire-and-forget:

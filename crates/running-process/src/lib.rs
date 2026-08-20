@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use crate::observer::{ObserverEmitter, ProcessWatchEmitter};
 
+pub(crate) use running_process_platform_internal::platform;
+
 #[cfg(feature = "async-process")]
 mod async_process;
 #[cfg(feature = "async-process")]
