@@ -10,7 +10,6 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::thread;
 
-use interprocess::local_socket::traits::Listener;
 use prost::Message;
 
 use crate::broker::protocol::{
@@ -20,6 +19,7 @@ use crate::broker::protocol::{
 };
 use crate::broker::server::deadline_stream::{hello_read_deadline, with_nonblocking_deadline};
 use crate::broker::server::{HelloHandler, HelloRouter, PeerIdentity};
+use crate::platform::ipc;
 
 /// Peer credential policy applied before reading a Hello frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,15 +48,7 @@ impl PeerCredentialPolicy {
 
     /// Build an owner-only policy for the current platform user.
     pub fn current_user() -> Option<Self> {
-        #[cfg(unix)]
-        {
-            Some(Self::owner_only(unsafe { libc::geteuid() }.to_string()))
-        }
-
-        #[cfg(windows)]
-        {
-            current_process_user_sid().ok().map(Self::owner_only)
-        }
+        ipc::current_user_id().ok().map(Self::owner_only)
     }
 
     /// Return true when `peer` is authorized by this policy.
@@ -364,15 +356,10 @@ pub enum BrokerConnectionError {
     WorkerPanic,
 }
 
-pub(super) fn bind_local_socket(
-    socket_path: &str,
-) -> Result<interprocess::local_socket::Listener, BrokerConnectionError> {
-    use interprocess::local_socket::ListenerOptions;
-
-    prepare_local_socket_path(socket_path)?;
-    let name = local_socket_name(socket_path)?;
-    let listener = ListenerOptions::new().name(name).create_sync()?;
-    secure_local_socket_path(socket_path)?;
+pub(super) fn bind_local_socket(socket_path: &str) -> Result<ipc::Listener, BrokerConnectionError> {
+    let endpoint = ipc::Endpoint::new(socket_path.to_owned())?;
+    prepare_local_socket_path(&endpoint)?;
+    let listener = ipc::Listener::bind_owner_only(&endpoint)?;
     Ok(listener)
 }
 
@@ -452,13 +439,11 @@ pub(super) fn refused_reply(
     }
 }
 
-pub fn peer_identity_from_stream(
-    stream: &interprocess::local_socket::Stream,
-) -> Result<PeerIdentity, BrokerConnectionError> {
-    use interprocess::local_socket::traits::StreamCommon;
-
-    let creds = stream.peer_creds()?;
-    Ok(peer_identity_from_peer_creds(&creds))
+pub fn peer_identity_from_stream<S>(stream: &S) -> Result<PeerIdentity, BrokerConnectionError>
+where
+    S: ipc::PeerIdentitySource + ?Sized,
+{
+    peer_identity_from_source(stream)
 }
 
 /// Async analog of [`peer_identity_from_stream`] for tokio-`interprocess`
@@ -469,195 +454,43 @@ pub fn peer_identity_from_stream(
 /// accept loop without yielding. The credential extraction is identical to the
 /// sync path (shared `peer_identity_from_peer_creds`).
 #[cfg(feature = "client-async")]
-pub fn peer_identity_from_tokio_stream(
-    stream: &interprocess::local_socket::tokio::Stream,
-) -> Result<PeerIdentity, BrokerConnectionError> {
-    use interprocess::local_socket::traits::StreamCommon;
-
-    let creds = stream.peer_creds()?;
-    Ok(peer_identity_from_peer_creds(&creds))
+pub fn peer_identity_from_tokio_stream<S>(stream: &S) -> Result<PeerIdentity, BrokerConnectionError>
+where
+    S: ipc::PeerIdentitySource + ?Sized,
+{
+    peer_identity_from_source(stream)
 }
 
-/// Derive a [`PeerIdentity`] from already-read OS peer credentials.
-///
-/// Shared by the sync [`peer_identity_from_stream`] and the async
-/// [`peer_identity_from_tokio_stream`] so both transports resolve the same
-/// `(pid, uid_or_sid)` from the same `PeerCreds`.
-fn peer_identity_from_peer_creds(creds: &interprocess::local_socket::PeerCreds) -> PeerIdentity {
-    #[cfg(unix)]
-    let pid = creds
-        .pid()
-        .and_then(|pid| u32::try_from(pid).ok())
-        .unwrap_or(0);
-
-    #[cfg(windows)]
-    let pid = creds.pid().unwrap_or(0);
-
-    #[cfg(unix)]
-    let uid_or_sid = creds.euid().map(|uid| uid.to_string()).unwrap_or_default();
-
-    #[cfg(windows)]
-    let uid_or_sid = if pid == 0 {
-        String::new()
-    } else {
-        process_user_sid(pid).unwrap_or_default()
-    };
-
-    PeerIdentity { pid, uid_or_sid }
+fn peer_identity_from_source<S>(stream: &S) -> Result<PeerIdentity, BrokerConnectionError>
+where
+    S: ipc::PeerIdentitySource + ?Sized,
+{
+    let peer = ipc::PeerIdentitySource::ipc_peer_identity(stream)?;
+    Ok(PeerIdentity {
+        pid: peer.pid,
+        uid_or_sid: peer.user_id,
+    })
 }
 
-#[cfg(windows)]
-fn current_process_user_sid() -> io::Result<String> {
-    process_user_sid(std::process::id())
-}
-
-#[cfg(windows)]
-fn process_user_sid(pid: u32) -> io::Result<String> {
-    use std::ptr;
-    use winapi::um::processthreadsapi::{OpenProcess, OpenProcessToken};
-    use winapi::um::winnt::{
-        TokenUser, HANDLE, PROCESS_QUERY_LIMITED_INFORMATION, TOKEN_QUERY, TOKEN_USER,
-    };
-
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if process.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        let _process_guard = WindowsHandle(process);
-
-        let mut token: HANDLE = ptr::null_mut();
-        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let _token_guard = WindowsHandle(token);
-
-        let mut required_size = 0_u32;
-        let _ = winapi::um::securitybaseapi::GetTokenInformation(
-            token,
-            TokenUser,
-            ptr::null_mut(),
-            0,
-            &mut required_size,
-        );
-        if required_size == 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let mut buffer = vec![0_u8; required_size as usize];
-        if winapi::um::securitybaseapi::GetTokenInformation(
-            token,
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            required_size,
-            &mut required_size,
-        ) == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-
-        let token_user: *const TOKEN_USER = buffer.as_ptr().cast();
-        let sid = (*token_user).User.Sid;
-        sid_to_stable_string(sid)
+fn prepare_local_socket_path(endpoint: &ipc::Endpoint) -> io::Result<()> {
+    endpoint.ensure_owner_private_parent()?;
+    if endpoint.target_exists()? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "broker local socket path already exists",
+        ));
     }
-}
-
-#[cfg(windows)]
-struct WindowsHandle(winapi::um::winnt::HANDLE);
-
-#[cfg(windows)]
-impl Drop for WindowsHandle {
-    fn drop(&mut self) {
-        unsafe {
-            winapi::um::handleapi::CloseHandle(self.0);
-        }
-    }
-}
-
-#[cfg(windows)]
-unsafe fn sid_to_stable_string(sid: winapi::um::winnt::PSID) -> io::Result<String> {
-    use winapi::um::securitybaseapi::{GetLengthSid, IsValidSid};
-
-    if sid.is_null() || IsValidSid(sid) == 0 {
-        return Err(io::Error::other("invalid Windows SID"));
-    }
-    let len = GetLengthSid(sid) as usize;
-    if len == 0 || len > 1024 {
-        return Err(io::Error::other(format!(
-            "implausible Windows SID length {len}"
-        )));
-    }
-    let bytes = std::slice::from_raw_parts(sid.cast::<u8>(), len);
-    let mut out = String::with_capacity("windows-sid:".len() + len * 2);
-    out.push_str("windows-sid:");
-    for byte in bytes {
-        out.push(nibble_to_hex(byte >> 4));
-        out.push(nibble_to_hex(byte & 0x0f));
-    }
-    Ok(out)
-}
-
-#[cfg(windows)]
-fn nibble_to_hex(nibble: u8) -> char {
-    match nibble {
-        0..=9 => (b'0' + nibble) as char,
-        10..=15 => (b'a' + (nibble - 10)) as char,
-        _ => unreachable!("nibble out of range"),
-    }
-}
-
-fn prepare_local_socket_path(socket_path: &str) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        let path = std::path::Path::new(socket_path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        match std::fs::symlink_metadata(path) {
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "broker local socket path already exists",
-                ));
-            }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
-        }
-    }
-
-    #[cfg(windows)]
-    let _ = socket_path;
-
-    Ok(())
-}
-
-fn secure_local_socket_path(socket_path: &str) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(socket_path, perms)?;
-    }
-
-    #[cfg(windows)]
-    let _ = socket_path;
-
     Ok(())
 }
 
 fn cleanup_local_socket_path(socket_path: &str) {
-    #[cfg(unix)]
-    {
-        let _ = std::fs::remove_file(socket_path);
+    if let Ok(endpoint) = ipc::Endpoint::new(socket_path.to_owned()) {
+        let _ = endpoint.retire();
     }
-
-    #[cfg(windows)]
-    let _ = socket_path;
 }
 
-#[cfg(all(test, windows))]
-mod windows_endpoint_tests {
+#[cfg(test)]
+mod endpoint_tests {
     use super::local_socket_name;
 
     #[test]

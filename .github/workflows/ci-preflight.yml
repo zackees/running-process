@@ -158,7 +158,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/running-process-dylint-target
-          key: dylint-target-v5-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
+          key: dylint-target-v6-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
 
       - name: Dylint negative fixture
         if: ${{ inputs.dylint }}

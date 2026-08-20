@@ -32,6 +32,14 @@ impl Endpoint {
         Ok(())
     }
 
+    pub fn ensure_owner_private_parent(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn target_exists(&self) -> io::Result<bool> {
+        Ok(false)
+    }
+
     #[cfg(test)]
     pub fn test(label: &str) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
@@ -56,6 +64,10 @@ fn name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
 pub struct PeerIdentity {
     pub pid: u32,
     pub user_id: String,
+}
+
+pub trait PeerIdentitySource {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity>;
 }
 
 fn peer_identity(creds: PeerCreds) -> PeerIdentity {
@@ -133,7 +145,6 @@ fn process_user_sid_bytes(pid: u32) -> io::Result<Vec<u8>> {
     }
 }
 
-#[cfg(feature = "ipc-async")]
 fn owner_only_security_descriptor(
 ) -> io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
     use interprocess::os::windows::security_descriptor::SecurityDescriptor;
@@ -196,6 +207,18 @@ impl Stream {
     }
 }
 
+impl PeerIdentitySource for Stream {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity> {
+        self.peer_identity()
+    }
+}
+
+impl PeerIdentitySource for interprocess::local_socket::Stream {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity> {
+        self.peer_creds().map(peer_identity)
+    }
+}
+
 impl Read for Stream {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         self.0.read(buffer)
@@ -239,6 +262,16 @@ impl Listener {
         Self::bind_with_options(endpoint, true, ListenerNonblockingMode::Neither)
     }
 
+    pub fn bind_owner_only(endpoint: &Endpoint) -> io::Result<Self> {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+
+        ListenerOptions::new()
+            .name(name(endpoint.display())?)
+            .security_descriptor(owner_only_security_descriptor()?)
+            .create_sync()
+            .map(Self)
+    }
+
     pub fn bind_with_options(
         endpoint: &Endpoint,
         reclaim_name: bool,
@@ -278,6 +311,20 @@ impl AsyncStream {
 
     pub fn peer_identity(&self) -> io::Result<PeerIdentity> {
         self.0.peer_creds().map(peer_identity)
+    }
+}
+
+#[cfg(feature = "ipc-async")]
+impl PeerIdentitySource for AsyncStream {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity> {
+        self.peer_identity()
+    }
+}
+
+#[cfg(feature = "ipc-async")]
+impl PeerIdentitySource for interprocess::local_socket::tokio::Stream {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity> {
+        self.peer_creds().map(peer_identity)
     }
 }
 
@@ -382,10 +429,12 @@ impl IntoAsyncListener for interprocess::local_socket::tokio::Listener {
 
 #[cfg(all(test, feature = "ipc-async"))]
 mod security_tests {
+    use std::io::{Read as _, Write as _};
+
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::{
-        AsyncListener, AsyncStream, Endpoint, IntoAsyncListener, IntoAsyncStream,
+        AsyncListener, AsyncStream, Endpoint, IntoAsyncListener, IntoAsyncStream, Listener, Stream,
     };
 
     #[test]
@@ -398,6 +447,21 @@ mod security_tests {
     fn legacy_async_stream_keeps_its_conversion_contract() {
         fn accepts<T: IntoAsyncStream>() {}
         accepts::<interprocess::local_socket::tokio::Stream>();
+    }
+
+    #[test]
+    fn sync_owner_only_security_allows_the_current_user() {
+        let endpoint = Endpoint::test("sync-owner-only").expect("test endpoint");
+        let listener = Listener::bind_owner_only(&endpoint).expect("bind endpoint");
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().expect("accept current user");
+            stream.write_all(b"ok").expect("write response");
+        });
+        let mut client = Stream::connect(&endpoint).expect("current user can connect");
+        let mut response = [0_u8; 2];
+        client.read_exact(&mut response).expect("read response");
+        assert_eq!(&response, b"ok");
+        server.join().expect("server thread");
     }
 
     #[tokio::test]

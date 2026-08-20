@@ -185,6 +185,11 @@ size, caps allocation at 1 MiB, retries once if the size grows, and reads
 is a process-stable unique token, so loss of both OS sources fails closed
 instead of accepting an identity with a cross-boot constant.
 
+The former `server/connection.rs` inventory entry was retired by #971. Local
+IPC peer-identity and Windows SID extraction now run behind the audited
+`running-process-platform-internal` IPC facade, so the shared broker connection
+path contains no native `unsafe` sites.
+
 The `broker_owned_bind.rs` inventory covers the Unix listener handover (#500,
 slice 32). Two sites call `fcntl` to read and clear `FD_CLOEXEC` on the one
 descriptor being handed to a spawned daemon; both operate on a live

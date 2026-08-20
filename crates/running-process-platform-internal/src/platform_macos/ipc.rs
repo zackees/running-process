@@ -36,6 +36,18 @@ impl Endpoint {
         }
     }
 
+    pub fn ensure_owner_private_parent(&self) -> io::Result<()> {
+        prepare_owner_private_parent(&self.0)
+    }
+
+    pub fn target_exists(&self) -> io::Result<bool> {
+        match std::fs::symlink_metadata(&self.0) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     #[cfg(test)]
     pub fn test(label: &str) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
@@ -56,7 +68,6 @@ fn name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
 }
 
-#[cfg(feature = "ipc-async")]
 fn prepare_owner_private_parent(path: &str) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
 
@@ -99,6 +110,10 @@ pub struct PeerIdentity {
     pub user_id: String,
 }
 
+pub trait PeerIdentitySource {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity>;
+}
+
 fn peer_identity(creds: PeerCreds) -> PeerIdentity {
     PeerIdentity {
         pid: creds
@@ -130,6 +145,18 @@ impl Stream {
 
     pub fn peer_identity(&self) -> io::Result<PeerIdentity> {
         self.0.peer_creds().map(peer_identity)
+    }
+}
+
+impl PeerIdentitySource for Stream {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity> {
+        self.peer_identity()
+    }
+}
+
+impl PeerIdentitySource for interprocess::local_socket::Stream {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity> {
+        self.peer_creds().map(peer_identity)
     }
 }
 
@@ -176,6 +203,18 @@ impl Listener {
         Self::bind_with_options(endpoint, true, ListenerNonblockingMode::Neither)
     }
 
+    pub fn bind_owner_only(endpoint: &Endpoint) -> io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        prepare_owner_private_parent(endpoint.display())?;
+        let listener = ListenerOptions::new()
+            .name(name(endpoint.display())?)
+            .create_sync()
+            .map(Self)?;
+        std::fs::set_permissions(endpoint.display(), std::fs::Permissions::from_mode(0o600))?;
+        Ok(listener)
+    }
+
     pub fn bind_with_options(
         endpoint: &Endpoint,
         reclaim_name: bool,
@@ -215,6 +254,20 @@ impl AsyncStream {
 
     pub fn peer_identity(&self) -> io::Result<PeerIdentity> {
         self.0.peer_creds().map(peer_identity)
+    }
+}
+
+#[cfg(feature = "ipc-async")]
+impl PeerIdentitySource for AsyncStream {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity> {
+        self.peer_identity()
+    }
+}
+
+#[cfg(feature = "ipc-async")]
+impl PeerIdentitySource for interprocess::local_socket::tokio::Stream {
+    fn ipc_peer_identity(&self) -> io::Result<PeerIdentity> {
+        self.peer_creds().map(peer_identity)
     }
 }
 
@@ -304,7 +357,7 @@ impl AsyncListener {
 mod security_tests {
     use std::os::unix::fs::PermissionsExt as _;
 
-    use super::{Endpoint, IntoAsyncListener, IntoAsyncStream};
+    use super::{Endpoint, IntoAsyncListener, IntoAsyncStream, Listener};
 
     #[test]
     fn legacy_async_listener_keeps_its_conversion_contract() {
@@ -316,6 +369,31 @@ mod security_tests {
     fn legacy_async_stream_keeps_its_conversion_contract() {
         fn accepts<T: IntoAsyncStream>() {}
         accepts::<interprocess::local_socket::tokio::Stream>();
+    }
+
+    #[test]
+    fn sync_owner_only_security_sets_socket_mode_0600() {
+        let directory = tempfile::tempdir().expect("private tempdir");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private tempdir permissions");
+        let endpoint = Endpoint::new(
+            directory
+                .path()
+                .join("sync-owner-only.sock")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .expect("test endpoint");
+        let listener = Listener::bind_owner_only(&endpoint).expect("bind endpoint");
+        let mode = std::fs::metadata(endpoint.display())
+            .expect("endpoint metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        drop(listener);
+        endpoint.retire().expect("retire endpoint");
     }
 
     #[tokio::test]

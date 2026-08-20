@@ -8,7 +8,7 @@
 pub use crate::{
     ipc_current_user_id as current_user_id, IpcEndpoint as Endpoint, IpcListener as Listener,
     IpcListenerNonblockingMode as ListenerNonblockingMode, IpcPeerIdentity as PeerIdentity,
-    IpcStream as Stream,
+    IpcPeerIdentitySource as PeerIdentitySource, IpcStream as Stream,
 };
 
 #[cfg(feature = "ipc-async")]

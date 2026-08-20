@@ -19,6 +19,12 @@ selection use facade operations whose native state stays inside the concrete
 tree. The compatibility surface is deprecated for removal in 5.0; raw control
 payload structs or tokens remain forbidden in the neutral facade.
 
+The equivalent IPC transition preserves the public 4.x broker post-Hello
+callback's `interprocess::local_socket::Stream` parameter until 5.0. The
+internal package may provide a hidden crate-root conversion at that final API
+boundary, but `platform::ipc` remains opaque and no product mechanics may
+consume or expose the concrete transport.
+
 ## Toolchain and packaging proof
 
 `std::cfg_select!` is stable since Rust 1.95.0 ([Rust source](https://doc.rust-lang.org/src/core/macros/mod.rs.html#231-235)); the current 1.94.1 toolchain and declared MSRV 1.85 cannot use it. Phase 2 raises the root toolchain pin and workspace `rust-version` to **1.95.0** (or a later reviewed patch release) atomically. The CI Dylint lane remains independently pinned to `nightly-2026-04-16` until its upgrade is separately validated.

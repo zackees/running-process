@@ -68,8 +68,21 @@ pub use platform_imp::terminal_input;
 #[cfg(feature = "ipc")]
 pub use platform_imp::{
     ipc_current_user_id, IpcEndpoint, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
-    IpcStream,
+    IpcPeerIdentitySource, IpcStream,
 };
+
+/// Temporary source-compatibility conversion for public APIs that predate the
+/// opaque IPC facade.
+///
+/// New code must keep [`IpcStream`] opaque. This root-only adapter exists so
+/// `running-process` can preserve its established raw-stream callback contract
+/// until the next major release without exposing the transport through
+/// [`platform::ipc`].
+#[cfg(feature = "ipc")]
+#[doc(hidden)]
+pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
+    platform_imp::into_legacy_ipc_stream(stream)
+}
 
 #[cfg(feature = "ipc-async")]
 pub use platform_imp::{

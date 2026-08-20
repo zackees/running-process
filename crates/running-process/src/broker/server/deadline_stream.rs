@@ -32,6 +32,12 @@ impl SetNonblocking for interprocess::local_socket::Stream {
     }
 }
 
+impl SetNonblocking for crate::platform::ipc::Stream {
+    fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
+        self.set_nonblocking(nonblocking)
+    }
+}
+
 /// Run one operation with nonblocking I/O bounded by an absolute deadline.
 ///
 /// Accepted broker streams are blocking by default. This helper restores that

@@ -69,6 +69,12 @@ fn peer() -> PeerIdentity {
     }
 }
 
+#[test]
+fn peer_identity_helpers_keep_legacy_function_pointer_signatures() {
+    let _: fn(&interprocess::local_socket::Stream) -> Result<PeerIdentity, BrokerConnectionError> =
+        running_process::broker::server::peer_identity_from_stream;
+}
+
 fn peer_with_owner(uid_or_sid: &str) -> PeerIdentity {
     PeerIdentity {
         pid: std::process::id(),
