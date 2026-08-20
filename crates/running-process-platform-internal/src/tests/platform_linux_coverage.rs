@@ -4,6 +4,7 @@ use crate::platform::process::{
     ProcessCommandConfig, UnixSignalKind,
 };
 use std::io::Write as _;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -123,6 +124,27 @@ fn exit_status_and_shell_spec_preserve_linux_conventions() {
 }
 
 #[test]
+fn linux_only_stubs_and_shell_builders_are_explicit() {
+    let command_text = "printf platform-coverage";
+    for command in [shell_command(command_text), compat_shell_command(command_text)] {
+        assert_eq!(command.get_program(), OsStr::new("/bin/sh"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [OsStr::new("-lc"), OsStr::new(command_text)]
+        );
+    }
+
+    let mut child = std::process::Command::new("/bin/true").spawn().unwrap();
+    let error = match assign_child_to_windows_job(&child, child.id(), None, None) {
+        Ok(_) => panic!("Linux cannot create a Windows Job Object"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    assert_eq!(sync_child_native_handle(&child), 0);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
 fn capture_readers_deliver_data_and_wake_on_cancellation() {
     let cancellation = Arc::new(CaptureCancellation::default());
     let (mut writer, reader) = UnixStream::pair().unwrap();
@@ -188,4 +210,41 @@ fn reviewed_command_configuration_executes_on_short_lived_children() {
     let mut tokio_command = Command::new("/bin/true");
     configure_compat_tokio_command(&mut tokio_command, false, false).unwrap();
     configure_command(&mut tokio_command, true, true).unwrap();
+}
+
+#[test]
+fn tokio_configuration_and_live_signal_helpers_reach_the_os() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut command = Command::new("/bin/sleep");
+        command
+            .arg("30")
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        configure_compat_tokio_command(&mut command, false, true).unwrap();
+        let mut child = command.spawn().unwrap();
+        after_compat_tokio_spawn(&child, true);
+        unix_signal_process(child.id().unwrap(), UnixSignalKind::Terminate).unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("signalled child did not exit within cleanup deadline")
+            .unwrap();
+        assert!(!status.success());
+
+        let mut grouped = Command::new("/bin/sleep");
+        grouped.arg("30").kill_on_drop(true);
+        configure_command(&mut grouped, true, false).unwrap();
+        let mut child = grouped.spawn().unwrap();
+        after_spawn(&child, false);
+        let pid = child.id().unwrap();
+        unix_signal_process_group(pid as i32, UnixSignalKind::Terminate).unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("signalled process group did not exit within cleanup deadline")
+            .unwrap();
+        assert!(!status.success());
+    });
 }

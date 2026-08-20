@@ -4,6 +4,7 @@ use crate::broker::protocol::{
     PayloadEncoding, Refused, ENVELOPE_VERSION, PROTOCOL_VERSION,
 };
 use crate::broker::server::admin::AdminInodePressure;
+use interprocess::local_socket::Stream;
 use std::io::{self, Cursor, Read, Write};
 use std::time::Duration;
 
@@ -120,6 +121,36 @@ fn refusal(reply: HelloReply) -> Refused {
     }
 }
 
+fn temp_endpoint(tag: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("control socket tempdir");
+    let path = if std::env::consts::OS == "windows" {
+        format!(r"\\.\pipe\rp-control-coverage-{tag}-{}", std::process::id())
+    } else {
+        dir.path().join(format!("{tag}.sock")).display().to_string()
+    };
+    (dir, path)
+}
+
+fn request_over_socket(socket_path: &str, request: &Frame) -> Result<Frame, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut stream = loop {
+        let name = local_socket_name(socket_path).expect("local socket name");
+        match Stream::connect(name) {
+            Ok(stream) => break stream,
+            Err(error) if std::time::Instant::now() < deadline => {
+                let _ = error;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(format!("control socket did not become ready: {error}")),
+        }
+    };
+    let bytes = request.encode_to_vec();
+    write_frame(&mut stream, &bytes).map_err(|error| format!("write control request: {error}"))?;
+    let response =
+        read_frame(&mut stream).map_err(|error| format!("read control response: {error}"))?;
+    Frame::decode(response.as_slice()).map_err(|error| format!("decode control response: {error}"))
+}
+
 #[test]
 fn private_dispatch_helpers_cover_admin_decoding_limits_and_bad_reply_payloads() {
     assert_eq!(
@@ -233,4 +264,87 @@ fn zero_connection_server_returns_without_binding() {
         &PeerCredentialPolicy::allow_any(),
     )
     .unwrap();
+}
+
+#[test]
+fn bounded_control_server_accepts_hello_and_admin_connections() {
+    let (_dir, path) = temp_endpoint("bounded");
+    std::thread::scope(|scope| {
+        let server_path = path.clone();
+        let server = scope.spawn(move || {
+            serve_control_socket_connections_with_policy(
+                &server_path,
+                &RefusingResponder,
+                snapshot,
+                2,
+                &PeerCredentialPolicy::allow_any(),
+            )
+        });
+
+        let hello = request_over_socket(&path, &request_frame(PROTOCOL_VERSION, Vec::new()));
+        let status = request_over_socket(&path, &admin_frame(AdminVerb::Status as i32));
+        let server_result = server.join().unwrap();
+        server_result.unwrap();
+        assert_eq!(hello.unwrap().request_id, 91);
+        assert_eq!(status.unwrap().request_id, 91);
+    });
+}
+
+#[test]
+fn post_hello_hook_observes_a_live_negotiation() {
+    let (_dir, path) = temp_endpoint("post-hello");
+    let hook_calls = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let server_path = path.clone();
+        let hook_calls = &hook_calls;
+        let server = scope.spawn(move || {
+            serve_control_socket_connections_with_limit_policy_and_post_hello(
+                &server_path,
+                &RefusingResponder,
+                snapshot,
+                ControlSocketConnectionLimit::Bounded(NonZeroUsize::new(1).unwrap()),
+                &PeerCredentialPolicy::allow_any(),
+                |_stream, reply| {
+                    assert!(matches!(reply.result, Some(HelloReplyResult::Refused(_))));
+                    hook_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+        });
+
+        let reply = request_over_socket(&path, &request_frame(PROTOCOL_VERSION, Vec::new()));
+        let server_result = server.join().unwrap();
+        server_result.unwrap();
+        assert_eq!(reply.unwrap().request_id, 91);
+    });
+    assert_eq!(hook_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn concurrent_control_server_shutdown_acks_and_wakes_accept_loop() {
+    let (_dir, path) = temp_endpoint("concurrent-shutdown");
+    let guard = FdPressureGuard::default();
+    std::thread::scope(|scope| {
+        let server_path = path.clone();
+        let guard = &guard;
+        let server = scope.spawn(move || {
+            serve_launch_control_socket_connections_concurrently(
+                &server_path,
+                &RefusingResponder,
+                snapshot,
+                ControlSocketConnectionLimit::Bounded(NonZeroUsize::new(2).unwrap()),
+                &PeerCredentialPolicy::allow_any(),
+                guard,
+            )
+        });
+
+        let reply = request_over_socket(&path, &admin_frame(AdminVerb::Shutdown as i32));
+        // A second best-effort wake guarantees the bounded server can leave
+        // accept even if the shutdown request was accepted but its worker
+        // failed before setting the shared flag.
+        wake_control_socket_accept(&path);
+        wake_control_socket_accept(&path);
+        let server_result = server.join().unwrap();
+        server_result.unwrap();
+        assert_eq!(reply.unwrap().request_id, 91);
+    });
 }

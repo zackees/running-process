@@ -2,6 +2,35 @@ use super::*;
 use std::io::Read as _;
 use std::process::Stdio;
 
+struct TracedChildCleanup(TracedChild);
+
+impl std::ops::Deref for TracedChildCleanup {
+    type Target = TracedChild;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for TracedChildCleanup {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for TracedChildCleanup {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match self.0.try_wait_code() {
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+    }
+}
+
 #[test]
 fn proc_helpers_describe_the_current_process_and_reject_missing_pids() {
     let pid = std::process::id();
@@ -63,6 +92,28 @@ fn event_and_loss_helpers_preserve_trace_identity() {
 }
 
 #[test]
+fn origin_capture_handles_live_and_missing_processes() {
+    let pid = std::process::id();
+    let live = capture_origin(pid);
+    assert_eq!(live.origin_pid, pid);
+    assert_eq!(live.thread_id, pid);
+    assert!(!live.architecture.is_empty());
+    assert!(live.register_format.starts_with("linux-nt-prstatus-"));
+    assert!(live.executable.is_some());
+    assert!(!live.module_map.is_empty());
+
+    let missing = 2_147_483_647;
+    let absent = capture_origin(missing);
+    assert_eq!(absent.origin_pid, missing);
+    assert_eq!(absent.thread_id, missing);
+    assert!(absent.executable.is_none());
+    assert!(absent.registers.is_empty());
+    assert!(absent.stack.is_empty());
+    assert!(absent.module_map.is_empty());
+    assert!(!absent.module_map_truncated);
+}
+
+#[test]
 fn root_completion_and_ptrace_errors_are_observable() {
     let shared = Shared {
         state: Mutex::new(RootState::default()),
@@ -76,6 +127,62 @@ fn root_completion_and_ptrace_errors_are_observable() {
 
     assert!(ptrace_value(PtraceRequest::MAX, u32::MAX, 0, 0).is_err());
     detach_all(std::iter::empty());
+}
+
+#[test]
+fn fatal_trace_cleanup_reports_loss_reaps_root_and_wakes_waiters() {
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "sleep 30"])
+        .spawn()
+        .expect("spawn trace-cleanup fixture");
+    let root_pid = child.id();
+    let missing_pid = 2_147_483_647;
+    let tracee = Tracee {
+        parent_pid: Some(root_pid),
+        parent_start_key: None,
+        start_key: None,
+        process_leader: true,
+        executable: None,
+        argv: None,
+        origin: None,
+    };
+    let tracees = HashMap::from([(root_pid, tracee.clone()), (missing_pid, tracee.clone())]);
+    let shared = Shared {
+        state: Mutex::new(RootState::default()),
+        wake: Condvar::new(),
+    };
+    let events = Mutex::new(Vec::new());
+    abort_runtime_trace(
+        &mut child,
+        &shared,
+        &|event| events.lock().unwrap().push(event),
+        9,
+        missing_pid,
+        Some(&tracee),
+        &tracees,
+        "forced coverage cleanup".into(),
+    );
+    assert!(child.try_wait().unwrap().is_some());
+    let state = shared.state.lock().unwrap();
+    assert!(state.done);
+    assert_eq!(state.tracer_error.as_deref(), Some("forced coverage cleanup"));
+    drop(state);
+    assert!(matches!(
+        &events.into_inner().unwrap()[0].kind,
+        ExactTraceEventKind::Loss { reason } if reason == "forced coverage cleanup"
+    ));
+
+    let handle = TracedChild {
+        pid: missing_pid,
+        shared: Arc::new(shared),
+        stdin: None,
+        stdout: None,
+        stderr: None,
+    };
+    assert_eq!(
+        handle.try_wait_code().unwrap_err().to_string(),
+        "forced coverage cleanup"
+    );
 }
 
 #[test]
@@ -130,6 +237,33 @@ fn exact_trace_round_trip_exposes_stdio_exit_and_idempotent_kill() {
         .unwrap()
         .iter()
         .any(|event| matches!(event.kind, ExactTraceEventKind::Exec)));
+}
+
+#[test]
+fn exact_trace_can_kill_a_running_root() {
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let completed_sink = Arc::clone(&completed);
+    let mut command = std::process::Command::new("/bin/sleep");
+    command.arg("30");
+    let mut child = TracedChildCleanup(start_exact_trace(
+        command,
+        Box::new(|_| {}),
+        Box::new(move || {
+            completed_sink.store(true, std::sync::atomic::Ordering::Release);
+        }),
+    )
+    .expect("start killable exact trace"));
+    child.kill().expect("kill traced root");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(code) = child.try_wait_code().expect("trace state") {
+            assert_eq!(code, -9);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "trace kill did not complete");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(completed.load(std::sync::atomic::Ordering::Acquire));
 }
 
 #[test]
