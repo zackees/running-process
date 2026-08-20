@@ -166,6 +166,112 @@ fn interposer_so_fires_rpp_hook_via_ld_preload() {
     );
 }
 
+#[test]
+fn interposer_covers_every_file_operation_family() {
+    let so = build_and_locate_interposer_so();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for index in 0..12 {
+        for prefix in [
+            "absolute-open",
+            "relative-open",
+            "renameat-src",
+            "rename-src",
+            "unlinkat",
+            "unlink",
+        ] {
+            std::fs::write(tmp.path().join(format!("{prefix}-{index}.txt")), b"seed")
+                .expect("write operation input");
+        }
+    }
+
+    let script = r#"
+import os
+import sys
+import ctypes
+
+root = sys.argv[1]
+libc = ctypes.CDLL(None)
+libc.open.argtypes = [ctypes.c_char_p, ctypes.c_int]
+libc.open.restype = ctypes.c_int
+libc.openat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+libc.openat.restype = ctypes.c_int
+libc.write.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t]
+libc.write.restype = ctypes.c_ssize_t
+libc.close.argtypes = [ctypes.c_int]
+libc.close.restype = ctypes.c_int
+dirfd = os.open(root, os.O_RDONLY)
+for index in range(12):
+    absolute_open = os.path.join(root, f"absolute-open-{index}.txt")
+    fd = libc.open(os.fsencode(absolute_open), os.O_WRONLY)
+    assert fd >= 0
+    payload = ctypes.create_string_buffer(b"hook-family")
+    assert libc.write(fd, payload, len(b"hook-family")) == len(b"hook-family")
+    assert libc.close(fd) == 0
+
+    relative_fd = libc.openat(
+        dirfd,
+        os.fsencode(f"relative-open-{index}.txt"),
+        os.O_RDONLY,
+    )
+    assert relative_fd >= 0
+    assert libc.close(relative_fd) == 0
+
+    os.rename(
+        f"renameat-src-{index}.txt",
+        f"renameat-dst-{index}.txt",
+        src_dir_fd=dirfd,
+        dst_dir_fd=dirfd,
+    )
+    os.rename(
+        os.path.join(root, f"rename-src-{index}.txt"),
+        os.path.join(root, f"rename-dst-{index}.txt"),
+    )
+    os.unlink(f"unlinkat-{index}.txt", dir_fd=dirfd)
+    os.unlink(os.path.join(root, f"unlink-{index}.txt"))
+os.close(dirfd)
+"#;
+    let mut cmd = Command::new("python3");
+    cmd.args(["-c", script]).arg(tmp.path());
+    inject_via_env(&mut cmd, &so).expect("inject_via_env");
+
+    let output = cmd.output().expect("run file-operation child");
+    let captured = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "operation child failed: {captured}"
+    );
+    let hook_lines: Vec<_> = captured
+        .lines()
+        .filter(|line| line.contains("RPP_HOOK"))
+        .collect();
+    for (event, path_fragment) in [
+        ("file-open", "absolute-open-"),
+        ("file-write", "absolute-open-"),
+        ("file-close", "absolute-open-"),
+        ("file-open", "relative-open-"),
+        ("file-unlink", "unlinkat-"),
+        ("file-unlink", "unlink-"),
+    ] {
+        assert!(
+            hook_lines.iter().any(|line| {
+                line.contains(&format!("RPP_HOOK {event}")) && line.contains(path_fragment)
+            }),
+            "missing {event} event for {path_fragment} in {captured:?}"
+        );
+    }
+    for (from, to) in [
+        ("renameat-src-", "renameat-dst-"),
+        ("rename-src-", "rename-dst-"),
+    ] {
+        assert!(
+            hook_lines.iter().any(|line| {
+                line.contains("RPP_HOOK file-rename") && line.contains(from) && line.contains(to)
+            }),
+            "missing rename from {from} to {to} in {captured:?}"
+        );
+    }
+}
+
 /// Child entrypoint for [`interposer_hook_does_not_block_when_stderr_is_full`].
 ///
 /// Calling libc directly guarantees that every iteration reaches the

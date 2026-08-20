@@ -190,3 +190,7 @@ pub fn render_html(tree: &FlameNode, title: &str, subtitle: &str) -> String {
 fn flame_css() -> &'static str {
     include_str!("ui/flame.css")
 }
+
+#[cfg(test)]
+#[path = "../tests/http_flamegraph_coverage.rs"]
+mod coverage_tests;

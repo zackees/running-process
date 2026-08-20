@@ -296,3 +296,7 @@ fn encode_os_path(path: &Path) -> Vec<u8> {
         .flat_map(u16::to_le_bytes)
         .collect()
 }
+
+#[cfg(test)]
+#[path = "../tests/client_telemetry_coverage.rs"]
+mod coverage_tests;

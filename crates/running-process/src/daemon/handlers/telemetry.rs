@@ -401,3 +401,7 @@ impl RegistrationError {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/handler_telemetry_coverage.rs"]
+mod coverage_tests;

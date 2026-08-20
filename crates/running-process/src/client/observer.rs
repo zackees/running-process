@@ -260,3 +260,101 @@ fn event_category_to_u32(category: EventCategory) -> u32 {
         EventCategory::Process => 3,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::daemon::DaemonResponse;
+
+    #[test]
+    fn observer_request_builder_preserves_every_option() {
+        let request = SessionObserverRequest::new("session-1", SessionObserverKind::Pipe)
+            .categories([
+                EventCategory::Lifecycle,
+                EventCategory::File,
+                EventCategory::Network,
+                EventCategory::Process,
+            ])
+            .ring_capacity_events(17)
+            .backpressure(SessionObserverBackpressure::Block);
+
+        assert_eq!(request.session_id, "session-1");
+        assert_eq!(request.session_kind, SessionObserverKind::Pipe);
+        assert_eq!(request.categories.len(), 4);
+        assert_eq!(request.ring_capacity_events, 17);
+        assert_eq!(request.backpressure, SessionObserverBackpressure::Block);
+
+        let defaults = SessionObserverRequest::new("pty", SessionObserverKind::Pty);
+        assert_eq!(defaults.categories, vec![EventCategory::Lifecycle]);
+        assert_eq!(defaults.ring_capacity_events, 0);
+        assert_eq!(
+            defaults.backpressure,
+            SessionObserverBackpressure::DropOldest
+        );
+    }
+
+    #[test]
+    fn observer_wire_enum_mappings_are_complete() {
+        assert_eq!(
+            proto_session_kind(SessionObserverKind::Pty),
+            ProtoObserverSessionKind::Pty
+        );
+        assert_eq!(
+            proto_session_kind(SessionObserverKind::Pipe),
+            ProtoObserverSessionKind::Pipe
+        );
+        assert_eq!(
+            proto_backpressure(SessionObserverBackpressure::DropOldest),
+            ProtoObserverBackpressure::DropOldest
+        );
+        assert_eq!(
+            proto_backpressure(SessionObserverBackpressure::Block),
+            ProtoObserverBackpressure::Block
+        );
+        assert_eq!(event_category_to_u32(EventCategory::Lifecycle), 0);
+        assert_eq!(event_category_to_u32(EventCategory::File), 1);
+        assert_eq!(event_category_to_u32(EventCategory::Network), 2);
+        assert_eq!(event_category_to_u32(EventCategory::Process), 3);
+    }
+
+    #[test]
+    fn observer_response_status_maps_known_and_unknown_errors() {
+        assert!(ensure_ok(&DaemonResponse {
+            code: StatusCode::Ok.into(),
+            ..Default::default()
+        })
+        .is_ok());
+
+        let known = ensure_ok(&DaemonResponse {
+            code: StatusCode::NotFound.into(),
+            message: "missing".into(),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(matches!(
+            known,
+            ClientError::Server {
+                code: StatusCode::NotFound,
+                ref message,
+            } if message == "missing"
+        ));
+
+        let unknown = ensure_ok(&DaemonResponse {
+            code: i32::MAX,
+            message: "future".into(),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(matches!(
+            unknown,
+            ClientError::Server {
+                code: StatusCode::UnknownRequest,
+                ref message,
+            } if message == "future"
+        ));
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/client_observer_coverage.rs"]
+mod coverage_tests;

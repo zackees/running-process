@@ -2,33 +2,68 @@
 
 [![PyPI](https://img.shields.io/pypi/v/running-process)](https://pypi.org/project/running-process/) [![Crates.io](https://img.shields.io/crates/v/running-process)](https://crates.io/crates/running-process) [![codecov](https://codecov.io/gh/zackees/running-process/graph/badge.svg)](https://codecov.io/gh/zackees/running-process) [![Dependency Check](https://github.com/zackees/running-process/actions/workflows/dependency-check.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/dependency-check.yml)
 
-`running-process` is what you wished python's subprocess was. Blazing fast, highly concurrent, huge feature list, dead process tracking, pty support. Built in Rust with a thin python api.
+`running-process` is a cross-platform operating-system process runtime for Rust
+and Python. It gives applications one coherent abstraction over process
+creation, pipes, PTYs, process trees, containment, observation, detached
+daemons, and brokered long-lived services.
 
 ## Why?
 
-This project started off as a fix for python's sub process module. It was in python originally, but then moved to OS specific rust. Now it's blazing fast: using OS threads, atomics and proper signaling back to the python api. This library also allows stderr and stdout stream reading in parallel, something `subprocess` lacks. It also has cross platform process tracking, pty generation. It has zombie process tracking. It also has builtin `expect` for keyword event triggers, `idle tracking` (great for agent CLI's that dont' notifiy when they are done, they just stop sending data).
+Operating-system process behavior is not portable by default. Windows Job
+Objects and ConPTY, Unix process groups and signals, Linux tracing, named
+pipes, Unix-domain sockets, child reaping, and terminal control all have
+different lifetime and failure rules. `running-process` puts those rules in a
+Rust core and exposes them through first-class Rust APIs and Python bindings.
 
-This libary is design for speed and correctness and portability. Usually terminal utilities are for windows or linux/mac. This is designed to run everywhere.
+This is deliberately more than a nicer `subprocess`. It is the process layer
+for software that launches concurrent tools, owns descendant trees, drives
+interactive terminals, survives parent death, observes nested executions, or
+runs reusable daemon backends.
 
-For launched-tree diagnostics, see [process watches](docs/process-watches.md).
+## What it gives you
+
+| Capability | What the abstraction owns |
+| --- | --- |
+| Commands and streams | Concurrent stdout/stderr capture, bounded waits, typed exits, text and bytes |
+| Interactive terminals | Native PTYs on Windows, Linux, and macOS; expect rules, input relay, resize, interrupt, and idle detection |
+| Process-tree lifetime | Containment, recursive terminate/kill, descendant cleanup, originator tagging, and zombie-aware tracking |
+| Observation | Lifecycle events, process watches, exact Linux tree tracing, stack captures, and explicit loss records |
+| Durable execution | Detached launch, daemon lifecycle, broker negotiation, session relay, health probes, and admin diagnostics |
+| Operator tooling | Supervision CLI, cleanup manifests, terminal capability detection, probe UI, and process dashboard |
+
+The Python package is not a separate reimplementation. Its bindings call the
+same Rust process engine used by native consumers, while providing Pythonic
+sync and asyncio surfaces.
+
+## Proven in Soldr
+
+[Soldr](https://github.com/zackees/soldr) uses `running-process` as its process
+creation boundary and as the foundation of its successful daemon/broker
+complex. A stable singleton broker negotiates and relays work to compatible
+daemon generations, while running-process also supplies daemon spawning,
+containment, endpoint identity probes, session transport, and process-tree
+observation. That is the scale this library is designed for: long-lived,
+concurrent infrastructure, not only one-shot child commands.
+
+For the broker integration model, see [INTEGRATE.md](docs/INTEGRATE.md). For
+launched-tree diagnostics, see [process watches](docs/process-watches.md).
 
 ## Start here
 
-**Just want to run or supervise a command?** Start with `subprocess_run`,
+**Want to run or supervise a command?** Start with `subprocess_run`,
 `RunningProcess`, `InteractiveProcess`, or `ContainedProcessGroup`. They work
 on a bare installation: no broker, daemon, service, or additional setup is
 required.
 
 **Need a brokered process that can be supervised across sessions?** That is the
-v1 broker framework. Its client APIs use the broker daemon and its deployment
-and operational documentation is collected below. The same lifecycle building
-blocks already support [Soldr](https://github.com/zackees/soldr)'s successful
-managed-daemon and compiler-cache workflow through direct `BackendHandle`
-probing; full v1 `Hello` broker adoption there remains intentionally deferred.
+daemon/broker framework. The compatibility client now negotiates through the
+v2 broker and adopts the returned backend endpoint without changing existing
+callers. The frozen v1 schemas and operational references remain documented
+below for consumers that depend on them.
 
-### Does this API use the v1 broker?
+### Does this API use a broker?
 
-| API | Uses the v1 broker? |
+| API | Uses a broker? |
 | --- | --- |
 | `subprocess_run`, `RunningProcess`, `InteractiveProcess`, PTY/expect/idle APIs | No |
 | `ContainedProcessGroup`, `find_processes_by_originator`, `kill_process_tree` | No |
@@ -119,6 +154,7 @@ the same coverage for static binaries, secure-exec/setuid programs, direct
 syscalls, or programs that clear their environment. See
 [process watches](docs/process-watches.md) for stack artifacts, capability
 discovery, exact selector semantics, and the full platform model.
+
 ## PTY Support Matrix
 
 PTY support is a guaranteed part of the package contract on:

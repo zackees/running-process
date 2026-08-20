@@ -93,9 +93,142 @@ def _expected_seam_test_cmd() -> list[str]:
     return cmd
 
 
+def test_coverage_xml_command_is_unconditional_on_live_tests() -> None:
+    python = Path("/tmp/fake-venv/bin/python")
+
+    assert ci_test._coverage_xml_command(python) == [
+        str(python),
+        "-m",
+        "coverage",
+        "xml",
+        "-o",
+        "coverage-python.xml",
+    ]
+
+
+def test_rust_coverage_runs_all_features_and_excludes_test_fixtures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
+
+    assert ci_test._rust_coverage_test_command() == [
+        "cargo",
+        "nextest",
+        "run",
+        "--workspace",
+        "--all-features",
+        "-E",
+        "not binary(brokered_backend_ui)",
+    ]
+    assert ci_test._brokered_backend_ui_test_command() == [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "running-process",
+        "--features",
+        "client",
+        "--test",
+        "brokered_backend_ui",
+        "--no-capture",
+    ]
+    assert ci_test._rust_coverage_example_commands() == [
+        [
+            "cargo",
+            "run",
+            "-p",
+            "running-process",
+            "--all-features",
+            "--example",
+            "handoff_rollout_evidence",
+            "--",
+            "driver",
+        ],
+        [
+            "cargo",
+            "run",
+            "-p",
+            "running-process",
+            "--all-features",
+            "--example",
+            "session_relay_evidence",
+            "--",
+            "--smoke",
+        ],
+    ]
+    assert ci_test._rust_coverage_binary_build_command() == [
+        "cargo",
+        "build",
+        "-p",
+        "running-process",
+        "-p",
+        "running-process-probe-daemon",
+        "--all-features",
+        "--bins",
+    ]
+    assert ci_test._rust_coverage_process_smoke_command(
+        Path("/tmp/fake-venv/bin/python"),
+        {"CARGO_LLVM_COV_TARGET_DIR": "/tmp/coverage-target"},
+    ) == [
+        str(Path("/tmp/fake-venv/bin/python")),
+        "-m",
+        "ci.coverage_process_smoke",
+        "--bin-dir",
+        str(Path("/tmp/coverage-target/debug")),
+    ]
+    assert ci_test._rust_coverage_report_command() == [
+        "cargo",
+        "llvm-cov",
+        "report",
+        "--ignore-filename-regex",
+        r"[/\\]testbins[/\\]",
+        "--lcov",
+        "--output-path",
+        "coverage-rust.lcov",
+    ]
+
+
+def test_rust_coverage_environment_parses_external_test_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = "\n".join(
+        [
+            "LLVM_PROFILE_FILE=/tmp/target/process-%p.profraw",
+            "RUSTC_WRAPPER=/tmp/bin/coverage-wrapper",
+            "CARGO_LLVM_COV=1",
+            "CARGO_LLVM_COV_TARGET_DIR=/tmp/target",
+            "diagnostic text without an assignment",
+        ]
+    )
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["tool", *args])
+    monkeypatch.setattr(
+        ci_test.subprocess,
+        "run",
+        lambda *args, **kwargs: ci_test.subprocess.CompletedProcess(args[0], 0, output, ""),
+    )
+
+    coverage_env = ci_test._rust_coverage_environment()
+
+    assert coverage_env["LLVM_PROFILE_FILE"].endswith("process-%p.profraw")
+    assert coverage_env["RUSTC_WRAPPER"] == "/tmp/bin/coverage-wrapper"
+    assert ci_test._rust_coverage_profile_dir(coverage_env) == Path("/tmp/target")
+
+
+def test_decode_coverage_environment_value_removes_posix_shell_quotes() -> None:
+    unit_separator = "\x1f"
+    encoded = f"'-C{unit_separator}instrument-coverage{unit_separator}--cfg=coverage'"
+
+    assert ci_test._decode_coverage_environment_value(encoded, posix=True) == (
+        f"-C{unit_separator}instrument-coverage{unit_separator}--cfg=coverage"
+    )
+    assert ci_test._decode_coverage_environment_value(encoded, posix=False) == encoded
+
+
+@pytest.mark.parametrize("copy_denied", [False, True])
 def test_prune_invalid_profraw_preserves_evidence_before_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    copy_denied: bool,
 ) -> None:
     profile_dir = tmp_path / "profiles"
     bad_dir = tmp_path / "logs" / "bad-profraw"
@@ -124,6 +257,14 @@ def test_prune_invalid_profraw_preserves_evidence_before_removal(
     monkeypatch.setenv("RUNNER_OS", "fake-linux")
     monkeypatch.setenv("GITHUB_RUN_ID", "123456")
     monkeypatch.setenv("GITHUB_SHA", "deadbeef")
+    if copy_denied:
+        monkeypatch.setattr(
+            ci_test.shutil,
+            "copy2",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                PermissionError("profile is unreadable")
+            ),
+        )
 
     count = ci_test._prune_invalid_profraw(
         profile_dir,
@@ -134,7 +275,11 @@ def test_prune_invalid_profraw_preserves_evidence_before_removal(
     assert count == 1
     assert valid.read_bytes() == b"valid-profile"
     assert not invalid.exists()
-    assert (bad_dir / "nested" / "invalid.profraw").read_bytes() == b"rejected-profile"
+    preserved = bad_dir / "nested" / "invalid.profraw"
+    if copy_denied:
+        assert not preserved.exists()
+    else:
+        assert preserved.read_bytes() == b"rejected-profile"
     manifest = json.loads((bad_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["llvm_version"] == "LLVM fake-profdata 21.1.8"
     assert manifest["runner_os"] == "fake-linux"
@@ -145,9 +290,16 @@ def test_prune_invalid_profraw_preserves_evidence_before_removal(
             "filename": "invalid.profraw",
             "original_path": str(invalid),
             "preserved_path": (
-                "nested\\invalid.profraw"
-                if sys.platform == "win32"
-                else "nested/invalid.profraw"
+                None
+                if copy_denied
+                else (
+                    "nested\\invalid.profraw"
+                    if sys.platform == "win32"
+                    else "nested/invalid.profraw"
+                )
+            ),
+            "preservation_error": (
+                "PermissionError: profile is unreadable" if copy_denied else None
             ),
             "probe_command": [
                 sys.executable,
@@ -264,12 +416,8 @@ def test_main_skips_linux_docker_preflight_on_github_actions(monkeypatch) -> Non
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(
-        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
-    )
-    monkeypatch.setattr(
-        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
-    )
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
 
     result = ci_test.main([])
 
@@ -312,12 +460,8 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(
-        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
-    )
-    monkeypatch.setattr(
-        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
-    )
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
 
     result = ci_test.main([])
 
@@ -445,12 +589,8 @@ def test_main_live_only_runs_only_live_pytest_through_cli(monkeypatch) -> None:
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(
-        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
-    )
-    monkeypatch.setattr(
-        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
-    )
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
 
     result = ci_test.main(["--live-only", "tests/test_pty_support.py"])
 
@@ -493,12 +633,8 @@ def test_main_builds_release_wheel_before_live_tests_when_symbols_required(
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
-    monkeypatch.setattr(
-        ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0
-    )
-    monkeypatch.setattr(
-        ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0
-    )
+    monkeypatch.setattr(ci_test, "run", lambda cmd, extra_env=None: commands.append(list(cmd)) or 0)
+    monkeypatch.setattr(ci_test, "run_live", lambda cmd: commands.append(list(cmd)) or 0)
 
     result = ci_test.main(["--no-skip"])
 
@@ -708,13 +844,23 @@ def test_main_runs_coverage_when_the_preflight_passes(
     monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
     monkeypatch.delenv("RUNNING_PROCESS_LIVE_TESTS", raising=False)
-    monkeypatch.setenv(ci_test.SKIP_LINUX_DOCKER_ENV, "1")
+    monkeypatch.delenv(ci_test.SKIP_LINUX_DOCKER_ENV, raising=False)
     monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["cargo", *args])
     monkeypatch.setattr(ci_test, "ensure_dev_wheel", lambda *args, **kwargs: "built")
     monkeypatch.setattr(ci_test, "load_env_helpers", lambda: (lambda: None, lambda: {}))
     monkeypatch.setattr(ci_test, "_ensure_nextest_installed", lambda: True)
     monkeypatch.setattr(ci_test, "_prune_invalid_profraw", lambda *a, **k: 0)
     monkeypatch.setattr(ci_test, "llvm_profdata_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        ci_test,
+        "_rust_coverage_environment",
+        lambda: {
+            "LLVM_PROFILE_FILE": "/tmp/target/process-%p.profraw",
+            "RUSTC_WRAPPER": "/tmp/bin/coverage-wrapper",
+            "CARGO_LLVM_COV": "1",
+            "CARGO_LLVM_COV_TARGET_DIR": "/tmp/target",
+        },
+    )
     monkeypatch.setattr(
         ci_test,
         "run",
@@ -724,6 +870,11 @@ def test_main_runs_coverage_when_the_preflight_passes(
     result = ci_test.main(["--coverage"])
 
     assert result == 0
-    assert any(
-        "llvm-cov" in " ".join(cmd) for cmd in commands
-    ), f"coverage should have run; issued {commands}"
+    assert any("llvm-cov" in " ".join(cmd) for cmd in commands), (
+        f"coverage should have run; issued {commands}"
+    )
+    assert ci_test._brokered_backend_ui_test_command() in commands
+    assert ci_test._rust_coverage_test_command() in commands
+    for example_command in ci_test._rust_coverage_example_commands():
+        assert example_command in commands
+    assert not any("ci.linux_docker" in " ".join(cmd) for cmd in commands)

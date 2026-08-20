@@ -752,3 +752,7 @@ fn finish_root(shared: &Shared, exit_code: i32) {
     state.done = true;
     shared.wake.notify_all();
 }
+
+#[cfg(test)]
+#[path = "tests/platform_linux_trace_coverage.rs"]
+mod coverage_tests;

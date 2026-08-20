@@ -862,3 +862,7 @@ mod tests {
         assert!(first[1].registered, "registry row must win the duplicate");
     }
 }
+
+#[cfg(test)]
+#[path = "tests/query_coverage.rs"]
+mod coverage_tests;

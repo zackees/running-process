@@ -76,6 +76,44 @@ def test_ensure_dev_wheel_builds_and_records_state(monkeypatch, tmp_path: Path) 
     assert built_wheel.name in state
 
 
+def test_ensure_dev_wheel_force_rebuilds_matching_cached_wheel(
+    monkeypatch, tmp_path: Path
+) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    wheel = dist / "running_process-3.0.2-cp313-cp313-win_amd64.whl"
+    wheel.write_text("old wheel", encoding="utf-8")
+    (dist / ".running-process-dev-build.json").write_text(
+        '{"fingerprint": "abc123", "wheel": "'
+        + wheel.name
+        + '"}',
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command, cwd, check, env):
+        calls.append([str(part) for part in command])
+        wheel.write_text("instrumented wheel", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(dev_build, "build_env", lambda: {})
+    monkeypatch.setattr(dev_build, "source_fingerprint", lambda root: "abc123")
+    monkeypatch.setattr(dev_build.subprocess, "run", fake_run)
+
+    action = dev_build.ensure_dev_wheel(
+        tmp_path / ".venv" / "Scripts" / "python.exe",
+        root=tmp_path,
+        force=True,
+        cache_result=False,
+    )
+
+    assert action == "built"
+    assert calls == [
+        [str(tmp_path / ".venv" / "Scripts" / "python.exe"), "build.py", "--dev"]
+    ]
+    assert not (dist / ".running-process-dev-build.json").exists()
+
+
 def test_repo_python_ignores_windows_venv_on_non_windows(monkeypatch, tmp_path: Path) -> None:
     windows_python = tmp_path / ".venv" / "Scripts" / "python.exe"
     windows_python.parent.mkdir(parents=True, exist_ok=True)

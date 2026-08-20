@@ -109,11 +109,17 @@ def _reinstall_wheel(wheel: Path, *, python: Path, root: Path = ROOT) -> int:
     return int(result.returncode)
 
 
-def ensure_dev_wheel(python: Path | None = None, *, root: Path = ROOT) -> str:
+def ensure_dev_wheel(
+    python: Path | None = None,
+    *,
+    root: Path = ROOT,
+    force: bool = False,
+    cache_result: bool = True,
+) -> str:
     target_python = python or repo_python(root)
     fingerprint = source_fingerprint(root)
     state = _load_state(root / "dist" / DEV_BUILD_STATE.name)
-    if state is not None and state["fingerprint"] == fingerprint:
+    if not force and state is not None and state["fingerprint"] == fingerprint:
         wheel = root / "dist" / state["wheel"]
         if wheel.is_file():
             if _reinstall_wheel(wheel, python=target_python, root=root) != 0:
@@ -129,5 +135,11 @@ def ensure_dev_wheel(python: Path | None = None, *, root: Path = ROOT) -> str:
     if result.returncode != 0:
         raise RuntimeError("failed to build dev wheel")
     wheel = _latest_wheel(root / "dist")
-    _write_state(fingerprint, wheel, root / "dist" / DEV_BUILD_STATE.name)
+    state_path = root / "dist" / DEV_BUILD_STATE.name
+    if cache_result:
+        _write_state(fingerprint, wheel, state_path)
+    else:
+        # Instrumented and ordinary wheels share a filename. Do not let an
+        # external-test build masquerade as the reusable normal dev wheel.
+        state_path.unlink(missing_ok=True)
     return "built"

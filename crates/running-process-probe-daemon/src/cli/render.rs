@@ -313,3 +313,7 @@ pub fn bytes(count: u64) -> String {
         format!("{value:.1} {}", UNITS[unit])
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/cli_render_coverage.rs"]
+mod coverage_tests;

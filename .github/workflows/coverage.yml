@@ -19,6 +19,11 @@ jobs:
       RUST_BACKTRACE: "full"
       RUST_LIB_BACKTRACE: "full"
       RUNNING_PROCESS_TEST_NOCAPTURE: "1"
+      # Coverage must exercise the same real process, signal, and PTY paths
+      # that gate releases. The Python pass appends these tests to its report,
+      # while the instrumented PyO3 wheel records their native Rust execution.
+      RUNNING_PROCESS_LIVE_TESTS: "1"
+      RUNNING_PROCESS_GH_PTY_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -54,14 +59,11 @@ jobs:
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
 
-      - name: Dev build
-        run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
-
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      # cargo-nextest is the runner ci/test.py invokes under coverage
-      # (`cargo llvm-cov nextest ...`). Prebuilt binary install.
+      # The runner invokes nextest after applying llvm-cov's external-test
+      # environment. Install the prebuilt nextest binary first.
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -75,7 +77,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          PROFDATA="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata"
+          PROFDATA="$(find "${RUSTUP_HOME:-$HOME/.rustup}/toolchains" -path '*/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata' -print -quit)"
           echo "::group::llvm-profdata identity"
           "$PROFDATA" --version || true
           file "$PROFDATA" || true
@@ -92,13 +94,13 @@ jobs:
               cp "$f" logs/bad-profraw/ || true
               found_bad=1
             fi
-          done < <(find target/llvm-cov-target -name '*.profraw' -print0 2>/dev/null)
+          done < <(find target -name '*.profraw' -print0 2>/dev/null)
           [ "$found_bad" -eq 0 ] && echo "no individually-invalid profraw found; crash may need the full merge set"
           [ -f logs/bad-profraw/manifest.json ] && cat logs/bad-profraw/manifest.json
           echo "::endgroup::"
 
           echo "::group::merge retry excluding bad files"
-          find target/llvm-cov-target -name '*.profraw' 2>/dev/null | while read -r f; do
+          find target -name '*.profraw' 2>/dev/null | while read -r f; do
             "$PROFDATA" show "$f" >/dev/null 2>&1 && echo "$f"
           done > logs/good-profraw-list
           wc -l logs/good-profraw-list
@@ -120,7 +122,7 @@ jobs:
         with:
           name: coverage-python
           path: coverage-python.xml
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload Rust coverage artifact
         if: always()
@@ -128,14 +130,13 @@ jobs:
         with:
           name: coverage-rust
           path: coverage-rust.lcov
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload to Codecov
-        if: always()
         uses: codecov/codecov-action@v5
         with:
           files: coverage-python.xml,coverage-rust.lcov
-          fail_ci_if_error: false
+          fail_ci_if_error: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
@@ -166,11 +167,15 @@ jobs:
             done
           fi
           echo "::group::Rust toolchain diagnostics"
-          command -v rustup >/dev/null 2>&1 && rustup show || true
-          command -v rustup >/dev/null 2>&1 && rustup toolchain list || true
-          command -v rustc >/dev/null 2>&1 && rustc -Vv || true
-          command -v cargo >/dev/null 2>&1 && cargo -V || true
-          command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
+          RUSTUP_BIN="$(command -v rustup || true)"
+          [ -n "$RUSTUP_BIN" ] && "$RUSTUP_BIN" show || true
+          [ -n "$RUSTUP_BIN" ] && "$RUSTUP_BIN" toolchain list || true
+          RUSTC_BIN="$(command -v rustc || true)"
+          [ -n "$RUSTC_BIN" ] && "$RUSTC_BIN" -Vv || true
+          CARGO_BIN="$(command -v cargo || true)"
+          [ -n "$CARGO_BIN" ] && "$CARGO_BIN" -V || true
+          CLIPPY_BIN="$(command -v cargo-clippy || true)"
+          [ -n "$CLIPPY_BIN" ] && "$CLIPPY_BIN" -V || true
           echo "::endgroup::"
 
       - name: Upload failure logs

@@ -487,3 +487,7 @@ mod tests {
         assert!(resp.message.contains("subscriber_id must not be empty"));
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/handler_observer_coverage.rs"]
+mod coverage_tests;

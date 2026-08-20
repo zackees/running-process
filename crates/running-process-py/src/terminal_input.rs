@@ -259,3 +259,7 @@ impl NativeTerminalInput {
 }
 
 // Drop is now handled by TerminalInputCore's Drop impl
+
+#[cfg(test)]
+#[path = "tests/terminal_input_wrapper.rs"]
+mod wrapper_tests;

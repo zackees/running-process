@@ -29,6 +29,9 @@ ALLOWED_RUST_COMMAND_NEW = {
     # macOS platform-boundary regression fixtures construct only fixed system
     # commands and route them through configure_command_for_owner.
     Path("crates/running-process-platform-internal/src/platform_macos_tests.rs"),
+    # Linux platform coverage constructs fixed `/bin/true` commands solely to
+    # execute the selected platform root's reviewed pre-exec configuration.
+    Path("crates/running-process-platform-internal/src/tests/platform_linux_coverage.rs"),
     # The selected Windows sync-spawn boundary owns CreateProcessW. Its
     # reused-command regression constructs a Command and routes it through
     # that boundary twice; no higher-level caller bypass is introduced.
@@ -143,6 +146,16 @@ ALLOWED_RUST_COMMAND_NEW = {
     # `/bin/true` for env-setting smoke tests. No production spawn
     # path runs through this module.
     Path("crates/running-process-probe/src/inject_unix.rs"),
+    # Linux trace coverage owns fixed `/bin/sh` fixtures so it can attach the
+    # native tracer to a real process and verify stdout/stderr/exit delivery.
+    # The commands contain no user input and are bounded by the test timeout.
+    Path(
+        "crates/running-process-platform-internal/src/tests/"
+        "platform_linux_trace_coverage.rs"
+    ),
+    # Fixed shell fixtures exercise the Python binding's real descendant-tree
+    # discovery and bounded termination paths. No caller input reaches them.
+    Path("crates/running-process-py/src/tests/process_tree.rs"),
 
 }
 
@@ -154,6 +167,13 @@ ALLOWED_RUST_SPAWN = {
     # through configure_command_for_owner to test the canonical boundary.
     # Production platform_macos.rs remains outside this spawn allowlist.
     Path("crates/running-process-platform-internal/src/platform_macos_tests.rs"),
+    # Linux-only native-tracer regression fixtures. These are fixed `/bin/sh`
+    # child processes used to exercise the ptrace boundary, not product spawn
+    # paths; see the matching Command::new allowlist entry above.
+    Path(
+        "crates/running-process-platform-internal/src/tests/"
+        "platform_linux_trace_coverage.rs"
+    ),
     # #850 Phase 2: the process-global runtime starts one Tokio actor task
     # per child. The actor owns the blessed PlatformChild and exposes only
     # typed lifecycle commands; this is the canonical async engine, not a
@@ -258,6 +278,11 @@ ALLOWED_RUST_SPAWN = {
     # spawn layer in running-process.
     Path("crates/running-process/src/daemon/pty_sessions.rs"),
     Path("crates/running-process/src/daemon/pipe_sessions.rs"),
+    # Coverage fixtures exercise those same reviewed session-manager surfaces.
+    # They never construct a std::process::Command; the only `.spawn(...)`
+    # calls dispatch through PipeSessionRegistry/PtySessionRegistry.
+    Path("crates/running-process/src/tests/pty_sessions_coverage.rs"),
+    Path("crates/running-process/src/tests/pipe_sessions_coverage.rs"),
     # Daemon server: autostart dispatch invokes the session-manager
     # `.spawn(...)` methods listed above.
     Path("crates/running-process/src/daemon/server.rs"),
@@ -316,6 +341,8 @@ ALLOWED_RUST_SPAWN = {
     # because of the setpgid-vs-killpg interaction the containment test
     # relies on).
     Path("testbins/src/bin/spawner.rs"),
+    # See the matching fixed-fixture entry in ALLOWED_RUST_COMMAND_NEW.
+    Path("crates/running-process-py/src/tests/process_tree.rs"),
     # #551 slice 6e: see comment in ALLOWED_RUST_COMMAND_NEW. The
     # `.spawn()` hit is the rustdoc usage example, not production.
     Path("crates/running-process-probe/src/inject_unix.rs"),
@@ -336,6 +363,9 @@ ALLOWED_PORTABLE_PTY = {
     # the child's pid via the underlying portable_pty::Child::process_id.
     # Spawn itself routes through the native layer.
     Path("crates/running-process/src/daemon/pty_sessions.rs"),
+    # External product-coverage tests construct portable-pty ExitStatus values
+    # only; process creation still goes through NativePtyProcess.
+    Path("crates/running-process/src/tests/pty_core_coverage.rs"),
 }
 
 # `ChildStdin::from` / `ChildStdout::from` / `ChildStderr::from` consumes a

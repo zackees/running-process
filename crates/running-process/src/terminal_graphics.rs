@@ -772,3 +772,7 @@ mod tests {
         assert!(!primary_da_reports_sixel("\x1b[?62;22c"));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/terminal_graphics_coverage.rs"]
+mod coverage_tests;

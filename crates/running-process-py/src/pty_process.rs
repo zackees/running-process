@@ -246,3 +246,7 @@ impl NativePtyProcess {
         py.detach(|| self.inner.close_impl().map_err(Self::pty_err_to_py))
     }
 }
+
+#[cfg(test)]
+#[path = "tests/pty_process_wrapper.rs"]
+mod wrapper_tests;

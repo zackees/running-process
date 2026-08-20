@@ -18,6 +18,9 @@ class TestCoverageWorkflowContract(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         coverage_runner = COVERAGE_RUNNER.read_text(encoding="utf-8")
 
+        self.assertIn('RUNNING_PROCESS_LIVE_TESTS: "1"', workflow)
+        self.assertIn('RUNNING_PROCESS_GH_PTY_TESTS: "1"', workflow)
+
         for expensive_instrumentation in (
             "Enable core dumps",
             "kernel.core_pattern",
@@ -30,6 +33,16 @@ class TestCoverageWorkflowContract(unittest.TestCase):
 
         coverage_run = workflow_step(workflow, "Run tests with coverage")
         self.assertIn("ci.test --coverage", coverage_run)
+
+        python_upload = workflow_step(workflow, "Upload Python coverage artifact")
+        self.assertIn("if-no-files-found: error", python_upload)
+
+        rust_upload = workflow_step(workflow, "Upload Rust coverage artifact")
+        self.assertIn("if-no-files-found: error", rust_upload)
+
+        codecov_upload = workflow_step(workflow, "Upload to Codecov")
+        self.assertIn("fail_ci_if_error: true", codecov_upload)
+        self.assertNotIn("if: always()", codecov_upload)
 
         profraw_diagnostics = workflow_step(workflow, "Coverage profraw diagnostics")
         for retained_diagnostic in (
@@ -59,7 +72,9 @@ class TestCoverageWorkflowContract(unittest.TestCase):
             '"github_commit"',
             '"rejected_profiles"',
             "profraw.unlink()",
-            '_prune_invalid_profraw(ROOT / "target" / "llvm-cov-target")',
+            "_rust_coverage_profile_dir(coverage_env)",
+            "_rust_coverage_doctest_command()",
+            'cargo_command("test", "--workspace", "--all-features", "--doc")',
         ):
             self.assertIn(retained_runner_defense, coverage_runner)
 

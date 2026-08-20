@@ -490,3 +490,7 @@ fn describe_verdict(verdict: &MuxPoll) -> String {
 // (it appears only in error-path doc references above).
 #[allow(dead_code)]
 type _MuxErrorAlias = MuxError;
+
+#[cfg(test)]
+#[path = "../tests/conformance_coverage.rs"]
+mod coverage_tests;

@@ -1252,3 +1252,7 @@ mod tests {
         assert!(!loss.event.coverage_complete);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/process_watch_coverage.rs"]
+mod coverage_tests;

@@ -136,7 +136,9 @@ enum ErrorKind {
 
 fn classify(error: &IconError) -> ErrorKind {
     match error {
-        IconError::Unsupported { .. } => ErrorKind::Unsupported,
+        IconError::Unsupported { .. } | IconError::DegradedSourceUnsupported { .. } => {
+            ErrorKind::Unsupported
+        }
         IconError::Decode(_) => ErrorKind::BadData,
         _ => ErrorKind::Os,
     }
@@ -270,6 +272,12 @@ mod tests {
     fn an_unsupported_host_and_a_bad_icon_map_to_different_exceptions() {
         assert_eq!(
             classify(&IconError::Unsupported { reason: "no" }),
+            ErrorKind::Unsupported
+        );
+        assert_eq!(
+            classify(&IconError::DegradedSourceUnsupported {
+                reason: "name only",
+            }),
             ErrorKind::Unsupported
         );
         assert_eq!(

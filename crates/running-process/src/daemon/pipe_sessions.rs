@@ -762,3 +762,7 @@ mod tests {
         assert!(a.starts_with("pipe-"));
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/pipe_sessions_coverage.rs"]
+mod coverage_tests;

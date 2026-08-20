@@ -43,9 +43,8 @@ def _compile_idle_detector(
         callback_arity = _callable_arity(idle_detector)
         if callback_arity == 1:
             return IdleTiming(), idle_detector, None
-        if callback_arity == 2:
-            return IdleTiming(), None, idle_detector
-        raise TypeError("idle_detector callable must accept 1 or 2 positional arguments")
+        # _callable_arity either returns 1/2 or raises the same typed error.
+        return IdleTiming(), None, idle_detector
     raise TypeError(
         "idle_detector must be None, an IdleDetection instance, or a callable callback"
     )

@@ -980,3 +980,7 @@ mod tests {
         assert!(baseline.clear_inherited_env);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/client_core_coverage.rs"]
+mod coverage_tests;

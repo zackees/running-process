@@ -34,6 +34,10 @@ impl PyNativeProcess {
     }
 }
 
+#[cfg(test)]
+#[path = "tests/py_native_process_wrapper.rs"]
+mod wrapper_tests;
+
 fn validate_timeout(timeout: Option<f64>) -> PyResult<()> {
     if timeout.is_some_and(|value| !value.is_finite() || value < 0.0) {
         Err(PyValueError::new_err(

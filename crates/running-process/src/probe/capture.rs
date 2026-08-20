@@ -285,3 +285,7 @@ mod tests {
         assert_eq!(identity.len(), "sha256:".len() + 64);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/probe_capture_coverage.rs"]
+mod coverage_tests;

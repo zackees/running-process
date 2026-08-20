@@ -292,6 +292,10 @@ impl NativeRunningProcess {
     }
 }
 
+#[cfg(test)]
+#[path = "tests/process_wrapper.rs"]
+mod wrapper_tests;
+
 #[pymethods]
 impl NativeRunningProcess {
     #[new]

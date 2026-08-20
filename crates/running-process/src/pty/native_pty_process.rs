@@ -1095,3 +1095,7 @@ impl Drop for NativePtyProcess {
         self.close_nonblocking();
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/native_pty_process_coverage.rs"]
+mod coverage_tests;
