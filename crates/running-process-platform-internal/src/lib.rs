@@ -20,6 +20,15 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 /// ownership names before later phases move a capability behind them.
 pub mod platform;
 
+/// Temporary source-compatibility re-export for the pre-boundary PTY API.
+///
+/// New code must use [`platform::terminal`] facade-owned types. This root-only
+/// alias deliberately stays outside the neutral facade and can be removed in
+/// the next major release after downstream users have migrated.
+#[cfg(feature = "pty")]
+#[doc(hidden)]
+pub use portable_pty as portable_pty_compat;
+
 // This is deliberately the crate's only host selector.  Facade modules are
 // neutral; native details live behind the selected private root.
 cfg_select! {
@@ -68,11 +77,10 @@ pub use platform_imp::{IpcAsyncListener, IpcAsyncStream};
 #[cfg(feature = "pty")]
 pub use platform_imp::terminal::{
     before_pty_spawn, current_backend_kind, find_child_processes, find_orphan_conhosts,
-    input_payload, is_ignorable_process_control_error, kill_pty_process_group, preferred_pty_pid,
-    prepare_pty_child, query_responses, resize_pty, send_pty_interrupt, shell_argv,
-    signal_pty_tree, terminate_pty_child, wait_before_pty_close_supported, Backend,
-    ChildProcessInfo, ConPtyBackendKind, OrphanConhostInfo, PtyProcessGuard, PtySpawnContext,
-    TerminalInputSession,
+    input_payload, is_ignorable_process_control_error, prepare_unmanaged_pty_child,
+    query_responses, resize_pty, shell_argv, signal_pty_tree, terminate_pty_child,
+    wait_before_pty_close_supported, Backend, ChildProcessInfo, ConPtyBackendKind,
+    OrphanConhostInfo, PtyProcessGuard, PtySpawnContext, TerminalInputSession,
 };
 
 #[cfg(feature = "session-relay")]

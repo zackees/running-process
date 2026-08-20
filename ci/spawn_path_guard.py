@@ -366,6 +366,12 @@ ALLOWED_PORTABLE_PTY = {
     # the concrete portable-pty backend. Shared callers use facade-owned traits.
     Path("crates/running-process-platform-internal/src/platform_linux/terminal.rs"),
     Path("crates/running-process-platform-internal/src/platform_macos/terminal.rs"),
+    # #970 follow-up: these two files expose only the deprecated 4.x
+    # compatibility alias/helpers that downstream consumers already imported.
+    # PTY construction and spawning remain owned by the selected concrete
+    # terminal implementations above; remove these entries with the 5.0 API.
+    Path("crates/running-process-platform-internal/src/lib.rs"),
+    Path("crates/running-process/src/pty/mod.rs"),
 }
 
 # `ChildStdin::from` / `ChildStdout::from` / `ChildStderr::from` consumes a

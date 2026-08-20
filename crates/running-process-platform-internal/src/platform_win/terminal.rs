@@ -6,7 +6,7 @@ mod conpty_passthrough;
 
 #[cfg(feature = "pty")]
 use crate::platform::terminal::{
-    PtyBackend, PtyChild, PtyChildControlToken, PtyMaster, PtyMasterControlToken, PtySize, PtySlave,
+    PtyBackend, PtyChild, PtyMaster, PtySize, PtySlave,
 };
 #[cfg(feature = "pty")]
 use std::ffi::OsString;
@@ -69,9 +69,6 @@ impl PtyMaster for conpty_passthrough::ConPtyMaster {
         })
     }
 
-    fn control_token(&self) -> PtyMasterControlToken {
-        PtyMasterControlToken::default()
-    }
 }
 
 #[cfg(feature = "pty")]
@@ -106,10 +103,20 @@ impl PtyChild for conpty_passthrough::child::ConPtyChild {
         conpty_passthrough::child::ConPtyChild::kill(self)
     }
 
-    fn control_token(&self) -> PtyChildControlToken {
-        PtyChildControlToken {
-            raw_handle: Some(conpty_passthrough::child::ConPtyChild::as_raw_handle(self) as usize),
-        }
+    fn as_raw_handle(&self) -> Option<*mut std::ffi::c_void> {
+        Some(conpty_passthrough::child::ConPtyChild::as_raw_handle(self).cast())
+    }
+
+    fn prepare_process(
+        &self,
+        context: PtySpawnContext,
+        nice: Option<i32>,
+    ) -> std::io::Result<PtyProcessGuard> {
+        prepare_conpty_child(
+            context,
+            conpty_passthrough::child::ConPtyChild::as_raw_handle(self).cast(),
+            nice,
+        )
     }
 }
 
@@ -117,7 +124,7 @@ impl PtyChild for conpty_passthrough::child::ConPtyChild {
 pub type Backend = ConPtyBackend;
 
 #[cfg(feature = "pty")]
-use crate::platform::terminal::{PtyInputChunk, SharedPtyWriter};
+use crate::platform::terminal::PtyInputChunk;
 
 #[cfg(feature = "pty")]
 pub struct PtySpawnContext(Vec<u32>);
@@ -240,18 +247,14 @@ fn apply_priority(handle: *mut std::ffi::c_void, nice: Option<i32>) -> std::io::
 }
 
 #[cfg(feature = "pty")]
-pub fn prepare_pty_child(
+fn prepare_conpty_child(
     context: PtySpawnContext,
-    child: crate::platform::terminal::PtyChildControlToken,
+    handle: *mut std::ffi::c_void,
     nice: Option<i32>,
 ) -> std::io::Result<PtyProcessGuard> {
     use winapi::shared::minwindef::FALSE;
     use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
     use winapi::um::winnt::{JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
-    let handle = child
-        .raw_handle
-        .map(|handle| handle as *mut std::ffi::c_void)
-        .ok_or_else(|| std::io::Error::other("Pseudo-terminal child does not expose a Windows process handle"))?;
     let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
     if job.is_null() || job == winapi::um::handleapi::INVALID_HANDLE_VALUE { return Err(std::io::Error::last_os_error()); }
     let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
@@ -269,6 +272,16 @@ pub fn prepare_pty_child(
     }
     apply_priority(handle, nice)?;
     Ok(guard)
+}
+
+#[cfg(feature = "pty")]
+pub fn prepare_unmanaged_pty_child(
+    _context: PtySpawnContext,
+    _nice: Option<i32>,
+) -> std::io::Result<PtyProcessGuard> {
+    Err(std::io::Error::other(
+        "Pseudo-terminal child does not expose a Windows process handle",
+    ))
 }
 
 #[cfg(feature = "pty")]
@@ -308,17 +321,6 @@ pub fn is_ignorable_process_control_error(error: &std::io::Error) -> bool {
 }
 
 #[cfg(feature = "pty")]
-pub fn send_pty_interrupt(
-    _target: crate::platform::terminal::PtyMasterControlToken,
-    writer: &SharedPtyWriter,
-) -> std::io::Result<bool> {
-    let mut writer = writer.lock().map_err(|_| std::io::Error::other("pty writer mutex poisoned"))?;
-    writer.write_all(&[0x03])?;
-    writer.flush()?;
-    Ok(true)
-}
-
-#[cfg(feature = "pty")]
 pub fn terminate_pty_child(_pid: u32) -> std::io::Result<bool> { Ok(true) }
 
 #[cfg(feature = "pty")]
@@ -329,19 +331,6 @@ pub fn resize_pty(
     _master: &dyn crate::platform::terminal::PtyMaster,
     _size: crate::platform::terminal::PtySize,
 ) -> std::io::Result<()> { Ok(()) }
-
-#[cfg(feature = "pty")]
-pub fn preferred_pty_pid(
-    _master: &dyn crate::platform::terminal::PtyMaster,
-    child: &dyn crate::platform::terminal::PtyChild,
-) -> Option<u32> { Some(child.pid()) }
-
-#[cfg(feature = "pty")]
-pub fn kill_pty_process_group(
-    _target: crate::platform::terminal::PtyMasterControlToken,
-) -> std::io::Result<()> {
-    Ok(())
-}
 
 #[cfg(feature = "pty")]
 pub struct TerminalInputSession(super::terminal_input::TerminalInputCore);
@@ -381,12 +370,7 @@ mod tests {
 
     #[test]
     fn assign_child_to_job_null_handle_errors() {
-        assert!(prepare_pty_child(
-            before_pty_spawn(),
-            PtyChildControlToken::default(),
-            None
-        )
-        .is_err());
+        assert!(prepare_unmanaged_pty_child(before_pty_spawn(), None).is_err());
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Public PTY facade contract.
 //!
 //! The 4.0.1 public neutral traits remain reachable and usable through
-//! `NativePtyHandles`. The 5.0 platform-boundary migration deliberately removes
-//! concrete `portable-pty` and native fd/HANDLE escape hatches, while keeping
-//! custom host-neutral trait implementations source-compatible.
+//! `NativePtyHandles`. The platform-boundary migration keeps the historical
+//! concrete `portable-pty` and native fd/HANDLE escape hatches deprecated until
+//! the next major release, while new mechanics use only facade-owned operations.
 //!
 //! Uses `python -c sleep` as the child, matching the rest of the
 //! integration test suite. If the test runner doesn't have a
@@ -16,6 +16,7 @@ use running_process::pty::NativePtyProcess;
 
 struct NeutralMaster;
 
+#[allow(deprecated)]
 impl PtyMaster for NeutralMaster {
     fn try_clone_reader(&mut self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
         Ok(Box::new(std::io::empty()))
@@ -37,10 +38,19 @@ impl PtyMaster for NeutralMaster {
             pixel_height: 0,
         })
     }
+
+    fn process_group_leader(&self) -> Option<i32> {
+        Some(17)
+    }
+
+    fn as_raw_fd(&self) -> Option<i32> {
+        Some(23)
+    }
 }
 
 struct NeutralChild;
 
+#[allow(deprecated)]
 impl PtyChild for NeutralChild {
     fn pid(&self) -> u32 {
         1
@@ -57,6 +67,10 @@ impl PtyChild for NeutralChild {
     fn kill(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+
+    fn as_raw_handle(&self) -> Option<*mut std::ffi::c_void> {
+        Some(std::ptr::without_provenance_mut(29))
+    }
 }
 
 #[test]
@@ -66,6 +80,24 @@ fn downstream_neutral_backend_traits_require_no_host_specific_methods() {
 
     assert_master::<NeutralMaster>();
     assert_child::<NeutralChild>();
+}
+
+#[test]
+#[allow(deprecated)]
+fn downstream_legacy_pty_trait_methods_and_helpers_remain_source_compatible() {
+    let master = NeutralMaster;
+    assert_eq!(master.process_group_leader(), Some(17));
+    assert_eq!(master.as_raw_fd(), Some(23));
+    assert_eq!(
+        NeutralChild.as_raw_handle().map(|handle| handle.addr()),
+        Some(29)
+    );
+
+    let _command =
+        running_process::pty::command_builder_from_argv(&["echo".to_owned(), "compat".to_owned()]);
+    let status =
+        running_process::pty::reexports::portable_pty::ExitStatus::with_signal("Interrupt");
+    assert_eq!(running_process::pty::portable_exit_code(status), -2);
 }
 
 fn python_available() -> bool {

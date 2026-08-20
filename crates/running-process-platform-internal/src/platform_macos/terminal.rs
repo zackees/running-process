@@ -3,7 +3,7 @@
 #[cfg(feature = "pty")]
 mod pty {
 use crate::platform::terminal::{
-    PtyBackend, PtyChild, PtyChildControlToken, PtyMaster, PtyMasterControlToken, PtySize, PtySlave,
+    PtyBackend, PtyChild, PtyInterruptTarget, PtyMaster, PtySize, PtySlave,
 };
 use portable_pty::{
     native_pty_system, Child as PortableChild, CommandBuilder, MasterPty,
@@ -65,11 +65,63 @@ impl PtyMaster for PortablePtyMaster {
         })
     }
 
-    fn control_token(&self) -> PtyMasterControlToken {
-        PtyMasterControlToken {
-            process_group_leader: self.0.process_group_leader(),
-            raw_fd: self.0.as_raw_fd(),
+    fn process_group_leader(&self) -> Option<i32> {
+        self.0.process_group_leader()
+    }
+
+    fn as_raw_fd(&self) -> Option<i32> {
+        self.0.as_raw_fd()
+    }
+
+    fn interrupt_target(&self) -> io::Result<PtyInterruptTarget> {
+        if let Some(pid) = self.0.process_group_leader() {
+            return Ok(PtyInterruptTarget::new(move |_writer| {
+                super::super::unix_signal_process_group(
+                    pid,
+                    crate::platform::process::UnixSignalKind::Interrupt,
+                )?;
+                Ok(false)
+            }));
         }
+
+        use std::os::fd::{AsRawFd as _, FromRawFd as _};
+        let fd = self
+            .0
+            .as_raw_fd()
+            .ok_or_else(|| io::Error::other("PTY master does not expose a Unix descriptor"))?;
+        let duplicated = unsafe { libc::dup(fd) };
+        if duplicated < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicated) };
+        Ok(PtyInterruptTarget::new(move |writer| {
+            let _writer = match writer.try_lock() {
+                Ok(writer) => writer,
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(io::Error::other("pty writer mutex poisoned"));
+                }
+            };
+            super::write_nonblocking_byte(owned.as_raw_fd(), 0x03)?;
+            Ok(true)
+        }))
+    }
+
+    fn kill_process_group(&self) -> io::Result<()> {
+        match self.0.process_group_leader() {
+            Some(pid) => super::super::unix_signal_process_group(
+                pid,
+                crate::platform::process::UnixSignalKind::Kill,
+            ),
+            None => Ok(()),
+        }
+    }
+
+    fn preferred_pid(&self, child: &dyn PtyChild) -> Option<u32> {
+        self.0
+            .process_group_leader()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .or_else(|| Some(child.pid()))
     }
 }
 
@@ -122,9 +174,6 @@ impl PtyChild for PortablePtyChild {
         self.0.kill()
     }
 
-    fn control_token(&self) -> PtyChildControlToken {
-        PtyChildControlToken::default()
-    }
 }
 
 pub type Backend = PortablePtyBackend;
@@ -145,7 +194,7 @@ pub use pty::*;
 #[cfg(feature = "pty")]
 use crate::platform::process::UnixSignalKind;
 #[cfg(feature = "pty")]
-use crate::platform::terminal::{PtyInputChunk, SharedPtyWriter};
+use crate::platform::terminal::PtyInputChunk;
 
 #[cfg(feature = "pty")]
 pub struct PtySpawnContext;
@@ -182,9 +231,8 @@ pub struct OrphanConhostInfo {
 pub fn before_pty_spawn() -> PtySpawnContext { PtySpawnContext }
 
 #[cfg(feature = "pty")]
-pub fn prepare_pty_child(
+pub fn prepare_unmanaged_pty_child(
     _context: PtySpawnContext,
-    _child: crate::platform::terminal::PtyChildControlToken,
     _nice: Option<i32>,
 ) -> std::io::Result<PtyProcessGuard> { Ok(PtyProcessGuard) }
 
@@ -243,25 +291,6 @@ fn write_nonblocking_byte(fd: i32, byte: u8) -> std::io::Result<()> {
 }
 
 #[cfg(feature = "pty")]
-pub fn send_pty_interrupt(
-    target: crate::platform::terminal::PtyMasterControlToken,
-    writer: &SharedPtyWriter,
-) -> std::io::Result<bool> {
-    if let Some(pid) = target.process_group_leader {
-        super::unix_signal_process_group(pid, UnixSignalKind::Interrupt)?;
-        return Ok(false);
-    }
-    let _writer = match writer.try_lock() {
-        Ok(writer) => writer,
-        Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
-        Err(std::sync::TryLockError::Poisoned(_)) => return Err(std::io::Error::other("pty writer mutex poisoned")),
-    };
-    let fd = target.raw_fd.ok_or_else(|| std::io::Error::other("PTY master does not expose a Unix descriptor"))?;
-    write_nonblocking_byte(fd, 0x03)?;
-    Ok(true)
-}
-
-#[cfg(feature = "pty")]
 pub fn terminate_pty_child(pid: u32) -> std::io::Result<bool> {
     super::unix_signal_process(pid, UnixSignalKind::Terminate)?;
     Ok(false)
@@ -305,24 +334,6 @@ pub fn resize_pty(
     master: &dyn crate::platform::terminal::PtyMaster,
     size: crate::platform::terminal::PtySize,
 ) -> std::io::Result<()> { master.resize(size) }
-
-#[cfg(feature = "pty")]
-pub fn preferred_pty_pid(
-    master: &dyn crate::platform::terminal::PtyMaster,
-    child: &dyn crate::platform::terminal::PtyChild,
-) -> Option<u32> {
-    master.control_token().process_group_leader.and_then(|pid| u32::try_from(pid).ok()).or_else(|| Some(child.pid()))
-}
-
-#[cfg(feature = "pty")]
-pub fn kill_pty_process_group(
-    target: crate::platform::terminal::PtyMasterControlToken,
-) -> std::io::Result<()> {
-    match target.process_group_leader {
-        Some(pid) => super::unix_signal_process_group(pid, UnixSignalKind::Kill),
-        None => Ok(()),
-    }
-}
 
 #[cfg(feature = "pty")]
 pub fn find_child_processes(_parent_pid: u32) -> Vec<ChildProcessInfo> { Vec::new() }

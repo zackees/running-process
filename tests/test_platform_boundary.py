@@ -9,6 +9,7 @@ def test_bootstrap_ledgers_are_valid() -> None:
     assert len(rows) == 1584
     assert not platform_boundary.validate_ledger(rows)
     assert not platform_boundary.manifest_dependency_violations()
+    assert not platform_boundary.neutral_facade_contract_violations()
 
 
 def test_every_ledger_group_has_contiguous_ordinals() -> None:
