@@ -133,4 +133,26 @@ mod tests {
         assert!(try_read_daemon_identity_file(&path).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn pre_4_10_4_sidecar_remains_readable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("daemon-identity.json");
+        let daemon = test_daemon();
+        let mut legacy_json = serde_json::to_value(&daemon).expect("serialize identity");
+        assert!(legacy_json
+            .as_object_mut()
+            .expect("identity JSON object")
+            .remove("legacy_exe_sha256")
+            .is_some());
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy_json).unwrap()).unwrap();
+
+        let mut expected = daemon;
+        expected.legacy_exe_sha256 = [0; 32];
+        assert_eq!(read_daemon_identity_file(&path), Some(expected.clone()));
+        assert_eq!(
+            try_read_daemon_identity_file(&path).expect("legacy sidecar read"),
+            Some(expected)
+        );
+    }
 }
