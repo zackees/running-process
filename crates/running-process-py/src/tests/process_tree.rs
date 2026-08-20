@@ -1,3 +1,5 @@
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 use sysinfo::System;
 
 use crate::helpers::{descendant_pids, system_pid};
@@ -91,4 +93,86 @@ fn native_launch_detached_rejects_empty_command_without_daemon() {
             .expect_err("empty commands should be rejected before daemon IPC");
         assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
     });
+}
+
+struct ProcessTreeGuard {
+    child: Option<Child>,
+}
+
+impl ProcessTreeGuard {
+    fn id(&self) -> u32 {
+        self.child.as_ref().expect("process tree is live").id()
+    }
+
+    fn terminate_and_reap(&mut self) -> bool {
+        let pid = self.id();
+        let terminator = std::thread::spawn(move || terminate_process_tree_impl(pid, 5.0));
+        self.child
+            .as_mut()
+            .expect("process tree is live")
+            .wait()
+            .expect("reap process-tree root");
+        self.child.take();
+        terminator.join().expect("tree terminator panicked")
+    }
+}
+
+impl Drop for ProcessTreeGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            kill_process_tree_impl(child.id(), 1.0);
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn spawn_process_tree() -> ProcessTreeGuard {
+    let mut command = if std::env::consts::OS == "windows" {
+        let mut command = Command::new("cmd.exe");
+        command.args([
+            "/C",
+            "start /B ping -n 30 127.0.0.1 >NUL & waitfor /T 30 coverage",
+        ]);
+        command
+    } else {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        command
+    };
+    ProcessTreeGuard {
+        child: Some(command.spawn().expect("spawn process tree")),
+    }
+}
+
+fn wait_for_descendant(pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut system = System::new();
+        system.refresh_processes();
+        if !descendant_pids(&system, system_pid(pid)).is_empty() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "child process was not discovered"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn terminate_process_tree_kills_a_live_root_and_descendant() {
+    let mut root = spawn_process_tree();
+    wait_for_descendant(root.id());
+    assert!(root.terminate_and_reap());
+}
+
+#[test]
+fn process_tree_info_lists_a_live_descendant() {
+    let mut root = spawn_process_tree();
+    wait_for_descendant(root.id());
+    let rendered = native_get_process_tree_info(root.id());
+    assert!(rendered.contains("Child processes:"));
+    assert!(root.terminate_and_reap());
 }

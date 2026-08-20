@@ -68,12 +68,18 @@ def test_cleanup_smoke_is_dry_run_and_isolated(monkeypatch) -> None:
     assert all("--confirm" not in call for call in calls)
 
 
-def test_broker_smoke_covers_admin_servicedef_and_v2_no_bind(monkeypatch) -> None:
+def test_broker_smoke_covers_admin_servicedef_and_v2_lifecycle(monkeypatch) -> None:
     calls: list[tuple[str, tuple[str, ...]]] = []
+    live_calls: list[Path] = []
     monkeypatch.setattr(
         coverage_process_smoke,
         "_run",
         lambda binary, *args, env, **_kwargs: calls.append((binary.name, args)) or "",
+    )
+    monkeypatch.setattr(
+        coverage_process_smoke,
+        "exercise_live_v2_broker",
+        lambda binary, *, env: live_calls.append(binary),
     )
 
     coverage_process_smoke.exercise_brokers(
@@ -88,6 +94,8 @@ def test_broker_smoke_covers_admin_servicedef_and_v2_no_bind(monkeypatch) -> Non
         "running-process-broker-v2",
         ("--no-bind", "--program", "coverage-broker"),
     ) in calls
+    assert ("running-process-broker-v2", ("--http-port", "invalid")) in calls
+    assert live_calls == [Path("/tmp/running-process-broker-v2")]
 
 
 class TestProbeCoverageSmoke(unittest.TestCase):
@@ -96,6 +104,7 @@ class TestProbeCoverageSmoke(unittest.TestCase):
 
         class FinishedDaemon:
             returncode = 0
+            pid = 4242
 
             def poll(self):
                 return None
@@ -114,10 +123,18 @@ class TestProbeCoverageSmoke(unittest.TestCase):
                 calls.append((args, kwargs))
                 if "profile" in args:
                     Path(args[-1]).write_text("main 1\n", encoding="utf-8")
+                if "ps" in args and "--json" in args:
+                    return '[{"pid": 4242}]'
+                if "crashes" in args and "--json" in args:
+                    return '[{"id": 7}]'
+                if "fetch" in args and "999999" not in args:
+                    Path(args[-1]).write_bytes(b"crash")
                 return ""
 
             def fake_popen(*_args, **_kwargs):
-                (root / "runtime" / "rpprobed.json").write_text("{}", encoding="utf-8")
+                (root / "runtime" / "rpprobed.json").write_text(
+                    '{"control_socket": "coverage.sock"}', encoding="utf-8"
+                )
                 return FinishedDaemon()
 
             with (
@@ -128,6 +145,11 @@ class TestProbeCoverageSmoke(unittest.TestCase):
                     return_value=_TempDir(root),
                 ),
                 mock.patch.object(coverage_process_smoke.subprocess, "Popen", fake_popen),
+                mock.patch.object(
+                    coverage_process_smoke.subprocess,
+                    "run",
+                    return_value=mock.Mock(returncode=-6, stdout=b"", stderr=b""),
+                ),
                 mock.patch.object(coverage_process_smoke.time, "sleep", return_value=None),
             ):
                 coverage_process_smoke.exercise_probe_cli(

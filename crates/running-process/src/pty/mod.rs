@@ -977,3 +977,7 @@ mod tests {
         assert_eq!(resolved_spawn_cwd(None), expected);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/pty_core_coverage.rs"]
+mod coverage_tests;

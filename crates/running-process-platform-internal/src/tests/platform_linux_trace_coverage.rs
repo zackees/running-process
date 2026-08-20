@@ -84,7 +84,10 @@ fn exact_trace_round_trip_exposes_stdio_exit_and_idempotent_kill() {
     let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut command = std::process::Command::new("/bin/sh");
     command
-        .args(["-c", "printf trace-out; printf trace-err >&2; /bin/true; exit 7"])
+        .args([
+            "-c",
+            "printf trace-out; printf trace-err >&2; /bin/sh -c 'exit 0' & wait; exit 7",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

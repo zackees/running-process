@@ -153,6 +153,9 @@ ALLOWED_RUST_COMMAND_NEW = {
         "crates/running-process-platform-internal/src/tests/"
         "platform_linux_trace_coverage.rs"
     ),
+    # Fixed shell fixtures exercise the Python binding's real descendant-tree
+    # discovery and bounded termination paths. No caller input reaches them.
+    Path("crates/running-process-py/src/tests/process_tree.rs"),
 
 }
 
@@ -338,6 +341,8 @@ ALLOWED_RUST_SPAWN = {
     # because of the setpgid-vs-killpg interaction the containment test
     # relies on).
     Path("testbins/src/bin/spawner.rs"),
+    # See the matching fixed-fixture entry in ALLOWED_RUST_COMMAND_NEW.
+    Path("crates/running-process-py/src/tests/process_tree.rs"),
     # #551 slice 6e: see comment in ALLOWED_RUST_COMMAND_NEW. The
     # `.spawn()` hit is the rustdoc usage example, not production.
     Path("crates/running-process-probe/src/inject_unix.rs"),
@@ -358,6 +363,9 @@ ALLOWED_PORTABLE_PTY = {
     # the child's pid via the underlying portable_pty::Child::process_id.
     # Spawn itself routes through the native layer.
     Path("crates/running-process/src/daemon/pty_sessions.rs"),
+    # External product-coverage tests construct portable-pty ExitStatus values
+    # only; process creation still goes through NativePtyProcess.
+    Path("crates/running-process/src/tests/pty_core_coverage.rs"),
 }
 
 # `ChildStdin::from` / `ChildStdout::from` / `ChildStderr::from` consumes a
