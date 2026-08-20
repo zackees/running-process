@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use running_process::broker::backend_lifecycle::identity::DaemonProcess;
+use running_process::broker::backend_lifecycle::identity::{sha256_file, DaemonProcess};
 use running_process::broker::backend_lifecycle::verify_pid::{
     process_is_alive, verify_daemon_process, VerifyPidError,
 };
@@ -42,6 +42,7 @@ fn macos_process_handle_latches_exit_after_event_is_consumed() {
         pid: child.id(),
         exe_path: sleeper.into(),
         exe_hash: executable_hash_file(sleeper),
+        legacy_exe_sha256: sha256_file(std::path::Path::new(sleeper)).expect("hash sleeper"),
         boot_id: running_process::broker::host_identity::current().boot_id,
         ipc_endpoint: Endpoint {
             namespace_id: "test-namespace".into(),

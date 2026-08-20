@@ -53,6 +53,8 @@ pub struct DaemonProcess {
     pub exe_path: PathBuf,
     /// BLAKE3 content hash of the daemon executable.
     pub exe_hash: [u8; 32],
+    /// SHA-256 digest retained on the v1 wire for pre-BLAKE3 stable brokers.
+    pub legacy_exe_sha256: [u8; 32],
     /// Host boot ID observed when the daemon started.
     pub boot_id: String,
     /// IPC endpoint used to connect to the daemon.
@@ -78,10 +80,12 @@ impl DaemonProcess {
     ) -> Result<Self, IdentityError> {
         let exe_path = std::env::current_exe().map_err(IdentityError::CurrentExe)?;
         let exe_hash = executable_hash_file(&exe_path)?;
+        let legacy_exe_sha256 = sha256_file(&exe_path)?;
         Ok(Self {
             pid: std::process::id(),
             exe_path,
             exe_hash,
+            legacy_exe_sha256,
             boot_id: host_identity::current().boot_id,
             ipc_endpoint,
             started_at_unix_ms: unix_now_ms(),
@@ -104,6 +108,22 @@ impl DaemonProcess {
             boot_id: self.boot_id.clone(),
             idle_timeout_secs: self.idle_timeout_secs,
         }
+    }
+
+    /// Encode a daemon identity for an endpoint probe.
+    ///
+    /// Tag 3 remains reserved in the current protobuf schema, but stable
+    /// pre-BLAKE3 brokers still decode it as the executable SHA-256.  Preserve
+    /// their read path by appending that historical unknown field after the
+    /// canonical BLAKE3 message. Current protobuf readers safely ignore it.
+    pub fn encode_probe_identity(&self, output: &mut Vec<u8>) -> Result<(), prost::EncodeError> {
+        use prost::Message;
+
+        self.to_proto().encode(output)?;
+        output.push(0x1a); // field 3, length-delimited
+        output.push(32); // fixed digest length, encoded as a one-byte varint
+        output.extend_from_slice(&self.legacy_exe_sha256);
+        Ok(())
     }
 
     /// Read and normalize `CacheManifest.current_daemon`.
@@ -138,6 +158,10 @@ impl TryFrom<protocol::DaemonProcess> for DaemonProcess {
             pid: value.pid,
             exe_path: PathBuf::from(value.exe_path),
             exe_hash,
+            // Decoded identities are never served as a newly launched daemon.
+            // Keep the reserved compatibility payload local to identities we
+            // create from a verified executable path.
+            legacy_exe_sha256: [0; 32],
             boot_id: value.boot_id,
             ipc_endpoint,
             started_at_unix_ms: value.started_at_unix_ms,
@@ -177,6 +201,7 @@ impl<'de> Deserialize<'de> for DaemonProcess {
             pid: value.pid,
             exe_path: value.exe_path,
             exe_hash: value.exe_hash,
+            legacy_exe_sha256: value.legacy_exe_sha256,
             boot_id: value.boot_id,
             ipc_endpoint: value.ipc_endpoint.into(),
             started_at_unix_ms: value.started_at_unix_ms,
@@ -211,6 +236,7 @@ struct DaemonProcessSerde {
     exe_path: PathBuf,
     exe_hash_algorithm: String,
     exe_hash: [u8; 32],
+    legacy_exe_sha256: [u8; 32],
     boot_id: String,
     ipc_endpoint: EndpointSerde,
     started_at_unix_ms: u64,
@@ -224,6 +250,7 @@ impl From<&DaemonProcess> for DaemonProcessSerde {
             exe_path: value.exe_path.clone(),
             exe_hash_algorithm: EXECUTABLE_HASH_ALGORITHM.to_owned(),
             exe_hash: value.exe_hash,
+            legacy_exe_sha256: value.legacy_exe_sha256,
             boot_id: value.boot_id.clone(),
             ipc_endpoint: EndpointSerde::from(&value.ipc_endpoint),
             started_at_unix_ms: value.started_at_unix_ms,
@@ -298,6 +325,18 @@ mod broker_dance_identity_tests {
     //! exact collision that spawn-stormed soldr's per-process self-managed
     //! daemon when the identity did NOT carry the hash (zackees/soldr#2352).
     use super::*;
+    use prost::Message;
+
+    /// Schema used by brokers released before the BLAKE3 identity migration.
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyDaemonProcess {
+        #[prost(uint32, tag = "1")]
+        pid: u32,
+        #[prost(string, tag = "2")]
+        exe_path: String,
+        #[prost(bytes = "vec", tag = "3")]
+        exe_sha256: Vec<u8>,
+    }
 
     #[test]
     fn executable_identity_hash_uses_blake3() {
@@ -308,6 +347,29 @@ mod broker_dance_identity_tests {
         std::fs::remove_file(&path).ok();
 
         assert_eq!(actual, *blake3::hash(b"daemon image bytes").as_bytes());
+    }
+
+    #[test]
+    fn blake3_identity_dual_writes_a_legacy_sha256_for_stable_brokers() {
+        let identity = DaemonProcess::current_process(endpoint("compat.sock"), None)
+            .expect("current daemon identity");
+        let current = identity.to_proto();
+        let mut encoded = Vec::new();
+        identity
+            .encode_probe_identity(&mut encoded)
+            .expect("encode compatibility identity");
+        let legacy = LegacyDaemonProcess::decode(encoded.as_slice())
+            .expect("pre-blake3 broker decodes current identity");
+
+        assert_eq!(current.exe_hash_algorithm, EXECUTABLE_HASH_ALGORITHM);
+        assert_eq!(legacy.exe_sha256.len(), 32);
+        assert_eq!(
+            legacy.exe_sha256,
+            sha256_file(&identity.exe_path)
+                .expect("sha256 executable")
+                .to_vec(),
+            "the legacy wire field remains verifiable by a stable broker"
+        );
     }
 
     fn endpoint(path: &str) -> Endpoint {
@@ -324,6 +386,7 @@ mod broker_dance_identity_tests {
             pid: 1234,
             exe_path: PathBuf::from("runtime/soldr-self/v0.8.44-deadbeef/soldr.exe"),
             exe_hash,
+            legacy_exe_sha256: [0x24; 32],
             boot_id: "boot-1".to_owned(),
             ipc_endpoint: endpoint("rpb-v2-soldr-daemon-0123456789abcdef-0"),
             started_at_unix_ms: 1,
@@ -369,9 +432,11 @@ mod broker_dance_identity_tests {
             "the wire form must carry the full 32-byte BLAKE3 hash"
         );
         let restored = DaemonProcess::try_from(proto).expect("identity round-trips");
+        let mut expected = original;
+        expected.legacy_exe_sha256 = [0; 32];
         assert_eq!(
-            restored, original,
-            "identity (including exe_hash) must survive the manifest round-trip"
+            restored, expected,
+            "the canonical BLAKE3 identity must survive the manifest round-trip; the legacy probe field is not persisted"
         );
     }
 
