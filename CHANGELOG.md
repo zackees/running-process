@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — PTY platform-boundary migration
+
+The Python API and the high-level Rust `NativePtyProcess` API are unchanged.
+Direct Rust PTY-backend escape hatches remain source-compatible but are now
+deprecated; their removal is planned for 5.0.
+
+Issue #970 moves PTY/ConPTY mechanics behind the host-neutral internal platform
+facade. Runtime mechanics no longer carry concrete `portable-pty` types or
+native file descriptors/handles through the neutral control path. Deprecated
+4.x compatibility accessors and re-exports remain available only to avoid a
+breaking change in a minor release.
+
+### Preferred migration for direct Rust consumers
+
+| Before | After |
+|---|---|
+| `pty::reexports::portable_pty` | Depend on `portable-pty` directly if the application itself owns a concrete backend; otherwise use `running_process::pty`'s neutral traits. |
+| `pty::command_builder_from_argv` | Pass argv to `NativePtyProcess`; concrete command construction is now a platform implementation detail. |
+| `pty::portable_exit_code` | Use the exit codes returned by `PtyChild::{try_wait, wait}`. |
+| `PtyMaster::{process_group_leader, as_raw_fd}` / `PtyChild::as_raw_handle` | Use `NativePtyProcess` lifecycle and interrupt operations; raw host-control values remain inside the platform implementation. |
+
+`PtyMaster`, `PtyChild`, `PtySlave`, `PtyBackend`, and `PtySize` remain public.
+Their required, host-neutral methods are unchanged, and the legacy host-specific
+trait methods have default implementations, so downstream neutral backends remain
+source-compatible. The deprecated shims are scheduled for removal in 5.0.
+
 ## 4.10.2 — preserve client environments across daemon spawn boundaries
 
 Fixes daemon and broker child launches that accidentally used the long-lived

@@ -500,7 +500,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -554,7 +554,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1425,7 +1425,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.4"
+version = "4.10.6"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2072,7 +2072,6 @@ dependencies = [
  "interprocess",
  "libc",
  "png",
- "portable-pty",
  "prost",
  "prost-build",
  "prost-types",
@@ -2084,7 +2083,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "sysinfo",
- "tar",
  "tempfile",
  "test-watchdog",
  "thiserror 2.0.18",
@@ -2094,7 +2092,29 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trybuild",
+ "winapi",
+ "windows-sys 0.61.2",
+ "x11rb",
+]
+
+[[package]]
+name = "running-process-platform-internal"
+version = "4.10.6"
+dependencies = [
+ "dirs",
+ "interprocess",
+ "libc",
+ "png",
+ "portable-pty",
+ "sha2",
+ "sysinfo",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
  "ureq",
+ "widestring",
  "winapi",
  "windows-sys 0.61.2",
  "x11rb",
@@ -2102,20 +2122,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "running-process-platform-internal"
-version = "4.10.4"
-dependencies = [
- "interprocess",
- "libc",
- "sysinfo",
- "tokio",
- "winapi",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "running-process-probe"
-version = "4.10.4"
+version = "4.10.6"
 dependencies = [
  "blake3",
  "crash-handler",
@@ -2138,7 +2146,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe-daemon"
-version = "4.10.4"
+version = "4.10.6"
 dependencies = [
  "axum",
  "blake3",
@@ -2172,21 +2180,21 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe-interposer-linux"
-version = "4.10.4"
+version = "4.10.6"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "running-process-probe-interposer-macos"
-version = "4.10.4"
+version = "4.10.6"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "running-process-probe-interposer-windows"
-version = "4.10.4"
+version = "4.10.6"
 dependencies = [
  "retour",
  "windows-sys 0.61.2",
@@ -2194,7 +2202,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe-worker"
-version = "4.10.4"
+version = "4.10.6"
 dependencies = [
  "addr2line",
  "lzma-rs",
@@ -2212,9 +2220,8 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "4.10.4"
+version = "4.10.6"
 dependencies = [
- "interprocess",
  "libc",
  "prost",
  "pyo3",
@@ -2229,7 +2236,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-win-gnu-bridge"
-version = "4.10.4"
+version = "4.10.6"
 dependencies = [
  "windows-sys 0.61.2",
 ]
@@ -2267,7 +2274,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

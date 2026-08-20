@@ -1,4 +1,4 @@
-//! Setting the host console/terminal window icon (#577).
+//! Public policy for setting the host console/terminal window icon (#577).
 //!
 //! # Capability-reported, never assumed
 //!
@@ -23,14 +23,12 @@
 
 use std::path::PathBuf;
 
-pub mod ico;
+use running_process_platform_internal::platform::window_icon as platform_icon;
+
+pub mod ico {
+    pub use running_process_platform_internal::platform::window_icon::ico::*;
+}
 mod osc;
-#[cfg(target_os = "linux")]
-mod x11;
-// Gated to match `x11`, its only consumer: the PNG encoder it wraps is a
-// Linux-only dependency, so compiling this elsewhere fails to find `png`.
-#[cfg(all(test, target_os = "linux"))]
-mod tests_support;
 
 /// Where an icon comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,11 +224,116 @@ pub enum IconScope {
     },
 }
 
+fn platform_scope(scope: IconScope) -> platform_icon::IconScope {
+    match scope {
+        IconScope::Host => platform_icon::IconScope::Host,
+        IconScope::Child { pid } => platform_icon::IconScope::Child { pid },
+    }
+}
+
+fn platform_stock(stock: StockIcon) -> platform_icon::StockIcon {
+    match stock {
+        StockIcon::Application => platform_icon::StockIcon::Application,
+        StockIcon::Warning => platform_icon::StockIcon::Warning,
+        StockIcon::Error => platform_icon::StockIcon::Error,
+        StockIcon::Information => platform_icon::StockIcon::Information,
+        StockIcon::Shield => platform_icon::StockIcon::Shield,
+    }
+}
+
+fn platform_source(source: &IconSource) -> platform_icon::IconSource {
+    match source {
+        IconSource::Path(path) => platform_icon::IconSource::Path(path.clone()),
+        IconSource::Bytes(bytes) => platform_icon::IconSource::Bytes(bytes.clone()),
+        IconSource::Stock(stock) => platform_icon::IconSource::Stock(platform_stock(*stock)),
+    }
+}
+
+fn degraded_reason(reason: platform_icon::IconDegradedReason) -> &'static str {
+    match reason {
+        platform_icon::IconDegradedReason::WindowsTerminal => {
+            "Windows Terminal owns its window decoration and ignores WM_SETICON. Set the `icon` field on the WT profile for a real image; a stock name can still be sent via OSC 1"
+        }
+        platform_icon::IconDegradedReason::NonClassicWindowsHost => {
+            "the host is not the classic console (conhost). Modern emulators own their window decoration and ignore WM_SETICON; a stock name can still be sent via OSC 1"
+        }
+        platform_icon::IconDegradedReason::LinuxNameOnly => {
+            "WINDOWID is not set, so the terminal's X window cannot be identified; a stock name can still be sent via OSC 1"
+        }
+    }
+}
+
+fn unsupported_reason(reason: platform_icon::IconUnsupportedReason) -> &'static str {
+    match reason {
+        platform_icon::IconUnsupportedReason::ChildHasNoConsole => {
+            "that process has no console window of its own (it may share this one, have been created without a window, or have exited)"
+        }
+        platform_icon::IconUnsupportedReason::NoConsole => {
+            "this process has no console window (detached, or output is redirected from a windowless host)"
+        }
+        platform_icon::IconUnsupportedReason::MacTerminalOwnsWindow => {
+            "on macOS the window belongs to Terminal.app or iTerm2, not to this process; set the icon on the terminal application's own bundle"
+        }
+        platform_icon::IconUnsupportedReason::Wayland => {
+            "Wayland compositors do not let a client change another window's icon; set it in the terminal emulator's .desktop file"
+        }
+        platform_icon::IconUnsupportedReason::NoBackend => {
+            "no window-icon backend exists for this platform"
+        }
+        platform_icon::IconUnsupportedReason::LinuxChildScope => {
+            "X11 cannot identify another process's terminal window; WINDOWID names only this process's own host"
+        }
+        platform_icon::IconUnsupportedReason::LinuxNoDisplay => {
+            "no display server is attached (no DISPLAY or WAYLAND_DISPLAY), so there is no window to set an icon on"
+        }
+        platform_icon::IconUnsupportedReason::TargetDisappeared => {
+            "the target window disappeared between the support probe and the call"
+        }
+        platform_icon::IconUnsupportedReason::UnknownImageFormat => {
+            "the X11 backend accepts PNG data (or a .ico whose largest image is a PNG)"
+        }
+        platform_icon::IconUnsupportedReason::StockNeedsPixels => {
+            "stock icons are theme names, not images; X11 needs pixels. Pass a PNG, or let the OSC 1 fallback send the name"
+        }
+        platform_icon::IconUnsupportedReason::OversizedIcon => {
+            "icon is larger than 512x512; window managers scale down from far smaller"
+        }
+        platform_icon::IconUnsupportedReason::UnsupportedPngColorType => {
+            "the X11 backend needs an RGB or RGBA PNG; convert palette or grayscale images first"
+        }
+        platform_icon::IconUnsupportedReason::UnsupportedPngBitDepth => {
+            "the X11 backend needs an 8-bit PNG"
+        }
+        platform_icon::IconUnsupportedReason::UnsupportedX11VisualDepth => {
+            "the X11 visual depth cannot represent the requested icon"
+        }
+    }
+}
+
+fn map_platform_error(error: platform_icon::IconError) -> IconError {
+    match error {
+        platform_icon::IconError::Unsupported(reason) => IconError::Unsupported {
+            reason: unsupported_reason(reason),
+        },
+        platform_icon::IconError::Load { path, source } => IconError::Load { path, source },
+        platform_icon::IconError::Apply(source) => IconError::Apply(source),
+        platform_icon::IconError::Decode(source) => IconError::Decode(source),
+    }
+}
+
 /// Whether a window can accept an icon.
 ///
 /// Cheap, and safe to call before deciding whether to ship an icon at all.
 pub fn icon_support(scope: IconScope) -> IconSupport {
-    imp::icon_support(scope)
+    match platform_icon::icon_support(platform_scope(scope)) {
+        platform_icon::IconSupport::Available => IconSupport::Available,
+        platform_icon::IconSupport::Degraded(reason) => IconSupport::Degraded {
+            reason: degraded_reason(reason),
+        },
+        platform_icon::IconSupport::Unsupported(reason) => IconSupport::Unsupported {
+            reason: unsupported_reason(reason),
+        },
+    }
 }
 
 /// Whether this process's host window can accept an icon.
@@ -271,7 +374,10 @@ fn set_icon_given(
     source: &IconSource,
 ) -> Result<(), IconError> {
     match support {
-        IconSupport::Available => imp::set_icon(scope, source),
+        IconSupport::Available => {
+            platform_icon::set_icon(platform_scope(scope), &platform_source(source))
+                .map_err(map_platform_error)
+        }
         // Only a stock name has anything to send. A file or a byte blob would
         // mean inventing a name the caller never chose, and OSC 1 carries a
         // name rather than an image.
@@ -280,266 +386,6 @@ fn set_icon_given(
             _ => Err(IconError::DegradedSourceUnsupported { reason }),
         },
         IconSupport::Unsupported { reason } => Err(IconError::Unsupported { reason }),
-    }
-}
-
-#[cfg(windows)]
-mod imp {
-    use super::{IconError, IconScope, IconSource, IconSupport, StockIcon};
-    use std::os::windows::ffi::OsStrExt as _;
-
-    use winapi::shared::minwindef::{BOOL, DWORD, FALSE, LPARAM, TRUE};
-    use winapi::shared::windef::{HICON, HWND};
-    use winapi::um::wincon::GetConsoleWindow;
-    use winapi::um::winuser::{
-        CreateIconFromResourceEx, EnumWindows, GetClassNameW, GetWindowThreadProcessId, LoadIconW,
-        LoadImageW, SendMessageW, IDI_APPLICATION, IDI_ERROR, IDI_INFORMATION, IDI_SHIELD,
-        IDI_WARNING, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_SETICON,
-    };
-
-    /// `wParam` values for `WM_SETICON`.
-    const ICON_SMALL: usize = 0;
-    const ICON_BIG: usize = 1;
-
-    /// Window class of the classic console host.
-    ///
-    /// This is the discriminator that matters. Windows Terminal hosts the
-    /// session in a pseudo-console whose `GetConsoleWindow` handle belongs to
-    /// a hidden window of a different class — `WM_SETICON` against it
-    /// succeeds and changes nothing visible.
-    const CONHOST_CLASS: &str = "ConsoleWindowClass";
-
-    fn console_window() -> Option<HWND> {
-        let hwnd = unsafe { GetConsoleWindow() };
-        (!hwnd.is_null()).then_some(hwnd)
-    }
-
-    fn class_name(hwnd: HWND) -> String {
-        let mut buffer = [0u16; 256];
-        let len = unsafe { GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
-        if len <= 0 {
-            return String::new();
-        }
-        String::from_utf16_lossy(&buffer[..len as usize])
-    }
-
-    /// The console window a scope names, if there is one.
-    fn window_for(scope: IconScope) -> Option<HWND> {
-        match scope {
-            IconScope::Host => console_window(),
-            IconScope::Child { pid } => console_window_of_pid(pid),
-        }
-    }
-
-    /// Find the console window owned by `pid`.
-    ///
-    /// A process has at most one console window, so the first match is the
-    /// answer. The class is checked here as well as in the support probe
-    /// because a process can own windows that are not its console.
-    fn console_window_of_pid(pid: u32) -> Option<HWND> {
-        struct Search {
-            pid: u32,
-            found: HWND,
-        }
-
-        unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
-            let search = &mut *(lparam as *mut Search);
-            let mut owner: DWORD = 0;
-            GetWindowThreadProcessId(hwnd, &mut owner);
-            if owner == search.pid && class_name(hwnd) == CONHOST_CLASS {
-                search.found = hwnd;
-                return FALSE; // stop: a process has one console window
-            }
-            TRUE
-        }
-
-        let mut search = Search {
-            pid,
-            found: std::ptr::null_mut(),
-        };
-        unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
-        (!search.found.is_null()).then_some(search.found)
-    }
-
-    pub(super) fn icon_support(scope: IconScope) -> IconSupport {
-        if let IconScope::Child { pid } = scope {
-            return match console_window_of_pid(pid) {
-                Some(_) => IconSupport::Available,
-                // Either the child has no console of its own (it inherited
-                // ours, or was created with CREATE_NO_WINDOW), or it has
-                // already exited. Both mean there is no window to target.
-                None => IconSupport::Unsupported {
-                    reason: "that process has no console window of its own (it may share this                              one, have been created without a window, or have exited)",
-                },
-            };
-        }
-        // Checked before the window class because it yields a remedy the
-        // class check cannot: Windows Terminal *does* support a per-profile
-        // icon, just not one set at runtime. "Set the profile's icon field"
-        // is actionable; "your host owns its decoration" is not.
-        if std::env::var_os("WT_SESSION").is_some() {
-            return IconSupport::Degraded {
-                reason: "Windows Terminal owns its window decoration and ignores WM_SETICON.                          Set the `icon` field on the WT profile for a real image; a stock name                          can still be sent via OSC 1",
-            };
-        }
-        let Some(hwnd) = console_window() else {
-            return IconSupport::Unsupported {
-                reason: "this process has no console window (detached, or output is redirected \
-                         from a windowless host)",
-            };
-        };
-        if class_name(hwnd) == CONHOST_CLASS {
-            return IconSupport::Available;
-        }
-        IconSupport::Degraded {
-            reason: "the host is not the classic console (conhost). Modern emulators own \
-                     their window decoration and ignore WM_SETICON; a stock name can still \
-                     be sent via OSC 1",
-        }
-    }
-
-    /// Load an icon from a file, letting the OS pick the best size.
-    fn load_from_path(path: &std::path::Path) -> Result<HICON, IconError> {
-        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-        wide.push(0);
-
-        // LR_DEFAULTSIZE picks the system's preferred size from a multi-image
-        // .ico rather than whichever image happens to be first.
-        let icon = unsafe {
-            LoadImageW(
-                std::ptr::null_mut(),
-                wide.as_ptr(),
-                IMAGE_ICON,
-                0,
-                0,
-                LR_LOADFROMFILE | LR_DEFAULTSIZE,
-            )
-        } as HICON;
-        if icon.is_null() {
-            return Err(IconError::Load {
-                path: path.to_path_buf(),
-                source: std::io::Error::last_os_error(),
-            });
-        }
-        Ok(icon)
-    }
-
-    /// Load an icon from `.ico` bytes held in memory.
-    ///
-    /// There is no `LoadImage` equivalent that takes a whole `.ico` from
-    /// memory, so the directory is walked here to find one image and
-    /// `CreateIconFromResourceEx` is given exactly that span. The bytes are
-    /// treated as untrusted: `super::ico::best_image` bounds-checks every
-    /// offset before we hand a length to the OS, which would otherwise read
-    /// whatever follows in our address space.
-    fn load_from_bytes(bytes: &[u8]) -> Result<HICON, IconError> {
-        let span = super::ico::best_image(bytes).map_err(IconError::Decode)?;
-        let image = &bytes[span.offset..span.offset + span.len];
-
-        // 0x00030000 is the icon resource version the API expects.
-        const ICON_RESOURCE_VERSION: DWORD = 0x0003_0000;
-        let icon = unsafe {
-            CreateIconFromResourceEx(
-                image.as_ptr() as *mut u8,
-                image.len() as DWORD,
-                TRUE,
-                ICON_RESOURCE_VERSION,
-                0,
-                0,
-                LR_DEFAULTSIZE,
-            )
-        };
-        if icon.is_null() {
-            return Err(IconError::Apply(std::io::Error::last_os_error()));
-        }
-        Ok(icon)
-    }
-
-    /// Load an icon the OS already provides.
-    ///
-    /// These are shared resources owned by the system, so unlike the file and
-    /// byte paths there is nothing to free and no data to validate — the only
-    /// failure is the OS declining to hand one over.
-    pub(super) fn load_stock(stock: StockIcon) -> Result<HICON, IconError> {
-        let name = match stock {
-            StockIcon::Application => IDI_APPLICATION,
-            StockIcon::Warning => IDI_WARNING,
-            StockIcon::Error => IDI_ERROR,
-            StockIcon::Information => IDI_INFORMATION,
-            StockIcon::Shield => IDI_SHIELD,
-        };
-        // A null hInstance asks for a system icon rather than one from this
-        // module's resources.
-        let icon = unsafe { LoadIconW(std::ptr::null_mut(), name) };
-        if icon.is_null() {
-            return Err(IconError::Apply(std::io::Error::last_os_error()));
-        }
-        Ok(icon)
-    }
-
-    pub(super) fn set_icon(scope: IconScope, source: &IconSource) -> Result<(), IconError> {
-        let hwnd = window_for(scope).ok_or(IconError::Unsupported {
-            reason: "the console window disappeared between the support probe and the call",
-        })?;
-
-        let icon = match source {
-            IconSource::Path(path) => load_from_path(path)?,
-            IconSource::Bytes(bytes) => load_from_bytes(bytes)?,
-            IconSource::Stock(stock) => load_stock(*stock)?,
-        };
-
-        // Both slots: the small icon is the title bar and Alt+Tab, the big one
-        // is the taskbar. Setting only one leaves the other stale, which looks
-        // like a partial failure to a user.
-        unsafe {
-            SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icon as isize);
-            SendMessageW(hwnd, WM_SETICON, ICON_BIG, icon as isize);
-        }
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-mod imp {
-    use super::{IconError, IconScope, IconSource, IconSupport};
-
-    pub(super) fn icon_support(_scope: IconScope) -> IconSupport {
-        // Per-platform verdicts rather than one blanket string. A caller
-        // logging "unsupported" on macOS and on headless Linux is logging two
-        // different problems, and only one of them has a remedy.
-        if cfg!(target_os = "macos") {
-            return IconSupport::Unsupported {
-                reason: "on macOS the window belongs to Terminal.app or iTerm2, not to this                          process; set the icon on the terminal application's own bundle",
-            };
-        }
-        #[cfg(target_os = "linux")]
-        {
-            super::x11::support(_scope)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-                return IconSupport::Unsupported {
-                    reason: "Wayland compositors do not let a client change another window's                              icon; set it in the terminal emulator's .desktop file",
-                };
-            }
-            IconSupport::Unsupported {
-                reason: "no window-icon backend exists for this platform",
-            }
-        }
-    }
-
-    pub(super) fn set_icon(_scope: IconScope, _source: &IconSource) -> Result<(), IconError> {
-        #[cfg(target_os = "linux")]
-        {
-            super::x11::set_icon(_scope, _source)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(IconError::Unsupported {
-                reason: "no window-icon backend exists for this platform",
-            })
-        }
     }
 }
 
@@ -563,34 +409,6 @@ mod tests {
         }
     }
 
-    /// Windows Terminal must be detected by env, not only by window class.
-    ///
-    /// The class check cannot distinguish WT from any other non-conhost
-    /// host, and only WT has the specific remedy of a per-profile `icon`
-    /// field. This runs the real detection with the env var set, so the
-    /// branch is exercised rather than assumed.
-    #[test]
-    #[cfg(windows)]
-    fn windows_terminal_is_detected_by_env_and_names_its_remedy() {
-        // SAFETY: single-threaded test process; the var is restored below.
-        let previous = std::env::var_os("WT_SESSION");
-        unsafe { std::env::set_var("WT_SESSION", "test-session") };
-        let support = host_icon_support();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("WT_SESSION", value) },
-            None => unsafe { std::env::remove_var("WT_SESSION") },
-        }
-
-        match support {
-            IconSupport::Degraded { reason } => {
-                assert!(
-                    reason.contains("profile"),
-                    "WT's verdict must point at the profile icon field; got {reason:?}"
-                );
-            }
-            other => panic!("WT_SESSION must yield Degraded, got {other:?}"),
-        }
-    }
     #[test]
     fn a_degraded_host_is_attemptable_but_not_available() {
         // The distinction a caller acts on: `is_available` decides whether
@@ -723,28 +541,6 @@ mod tests {
         );
     }
 
-    /// The OS must hand back a real icon for every variant.
-    ///
-    /// Calls the loader directly rather than going through `set_host_icon`,
-    /// which refuses at the window lookup on a machine with no console — so
-    /// the enum-to-OS mapping would otherwise never run here. That is the
-    /// only place the mapping itself is exercised.
-    #[cfg(windows)]
-    #[test]
-    fn the_os_supplies_every_stock_icon() {
-        for stock in [
-            StockIcon::Application,
-            StockIcon::Warning,
-            StockIcon::Error,
-            StockIcon::Information,
-            StockIcon::Shield,
-        ] {
-            let icon =
-                imp::load_stock(stock).unwrap_or_else(|e| panic!("the OS declined {stock:?}: {e}"));
-            assert!(!icon.is_null(), "{stock:?} produced a null icon");
-        }
-    }
-
     /// A pid that owns no console window must be refused, with a reason.
     ///
     /// Platform-neutral: off Windows the whole feature is unavailable and
@@ -761,19 +557,6 @@ mod tests {
         assert!(
             !support.reason().expect("must explain itself").is_empty(),
             "an unsupported result must carry a usable reason"
-        );
-    }
-
-    /// On Windows the reason must name what is actually missing, so a caller
-    /// knows to spawn with CREATE_NEW_CONSOLE rather than retrying.
-    #[cfg(windows)]
-    #[test]
-    fn a_childless_pid_reason_names_the_console_window() {
-        let support = icon_support(IconScope::Child { pid: 0 });
-        let reason = support.reason().expect("must explain itself");
-        assert!(
-            reason.contains("console window"),
-            "the reason should name what is missing: {reason}"
         );
     }
 

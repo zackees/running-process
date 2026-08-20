@@ -20,7 +20,7 @@
 
 use crate::broker::protocol::framing::MAX_FRAME_BYTES;
 use crate::client::paths;
-use interprocess::local_socket::Stream;
+use crate::platform::ipc::Stream;
 use std::io::{self, Read};
 use std::sync::mpsc;
 use std::thread;
@@ -162,9 +162,8 @@ pub(crate) fn connect_with_timeout(socket_path: &str) -> io::Result<Stream> {
     thread::Builder::new()
         .name("rp-client-connect".to_string())
         .spawn(move || {
-            use interprocess::local_socket::traits::Stream as _;
-            let result = match paths::make_socket_name(&path) {
-                Ok(name) => Stream::connect(name),
+            let result = match paths::make_socket_endpoint(&path) {
+                Ok(endpoint) => Stream::connect(&endpoint),
                 Err(err) => Err(err),
             };
             // Receiver gone means the caller timed out; drop the stream here.

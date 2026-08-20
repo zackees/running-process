@@ -28,3 +28,6 @@ pub use telemetry::{
     SessionTeeBackpressure, SessionTeeFileMode, SessionTeeFileRequest, SessionTeeKind,
     SessionTeeStatus, SessionTeeStream,
 };
+
+#[doc(hidden)]
+pub use crate::platform::ipc::{Endpoint as IpcEndpoint, Stream as IpcStream};

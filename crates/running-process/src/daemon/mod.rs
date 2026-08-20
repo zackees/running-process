@@ -3,6 +3,9 @@ pub use crate::client::paths;
 pub use crate::client::pipe_session;
 pub use crate::client::pty_session;
 
+#[doc(hidden)]
+pub use running_process_platform_internal::platform::ipc::IntoAsyncListener as IntoDaemonAsyncListener;
+
 pub mod attach_stream;
 pub mod backend_endpoint;
 pub mod compile_session;

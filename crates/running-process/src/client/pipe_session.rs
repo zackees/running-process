@@ -9,6 +9,7 @@
 
 use crate::client::paths;
 use crate::client::{ClientError, DaemonClient};
+use crate::platform::ipc::Stream;
 use crate::proto::daemon::{
     AttachPipeStreamRequest, AttachPipeStreamResponse, DaemonRequest, DaemonResponse,
     DetachPipeStreamRequest, KeyValue, ListPipeSessionsRequest, ListPipeSessionsResponse,
@@ -16,8 +17,6 @@ use crate::proto::daemon::{
     SpawnPipeSessionResponse, StatusCode, TerminatePipeSessionRequest, WritePipeStdinRequest,
     WritePipeStdinResponse,
 };
-use interprocess::local_socket::Stream;
-use interprocess::TryClone;
 use prost::Message;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;

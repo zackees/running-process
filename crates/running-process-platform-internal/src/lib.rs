@@ -20,6 +20,15 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 /// ownership names before later phases move a capability behind them.
 pub mod platform;
 
+/// Temporary source-compatibility re-export for the pre-boundary PTY API.
+///
+/// New code must use [`platform::terminal`] facade-owned types. This root-only
+/// alias deliberately stays outside the neutral facade and can be removed in
+/// the next major release after downstream users have migrated.
+#[cfg(feature = "pty")]
+#[doc(hidden)]
+pub use portable_pty as portable_pty_compat;
+
 // This is deliberately the crate's only host selector.  Facade modules are
 // neutral; native details live behind the selected private root.
 cfg_select! {
@@ -41,16 +50,39 @@ cfg_select! {
 // root. Neutral capability facades re-export only crate-root names and never
 // name the private `platform_imp` alias themselves.
 pub use platform_imp::{
-    assign_child_to_windows_job, cancel_capture_reader, canonical_environment_pairs,
-    capture_reader_done, compat_shell_command, configure_exact_trace, configure_process_command,
-    configure_sync_contained_command, configure_sync_daemon_command, configure_trampoline_command,
-    current_executable_build_id, exact_trace_capability, exit_code, kill_tree,
-    monitor_console_windows, parent_has_console, prepare_capture_reader, process_snapshot,
-    process_snapshot_for_pid, set_process_name, shell_command, soft_terminate_process_group,
-    spawn_sync, spawn_sync_daemon, start_descendant_monitor, start_exact_trace,
-    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
-    unix_set_priority, unix_signal_process, unix_signal_process_group, unix_signal_raw,
-    CaptureCancellation, TracedChild, WindowsJobHandle,
+    active_graphics_probe, assign_child_to_windows_job, cancel_capture_reader,
+    canonical_environment_pairs, capture_reader_done, compat_shell_command, configure_exact_trace,
+    configure_process_command, configure_sync_contained_command, configure_sync_daemon_command,
+    configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
+    kill_tree, monitor_console_windows, parent_has_console, prepare_capture_reader,
+    process_snapshot, process_snapshot_for_pid, set_process_name, set_window_icon_impl,
+    shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
+    start_descendant_monitor, start_exact_trace, sync_child_native_handle, trampoline_exit_code,
+    unix_mark_extra_fds_close_on_exec, unix_set_priority, unix_signal_process,
+    unix_signal_process_group, unix_signal_raw, window_icon_support_impl, CaptureCancellation,
+    TracedChild, WindowsJobHandle,
+};
+
+pub use platform_imp::terminal_input;
+
+#[cfg(feature = "ipc")]
+pub use platform_imp::{
+    ipc_current_user_id, IpcEndpoint, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
+    IpcStream,
+};
+
+#[cfg(feature = "ipc-async")]
+pub use platform_imp::{
+    IpcAsyncListener, IpcAsyncStream, IpcIntoAsyncListener, IpcIntoAsyncStream,
+};
+
+#[cfg(feature = "pty")]
+pub use platform_imp::terminal::{
+    before_pty_spawn, current_backend_kind, find_child_processes, find_orphan_conhosts,
+    input_payload, is_ignorable_process_control_error, prepare_unmanaged_pty_child,
+    query_responses, resize_pty, shell_argv, signal_pty_tree, terminate_pty_child,
+    wait_before_pty_close_supported, Backend, ChildProcessInfo, ConPtyBackendKind,
+    OrphanConhostInfo, PtyProcessGuard, PtySpawnContext, TerminalInputSession,
 };
 
 #[cfg(feature = "session-relay")]

@@ -1,10 +1,34 @@
 //! Linux implementation root for the process capability.
 
+#[cfg(feature = "ipc")]
+#[path = "platform_linux/ipc.rs"]
+pub(crate) mod ipc;
+#[cfg(feature = "ipc")]
+pub use ipc::{
+    current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint, Listener as IpcListener,
+    ListenerNonblockingMode as IpcListenerNonblockingMode, PeerIdentity as IpcPeerIdentity,
+    Stream as IpcStream,
+};
+#[cfg(feature = "ipc-async")]
+pub use ipc::{
+    AsyncListener as IpcAsyncListener, AsyncStream as IpcAsyncStream,
+    IntoAsyncListener as IpcIntoAsyncListener, IntoAsyncStream as IpcIntoAsyncStream,
+};
+
 #[cfg(feature = "session-relay")]
 #[path = "platform_linux_session_relay.rs"]
 mod session_relay;
 #[cfg(feature = "session-relay")]
 pub use session_relay::relay_local_socket_session;
+
+#[path = "platform_linux/terminal.rs"]
+pub mod terminal;
+pub use terminal::active_graphics_probe;
+pub use crate::platform::terminal_input;
+
+#[path = "platform_linux/window_icon.rs"]
+mod window_icon;
+pub use window_icon::{icon_support as window_icon_support_impl, set_icon as set_window_icon_impl};
 
 pub fn shell_command(command: &str) -> std::process::Command {
     let mut shell = std::process::Command::new("/bin/sh");

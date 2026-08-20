@@ -18,8 +18,10 @@ use std::path::PathBuf;
 pub fn socket_path(scope_hash: Option<&str>) -> String {
     #[cfg(unix)]
     {
-        // Ensure the directory exists.
-        let _ = std::fs::create_dir_all(runtime_dir_unix());
+        // This is a product-owned, dedicated leaf, so the caller is allowed
+        // to repair legacy permissions before the platform bind verifies it.
+        let directory = runtime_dir_unix();
+        let _ = crate::broker::secure_dir::ensure_private_dir(&directory);
     }
     socket_path_view(scope_hash)
 }
@@ -44,11 +46,15 @@ pub fn socket_path_view(scope_hash: Option<&str>) -> String {
     }
 }
 
-/// Build an `interprocess` local socket [`interprocess::local_socket::Name`]
-/// from the path returned by [`socket_path`].
+/// Build an opaque local IPC endpoint from the path returned by [`socket_path`].
 ///
 /// This must use the same name-type dispatch as the server so that client
 /// and server agree on the actual IPC endpoint.
+pub fn make_socket_endpoint(path: &str) -> std::io::Result<crate::platform::ipc::Endpoint> {
+    crate::platform::ipc::Endpoint::new(path)
+}
+
+/// Compatibility name conversion retained while broker callers migrate.
 pub fn make_socket_name(path: &str) -> std::io::Result<interprocess::local_socket::Name<'_>> {
     crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(std::io::Error::other)
 }

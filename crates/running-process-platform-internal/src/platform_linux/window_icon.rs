@@ -34,7 +34,13 @@ use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode, Window};
 // xproto surface, so it needs its own trait in scope.
 use x11rb::wrapper::ConnectionExt as _;
 
-use super::{IconError, IconScope, IconSource, IconSupport};
+use crate::platform::window_icon::{
+    IconDegradedReason, IconError, IconScope, IconSource, IconSupport, IconUnsupportedReason,
+};
+
+#[cfg(test)]
+#[path = "window_icon/tests_support.rs"]
+mod tests_support;
 
 /// Decoded pixels, ready for the property.
 #[derive(Debug)]
@@ -77,48 +83,37 @@ fn parse_window_id(raw: &str) -> Option<Window> {
 }
 
 /// Whether this host can take a real icon.
-pub(super) fn support(scope: IconScope) -> IconSupport {
+pub fn icon_support(scope: IconScope) -> IconSupport {
     // A child's window cannot be identified. `WINDOWID` names *this*
     // process's terminal, and mapping a pid to an X window would mean the
     // same heuristic guessing that finding our own window deliberately
     // avoids — with the added cost that guessing wrong writes an icon onto
     // an unrelated application.
     if matches!(scope, IconScope::Child { .. }) {
-        return IconSupport::Unsupported {
-            reason: "X11 cannot identify another process's terminal window; WINDOWID names                      only this process's own host",
-        };
+        return IconSupport::Unsupported(IconUnsupportedReason::LinuxChildScope);
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        return IconSupport::Unsupported {
-            reason: "Wayland compositors do not let a client change another window's icon; \
-                     set it in the terminal emulator's .desktop file",
-        };
+        return IconSupport::Unsupported(IconUnsupportedReason::Wayland);
     }
     if std::env::var_os("DISPLAY").is_none() {
-        return IconSupport::Unsupported {
-            reason: "no display server is attached (no DISPLAY or WAYLAND_DISPLAY), so there \
-                     is no window to set an icon on",
-        };
+        return IconSupport::Unsupported(IconUnsupportedReason::LinuxNoDisplay);
     }
     if window_id().is_none() {
         // Degraded rather than unsupported: OSC 1 still reaches the terminal
         // even when we cannot identify its window.
-        return IconSupport::Degraded {
-            reason: "WINDOWID is not set, so the terminal's X window cannot be identified; \
-                     a stock name can still be sent via OSC 1",
-        };
+        return IconSupport::Degraded(IconDegradedReason::LinuxNameOnly);
     }
     IconSupport::Available
 }
 
 /// Write `source` onto this process's terminal window.
-pub(super) fn set_icon(scope: IconScope, source: &IconSource) -> Result<(), IconError> {
-    if let IconSupport::Unsupported { reason } = support(scope) {
-        return Err(IconError::Unsupported { reason });
+pub fn set_icon(scope: IconScope, source: &IconSource) -> Result<(), IconError> {
+    if let IconSupport::Unsupported(reason) = icon_support(scope) {
+        return Err(IconError::Unsupported(reason));
     }
-    let window = window_id().ok_or(IconError::Unsupported {
-        reason: "WINDOWID is not set, so the terminal's X window cannot be identified",
-    })?;
+    let window = window_id().ok_or(IconError::Unsupported(
+        IconUnsupportedReason::TargetDisappeared,
+    ))?;
     let image = decode(source)?;
     write_property(window, &image)
 }
@@ -137,10 +132,9 @@ fn decode(source: &IconSource) -> Result<Rgba, IconError> {
         // A stock name is a theme lookup, not an image. Resolving it would
         // mean reading the user's icon theme, which is a different feature;
         // the OSC 1 fallback already carries the name.
-        IconSource::Stock(_) => Err(IconError::Unsupported {
-            reason: "stock icons are theme names, not images; X11 needs pixels. Pass a PNG, \
-                     or let the OSC 1 fallback send the name",
-        }),
+        IconSource::Stock(_) => Err(IconError::Unsupported(
+            IconUnsupportedReason::StockNeedsPixels,
+        )),
     }
 }
 
@@ -155,20 +149,19 @@ fn decode_bytes(bytes: &[u8], path: Option<&Path>) -> Result<Rgba, IconError> {
     // handled by unwrapping to the embedded image; a DIB would need a second
     // decoder, and saying so is more useful than a generic parse failure that
     // sends the caller looking for a corrupt file.
-    if let Ok(span) = super::ico::best_image(bytes) {
+    if let Ok(span) = crate::platform::window_icon::ico::best_image(bytes) {
         let inner = &bytes[span.offset..span.offset + span.len];
         if inner.len() >= PNG_MAGIC.len() && inner[..PNG_MAGIC.len()] == PNG_MAGIC {
             return decode_png(inner);
         }
-        return Err(IconError::Unsupported {
-            reason: "this .ico holds a BMP/DIB image, which the X11 backend cannot decode. \
-                     Pass a PNG, or a .ico whose largest image is PNG-encoded",
-        });
+        return Err(IconError::Unsupported(
+            IconUnsupportedReason::UnknownImageFormat,
+        ));
     }
     let _ = path;
-    Err(IconError::Unsupported {
-        reason: "the X11 backend accepts PNG data (or a .ico whose largest image is a PNG)",
-    })
+    Err(IconError::Unsupported(
+        IconUnsupportedReason::UnknownImageFormat,
+    ))
 }
 
 fn decode_png(bytes: &[u8]) -> Result<Rgba, IconError> {
@@ -183,10 +176,9 @@ fn decode_png(bytes: &[u8]) -> Result<Rgba, IconError> {
         .map_err(|e| IconError::Apply(std::io::Error::other(e.to_string())))?;
 
     if info.width > MAX_SIDE || info.height > MAX_SIDE {
-        return Err(IconError::Unsupported {
-            reason: "icon is larger than 512x512; window managers scale down from far smaller, \
-                     and the property travels on the same socket as every other X request",
-        });
+        return Err(IconError::Unsupported(
+            IconUnsupportedReason::OversizedIcon,
+        ));
     }
 
     let pixels = match info.color_type {
@@ -199,10 +191,9 @@ fn decode_png(bytes: &[u8]) -> Result<Rgba, IconError> {
             .collect(),
         other => {
             let _ = other;
-            return Err(IconError::Unsupported {
-                reason: "the X11 backend needs an RGB or RGBA PNG; convert palette or \
-                         grayscale images first",
-            });
+            return Err(IconError::Unsupported(
+                IconUnsupportedReason::UnsupportedPngColorType,
+            ));
         }
     };
 
@@ -296,16 +287,16 @@ mod tests {
     fn a_child_scope_is_refused_rather_than_silently_hitting_our_own_window() {
         // The bug this prevents: without the scope check, targeting a child
         // writes the icon onto *this* process's terminal and reports success.
-        let support = support(IconScope::Child { pid: 4242 });
+        let support = icon_support(IconScope::Child { pid: 4242 });
         match support {
-            IconSupport::Unsupported { reason } => assert!(reason.contains("WINDOWID")),
+            IconSupport::Unsupported(IconUnsupportedReason::LinuxChildScope) => {}
             other => panic!("a child's window is not identifiable on X11, got {other:?}"),
         }
     }
 
     #[test]
     fn an_rgb_png_gains_full_alpha_rather_than_being_refused() {
-        let png = super::super::tests_support::rgb_png(1, 1, [0x10, 0x20, 0x30]);
+        let png = super::tests_support::rgb_png(1, 1, [0x10, 0x20, 0x30]);
         let image = decode_png(&png).expect("an RGB PNG is an ordinary icon");
         assert_eq!(image.pixels, vec![0x10, 0x20, 0x30, 0xff]);
     }
@@ -315,24 +306,27 @@ mod tests {
         let error = decode_bytes(b"not an image at all", None)
             .expect_err("arbitrary bytes are not an icon");
         match error {
-            IconError::Unsupported { reason } => assert!(reason.contains("PNG")),
+            IconError::Unsupported(IconUnsupportedReason::UnknownImageFormat) => {}
             other => panic!("expected Unsupported, got {other:?}"),
         }
     }
 
     #[test]
     fn an_oversized_png_is_refused_before_it_reaches_the_socket() {
-        let png = super::super::tests_support::rgb_png(MAX_SIDE + 1, 1, [0, 0, 0]);
+        let png = super::tests_support::rgb_png(MAX_SIDE + 1, 1, [0, 0, 0]);
         let error = decode_png(&png).expect_err("an oversized icon must be refused");
-        assert!(matches!(error, IconError::Unsupported { .. }));
+        assert!(matches!(
+            error,
+            IconError::Unsupported(IconUnsupportedReason::OversizedIcon)
+        ));
     }
 
     #[test]
     fn a_stock_icon_is_refused_because_x11_needs_pixels() {
-        let error = decode(&IconSource::Stock(super::super::StockIcon::Shield))
+        let error = decode(&IconSource::Stock(crate::platform::window_icon::StockIcon::Shield))
             .expect_err("a theme name is not an image");
         match error {
-            IconError::Unsupported { reason } => assert!(reason.contains("OSC 1")),
+            IconError::Unsupported(IconUnsupportedReason::StockNeedsPixels) => {}
             other => panic!("expected Unsupported, got {other:?}"),
         }
     }

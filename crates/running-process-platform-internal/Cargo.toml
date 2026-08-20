@@ -14,19 +14,60 @@ workspace = true
 
 [features]
 default = []
-session-relay = ["dep:interprocess", "tokio/net"]
+ipc = ["dep:interprocess"]
+ipc-async = ["ipc", "interprocess/tokio", "tokio/net"]
+session-relay = ["ipc-async"]
+pty = ["dep:portable-pty"]
+conpty-sidecar = [
+    "pty",
+    "dep:dirs",
+    "dep:sha2",
+    "dep:ureq",
+    "dep:zstd",
+    "dep:tar",
+]
 
 [dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt"] }
 sysinfo = "0.30"
-interprocess = { version = "2", optional = true, features = ["tokio"] }
+interprocess = { version = "2", optional = true }
+thiserror = "2"
+portable-pty = { version = "0.9", optional = true }
+
+[build-dependencies]
+toml = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
+png = "0.17"
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
-winapi = { version = "0.3", features = ["fileapi", "handleapi", "ioapiset", "jobapi2", "minwindef", "namedpipeapi", "processenv", "processthreadsapi", "synchapi", "winbase", "windef", "winnt", "winuser"] }
+dirs = { version = "6", optional = true }
+sha2 = { version = "0.10", optional = true }
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
+zstd = { version = "0.13", default-features = false, optional = true }
+tar = { version = "0.4", default-features = false, optional = true }
+windows-sys = { version = "0.61", features = [
+    "Wdk_System_Threading",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+winapi = { version = "0.3", features = ["consoleapi", "fileapi", "handleapi", "ioapiset", "jobapi2", "minwindef", "namedpipeapi", "processenv", "processthreadsapi", "synchapi", "tlhelp32", "winbase", "wincon", "wincontypes", "windef", "winerror", "winnt", "winuser"] }
+widestring = "1"

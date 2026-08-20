@@ -14,9 +14,6 @@ here in the same change.
 | Dependency | Manifest section | Activation | Review note |
 |---|---|---|---|
 | `libc` | `[dependencies]` | Always compiled | Unix process, file, and credential APIs. Platform boundary is security-sensitive. |
-| `portable-pty` | `[dependencies]` | `pty` feature | Unix PTY implementation for the process API. Not part of broker wire parsing. |
-| `x11rb` | `[dependencies]` | Linux only | Speaks the X11 protocol directly over the display socket to set `_NET_WM_ICON` (#577). Pure Rust, so it adds no `libxcb`/`libX11` system dependency to a crate that must build in minimal containers. Talks only to the local display server named by `DISPLAY`; no network transport purpose. |
-| `png` | `[dependencies]` | Linux only | Decodes an icon to the RGBA that `_NET_WM_ICON` requires — Windows lets the OS decode, X11 does not. **Untrusted-input parser**: the icon bytes come from the caller. Decoded output is bounded to 512x512 before it reaches the socket. |
 | `sysinfo` | `[dependencies]` | Always compiled | Process inspection for local runtime behavior. No network transport purpose. |
 | `thiserror` | `[dependencies]` | Always compiled | Error types only. Workspace version source. |
 | `winapi` | `[dependencies]` | Always compiled; used by Windows paths | Windows process, pipe, handle, and security APIs. Platform boundary is security-sensitive. |
@@ -31,7 +28,7 @@ here in the same change.
 | `getrandom` | `[dependencies]` | `client` feature | Backend pipe randomness. Security-sensitive entropy boundary. |
 | `running-process-probe` | `[dependencies]` | `probe` feature | Schema-only: supplies the `probe_diag.v1` prost types to the probe client facade (#633). Pulled in with `default-features = false`, so the crate's injection vehicles (gated on its `embed-helper` feature) are never compiled here and the main crate keeps zero injection symbols. No network transport purpose. |
 | `tokio` | `[dependencies]` | `daemon` feature | Async runtime for broker daemon tasks. `full` features include broad Tokio APIs, so code review must keep broker operation local-IPC-only. |
-| `running-process-platform-internal` | `[dependencies]` | `async-process` feature | Blessed platform process boundary for async process spawning and lifecycle operations. Kept behind the feature so the synchronous API remains available without Tokio. |
+| `running-process-platform-internal` | `[dependencies]` | Always compiled; optional capabilities follow `pty`, `conpty-sidecar`, and `client-async` | Blessed platform boundary for process, terminal/PTY/ConPTY, terminal input, and native window-icon mechanics. It owns the concrete host dependencies and exposes neutral caller-facing types. |
 | `tokio-util` | `[dependencies]` | `daemon` feature | Codec helpers for local IPC framing. Untrusted-input framing boundary. |
 | `bytes` | `[dependencies]` | `daemon` feature | Buffer type used by async framing. Untrusted-input sizing boundary. |
 | `futures-util` | `[dependencies]` | `daemon` feature | Async sink/stream helpers. No standalone transport purpose. |
@@ -42,17 +39,15 @@ here in the same change.
 | `serde` | `[dependencies]` | Always compiled | Data model derives and local JSON sidecar support. Not broker wire authority. |
 | `serde_json` | `[dependencies]` | Always compiled | Local JSON sidecar/admin-output support. The broker wire format remains prost-only. |
 | `windows-sys` | `[target.'cfg(windows)'.dependencies]` | Windows only | ConPTY and Windows platform APIs. Platform boundary is security-sensitive. |
-| `ureq` | `[target.'cfg(windows)'.dependencies]` | Windows only, `conpty-sidecar` feature | Blocking HTTPS client for Win10 ConPTY sidecar self-acquisition (#445). Only used to GET `conpty-sidecar-<arch>.tar.zst` from this crate's GitHub release. rustls TLS, no native-tls. The library has no general-purpose HTTP path; ureq is reachable only through the one-time sidecar fetch on Windows 10 and is gated by `RUNNING_PROCESS_USE_SYSTEM_CONPTY` / `RUNNING_PROCESS_CONPTY_OFFLINE`. |
-| `zstd` | `[target.'cfg(windows)'.dependencies]` | Windows only, `conpty-sidecar` feature | Decompresses the zstd-19 sidecar tarball fetched by ureq. Decode-only of an asset that is content-locked to a GitHub release tag. |
-| `tar` | `[target.'cfg(windows)'.dependencies]` | Windows only, `conpty-sidecar` feature | Extracts `conpty.dll` + `OpenConsole.exe` from the decompressed sidecar archive. Path-traversal-defended at the call site (see `conpty_acquire::extract_tar_zst`). |
 
 ## Current Review Summary
 
-- The only direct runtime dependency reviewed as an HTTP/TLS dependency is
-  `ureq` (Windows-only, gated to a single one-shot GET to this crate's own
-  GitHub release for the Win10 ConPTY sidecar — see #445). It is reachable
-  only with the `conpty-sidecar` feature from
-  `pty::conpty_passthrough::conpty_acquire`, never from broker code.
+- `running-process-platform-internal` is the only direct dependency whose
+  transitive, Windows-only `conpty-sidecar` capability includes an HTTP/TLS
+  client: `ureq`, gated to a single one-shot GET to this crate's own GitHub
+  release for the Win10 ConPTY sidecar (see #445). It is reachable only from
+  `platform_win::terminal::conpty_passthrough::conpty_acquire`, never from
+  broker code.
   No other current direct runtime dependency is reviewed as an HTTP, TLS,
   WebSocket, browser-facing transport, or network-RPC dependency.
 - `tokio` is the only direct runtime dependency with broadly available async

@@ -525,73 +525,15 @@ pub fn xtsmgraphics_reports_sixel(reply: &str) -> bool {
     reply.contains("\x1b[?") && reply.contains('S')
 }
 
-#[cfg(unix)]
 fn active_probe(timeout: Duration) -> TerminalProbeEvidence {
-    use std::fs::OpenOptions;
-    use std::io::{Read, Write};
-    use std::os::fd::AsRawFd;
-    use std::time::Instant;
-
-    let Ok(mut tty) = OpenOptions::new().read(true).write(true).open("/dev/tty") else {
-        return TerminalProbeEvidence::default();
-    };
-    let fd = tty.as_raw_fd();
-    let mut old_termios = std::mem::MaybeUninit::<libc::termios>::uninit();
-    let have_termios = unsafe { libc::tcgetattr(fd, old_termios.as_mut_ptr()) == 0 };
-    let old_termios = if have_termios {
-        Some(unsafe { old_termios.assume_init() })
-    } else {
-        None
-    };
-    if let Some(mut raw) = old_termios {
-        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
-        raw.c_cc[libc::VMIN] = 0;
-        raw.c_cc[libc::VTIME] = 0;
-        let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) };
-    }
-    let old_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if old_flags >= 0 {
-        let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, old_flags | libc::O_NONBLOCK) };
-    }
-
-    let _ = tty.write_all(
-        b"\x1b[c\x1b[?2;1;0S\x1b_Gi=running-process-probe,a=q;\x1b\\\x1b]1337;Capabilities\x07",
-    );
-    let _ = tty.flush();
-
-    let deadline = Instant::now() + timeout;
-    let mut buf = Vec::new();
-    while Instant::now() < deadline {
-        let mut chunk = [0_u8; 512];
-        match tty.read(&mut chunk) {
-            Ok(0) => std::thread::sleep(Duration::from_millis(5)),
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Err(_) => break,
-        }
-    }
-
-    if old_flags >= 0 {
-        let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, old_flags) };
-    }
-    if let Some(old) = old_termios {
-        let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &old) };
-    }
-
-    let reply = String::from_utf8_lossy(&buf).into_owned();
+    let reply =
+        running_process_platform_internal::platform::terminal::active_graphics_probe(timeout);
     TerminalProbeEvidence {
-        sixel_xtsmgraphics: reply.contains('S').then(|| reply.clone()),
-        sixel_da1: reply.contains("[?").then(|| reply.clone()),
-        kitty_graphics: reply.contains("_G").then(|| reply.clone()),
-        iterm2_capabilities: reply.contains("Capabilities=").then_some(reply),
+        sixel_xtsmgraphics: reply.sixel_xtsmgraphics,
+        sixel_da1: reply.sixel_da1,
+        kitty_graphics: reply.kitty_graphics,
+        iterm2_capabilities: reply.iterm2_capabilities,
     }
-}
-
-#[cfg(not(unix))]
-fn active_probe(_timeout: Duration) -> TerminalProbeEvidence {
-    TerminalProbeEvidence::default()
 }
 
 #[cfg(feature = "client")]

@@ -1,5 +1,20 @@
 //! Windows implementation root for the process capability.
 
+#[cfg(feature = "ipc")]
+#[path = "platform_win/ipc.rs"]
+pub(crate) mod ipc;
+#[cfg(feature = "ipc")]
+pub use ipc::{
+    current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint, Listener as IpcListener,
+    ListenerNonblockingMode as IpcListenerNonblockingMode, PeerIdentity as IpcPeerIdentity,
+    Stream as IpcStream,
+};
+#[cfg(feature = "ipc-async")]
+pub use ipc::{
+    AsyncListener as IpcAsyncListener, AsyncStream as IpcAsyncStream,
+    IntoAsyncListener as IpcIntoAsyncListener, IntoAsyncStream as IpcIntoAsyncStream,
+};
+
 #[cfg(feature = "session-relay")]
 #[path = "platform_win_session_relay.rs"]
 mod session_relay;
@@ -9,6 +24,17 @@ pub use session_relay::relay_local_socket_session;
 #[path = "platform_win/console.rs"]
 mod console;
 pub use console::monitor_console_windows;
+
+#[path = "platform_win/terminal.rs"]
+pub mod terminal;
+pub use terminal::active_graphics_probe;
+
+#[path = "platform_win/terminal_input.rs"]
+pub mod terminal_input;
+
+#[path = "platform_win/window_icon.rs"]
+mod window_icon;
+pub use window_icon::{icon_support as window_icon_support_impl, set_icon as set_window_icon_impl};
 
 #[path = "platform_win_descendants.rs"]
 mod descendants;

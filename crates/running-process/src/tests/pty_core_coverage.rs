@@ -103,29 +103,7 @@ fn pty_reader_retries_transient_errors_records_metrics_and_closes() {
 }
 
 #[test]
-fn helpers_cover_exit_signals_commands_metrics_and_error_rendering() {
-    assert_eq!(
-        portable_exit_code(portable_pty::ExitStatus::with_exit_code(23)),
-        23
-    );
-    assert_eq!(
-        portable_exit_code(portable_pty::ExitStatus::with_signal("Interrupt")),
-        -2
-    );
-    assert_eq!(
-        portable_exit_code(portable_pty::ExitStatus::with_signal("Terminated")),
-        -15
-    );
-    assert_eq!(
-        portable_exit_code(portable_pty::ExitStatus::with_signal("Killed")),
-        -9
-    );
-    assert_eq!(
-        portable_exit_code(portable_pty::ExitStatus::with_signal("Other")),
-        1
-    );
-    let _ = command_builder_from_argv(&["echo".into(), "coverage".into()]);
-
+fn helpers_cover_metrics_and_error_rendering() {
     let bytes = Arc::new(AtomicUsize::new(0));
     let newlines = Arc::new(AtomicUsize::new(0));
     let submits = Arc::new(AtomicUsize::new(0));

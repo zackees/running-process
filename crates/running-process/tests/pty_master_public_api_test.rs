@@ -1,12 +1,9 @@
-//! Regression test for 4.0.1: the `PtyMaster` trait + `PtySize`
-//! struct are reachable from downstream crates via the public
-//! `running_process::pty::backend` re-exports, and `master.resize` /
-//! `master.get_size` can be called through `NativePtyHandles.master`.
+//! Public PTY facade contract.
 //!
-//! In 4.0.0 the backend trait and module were `pub(crate)`, which
-//! meant downstream consumers (e.g. clud's SIGWINCH relay) could
-//! hold the `Box<dyn PtyMaster>` from `NativePtyHandles.master` but
-//! couldn't call any method on it. This test locks the surface in.
+//! The 4.0.1 public neutral traits remain reachable and usable through
+//! `NativePtyHandles`. The platform-boundary migration keeps the historical
+//! concrete `portable-pty` and native fd/HANDLE escape hatches deprecated until
+//! the next major release, while new mechanics use only facade-owned operations.
 //!
 //! Uses `python -c sleep` as the child, matching the rest of the
 //! integration test suite. If the test runner doesn't have a
@@ -14,8 +11,94 @@
 
 use std::time::{Duration, Instant};
 
-use running_process::pty::backend::PtySize;
+use running_process::pty::backend::{PtyChild, PtyMaster, PtySize};
 use running_process::pty::NativePtyProcess;
+
+struct NeutralMaster;
+
+#[allow(deprecated)]
+impl PtyMaster for NeutralMaster {
+    fn try_clone_reader(&mut self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        Ok(Box::new(std::io::empty()))
+    }
+
+    fn take_writer(&mut self) -> std::io::Result<Box<dyn std::io::Write + Send>> {
+        Ok(Box::new(std::io::sink()))
+    }
+
+    fn resize(&self, _size: PtySize) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn get_size(&self) -> std::io::Result<PtySize> {
+        Ok(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+    }
+
+    fn process_group_leader(&self) -> Option<i32> {
+        Some(17)
+    }
+
+    fn as_raw_fd(&self) -> Option<i32> {
+        Some(23)
+    }
+}
+
+struct NeutralChild;
+
+#[allow(deprecated)]
+impl PtyChild for NeutralChild {
+    fn pid(&self) -> u32 {
+        1
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<u32>> {
+        Ok(None)
+    }
+
+    fn wait(&mut self) -> std::io::Result<u32> {
+        Ok(0)
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn as_raw_handle(&self) -> Option<*mut std::ffi::c_void> {
+        Some(std::ptr::without_provenance_mut(29))
+    }
+}
+
+#[test]
+fn downstream_neutral_backend_traits_require_no_host_specific_methods() {
+    fn assert_master<T: PtyMaster>() {}
+    fn assert_child<T: PtyChild>() {}
+
+    assert_master::<NeutralMaster>();
+    assert_child::<NeutralChild>();
+}
+
+#[test]
+#[allow(deprecated)]
+fn downstream_legacy_pty_trait_methods_and_helpers_remain_source_compatible() {
+    let master = NeutralMaster;
+    assert_eq!(master.process_group_leader(), Some(17));
+    assert_eq!(master.as_raw_fd(), Some(23));
+    assert_eq!(
+        NeutralChild.as_raw_handle().map(|handle| handle.addr()),
+        Some(29)
+    );
+
+    let _command =
+        running_process::pty::command_builder_from_argv(&["echo".to_owned(), "compat".to_owned()]);
+    let status =
+        running_process::pty::reexports::portable_pty::ExitStatus::with_signal("Interrupt");
+    assert_eq!(running_process::pty::portable_exit_code(status), -2);
+}
 
 fn python_available() -> bool {
     std::process::Command::new("python")

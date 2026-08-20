@@ -1,4 +1,4 @@
-//! The OSC 1 fallback, for hosts with no native icon backend.
+//! Caller-owned OSC 1 fallback for hosts with no native icon backend.
 //!
 //! # What this is, and what it is not
 //!

@@ -26,7 +26,6 @@
 use std::sync::Arc;
 
 use bytes::{Buf, BytesMut};
-use interprocess::local_socket::tokio::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::broker::backend_handle::DaemonProcess;
@@ -34,6 +33,7 @@ use crate::broker::backend_sdk::{BackendEndpointMux, LegacyClassification, MuxPo
 use crate::broker::protocol::registry::SESSION_PAYLOAD_PROTOCOL;
 use crate::containment::ContainedProcessGroup;
 use crate::daemon::compile_session::session_takeover_from_buffered;
+use crate::daemon::IntoDaemonAsyncListener;
 
 /// Accept connections on `listener` and serve each backend connection with the
 /// daemon `identity` (used to answer identity probes).
@@ -45,10 +45,11 @@ use crate::daemon::compile_session::session_takeover_from_buffered;
 ///
 /// Returns the first fatal `accept()` error (the listener is unusable). Per-
 /// connection errors are logged and never propagate.
-pub async fn serve_backend_endpoint(
-    listener: interprocess::local_socket::tokio::Listener,
-    identity: DaemonProcess,
-) -> std::io::Result<()> {
+pub async fn serve_backend_endpoint<L>(listener: L, identity: DaemonProcess) -> std::io::Result<()>
+where
+    L: IntoDaemonAsyncListener,
+{
+    let listener = listener.into_async_listener();
     loop {
         let stream = listener.accept().await?;
         let identity = identity.clone();
