@@ -64,10 +64,6 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
         unsafe_count: 9,
     },
     UnsafeInventoryEntry {
-        path: "src/broker/server/connection.rs",
-        unsafe_count: 4,
-    },
-    UnsafeInventoryEntry {
         path: "src/broker/server/handoff/unix.rs",
         unsafe_count: 11,
     },
