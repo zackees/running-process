@@ -1,4 +1,7 @@
+import tempfile
+import unittest
 from pathlib import Path
+from unittest import mock
 
 from ci import coverage_process_smoke
 
@@ -79,3 +82,71 @@ def test_broker_smoke_covers_admin_servicedef_and_v2_no_bind(monkeypatch) -> Non
         "running-process-broker-v2",
         ("--no-bind", "--program", "coverage-broker"),
     ) in calls
+
+
+class TestProbeCoverageSmoke(unittest.TestCase):
+    def test_probe_smoke_covers_queries_validation_and_profile(self) -> None:
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+        class FinishedDaemon:
+            returncode = 0
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                return None
+
+            def communicate(self, timeout=None):
+                del timeout
+                return "", ""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def fake_run(_binary, *args, **kwargs):
+                calls.append((args, kwargs))
+                if "profile" in args:
+                    Path(args[-1]).write_text("main 1\n", encoding="utf-8")
+                return ""
+
+            def fake_popen(*_args, **_kwargs):
+                (root / "runtime" / "rpprobed.json").write_text("{}", encoding="utf-8")
+                return FinishedDaemon()
+
+            with (
+                mock.patch.object(coverage_process_smoke, "_run", fake_run),
+                mock.patch.object(
+                    coverage_process_smoke.tempfile,
+                    "TemporaryDirectory",
+                    return_value=_TempDir(root),
+                ),
+                mock.patch.object(coverage_process_smoke.subprocess, "Popen", fake_popen),
+                mock.patch.object(coverage_process_smoke.time, "sleep", return_value=None),
+            ):
+                coverage_process_smoke.exercise_probe_cli(
+                    Path("/tmp/rpprobed"), Path("/tmp/rpprobe")
+                )
+
+        profile_calls = [(args, kwargs) for args, kwargs in calls if "profile" in args]
+        self.assertEqual(len(profile_calls), 1)
+        profile_args, profile_kwargs = profile_calls[0]
+        self.assertEqual(
+            profile_args[-9:-1],
+            ("profile", "--seconds", "1", "--hz", "10", "--format", "collapsed", "--out"),
+        )
+        self.assertNotIn("expected_codes", profile_kwargs)
+        self.assertTrue(any("fetch" in args for args, _ in calls))
+        self.assertTrue(any("snapshot" in args for args, _ in calls))
+        self.assertTrue(any("--force" in args for args, _ in calls))
+
+
+class _TempDir:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def __enter__(self) -> str:
+        return str(self.path)
+
+    def __exit__(self, *_args) -> None:
+        return None

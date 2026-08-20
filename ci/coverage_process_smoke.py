@@ -240,11 +240,56 @@ def exercise_probe_cli(daemon_binary: Path, cli_binary: Path) -> None:
             for args in (
                 ("ps",),
                 ("--json", "ps", "--include-unregistered", "--env", "--limit", "5"),
+                ("ps", "--name", "*python*", "--limit", "5"),
                 ("crashes", "--limit", "5"),
                 ("--json", "crashes", "--stats"),
+                (
+                    "crashes",
+                    "--class",
+                    "coverage",
+                    "--class-like",
+                    "coverage%",
+                    "--signature",
+                    "missing",
+                    "--limit",
+                    "5",
+                ),
                 ("--http", "ps"),
             ):
                 _run(cli_binary, "--discovery", str(discovery), *args, env=env)
+            for args in (
+                ("--json", "doctor"),
+                ("dump",),
+                ("dump", "--force"),
+                ("snapshot", str(os.getpid())),
+                ("fetch", "999999", "--out", str(root / "missing-artifact.bin")),
+            ):
+                _run(
+                    cli_binary,
+                    "--discovery",
+                    str(discovery),
+                    *args,
+                    env=env,
+                    expected_codes=(0, 1),
+                )
+            profile = root / "profile.collapsed"
+            _run(
+                cli_binary,
+                "--discovery",
+                str(discovery),
+                "profile",
+                "--seconds",
+                "1",
+                "--hz",
+                "10",
+                "--format",
+                "collapsed",
+                "--out",
+                str(profile),
+                env=env,
+            )
+            if not profile.is_file() or profile.stat().st_size == 0:
+                raise RuntimeError("rpprobe profile did not produce a collapsed profile")
         finally:
             daemon.terminate()
             try:
