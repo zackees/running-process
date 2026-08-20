@@ -11,6 +11,25 @@ pub use ipc::{
     PeerIdentitySource as IpcPeerIdentitySource, Stream as IpcStream,
 };
 #[cfg(feature = "ipc")]
+pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::Result<String> {
+    use std::fmt::Write as _;
+    use std::path::PathBuf;
+
+    let mut hash = blake3::Hasher::new();
+    if path_scoped {
+        hash.update(b"running-process:path-scoped-socket:v1\0");
+        hash.update(bare_name.as_bytes());
+        let mut leaf = String::with_capacity(32);
+        for byte in hash.finalize().as_bytes().iter().take(16) { let _ = write!(leaf, "{byte:02x}"); }
+        return Ok(PathBuf::from("/tmp").join(format!(".rp-path-{leaf}.sock")).to_string_lossy().into_owned());
+    }
+    hash.update(bare_name.as_bytes());
+    let mut leaf = String::with_capacity(16);
+    for byte in hash.finalize().as_bytes().iter().take(8) { let _ = write!(leaf, "{byte:02x}"); }
+    let root = std::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+    Ok(root.join(format!(".rp-{}-broker-v2", unsafe { libc::getuid() })).join(format!("{leaf}.sock")).to_string_lossy().into_owned())
+}
+#[cfg(feature = "ipc")]
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     stream.0
 }

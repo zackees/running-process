@@ -11,6 +11,25 @@ pub use ipc::{
     PeerIdentitySource as IpcPeerIdentitySource, Stream as IpcStream,
 };
 #[cfg(feature = "ipc")]
+pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::Result<String> {
+    use std::fmt::Write as _;
+    use std::path::PathBuf;
+
+    if path_scoped {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"running-process:path-scoped-socket:v1\0");
+        hash.update(bare_name.as_bytes());
+        let mut leaf = String::with_capacity(32);
+        for byte in hash.finalize().as_bytes().iter().take(16) { let _ = write!(leaf, "{byte:02x}"); }
+        return Ok(PathBuf::from("/tmp").join(format!(".rp-path-{leaf}.sock")).to_string_lossy().into_owned());
+    }
+    let directory = match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(value) => PathBuf::from(value).join("running-process").join("broker-v2"),
+        None => PathBuf::from(format!("/tmp/running-process-{}/broker-v2", unsafe { libc::getuid() })),
+    };
+    Ok(directory.join(format!("{bare_name}.sock")).to_string_lossy().into_owned())
+}
+#[cfg(feature = "ipc")]
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     stream.0
 }

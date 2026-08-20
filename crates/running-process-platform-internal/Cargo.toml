@@ -33,6 +33,7 @@ sysinfo = "0.30"
 interprocess = { version = "2", optional = true }
 thiserror = "2"
 portable-pty = { version = "0.9", optional = true }
+blake3 = "1"
 
 [build-dependencies]
 toml = "0.8"
