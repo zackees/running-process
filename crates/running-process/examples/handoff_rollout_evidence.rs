@@ -78,6 +78,7 @@ use running_process::broker::server::{
     service_definition_path, BrokerInstanceKey, BrokerServeConfig, HandoffToken, HandoffTokenStore,
     HANDOFF_TOKEN_BYTES,
 };
+use running_process::broker::secure_dir::ensure_private_dir;
 
 const SERVICE_NAME: &str = "zccache";
 const SERVICE_VERSION: &str = "1.11.20";
@@ -130,6 +131,10 @@ fn run_driver() {
 /// latency of the requested route from this (separate) client process.
 fn measure_deployment(mode: Mode) -> HandoffLatencySummary {
     let tmp = tempfile::tempdir().expect("temp dir for deployment");
+    // The broker listener requires its immediate parent to be owner-private.
+    // `tempfile` deliberately follows the process umask, so harden this
+    // evidence deployment root explicitly before deriving Unix endpoints.
+    ensure_private_dir(tmp.path()).expect("private deployment temp dir");
     let services = tmp.path().join("services");
     write_service_definition(&services);
 
