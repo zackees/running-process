@@ -74,7 +74,7 @@ fn root_completion_and_ptrace_errors_are_observable() {
     assert!(state.done);
     drop(state);
 
-    assert!(ptrace_value(PTRACE_CONT, u32::MAX, 0, 0).is_err());
+    assert!(ptrace_value(PtraceRequest::MAX, u32::MAX, 0, 0).is_err());
     detach_all(std::iter::empty());
 }
 
