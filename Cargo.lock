@@ -2078,6 +2078,7 @@ dependencies = [
  "getrandom 0.4.2",
  "interprocess",
  "libc",
+ "png",
  "prost",
  "prost-build",
  "prost-types",
@@ -2100,6 +2101,7 @@ dependencies = [
  "trybuild",
  "winapi",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]

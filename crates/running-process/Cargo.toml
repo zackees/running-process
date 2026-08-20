@@ -235,6 +235,11 @@ test-watchdog = { path = "../test-watchdog" }
 trybuild = "1"
 tokio = { version = "1", default-features = false, features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The public X11 round-trip test creates its own window and PNG fixture.
+x11rb = "0.13"
+png = "0.17"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Wdk_System_Threading",
