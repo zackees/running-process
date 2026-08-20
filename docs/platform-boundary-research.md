@@ -20,10 +20,12 @@ tree. The compatibility surface is deprecated for removal in 5.0; raw control
 payload structs or tokens remain forbidden in the neutral facade.
 
 The equivalent IPC transition preserves the public 4.x broker post-Hello
-callback's `interprocess::local_socket::Stream` parameter until 5.0. The
-internal package may provide a hidden crate-root conversion at that final API
-boundary, but `platform::ipc` remains opaque and no product mechanics may
-consume or expose the concrete transport.
+callback's `interprocess::local_socket::Stream` parameter, client APIs that
+return that stream, and pre-bound async SESSION listener inputs until 5.0. The
+internal package may provide a hidden crate-root stream conversion at those
+final return/callback boundaries and a facade-owned input conversion trait for
+the legacy listener, but `platform::ipc` returns only opaque transport values
+and product mechanics may not inspect the concrete transport.
 
 ## Toolchain and packaging proof
 

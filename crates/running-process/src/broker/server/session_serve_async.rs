@@ -38,10 +38,10 @@ use crate::broker::protocol::{
     PayloadEncoding, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION, MAX_HELLO_BYTES, PROTOCOL_VERSION,
 };
 use crate::broker::session_relay::relay_local_socket_session;
+use running_process_platform_internal::platform::ipc;
 
 use super::connection::{
-    local_socket_name, peer_identity_from_tokio_stream, refused_reply, HelloResponder,
-    PeerCredentialPolicy,
+    peer_identity_from_tokio_stream, refused_reply, HelloResponder, PeerCredentialPolicy,
 };
 use super::hello_handler::PeerIdentity;
 
@@ -75,21 +75,17 @@ where
     R: HelloResponder + ?Sized,
 {
     let listener = bind_session_listener(socket_path)?;
-    serve_broker_session_endpoint(listener, responder, peer_policy).await
+    serve_broker_session_endpoint_opaque(listener, responder, peer_policy).await
 }
 
 /// Bind a tokio-`interprocess` SESSION listener at `socket_path`.
 ///
-/// Uses the same platform name resolution ([`local_socket_name`]) as the sync
-/// broker bind, so a SESSION listener and a legacy control listener name the
-/// same path identically across Unix (filesystem) and Windows (namespace).
-fn bind_session_listener(
-    socket_path: &str,
-) -> std::io::Result<interprocess::local_socket::tokio::Listener> {
-    use interprocess::local_socket::ListenerOptions;
-
-    let name = local_socket_name(socket_path)?;
-    ListenerOptions::new().name(name).create_tokio()
+/// Uses the same facade endpoint resolution as the sync broker bind, so a
+/// SESSION listener and a legacy control listener name the same path
+/// identically across Unix (filesystem) and Windows (namespace).
+fn bind_session_listener(socket_path: &str) -> std::io::Result<ipc::AsyncListener> {
+    let endpoint = ipc::Endpoint::new(socket_path.to_owned())?;
+    ipc::AsyncListener::bind(&endpoint)
 }
 
 /// Accept SESSION connections on `listener`, negotiate each Hello with the sync
@@ -123,7 +119,18 @@ pub async fn serve_broker_session_endpoint<R>(
 where
     R: HelloResponder + ?Sized,
 {
-    use interprocess::local_socket::tokio::prelude::*;
+    serve_broker_session_endpoint_opaque(listener, responder, peer_policy).await
+}
+
+async fn serve_broker_session_endpoint_opaque<R>(
+    listener: impl ipc::IntoAsyncListener,
+    responder: &R,
+    peer_policy: &PeerCredentialPolicy,
+) -> std::io::Result<()>
+where
+    R: HelloResponder + ?Sized,
+{
+    let listener = listener.into_async_listener();
 
     loop {
         let stream = listener.accept().await?;
@@ -181,7 +188,18 @@ pub async fn serve_broker_session_endpoint_concurrently<R>(
 where
     R: HelloResponder + Send + Sync + 'static,
 {
-    use interprocess::local_socket::tokio::prelude::*;
+    serve_broker_session_endpoint_concurrently_opaque(listener, responder, peer_policy).await
+}
+
+async fn serve_broker_session_endpoint_concurrently_opaque<R>(
+    listener: impl ipc::IntoAsyncListener,
+    responder: Arc<R>,
+    peer_policy: &PeerCredentialPolicy,
+) -> std::io::Result<()>
+where
+    R: HelloResponder + Send + Sync + 'static,
+{
+    let listener = listener.into_async_listener();
 
     let permits = Arc::new(tokio::sync::Semaphore::new(
         MAX_CONCURRENT_SESSION_NEGOTIATIONS,

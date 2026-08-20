@@ -16,9 +16,9 @@
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use interprocess::local_socket::traits::Stream as _;
-use interprocess::local_socket::Stream;
+use interprocess::local_socket::Stream as LegacyStream;
 use prost::Message;
+use running_process_platform_internal::{into_legacy_ipc_stream, platform::ipc};
 
 /// Default deadline for the Hello round-trip in [`connect`].
 ///
@@ -31,7 +31,7 @@ use prost::Message;
 pub const DEFAULT_HELLO_DEADLINE: Duration = Duration::from_secs(3);
 
 use crate::broker::adopt::{IntoBackendIoError, OwnedBackendIo};
-use crate::broker::client::connect_local_socket;
+use crate::broker::client::connect_ipc_stream;
 use crate::broker::connect_watchdog::{capture_connect_dump, ConnectWatchdog, WATCHDOG_GRACE};
 use crate::broker::lifecycle::names::PipePathError;
 use crate::broker::lifecycle::names_v2::{
@@ -210,7 +210,7 @@ impl AsyncClientSession {
     /// `connect` on a local socket: calling it directly from a task would
     /// stall a runtime worker for as long as the backend takes to accept,
     /// which for an unresponsive backend is the whole connect timeout.
-    pub async fn connect_backend(self) -> Result<Stream, AsyncConnectError> {
+    pub async fn connect_backend(self) -> Result<LegacyStream, AsyncConnectError> {
         let inner = self.inner;
         tokio::task::spawn_blocking(move || inner.connect_backend())
             .await
@@ -260,13 +260,13 @@ pub enum AsyncConnectError {
 
 /// A live session with the v2 broker.
 ///
-/// Wraps the underlying [`Stream`] plus the broker's [`Negotiated`]
+/// Wraps the underlying local IPC stream plus the broker's [`Negotiated`]
 /// reply. Future slices add operations on top (streaming frames, HTTP
 /// endpoint discovery, etc.); slice 4 exposes only the handshake
 /// result so downstream consumers can pin the API shape now.
 #[derive(Debug)]
 pub struct ClientSession {
-    stream: Stream,
+    stream: ipc::Stream,
     negotiated: Negotiated,
 }
 
@@ -280,8 +280,8 @@ impl ClientSession {
     ///
     /// Slices that add post-handshake operations build them on this
     /// raw stream until the v2 client surface stabilizes.
-    pub fn into_inner(self) -> (Stream, Negotiated) {
-        (self.stream, self.negotiated)
+    pub fn into_inner(self) -> (LegacyStream, Negotiated) {
+        (into_legacy_ipc_stream(self.stream), self.negotiated)
     }
 
     /// Dial the backend the broker named, and hand back that connection.
@@ -300,11 +300,13 @@ impl ClientSession {
     ///
     /// The broker stream is dropped here, as v1 drops it: its job ended with
     /// the reply.
-    pub fn connect_backend(self) -> Result<Stream, BackendDialError> {
+    pub fn connect_backend(self) -> Result<LegacyStream, BackendDialError> {
         if self.negotiated.backend_pipe.is_empty() {
             return Err(BackendDialError::EmptyBackendPipe);
         }
-        connect_local_socket(&self.negotiated.backend_pipe).map_err(BackendDialError::Connect)
+        connect_ipc_stream(&self.negotiated.backend_pipe)
+            .map(into_legacy_ipc_stream)
+            .map_err(BackendDialError::Connect)
     }
 
     /// [`connect_backend`](Self::connect_backend), handed back as an owned OS
@@ -578,11 +580,7 @@ fn connect_unbounded(
     service_name: &str,
     version_hint: &str,
 ) -> Result<ClientSession, BrokerV2Error> {
-    let name = wrap_socket_name(socket_path).map_err(|err| BrokerV2Error::Dial {
-        socket_path: socket_path.to_string(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, err),
-    })?;
-    let mut stream = Stream::connect(name).map_err(|source| BrokerV2Error::Dial {
+    let mut stream = connect_ipc_stream(socket_path).map_err(|source| BrokerV2Error::Dial {
         socket_path: socket_path.to_string(),
         source,
     })?;
@@ -597,11 +595,7 @@ fn connect_unbounded_with_hello(
     socket_path: &str,
     hello: Hello,
 ) -> Result<ClientSession, ExplicitHelloError> {
-    let name = wrap_socket_name(socket_path).map_err(|err| BrokerV2Error::Dial {
-        socket_path: socket_path.to_string(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, err),
-    })?;
-    let mut stream = Stream::connect(name).map_err(|source| BrokerV2Error::Dial {
+    let mut stream = connect_ipc_stream(socket_path).map_err(|source| BrokerV2Error::Dial {
         socket_path: socket_path.to_string(),
         source,
     })?;
@@ -740,6 +734,7 @@ fn resolve_socket_path(bare_name: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
     crate::broker::server::singleton_bind::wrap_socket_name(socket_path)
 }
@@ -1500,19 +1495,17 @@ mod tests {
 #[cfg(test)]
 mod backend_dial_tests {
     use super::*;
-    // `Stream as _` is not repeated here: `use super::*` already brings the
-    // module's own import of it into scope, and naming it twice is a
-    // `-D warnings` failure.
     use interprocess::local_socket::traits::Listener as _;
-    use interprocess::local_socket::{ListenerOptions, Stream};
+    use interprocess::local_socket::ListenerOptions;
 
     /// Build a session with a chosen `backend_pipe`.
     ///
-    /// `stream` stands in for the broker connection. Its contents are
-    /// irrelevant — `connect_backend` drops it — but it must be a real
-    /// `Stream`, which is the point: the field being occupied is what proves
-    /// the dial does not reuse it.
-    fn session_with(stream: Stream, backend_pipe: &str) -> ClientSession {
+    /// The broker connection's contents are irrelevant — `connect_backend`
+    /// drops it — but it must be a real opaque stream so the field being
+    /// occupied proves the backend dial does not reuse it.
+    fn session_with(broker_endpoint: &str, backend_pipe: &str) -> ClientSession {
+        let endpoint = ipc::Endpoint::new(broker_endpoint.to_owned()).expect("broker endpoint");
+        let stream = ipc::Stream::connect(&endpoint).expect("dial broker");
         ClientSession {
             stream,
             negotiated: Negotiated {
@@ -1555,10 +1548,10 @@ mod backend_dial_tests {
             .name(socket_name(&path))
             .create_sync()
             .expect("bind");
-        let broker_side = Stream::connect(socket_name(&path)).expect("dial");
+        let session = session_with(&path, "");
         let _accepted = listener.accept().expect("accept");
 
-        let err = session_with(broker_side, "")
+        let err = session
             .connect_backend()
             .expect_err("an empty backend pipe must not be dialed");
         assert!(
@@ -1580,14 +1573,13 @@ mod backend_dial_tests {
             .name(socket_name(&broker_path))
             .create_sync()
             .expect("bind broker");
-        let broker_side = Stream::connect(socket_name(&broker_path)).expect("dial broker");
-        let _broker_accepted = broker_listener.accept().expect("accept broker");
-
         let (_kdir, backend_path) = temp_endpoint("backend");
         let backend_listener = ListenerOptions::new()
             .name(socket_name(&backend_path))
             .create_sync()
             .expect("bind backend");
+        let session = session_with(&broker_path, &backend_path);
+        let _broker_accepted = broker_listener.accept().expect("accept broker");
 
         // Accept on a helper thread with a deadline. A bare `accept()` blocks
         // forever when nothing dials, so a regression that skips the dial
@@ -1600,7 +1592,7 @@ mod backend_dial_tests {
             let _ = accepted_tx.send(backend_listener.accept());
         });
 
-        let mut data = session_with(broker_side, &backend_path)
+        let mut data = session
             .connect_backend()
             .expect("dial the negotiated backend");
 
@@ -1624,11 +1616,10 @@ mod backend_dial_tests {
             .name(socket_name(&broker_path))
             .create_sync()
             .expect("bind broker");
-        let broker_side = Stream::connect(socket_name(&broker_path)).expect("dial broker");
-        let _broker_accepted = broker_listener.accept().expect("accept broker");
-
         let (_kdir, dead_path) = temp_endpoint("nobody-home");
-        let err = session_with(broker_side, &dead_path)
+        let session = session_with(&broker_path, &dead_path);
+        let _broker_accepted = broker_listener.accept().expect("accept broker");
+        let err = session
             .connect_backend()
             .expect_err("nothing is listening there");
         assert!(
@@ -1661,23 +1652,20 @@ mod backend_dial_tests {
             .name(socket_name(&broker_path))
             .create_sync()
             .expect("bind broker");
-        let broker_side = Stream::connect(socket_name(&broker_path)).expect("dial broker");
-        let _broker_accepted = broker_listener.accept().expect("accept broker");
-
         let (_kdir, backend_path) = temp_endpoint("abackend");
         let backend_listener = ListenerOptions::new()
             .name(socket_name(&backend_path))
             .create_sync()
             .expect("bind backend");
+        let inner = session_with(&broker_path, &backend_path);
+        let _broker_accepted = broker_listener.accept().expect("accept broker");
 
         let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = accepted_tx.send(backend_listener.accept());
         });
 
-        let session = AsyncClientSession {
-            inner: session_with(broker_side, &backend_path),
-        };
+        let session = AsyncClientSession { inner };
         let mut data = runtime()
             .block_on(session.connect_backend())
             .expect("async dial");
@@ -1708,13 +1696,10 @@ mod backend_dial_tests {
             .name(socket_name(&broker_path))
             .create_sync()
             .expect("bind broker");
-        let broker_side = Stream::connect(socket_name(&broker_path)).expect("dial broker");
-        let _broker_accepted = broker_listener.accept().expect("accept broker");
-
         let (_kdir, dead_path) = temp_endpoint("anobody");
-        let session = AsyncClientSession {
-            inner: session_with(broker_side, &dead_path),
-        };
+        let inner = session_with(&broker_path, &dead_path);
+        let _broker_accepted = broker_listener.accept().expect("accept broker");
+        let session = AsyncClientSession { inner };
         let err = runtime()
             .block_on(session.connect_backend())
             .expect_err("nothing is listening there");
@@ -1733,12 +1718,10 @@ mod backend_dial_tests {
             .name(socket_name(&path))
             .create_sync()
             .expect("bind");
-        let broker_side = Stream::connect(socket_name(&path)).expect("dial");
+        let inner = session_with(&path, "");
         let _accepted = listener.accept().expect("accept");
 
-        let session = AsyncClientSession {
-            inner: session_with(broker_side, ""),
-        };
+        let session = AsyncClientSession { inner };
         let err = runtime()
             .block_on(session.connect_backend())
             .expect_err("an empty pipe must not be dialed");
