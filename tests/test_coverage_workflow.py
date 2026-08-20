@@ -73,6 +73,8 @@ class TestCoverageWorkflowContract(unittest.TestCase):
             '"rejected_profiles"',
             "profraw.unlink()",
             "_rust_coverage_profile_dir(coverage_env)",
+            "_rust_coverage_doctest_command()",
+            'cargo_command("test", "--workspace", "--all-features", "--doc")',
         ):
             self.assertIn(retained_runner_defense, coverage_runner)
 

@@ -67,6 +67,11 @@ def _rust_coverage_test_command() -> list[str]:
     )
 
 
+def _rust_coverage_doctest_command() -> list[str]:
+    """Exercise checked-in Rust documentation examples under instrumentation."""
+    return cargo_command("test", "--workspace", "--all-features", "--doc")
+
+
 def _brokered_backend_ui_test_command() -> list[str]:
     """Run trybuild before LLVM instrumentation alters rustc diagnostics."""
     return cargo_command(
@@ -741,6 +746,12 @@ def main(argv: list[str] | None = None) -> int:
             # before nextest gets a chance to name and terminate one test.
             cargo_cmd = _rust_coverage_test_command()
             if run(cargo_cmd) != 0:
+                return 1
+            # nextest intentionally does not execute rustdoc tests. The
+            # repository's public examples are executable API contracts, so
+            # keep them in the same instrumented profile set instead of
+            # leaving documented constructors and error paths unverified.
+            if run(_rust_coverage_doctest_command()) != 0:
                 return 1
             # nextest does not execute Cargo examples. These two checked-in
             # evidence programs deploy real broker/backend processes and the

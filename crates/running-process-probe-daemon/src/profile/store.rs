@@ -105,7 +105,11 @@ impl ProfileStore {
 /// otherwise a daemon that ran three profiles this morning would still be
 /// holding them at midnight.
 fn evict(entries: &mut HashMap<u64, Entry>) {
-    entries.retain(|_, entry| entry.stored.elapsed() < PROFILE_TTL);
+    evict_at(entries, Instant::now());
+}
+
+fn evict_at(entries: &mut HashMap<u64, Entry>, now: Instant) {
+    entries.retain(|_, entry| now.saturating_duration_since(entry.stored) < PROFILE_TTL);
     while entries.len() > MAX_PROFILES {
         let Some(oldest) = entries
             .iter()
@@ -212,3 +216,7 @@ pub fn session_to_tree(result: &SessionResult) -> FlameNode {
     sort_hot_first(&mut root);
     root
 }
+
+#[cfg(test)]
+#[path = "../tests/profile_store_coverage.rs"]
+mod coverage_tests;

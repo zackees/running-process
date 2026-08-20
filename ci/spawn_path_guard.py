@@ -143,6 +143,13 @@ ALLOWED_RUST_COMMAND_NEW = {
     # `/bin/true` for env-setting smoke tests. No production spawn
     # path runs through this module.
     Path("crates/running-process-probe/src/inject_unix.rs"),
+    # Linux trace coverage owns fixed `/bin/sh` fixtures so it can attach the
+    # native tracer to a real process and verify stdout/stderr/exit delivery.
+    # The commands contain no user input and are bounded by the test timeout.
+    Path(
+        "crates/running-process-platform-internal/src/tests/"
+        "platform_linux_trace_coverage.rs"
+    ),
 
 }
 
@@ -154,6 +161,13 @@ ALLOWED_RUST_SPAWN = {
     # through configure_command_for_owner to test the canonical boundary.
     # Production platform_macos.rs remains outside this spawn allowlist.
     Path("crates/running-process-platform-internal/src/platform_macos_tests.rs"),
+    # Linux-only native-tracer regression fixtures. These are fixed `/bin/sh`
+    # child processes used to exercise the ptrace boundary, not product spawn
+    # paths; see the matching Command::new allowlist entry above.
+    Path(
+        "crates/running-process-platform-internal/src/tests/"
+        "platform_linux_trace_coverage.rs"
+    ),
     # #850 Phase 2: the process-global runtime starts one Tokio actor task
     # per child. The actor owns the blessed PlatformChild and exposes only
     # typed lifecycle commands; this is the canonical async engine, not a
