@@ -46,7 +46,7 @@ embed-helper = ["dep:dirs", "dep:blake3"]
 # behind the off-by-default `embed-helper` feature so consumers that
 # don't opt in pay zero binary-size + zero static-AV-surface cost.
 dirs = { version = "6", optional = true }
-blake3 = { version = "1", optional = true }
+blake3 = { version = "1.8.7", optional = true }
 
 # The probe_diag.v1 schema (#630) is always compiled — it is the crate's
 # wire, not an opt-in. `prost` is non-optional; the "no injection symbols"
