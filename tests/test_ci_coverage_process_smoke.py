@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 from ci import coverage_process_smoke
@@ -189,6 +190,11 @@ class TestProbeCoverageSmoke(unittest.TestCase):
         self.assertIn("'--spool'", crash_script)
         self.assertIn("'--mode', 'abort'", crash_script)
         self.assertEqual(crash_kwargs["cwd"], root)
+        crash_env = cast(dict[str, str], crash_kwargs["env"])
+        self.assertEqual(
+            crash_env["RUNNING_PROCESS_PROBE_WORKER"],
+            str(root / "missing-symbolizer"),
+        )
 
 
 class _TempDir:

@@ -353,6 +353,11 @@ def exercise_probe_cli(
                 "XDG_STATE_HOME": str(root / "state"),
                 "RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED": "1",
                 "RUNNING_PROCESS_PROBE_SPOOL_DIR": str(root / "spool"),
+                # Crash ingestion is the contract under test here. The full
+                # suite separately exercises the real symbolizer; forcing its
+                # documented raw-frame fallback keeps this smoke below the
+                # worker's 60-second deadline on instrumented debug builds.
+                "RUNNING_PROCESS_PROBE_WORKER": str(root / "missing-symbolizer"),
             }
         )
         (root / "home").mkdir(mode=0o700)
