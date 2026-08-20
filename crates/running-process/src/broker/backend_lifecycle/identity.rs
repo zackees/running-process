@@ -236,6 +236,7 @@ struct DaemonProcessSerde {
     exe_path: PathBuf,
     exe_hash_algorithm: String,
     exe_hash: [u8; 32],
+    #[serde(default)]
     legacy_exe_sha256: [u8; 32],
     boot_id: String,
     ipc_endpoint: EndpointSerde,
@@ -416,6 +417,20 @@ mod broker_dance_identity_tests {
             identity([0xAA; 32]),
             "identical executable bytes must yield the same identity"
         );
+    }
+
+    #[test]
+    fn pre_4_10_4_json_defaults_the_missing_legacy_sha256() {
+        let original = identity([0x42; 32]);
+        let mut legacy_json = serde_json::to_value(&original).expect("serialize identity");
+        let object = legacy_json.as_object_mut().expect("identity JSON object");
+        assert!(object.remove("legacy_exe_sha256").is_some());
+
+        let restored: DaemonProcess =
+            serde_json::from_value(legacy_json).expect("read pre-4.10.4 identity JSON");
+        let mut expected = original;
+        expected.legacy_exe_sha256 = [0; 32];
+        assert_eq!(restored, expected);
     }
 
     #[test]
