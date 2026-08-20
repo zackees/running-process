@@ -17,6 +17,10 @@ pub enum TerminalInputError {
     Timeout,
     #[error("terminal input capture is closed")]
     Closed,
+    #[error("terminal input I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("terminal input error: {0}")]
+    Other(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
