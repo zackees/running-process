@@ -17,9 +17,10 @@
 
 #![cfg(feature = "client")]
 
-// trybuild intentionally normalizes absolute input spans differently on
-// Windows and Unix. Keep a snapshot for each rendering, while asserting that
-// the compile-fail source itself is byte-for-byte identical across both dirs.
+// Hosted rustc normalizes absolute input spans differently from the local
+// Windows toolchain. Unix uses the normalized rendering in both environments.
+// Keep a fixture for each rendering, while asserting that the compile-fail
+// source itself is identical.
 #[test]
 fn brokered_backend_compile_fail_ui_snapshots() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -31,7 +32,8 @@ fn brokered_backend_compile_fail_ui_snapshots() {
         "platform-specific trybuild fixtures must stay identical",
     );
 
-    let platform_dir = if cfg!(windows) { "ui" } else { "ui-unix" };
+    let normalized_spans = cfg!(not(windows)) || std::env::var_os("CI").is_some();
+    let platform_dir = if normalized_spans { "ui-unix" } else { "ui" };
     let pattern = format!(
         "{}/tests/{platform_dir}/brokered_backend_*.rs",
         manifest.display()

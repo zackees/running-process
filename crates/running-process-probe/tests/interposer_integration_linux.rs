@@ -187,17 +187,34 @@ fn interposer_covers_every_file_operation_family() {
     let script = r#"
 import os
 import sys
+import ctypes
 
 root = sys.argv[1]
+libc = ctypes.CDLL(None)
+libc.open.argtypes = [ctypes.c_char_p, ctypes.c_int]
+libc.open.restype = ctypes.c_int
+libc.openat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+libc.openat.restype = ctypes.c_int
+libc.write.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t]
+libc.write.restype = ctypes.c_ssize_t
+libc.close.argtypes = [ctypes.c_int]
+libc.close.restype = ctypes.c_int
 dirfd = os.open(root, os.O_RDONLY)
 for index in range(12):
     absolute_open = os.path.join(root, f"absolute-open-{index}.txt")
-    fd = os.open(absolute_open, os.O_WRONLY)
-    os.write(fd, b"hook-family")
-    os.close(fd)
+    fd = libc.open(os.fsencode(absolute_open), os.O_WRONLY)
+    assert fd >= 0
+    payload = ctypes.create_string_buffer(b"hook-family")
+    assert libc.write(fd, payload, len(b"hook-family")) == len(b"hook-family")
+    assert libc.close(fd) == 0
 
-    relative_fd = os.open(f"relative-open-{index}.txt", os.O_RDONLY, dir_fd=dirfd)
-    os.close(relative_fd)
+    relative_fd = libc.openat(
+        dirfd,
+        os.fsencode(f"relative-open-{index}.txt"),
+        os.O_RDONLY,
+    )
+    assert relative_fd >= 0
+    assert libc.close(relative_fd) == 0
 
     os.rename(
         f"renameat-src-{index}.txt",
