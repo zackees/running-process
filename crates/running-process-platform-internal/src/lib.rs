@@ -56,6 +56,15 @@ pub use platform_imp::{
 
 pub use platform_imp::terminal_input;
 
+#[cfg(feature = "ipc")]
+pub use platform_imp::{
+    ipc_current_user_id, IpcEndpoint, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
+    IpcStream,
+};
+
+#[cfg(feature = "ipc-async")]
+pub use platform_imp::{IpcAsyncListener, IpcAsyncStream};
+
 #[cfg(feature = "pty")]
 pub use platform_imp::terminal::{
     before_pty_spawn, current_backend_kind, find_child_processes, find_orphan_conhosts,

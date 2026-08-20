@@ -83,6 +83,7 @@ telemetry = []
 pty = ["running-process-platform-internal/pty"]
 client = [
     "dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs",
+    "running-process-platform-internal/ipc",
     "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2", "dep:getrandom",
     # Phase 5 of #222 (#428): the `runpm` CLI parses `runpm.toml` batch
     # config files (`[[app]]` entries). The TOML parsing helpers live
@@ -128,6 +129,7 @@ client-async = [
     "tokio/macros",
     "tokio/time",
     "tokio/sync",
+    "running-process-platform-internal/ipc-async",
     "interprocess/tokio",
     "running-process-platform-internal/session-relay",
     "dep:tokio-util",
@@ -138,7 +140,6 @@ daemon = [
     "client",
     "client-async",
     "pty",
-    "interprocess/tokio",
     "dep:tokio", "dep:tokio-util", "dep:bytes", "dep:futures-util",
     "tokio/full",
     "dep:tracing", "dep:tracing-subscriber",

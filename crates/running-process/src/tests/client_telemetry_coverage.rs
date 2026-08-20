@@ -1,10 +1,9 @@
 use super::*;
 use crate::client::paths;
+use crate::platform::ipc::{Listener, Stream};
 use crate::proto::daemon::{
     DaemonResponse, GetSessionTeeStatusResponse, RegisterSessionTeeResponse,
 };
-use interprocess::local_socket::traits::Listener as _;
-use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,7 +27,7 @@ fn socket_path() -> String {
     }
 }
 
-fn read_request(stream: &mut interprocess::local_socket::Stream) -> DaemonRequest {
+fn read_request(stream: &mut Stream) -> DaemonRequest {
     let mut prefix = [0u8; 4];
     stream.read_exact(&mut prefix).unwrap();
     let mut payload = vec![0u8; u32::from_be_bytes(prefix) as usize];
@@ -36,7 +35,7 @@ fn read_request(stream: &mut interprocess::local_socket::Stream) -> DaemonReques
     DaemonRequest::decode(payload.as_slice()).unwrap()
 }
 
-fn write_response(stream: &mut interprocess::local_socket::Stream, response: DaemonResponse) {
+fn write_response(stream: &mut Stream, response: DaemonResponse) {
     let payload = response.encode_to_vec();
     stream
         .write_all(&(payload.len() as u32).to_be_bytes())
@@ -48,10 +47,8 @@ fn write_response(stream: &mut interprocess::local_socket::Stream, response: Dae
 fn tee_rpc_round_trips_cover_status_and_protocol_failures() {
     let path = socket_path();
     let _ = std::fs::remove_file(&path);
-    let listener = ListenerOptions::new()
-        .name(paths::make_socket_name(&path).unwrap())
-        .create_sync()
-        .unwrap();
+    let endpoint = paths::make_socket_endpoint(&path).unwrap();
+    let listener = Listener::bind(&endpoint).unwrap();
     let server = thread::spawn(move || {
         let mut stream = listener.accept().unwrap();
         for sequence in 0..8 {

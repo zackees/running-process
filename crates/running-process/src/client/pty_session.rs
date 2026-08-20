@@ -13,6 +13,7 @@
 
 use crate::client::paths;
 use crate::client::{ClientError, DaemonClient};
+use crate::platform::ipc::Stream;
 use crate::proto::daemon::{
     pty_input_frame::Frame as InputOneof, AttachPtySessionRequest, AttachPtySessionResponse,
     DaemonRequest, DaemonResponse, DetachPtySessionRequest, KeyValue, ListPtySessionsRequest,
@@ -23,8 +24,6 @@ use crate::terminal_graphics::{
     current_terminal_capabilities, terminal_graphics_capabilities_to_proto, TerminalCapabilities,
     TerminalGraphicsCapabilities,
 };
-use interprocess::local_socket::Stream;
-use interprocess::TryClone;
 use prost::Message;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
@@ -439,8 +438,6 @@ impl PtyAttachment {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<PtyStreamFrame>, AttachError> {
-        use interprocess::local_socket::traits::Stream as _;
-
         let deadline = std::time::Instant::now() + timeout;
         self.reader
             .get_ref()

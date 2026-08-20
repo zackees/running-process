@@ -44,11 +44,15 @@ pub fn socket_path_view(scope_hash: Option<&str>) -> String {
     }
 }
 
-/// Build an `interprocess` local socket [`interprocess::local_socket::Name`]
-/// from the path returned by [`socket_path`].
+/// Build an opaque local IPC endpoint from the path returned by [`socket_path`].
 ///
 /// This must use the same name-type dispatch as the server so that client
 /// and server agree on the actual IPC endpoint.
+pub fn make_socket_endpoint(path: &str) -> std::io::Result<crate::platform::ipc::Endpoint> {
+    crate::platform::ipc::Endpoint::new(path)
+}
+
+/// Compatibility name conversion retained while broker callers migrate.
 pub fn make_socket_name(path: &str) -> std::io::Result<interprocess::local_socket::Name<'_>> {
     crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(std::io::Error::other)
 }

@@ -1,6 +1,5 @@
 use super::*;
-use interprocess::local_socket::traits::Listener as _;
-use interprocess::local_socket::ListenerOptions;
+use crate::platform::ipc::Listener;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
@@ -22,12 +21,9 @@ fn socket_path(label: &str) -> String {
     }
 }
 
-fn bind(path: &str) -> interprocess::local_socket::Listener {
+fn bind(path: &str) -> Listener {
     let _ = std::fs::remove_file(path);
-    ListenerOptions::new()
-        .name(paths::make_socket_name(path).unwrap())
-        .create_sync()
-        .unwrap()
+    Listener::bind(&paths::make_socket_endpoint(path).unwrap()).unwrap()
 }
 
 fn response(request: &DaemonRequest, sequence: usize) -> DaemonResponse {
