@@ -319,10 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn async_pty_dispatches_start_read_and_close_through_island() {
-        #[cfg(windows)]
-        let argv = vec!["cmd.exe".into(), "/C".into(), "echo async-pty".into()];
-        #[cfg(not(windows))]
-        let argv = vec!["/bin/sh".into(), "-c".into(), "printf async-pty".into()];
+        let argv = crate::pty::platform_shell_argv("echo async-pty");
 
         let process =
             AsyncPtyProcess::new(argv, None, None, 24, 80, None).expect("async PTY configuration");

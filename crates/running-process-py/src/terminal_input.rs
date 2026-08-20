@@ -124,17 +124,7 @@ impl NativeTerminalInput {
     }
 
     pub(crate) fn start(&self) -> PyResult<()> {
-        #[cfg(windows)]
-        {
-            self.inner.start_impl().map_err(to_py_err)
-        }
-
-        #[cfg(not(windows))]
-        {
-            Err(PyRuntimeError::new_err(
-                "NativeTerminalInput is only available on Windows consoles",
-            ))
-        }
+        self.inner.start_impl().map_err(to_py_err)
     }
 
     fn stop(&self, py: Python<'_>) -> PyResult<()> {

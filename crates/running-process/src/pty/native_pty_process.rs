@@ -1,29 +1,18 @@
 use std::collections::VecDeque;
+use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
 use super::backend::PtySlave;
 use super::backend::{Backend, PtyBackend, PtyChild, PtyMaster, PtySize};
-#[cfg(unix)]
-use super::posix_terminal_input_relay_worker;
-#[cfg(windows)]
-use super::{
-    apply_windows_pty_priority, assign_child_to_windows_kill_on_close_job,
-    assign_conpty_conhost_to_job, conhost_children_of_current_process,
-};
 use super::{
     is_ignorable_process_control_error, poll_pty_process, record_pty_input_metrics,
-    spawn_pty_reader, store_pty_returncode, write_pty_input, IdleDetectorCore, NativePtyHandles,
-    PtyError, PtyReadShared, PtyReadState,
+    spawn_pty_reader, store_pty_returncode, terminal_input_relay_worker, write_pty_input,
+    IdleDetectorCore, NativePtyHandles, PtyError, PtyReadShared, PtyReadState,
 };
-
-#[cfg(unix)]
-use super::pty_posix as pty_platform;
-#[cfg(windows)]
-use super::pty_windows;
+use running_process_platform_internal::platform::terminal as pty_platform;
 
 /// Low-level native pseudo-terminal process wrapper.
 ///
@@ -41,8 +30,7 @@ pub struct NativePtyProcess {
     pub rows: u16,
     /// Initial PTY column count.
     pub cols: u16,
-    /// Optional Windows process priority hint for the PTY child.
-    #[cfg(windows)]
+    /// Optional host process priority hint for the PTY child.
     pub nice: Option<i32>,
     /// Native PTY handles for the running child, present after start.
     pub handles: Arc<Mutex<Option<NativePtyHandles>>>,
@@ -83,77 +71,6 @@ pub(super) fn resolved_spawn_cwd(cwd: Option<&str>) -> Option<String> {
 }
 
 impl NativePtyProcess {
-    /// Terminate and reap a Unix PTY process without allowing child or reader
-    /// cleanup to block the caller indefinitely.
-    #[cfg(unix)]
-    pub(super) fn finish_unix_teardown(&self, handles: NativePtyHandles) -> Result<(), PtyError> {
-        const CHILD_REAP_TIMEOUT: Duration = Duration::from_secs(2);
-        const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
-        const READER_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
-
-        let NativePtyHandles {
-            master,
-            writer,
-            mut child,
-        } = handles;
-        let process_group = master.process_group_leader();
-
-        let mut control_error = None;
-        if let Some(pid) = process_group {
-            if let Err(err) = crate::unix_signal_process_group(pid, crate::UnixSignal::Kill) {
-                if !is_ignorable_process_control_error(&err) {
-                    control_error = Some(err);
-                }
-            }
-        }
-        if let Err(err) = child.kill() {
-            if !is_ignorable_process_control_error(&err) && control_error.is_none() {
-                control_error = Some(err);
-            }
-        }
-        drop(writer);
-
-        let deadline = Instant::now() + CHILD_REAP_TIMEOUT;
-        let code = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status as i32,
-                Ok(None) if Instant::now() < deadline => {
-                    thread::sleep(CHILD_POLL_INTERVAL);
-                }
-                Ok(None) => break -9,
-                Err(err) => {
-                    if control_error.is_none() {
-                        control_error = Some(err);
-                    }
-                    break -9;
-                }
-            }
-        };
-        self.store_returncode(code);
-
-        let reader_worker = self
-            .reader_worker
-            .lock()
-            .expect("pty reader worker mutex poisoned")
-            .take();
-        let (tx, rx) = std::sync::mpsc::channel();
-        thread::spawn(move || {
-            drop(master);
-            drop(child);
-            if let Some(worker) = reader_worker {
-                let _ = worker.join();
-            }
-            let _ = tx.send(());
-        });
-        let _ = rx.recv_timeout(READER_TEARDOWN_TIMEOUT);
-        self.mark_reader_closed();
-
-        match control_error {
-            Some(err) => Err(PtyError::Io(err)),
-            None => Ok(()),
-        }
-    }
-
     /// Create a pseudo-terminal process configuration.
     ///
     /// The child is not spawned until [`Self::start_impl`] is called.
@@ -168,15 +85,12 @@ impl NativePtyProcess {
         if argv.is_empty() {
             return Err(PtyError::Other("command cannot be empty".into()));
         }
-        #[cfg(not(windows))]
-        let _ = nice;
         Ok(Self {
             argv,
             cwd,
             env,
             rows,
             cols,
-            #[cfg(windows)]
             nice,
             handles: Arc::new(Mutex::new(None)),
             reader: Arc::new(PtyReadShared {
@@ -257,81 +171,31 @@ impl NativePtyProcess {
             return Err(PtyError::NotRunning);
         }
 
+        let Some(input) = pty_platform::TerminalInputSession::new().map_err(PtyError::Io)? else {
+            self.terminal_input_relay_active
+                .store(false, Ordering::Release);
+            return Ok(());
+        };
+
         self.terminal_input_relay_stop
             .store(false, Ordering::Release);
         self.terminal_input_relay_active
             .store(true, Ordering::Release);
 
-        let handles = Arc::clone(&self.handles);
-        let returncode = Arc::clone(&self.returncode);
-        let input_bytes_total = Arc::clone(&self.input_bytes_total);
-        let newline_events_total = Arc::clone(&self.newline_events_total);
-        let submit_events_total = Arc::clone(&self.submit_events_total);
-        let stop = Arc::clone(&self.terminal_input_relay_stop);
-        let active = Arc::clone(&self.terminal_input_relay_active);
+        let relay_state = super::TerminalInputRelayState {
+            handles: Arc::clone(&self.handles),
+            returncode: Arc::clone(&self.returncode),
+            input_bytes_total: Arc::clone(&self.input_bytes_total),
+            newline_events_total: Arc::clone(&self.newline_events_total),
+            submit_events_total: Arc::clone(&self.submit_events_total),
+            stop: Arc::clone(&self.terminal_input_relay_stop),
+            active: Arc::clone(&self.terminal_input_relay_active),
+        };
 
-        #[cfg(windows)]
-        {
-            let capture = super::terminal_input::TerminalInputCore::new();
-            capture.start_impl().map_err(PtyError::Io)?;
-            *worker_guard = Some(thread::spawn(move || {
-                loop {
-                    if stop.load(Ordering::Acquire) {
-                        break;
-                    }
-                    match poll_pty_process(&handles, &returncode) {
-                        Ok(Some(_)) => break,
-                        Ok(None) => {}
-                        Err(_) => break,
-                    }
-                    match super::terminal_input::wait_for_terminal_input_event(
-                        &capture.state,
-                        &capture.condvar,
-                        Some(Duration::from_millis(50)),
-                    ) {
-                        super::terminal_input::TerminalInputWaitOutcome::Event(event) => {
-                            record_pty_input_metrics(
-                                &input_bytes_total,
-                                &newline_events_total,
-                                &submit_events_total,
-                                &event.data,
-                                event.submit,
-                            );
-                            if write_pty_input(&handles, &event.data).is_err() {
-                                break;
-                            }
-                        }
-                        super::terminal_input::TerminalInputWaitOutcome::Timeout => continue,
-                        super::terminal_input::TerminalInputWaitOutcome::Closed => break,
-                    }
-                }
-                active.store(false, Ordering::Release);
-                let _ = capture.stop_impl();
-            }));
-            Ok(())
-        }
-
-        #[cfg(unix)]
-        {
-            if unsafe { libc::isatty(libc::STDIN_FILENO) } != 1 {
-                self.terminal_input_relay_active
-                    .store(false, Ordering::Release);
-                return Ok(());
-            }
-
-            *worker_guard = Some(thread::spawn(move || {
-                posix_terminal_input_relay_worker(
-                    handles,
-                    returncode,
-                    input_bytes_total,
-                    newline_events_total,
-                    submit_events_total,
-                    stop,
-                    active,
-                );
-            }));
-            Ok(())
-        }
+        *worker_guard = Some(thread::spawn(move || {
+            terminal_input_relay_worker(input, relay_state);
+        }));
+        Ok(())
     }
 
     /// Stop the terminal input relay worker and wait for it to exit.
@@ -364,139 +228,87 @@ impl NativePtyProcess {
         };
         drop(guard);
 
-        #[cfg(windows)]
         let NativePtyHandles {
             master,
             writer,
             mut child,
-            _job,
+            process_guard,
         } = handles;
-        #[cfg(not(windows))]
-        let NativePtyHandles {
-            master,
-            writer,
-            child,
-        } = handles;
-
-        #[cfg(windows)]
-        {
-            {
-                crate::rp_rust_debug_scope!(
-                    "running_process::NativePtyProcess::close_impl.drop_job"
-                );
-                drop(_job);
-            }
-
-            {
-                crate::rp_rust_debug_scope!(
-                    "running_process::NativePtyProcess::close_impl.wait_job_exit"
-                );
-                let wait_deadline = Instant::now() + Duration::from_secs(2);
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            let code = status as i32;
-                            self.store_returncode(code);
-                            break;
-                        }
-                        Ok(None) if Instant::now() < wait_deadline => {
-                            // #199: intentional — `PtyChild` doesn't
-                            // expose a "wait with timeout" method
-                            // (portable-pty's Child trait doesn't
-                            // either). Polling at 10ms inside a
-                            // bounded 2-second deadline is the
-                            // close-path graceful-exit watcher.
-                            thread::sleep(Duration::from_millis(10));
-                        }
-                        Ok(None) => {
-                            if let Err(err) = child.kill() {
-                                if !is_ignorable_process_control_error(&err) {
-                                    return Err(PtyError::Io(err));
-                                }
-                            }
-                            // Bounded wait after kill (issue #590, cluster I):
-                            // `ConPtyChild::wait` is a raw
-                            // `WaitForSingleObject(process, INFINITE)`, so an
-                            // uninterruptible child that survives
-                            // TerminateProcess would wedge close() forever.
-                            // Poll `try_wait` for a short grace instead; the
-                            // Job Object's KILL_ON_JOB_CLOSE (dropped earlier)
-                            // plus TerminateProcess normally make this resolve
-                            // in one iteration.
-                            let kill_deadline = Instant::now() + Duration::from_secs(2);
-                            let code = loop {
-                                match child.try_wait() {
-                                    Ok(Some(status)) => break status as i32,
-                                    Ok(None) if Instant::now() < kill_deadline => {
-                                        thread::sleep(Duration::from_millis(10));
-                                    }
-                                    _ => break -9,
-                                }
-                            };
-                            self.store_returncode(code);
-                            break;
-                        }
-                        Err(_) => {
-                            self.store_returncode(-9);
-                            break;
-                        }
-                    }
+        let wait_before_close = pty_platform::wait_before_close_supported();
+        let mut control_error = None;
+        if wait_before_close {
+            if let Err(error) = pty_platform::kill_pty_process_group(master.control_token()) {
+                if !is_ignorable_process_control_error(&error) {
+                    control_error = Some(error);
                 }
             }
-            {
-                crate::rp_rust_debug_scope!(
-                    "running_process::NativePtyProcess::close_impl.drop_writer"
-                );
-                drop(writer);
+            if let Err(error) = child.kill() {
+                if !is_ignorable_process_control_error(&error) && control_error.is_none() {
+                    control_error = Some(error);
+                }
             }
-            // Bounded teardown (issue #590, cluster C). `drop(master)`
-            // calls ClosePseudoConsole, which blocks until the ConPTY
-            // output pipe drains; the reader's synchronous ReadFile only
-            // sees EOF once that pipe's last write end closes. A detached
-            // grandchild that inherited the pipe keeps it open, so both
-            // ClosePseudoConsole and the reader join would wedge close()
-            // forever. Run them on a helper thread and bound the wait; on
-            // timeout we return — the teardown thread + reader leak, but the
-            // caller is unblocked.
-            {
-                crate::rp_rust_debug_scope!(
-                    "running_process::NativePtyProcess::close_impl.bounded_teardown"
-                );
-                let reader_worker = self
-                    .reader_worker
-                    .lock()
-                    .expect("pty reader worker mutex poisoned")
-                    .take();
-                let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    drop(master);
-                    drop(child);
-                    if let Some(worker) = reader_worker {
-                        let _ = worker.join();
+        }
+
+        // On Windows this closes the kill-on-close Job Object before the
+        // bounded reap. On Unix the guard is a no-op token.
+        drop(process_guard);
+        let reap_deadline = Instant::now() + Duration::from_secs(2);
+        let code = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status as i32,
+                Ok(None) if Instant::now() < reap_deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) if wait_before_close => break -9,
+                Ok(None) => {
+                    if let Err(error) = child.kill() {
+                        if !is_ignorable_process_control_error(&error) && control_error.is_none() {
+                            control_error = Some(error);
+                        }
                     }
-                    let _ = tx.send(());
-                });
-                let _ = rx.recv_timeout(Duration::from_secs(2));
+                    let kill_deadline = Instant::now() + Duration::from_secs(2);
+                    break loop {
+                        match child.try_wait() {
+                            Ok(Some(status)) => break status as i32,
+                            Ok(None) if Instant::now() < kill_deadline => {
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                            _ => break -9,
+                        }
+                    };
+                }
+                Err(error) => {
+                    if control_error.is_none() {
+                        control_error = Some(error);
+                    }
+                    break -9;
+                }
             }
-            self.mark_reader_closed();
-            Ok(())
-        }
-
-        #[cfg(not(windows))]
-        {
-            self.finish_unix_teardown(NativePtyHandles {
-                master,
-                writer,
-                child,
-            })
-        }
+        };
+        drop(writer);
+        let reader_worker = self
+            .reader_worker
+            .lock()
+            .expect("pty reader worker mutex poisoned")
+            .take();
+        let (teardown_tx, teardown_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(master);
+            drop(child);
+            if let Some(worker) = reader_worker {
+                let _ = worker.join();
+            }
+            let _ = teardown_tx.send(());
+        });
+        let _ = teardown_rx.recv_timeout(Duration::from_secs(2));
+        self.store_returncode(code);
+        self.mark_reader_closed();
+        control_error.map_or(Ok(()), |error| Err(PtyError::Io(error)))
     }
-
     /// Best-effort, non-blocking teardown for use from `Drop`.
     #[inline(never)]
     pub fn close_nonblocking(&self) {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::close_nonblocking");
-        #[cfg(windows)]
         self.request_terminal_input_relay_stop();
         let Ok(mut guard) = self.handles.lock() else {
             return;
@@ -507,47 +319,27 @@ impl NativePtyProcess {
         };
         drop(guard);
 
-        #[cfg(windows)]
         let NativePtyHandles {
             master,
             writer,
             mut child,
-            _job,
+            process_guard,
         } = handles;
-        #[cfg(not(windows))]
-        let NativePtyHandles {
-            master,
-            writer,
-            mut child,
-        } = handles;
-
-        if let Err(err) = child.kill() {
-            if !is_ignorable_process_control_error(&err) {
-                return;
-            }
-        }
+        let _ = child.kill();
         drop(writer);
-        // On Windows `drop(master)` (ClosePseudoConsole) blocks until the
-        // ConPTY output pipe drains, which can wedge if a grandchild
-        // inherited it (issue #590, cluster C). This is the `Drop` path and
-        // MUST stay non-blocking as its name promises, so move the blocking
-        // drops to a detached thread (`PtyMaster`/`PtyChild` are
-        // `Send + 'static`). On Unix `drop(master)` just closes the master
-        // fd, so drop inline.
-        #[cfg(windows)]
-        std::thread::spawn(move || {
+        if pty_platform::wait_before_close_supported() {
             drop(master);
             drop(child);
-            drop(_job);
-        });
-        #[cfg(not(windows))]
-        {
-            drop(master);
-            drop(child);
+            drop(process_guard);
+        } else {
+            thread::spawn(move || {
+                drop(master);
+                drop(child);
+                drop(process_guard);
+            });
         }
         self.mark_reader_closed();
     }
-
     /// Spawn the configured child process inside a native PTY.
     pub fn start_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::start");
@@ -556,10 +348,7 @@ impl NativePtyProcess {
             return Err(PtyError::AlreadyStarted);
         }
 
-        // Snapshot our conhost.exe children before openpty() so we can diff
-        // after spawn to find the new conhost.exe created by ConPTY.
-        #[cfg(windows)]
-        let conhost_pids_before = conhost_children_of_current_process();
+        let spawn_context = pty_platform::before_pty_spawn();
 
         let (mut master, slave) = Backend::openpty(PtySize {
             rows: self.rows,
@@ -590,14 +379,12 @@ impl NativePtyProcess {
         let child = slave
             .spawn(&argv, cwd_path, env.as_deref())
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
-        // The trait's PtyChild::as_raw_handle returns Option<RawHandle>
-        // matching portable_pty's signature; pass directly.
-        #[cfg(windows)]
-        let job = assign_child_to_windows_kill_on_close_job(PtyChild::as_raw_handle(&child))?;
-        #[cfg(windows)]
-        assign_conpty_conhost_to_job(&job, &conhost_pids_before);
-        #[cfg(windows)]
-        apply_windows_pty_priority(PtyChild::as_raw_handle(&child), self.nice)?;
+        let process_guard = pty_platform::prepare_pty_child(
+            spawn_context,
+            PtyChild::control_token(&child),
+            self.nice,
+        )
+        .map_err(PtyError::Io)?;
         let shared = Arc::clone(&self.reader);
         let echo = Arc::clone(&self.echo);
         let idle_detector = Arc::clone(&self.idle_detector);
@@ -624,23 +411,27 @@ impl NativePtyProcess {
             // blocking input write never holds the `handles` lock.
             writer: Arc::new(Mutex::new(writer)),
             child: Box::new(child) as Box<dyn PtyChild>,
-            #[cfg(windows)]
-            _job: job,
+            process_guard,
         });
         Ok(())
     }
 
     /// Respond to terminal query escape sequences found in a PTY output chunk.
     pub fn respond_to_queries_impl(&self, data: &[u8]) -> Result<(), PtyError> {
-        #[cfg(windows)]
-        {
-            pty_windows::respond_to_queries(self, data)
+        let responses = pty_platform::query_responses(data);
+        if responses.is_empty() {
+            return Ok(());
         }
-
-        #[cfg(unix)]
-        {
-            pty_platform::respond_to_queries(self, data)
+        let writer = {
+            let guard = self.handles.lock().expect("pty handles mutex poisoned");
+            let handles = guard.as_ref().ok_or(PtyError::NotRunning)?;
+            Arc::clone(&handles.writer)
+        };
+        let mut writer = writer.lock().expect("pty writer mutex poisoned");
+        for response in responses {
+            writer.write_all(&response).map_err(PtyError::Io)?;
         }
+        writer.flush().map_err(PtyError::Io)
     }
 
     /// Resize the PTY to the given row and column dimensions.
@@ -648,25 +439,16 @@ impl NativePtyProcess {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::resize");
         let guard = self.handles.lock().expect("pty handles mutex poisoned");
         if let Some(handles) = guard.as_ref() {
-            #[cfg(windows)]
-            {
-                let _ = (rows, cols, handles);
-                // ConPTY resize can leave ClosePseudoConsole blocked during
-                // teardown on Windows. Keep resize as a no-op until the
-                // backend can cancel the outstanding PTY read safely.
-                return Ok(());
-            }
-
-            #[cfg(not(windows))]
-            handles
-                .master
-                .resize(PtySize {
+            pty_platform::resize_pty(
+                handles.master.as_ref(),
+                PtySize {
                     rows,
                     cols,
                     pixel_width: 0,
                     pixel_height: 0,
-                })
-                .map_err(|e| PtyError::Other(e.to_string()))?;
+                },
+            )
+            .map_err(|error| PtyError::Other(error.to_string()))?;
         }
         Ok(())
     }
@@ -674,15 +456,17 @@ impl NativePtyProcess {
     /// Send an interrupt signal or control event to the PTY child.
     pub fn send_interrupt_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::send_interrupt");
-        #[cfg(windows)]
-        {
-            pty_windows::send_interrupt(self)
+        let (target, writer) = {
+            let guard = self.handles.lock().expect("pty handles mutex poisoned");
+            let handles = guard.as_ref().ok_or(PtyError::NotRunning)?;
+            (handles.master.control_token(), Arc::clone(&handles.writer))
+        };
+        let wrote_input =
+            pty_platform::send_pty_interrupt(target, &writer).map_err(PtyError::Io)?;
+        if wrote_input {
+            self.record_input_metrics(&[0x03], false);
         }
-
-        #[cfg(unix)]
-        {
-            pty_platform::send_interrupt(self)
-        }
+        Ok(())
     }
 
     /// Wait for the PTY child to exit and return its exit code.
@@ -716,86 +500,85 @@ impl NativePtyProcess {
     /// Request graceful termination of the PTY child.
     pub fn terminate_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::terminate");
-        #[cfg(windows)]
-        {
-            if self
-                .handles
-                .lock()
-                .expect("pty handles mutex poisoned")
-                .is_none()
-            {
+        let should_close = {
+            let mut guard = self.handles.lock().expect("pty handles mutex poisoned");
+            let handles = guard.as_mut().ok_or(PtyError::NotRunning)?;
+            let pid = handles.child.pid();
+            if pid == 0 {
                 return Err(PtyError::NotRunning);
             }
-            self.close_impl()
+            pty_platform::terminate_pty_child(pid).map_err(PtyError::Io)?
+        };
+        if should_close {
+            self.close_impl()?;
         }
-
-        #[cfg(unix)]
-        {
-            pty_platform::terminate(self)
-        }
+        Ok(())
     }
 
     /// Forcefully terminate the PTY child.
     pub fn kill_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::kill");
-        #[cfg(windows)]
+        if self
+            .handles
+            .lock()
+            .expect("pty handles mutex poisoned")
+            .is_none()
         {
-            if self
-                .handles
-                .lock()
-                .expect("pty handles mutex poisoned")
-                .is_none()
-            {
-                return Err(PtyError::NotRunning);
-            }
-            self.close_impl()
+            return Err(PtyError::NotRunning);
         }
-
-        #[cfg(unix)]
-        {
-            pty_platform::kill(self)
-        }
+        self.close_impl()
     }
 
     /// Request graceful termination of the PTY child process tree.
     pub fn terminate_tree_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::terminate_tree");
-        #[cfg(windows)]
-        {
-            pty_windows::terminate_tree(self)
+        let Some(pid) = self.pid()? else {
+            return if self
+                .returncode
+                .lock()
+                .expect("pty returncode mutex poisoned")
+                .is_some()
+            {
+                Ok(())
+            } else {
+                Err(PtyError::NotRunning)
+            };
+        };
+        if pty_platform::signal_pty_tree(pid, false).map_err(PtyError::Io)? {
+            self.close_impl()?;
         }
-
-        #[cfg(unix)]
-        {
-            pty_platform::terminate_tree(self)
-        }
+        Ok(())
     }
 
     /// Forcefully terminate the PTY child process tree.
     pub fn kill_tree_impl(&self) -> Result<(), PtyError> {
         crate::rp_rust_debug_scope!("running_process::NativePtyProcess::kill_tree");
-        #[cfg(windows)]
-        {
-            pty_windows::kill_tree(self)
+        let Some(pid) = self.pid()? else {
+            return if self
+                .returncode
+                .lock()
+                .expect("pty returncode mutex poisoned")
+                .is_some()
+            {
+                Ok(())
+            } else {
+                Err(PtyError::NotRunning)
+            };
+        };
+        if pty_platform::signal_pty_tree(pid, true).map_err(PtyError::Io)? {
+            self.close_impl()?;
         }
-
-        #[cfg(unix)]
-        {
-            pty_platform::kill_tree(self)
-        }
+        Ok(())
     }
 
     /// Get the PID of the child process, if running.
     pub fn pid(&self) -> Result<Option<u32>, PtyError> {
         let guard = self.handles.lock().expect("pty handles mutex poisoned");
         if let Some(handles) = guard.as_ref() {
-            #[cfg(unix)]
-            if let Some(pid) = handles.master.process_group_leader() {
-                if let Ok(pid) = u32::try_from(pid) {
-                    return Ok(Some(pid));
-                }
-            }
-            return Ok(Some(handles.child.pid()));
+            return Ok(pty_platform::preferred_pty_pid(
+                handles.master.as_ref(),
+                handles.child.as_ref(),
+            ));
         }
         Ok(None)
     }

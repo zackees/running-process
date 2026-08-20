@@ -41,16 +41,29 @@ cfg_select! {
 // root. Neutral capability facades re-export only crate-root names and never
 // name the private `platform_imp` alias themselves.
 pub use platform_imp::{
-    assign_child_to_windows_job, cancel_capture_reader, canonical_environment_pairs,
-    capture_reader_done, compat_shell_command, configure_exact_trace, configure_process_command,
-    configure_sync_contained_command, configure_sync_daemon_command, configure_trampoline_command,
-    current_executable_build_id, exact_trace_capability, exit_code, kill_tree,
-    monitor_console_windows, parent_has_console, prepare_capture_reader, process_snapshot,
-    process_snapshot_for_pid, set_process_name, shell_command, soft_terminate_process_group,
-    spawn_sync, spawn_sync_daemon, start_descendant_monitor, start_exact_trace,
-    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
-    unix_set_priority, unix_signal_process, unix_signal_process_group, unix_signal_raw,
-    CaptureCancellation, TracedChild, WindowsJobHandle,
+    active_graphics_probe, assign_child_to_windows_job, cancel_capture_reader,
+    canonical_environment_pairs, capture_reader_done, compat_shell_command, configure_exact_trace,
+    configure_process_command, configure_sync_contained_command, configure_sync_daemon_command,
+    configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
+    kill_tree, monitor_console_windows, parent_has_console, prepare_capture_reader,
+    process_snapshot, process_snapshot_for_pid, set_process_name, set_window_icon_impl,
+    shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
+    start_descendant_monitor, start_exact_trace, sync_child_native_handle, trampoline_exit_code,
+    unix_mark_extra_fds_close_on_exec, unix_set_priority, unix_signal_process,
+    unix_signal_process_group, unix_signal_raw, window_icon_support_impl, CaptureCancellation,
+    TracedChild, WindowsJobHandle,
+};
+
+pub use platform_imp::terminal_input;
+
+#[cfg(feature = "pty")]
+pub use platform_imp::terminal::{
+    before_pty_spawn, current_backend_kind, find_child_processes, find_orphan_conhosts,
+    input_payload, is_ignorable_process_control_error, kill_pty_process_group, preferred_pty_pid,
+    prepare_pty_child, query_responses, resize_pty, send_pty_interrupt, shell_argv,
+    signal_pty_tree, terminate_pty_child, wait_before_pty_close_supported, Backend,
+    ChildProcessInfo, ConPtyBackendKind, OrphanConhostInfo, PtyProcessGuard, PtySpawnContext,
+    TerminalInputSession,
 };
 
 #[cfg(feature = "session-relay")]

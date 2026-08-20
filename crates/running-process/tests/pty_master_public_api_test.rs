@@ -1,12 +1,9 @@
-//! Regression test for 4.0.1: the `PtyMaster` trait + `PtySize`
-//! struct are reachable from downstream crates via the public
-//! `running_process::pty::backend` re-exports, and `master.resize` /
-//! `master.get_size` can be called through `NativePtyHandles.master`.
+//! Public PTY facade contract.
 //!
-//! In 4.0.0 the backend trait and module were `pub(crate)`, which
-//! meant downstream consumers (e.g. clud's SIGWINCH relay) could
-//! hold the `Box<dyn PtyMaster>` from `NativePtyHandles.master` but
-//! couldn't call any method on it. This test locks the surface in.
+//! The 4.0.1 public neutral traits remain reachable and usable through
+//! `NativePtyHandles`. The 5.0 platform-boundary migration deliberately removes
+//! concrete `portable-pty` and native fd/HANDLE escape hatches, while keeping
+//! custom host-neutral trait implementations source-compatible.
 //!
 //! Uses `python -c sleep` as the child, matching the rest of the
 //! integration test suite. If the test runner doesn't have a
@@ -14,8 +11,62 @@
 
 use std::time::{Duration, Instant};
 
-use running_process::pty::backend::PtySize;
+use running_process::pty::backend::{PtyChild, PtyMaster, PtySize};
 use running_process::pty::NativePtyProcess;
+
+struct NeutralMaster;
+
+impl PtyMaster for NeutralMaster {
+    fn try_clone_reader(&mut self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        Ok(Box::new(std::io::empty()))
+    }
+
+    fn take_writer(&mut self) -> std::io::Result<Box<dyn std::io::Write + Send>> {
+        Ok(Box::new(std::io::sink()))
+    }
+
+    fn resize(&self, _size: PtySize) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn get_size(&self) -> std::io::Result<PtySize> {
+        Ok(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+    }
+}
+
+struct NeutralChild;
+
+impl PtyChild for NeutralChild {
+    fn pid(&self) -> u32 {
+        1
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<u32>> {
+        Ok(None)
+    }
+
+    fn wait(&mut self) -> std::io::Result<u32> {
+        Ok(0)
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn downstream_neutral_backend_traits_require_no_host_specific_methods() {
+    fn assert_master<T: PtyMaster>() {}
+    fn assert_child<T: PtyChild>() {}
+
+    assert_master::<NeutralMaster>();
+    assert_child::<NeutralChild>();
+}
 
 fn python_available() -> bool {
     std::process::Command::new("python")

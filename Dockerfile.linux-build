@@ -54,6 +54,7 @@ COPY crates/running-process-win-gnu-bridge/Cargo.toml /work/crates/running-proce
 COPY crates/test-watchdog/Cargo.toml /work/crates/test-watchdog/Cargo.toml
 COPY testbins/Cargo.toml /work/testbins/Cargo.toml
 COPY crates/running-process-platform-internal/Cargo.toml /work/crates/running-process-platform-internal/Cargo.toml
+COPY crates/running-process-platform-internal/build.rs /work/crates/running-process-platform-internal/build.rs
 
 RUN mkdir -p /work/crates/running-process/src/bin \
     /work/crates/running-process-platform-internal/src \

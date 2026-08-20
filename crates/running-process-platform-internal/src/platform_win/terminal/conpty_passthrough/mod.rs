@@ -1,6 +1,6 @@
 //! Direct ConPTY backend with `PSEUDOCONSOLE_PASSTHROUGH_MODE`.
 //!
-//! See #150. `portable_pty 0.9.0` hardcodes ConPTY flags to
+//! See #150. The previous upstream backend hardcoded ConPTY flags to
 //! `PSUEDOCONSOLE_INHERIT_CURSOR | PSEUDOCONSOLE_RESIZE_QUIRK |
 //! PSEUDOCONSOLE_WIN32_INPUT_MODE` with no API to add
 //! `PSEUDOCONSOLE_PASSTHROUGH_MODE = 0x8`. Without passthrough,
@@ -55,7 +55,7 @@ use windows_sys::Win32::System::Threading::{
 // from the Microsoft consoleapi.h header value.
 pub(super) const PSEUDOCONSOLE_PASSTHROUGH_MODE: u32 = 0x8;
 
-pub(in crate::pty) mod child;
+pub(super) mod child;
 // The sidecar self-acquisition module pulls in `dirs`, `ureq`, `zstd`,
 // `tar`, and `sha2` — all gated by the `conpty-sidecar` feature.
 // Builds without it fall back to manual pre-stage + kernel32 on Win10.
@@ -106,7 +106,7 @@ pub(super) struct ConPtyPair {
 /// Host-side handle. Shares ownership of the `HPCON` with the slave
 /// via an `Arc<Mutex<...>>` so `Drop` order is deterministic — the
 /// HPCON is only released when the last clone goes away.
-pub(crate) struct ConPtyMaster {
+pub struct ConPtyMaster {
     pseudo_console: Arc<Mutex<PseudoConsole>>,
     /// Host-side handle for reading child stdout/stderr. `None` after
     /// `try_clone_reader` has taken it.
@@ -168,7 +168,7 @@ impl ConPtyMaster {
 /// values are dropped at function exit). Holding our copies open
 /// past `CreatePseudoConsole` desyncs ConPTY's internal pipe
 /// reference counts and breaks the master-side reader.
-pub(crate) struct ConPtySlave {
+pub struct ConPtySlave {
     pseudo_console: Arc<Mutex<PseudoConsole>>,
 }
 

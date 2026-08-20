@@ -2078,8 +2078,6 @@ dependencies = [
  "getrandom 0.4.2",
  "interprocess",
  "libc",
- "png",
- "portable-pty",
  "prost",
  "prost-build",
  "prost-types",
@@ -2091,7 +2089,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "sysinfo",
- "tar",
  "tempfile",
  "test-watchdog",
  "thiserror 2.0.18",
@@ -2101,23 +2098,31 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trybuild",
- "ureq",
  "winapi",
  "windows-sys 0.61.2",
- "x11rb",
- "zstd",
 ]
 
 [[package]]
 name = "running-process-platform-internal"
 version = "4.10.3"
 dependencies = [
+ "dirs",
  "interprocess",
  "libc",
+ "png",
+ "portable-pty",
+ "sha2",
  "sysinfo",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
  "tokio",
+ "toml 0.8.23",
+ "ureq",
  "winapi",
  "windows-sys 0.61.2",
+ "x11rb",
+ "zstd",
 ]
 
 [[package]]

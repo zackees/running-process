@@ -1,11 +1,9 @@
 # Phase 2 manifest-boundary bootstrap ledger. Schema: crate<TAB>kind<TAB>construct.
 running-process	native_dependency	interprocess
 running-process	native_dependency	libc
-running-process	native_dependency	portable-pty
 running-process	native_dependency	winapi
 running-process	native_dependency	winapi
 running-process	native_dependency	windows-sys
-running-process	target_dependency_table	target
 running-process	target_dependency_table	target
 running-process-probe	native_dependency	libc
 running-process-probe	native_dependency	libc

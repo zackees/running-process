@@ -1,6 +1,6 @@
 //! Spawned-process handle wrapper for ConPTY children (#150 W2).
 //!
-//! Narrower than `portable_pty::Child` — we own both sides of the
+//! Narrower than the upstream PTY child trait — we own both sides of the
 //! abstraction so we only expose what `native_pty_process.rs`
 //! actually calls: `pid`, `try_wait`, `wait`, `kill`, `as_raw_handle`.
 //!
@@ -22,7 +22,7 @@ use windows_sys::Win32::System::Threading::{
 /// running. Equals `STATUS_PENDING` from ntstatus.h.
 const STILL_ACTIVE: u32 = 259;
 
-pub(crate) struct ConPtyChild {
+pub struct ConPtyChild {
     process: OwnedHandle,
     _main_thread: OwnedHandle,
 }
