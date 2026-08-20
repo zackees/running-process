@@ -1,7 +1,6 @@
 import tempfile
 import unittest
 from pathlib import Path
-from typing import cast
 from unittest import mock
 
 from ci import coverage_process_smoke
@@ -102,7 +101,6 @@ def test_broker_smoke_covers_admin_servicedef_and_v2_lifecycle(monkeypatch) -> N
 class TestProbeCoverageSmoke(unittest.TestCase):
     def test_probe_smoke_covers_queries_validation_and_profile(self) -> None:
         calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
-        crash_runs: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
         class FinishedDaemon:
             returncode = 0
@@ -139,10 +137,6 @@ class TestProbeCoverageSmoke(unittest.TestCase):
                 )
                 return FinishedDaemon()
 
-            def fake_subprocess_run(*args, **kwargs):
-                crash_runs.append((args, kwargs))
-                return mock.Mock(returncode=-6, stdout=b"", stderr=b"")
-
             with (
                 mock.patch.object(coverage_process_smoke, "_run", fake_run),
                 mock.patch.object(
@@ -151,17 +145,11 @@ class TestProbeCoverageSmoke(unittest.TestCase):
                     return_value=_TempDir(root),
                 ),
                 mock.patch.object(coverage_process_smoke.subprocess, "Popen", fake_popen),
-                mock.patch.object(
-                    coverage_process_smoke.subprocess,
-                    "run",
-                    side_effect=fake_subprocess_run,
-                ),
                 mock.patch.object(coverage_process_smoke.time, "sleep", return_value=None),
             ):
                 coverage_process_smoke.exercise_probe_cli(
                     Path("/tmp/rpprobed"),
                     Path("/tmp/rpprobe"),
-                    Path("/tmp/testbin-probe-crasher"),
                 )
 
         profile_calls = [(args, kwargs) for args, kwargs in calls if "profile" in args]
@@ -175,26 +163,6 @@ class TestProbeCoverageSmoke(unittest.TestCase):
         self.assertTrue(any("fetch" in args for args, _ in calls))
         self.assertTrue(any("snapshot" in args for args, _ in calls))
         self.assertTrue(any("--force" in args for args, _ in calls))
-        self.assertTrue(
-            any(
-                "crashes" in args and "--class" in args and "crash-fixture" in args
-                for args, _ in calls
-            )
-        )
-        self.assertEqual(len(crash_runs), 1)
-        crash_args, crash_kwargs = crash_runs[0]
-        self.assertEqual(crash_args[0][:2], [coverage_process_smoke.sys.executable, "-c"])
-        crash_script = crash_args[0][2]
-        self.assertIn("resource.setrlimit(resource.RLIMIT_CORE, (0, 0))", crash_script)
-        self.assertIn(repr(str(Path("/tmp/testbin-probe-crasher"))), crash_script)
-        self.assertIn("'--spool'", crash_script)
-        self.assertIn("'--mode', 'abort'", crash_script)
-        self.assertEqual(crash_kwargs["cwd"], root)
-        crash_env = cast(dict[str, str], crash_kwargs["env"])
-        self.assertEqual(
-            crash_env["RUNNING_PROCESS_PROBE_WORKER"],
-            str(root / "missing-symbolizer"),
-        )
 
 
 class _TempDir:

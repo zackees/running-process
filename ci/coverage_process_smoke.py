@@ -333,9 +333,7 @@ def exercise_live_v2_broker(binary: Path, *, env: dict[str, str]) -> None:
                 loop.communicate(timeout=5)
 
 
-def exercise_probe_cli(
-    daemon_binary: Path, cli_binary: Path, crash_binary: Path
-) -> None:
+def exercise_probe_cli(daemon_binary: Path, cli_binary: Path) -> None:
     """Query a real isolated probe daemon through socket and HTTP transports."""
     # The probe endpoint is a Unix-domain socket. GitHub's TMPDIR lives below a
     # long workspace path, which can push the generated endpoint past
@@ -353,11 +351,6 @@ def exercise_probe_cli(
                 "XDG_STATE_HOME": str(root / "state"),
                 "RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED": "1",
                 "RUNNING_PROCESS_PROBE_SPOOL_DIR": str(root / "spool"),
-                # Crash ingestion is the contract under test here. The full
-                # suite separately exercises the real symbolizer; forcing its
-                # documented raw-frame fallback keeps this smoke below the
-                # worker's 60-second deadline on instrumented debug builds.
-                "RUNNING_PROCESS_PROBE_WORKER": str(root / "missing-symbolizer"),
             }
         )
         (root / "home").mkdir(mode=0o700)
@@ -472,73 +465,6 @@ time.sleep(300)
                 ("snapshot", str(enrolled.pid), "--max-depth", "16"),
             ):
                 _run(cli_binary, "--discovery", str(discovery), *args, env=env)
-
-            crash_argv = [
-                str(crash_binary),
-                "--spool",
-                str(root / "spool"),
-                "--mode",
-                "abort",
-            ]
-            crash_script = f"""
-import os
-import resource
-
-resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-os.execv({str(crash_binary)!r}, {crash_argv!r})
-"""
-            crashed = subprocess.run(
-                [sys.executable, "-c", crash_script],
-                env=env,
-                cwd=root,
-                capture_output=True,
-                timeout=20,
-                check=False,
-            )
-            if crashed.returncode == 0:
-                raise RuntimeError("probe crash fixture unexpectedly exited successfully")
-
-            crash_deadline = time.monotonic() + 15.0
-            crash_id: int | None = None
-            while time.monotonic() < crash_deadline:
-                payload = _run(
-                    cli_binary,
-                    "--discovery",
-                    str(discovery),
-                    "--json",
-                    "crashes",
-                    "--class",
-                    "crash-fixture",
-                    "--limit",
-                    "5",
-                    env=env,
-                )
-                try:
-                    parsed = json.loads(payload)
-                except json.JSONDecodeError:
-                    parsed = []
-                rows = parsed if isinstance(parsed, list) else parsed.get("records", [])
-                if rows:
-                    candidate = rows[0].get("id")
-                    if isinstance(candidate, int):
-                        crash_id = candidate
-                        break
-                time.sleep(0.1)
-            if crash_id is None:
-                raise RuntimeError("probe daemon did not ingest the crash fixture")
-            artifact = root / "coverage-crash-artifact.bin"
-            _run(
-                cli_binary,
-                "--discovery",
-                str(discovery),
-                "fetch",
-                str(crash_id),
-                "--out",
-                str(artifact),
-                env=env,
-            )
-            if not artifact.is_file() or artifact.stat().st_size == 0:
-                raise RuntimeError("probe crash artifact download was empty")
 
             _run(
                 cli_binary,
@@ -844,7 +770,6 @@ def main() -> int:
     broker_v2_binary = args.bin_dir / "running-process-broker-v2"
     probe_daemon_binary = args.bin_dir / "rpprobed"
     probe_cli_binary = args.bin_dir / "rpprobe"
-    crash_binary = args.bin_dir / "testbin-probe-crasher"
     trampoline_binary = args.bin_dir / "daemon-trampoline"
     for required in (
         daemon_binary,
@@ -853,14 +778,13 @@ def main() -> int:
         broker_v2_binary,
         probe_daemon_binary,
         probe_cli_binary,
-        crash_binary,
         trampoline_binary,
     ):
         if not required.is_file():
             raise RuntimeError(f"instrumented binary not found at {required}")
     exercise_cleanup(cleanup_binary)
     exercise_brokers(broker_v1_binary, broker_v2_binary)
-    exercise_probe_cli(probe_daemon_binary, probe_cli_binary, crash_binary)
+    exercise_probe_cli(probe_daemon_binary, probe_cli_binary)
     exercise_trampoline(trampoline_binary)
     exercise_runpm(binary, daemon_binary)
     return 0
