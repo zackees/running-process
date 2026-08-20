@@ -204,14 +204,15 @@ impl Listener {
     }
 
     pub fn bind_owner_only(endpoint: &Endpoint) -> io::Result<Self> {
-        use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+        use std::os::unix::fs::PermissionsExt as _;
 
         prepare_owner_private_parent(endpoint.display())?;
-        ListenerOptions::new()
+        let listener = ListenerOptions::new()
             .name(name(endpoint.display())?)
-            .mode(0o600)
             .create_sync()
-            .map(Self)
+            .map(Self)?;
+        std::fs::set_permissions(endpoint.display(), std::fs::Permissions::from_mode(0o600))?;
+        Ok(listener)
     }
 
     pub fn bind_with_options(
