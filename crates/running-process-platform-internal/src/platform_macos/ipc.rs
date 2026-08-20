@@ -54,12 +54,8 @@ impl Endpoint {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        Self::new(
-            std::env::temp_dir()
-                .join(format!("rp-ipc-{label}-{}-{nonce}.sock", std::process::id()))
-                .to_string_lossy()
-                .into_owned(),
-        )
+        let digest = blake3::hash(format!("{label}-{}-{nonce}", std::process::id()).as_bytes());
+        Self::new(format!("/tmp/rp-ipc-{}.sock", &digest.to_hex()[..16]))
     }
 }
 
