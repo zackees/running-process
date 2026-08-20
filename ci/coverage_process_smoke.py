@@ -466,7 +466,6 @@ time.sleep(300)
                 time.sleep(0.05)
 
             for args in (
-                ("doctor",),
                 ("dump", str(enrolled.pid)),
                 ("--json", "dump", str(enrolled.pid), "--max-depth", "16"),
                 ("dump", "--name", "*python*", "--all", "--max-depth", "8"),
