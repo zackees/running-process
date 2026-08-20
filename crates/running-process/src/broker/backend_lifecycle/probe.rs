@@ -284,7 +284,7 @@ pub fn endpoint_probe_response_frame(
 ) -> Frame {
     let mut payload = Vec::with_capacity(PROBE_NONCE_BYTES + 128);
     payload.extend_from_slice(&request.nonce);
-    daemon.to_proto().encode(&mut payload).expect(
+    daemon.encode_probe_identity(&mut payload).expect(
         "prost encoding DaemonProcess into Vec cannot fail because Vec writes are infallible",
     );
 
