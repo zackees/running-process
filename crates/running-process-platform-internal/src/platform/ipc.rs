@@ -6,7 +6,8 @@
 
 #[cfg(feature = "ipc")]
 pub use crate::{
-    ipc_current_user_id as current_user_id, IpcEndpoint as Endpoint, IpcListener as Listener,
+    ipc_current_user_id as current_user_id, IpcEndpoint as Endpoint,
+    IpcInheritedListener as InheritedListener, IpcListener as Listener,
     IpcListenerNonblockingMode as ListenerNonblockingMode, IpcPeerIdentity as PeerIdentity,
     IpcPeerIdentitySource as PeerIdentitySource, IpcStream as Stream,
 };

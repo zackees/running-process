@@ -67,7 +67,8 @@ pub use platform_imp::terminal_input;
 
 #[cfg(feature = "ipc")]
 pub use platform_imp::{
-    ipc_current_user_id, IpcEndpoint, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
+    ipc_current_user_id, IpcEndpoint, IpcInheritedListener, IpcListener,
+    IpcListenerNonblockingMode, IpcPeerIdentity,
     IpcPeerIdentitySource, IpcStream,
 };
 

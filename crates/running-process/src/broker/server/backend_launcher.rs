@@ -145,9 +145,7 @@ impl BackendLauncher for CommandBackendLauncher {
         // aborting a launch over — falling back gives the spawn-then-probe
         // behaviour this launcher has always had, and the probe below still
         // gates success either way.
-        #[cfg(unix)]
         let mut inherited = broker_owned_listener(&endpoint);
-        #[cfg(unix)]
         if let Some(listener) = inherited.as_ref() {
             // Publishing the descriptor must happen before the spawn. Failing
             // here would leave the child inheriting nothing while the broker
@@ -180,7 +178,6 @@ impl BackendLauncher for CommandBackendLauncher {
                 // the probe fails, the child is killed, and the listener drops
                 // with its reclaim guard already released. Dead daemon,
                 // orphaned socket.
-                #[cfg(unix)]
                 if let Some(listener) = inherited.as_mut() {
                     listener.disown_endpoint();
                 }
@@ -201,7 +198,6 @@ impl BackendLauncher for CommandBackendLauncher {
 ///
 /// `None` means the daemon binds for itself — the path this launcher has
 /// always taken, and the default.
-#[cfg(unix)]
 fn broker_owned_listener(
     endpoint: &Endpoint,
 ) -> Option<crate::broker::broker_owned_bind::InheritableListener> {

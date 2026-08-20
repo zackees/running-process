@@ -5,7 +5,8 @@
 pub(crate) mod ipc;
 #[cfg(feature = "ipc")]
 pub use ipc::{
-    current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint, Listener as IpcListener,
+    current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint,
+    InheritedListener as IpcInheritedListener, Listener as IpcListener,
     ListenerNonblockingMode as IpcListenerNonblockingMode, PeerIdentity as IpcPeerIdentity,
     PeerIdentitySource as IpcPeerIdentitySource, Stream as IpcStream,
 };

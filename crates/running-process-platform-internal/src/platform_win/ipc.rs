@@ -40,7 +40,7 @@ impl Endpoint {
         Ok(false)
     }
 
-    #[cfg(test)]
+    /// Allocate a unique endpoint for a caller-owned test or probe.
     pub fn test(label: &str) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -301,6 +301,37 @@ impl Listener {
 
     pub fn do_not_reclaim_name_on_drop(&mut self) {
         self.0.do_not_reclaim_name_on_drop();
+    }
+}
+
+/// Windows named-pipe listeners cannot be handed off as a bound listener:
+/// one accepted pipe instance becomes the connection. The opaque type keeps
+/// that capability gap at the platform boundary.
+pub struct InheritedListener;
+
+impl InheritedListener {
+    pub fn supported() -> bool {
+        false
+    }
+
+    pub fn bind(_endpoint: &Endpoint) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a Windows named-pipe listener cannot be inherited by a child",
+        ))
+    }
+
+    pub fn prepare(&self, _command: &mut std::process::Command, _env_key: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a Windows named-pipe listener cannot be inherited by a child",
+        ))
+    }
+
+    pub fn disown_endpoint(&mut self) {}
+
+    pub fn recover_from_env(_env_key: &str) -> io::Result<Option<Listener>> {
+        Ok(None)
     }
 }
 
