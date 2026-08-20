@@ -5,8 +5,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use interprocess::local_socket::prelude::*;
 use prost::Message;
+use running_process_platform_internal::{into_legacy_ipc_stream, platform::ipc};
 
 use crate::broker::capabilities::{handoff_transport_available, CAP_HANDLE_PASSING};
 use crate::broker::protocol::{
@@ -16,7 +16,6 @@ use crate::broker::protocol::{
     CONTROL_PAYLOAD_PROTOCOL, PROTOCOL_VERSION,
 };
 use crate::broker::server::handoff::validate_handoff_frame;
-use crate::broker::server::local_socket_name;
 
 /// Default wall-clock bound on waiting for the broker's handoff-ready relay
 /// before silently downgrading to the `backend_pipe` reconnect path.
@@ -281,7 +280,7 @@ pub fn connect_to_backend(
         ) {
             return Ok(BackendConnection {
                 endpoint: negotiated.backend_pipe.clone(),
-                stream: adopted,
+                stream: into_legacy_ipc_stream(adopted),
                 route: BackendConnectionRoute::HandlePassed,
                 negotiated: Some(negotiated),
             });
@@ -348,10 +347,10 @@ fn handoff_negotiated(negotiated: &Negotiated) -> bool {
 /// the caller falls back to reconnect. Every failure returns `None` —
 /// adoption is best-effort by contract.
 fn await_handoff_ready(
-    stream: interprocess::local_socket::Stream,
+    stream: ipc::Stream,
     expected_token: Vec<u8>,
     timeout: Duration,
-) -> Option<interprocess::local_socket::Stream> {
+) -> Option<ipc::Stream> {
     let (result_tx, result_rx) = mpsc::channel();
     thread::spawn(move || {
         let mut stream = stream;
@@ -368,10 +367,7 @@ fn await_handoff_ready(
 ///
 /// Errors carry a static description for diagnostics, but the adoption
 /// contract maps every failure to the silent reconnect downgrade.
-fn read_handoff_ready(
-    stream: &mut interprocess::local_socket::Stream,
-    expected_token: &[u8],
-) -> Result<(), &'static str> {
+fn read_handoff_ready(stream: &mut ipc::Stream, expected_token: &[u8]) -> Result<(), &'static str> {
     let bytes = read_frame(stream).map_err(|_| "failed to read handoff-ready frame")?;
     let frame =
         Frame::decode(bytes.as_slice()).map_err(|_| "failed to decode handoff-ready Frame")?;
@@ -441,7 +437,7 @@ fn send_admin_request_unbounded(
     request: AdminRequest,
 ) -> Result<AdminReply, BrokerClientError> {
     let mut stream =
-        connect_local_socket(broker_endpoint).map_err(BrokerClientError::BrokerConnect)?;
+        connect_ipc_stream(broker_endpoint).map_err(BrokerClientError::BrokerConnect)?;
     let request_frame = Frame {
         envelope_version: PROTOCOL_VERSION,
         kind: FrameKind::Request as i32,
@@ -469,13 +465,17 @@ fn send_admin_request_unbounded(
 
 /// Open a platform local socket by broker endpoint string.
 pub fn connect_local_socket(endpoint: &str) -> io::Result<interprocess::local_socket::Stream> {
-    let name = local_socket_name(endpoint)?;
-    LocalSocketStream::connect(name)
+    connect_ipc_stream(endpoint).map(into_legacy_ipc_stream)
+}
+
+pub(crate) fn connect_ipc_stream(endpoint: &str) -> io::Result<ipc::Stream> {
+    let endpoint = ipc::Endpoint::new(endpoint.to_owned())?;
+    ipc::Stream::connect(&endpoint)
 }
 
 fn broker_hello(
     request: &ConnectBackendRequest<'_>,
-) -> Result<(interprocess::local_socket::Stream, Negotiated), BrokerClientError> {
+) -> Result<(ipc::Stream, Negotiated), BrokerClientError> {
     // Bound the Hello handshake round-trip on a helper thread (issue #590,
     // cluster H). `request` is borrowed, so capture the owned endpoint +
     // pre-encoded Hello payload before moving into the thread; the
@@ -495,9 +495,9 @@ fn broker_hello(
 fn broker_hello_unbounded(
     broker_endpoint: &str,
     hello_bytes: Vec<u8>,
-) -> Result<(interprocess::local_socket::Stream, Negotiated), BrokerClientError> {
+) -> Result<(ipc::Stream, Negotiated), BrokerClientError> {
     let mut stream =
-        connect_local_socket(broker_endpoint).map_err(BrokerClientError::BrokerConnect)?;
+        connect_ipc_stream(broker_endpoint).map_err(BrokerClientError::BrokerConnect)?;
     let request_frame = Frame {
         envelope_version: PROTOCOL_VERSION,
         kind: FrameKind::Request as i32,

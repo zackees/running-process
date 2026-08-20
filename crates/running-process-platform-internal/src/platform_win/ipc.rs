@@ -189,6 +189,12 @@ pub fn current_user_id() -> io::Result<String> {
 
 pub struct Stream(pub(crate) interprocess::local_socket::Stream);
 
+impl std::fmt::Debug for Stream {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("IpcStream")
+    }
+}
+
 impl Stream {
     pub fn connect(endpoint: &Endpoint) -> io::Result<Self> {
         interprocess::local_socket::Stream::connect(name(endpoint.display())?).map(Self)
