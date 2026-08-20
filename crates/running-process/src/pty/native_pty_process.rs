@@ -237,7 +237,7 @@ impl NativePtyProcess {
         let wait_before_close = pty_platform::wait_before_close_supported();
         let mut control_error = None;
         if wait_before_close {
-            if let Err(error) = pty_platform::kill_pty_process_group(master.control_token()) {
+            if let Err(error) = pty_platform::kill_pty_process_group(master.as_ref()) {
                 if !is_ignorable_process_control_error(&error) {
                     control_error = Some(error);
                 }
@@ -379,12 +379,8 @@ impl NativePtyProcess {
         let child = slave
             .spawn(&argv, cwd_path, env.as_deref())
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
-        let process_guard = pty_platform::prepare_pty_child(
-            spawn_context,
-            PtyChild::control_token(&child),
-            self.nice,
-        )
-        .map_err(PtyError::Io)?;
+        let process_guard = pty_platform::prepare_pty_child(spawn_context, &child, self.nice)
+            .map_err(PtyError::Io)?;
         let shared = Arc::clone(&self.reader);
         let echo = Arc::clone(&self.echo);
         let idle_detector = Arc::clone(&self.idle_detector);
@@ -459,7 +455,10 @@ impl NativePtyProcess {
         let (target, writer) = {
             let guard = self.handles.lock().expect("pty handles mutex poisoned");
             let handles = guard.as_ref().ok_or(PtyError::NotRunning)?;
-            (handles.master.control_token(), Arc::clone(&handles.writer))
+            (
+                handles.master.interrupt_target().map_err(PtyError::Io)?,
+                Arc::clone(&handles.writer),
+            )
         };
         let wrote_input =
             pty_platform::send_pty_interrupt(target, &writer).map_err(PtyError::Io)?;

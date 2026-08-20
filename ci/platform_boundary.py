@@ -61,6 +61,13 @@ IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 NATIVE_PATH = re.compile(r"\bstd\s*::\s*os\s*::\s*(unix|windows)\b")
 NATIVE_ROOT = re.compile(r"\b(libc|windows_sys)\s*::")
 CONCRETE_MODULE = re.compile(r"\b(platform_win|platform_linux|platform_macos|platform_imp)\b")
+RAW_PTY_CONTROL_PAYLOAD = re.compile(
+    r"\b(?:PtyMasterControlToken|PtyChildControlToken)\b"
+    r"|\b(?:raw_fd|raw_handle|process_group_leader)\s*:"
+)
+NEUTRAL_TERMINAL_FACADE = (
+    ROOT / PLATFORM_CRATE / "src" / "platform" / "terminal.rs"
+)
 
 
 @dataclass(frozen=True, order=True)
@@ -273,6 +280,15 @@ def manifest_dependency_violations() -> list[str]:
     return failures
 
 
+def neutral_facade_contract_violations() -> list[str]:
+    """Reject raw PTY control payloads disguised as facade-owned tokens."""
+    text = code_only(NEUTRAL_TERMINAL_FACADE.read_text(encoding="utf-8"))
+    return [
+        "neutral PTY facade carries raw descriptor/handle control payloads"
+        for _match in RAW_PTY_CONTROL_PAYLOAD.finditer(text)
+    ]
+
+
 def totals(rows: list[Row]) -> str:
     by_kind = collections.Counter(row.kind for row in rows)
     by_crate = collections.Counter(row.path.split("/")[1] for row in rows)
@@ -294,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         *validate_ledger(rows),
         *source_scan_violations(rows),
         *manifest_dependency_violations(),
+        *neutral_facade_contract_violations(),
     ]
     if args.print_totals:
         print(totals(rows))

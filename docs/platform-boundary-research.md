@@ -10,6 +10,15 @@ The package becomes a dependency leaf: it may depend on external implementation 
 
 `platform::{process, terminal, ipc, fs, executable, host}` is the neutral facade. It exchanges standard-library values or facade-owned types only: never raw handles/file descriptors, Win32/libc structs or error codes, Tokio process values, concrete streams/pipes, concrete PTYs, Python/PyO3 types, or daemon/broker/probe protocol types. Callers retain endpoint naming policy, lifecycle/retry policy, protocol framing, public diagnostics, and release-target selection.
 
+The sole transitional PTY API exception is source compatibility for the public
+4.x `PtyMaster::{process_group_leader, as_raw_fd}` and
+`PtyChild::as_raw_handle` method names, plus the deprecated
+`pty::reexports::portable_pty` helpers. These accessors are never consumed by
+platform mechanics: preparation, interrupts, process-group control, and PID
+selection use facade operations whose native state stays inside the concrete
+tree. The compatibility surface is deprecated for removal in 5.0; raw control
+payload structs or tokens remain forbidden in the neutral facade.
+
 ## Toolchain and packaging proof
 
 `std::cfg_select!` is stable since Rust 1.95.0 ([Rust source](https://doc.rust-lang.org/src/core/macros/mod.rs.html#231-235)); the current 1.94.1 toolchain and declared MSRV 1.85 cannot use it. Phase 2 raises the root toolchain pin and workspace `rust-version` to **1.95.0** (or a later reviewed patch release) atomically. The CI Dylint lane remains independently pinned to `nightly-2026-04-16` until its upgrade is separately validated.

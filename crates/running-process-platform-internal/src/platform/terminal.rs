@@ -24,24 +24,24 @@ pub struct PtyInputChunk {
 /// Independently lockable writer used by the PTY session policy layer.
 pub type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
-/// Opaque host control data for a PTY master.
-///
-/// Shared callers can carry this token without observing a native descriptor
-/// or process-group value.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PtyMasterControlToken {
-    pub(crate) process_group_leader: Option<i32>,
-    pub(crate) raw_fd: Option<i32>,
-}
+type PtyInterruptOperation = Box<dyn FnOnce(&SharedPtyWriter) -> io::Result<bool> + Send + 'static>;
 
-/// Opaque host control data for a spawned PTY child.
+/// Prepared, owned interrupt operation that can outlive a borrow of the PTY master.
 ///
-/// Native process handles never appear in the facade signature.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PtyChildControlToken {
-    pub(crate) raw_handle: Option<usize>,
+/// Native descriptors and process-group identifiers remain captured inside the
+/// selected concrete implementation rather than crossing this facade.
+pub struct PtyInterruptTarget(PtyInterruptOperation);
+
+impl PtyInterruptTarget {
+    pub(crate) fn new(
+        send: impl FnOnce(&SharedPtyWriter) -> io::Result<bool> + Send + 'static,
+    ) -> Self {
+        Self(Box::new(send))
+    }
+
+    pub fn send(self, writer: &SharedPtyWriter) -> io::Result<bool> {
+        (self.0)(writer)
+    }
 }
 
 /// Platform-neutral handle for the master side of a pseudo-terminal.
@@ -51,9 +51,47 @@ pub trait PtyMaster: Send + 'static {
     fn resize(&self, size: PtySize) -> io::Result<()>;
     fn get_size(&self) -> io::Result<PtySize>;
 
-    /// Return opaque host control data without exposing native descriptors.
-    fn control_token(&self) -> PtyMasterControlToken {
-        PtyMasterControlToken::default()
+    /// Legacy Unix process-group accessor retained for source compatibility.
+    ///
+    /// Platform mechanics do not consume this value; use facade operations for
+    /// control. This method will be removed in the next major release.
+    #[deprecated(note = "use facade PTY control operations; removal planned for 5.0")]
+    fn process_group_leader(&self) -> Option<i32> {
+        None
+    }
+
+    /// Legacy Unix descriptor accessor retained for source compatibility.
+    ///
+    /// The primitive representation avoids a host-native type in the neutral
+    /// signature, and shared callers must not use it for platform mechanics.
+    #[deprecated(note = "use facade PTY operations; removal planned for 5.0")]
+    fn as_raw_fd(&self) -> Option<i32> {
+        None
+    }
+
+    /// Prepare an owned interrupt operation using the selected host's PTY mechanics.
+    #[cfg(feature = "pty")]
+    fn interrupt_target(&self) -> io::Result<PtyInterruptTarget> {
+        Ok(PtyInterruptTarget::new(|writer| {
+            let mut writer = writer
+                .lock()
+                .map_err(|_| io::Error::other("pty writer mutex poisoned"))?;
+            writer.write_all(&[0x03])?;
+            writer.flush()?;
+            Ok(true)
+        }))
+    }
+
+    /// Kill the selected host's PTY process group, when one exists.
+    #[cfg(feature = "pty")]
+    fn kill_process_group(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Select the externally meaningful PID for this PTY.
+    #[cfg(feature = "pty")]
+    fn preferred_pid(&self, child: &dyn PtyChild) -> Option<u32> {
+        Some(child.pid())
     }
 }
 
@@ -64,9 +102,23 @@ pub trait PtyChild: Send + 'static {
     fn wait(&mut self) -> io::Result<u32>;
     fn kill(&mut self) -> io::Result<()>;
 
-    /// Return opaque host control data without exposing a native process handle.
-    fn control_token(&self) -> PtyChildControlToken {
-        PtyChildControlToken::default()
+    /// Legacy Windows process-handle accessor retained for source compatibility.
+    ///
+    /// Platform mechanics do not consume this value. The facade-owned process
+    /// preparation operation keeps native handles inside the concrete tree.
+    #[deprecated(note = "use facade PTY operations; removal planned for 5.0")]
+    fn as_raw_handle(&self) -> Option<*mut std::ffi::c_void> {
+        None
+    }
+
+    /// Apply selected-host containment and priority mechanics after spawn.
+    #[cfg(feature = "pty")]
+    fn prepare_process(
+        &self,
+        context: PtySpawnContext,
+        nice: Option<i32>,
+    ) -> io::Result<PtyProcessGuard> {
+        crate::prepare_unmanaged_pty_child(context, nice)
     }
 }
 
@@ -125,10 +177,10 @@ pub fn before_pty_spawn() -> PtySpawnContext {
 #[cfg(feature = "pty")]
 pub fn prepare_pty_child(
     context: PtySpawnContext,
-    child: PtyChildControlToken,
+    child: &dyn PtyChild,
     nice: Option<i32>,
 ) -> io::Result<PtyProcessGuard> {
-    crate::prepare_pty_child(context, child, nice)
+    child.prepare_process(context, nice)
 }
 
 #[cfg(feature = "pty")]
@@ -158,15 +210,15 @@ pub fn is_ignorable_process_control_error(error: &io::Error) -> bool {
 
 #[cfg(feature = "pty")]
 pub fn send_pty_interrupt(
-    target: PtyMasterControlToken,
+    target: PtyInterruptTarget,
     writer: &SharedPtyWriter,
 ) -> io::Result<bool> {
-    crate::send_pty_interrupt(target, writer)
+    target.send(writer)
 }
 
 #[cfg(feature = "pty")]
-pub fn kill_pty_process_group(target: PtyMasterControlToken) -> io::Result<()> {
-    crate::kill_pty_process_group(target)
+pub fn kill_pty_process_group(master: &dyn PtyMaster) -> io::Result<()> {
+    master.kill_process_group()
 }
 
 #[cfg(feature = "pty")]
@@ -186,7 +238,7 @@ pub fn resize_pty(master: &dyn PtyMaster, size: PtySize) -> io::Result<()> {
 
 #[cfg(feature = "pty")]
 pub fn preferred_pty_pid(master: &dyn PtyMaster, child: &dyn PtyChild) -> Option<u32> {
-    crate::preferred_pty_pid(master, child)
+    master.preferred_pid(child)
 }
 
 #[cfg(feature = "pty")]

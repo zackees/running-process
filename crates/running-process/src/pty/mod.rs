@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -8,6 +9,19 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 use running_process_platform_internal::platform::terminal as pty_platform;
+
+/// Compatibility re-exports for downstream crates using the pre-boundary PTY API.
+///
+/// New code should use this module's [`PtyMaster`], [`PtyChild`], and [`PtySize`]
+/// facade-owned types. The concrete portable-pty escape hatch remains available
+/// through the next major release so existing imports keep compiling.
+#[deprecated(
+    note = "use running_process::pty facade-owned types; portable-pty compatibility will be removed in 5.0"
+)]
+pub mod reexports {
+    /// Re-export of the historical `portable_pty` dependency.
+    pub use running_process_platform_internal::portable_pty_compat as portable_pty;
+}
 
 /// Native terminal input capture and translation helpers.
 pub mod terminal_input;
@@ -40,6 +54,49 @@ pub fn platform_shell_argv(command: &str) -> Vec<String> {
 /// Whether this host can observe child exit before closing the PTY master.
 pub fn wait_before_close_supported() -> bool {
     pty_platform::wait_before_close_supported()
+}
+
+/// Build a `portable_pty::CommandBuilder` from an argv vector.
+#[deprecated(
+    note = "use NativePtyProcess or a facade-owned PTY backend; this helper will be removed in 5.0"
+)]
+pub fn command_builder_from_argv(
+    argv: &[String],
+) -> running_process_platform_internal::portable_pty_compat::CommandBuilder {
+    use running_process_platform_internal::portable_pty_compat::CommandBuilder;
+
+    let mut command = CommandBuilder::new(&argv[0]);
+    if argv.len() > 1 {
+        command.args(
+            argv[1..]
+                .iter()
+                .map(OsString::from)
+                .collect::<Vec<OsString>>(),
+        );
+    }
+    command
+}
+
+/// Convert a `portable_pty` exit status into this crate's signed exit-code convention.
+#[deprecated(
+    note = "use PtyChild::wait; direct portable-pty status conversion will be removed in 5.0"
+)]
+pub fn portable_exit_code(
+    status: running_process_platform_internal::portable_pty_compat::ExitStatus,
+) -> i32 {
+    if let Some(signal) = status.signal() {
+        let signal = signal.to_ascii_lowercase();
+        if signal.contains("interrupt") {
+            return -2;
+        }
+        if signal.contains("terminated") {
+            return -15;
+        }
+        if signal.contains("killed") {
+            return -9;
+        }
+    }
+    status.exit_code() as i32
 }
 
 mod native_pty_process;
