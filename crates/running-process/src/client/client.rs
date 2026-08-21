@@ -247,7 +247,7 @@ impl DaemonClient {
     /// Connect to a running daemon identified by an optional scope hash.
     ///
     /// The socket path is computed by [`paths::socket_path`] and the name type
-    /// dispatch matches the server via [`paths::make_socket_name`].
+    /// dispatch matches the server via [`paths::make_socket_endpoint`].
     pub fn connect(scope_hash: Option<&str>) -> Result<Self, ClientError> {
         let path = paths::socket_path(scope_hash);
         Self::connect_to(&path)
@@ -261,7 +261,7 @@ impl DaemonClient {
         // Validate the name up front so a bad path keeps its own error,
         // then connect with a bounded timeout (issue #590, cluster B) so a
         // bound-but-never-accepting daemon socket can't wedge the caller.
-        paths::make_socket_name(socket_path).map_err(ClientError::Connect)?;
+        paths::make_socket_endpoint(socket_path).map_err(ClientError::Connect)?;
         let stream = crate::client::deadline_io::connect_with_timeout(socket_path)
             .map_err(ClientError::Connect)?;
         let stream_clone = stream.try_clone().map_err(ClientError::Connect)?;
