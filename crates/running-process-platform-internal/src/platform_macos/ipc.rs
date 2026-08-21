@@ -167,7 +167,7 @@ impl Stream {
             interprocess::local_socket::Stream::UdSocket(stream) => stream.as_fd().as_raw_fd(),
         };
         send_connection_with_payload(control_fd, connection_fd, sideband_payload)?;
-        Ok(crate::platform::ipc::HandoffAttachment::new(0))
+        Ok(crate::platform::ipc::HandoffAttachment::new(0, true))
     }
 }
 
