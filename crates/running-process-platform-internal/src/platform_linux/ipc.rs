@@ -48,6 +48,28 @@ impl Endpoint {
         }
     }
 
+    pub fn ensure_parent_exists(&self) -> io::Result<()> {
+        if let Some(parent) = std::path::Path::new(&self.0).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        Ok(())
+    }
+
+    pub fn is_stale(&self) -> bool {
+        use interprocess::local_socket::traits::Stream as _;
+
+        let Ok(endpoint_name) = name(&self.0) else {
+            return false;
+        };
+        match interprocess::local_socket::Stream::connect(endpoint_name) {
+            Ok(_stream) => false,
+            Err(error) => matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            ),
+        }
+    }
+
     /// Allocate a unique endpoint for a caller-owned test or probe.
     pub fn test(label: &str) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
@@ -62,6 +84,26 @@ impl Endpoint {
 fn name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
     path.to_fs_name::<GenericFilePath>()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+}
+
+pub fn legacy_name(path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
+    path.to_fs_name::<GenericFilePath>()
+        .map_err(|error| format!("to_fs_name: {error}"))
+}
+
+pub fn select_endpoint_address(
+    _kernel_namespace: Option<String>,
+    filesystem: Option<std::path::PathBuf>,
+) -> Option<String> {
+    filesystem.map(|path| path.to_string_lossy().into_owned())
+}
+
+pub const fn nonblocking_zero_read_is_pending() -> bool {
+    false
+}
+
+pub const fn endpoint_is_filesystem_backed() -> bool {
+    true
 }
 
 fn prepare_owner_private_parent(path: &str) -> io::Result<()> {

@@ -107,7 +107,7 @@ impl<S: Read> Read for DeadlineStream<'_, S> {
                 // Windows `PIPE_NOWAIT` reports an empty pipe as `Ok(0)`;
                 // Unix only returns zero for EOF, which framing must keep
                 // distinct from a deadline expiry.
-                Ok(0) if cfg!(windows) => self.wait()?,
+                Ok(0) if crate::platform::ipc::nonblocking_zero_read_is_pending() => self.wait()?,
                 Ok(0) => return Ok(0),
                 Ok(n) => return Ok(n),
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => self.wait()?,
@@ -152,9 +152,11 @@ mod tests {
     use std::cell::RefCell;
     use std::io;
 
-    #[cfg(unix)]
     #[test]
     fn eof_remains_distinct_from_timeout() {
+        if crate::platform::ipc::nonblocking_zero_read_is_pending() {
+            return;
+        }
         let mut empty = std::io::Cursor::new(Vec::<u8>::new());
         let mut stream = DeadlineStream::new(&mut empty, Instant::now() + Duration::from_secs(1));
         let mut byte = [0u8; 1];

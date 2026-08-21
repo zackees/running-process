@@ -40,6 +40,14 @@ impl Endpoint {
         Ok(false)
     }
 
+    pub fn ensure_parent_exists(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn is_stale(&self) -> bool {
+        false
+    }
+
     /// Allocate a unique endpoint for a caller-owned test or probe.
     pub fn test(label: &str) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
@@ -58,6 +66,28 @@ fn name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
         .unwrap_or(path)
         .to_ns_name::<GenericNamespaced>()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+}
+
+pub fn legacy_name(path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
+    path.strip_prefix(r"\\.\pipe\")
+        .unwrap_or(path)
+        .to_ns_name::<GenericNamespaced>()
+        .map_err(|error| format!("to_ns_name: {error}"))
+}
+
+pub fn select_endpoint_address(
+    kernel_namespace: Option<String>,
+    _filesystem: Option<std::path::PathBuf>,
+) -> Option<String> {
+    kernel_namespace
+}
+
+pub const fn nonblocking_zero_read_is_pending() -> bool {
+    true
+}
+
+pub const fn endpoint_is_filesystem_backed() -> bool {
+    false
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

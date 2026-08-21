@@ -978,8 +978,6 @@ crates/running-process/src/broker/manifest.rs	native_import	std::os::windows	0
 crates/running-process/src/broker/manifest.rs	native_import	std::os::windows	1
 crates/running-process/src/broker/manifest.rs	native_import	windows_sys	0
 crates/running-process/src/broker/manifest.rs	native_import	windows_sys	1
-crates/running-process/src/broker/server/backend_endpoint_allocator.rs	attr_cfg	unix	0
-crates/running-process/src/broker/server/backend_endpoint_allocator.rs	attr_cfg	windows	0
 crates/running-process/src/broker/server/backend_launcher.rs	attr_cfg	unix	0
 crates/running-process/src/broker/server/backend_launcher.rs	attr_cfg	unix	1
 crates/running-process/src/broker/server/backend_launcher.rs	attr_cfg	unix	2
@@ -988,8 +986,6 @@ crates/running-process/src/broker/server/backend_registry.rs	attr_cfg	unix	0
 crates/running-process/src/broker/server/backend_registry.rs	attr_cfg	windows	0
 crates/running-process/src/broker/server/combined_service_def_loader/tests.rs	attr_cfg	windows	0
 crates/running-process/src/broker/server/combined_service_def_loader/tests.rs	attr_cfg	windows	1
-crates/running-process/src/broker/server/deadline_stream.rs	attr_cfg	unix	0
-crates/running-process/src/broker/server/deadline_stream.rs	cfg_macro	windows	0
 crates/running-process/src/broker/server/fd_pressure.rs	attr_cfg	unix	0
 crates/running-process/src/broker/server/fd_pressure.rs	attr_cfg	unix	1
 crates/running-process/src/broker/server/fd_pressure.rs	attr_cfg	windows	0
@@ -1098,12 +1094,6 @@ crates/running-process/src/broker/server/session_serve_async/tests.rs	attr_cfg	u
 crates/running-process/src/broker/server/session_serve_async/tests.rs	attr_cfg	unix	2
 crates/running-process/src/broker/server/session_serve_async/tests.rs	attr_cfg	unix	3
 crates/running-process/src/broker/server/session_serve_async/tests.rs	attr_cfg	unix	4
-crates/running-process/src/broker/server/singleton_bind.rs	attr_cfg	unix	0
-crates/running-process/src/broker/server/singleton_bind.rs	attr_cfg	unix	1
-crates/running-process/src/broker/server/singleton_bind.rs	attr_cfg	unix	2
-crates/running-process/src/broker/server/singleton_bind.rs	attr_cfg	unix	3
-crates/running-process/src/broker/server/singleton_bind.rs	attr_cfg	unix	4
-crates/running-process/src/broker/server/singleton_bind.rs	attr_cfg	windows	0
 crates/running-process/src/broker/server/spawn_coordinator.rs	attr_cfg	unix	0
 crates/running-process/src/broker/server/spawn_coordinator.rs	attr_cfg	unix	1
 crates/running-process/src/broker/server/spawn_coordinator.rs	attr_cfg	unix	2
