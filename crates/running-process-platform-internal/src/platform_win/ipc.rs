@@ -238,6 +238,15 @@ impl Stream {
         interprocess::local_socket::traits::Stream::set_nonblocking(&self.0, nonblocking)
     }
 
+    /// Bound how long a receive may block.
+    ///
+    /// A peer that accepts and then stalls would otherwise hold the calling
+    /// thread forever. The send side is not bounded here: the selected
+    /// transport exposes only a receive timeout.
+    pub fn set_recv_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        interprocess::local_socket::traits::Stream::set_recv_timeout(&self.0, timeout)
+    }
+
     pub fn peer_identity(&self) -> io::Result<PeerIdentity> {
         self.0.peer_creds().map(peer_identity)
     }

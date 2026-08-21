@@ -82,7 +82,7 @@ pub trait ProbeClient: Send {
 /// A [`ProbeClient`] over the daemon's local control socket.
 #[derive(Debug)]
 pub struct SocketProbeClient {
-    stream: interprocess::local_socket::Stream,
+    stream: crate::platform::ipc::Stream,
     request_id: u64,
 }
 
@@ -90,15 +90,13 @@ impl SocketProbeClient {
     /// Connect to the daemon at `socket_path`, bounding the attempt by
     /// `deadline`.
     pub fn connect(socket_path: &str, deadline: Duration) -> Result<Self, ClientError> {
-        use interprocess::local_socket::traits::Stream as _;
-
-        let name = crate::broker::server::local_socket_name(socket_path)
+        let endpoint = crate::platform::ipc::Endpoint::new(socket_path.to_owned())
             .map_err(|e| ClientError::Wire(format!("socket name: {e}")))?;
         let stream =
-            interprocess::local_socket::Stream::connect(name).map_err(ClientError::Unreachable)?;
+            crate::platform::ipc::Stream::connect(&endpoint).map_err(ClientError::Unreachable)?;
 
         // Bound receives. Without this a daemon that accepts and then stalls
-        // would hold the worker thread forever. interprocess exposes only a
+        // would hold the worker thread forever. The facade exposes only a
         // recv timeout; the send side is bounded in practice because requests
         // are small and the daemon reads promptly.
         stream
