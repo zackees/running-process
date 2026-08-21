@@ -1041,7 +1041,6 @@ crates/running-process/src/cleanup/verify_basic.rs	attr_cfg	windows	0
 crates/running-process/src/cleanup/verify_basic.rs	native_import	libc	0
 crates/running-process/src/cleanup/verify_basic.rs	native_import	libc	1
 crates/running-process/src/client/client.rs	cfg_macro	windows	0
-crates/running-process/src/client/deadline_io.rs	cfg_macro	windows	0
 crates/running-process/src/client/paths.rs	attr_cfg	target_os	0
 crates/running-process/src/client/paths.rs	attr_cfg	target_os	1
 crates/running-process/src/client/paths.rs	attr_cfg	unix	0
