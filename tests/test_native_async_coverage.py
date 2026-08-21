@@ -68,6 +68,14 @@ class TestNativeAsyncCoverage(unittest.IsolatedAsyncioTestCase):
         try:
             await group.start_async()
             self.assertTrue(await group.terminate_group_soft_async())
+            if sys.platform == "win32":
+                # CTRL_BREAK delivery is advisory on Windows: a console-less
+                # test host can accept the request without ending the child,
+                # while a console-attached host may have ended it already.
+                try:
+                    await group.kill_async()
+                except RuntimeError:
+                    pass
             self.assertNotEqual(await group.wait_async(10.0), 0)
         finally:
             await group.close_async()
