@@ -53,6 +53,33 @@ pub use ipc_private_dir::{
 pub fn ipc_broker_endpoint_name(bare_name: &str, _path_scoped: bool) -> std::io::Result<String> {
     Ok(format!(r"\\.\pipe\{bare_name}"))
 }
+
+/// Windows named-pipe names are capped by `MAX_PATH` while the long-path
+/// prefix is not in use.
+const WINDOWS_MAX_PATH: usize = 260;
+
+#[cfg(feature = "ipc")]
+pub fn ipc_endpoint_name_limit() -> crate::platform::ipc::EndpointNameLimit {
+    crate::platform::ipc::EndpointNameLimit {
+        max_bytes: WINDOWS_MAX_PATH,
+        label: "Windows MAX_PATH",
+    }
+}
+
+#[cfg(feature = "ipc")]
+pub fn ipc_broker_v1_endpoint_path(
+    bare_name: &str,
+) -> Result<String, crate::platform::ipc::EndpointNameTooLong> {
+    let path = format!(r"\\.\pipe\{bare_name}");
+    if path.len() > WINDOWS_MAX_PATH {
+        return Err(crate::platform::ipc::EndpointNameTooLong {
+            len: path.len(),
+            max: WINDOWS_MAX_PATH,
+            limit_label: "Windows MAX_PATH",
+        });
+    }
+    Ok(path)
+}
 #[cfg(feature = "ipc")]
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     stream.0
@@ -515,5 +542,33 @@ mod tests {
         let output = command.output().expect("compat shell command should execute");
         assert!(output.status.success());
         assert_eq!(output.stdout, b"shell-ok\r\n");
+    }
+}
+
+#[cfg(all(test, feature = "ipc"))]
+mod endpoint_naming_tests {
+    use super::{ipc_broker_v1_endpoint_path, ipc_endpoint_name_limit, WINDOWS_MAX_PATH};
+
+    #[test]
+    fn the_v1_address_is_a_named_pipe_carrying_the_bare_name() {
+        let address = ipc_broker_v1_endpoint_path("rpb-v1-abc-shared").expect("derive address");
+        assert!(address.starts_with(r"\\.\pipe\"));
+        assert!(address.ends_with("rpb-v1-abc-shared"));
+    }
+
+    #[test]
+    fn an_over_long_name_is_refused_against_max_path() {
+        let err = ipc_broker_v1_endpoint_path(&"a".repeat(WINDOWS_MAX_PATH))
+            .expect_err("must exceed MAX_PATH");
+        assert_eq!(err.max, WINDOWS_MAX_PATH);
+        assert_eq!(err.limit_label, "Windows MAX_PATH");
+        assert!(err.len > WINDOWS_MAX_PATH);
+    }
+
+    #[test]
+    fn the_reported_budget_is_max_path() {
+        let limit = ipc_endpoint_name_limit();
+        assert_eq!(limit.max_bytes, WINDOWS_MAX_PATH);
+        assert_eq!(limit.label, "Windows MAX_PATH");
     }
 }

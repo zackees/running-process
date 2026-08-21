@@ -56,6 +56,55 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::
     };
     Ok(directory.join(format!("{bare_name}.sock")).to_string_lossy().into_owned())
 }
+
+/// Linux `sun_path` is 108 bytes including the NUL terminator.
+const LINUX_SUN_PATH_MAX: usize = 108;
+
+#[cfg(feature = "ipc")]
+pub fn ipc_endpoint_name_limit() -> crate::platform::ipc::EndpointNameLimit {
+    crate::platform::ipc::EndpointNameLimit {
+        max_bytes: LINUX_SUN_PATH_MAX,
+        label: "Linux sun_path",
+    }
+}
+
+/// Directory holding v1 broker sockets.
+///
+/// Deliberately performs no filesystem writes: name derivation stays pure so
+/// the hash and length-limit tests remain deterministic. Callers that bind
+/// create the parent directory themselves.
+#[cfg(feature = "ipc")]
+fn broker_v1_socket_dir() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(dir) => PathBuf::from(dir).join("running-process").join("broker"),
+        None => PathBuf::from(format!(
+            "/tmp/running-process-{}/broker",
+            unsafe { libc::getuid() }
+        )),
+    }
+}
+
+#[cfg(feature = "ipc")]
+pub fn ipc_broker_v1_endpoint_path(
+    bare_name: &str,
+) -> Result<String, crate::platform::ipc::EndpointNameTooLong> {
+    // Linux gets 108 bytes and a guaranteed $XDG_RUNTIME_DIR (or a short
+    // /tmp fallback), so the full canonical name survives for debuggability.
+    let candidate = broker_v1_socket_dir().join(format!("{bare_name}.sock"));
+    let candidate = candidate.to_string_lossy();
+    // sockaddr_un is NUL-terminated, so the path itself must be strictly
+    // shorter than the field width.
+    if candidate.len() >= LINUX_SUN_PATH_MAX {
+        return Err(crate::platform::ipc::EndpointNameTooLong {
+            len: candidate.len(),
+            max: LINUX_SUN_PATH_MAX - 1,
+            limit_label: "Linux sun_path",
+        });
+    }
+    Ok(candidate.into_owned())
+}
 #[cfg(feature = "ipc")]
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     stream.0
@@ -645,3 +694,39 @@ mod coverage_tests;
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;
 pub use sync_spawn::{spawn_sync, spawn_sync_daemon};
+
+#[cfg(all(test, feature = "ipc"))]
+mod endpoint_naming_tests {
+    use super::{ipc_broker_v1_endpoint_path, ipc_endpoint_name_limit, LINUX_SUN_PATH_MAX};
+
+    #[test]
+    fn the_v1_address_keeps_the_full_name_for_debuggability() {
+        let address = ipc_broker_v1_endpoint_path("rpb-v1-abc-shared").expect("derive address");
+        assert!(address.contains("rpb-v1-abc-shared"));
+        assert!(address.ends_with("-shared.sock"));
+        assert!(address.contains("/broker/"));
+    }
+
+    #[test]
+    fn an_over_long_name_is_refused_against_sun_path() {
+        let err = ipc_broker_v1_endpoint_path(&"a".repeat(LINUX_SUN_PATH_MAX))
+            .expect_err("must exceed sun_path");
+        assert_eq!(err.max, LINUX_SUN_PATH_MAX - 1);
+        assert_eq!(err.limit_label, "Linux sun_path");
+    }
+
+    #[test]
+    fn an_accepted_address_is_strictly_shorter_than_the_field() {
+        // sockaddr_un is NUL-terminated, so equality with the field width
+        // would truncate the terminator.
+        let address = ipc_broker_v1_endpoint_path("rpb-v1-abc-shared").expect("derive address");
+        assert!(address.len() < LINUX_SUN_PATH_MAX);
+    }
+
+    #[test]
+    fn the_reported_budget_is_sun_path() {
+        let limit = ipc_endpoint_name_limit();
+        assert_eq!(limit.max_bytes, LINUX_SUN_PATH_MAX);
+        assert_eq!(limit.label, "Linux sun_path");
+    }
+}

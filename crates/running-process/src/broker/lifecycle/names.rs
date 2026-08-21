@@ -36,8 +36,6 @@
 
 use std::path::PathBuf;
 
-#[cfg(unix)]
-use crate::broker::lifecycle::sid::hash_to_16_hex;
 use crate::broker::lifecycle::sid::SidError;
 
 /// Errors that prevent computing a valid pipe path.
@@ -71,8 +69,9 @@ pub enum PipePathError {
 /// A pipe address in platform-neutral form.
 ///
 /// Exactly one of [`Self::windows`] or [`Self::unix`] is populated on
-/// any given host. The other field is `None`. Callers select the
-/// active platform's value via `cfg(windows)` / `cfg(unix)` blocks.
+/// any given host. The other field is `None`. Which one is populated
+/// follows [`crate::platform::ipc::endpoint_is_filesystem_backed`], so
+/// callers select the active value without naming a host themselves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipePath {
     /// Windows named-pipe path (e.g. `\\.\pipe\rpb-v1-abc-shared`).
@@ -273,97 +272,27 @@ fn nibble_to_hex(n: u8) -> char {
 }
 
 fn build_pipe_path(name: &str) -> Result<PipePath, PipePathError> {
-    #[cfg(windows)]
-    {
-        let path = format!(r"\\.\pipe\{name}");
-        if path.len() > WINDOWS_MAX_PATH {
-            return Err(PipePathError::PathTooLong {
-                len: path.len(),
-                max: WINDOWS_MAX_PATH,
-                limit_label: "Windows MAX_PATH",
-            });
+    // The selected host owns directory placement, leaf spelling, and the
+    // length budget. This module owns which bare name to ask for.
+    let address = crate::platform::ipc::broker_v1_endpoint_path(name).map_err(|err| {
+        PipePathError::PathTooLong {
+            len: err.len,
+            max: err.max,
+            limit_label: err.limit_label,
         }
-        Ok(PipePath {
-            windows: Some(path),
-            unix: None,
-        })
-    }
+    })?;
 
-    #[cfg(unix)]
-    {
-        let dir = unix_broker_socket_dir();
-        // macOS sun_path is only 104 bytes. Per the #228 spec, every
-        // macOS pipe name folds to `{16char-hash}.sock` — there is no
-        // budget to embed the full canonical name. Linux gets 108 bytes
-        // AND a guaranteed $XDG_RUNTIME_DIR (or short /tmp fallback),
-        // so we keep the full name there for debuggability.
-        let leaf = if cfg!(target_os = "macos") {
-            format!("{}.sock", hash_to_16_hex(name.as_bytes()))
-        } else {
-            format!("{name}.sock")
-        };
-        let candidate = dir.join(leaf);
-        let candidate_str = candidate.to_string_lossy();
-        let limit = if cfg!(target_os = "macos") {
-            MACOS_SUN_PATH_MAX
-        } else {
-            LINUX_SUN_PATH_MAX
-        };
-        let limit_label = if cfg!(target_os = "macos") {
-            "macOS sun_path"
-        } else {
-            "Linux sun_path"
-        };
-        // sockaddr_un is NUL-terminated, so the path string itself
-        // must be strictly less than the field width.
-        if candidate_str.len() >= limit {
-            return Err(PipePathError::PathTooLong {
-                len: candidate_str.len(),
-                max: limit - 1,
-                limit_label,
-            });
-        }
-        Ok(PipePath {
+    Ok(if crate::platform::ipc::endpoint_is_filesystem_backed() {
+        PipePath {
             windows: None,
-            unix: Some(candidate),
-        })
-    }
-}
-
-#[cfg(unix)]
-fn unix_broker_socket_dir() -> PathBuf {
-    // We deliberately do NOT call `client::paths::shadow_dir()` here
-    // because that function has filesystem side effects
-    // (`create_dir_all`). The names module must be pure / no-IO so the
-    // hash + length-limit tests stay deterministic. Callers that need
-    // to actually bind the socket are expected to create the parent
-    // directory themselves.
-    #[cfg(target_os = "macos")]
-    {
-        // Per the #228 spec: macOS has no $XDG_RUNTIME_DIR and a tight
-        // 104-byte sun_path. Use `$TMPDIR/.rp-{uid}` so the parent dir
-        // stays short enough to leave room for the hashed leaf.
-        // `$TMPDIR` on macOS is per-user (e.g. `/var/folders/.../T/`)
-        // so the `-{uid}` suffix is technically redundant there, but
-        // we keep it so the path is well-formed when `$TMPDIR` is
-        // unset (CI containers, restricted launchd contexts) and we
-        // fall back to `/tmp`.
-        let uid = unsafe { libc::getuid() };
-        let tmp = std::env::var_os("TMPDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        tmp.join(format!(".rp-{uid}"))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
-            PathBuf::from(d).join("running-process").join("broker")
-        } else {
-            // Fallback: /tmp/running-process-{uid}/broker
-            let uid = unsafe { libc::getuid() };
-            PathBuf::from(format!("/tmp/running-process-{uid}/broker"))
+            unix: Some(PathBuf::from(address)),
         }
-    }
+    } else {
+        PipePath {
+            windows: Some(address),
+            unix: None,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -372,31 +301,61 @@ mod tests {
 
     const SAMPLE_HASH: &str = "0123456789abcdef";
 
+    /// Return the single populated form, asserting the other is empty.
+    ///
+    /// Host-specific spelling of that form is characterized beside each
+    /// concrete implementation in `running-process-platform-internal`;
+    /// this module owns only the host-neutral contract.
+    fn sole_address(path: &PipePath) -> String {
+        match (&path.windows, &path.unix) {
+            (Some(windows), None) => windows.clone(),
+            (None, Some(unix)) => unix.to_string_lossy().into_owned(),
+            _ => panic!("exactly one form must be populated"),
+        }
+    }
+
     #[test]
     fn shared_broker_pipe_builds() {
-        let p = shared_broker_pipe(SAMPLE_HASH).expect("shared pipe should build");
-        #[cfg(windows)]
-        {
-            let w = p.windows.expect("windows form populated on Windows");
-            assert!(w.starts_with(r"\\.\pipe\rpb-v1-"));
-            assert!(w.ends_with("-shared"));
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let u = p.unix.expect("unix form populated on Unix");
-            let s = u.to_string_lossy();
-            assert!(s.contains("rpb-v1-"));
-            assert!(s.ends_with("-shared.sock"));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            // macOS folds the canonical name into a 16-char hash —
-            // the `rpb-v1-...-shared` segment is the *input* to the
-            // hash but doesn't survive into the path.
-            let u = p.unix.expect("unix form populated on macOS");
-            let s = u.to_string_lossy();
-            assert!(s.ends_with(".sock"));
-        }
+        let path = shared_broker_pipe(SAMPLE_HASH).expect("shared pipe should build");
+        assert!(!sole_address(&path).is_empty());
+    }
+
+    #[test]
+    fn populated_form_follows_the_selected_transport() {
+        let path = shared_broker_pipe(SAMPLE_HASH).expect("shared pipe should build");
+        assert_eq!(
+            path.unix.is_some(),
+            crate::platform::ipc::endpoint_is_filesystem_backed(),
+            "filesystem-backed hosts must populate the unix form and no other"
+        );
+    }
+
+    #[test]
+    fn the_derived_address_respects_the_host_budget() {
+        let limit = crate::platform::ipc::endpoint_name_limit();
+        let path = backend_pipe(SAMPLE_HASH, &[0xABu8; 16]).expect("backend pipe");
+        assert!(
+            sole_address(&path).len() <= limit.max_bytes,
+            "derived address exceeds the {} budget of {} bytes",
+            limit.label,
+            limit.max_bytes
+        );
+    }
+
+    #[test]
+    fn the_host_budget_is_one_of_the_documented_ceilings() {
+        let limit = crate::platform::ipc::endpoint_name_limit();
+        assert!(
+            matches!(
+                (limit.max_bytes, limit.label),
+                (WINDOWS_MAX_PATH, "Windows MAX_PATH")
+                    | (MACOS_SUN_PATH_MAX, "macOS sun_path")
+                    | (LINUX_SUN_PATH_MAX, "Linux sun_path")
+            ),
+            "facade reported {} / {} bytes, which matches no documented ceiling",
+            limit.label,
+            limit.max_bytes
+        );
     }
 
     #[test]
@@ -427,26 +386,12 @@ mod tests {
     }
 
     #[test]
-    fn backend_pipe_uses_hex_suffix() {
-        let p = backend_pipe(SAMPLE_HASH, &[0xABu8; 16]).expect("backend pipe");
-        let s = match (p.windows, p.unix) {
-            (Some(w), None) => w,
-            (None, Some(u)) => u.to_string_lossy().into_owned(),
-            _ => panic!("exactly one form must be populated"),
-        };
-        // macOS folds the canonical name into a 16-char hash to fit
-        // `sun_path` (104 bytes), so the literal `-be-` segment and
-        // raw hex suffix don't appear on that platform — we still
-        // assert the leaf shape and uniqueness in the integration
-        // test `macos_pipe_paths_are_hashed_leaves`.
-        #[cfg(not(target_os = "macos"))]
-        {
-            assert!(s.contains("-be-"));
-            assert!(s.contains(&"ab".repeat(16)));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            assert!(s.ends_with(".sock"));
-        }
+    fn backend_pipes_are_distinct_per_random_suffix() {
+        // macOS folds the canonical name into a hashed leaf, so the raw hex
+        // suffix is not observable in the address on every host. Uniqueness
+        // is the property every host must preserve.
+        let first = backend_pipe(SAMPLE_HASH, &[0xABu8; 16]).expect("backend pipe");
+        let second = backend_pipe(SAMPLE_HASH, &[0xCDu8; 16]).expect("backend pipe");
+        assert_ne!(sole_address(&first), sole_address(&second));
     }
 }

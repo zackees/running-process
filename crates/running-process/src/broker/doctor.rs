@@ -41,10 +41,7 @@ use crate::broker::client::{
     broker_disabled_by_env, connect_local_socket, RUNNING_PROCESS_DISABLE_ENV,
     RUNNING_PROCESS_FAKE_BACKEND_ENV,
 };
-use crate::broker::lifecycle::names::{
-    backend_pipe, shared_broker_pipe, PipePathError, LINUX_SUN_PATH_MAX, MACOS_SUN_PATH_MAX,
-    WINDOWS_MAX_PATH,
-};
+use crate::broker::lifecycle::names::{backend_pipe, shared_broker_pipe, PipePathError};
 use crate::broker::lifecycle::sid::user_sid_hash;
 use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, read_frame, write_frame, ErrorCode, Frame, FrameKind,
@@ -767,13 +764,8 @@ const PATH_BUDGET_WARN_SLACK: usize = 8;
 /// macOS, where `sun_path` is only 104 bytes.
 pub fn platform_path_budget_check() -> DoctorCheck {
     const NAME: &str = "platform:path-budget";
-    let (limit, limit_label) = if cfg!(windows) {
-        (WINDOWS_MAX_PATH, "Windows MAX_PATH")
-    } else if cfg!(target_os = "macos") {
-        (MACOS_SUN_PATH_MAX, "macOS sun_path")
-    } else {
-        (LINUX_SUN_PATH_MAX, "Linux/Unix sun_path")
-    };
+    let budget = crate::platform::ipc::endpoint_name_limit();
+    let (limit, limit_label) = (budget.max_bytes, budget.label);
     let sid_hash = match user_sid_hash() {
         Ok(hash) => hash,
         Err(err) => {
