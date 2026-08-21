@@ -176,6 +176,49 @@ pub fn broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::Resu
     crate::IpcBrokerEndpointName(bare_name, path_scoped)
 }
 
+/// The selected host's limit on a local IPC endpoint name.
+///
+/// Unix transports are bounded by the `sun_path` field of `sockaddr_un`;
+/// Windows named pipes are bounded by `MAX_PATH` unless the long-path
+/// prefix is in use. Callers use this to report a budget without naming
+/// which host they are on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EndpointNameLimit {
+    /// Largest endpoint name this host accepts, in bytes.
+    pub max_bytes: usize,
+    /// Operator-facing name of the limit, e.g. `"macOS sun_path"`.
+    pub label: &'static str,
+}
+
+/// Report the selected host's endpoint-name budget.
+#[cfg(feature = "ipc")]
+pub fn endpoint_name_limit() -> EndpointNameLimit {
+    crate::ipc_endpoint_name_limit()
+}
+
+/// A derived endpoint name that does not fit this host's budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EndpointNameTooLong {
+    /// Length of the name that was derived.
+    pub len: usize,
+    /// Largest length that would have been accepted.
+    pub max: usize,
+    /// Operator-facing name of the limit that rejected it.
+    pub limit_label: &'static str,
+}
+
+/// Derive the v1 broker endpoint address for `bare_name`.
+///
+/// The selected host owns directory placement, the leaf spelling, and the
+/// length check. Callers own which bare name to ask for. The returned string
+/// is the address the caller passes back to [`Endpoint::new`]; it is a
+/// filesystem path where [`endpoint_is_filesystem_backed`] reports `true` and
+/// a kernel-namespace name otherwise.
+#[cfg(feature = "ipc")]
+pub fn broker_v1_endpoint_path(bare_name: &str) -> Result<String, EndpointNameTooLong> {
+    crate::ipc_broker_v1_endpoint_path(bare_name)
+}
+
 #[cfg(feature = "ipc-async")]
 pub use crate::{
     IpcAsyncListener as AsyncListener, IpcAsyncStream as AsyncStream,

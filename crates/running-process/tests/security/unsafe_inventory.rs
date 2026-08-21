@@ -11,8 +11,8 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
     },
     UnsafeInventoryEntry {
         // Slice 4 of #488 (PR #491): `unsafe { libc::getuid() }` in
-        // `resolve_socket_path` for the unix bind dir. Same pattern v1
-        // uses in `lifecycle/names.rs::unix_broker_socket_dir`.
+        // `resolve_socket_path` for the unix bind dir. The matching v1 site
+        // in `lifecycle/names.rs` was retired by #971; this one remains.
         path: "src/broker/client_v2.rs",
         unsafe_count: 2,
     },
@@ -23,10 +23,6 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
     UnsafeInventoryEntry {
         path: "src/broker/host_identity.rs",
         unsafe_count: 13,
-    },
-    UnsafeInventoryEntry {
-        path: "src/broker/lifecycle/names.rs",
-        unsafe_count: 2,
     },
     UnsafeInventoryEntry {
         path: "src/broker/lifecycle/privilege.rs",

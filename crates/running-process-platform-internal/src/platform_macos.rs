@@ -56,6 +56,62 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::
     let root = std::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
     Ok(root.join(format!(".rp-{}-broker-v2", unsafe { libc::getuid() })).join(format!("{leaf}.sock")).to_string_lossy().into_owned())
 }
+
+/// macOS `sun_path` is 104 bytes including the NUL terminator.
+const MACOS_SUN_PATH_MAX: usize = 104;
+
+#[cfg(feature = "ipc")]
+pub fn ipc_endpoint_name_limit() -> crate::platform::ipc::EndpointNameLimit {
+    crate::platform::ipc::EndpointNameLimit {
+        max_bytes: MACOS_SUN_PATH_MAX,
+        label: "macOS sun_path",
+    }
+}
+
+/// Directory holding v1 broker sockets.
+///
+/// macOS has no `$XDG_RUNTIME_DIR` and a tight 104-byte `sun_path`, so this
+/// uses `$TMPDIR/.rp-{uid}` to keep the parent short enough to leave room for
+/// the hashed leaf. `$TMPDIR` is already per-user on macOS, so the `-{uid}`
+/// suffix is redundant there, but it keeps the path well formed when
+/// `$TMPDIR` is unset (CI containers, restricted launchd contexts) and the
+/// `/tmp` fallback applies. Performs no filesystem writes: name derivation
+/// stays pure so the hash and length-limit tests remain deterministic.
+#[cfg(feature = "ipc")]
+fn broker_v1_socket_dir() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    let root = std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    root.join(format!(".rp-{}", unsafe { libc::getuid() }))
+}
+
+#[cfg(feature = "ipc")]
+pub fn ipc_broker_v1_endpoint_path(
+    bare_name: &str,
+) -> Result<String, crate::platform::ipc::EndpointNameTooLong> {
+    use std::fmt::Write as _;
+
+    // Every macOS endpoint folds to `{16char-hash}.sock`: there is no budget
+    // to embed the full canonical name within `sun_path`.
+    let mut leaf = String::with_capacity(16);
+    for byte in blake3::hash(bare_name.as_bytes()).as_bytes().iter().take(8) {
+        let _ = write!(leaf, "{byte:02x}");
+    }
+    let candidate = broker_v1_socket_dir().join(format!("{leaf}.sock"));
+    let candidate = candidate.to_string_lossy();
+    // sockaddr_un is NUL-terminated, so the path itself must be strictly
+    // shorter than the field width.
+    if candidate.len() >= MACOS_SUN_PATH_MAX {
+        return Err(crate::platform::ipc::EndpointNameTooLong {
+            len: candidate.len(),
+            max: MACOS_SUN_PATH_MAX - 1,
+            limit_label: "macOS sun_path",
+        });
+    }
+    Ok(candidate.into_owned())
+}
 #[cfg(feature = "ipc")]
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     stream.0
@@ -737,3 +793,42 @@ mod tests;
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;
 pub use sync_spawn::{spawn_sync, spawn_sync_daemon};
+
+#[cfg(all(test, feature = "ipc"))]
+mod endpoint_naming_tests {
+    use super::{ipc_broker_v1_endpoint_path, ipc_endpoint_name_limit, MACOS_SUN_PATH_MAX};
+
+    #[test]
+    fn the_v1_address_folds_the_name_into_a_hashed_leaf() {
+        // The tight 104-byte sun_path leaves no budget for the canonical
+        // name, so it is the hash input rather than part of the path.
+        let address = ipc_broker_v1_endpoint_path("rpb-v1-abc-shared").expect("derive address");
+        assert!(address.ends_with(".sock"));
+        assert!(!address.contains("rpb-v1-abc-shared"));
+
+        let leaf = address.rsplit('/').next().expect("leaf");
+        let stem = leaf.strip_suffix(".sock").expect("stem");
+        assert_eq!(stem.len(), 16, "leaf stem must be a 16-char hash");
+        assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn distinct_names_fold_to_distinct_leaves() {
+        let first = ipc_broker_v1_endpoint_path("rpb-v1-abc-shared").expect("derive address");
+        let second = ipc_broker_v1_endpoint_path("rpb-v1-def-shared").expect("derive address");
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn an_accepted_address_is_strictly_shorter_than_the_field() {
+        let address = ipc_broker_v1_endpoint_path("rpb-v1-abc-shared").expect("derive address");
+        assert!(address.len() < MACOS_SUN_PATH_MAX);
+    }
+
+    #[test]
+    fn the_reported_budget_is_sun_path() {
+        let limit = ipc_endpoint_name_limit();
+        assert_eq!(limit.max_bytes, MACOS_SUN_PATH_MAX);
+        assert_eq!(limit.label, "macOS sun_path");
+    }
+}
