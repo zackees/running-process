@@ -6,14 +6,12 @@
 //! splice rather than an in-memory `UnixStream` approximation). Unix-first.
 
 use futures_util::{SinkExt, StreamExt};
-use interprocess::local_socket::tokio::prelude::*;
-use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 
 use super::relay_local_socket_session;
 use crate::broker::protocol_v2::{session_frame, SessionFrame, SessionStart};
 use crate::daemon::compile_session::session_framed;
 use crate::daemon::session_endpoint::serve_session_endpoint;
-use crate::platform::ipc::{AsyncListener, Endpoint as IpcEndpoint};
+use crate::platform::ipc::{AsyncListener, AsyncStream as IpcAsyncStream, Endpoint as IpcEndpoint};
 
 fn fixture_program() -> String {
     let exe = std::env::current_exe().expect("test executable path");
@@ -52,15 +50,11 @@ async fn relay_session_proxies_client_to_daemon_endpoint() {
     let daemon = tokio::spawn(serve_session_endpoint(daemon_listener));
 
     // Broker: accept the client and full-proxy it to the daemon endpoint.
-    let broker_listener = ListenerOptions::new()
-        .name(
-            broker_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("broker fs name"),
-        )
-        .create_tokio()
-        .expect("bind broker endpoint");
+    let broker_listener = AsyncListener::bind(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
+            .expect("broker fs name"),
+    )
+    .expect("bind broker endpoint");
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
         let client_conn = broker_listener.accept().await.expect("broker accept");
@@ -68,10 +62,8 @@ async fn relay_session_proxies_client_to_daemon_endpoint() {
     });
 
     // Client dials ONLY the broker and speaks the SESSION wire.
-    let stream = interprocess::local_socket::tokio::Stream::connect(
-        broker_path
-            .as_path()
-            .to_fs_name::<GenericFilePath>()
+    let stream = IpcAsyncStream::connect(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
             .expect("client fs name"),
     )
     .await
@@ -148,15 +140,11 @@ async fn relay_session_preserves_start_environment_and_exit_metadata() {
 
     // Stub daemon: accept, read the client's opening frame, reply with one Exit
     // carrying a metadata map, then close.
-    let daemon_listener = ListenerOptions::new()
-        .name(
-            daemon_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("daemon fs name"),
-        )
-        .create_tokio()
-        .expect("bind daemon endpoint");
+    let daemon_listener = AsyncListener::bind(
+        &IpcEndpoint::new(daemon_path.as_path().to_string_lossy().into_owned())
+            .expect("daemon fs name"),
+    )
+    .expect("bind daemon endpoint");
     let daemon = tokio::spawn(async move {
         let conn = daemon_listener.accept().await.expect("daemon accept");
         let mut d = session_framed(conn);
@@ -175,25 +163,19 @@ async fn relay_session_preserves_start_environment_and_exit_metadata() {
         start
     });
 
-    let broker_listener = ListenerOptions::new()
-        .name(
-            broker_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("broker fs name"),
-        )
-        .create_tokio()
-        .expect("bind broker endpoint");
+    let broker_listener = AsyncListener::bind(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
+            .expect("broker fs name"),
+    )
+    .expect("bind broker endpoint");
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
         let client_conn = broker_listener.accept().await.expect("broker accept");
         let _ = relay_local_socket_session(client_conn, &daemon_path_str).await;
     });
 
-    let stream = interprocess::local_socket::tokio::Stream::connect(
-        broker_path
-            .as_path()
-            .to_fs_name::<GenericFilePath>()
+    let stream = IpcAsyncStream::connect(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
             .expect("client fs name"),
     )
     .await
@@ -264,15 +246,11 @@ async fn relay_session_cancellation_closes_both_peers() {
     let _ = std::fs::remove_file(&daemon_path);
     let _ = std::fs::remove_file(&broker_path);
 
-    let daemon_listener = ListenerOptions::new()
-        .name(
-            daemon_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("daemon fs name"),
-        )
-        .create_tokio()
-        .expect("bind daemon endpoint");
+    let daemon_listener = AsyncListener::bind(
+        &IpcEndpoint::new(daemon_path.as_path().to_string_lossy().into_owned())
+            .expect("daemon fs name"),
+    )
+    .expect("bind daemon endpoint");
     let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
     let daemon = tokio::spawn(async move {
         let mut conn = daemon_listener.accept().await.expect("daemon accept");
@@ -284,25 +262,19 @@ async fn relay_session_cancellation_closes_both_peers() {
             .expect("daemon read")
     });
 
-    let broker_listener = ListenerOptions::new()
-        .name(
-            broker_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("broker fs name"),
-        )
-        .create_tokio()
-        .expect("bind broker endpoint");
+    let broker_listener = AsyncListener::bind(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
+            .expect("broker fs name"),
+    )
+    .expect("bind broker endpoint");
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
         let client = broker_listener.accept().await.expect("broker accept");
         relay_local_socket_session(client, &daemon_path_str).await
     });
 
-    let mut client = interprocess::local_socket::tokio::Stream::connect(
-        broker_path
-            .as_path()
-            .to_fs_name::<GenericFilePath>()
+    let mut client = IpcAsyncStream::connect(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
             .expect("client fs name"),
     )
     .await
