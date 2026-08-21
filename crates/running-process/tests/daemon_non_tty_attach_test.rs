@@ -73,18 +73,15 @@ fn raw_attach_non_tty(
     rows: u32,
     cols: u32,
     term: &str,
-) -> std::io::Result<BufReader<interprocess::local_socket::Stream>> {
-    use interprocess::local_socket::traits::Stream as _;
-    use interprocess::local_socket::Stream;
-    use interprocess::TryClone;
+) -> std::io::Result<BufReader<running_process::client::IpcStream>> {
     use prost::Message;
     use running_process::proto::daemon::{
         CapabilityStatus, DaemonRequest, DaemonResponse, EvidenceStrength, GraphicsProtocol,
         RequestType, StatusCode, TerminalGraphicsCapabilities, TerminalGraphicsCapability,
     };
 
-    let name = paths::make_socket_name(socket_path)?;
-    let stream = Stream::connect(name)?;
+    let endpoint = paths::make_socket_endpoint(socket_path)?;
+    let stream = running_process::client::IpcStream::connect(&endpoint)?;
     let stream_clone = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
     let mut writer = BufWriter::new(stream_clone);

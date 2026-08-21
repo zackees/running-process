@@ -373,7 +373,7 @@ impl PtyAttachment {
     ) -> Result<Self, AttachError> {
         // Bounded connect (issue #590, cluster B): a bound-but-never-
         // accepting daemon socket must not wedge the attaching client.
-        paths::make_socket_name(socket_path).map_err(AttachError::Connect)?;
+        paths::make_socket_endpoint(socket_path).map_err(AttachError::Connect)?;
         let stream = crate::client::deadline_io::connect_with_timeout(socket_path)
             .map_err(AttachError::Connect)?;
         let stream_clone = stream.try_clone().map_err(AttachError::Connect)?;

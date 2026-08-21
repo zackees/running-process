@@ -54,11 +54,6 @@ pub fn make_socket_endpoint(path: &str) -> std::io::Result<crate::platform::ipc:
     crate::platform::ipc::Endpoint::new(path)
 }
 
-/// Compatibility name conversion retained while broker callers migrate.
-pub fn make_socket_name(path: &str) -> std::io::Result<interprocess::local_socket::Name<'_>> {
-    crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(std::io::Error::other)
-}
-
 /// Returns the path to the daemon PID file.
 ///
 /// - **Linux/macOS**: same directory as the socket, with `.pid` extension.

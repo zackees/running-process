@@ -370,7 +370,7 @@ impl PipeStreamAttachment {
     ) -> Result<Self, PipeAttachError> {
         // Bounded connect (issue #590, cluster B): a bound-but-never-
         // accepting daemon socket must not wedge the attaching client.
-        paths::make_socket_name(socket_path).map_err(PipeAttachError::Connect)?;
+        paths::make_socket_endpoint(socket_path).map_err(PipeAttachError::Connect)?;
         let s = crate::client::deadline_io::connect_with_timeout(socket_path)
             .map_err(PipeAttachError::Connect)?;
         let s_clone = s.try_clone().map_err(PipeAttachError::Connect)?;
