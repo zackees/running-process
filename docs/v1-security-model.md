@@ -210,6 +210,15 @@ public error and fallback policy, and reaches the mechanics only through hidden
 crate-root compatibility adapters, so the shared handoff path contains no
 native `unsafe` sites.
 
+The former `lifecycle/names.rs` entry was retired by #971. Its two inventoried
+`unsafe` tokens were both `libc::getuid()` reads used to derive the Unix
+fallback socket directory. Endpoint directory placement and the `sun_path` /
+`MAX_PATH` budgets now execute inside the audited platform IPC facade, so the
+broker derives a v1 endpoint address without a native call of its own. The
+broker retains the naming policy: the `rpb-v1-` prefix, service and version
+validation, and the SID-hash check. The equivalent `client_v2.rs` read is
+unchanged and still inventoried.
+
 ## Fuzz Campaign And Reviewer Signoff
 
 The v1 release gate requires one-hour fuzz campaign evidence for every
