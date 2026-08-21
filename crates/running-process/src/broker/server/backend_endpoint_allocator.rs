@@ -108,18 +108,7 @@ impl From<getrandom::Error> for BackendEndpointAllocatorError {
 }
 
 fn endpoint_path(pipe_path: PipePath) -> Result<String, BackendEndpointAllocatorError> {
-    #[cfg(windows)]
-    {
-        pipe_path
-            .windows
-            .ok_or(BackendEndpointAllocatorError::MissingPlatformPath)
-    }
-
-    #[cfg(unix)]
-    {
-        pipe_path
-            .unix
-            .map(|path| path.to_string_lossy().into_owned())
-            .ok_or(BackendEndpointAllocatorError::MissingPlatformPath)
-    }
+    crate::platform::ipc::EndpointAddressCandidates::new(pipe_path.windows, pipe_path.unix)
+        .select()
+        .ok_or(BackendEndpointAllocatorError::MissingPlatformPath)
 }

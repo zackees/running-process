@@ -68,8 +68,9 @@ pub use platform_imp::terminal_input;
 #[cfg(feature = "ipc")]
 pub use platform_imp::{
     ipc_broker_endpoint_name as IpcBrokerEndpointName, ipc_current_user_id,
-    ipc_ensure_owner_private_directory, ipc_owner_private_directory, IpcEndpoint,
-    IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
+    ipc_endpoint_is_filesystem_backed, ipc_ensure_owner_private_directory,
+    ipc_nonblocking_zero_read_is_pending, ipc_owner_private_directory, ipc_select_endpoint_address,
+    IpcEndpoint, IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
     IpcPeerIdentitySource, IpcStream,
 };
 
@@ -91,6 +92,14 @@ pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::
 #[doc(hidden)]
 pub fn from_legacy_ipc_stream(stream: interprocess::local_socket::Stream) -> IpcStream {
     platform_imp::from_legacy_ipc_stream(stream)
+}
+
+/// Temporary source-compatibility conversion for public APIs that return an
+/// `interprocess` endpoint name.
+#[cfg(feature = "ipc")]
+#[doc(hidden)]
+pub fn legacy_ipc_name(path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
+    platform_imp::legacy_ipc_name(path)
 }
 
 #[cfg(feature = "ipc-async")]

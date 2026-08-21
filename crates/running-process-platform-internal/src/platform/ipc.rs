@@ -24,6 +24,33 @@ pub struct HandoffAttachment {
     backend_may_adopt_before_offer: bool,
 }
 
+/// Host-neutral candidates for one endpoint address.
+///
+/// Product naming policy may derive both a kernel-namespace name and a
+/// filesystem path. The selected transport chooses the applicable standard
+/// library value without exposing that host choice to the caller.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg(feature = "ipc")]
+pub struct EndpointAddressCandidates {
+    kernel_namespace: Option<String>,
+    filesystem: Option<std::path::PathBuf>,
+}
+
+#[cfg(feature = "ipc")]
+impl EndpointAddressCandidates {
+    pub fn new(kernel_namespace: Option<String>, filesystem: Option<std::path::PathBuf>) -> Self {
+        Self {
+            kernel_namespace,
+            filesystem,
+        }
+    }
+
+    /// Select the address used by the active local IPC transport.
+    pub fn select(self) -> Option<String> {
+        crate::ipc_select_endpoint_address(self.kernel_namespace, self.filesystem)
+    }
+}
+
 impl HandoffAttachment {
     pub(crate) fn new(protocol_value: u64, backend_may_adopt_before_offer: bool) -> Self {
         Self {
@@ -78,6 +105,19 @@ pub fn ensure_owner_private_directory(
 #[cfg(feature = "ipc")]
 pub fn owner_private_directory(path: &std::path::Path) -> std::io::Result<bool> {
     crate::ipc_owner_private_directory(path)
+}
+
+/// Whether an empty nonblocking read means "not ready yet" for this host's
+/// local IPC transport rather than end-of-stream.
+#[cfg(feature = "ipc")]
+pub fn nonblocking_zero_read_is_pending() -> bool {
+    crate::ipc_nonblocking_zero_read_is_pending()
+}
+
+/// Whether the selected local IPC transport uses filesystem endpoint names.
+#[cfg(feature = "ipc")]
+pub fn endpoint_is_filesystem_backed() -> bool {
+    crate::ipc_endpoint_is_filesystem_backed()
 }
 
 /// Host-neutral classification of a failed connection-transfer primitive.

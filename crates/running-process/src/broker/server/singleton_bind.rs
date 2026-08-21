@@ -53,50 +53,26 @@ pub fn is_already_bound_error(err: &io::Error) -> bool {
     )
 }
 
-/// Unix-only: tell a genuinely orphaned unix-socket path (left behind by a
-/// process that exited without cleaning up) apart from a path where a live
+/// Source-compatible stale-endpoint helper for filesystem-backed transports.
+/// Tells a genuinely orphaned socket path (left behind by a process that
+/// exited without cleaning up) apart from a path where a live
 /// peer is listening right now — the two look identical to `bind`
 /// (`AddrInUse` either way). A connect probe distinguishes them: nothing is
 /// listening if the connect itself fails to even reach a peer
 /// (`ConnectionRefused` — the classic "orphaned socket file, no listener"
 /// signal — or `NotFound`); any other outcome, including a successful
-/// connect, means treat the path as live and leave it alone.
-#[cfg(unix)]
+/// connect, means treat the path as live and leave it alone. Non-filesystem
+/// transports return `false` because they leave no endpoint file to retire.
 pub fn unix_socket_path_is_stale(socket_path: &str) -> bool {
-    use interprocess::local_socket::traits::Stream as _;
-    use interprocess::local_socket::Stream;
-    let Ok(name) = wrap_socket_name(socket_path) else {
-        return false; // can't even build the name -- don't touch the file
-    };
-    match Stream::connect(name) {
-        Ok(_stream) => false,
-        Err(err) => matches!(
-            err.kind(),
-            io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
-        ),
-    }
+    crate::platform::ipc::Endpoint::new(socket_path.to_owned())
+        .map(|endpoint| endpoint.is_stale())
+        .unwrap_or(false)
 }
 
 /// Build an `interprocess` [`Name`](interprocess::local_socket::Name) from a
 /// resolved socket path (see [`resolve_socket_path`]).
 pub fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
-    use interprocess::local_socket::prelude::*;
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::GenericNamespaced;
-        let bare = socket_path
-            .strip_prefix(r"\\.\pipe\")
-            .unwrap_or(socket_path);
-        bare.to_ns_name::<GenericNamespaced>()
-            .map_err(|e| format!("to_ns_name: {e}"))
-    }
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::GenericFilePath;
-        socket_path
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|e| format!("to_fs_name: {e}"))
-    }
+    running_process_platform_internal::legacy_ipc_name(socket_path)
 }
 
 /// Why [`bind_singleton`] refused to bind.
@@ -124,10 +100,8 @@ pub enum BindSingletonError {
 /// rebind over the freed path — so all N starters observed a successful
 /// bind instead of exactly one (running-process#899, soldr#2361/#2363's
 /// singleton testing invariant). This function instead: attempts the bind
-/// first with no cleanup; on an already-bound failure, Unix-only,
-/// connect-probes the path via `unix_socket_path_is_stale` (Unix-only, so
-/// not linked here — a doc build on a non-Unix target has no such item in
-/// scope to resolve against) to tell a
+/// first with no cleanup; on an already-bound failure, it connect-probes
+/// filesystem-backed endpoints via `unix_socket_path_is_stale` to tell a
 /// genuinely orphaned socket file apart from a live peer, and only then
 /// removes + retries once. Windows needs no cleanup step at all — the
 /// named pipe namespace is kernel-managed and a prior binding vanishes
@@ -136,22 +110,18 @@ pub enum BindSingletonError {
 /// On Unix, the parent directory of `socket_path` is created if missing
 /// before the first bind attempt.
 pub fn bind_singleton(socket_path: &str) -> Result<Listener, BindSingletonError> {
-    #[cfg(unix)]
-    {
-        let path = std::path::Path::new(socket_path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(BindSingletonError::Other)?;
-        }
-    }
-
     let name = wrap_socket_name(socket_path).map_err(BindSingletonError::InvalidName)?;
-    #[cfg_attr(not(unix), allow(unused_mut))]
+    let endpoint = crate::platform::ipc::Endpoint::new(socket_path.to_owned())
+        .map_err(|error| BindSingletonError::InvalidName(error.to_string()))?;
+    endpoint
+        .ensure_parent_exists()
+        .map_err(BindSingletonError::Other)?;
+    #[allow(unused_mut)]
     let mut listener_result = ListenerOptions::new().name(name).create_sync();
 
-    #[cfg(unix)]
     if let Err(err) = &listener_result {
-        if is_already_bound_error(err) && unix_socket_path_is_stale(socket_path) {
-            let _ = std::fs::remove_file(socket_path);
+        if is_already_bound_error(err) && endpoint.is_stale() {
+            let _ = endpoint.retire();
             listener_result = match wrap_socket_name(socket_path) {
                 Ok(retry_name) => ListenerOptions::new().name(retry_name).create_sync(),
                 Err(_) => listener_result,
@@ -185,11 +155,12 @@ mod tests {
         let again = resolve_path_scoped_socket_path("rpb-v2-program-0123456789abcdef-0")
             .expect("resolve stable endpoint");
         assert_eq!(first, again);
-        #[cfg(unix)]
-        assert_eq!(
-            std::path::Path::new(&first).parent(),
-            Some(std::path::Path::new("/tmp"))
-        );
+        if crate::platform::ipc::endpoint_is_filesystem_backed() {
+            assert_eq!(
+                std::path::Path::new(&first).parent(),
+                Some(std::path::Path::new("/tmp"))
+            );
+        }
     }
 
     #[test]

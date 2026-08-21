@@ -9,6 +9,9 @@ mod ipc_private_dir;
 #[cfg(feature = "ipc")]
 pub use ipc::{
     current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint,
+    endpoint_is_filesystem_backed as ipc_endpoint_is_filesystem_backed,
+    nonblocking_zero_read_is_pending as ipc_nonblocking_zero_read_is_pending,
+    select_endpoint_address as ipc_select_endpoint_address,
     InheritedListener as IpcInheritedListener, Listener as IpcListener,
     ListenerNonblockingMode as IpcListenerNonblockingMode, PeerIdentity as IpcPeerIdentity,
     PeerIdentitySource as IpcPeerIdentitySource, Stream as IpcStream,
@@ -30,6 +33,10 @@ pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::
 #[cfg(feature = "ipc")]
 pub fn from_legacy_ipc_stream(stream: interprocess::local_socket::Stream) -> IpcStream {
     ipc::Stream(stream)
+}
+#[cfg(feature = "ipc")]
+pub fn legacy_ipc_name(path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
+    ipc::legacy_name(path)
 }
 #[cfg(feature = "ipc-async")]
 pub use ipc::{
