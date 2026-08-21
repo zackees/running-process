@@ -112,6 +112,27 @@ pub fn ipc_broker_v1_endpoint_path(
     }
     Ok(candidate.into_owned())
 }
+
+#[cfg(feature = "ipc")]
+pub fn ipc_endpoint_scope_bytes(path: &std::path::Path) -> Vec<u8> {
+    // macOS filesystems are commonly case-insensitive but paths remain byte
+    // strings, and the broker's contract has always hashed them verbatim.
+    // Preserving that keeps existing scopes stable.
+    use std::os::unix::ffi::OsStrExt as _;
+
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(feature = "ipc")]
+pub fn ipc_broker_v2_runtime_dir() -> std::path::PathBuf {
+    // macOS hands each user a private `TMPDIR` (`/var/folders/...`), so it is
+    // already per-user. The short leaf matters here: the broker's sockets
+    // share this root and `sun_path` is only 104 bytes.
+    match std::env::var_os("TMPDIR") {
+        Some(tmp) => std::path::PathBuf::from(tmp).join("rp-broker-v2"),
+        None => crate::platform::ipc::per_user_runtime_fallback(),
+    }
+}
 #[cfg(feature = "ipc")]
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     stream.0
@@ -831,4 +852,20 @@ mod endpoint_naming_tests {
         assert_eq!(limit.max_bytes, MACOS_SUN_PATH_MAX);
         assert_eq!(limit.label, "macOS sun_path");
     }
+
+    #[test]
+    fn the_scope_spelling_is_the_verbatim_path_bytes() {
+        // Paths are opaque byte strings here: no spelling difference is
+        // meaningless, and case is significant. This pins the spelling --
+        // changing it re-scopes every deployed broker, and the stability
+        // tests upstream would not notice.
+        use super::ipc_endpoint_scope_bytes;
+
+        let bytes = ipc_endpoint_scope_bytes(std::path::Path::new("/usr/local/bin/Broker"));
+        assert_eq!(bytes, b"/usr/local/bin/Broker".to_vec());
+
+        let lowered = ipc_endpoint_scope_bytes(std::path::Path::new("/usr/local/bin/broker"));
+        assert_ne!(bytes, lowered, "case must remain significant");
+    }
+
 }

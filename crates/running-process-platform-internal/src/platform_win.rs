@@ -80,6 +80,28 @@ pub fn ipc_broker_v1_endpoint_path(
     }
     Ok(path)
 }
+
+#[cfg(feature = "ipc")]
+pub fn ipc_endpoint_scope_bytes(path: &std::path::Path) -> Vec<u8> {
+    // Windows paths and named pipes are case-insensitive. Hash one
+    // slash/case-normalized spelling so callers cannot split the broker
+    // merely by varying path presentation.
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase()
+        .into_bytes()
+}
+
+#[cfg(feature = "ipc")]
+pub fn ipc_broker_v2_runtime_dir() -> std::path::PathBuf {
+    // Named pipes have no directory, so this is chosen rather than derived.
+    // `data_local_dir` is per-user and non-roaming, which is what a
+    // machine-local endpoint file wants -- a roaming profile would carry a
+    // port from another machine.
+    dirs::data_local_dir()
+        .map(|dir| dir.join("running-process").join("broker-v2"))
+        .unwrap_or_else(crate::platform::ipc::per_user_runtime_fallback)
+}
 #[cfg(feature = "ipc")]
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     stream.0
@@ -571,4 +593,20 @@ mod endpoint_naming_tests {
         assert_eq!(limit.max_bytes, WINDOWS_MAX_PATH);
         assert_eq!(limit.label, "Windows MAX_PATH");
     }
+
+    #[test]
+    fn the_scope_spelling_folds_case_and_separators() {
+        // Named pipes and paths are case-insensitive here, so two callers
+        // spelling the same install differently must hash identically. This
+        // pins the spelling itself: changing it re-scopes every deployed
+        // broker, and the stability tests upstream would not notice.
+        use super::ipc_endpoint_scope_bytes;
+
+        let mixed = ipc_endpoint_scope_bytes(std::path::Path::new(r"C:\Program Files\App\Broker.exe"));
+        assert_eq!(mixed, b"c:/program files/app/broker.exe".to_vec());
+
+        let other = ipc_endpoint_scope_bytes(std::path::Path::new("c:/PROGRAM FILES/app/BROKER.exe"));
+        assert_eq!(mixed, other);
+    }
+
 }

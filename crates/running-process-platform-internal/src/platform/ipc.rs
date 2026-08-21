@@ -207,6 +207,49 @@ pub struct EndpointNameTooLong {
     pub limit_label: &'static str,
 }
 
+/// Last-resort per-user root when the host's runtime/temp variable is unset.
+///
+/// Deliberately not `/tmp`: a per-user directory keeps two accounts on one
+/// host from colliding without naming a uid. Only reached when the platform's
+/// runtime variable is missing -- cron and sessionless ssh being the realistic
+/// cases.
+#[cfg(feature = "ipc")]
+pub(crate) fn per_user_runtime_fallback() -> std::path::PathBuf {
+    dirs::cache_dir()
+        .or_else(dirs::data_local_dir)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("running-process")
+        .join("broker-v2")
+}
+
+/// Canonical byte spelling of `path` for endpoint-scope identity.
+///
+/// Two callers naming the same installed file must hash to the same scope, so
+/// the selected host decides which spelling differences are meaningless. On a
+/// case-insensitive host that means folding case and separator style; on a
+/// host whose paths are opaque byte strings it means the bytes as they are.
+/// Callers own the hash itself, its domain separator, and its encoding.
+#[cfg(feature = "ipc")]
+pub fn endpoint_scope_bytes(path: &std::path::Path) -> Vec<u8> {
+    crate::ipc_endpoint_scope_bytes(path)
+}
+
+/// The selected host's directory for broker-v2 runtime files and sockets.
+///
+/// Every host lands inside a location the OS already scopes to a single user,
+/// so two accounts stay apart without a uid spelled into the path. The leaf is
+/// chosen per host rather than shared: on macOS the broker's sockets live under
+/// this root, and `sun_path` leaves no budget for a long one.
+///
+/// The directory is not created here. A caller that writes into it creates it
+/// owner-only at that point; a caller that only reads treats an absent
+/// directory as "nothing published", which is a normal state.
+#[cfg(feature = "ipc")]
+pub fn broker_v2_runtime_dir() -> std::path::PathBuf {
+    crate::ipc_broker_v2_runtime_dir()
+}
+
 /// Derive the v1 broker endpoint address for `bare_name`.
 ///
 /// The selected host owns directory placement, the leaf spelling, and the
