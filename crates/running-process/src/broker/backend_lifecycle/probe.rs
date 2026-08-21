@@ -4,7 +4,6 @@ use std::io::{self, Read, Write};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::prelude::*;
 use prost::Message;
 
 use crate::broker::backend_lifecycle::identity::{DaemonProcess, IdentityError};
@@ -417,8 +416,8 @@ fn same_daemon_identity(left: &DaemonProcess, right: &DaemonProcess) -> bool {
 
 /// Connect to the probe endpoint with a hard deadline.
 ///
-/// `interprocess::local_socket::Stream::connect` is a blocking syscall with
-/// no portable timeout: on macOS a bound-but-never-accepted Unix socket can
+/// The facade's `Stream::connect` is a blocking syscall with no portable
+/// timeout: on macOS a bound-but-never-accepted Unix socket can
 /// park the caller in `connect(2)` indefinitely once the (tiny) listen
 /// backlog is full, which would silently wedge the broker serve thread
 /// before it ever binds its own control socket (#399). Run the blocking
@@ -428,27 +427,26 @@ fn same_daemon_identity(left: &DaemonProcess, right: &DaemonProcess) -> bool {
 fn connect_endpoint_with_deadline(
     endpoint: &Endpoint,
     deadline: Instant,
-) -> Result<interprocess::local_socket::Stream, EndpointProbeError> {
+) -> Result<crate::platform::ipc::Stream, EndpointProbeError> {
     if endpoint.path.is_empty() {
         return Err(EndpointProbeError::Connect(io::Error::new(
             io::ErrorKind::InvalidInput,
             "backend endpoint path is empty",
         )));
     }
-    // Validate the name synchronously so naming errors keep their own variant.
-    endpoint_name(&endpoint.path).map_err(EndpointProbeError::LocalSocketName)?;
+    // Resolve the name synchronously so naming errors keep their own variant.
+    // The facade endpoint owns its path, so the helper thread can hold one
+    // outright rather than re-deriving a borrowed name from a cloned string.
+    let endpoint = crate::platform::ipc::Endpoint::new(endpoint.path.clone())
+        .map_err(EndpointProbeError::LocalSocketName)?;
 
-    let path = endpoint.path.clone();
+    let dial_endpoint = endpoint.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     thread::Builder::new()
         .name("rp-endpoint-probe-connect".to_string())
         .spawn(move || {
-            let result = match endpoint_name(&path) {
-                Ok(name) => interprocess::local_socket::Stream::connect(name),
-                Err(err) => Err(err),
-            };
             // Receiver gone means the probe timed out; drop the stream here.
-            let _ = tx.send(result);
+            let _ = tx.send(crate::platform::ipc::Stream::connect(&dial_endpoint));
         })
         .map_err(EndpointProbeError::Connect)?;
 
@@ -461,14 +459,14 @@ fn connect_endpoint_with_deadline(
             format!(
                 "backend endpoint probe connect timed out after the probe deadline \
                  (endpoint {}): the listener exists but never completed the connection",
-                endpoint.path
+                endpoint.display()
             ),
         ))),
     }
 }
 
 fn write_probe_frame_with_deadline(
-    stream: &mut interprocess::local_socket::Stream,
+    stream: &mut crate::platform::ipc::Stream,
     body: &[u8],
     deadline: Instant,
 ) -> Result<(), EndpointProbeError> {
@@ -487,7 +485,7 @@ fn write_probe_frame_with_deadline(
 }
 
 fn read_probe_frame_with_deadline(
-    stream: &mut interprocess::local_socket::Stream,
+    stream: &mut crate::platform::ipc::Stream,
     deadline: Instant,
 ) -> Result<Vec<u8>, EndpointProbeError> {
     parse_probe_frame(|buf| read_exact_with_deadline(stream, buf, deadline))
@@ -597,8 +595,4 @@ fn wait_for_io(deadline: Instant) -> Result<(), EndpointProbeError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     thread::sleep(remaining.min(NONBLOCKING_POLL_INTERVAL));
     Ok(())
-}
-
-fn endpoint_name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
-    crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(io::Error::other)
 }
