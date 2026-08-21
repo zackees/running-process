@@ -444,7 +444,7 @@ enum ProbeOutcome {
 /// Runs on a helper thread bounded by [`DOCTOR_PROBE_TIMEOUT`] because
 /// local-socket streams have no portable read timeout; on timeout the
 /// abandoned stream stays with the helper thread.
-fn hello_probe(stream: interprocess::local_socket::Stream) -> Result<ProbeOutcome, String> {
+fn hello_probe(stream: crate::platform::ipc::Stream) -> Result<ProbeOutcome, String> {
     let (result_tx, result_rx) = mpsc::channel();
     thread::spawn(move || {
         let mut stream = stream;
@@ -458,9 +458,7 @@ fn hello_probe(stream: interprocess::local_socket::Stream) -> Result<ProbeOutcom
     }
 }
 
-fn hello_probe_blocking(
-    stream: &mut interprocess::local_socket::Stream,
-) -> Result<ProbeOutcome, String> {
+fn hello_probe_blocking(stream: &mut crate::platform::ipc::Stream) -> Result<ProbeOutcome, String> {
     let hello = Hello {
         client_min_protocol: PROTOCOL_VERSION,
         client_max_protocol: PROTOCOL_VERSION,

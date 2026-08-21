@@ -196,6 +196,18 @@ impl Stream {
         interprocess::local_socket::traits::Stream::set_recv_timeout(&self.0, timeout)
     }
 
+    /// Consume the stream and hand back the descriptor that backs it.
+    ///
+    /// The transfer of ownership is the point: a caller that wants to run its
+    /// own protocol over an already-negotiated connection needs the
+    /// descriptor itself, and taking it here is what keeps that caller from
+    /// naming the implementation type to get at it.
+    pub fn into_owned_fd(self) -> std::os::fd::OwnedFd {
+        match self.0 {
+            interprocess::local_socket::Stream::UdSocket(uds) => std::os::fd::OwnedFd::from(uds),
+        }
+    }
+
     pub fn peer_identity(&self) -> io::Result<PeerIdentity> {
         self.0.peer_creds().map(peer_identity)
     }

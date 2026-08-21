@@ -149,18 +149,16 @@ pub struct OwnedBackendIo {
 impl OwnedBackendIo {
     #[cfg(unix)]
     pub(crate) fn from_local_socket_stream(
-        stream: interprocess::local_socket::Stream,
+        stream: crate::platform::ipc::Stream,
     ) -> Result<Self, IntoBackendIoError> {
-        match stream {
-            interprocess::local_socket::Stream::UdSocket(uds) => Ok(Self {
-                fd: std::os::fd::OwnedFd::from(uds),
-            }),
-        }
+        Ok(Self {
+            fd: stream.into_owned_fd(),
+        })
     }
 
     #[cfg(windows)]
     pub(crate) fn from_local_socket_stream(
-        _stream: interprocess::local_socket::Stream,
+        _stream: crate::platform::ipc::Stream,
     ) -> Result<Self, IntoBackendIoError> {
         Err(IntoBackendIoError::WindowsUnsupported)
     }
@@ -451,7 +449,9 @@ fn adopt_async_blocking(request: OwnedConnectRequest) -> Result<AdoptedAsync, Ad
     .map_err(map_explicit_hello_error)?;
     let negotiated = session.negotiated().clone();
     let endpoint = negotiated.backend_pipe.clone();
-    let stream = session.connect_backend().map_err(map_v2_backend_error)?;
+    let stream = session
+        .connect_backend_ipc()
+        .map_err(map_v2_backend_error)?;
     Ok((
         BackendConnectionRoute::BrokerNegotiated,
         endpoint,

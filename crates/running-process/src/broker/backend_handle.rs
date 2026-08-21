@@ -382,7 +382,7 @@ impl BackendHandle {
 /// liveness, while this type owns a single local-socket stream opened from the
 /// verified endpoint.
 pub struct Connection {
-    stream: interprocess::local_socket::Stream,
+    stream: crate::platform::ipc::Stream,
 }
 
 impl Connection {
@@ -394,15 +394,13 @@ impl Connection {
                 "backend endpoint path is empty",
             ));
         }
-        let name = endpoint_name(&endpoint.path)?;
-
-        use interprocess::local_socket::traits::Stream as _;
-        let stream = interprocess::local_socket::Stream::connect(name)?;
+        let endpoint = crate::platform::ipc::Endpoint::new(endpoint.path.clone())?;
+        let stream = crate::platform::ipc::Stream::connect(&endpoint)?;
         Ok(Self { stream })
     }
 
-    /// Return the underlying `interprocess` stream.
-    pub fn into_inner(self) -> interprocess::local_socket::Stream {
+    /// Return the underlying platform stream.
+    pub fn into_inner(self) -> crate::platform::ipc::Stream {
         self.stream
     }
 }
@@ -428,10 +426,6 @@ pub enum BackendHandleError {
         /// Process ID that did not exit before the timeout.
         pid: u32,
     },
-}
-
-fn endpoint_name(path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
-    crate::broker::server::singleton_bind::wrap_socket_name(path).map_err(io::Error::other)
 }
 
 /// Remove the socket file backing `endpoint`, if there is one.
