@@ -40,6 +40,30 @@ impl HandoffAttachment {
     }
 }
 
+/// Result of enforcing owner-private permissions on a local IPC directory.
+#[cfg(feature = "ipc")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerPrivateDirectoryOutcome {
+    /// The existing directory already had the complete host policy.
+    AlreadyPrivate,
+    /// Permissions were applied or repaired.
+    Hardened,
+}
+
+/// Create a directory and enforce the selected host's owner-private policy.
+#[cfg(feature = "ipc")]
+pub fn ensure_owner_private_directory(
+    path: &std::path::Path,
+) -> std::io::Result<OwnerPrivateDirectoryOutcome> {
+    crate::ipc_ensure_owner_private_directory(path)
+}
+
+/// Return whether a directory has the selected host's owner-private policy.
+#[cfg(feature = "ipc")]
+pub fn owner_private_directory(path: &std::path::Path) -> std::io::Result<bool> {
+    crate::ipc_owner_private_directory(path)
+}
+
 /// Host-neutral classification of a failed connection-transfer primitive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HandoffTransferErrorKind {
@@ -106,7 +130,18 @@ pub use crate::{
 mod tests {
     use std::io::{Read, Write};
 
-    use super::{current_user_id, Endpoint, HandoffAttachment, Listener, Stream};
+    use super::{
+        current_user_id, ensure_owner_private_directory, owner_private_directory, Endpoint,
+        HandoffAttachment, Listener, Stream,
+    };
+
+    #[test]
+    fn ensure_private_dir_passes_private_check() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("private");
+        ensure_owner_private_directory(&path).expect("harden directory");
+        assert!(owner_private_directory(&path).expect("inspect directory"));
+    }
 
     #[test]
     fn handoff_attachment_can_be_encoded_without_exposing_its_value() {

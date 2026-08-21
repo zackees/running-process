@@ -195,6 +195,11 @@ retired by #971. Listener inheritance/adoption and host-specific endpoint
 construction now execute inside the audited platform IPC facade, while the
 broker retains the surrounding opt-in, retry, and diagnostics policy.
 
+The former `secure_dir.rs` entry was retired by #971. The owner-private
+directory mode and Windows DACL mechanics formerly covered by nine inventoried
+`unsafe` tokens now execute inside the audited platform IPC facade. The broker
+retains directory-placement policy and public diagnostics.
+
 The `server/handoff/unix.rs` inventory covers the Unix `SCM_RIGHTS` boundary:
 constructing and inspecting `msghdr` control messages, calling `sendmsg` and
 `recvmsg`, and closing the duplicated descriptor received by the compatibility
