@@ -200,11 +200,15 @@ directory mode and Windows DACL mechanics formerly covered by nine inventoried
 `unsafe` tokens now execute inside the audited platform IPC facade. The broker
 retains directory-placement policy and public diagnostics.
 
-The `server/handoff/unix.rs` inventory covers the Unix `SCM_RIGHTS` boundary:
-constructing and inspecting `msghdr` control messages, calling `sendmsg` and
-`recvmsg`, and closing the duplicated descriptor received by the compatibility
-test. The additional reviewed site for #614 closes only the descriptor returned
-by that test's successful `recvmsg`; production ownership remains unchanged.
+The former `server/handoff/unix.rs` and `server/handoff/windows.rs` entries
+were retired by #971. The deprecated public 4.x descriptor-passing mechanics --
+constructing and inspecting `msghdr` control messages and calling `sendmsg` /
+`recvmsg` on Unix, and duplicating the backend handle via `DuplicateHandle` on
+Windows -- now execute inside the audited `running-process-platform-internal`
+IPC facade. The broker retains the legacy numeric fd/HANDLE models and the
+public error and fallback policy, and reaches the mechanics only through hidden
+crate-root compatibility adapters, so the shared handoff path contains no
+native `unsafe` sites.
 
 ## Fuzz Campaign And Reviewer Signoff
 

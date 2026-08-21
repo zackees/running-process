@@ -74,6 +74,127 @@ pub use platform_imp::{
     IpcPeerIdentitySource, IpcStream,
 };
 
+/// Failure details for the deprecated 4.x raw descriptor/handle handoff API.
+///
+/// This type exists only at the crate-root compatibility boundary. New product
+/// mechanics use opaque [`platform::ipc::Stream`] operations instead.
+#[cfg(feature = "ipc")]
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyHandoffError {
+    kind: platform::ipc::HandoffTransferErrorKind,
+    raw_os_error: Option<i32>,
+    transferred_bytes: Option<usize>,
+    expected_bytes: Option<usize>,
+    detail: Option<String>,
+}
+
+#[cfg(feature = "ipc")]
+impl LegacyHandoffError {
+    pub(crate) fn new(
+        kind: platform::ipc::HandoffTransferErrorKind,
+        raw_os_error: Option<i32>,
+    ) -> Self {
+        Self {
+            kind,
+            raw_os_error,
+            transferred_bytes: None,
+            expected_bytes: None,
+            detail: None,
+        }
+    }
+
+    pub(crate) fn with_detail(
+        kind: platform::ipc::HandoffTransferErrorKind,
+        raw_os_error: Option<i32>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            raw_os_error,
+            transferred_bytes: None,
+            expected_bytes: None,
+            detail: Some(detail.into()),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn partial(transferred_bytes: usize, expected_bytes: usize) -> Self {
+        Self {
+            kind: platform::ipc::HandoffTransferErrorKind::Failed,
+            raw_os_error: None,
+            transferred_bytes: Some(transferred_bytes),
+            expected_bytes: Some(expected_bytes),
+            detail: Some(format!(
+                "SCM_RIGHTS connection transfer was partial ({transferred_bytes}/{expected_bytes} bytes)"
+            )),
+        }
+    }
+
+    /// Return the policy-neutral failure category.
+    pub fn kind(&self) -> platform::ipc::HandoffTransferErrorKind {
+        self.kind
+    }
+
+    /// Return the native error code retained for legacy public diagnostics.
+    pub fn raw_os_error(&self) -> Option<i32> {
+        self.raw_os_error
+    }
+
+    /// Return a partial payload count when the descriptor may have transferred.
+    pub fn partial_counts(&self) -> Option<(usize, usize)> {
+        self.transferred_bytes.zip(self.expected_bytes)
+    }
+
+    pub(crate) fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+}
+
+/// Whether the deprecated 4.x SCM_RIGHTS compatibility transport is available.
+#[cfg(feature = "ipc")]
+#[doc(hidden)]
+pub const LEGACY_SCM_RIGHTS_TRANSPORT_SUPPORTED: bool =
+    platform_imp::LEGACY_SCM_RIGHTS_TRANSPORT_SUPPORTED;
+
+/// Whether the deprecated 4.x DuplicateHandle compatibility transport is available.
+#[cfg(feature = "ipc")]
+#[doc(hidden)]
+pub const LEGACY_DUPLICATE_HANDLE_TRANSPORT_SUPPORTED: bool =
+    platform_imp::LEGACY_DUPLICATE_HANDLE_TRANSPORT_SUPPORTED;
+
+/// Root-only adapter for the deprecated raw-descriptor handoff API.
+#[cfg(feature = "ipc")]
+#[doc(hidden)]
+pub fn legacy_send_fd_to(
+    socket: &std::path::Path,
+    sent_fd: i32,
+    payload: &[u8],
+) -> Result<(), LegacyHandoffError> {
+    platform_imp::legacy_send_fd_to(socket, sent_fd, payload)
+}
+
+/// Root-only adapter for the deprecated connected raw-descriptor handoff API.
+#[cfg(feature = "ipc")]
+#[doc(hidden)]
+pub fn legacy_send_fd_over(
+    socket_fd: i32,
+    sent_fd: i32,
+    payload: &[u8],
+) -> Result<(), LegacyHandoffError> {
+    platform_imp::legacy_send_fd_over(socket_fd, sent_fd, payload)
+}
+
+/// Root-only adapter for the deprecated raw-handle duplication API.
+#[cfg(feature = "ipc")]
+#[doc(hidden)]
+pub fn legacy_duplicate_handle(
+    source_handle: usize,
+    backend_pid: u32,
+) -> Result<usize, LegacyHandoffError> {
+    platform_imp::legacy_duplicate_handle(source_handle, backend_pid)
+}
+
 /// Temporary source-compatibility conversion for public APIs that predate the
 /// opaque IPC facade.
 ///

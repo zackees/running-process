@@ -222,7 +222,6 @@ where
 /// pid comes from the verified daemon identity, and duplication goes
 /// through
 /// [`BackendHandle::try_duplicate_windows_handoff_handle`](crate::broker::backend_handle::BackendHandle::try_duplicate_windows_handoff_handle).
-#[cfg(windows)]
 pub fn execute_verified_windows_handoff<D>(
     backend: &crate::broker::backend_handle::BackendHandle,
     pipe_handle: WindowsHandleValue,
@@ -249,8 +248,9 @@ where
 /// Run one orchestrated handoff with an explicit duplication transport.
 ///
 /// Platform-neutral tests inject a mock transport here; production callers
-/// use [`execute_windows_handoff`] or the Windows-only
-/// `execute_verified_windows_handoff`.
+/// use [`execute_windows_handoff`] or the cfg-free
+/// `execute_verified_windows_handoff`; the selected platform transport reports
+/// an unsupported fallback when the latter is invoked off Windows.
 pub fn execute_windows_handoff_with_transport<T, D>(
     tokens: &mut HandoffTokenStore,
     acks: &mut HandoffAckRegistry,

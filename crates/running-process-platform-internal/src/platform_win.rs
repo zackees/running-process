@@ -17,6 +17,34 @@ pub use ipc::{
     PeerIdentitySource as IpcPeerIdentitySource, Stream as IpcStream,
 };
 #[cfg(feature = "ipc")]
+pub const LEGACY_SCM_RIGHTS_TRANSPORT_SUPPORTED: bool = false;
+#[cfg(feature = "ipc")]
+pub const LEGACY_DUPLICATE_HANDLE_TRANSPORT_SUPPORTED: bool = true;
+#[cfg(feature = "ipc")]
+pub use ipc::legacy_duplicate_handle;
+#[cfg(feature = "ipc")]
+pub fn legacy_send_fd_to(
+    _socket: &std::path::Path,
+    _sent_fd: i32,
+    _payload: &[u8],
+) -> Result<(), crate::LegacyHandoffError> {
+    Err(crate::LegacyHandoffError::new(
+        crate::platform::ipc::HandoffTransferErrorKind::Unsupported,
+        None,
+    ))
+}
+#[cfg(feature = "ipc")]
+pub fn legacy_send_fd_over(
+    _socket_fd: i32,
+    _sent_fd: i32,
+    _payload: &[u8],
+) -> Result<(), crate::LegacyHandoffError> {
+    Err(crate::LegacyHandoffError::new(
+        crate::platform::ipc::HandoffTransferErrorKind::Unsupported,
+        None,
+    ))
+}
+#[cfg(feature = "ipc")]
 pub use ipc_private_dir::{
     ensure_owner_private_directory as ipc_ensure_owner_private_directory,
     owner_private_directory as ipc_owner_private_directory,

@@ -17,6 +17,22 @@ pub use ipc::{
     PeerIdentitySource as IpcPeerIdentitySource, Stream as IpcStream,
 };
 #[cfg(feature = "ipc")]
+pub const LEGACY_SCM_RIGHTS_TRANSPORT_SUPPORTED: bool = true;
+#[cfg(feature = "ipc")]
+pub const LEGACY_DUPLICATE_HANDLE_TRANSPORT_SUPPORTED: bool = false;
+#[cfg(feature = "ipc")]
+pub use ipc::{legacy_send_fd_over, legacy_send_fd_to};
+#[cfg(feature = "ipc")]
+pub fn legacy_duplicate_handle(
+    _source_handle: usize,
+    _backend_pid: u32,
+) -> Result<usize, crate::LegacyHandoffError> {
+    Err(crate::LegacyHandoffError::new(
+        crate::platform::ipc::HandoffTransferErrorKind::Unsupported,
+        None,
+    ))
+}
+#[cfg(feature = "ipc")]
 pub use ipc_private_dir::{
     ensure_owner_private_directory as ipc_ensure_owner_private_directory,
     owner_private_directory as ipc_owner_private_directory,
