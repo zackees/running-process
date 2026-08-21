@@ -12,6 +12,84 @@ pub use crate::{
     IpcPeerIdentitySource as PeerIdentitySource, IpcStream as Stream,
 };
 
+/// Opaque platform attachment created while transferring an accepted IPC
+/// connection to a backend process.
+///
+/// On Windows this owns the handle-table value that must be carried by the
+/// caller's existing protocol. On Unix the descriptor travels out-of-band via
+/// `SCM_RIGHTS`. Native handle and descriptor values never cross the facade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HandoffAttachment(u64);
+
+impl HandoffAttachment {
+    pub(crate) fn new(protocol_value: u64) -> Self {
+        Self(protocol_value)
+    }
+
+    /// Append this attachment's opaque value as an unsigned protobuf varint.
+    ///
+    /// The caller owns the wire envelope while this facade retains ownership
+    /// of the native value and its representation.
+    pub fn append_unsigned_varint(self, output: &mut Vec<u8>) {
+        let mut value = self.0;
+        while value >= 0x80 {
+            output.push((value as u8 & 0x7f) | 0x80);
+            value >>= 7;
+        }
+        output.push(value as u8);
+    }
+}
+
+/// Host-neutral classification of a failed connection-transfer primitive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandoffTransferErrorKind {
+    Unsupported,
+    PermissionDenied,
+    BackendUnavailable,
+    WouldBlock,
+    Failed,
+}
+
+/// Failure from the platform-owned connection-transfer primitive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoffTransferError {
+    kind: HandoffTransferErrorKind,
+    may_have_reached_backend: bool,
+    detail: String,
+}
+
+impl HandoffTransferError {
+    pub(crate) fn new(
+        kind: HandoffTransferErrorKind,
+        may_have_reached_backend: bool,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            may_have_reached_backend,
+            detail: detail.into(),
+        }
+    }
+
+    /// Return the policy-neutral failure category.
+    pub fn kind(&self) -> HandoffTransferErrorKind {
+        self.kind
+    }
+
+    /// Whether the backend may already own a duplicated connection.
+    pub fn may_have_reached_backend(&self) -> bool {
+        self.may_have_reached_backend
+    }
+}
+
+impl std::fmt::Display for HandoffTransferError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for HandoffTransferError {}
+
 /// Resolve a broker endpoint name using selected-host path and pipe rules.
 #[cfg(feature = "ipc")]
 pub fn broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::Result<String> {
@@ -28,7 +106,14 @@ pub use crate::{
 mod tests {
     use std::io::{Read, Write};
 
-    use super::{current_user_id, Endpoint, Listener, Stream};
+    use super::{current_user_id, Endpoint, HandoffAttachment, Listener, Stream};
+
+    #[test]
+    fn handoff_attachment_can_be_encoded_without_exposing_its_value() {
+        let mut encoded = Vec::new();
+        HandoffAttachment::new(300).append_unsigned_varint(&mut encoded);
+        assert_eq!(encoded, [0xac, 0x02]);
+    }
 
     #[test]
     fn endpoint_lifecycle_mechanics_are_facade_owned() {

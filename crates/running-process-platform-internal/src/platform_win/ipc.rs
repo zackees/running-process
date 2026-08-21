@@ -211,6 +211,86 @@ impl Stream {
     pub fn peer_identity(&self) -> io::Result<PeerIdentity> {
         self.0.peer_creds().map(peer_identity)
     }
+
+    /// Duplicate this accepted named-pipe connection into a backend process.
+    pub fn transfer_to_backend(
+        &self,
+        _backend_control: &Self,
+        _backend_endpoint: &Endpoint,
+        backend_pid: u32,
+        _sideband_payload: &[u8],
+    ) -> Result<crate::platform::ipc::HandoffAttachment, crate::platform::ipc::HandoffTransferError>
+    {
+        use crate::platform::ipc::{
+            HandoffAttachment, HandoffTransferError, HandoffTransferErrorKind,
+        };
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_ACCESS_DENIED, HANDLE,
+            INVALID_HANDLE_VALUE,
+        };
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
+        };
+
+        let source = match &self.0 {
+            interprocess::local_socket::Stream::NamedPipe(stream) => {
+                stream.as_handle().as_raw_handle() as HANDLE
+            }
+        };
+        // SAFETY: OpenProcess receives a numeric PID and requests only the
+        // duplication right; the returned handle is closed below.
+        let backend = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, backend_pid) };
+        if backend.is_null() {
+            let error = io::Error::last_os_error();
+            let kind = if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+                HandoffTransferErrorKind::PermissionDenied
+            } else {
+                HandoffTransferErrorKind::BackendUnavailable
+            };
+            return Err(HandoffTransferError::new(
+                kind,
+                false,
+                format!(
+                    "cannot open backend process {backend_pid} for connection transfer: {error}"
+                ),
+            ));
+        }
+
+        let mut duplicated: HANDLE = std::ptr::null_mut();
+        // SAFETY: source and backend are live handles, `duplicated` is a valid
+        // writable out-parameter, and the API duplicates with the same access.
+        let ok = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                source,
+                backend,
+                &mut duplicated,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        let error = io::Error::last_os_error();
+        // SAFETY: `backend` was successfully opened above and is owned here.
+        unsafe { CloseHandle(backend) };
+        if ok == 0 || duplicated.is_null() || duplicated == INVALID_HANDLE_VALUE {
+            let kind = if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+                HandoffTransferErrorKind::PermissionDenied
+            } else {
+                HandoffTransferErrorKind::Failed
+            };
+            return Err(HandoffTransferError::new(
+                kind,
+                false,
+                format!(
+                    "failed to duplicate connection into backend process {backend_pid}: {error}"
+                ),
+            ));
+        }
+
+        Ok(HandoffAttachment::new(duplicated as usize as u64))
+    }
 }
 
 impl PeerIdentitySource for Stream {

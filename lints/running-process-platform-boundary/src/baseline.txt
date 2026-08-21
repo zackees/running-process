@@ -1148,8 +1148,6 @@ crates/running-process/src/broker/server/handoff_serve.rs	attr_cfg	unix	2
 crates/running-process/src/broker/server/handoff_serve.rs	attr_cfg	windows	0
 crates/running-process/src/broker/server/handoff_serve.rs	attr_cfg	windows	1
 crates/running-process/src/broker/server/handoff_serve.rs	attr_cfg	windows	2
-crates/running-process/src/broker/server/handoff_serve.rs	native_import	std::os::windows	0
-crates/running-process/src/broker/server/handoff_serve.rs	native_import	std::os::windows	1
 crates/running-process/src/broker/server/hello_router.rs	attr_cfg	unix	0
 crates/running-process/src/broker/server/hello_router.rs	attr_cfg	windows	0
 crates/running-process/src/broker/server/service_def_loader.rs	attr_cfg	target_os	0
