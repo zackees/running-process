@@ -148,6 +148,120 @@ impl Stream {
     pub fn peer_identity(&self) -> io::Result<PeerIdentity> {
         self.0.peer_creds().map(peer_identity)
     }
+
+    /// Pass this accepted connection to a backend over its control stream.
+    pub fn transfer_to_backend(
+        &self,
+        backend_control: &Self,
+        _backend_endpoint: &Endpoint,
+        _backend_pid: u32,
+        sideband_payload: &[u8],
+    ) -> Result<crate::platform::ipc::HandoffAttachment, crate::platform::ipc::HandoffTransferError>
+    {
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+
+        let control_fd = match &backend_control.0 {
+            interprocess::local_socket::Stream::UdSocket(stream) => stream.as_fd().as_raw_fd(),
+        };
+        let connection_fd = match &self.0 {
+            interprocess::local_socket::Stream::UdSocket(stream) => stream.as_fd().as_raw_fd(),
+        };
+        send_connection_with_payload(control_fd, connection_fd, sideband_payload)?;
+        Ok(crate::platform::ipc::HandoffAttachment::new(0))
+    }
+}
+
+fn send_connection_with_payload(
+    control_fd: std::os::fd::RawFd,
+    connection_fd: std::os::fd::RawFd,
+    sideband_payload: &[u8],
+) -> Result<(), crate::platform::ipc::HandoffTransferError> {
+    use crate::platform::ipc::{HandoffTransferError, HandoffTransferErrorKind};
+
+    if sideband_payload.is_empty() {
+        return Err(HandoffTransferError::new(
+            HandoffTransferErrorKind::Failed,
+            false,
+            "connection transfer requires a non-empty sideband payload",
+        ));
+    }
+    let mut payload = sideband_payload.to_vec();
+    let mut iov = libc::iovec {
+        iov_base: payload.as_mut_ptr().cast(),
+        iov_len: payload.len(),
+    };
+    // SAFETY: CMSG_SPACE only computes aligned storage for the supplied size.
+    let control_len = unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) } as usize;
+    let control_slots = control_len.div_ceil(std::mem::size_of::<libc::cmsghdr>());
+    // `Vec<cmsghdr>` guarantees the alignment required by CMSG_FIRSTHDR;
+    // msg_controllen retains the exact byte length returned by CMSG_SPACE.
+    let mut control = (0..control_slots)
+        .map(|_| unsafe { std::mem::zeroed::<libc::cmsghdr>() })
+        .collect::<Vec<_>>();
+    // SAFETY: an all-zero msghdr is the documented empty initialization; the
+    // live iovec and control-buffer pointers are installed immediately below.
+    let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = control_len as _;
+
+    // SAFETY: `message` points at live, correctly sized iovec/control storage;
+    // the one SCM_RIGHTS payload is a libc::c_int file descriptor.
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&message);
+        if header.is_null() {
+            return Err(HandoffTransferError::new(
+                HandoffTransferErrorKind::Failed,
+                false,
+                "could not construct SCM_RIGHTS control message",
+            ));
+        }
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as _) as _;
+        *libc::CMSG_DATA(header).cast::<libc::c_int>() = connection_fd;
+    }
+
+    let flags = libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL;
+    // SAFETY: both descriptors are borrowed from live opaque streams for the
+    // duration of this call and every msghdr pointer references live storage.
+    let sent = unsafe { libc::sendmsg(control_fd, &message, flags) };
+    if sent < 0 {
+        let error = io::Error::last_os_error();
+        let raw = error.raw_os_error();
+        let kind = if error.kind() == io::ErrorKind::PermissionDenied {
+            HandoffTransferErrorKind::PermissionDenied
+        } else if error.kind() == io::ErrorKind::WouldBlock || raw == Some(libc::ENOBUFS) {
+            HandoffTransferErrorKind::WouldBlock
+        } else if matches!(
+            error.kind(),
+            io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::NotConnected
+        ) {
+            HandoffTransferErrorKind::BackendUnavailable
+        } else {
+            HandoffTransferErrorKind::Failed
+        };
+        return Err(HandoffTransferError::new(
+            kind,
+            false,
+            format!("SCM_RIGHTS connection transfer failed: {error}"),
+        ));
+    }
+    if sent as usize != payload.len() {
+        return Err(HandoffTransferError::new(
+            HandoffTransferErrorKind::Failed,
+            sent > 0,
+            format!(
+                "SCM_RIGHTS connection transfer was partial ({sent}/{} bytes)",
+                payload.len()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 impl PeerIdentitySource for Stream {

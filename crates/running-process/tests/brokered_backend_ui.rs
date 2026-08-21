@@ -24,8 +24,11 @@
 #[test]
 fn brokered_backend_compile_fail_ui_snapshots() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fixtures = ["ui", "ui-unix", "ui-macos", "ui-windows"]
-        .map(|directory| manifest.join(format!("tests/{directory}/brokered_backend_state_in_bind.rs")));
+    let fixtures = ["ui", "ui-unix", "ui-macos", "ui-windows"].map(|directory| {
+        manifest.join(format!(
+            "tests/{directory}/brokered_backend_state_in_bind.rs"
+        ))
+    });
     for fixture in fixtures.iter().skip(1) {
         assert_eq!(
             std::fs::read(&fixtures[0]).expect("read primary trybuild fixture"),

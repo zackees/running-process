@@ -22,7 +22,9 @@ fn no_environment_value_means_no_inherited_listener() {
         eprintln!("skipping: inherited-listener environment is set");
         return;
     }
-    assert!(recover_from_env().expect("absence is not an error").is_none());
+    assert!(recover_from_env()
+        .expect("absence is not an error")
+        .is_none());
 }
 
 #[test]

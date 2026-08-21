@@ -173,6 +173,14 @@ pub enum ScmRightsError {
         /// Raw OS error code returned by the platform, when available.
         raw_os_error: Option<i32>,
     },
+    /// Descriptor transfer succeeded but the follow-up protocol offer failed.
+    #[error("handoff offer delivery failed after passing fd {fd} to backend socket {socket}")]
+    PostTransferDeliveryFailed {
+        /// File descriptor targeted by the handoff.
+        fd: i32,
+        /// Backend handoff socket path.
+        socket: PathBuf,
+    },
     /// Some token bytes were sent, so the descriptor may have reached the backend.
     #[error(
         "SCM_RIGHTS send was partial ({sent_bytes}/{expected_bytes} bytes) for fd {fd} to backend handoff socket {socket}"
@@ -366,6 +374,7 @@ impl ScmRightsError {
             Self::BackendSocketUnavailable { .. }
             | Self::WouldBlock { .. }
             | Self::SendFailed { .. }
+            | Self::PostTransferDeliveryFailed { .. }
             | Self::PartialSend { .. }
             | Self::BackendAckTimeout { .. } => Some(HandoffAttemptFailure::BackendAckTimeout),
         }
@@ -401,7 +410,8 @@ impl ScmRightsError {
     /// positive short send is indeterminate even though the complete token was
     /// not delivered. The orchestrator revokes that token before fallback.
     pub fn fd_may_have_reached_backend(&self) -> bool {
-        matches!(self, Self::PartialSend { sent_bytes, .. } if *sent_bytes > 0)
+        matches!(self, Self::PostTransferDeliveryFailed { .. })
+            || matches!(self, Self::PartialSend { sent_bytes, .. } if *sent_bytes > 0)
     }
 }
 
@@ -431,6 +441,17 @@ mod platform_neutral_tests {
             socket: "handoff".into(),
             sent_bytes: 1,
             expected_bytes: 16,
+        };
+
+        assert!(error.fd_may_have_reached_backend());
+        assert!(error.is_fallback_safe());
+    }
+
+    #[test]
+    fn failed_offer_after_transfer_tracks_backend_ownership() {
+        let error = ScmRightsError::PostTransferDeliveryFailed {
+            fd: 7,
+            socket: "handoff".into(),
         };
 
         assert!(error.fd_may_have_reached_backend());

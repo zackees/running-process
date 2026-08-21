@@ -18,6 +18,11 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, _path_scoped: bool) -> std::io:
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     stream.0
 }
+
+#[cfg(feature = "ipc")]
+pub fn from_legacy_ipc_stream(stream: interprocess::local_socket::Stream) -> IpcStream {
+    ipc::Stream(stream)
+}
 #[cfg(feature = "ipc-async")]
 pub use ipc::{
     AsyncListener as IpcAsyncListener, AsyncStream as IpcAsyncStream,

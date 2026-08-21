@@ -52,7 +52,7 @@ use std::time::Instant;
 use prost::Message;
 
 use crate::broker::capabilities::CAP_HANDLE_PASSING;
-use crate::broker::client::connect_local_socket;
+use crate::broker::client::connect_ipc_stream;
 use crate::broker::protocol::{
     hello_reply::Result as HelloReplyResult, write_frame, HandoffAck, HelloReply, Negotiated,
 };
@@ -92,7 +92,24 @@ pub fn try_complete_negotiated_handoff(
     client_stream: &mut interprocess::local_socket::Stream,
     reply: &HelloReply,
 ) -> bool {
-    if !try_transfer_negotiated_handoff(ctx, client_stream, reply) {
+    let mut stream = match clone_legacy_stream_into_platform(client_stream) {
+        Ok(stream) => stream,
+        Err(error) => {
+            log_handoff_fallback(&format!(
+                "failed to clone legacy handoff callback stream: {error}"
+            ));
+            return false;
+        }
+    };
+    try_complete_negotiated_handoff_opaque(ctx, &mut stream, reply)
+}
+
+pub(crate) fn try_complete_negotiated_handoff_opaque(
+    ctx: &ServeHandoffContext<'_>,
+    client_stream: &mut crate::platform::ipc::Stream,
+    reply: &HelloReply,
+) -> bool {
+    if !try_transfer_negotiated_handoff_opaque(ctx, client_stream, reply) {
         return false;
     }
     let Some(negotiated) = negotiated_with_handoff(reply) else {
@@ -119,6 +136,23 @@ pub fn try_complete_negotiated_handoff(
 pub fn try_transfer_negotiated_handoff(
     ctx: &ServeHandoffContext<'_>,
     client_stream: &mut interprocess::local_socket::Stream,
+    reply: &HelloReply,
+) -> bool {
+    let mut stream = match clone_legacy_stream_into_platform(client_stream) {
+        Ok(stream) => stream,
+        Err(error) => {
+            log_handoff_fallback(&format!(
+                "failed to clone legacy handoff callback stream: {error}"
+            ));
+            return false;
+        }
+    };
+    try_transfer_negotiated_handoff_opaque(ctx, &mut stream, reply)
+}
+
+pub(crate) fn try_transfer_negotiated_handoff_opaque(
+    ctx: &ServeHandoffContext<'_>,
+    client_stream: &mut crate::platform::ipc::Stream,
     reply: &HelloReply,
 ) -> bool {
     let Some(negotiated) = negotiated_with_handoff(reply) else {
@@ -148,7 +182,7 @@ pub fn try_transfer_negotiated_handoff(
         now,
     );
 
-    let backend_stream = match connect_local_socket(ctx.handoff_endpoint) {
+    let backend_stream = match connect_ipc_stream(ctx.handoff_endpoint) {
         Ok(stream) => stream,
         Err(error) => {
             acks.abandon(&mut tokens, &issued);
@@ -162,7 +196,7 @@ pub fn try_transfer_negotiated_handoff(
     let io_deadline = Instant::now()
         .checked_add(acks.ack_deadline())
         .unwrap_or_else(Instant::now);
-    let mut delivery = WireHandoffDelivery::new_local_socket(
+    let mut delivery = WireHandoffDelivery::new_platform_stream(
         backend_stream,
         ctx.service_name,
         negotiated.connection_id,
@@ -193,6 +227,16 @@ pub fn complete_negotiated_handoff(
     let _ = try_complete_negotiated_handoff(ctx, client_stream, reply);
 }
 
+fn clone_legacy_stream_into_platform(
+    stream: &interprocess::local_socket::Stream,
+) -> std::io::Result<crate::platform::ipc::Stream> {
+    use interprocess::TryClone as _;
+
+    stream
+        .try_clone()
+        .map(running_process_platform_internal::from_legacy_ipc_stream)
+}
+
 /// Record the post-transfer notification result without changing ownership.
 /// After backend ACK, returning `false` would authorize an unsafe proxy of a
 /// connection the backend already owns.
@@ -221,88 +265,125 @@ fn negotiated_with_handoff(reply: &HelloReply) -> Option<&Negotiated> {
 #[cfg(windows)]
 fn run_platform_handoff(
     ctx: &ServeHandoffContext<'_>,
-    client_stream: &interprocess::local_socket::Stream,
+    client_stream: &crate::platform::ipc::Stream,
     issued: HandoffToken,
     tokens: &mut HandoffTokenStore,
     acks: &mut HandoffAckRegistry,
-    delivery: &mut WireHandoffDelivery<interprocess::local_socket::Stream>,
+    delivery: &mut WireHandoffDelivery<crate::platform::ipc::Stream>,
 ) -> bool {
-    use std::os::windows::io::{AsHandle, AsRawHandle};
-
-    use super::handoff::{
-        execute_verified_windows_handoff, WindowsHandleValue, WindowsHandoffOutcome,
-    };
-
-    let pipe_handle = match client_stream {
-        interprocess::local_socket::Stream::NamedPipe(stream) => {
-            WindowsHandleValue::new(stream.as_handle().as_raw_handle() as usize)
-        }
-    };
+    use super::handoff::{HandoffDelivery, WindowsHandoffStage};
 
     // The accept loop is sequential, so holding the registry lock for the
     // duration of one handoff cannot deadlock against another connection.
-    let registry = ctx
-        .registry
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(backend) = registry.get_any_build(ctx.instance, ctx.service_name, ctx.service_version)
-    else {
-        acks.abandon(tokens, &issued);
-        log_handoff_fallback("registered backend disappeared before handoff delivery");
-        return false;
+    let backend_pid = {
+        let registry = ctx
+            .registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(backend) =
+            registry.get_any_build(ctx.instance, ctx.service_name, ctx.service_version)
+        else {
+            acks.abandon(tokens, &issued);
+            log_handoff_fallback("registered backend disappeared before handoff delivery");
+            return false;
+        };
+        backend.daemon_process.pid
     };
 
-    let outcome =
-        execute_verified_windows_handoff(backend, pipe_handle, issued, tokens, acks, delivery);
-    let explicitly_rejected = delivery.backend_explicitly_rejected();
-    match outcome {
-        WindowsHandoffOutcome::Completed(_) => true,
-        WindowsHandoffOutcome::FallbackToReconnect(fallback) => {
-            let leak = match fallback.leaked_backend_handle {
-                Some(handle) => format!(
-                    "; duplicated handle {:#x} leaks in backend pid {} until it exits",
-                    handle.get(),
-                    backend.daemon_process.pid
-                ),
-                None => String::new(),
-            };
-            log_handoff_fallback(&format!(
-                "abandoned at {:?} stage: {}{leak}",
-                fallback.stage, fallback.detail
-            ));
-            windows_fallback_requires_relinquish(fallback.stage, explicitly_rejected)
+    let endpoint = match crate::platform::ipc::Endpoint::new(ctx.handoff_endpoint.to_owned()) {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            acks.abandon(tokens, &issued);
+            log_handoff_fallback(&format!("invalid backend handoff endpoint: {error}"));
+            return false;
         }
+    };
+    let attachment = match client_stream.transfer_to_backend(
+        delivery.stream(),
+        &endpoint,
+        backend_pid,
+        issued.as_bytes(),
+    ) {
+        Ok(attachment) => attachment,
+        Err(error) => {
+            acks.abandon(tokens, &issued);
+            log_handoff_fallback(&format!(
+                "abandoned at {:?} stage: {error}",
+                WindowsHandoffStage::Duplicate
+            ));
+            return false;
+        }
+    };
+    if let Err(error) = delivery.deliver_attachment(attachment, &issued) {
+        acks.abandon(tokens, &issued);
+        log_handoff_fallback(&format!(
+            "abandoned at {:?} stage: {error}; duplicated connection handle leaks in backend pid \
+             {backend_pid} until it exits",
+            WindowsHandoffStage::Deliver
+        ));
+        return false;
     }
+
+    let deadline = Instant::now()
+        .checked_add(acks.ack_deadline())
+        .unwrap_or_else(Instant::now);
+    let acknowledged_at = match delivery.await_backend_ack(&issued, deadline) {
+        Ok(observed_at) => observed_at,
+        Err(error) => {
+            acks.abandon(tokens, &issued);
+            let explicitly_rejected = delivery.backend_explicitly_rejected();
+            log_handoff_fallback(&format!(
+                "abandoned at {:?} stage: {error}; duplicated connection handle leaks in backend \
+                 pid {backend_pid} until it exits",
+                WindowsHandoffStage::AwaitAck
+            ));
+            return windows_fallback_requires_relinquish(
+                WindowsHandoffStage::AwaitAck,
+                explicitly_rejected,
+            );
+        }
+    };
+    if let Err(error) = acks.acknowledge(tokens, &issued, acknowledged_at) {
+        tokens.revoke(&issued);
+        log_handoff_fallback(&format!(
+            "abandoned at {:?} stage: {error}; duplicated connection handle remains owned by \
+             backend pid {backend_pid}",
+            WindowsHandoffStage::Acknowledge
+        ));
+    }
+    true
 }
 
 #[cfg(unix)]
 fn run_platform_handoff(
     ctx: &ServeHandoffContext<'_>,
-    client_stream: &interprocess::local_socket::Stream,
+    client_stream: &crate::platform::ipc::Stream,
     issued: HandoffToken,
     tokens: &mut HandoffTokenStore,
     acks: &mut HandoffAckRegistry,
-    delivery: &mut WireHandoffDelivery<interprocess::local_socket::Stream>,
+    delivery: &mut WireHandoffDelivery<crate::platform::ipc::Stream>,
 ) -> bool {
     use std::cell::RefCell;
-    use std::os::fd::{AsFd, AsRawFd};
     use std::time::Instant;
 
     use super::handoff::{
-        execute_unix_handoff_with_transport, try_send_scm_rights_over, HandoffDelivery,
-        HandoffDeliveryError, ScmRightsAttempt, ScmRightsError, ScmRightsResult,
-        UnixFileDescriptor, UnixHandoffAckWait, UnixHandoffOutcome, UnixHandoffRequest,
-        UnixHandoffSocket, WindowsHandleValue,
+        execute_unix_handoff_with_transport, HandoffDelivery, HandoffDeliveryError,
+        ScmRightsAttempt, ScmRightsError, ScmRightsResult, UnixFileDescriptor, UnixHandoffAckWait,
+        UnixHandoffOutcome, UnixHandoffRequest, UnixHandoffSocket, WindowsHandleValue,
     };
 
-    let client_fd = match client_stream {
-        interprocess::local_socket::Stream::UdSocket(stream) => stream.as_fd().as_raw_fd(),
-    };
-    let backend_fd = match delivery.stream() {
-        interprocess::local_socket::Stream::UdSocket(stream) => stream.as_fd().as_raw_fd(),
+    use crate::platform::ipc::HandoffTransferErrorKind;
+
+    let endpoint = match crate::platform::ipc::Endpoint::new(ctx.handoff_endpoint.to_owned()) {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            acks.abandon(tokens, &issued);
+            log_handoff_fallback(&format!("invalid backend handoff endpoint: {error}"));
+            return false;
+        }
     };
     let request = UnixHandoffRequest::new(
-        UnixFileDescriptor::new(client_fd),
+        UnixFileDescriptor::new(0),
         UnixHandoffSocket::new(ctx.handoff_endpoint),
         issued,
     );
@@ -313,22 +394,63 @@ fn run_platform_handoff(
     let delivery = RefCell::new(delivery);
     let transport = |attempt: &ScmRightsAttempt| -> ScmRightsResult {
         let mut delivery = delivery.borrow_mut();
-        let sent = try_send_scm_rights_over(backend_fd, attempt)?;
+        client_stream
+            .transfer_to_backend(
+                delivery.stream(),
+                &endpoint,
+                0,
+                attempt.handoff_token.as_bytes(),
+            )
+            .map_err(|error| {
+                if error.may_have_reached_backend() {
+                    return ScmRightsError::PartialSend {
+                        fd: -1,
+                        socket: attempt.backend_socket.path.clone(),
+                        sent_bytes: 1,
+                        expected_bytes: attempt.handoff_token.as_bytes().len(),
+                    };
+                }
+                match error.kind() {
+                    HandoffTransferErrorKind::Unsupported => ScmRightsError::UnsupportedPlatform,
+                    HandoffTransferErrorKind::PermissionDenied => {
+                        ScmRightsError::PermissionDenied {
+                            fd: -1,
+                            socket: attempt.backend_socket.path.clone(),
+                        }
+                    }
+                    HandoffTransferErrorKind::BackendUnavailable => {
+                        ScmRightsError::BackendSocketUnavailable {
+                            socket: attempt.backend_socket.path.clone(),
+                        }
+                    }
+                    HandoffTransferErrorKind::WouldBlock => ScmRightsError::WouldBlock {
+                        socket: attempt.backend_socket.path.clone(),
+                    },
+                    HandoffTransferErrorKind::Failed => ScmRightsError::SendFailed {
+                        fd: -1,
+                        socket: attempt.backend_socket.path.clone(),
+                        raw_os_error: None,
+                    },
+                }
+            })?;
         delivery
             .deliver(WindowsHandleValue::new(0), &attempt.handoff_token)
             .map_err(|error| {
                 log_handoff_fallback(&format!("failed to write HandoffOffer frame: {error}"));
-                ScmRightsError::SendFailed {
+                ScmRightsError::PostTransferDeliveryFailed {
                     fd: attempt.fd.raw(),
                     socket: attempt.backend_socket.path.clone(),
-                    raw_os_error: None,
                 }
             })?;
-        Ok(sent)
+        Ok(super::handoff::ScmRightsSuccess::new(
+            attempt.fd,
+            attempt.backend_socket.clone(),
+            attempt.handoff_token,
+        ))
     };
 
     struct DeliveryAckWait<'a, 'b> {
-        delivery: &'a RefCell<&'b mut WireHandoffDelivery<interprocess::local_socket::Stream>>,
+        delivery: &'a RefCell<&'b mut WireHandoffDelivery<crate::platform::ipc::Stream>>,
     }
     impl UnixHandoffAckWait for DeliveryAckWait<'_, '_> {
         fn await_backend_ack(
@@ -360,7 +482,11 @@ fn run_platform_handoff(
                 "abandoned at {:?} stage: {}{reached}",
                 fallback.stage, fallback.detail
             ));
-            unix_fallback_requires_relinquish(fallback.stage, explicitly_rejected)
+            unix_fallback_requires_relinquish(
+                fallback.stage,
+                fallback.fd_reached_backend,
+                explicitly_rejected,
+            )
         }
     }
 }
@@ -382,12 +508,13 @@ fn windows_fallback_requires_relinquish(
 #[cfg(unix)]
 fn unix_fallback_requires_relinquish(
     stage: super::handoff::UnixHandoffStage,
+    fd_reached_backend: bool,
     explicitly_rejected: bool,
 ) -> bool {
     use super::handoff::UnixHandoffStage;
 
     match stage {
-        UnixHandoffStage::Send => false,
+        UnixHandoffStage::Send => fd_reached_backend,
         UnixHandoffStage::AwaitAck => !explicitly_rejected,
         UnixHandoffStage::Acknowledge => true,
     }
@@ -438,18 +565,27 @@ mod tests {
 
         assert!(!unix_fallback_requires_relinquish(
             UnixHandoffStage::Send,
+            false,
+            false
+        ));
+        assert!(unix_fallback_requires_relinquish(
+            UnixHandoffStage::Send,
+            true,
             false
         ));
         assert!(!unix_fallback_requires_relinquish(
             UnixHandoffStage::AwaitAck,
+            true,
             true
         ));
         assert!(unix_fallback_requires_relinquish(
             UnixHandoffStage::AwaitAck,
+            true,
             false
         ));
         assert!(unix_fallback_requires_relinquish(
             UnixHandoffStage::Acknowledge,
+            true,
             false
         ));
     }

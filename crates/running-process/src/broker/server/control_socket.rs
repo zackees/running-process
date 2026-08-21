@@ -273,6 +273,41 @@ where
     F: Fn() -> AdminSnapshot,
     H: FnMut(&mut interprocess::local_socket::Stream, &HelloReply),
 {
+    serve_control_socket_connections_with_limit_policy_post_hello_opaque(
+        socket_path,
+        hello_responder,
+        snapshot_provider,
+        connection_limit,
+        peer_policy,
+        move |stream, reply| {
+            let mut legacy_stream =
+                running_process_platform_internal::into_legacy_ipc_stream(stream);
+            post_hello(&mut legacy_stream, reply);
+        },
+        fd_guard,
+    )
+}
+
+/// Internal post-Hello path that retains the opaque platform stream.
+///
+/// The public callback above preserves its 4.x concrete-stream contract at
+/// the final callback boundary. Production broker mechanics use this entry
+/// point and therefore never unwrap the platform transport.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn serve_control_socket_connections_with_limit_policy_post_hello_opaque<R, F, H>(
+    socket_path: &str,
+    hello_responder: &R,
+    snapshot_provider: F,
+    connection_limit: ControlSocketConnectionLimit,
+    peer_policy: &PeerCredentialPolicy,
+    mut post_hello: H,
+    fd_guard: &FdPressureGuard,
+) -> Result<(), ControlSocketError>
+where
+    R: HelloResponder + ?Sized,
+    F: Fn() -> AdminSnapshot,
+    H: FnMut(crate::platform::ipc::Stream, &HelloReply),
+{
     /// Back-off between accepts while demoted so a hard fd-exhaustion loop
     /// cannot spin the broker's CPU at 100%.
     const FD_PRESSURE_ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
@@ -334,9 +369,7 @@ where
                 );
             }
             if let ControlSocketReply::Hello(hello_reply) = &reply {
-                let mut legacy_stream =
-                    running_process_platform_internal::into_legacy_ipc_stream(stream);
-                post_hello(&mut legacy_stream, hello_reply);
+                post_hello(stream, hello_reply);
             }
         }
         Ok(())

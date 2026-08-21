@@ -80,6 +80,41 @@ pub fn handoff_offer_frame(offer: &HandoffOffer) -> Frame {
     }
 }
 
+#[allow(dead_code)]
+fn handoff_offer_frame_with_attachment(
+    attachment: crate::platform::ipc::HandoffAttachment,
+    token: &HandoffToken,
+    service_name: String,
+    correlation_id: u64,
+) -> Frame {
+    let offer = HandoffOffer {
+        handle_value: 0,
+        token: token.as_bytes().to_vec(),
+        service_name,
+        correlation_id,
+    };
+    let mut payload = Vec::with_capacity(64);
+    // Field 1 is the existing uint64 handle slot. The platform facade writes
+    // its opaque value directly, so no native HANDLE-shaped scalar crosses
+    // into product code.
+    payload.push(0x08);
+    attachment.append_unsigned_varint(&mut payload);
+    offer.encode(&mut payload).expect(
+        "prost encoding HandoffOffer into Vec cannot fail because Vec writes are infallible",
+    );
+    Frame {
+        envelope_version: PROTOCOL_VERSION,
+        kind: FrameKind::Request as i32,
+        payload_protocol: HANDOFF_PAYLOAD_PROTOCOL,
+        payload,
+        request_id: correlation_id,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: String::new(),
+        tracestate: String::new(),
+    }
+}
+
 /// Build the v1 frame carrying one backend→broker [`HandoffAck`].
 pub fn handoff_ack_frame(ack: &HandoffAck) -> Frame {
     let mut payload = Vec::with_capacity(64);
@@ -232,9 +267,79 @@ impl<S> WireHandoffDelivery<S> {
     }
 }
 
-impl WireHandoffDelivery<interprocess::local_socket::Stream> {
+impl WireHandoffDelivery<crate::platform::ipc::Stream> {
     /// Wrap a production local socket and enforce ACK deadlines with the
     /// platform's bounded-read mechanism.
+    pub fn new_platform_stream(
+        stream: crate::platform::ipc::Stream,
+        service_name: impl Into<String>,
+        correlation_id: u64,
+        io_deadline: Instant,
+    ) -> Self {
+        let ack_setup_error = stream
+            .set_nonblocking(true)
+            .err()
+            .map(|error| format!("failed to enable bounded HandoffAck reads: {error}"));
+        Self {
+            stream,
+            service_name: service_name.into(),
+            correlation_id,
+            configure_ack_bounded_io: Some(|stream, bounded| stream.set_nonblocking(bounded)),
+            ack_setup_error,
+            io_deadline,
+            backend_explicitly_rejected: false,
+        }
+    }
+
+    /// Deliver a platform-owned attachment without exposing its native value.
+    #[allow(dead_code)]
+    pub(crate) fn deliver_attachment(
+        &mut self,
+        attachment: crate::platform::ipc::HandoffAttachment,
+        token: &HandoffToken,
+    ) -> Result<(), HandoffDeliveryError> {
+        let frame = handoff_offer_frame_with_attachment(
+            attachment,
+            token,
+            self.service_name.clone(),
+            self.correlation_id,
+        );
+        self.write_offer_frame(frame)
+    }
+}
+
+impl<S: Write> WireHandoffDelivery<S> {
+    fn write_offer_frame(&mut self, frame: Frame) -> Result<(), HandoffDeliveryError> {
+        if let Some(error) = self.ack_setup_error.as_ref() {
+            return Err(HandoffDeliveryError::DeliveryFailed {
+                detail: error.clone(),
+            });
+        }
+        let mut bytes = Vec::with_capacity(64);
+        frame
+            .encode(&mut bytes)
+            .expect("prost encoding Frame into Vec cannot fail because Vec writes are infallible");
+        let mut deadline_stream = DeadlineStream::new(&mut self.stream, self.io_deadline);
+        if let Err(write_error) = write_frame(&mut deadline_stream, &bytes) {
+            let restore_error = self
+                .configure_ack_bounded_io
+                .and_then(|configure| configure(&self.stream, false).err());
+            let detail = match restore_error {
+                Some(restore_error) => format!(
+                    "failed to write HandoffOffer frame: {write_error}; additionally failed to \
+                     restore blocking mode: {restore_error}"
+                ),
+                None => format!("failed to write HandoffOffer frame: {write_error}"),
+            };
+            return Err(HandoffDeliveryError::DeliveryFailed { detail });
+        }
+        Ok(())
+    }
+}
+
+/// Compatibility constructor for the public 4.x concrete-stream surface.
+/// Production broker mechanics use the opaque specialization above.
+impl WireHandoffDelivery<interprocess::local_socket::Stream> {
     pub fn new_local_socket(
         stream: interprocess::local_socket::Stream,
         service_name: impl Into<String>,
@@ -242,6 +347,7 @@ impl WireHandoffDelivery<interprocess::local_socket::Stream> {
         io_deadline: Instant,
     ) -> Self {
         use interprocess::local_socket::traits::Stream as _;
+
         let ack_setup_error = stream
             .set_nonblocking(true)
             .err()
@@ -267,11 +373,6 @@ impl<S: Read + Write> HandoffDelivery for WireHandoffDelivery<S> {
         handle: WindowsHandleValue,
         token: &HandoffToken,
     ) -> Result<(), HandoffDeliveryError> {
-        if let Some(error) = self.ack_setup_error.as_ref() {
-            return Err(HandoffDeliveryError::DeliveryFailed {
-                detail: error.clone(),
-            });
-        }
         let offer = HandoffOffer {
             handle_value: handle.get() as u64,
             token: token.as_bytes().to_vec(),
@@ -279,25 +380,7 @@ impl<S: Read + Write> HandoffDelivery for WireHandoffDelivery<S> {
             correlation_id: self.correlation_id,
         };
         let frame = handoff_offer_frame(&offer);
-        let mut bytes = Vec::with_capacity(64);
-        frame
-            .encode(&mut bytes)
-            .expect("prost encoding Frame into Vec cannot fail because Vec writes are infallible");
-        let mut deadline_stream = DeadlineStream::new(&mut self.stream, self.io_deadline);
-        if let Err(write_error) = write_frame(&mut deadline_stream, &bytes) {
-            let restore_error = self
-                .configure_ack_bounded_io
-                .and_then(|configure| configure(&self.stream, false).err());
-            let detail = match restore_error {
-                Some(restore_error) => format!(
-                    "failed to write HandoffOffer frame: {write_error}; additionally failed to \
-                     restore blocking mode: {restore_error}"
-                ),
-                None => format!("failed to write HandoffOffer frame: {write_error}"),
-            };
-            return Err(HandoffDeliveryError::DeliveryFailed { detail });
-        }
-        Ok(())
+        self.write_offer_frame(frame)
     }
 
     fn await_backend_ack(

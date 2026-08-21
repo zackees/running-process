@@ -22,12 +22,12 @@ use super::backend_registry::BackendRegistry;
 use super::combined_service_def_loader::CombinedServiceDefinitionLoader;
 use super::connection::{BrokerConnectionError, PeerCredentialPolicy};
 use super::control_socket::{
-    serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard,
+    serve_control_socket_connections_with_limit_policy_post_hello_opaque,
     serve_launch_control_socket_connections_concurrently, ControlSocketConnectionLimit,
     ControlSocketError,
 };
 use super::fd_pressure::FdPressureGuard;
-use super::handoff_serve::{try_complete_negotiated_handoff, ServeHandoffContext};
+use super::handoff_serve::{try_complete_negotiated_handoff_opaque, ServeHandoffContext};
 use super::hello_handler::{HelloHandler, HelloHandlerError};
 use super::hello_router::HelloRouter;
 use super::instance::{BrokerInstanceError, BrokerInstanceKey};
@@ -203,13 +203,13 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
         )
         .with_fd_pressure_demoted(demoted)
     };
-    serve_control_socket_connections_with_limit_policy_post_hello_and_fd_guard(
+    serve_control_socket_connections_with_limit_policy_post_hello_opaque(
         &config.socket_path,
         &router,
         snapshot_provider,
         config.connection_limit(),
         &peer_policy,
-        |stream, reply| {
+        |mut stream, reply| {
             // Off by default: no handoff endpoint means no handoff attempt.
             let Some(handoff_endpoint) = config.handoff_endpoint.as_deref() else {
                 return;
@@ -221,7 +221,7 @@ pub fn serve_registered_backend(config: BrokerServeConfig) -> Result<(), BrokerS
                 instance: &instance,
                 registry: &registry,
             };
-            let _must_relinquish = try_complete_negotiated_handoff(&ctx, stream, reply);
+            let _must_relinquish = try_complete_negotiated_handoff_opaque(&ctx, &mut stream, reply);
         },
         &fd_guard,
     )?;

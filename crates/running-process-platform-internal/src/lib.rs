@@ -68,8 +68,7 @@ pub use platform_imp::terminal_input;
 #[cfg(feature = "ipc")]
 pub use platform_imp::{
     ipc_broker_endpoint_name as IpcBrokerEndpointName, ipc_current_user_id, IpcEndpoint,
-    IpcInheritedListener, IpcListener,
-    IpcListenerNonblockingMode, IpcPeerIdentity,
+    IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
     IpcPeerIdentitySource, IpcStream,
 };
 
@@ -84,6 +83,13 @@ pub use platform_imp::{
 #[doc(hidden)]
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     platform_imp::into_legacy_ipc_stream(stream)
+}
+
+/// Temporary source-compatibility conversion for legacy 4.x callback inputs.
+#[cfg(feature = "ipc")]
+#[doc(hidden)]
+pub fn from_legacy_ipc_stream(stream: interprocess::local_socket::Stream) -> IpcStream {
+    platform_imp::from_legacy_ipc_stream(stream)
 }
 
 #[cfg(feature = "ipc-async")]
