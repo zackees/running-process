@@ -30,4 +30,6 @@ pub use telemetry::{
 };
 
 #[doc(hidden)]
-pub use crate::platform::ipc::{Endpoint as IpcEndpoint, Stream as IpcStream};
+pub use crate::platform::ipc::{
+    Endpoint as IpcEndpoint, Listener as IpcListener, ListenerNonblockingMode, Stream as IpcStream,
+};

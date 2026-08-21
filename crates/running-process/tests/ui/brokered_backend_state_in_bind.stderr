@@ -4,4 +4,4 @@ error[E0185]: method `bind` has a `&self` declaration in the impl, but not in th
 20 |     fn bind(&self, _endpoint: &Endpoint) -> Result<IpcListener, BindError> {
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&self` used in impl
    |
-   = note: `bind` from trait: `fn(&str) -> std::result::Result<running_process_platform_internal::platform_win::ipc::Listener, BindError>`
+   = note: `bind` from trait: `fn(&str) -> std::result::Result<IpcListener, BindError>`
