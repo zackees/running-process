@@ -181,8 +181,6 @@ async fn full_vertical_client_broker_relay_daemon_mux_compile() {
     // -> daemon mux endpoint. The broker is transparent (platform SESSION
     // relay); the daemon serves 0x5350 via the mux.
     use crate::broker::session_relay::relay_local_socket_session;
-    use interprocess::local_socket::tokio::prelude::*;
-    use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 
     let pid = std::process::id();
     let daemon_path = std::env::temp_dir().join(format!("rp-vert-d-{pid}.sock"));
@@ -197,15 +195,11 @@ async fn full_vertical_client_broker_relay_daemon_mux_compile() {
     let daemon = tokio::spawn(serve_backend_endpoint(daemon_listener, identity));
 
     // Broker: accept the client and full-proxy it to the daemon endpoint.
-    let broker_listener = ListenerOptions::new()
-        .name(
-            broker_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("broker fs name"),
-        )
-        .create_tokio()
-        .expect("bind broker endpoint");
+    let broker_listener = AsyncListener::bind(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
+            .expect("broker fs name"),
+    )
+    .expect("bind broker endpoint");
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
         let client_conn = broker_listener.accept().await.expect("broker accept");
@@ -213,10 +207,8 @@ async fn full_vertical_client_broker_relay_daemon_mux_compile() {
     });
 
     // Client dials ONLY the broker and speaks the SESSION wire.
-    let stream = interprocess::local_socket::tokio::Stream::connect(
-        broker_path
-            .as_path()
-            .to_fs_name::<GenericFilePath>()
+    let stream = AsyncStream::connect(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
             .expect("client fs name"),
     )
     .await

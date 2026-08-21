@@ -112,7 +112,7 @@ fn bind_session_listener(socket_path: &str) -> std::io::Result<ipc::AsyncListene
 /// Returns the first fatal `accept()` error (the listener is unusable).
 /// Per-connection credential/negotiation errors are logged and never propagate.
 pub async fn serve_broker_session_endpoint<R>(
-    listener: interprocess::local_socket::tokio::Listener,
+    listener: impl ipc::IntoAsyncListener,
     responder: &R,
     peer_policy: &PeerCredentialPolicy,
 ) -> std::io::Result<()>
@@ -181,7 +181,7 @@ where
 /// pool. This keeps the listener responsive without creating an unbounded
 /// collection of tasks or threads.
 pub async fn serve_broker_session_endpoint_concurrently<R>(
-    listener: interprocess::local_socket::tokio::Listener,
+    listener: impl ipc::IntoAsyncListener,
     responder: Arc<R>,
     peer_policy: &PeerCredentialPolicy,
 ) -> std::io::Result<()>

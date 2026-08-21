@@ -6,8 +6,6 @@
 //! front. Unix-first.
 
 use futures_util::{SinkExt, StreamExt};
-use interprocess::local_socket::tokio::prelude::*;
-use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 use prost::Message;
 use std::sync::{Arc, Condvar, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -25,7 +23,7 @@ use crate::broker::server::connection::{HelloResponder, PeerCredentialPolicy};
 use crate::broker::server::hello_handler::PeerIdentity;
 use crate::daemon::compile_session::session_framed;
 use crate::daemon::session_endpoint::serve_session_endpoint;
-use crate::platform::ipc::{AsyncListener, Endpoint as IpcEndpoint};
+use crate::platform::ipc::{AsyncListener, AsyncStream as IpcAsyncStream, Endpoint as IpcEndpoint};
 
 /// A permissive responder that negotiates every Hello, pointing the relay at a
 /// fixed `backend_pipe` — isolates the async transport under test from the
@@ -127,10 +125,8 @@ async fn read_framed_body<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> Ve
 
 #[cfg(unix)]
 async fn send_hello_only(broker_path: &std::path::Path) {
-    let mut stream = interprocess::local_socket::tokio::Stream::connect(
-        broker_path
-            .to_fs_name::<GenericFilePath>()
-            .expect("client fs name"),
+    let mut stream = IpcAsyncStream::connect(
+        &IpcEndpoint::new(broker_path.to_string_lossy().into_owned()).expect("client fs name"),
     )
     .await
     .expect("client dials broker");
@@ -152,15 +148,11 @@ async fn async_broker_negotiates_distinct_sessions_concurrently() {
     let pid = std::process::id();
     let broker_path = std::env::temp_dir().join(format!("rp-async-brk-overlap-{pid}.sock"));
     let _ = std::fs::remove_file(&broker_path);
-    let broker_listener = ListenerOptions::new()
-        .name(
-            broker_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("broker fs name"),
-        )
-        .create_tokio()
-        .expect("bind broker endpoint");
+    let broker_listener = AsyncListener::bind(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
+            .expect("broker fs name"),
+    )
+    .expect("bind broker endpoint");
     let responder = Arc::new(OverlapResponder::new());
     let broker_responder = Arc::clone(&responder);
     let broker = tokio::spawn(async move {
@@ -199,15 +191,11 @@ async fn async_broker_negotiates_hello_then_proxies_session() {
     let daemon = tokio::spawn(serve_session_endpoint(daemon_listener));
 
     // Broker: async Hello round-trip, then full-proxy to the daemon endpoint.
-    let broker_listener = ListenerOptions::new()
-        .name(
-            broker_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("broker fs name"),
-        )
-        .create_tokio()
-        .expect("bind broker endpoint");
+    let broker_listener = AsyncListener::bind(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
+            .expect("broker fs name"),
+    )
+    .expect("bind broker endpoint");
     let daemon_path_str = daemon_path.to_string_lossy().into_owned();
     let broker = tokio::spawn(async move {
         // The responder points the per-connection relay at the daemon endpoint
@@ -221,10 +209,8 @@ async fn async_broker_negotiates_hello_then_proxies_session() {
     });
 
     // Client dials ONLY the broker: first the Hello frame, then the SESSION wire.
-    let mut stream = interprocess::local_socket::tokio::Stream::connect(
-        broker_path
-            .as_path()
-            .to_fs_name::<GenericFilePath>()
+    let mut stream = IpcAsyncStream::connect(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
             .expect("client fs name"),
     )
     .await
@@ -307,15 +293,11 @@ async fn async_broker_drops_peer_refused_by_policy() {
     let broker_path = std::env::temp_dir().join(format!("rp-async-brk-drop-{pid}.sock"));
     let _ = std::fs::remove_file(&broker_path);
 
-    let broker_listener = ListenerOptions::new()
-        .name(
-            broker_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
-                .expect("broker fs name"),
-        )
-        .create_tokio()
-        .expect("bind broker endpoint");
+    let broker_listener = AsyncListener::bind(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
+            .expect("broker fs name"),
+    )
+    .expect("bind broker endpoint");
 
     // A policy whose owner can never match a real peer's uid/SID, so every
     // connection is refused on the credential check before any Hello read.
@@ -330,10 +312,8 @@ async fn async_broker_drops_peer_refused_by_policy() {
         .await;
     });
 
-    let mut stream = interprocess::local_socket::tokio::Stream::connect(
-        broker_path
-            .as_path()
-            .to_fs_name::<GenericFilePath>()
+    let mut stream = IpcAsyncStream::connect(
+        &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
             .expect("client fs name"),
     )
     .await
@@ -386,10 +366,8 @@ async fn async_broker_session_socket_entry_binds_and_proxies() {
     // The bind happens inside the task, so retry the dial until it is listening.
     let mut stream = None;
     for _ in 0..200 {
-        match interprocess::local_socket::tokio::Stream::connect(
-            broker_path
-                .as_path()
-                .to_fs_name::<GenericFilePath>()
+        match IpcAsyncStream::connect(
+            &IpcEndpoint::new(broker_path.as_path().to_string_lossy().into_owned())
                 .expect("client fs name"),
         )
         .await
