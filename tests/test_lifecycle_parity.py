@@ -276,11 +276,20 @@ class TestPtyLifecycleSync(unittest.TestCase):
     def test_reads_and_discard_release_history(self) -> None:
         process = PseudoTerminalProcess([sys.executable, "-c", ECHO])
         try:
+            # Wait first, so the child's output is already in the history
+            # when `expect` runs. That ordering used to happen only
+            # sometimes, and it is the one this test got wrong: `expect`
+            # searches the *history*, so a pattern already sitting there
+            # matches without consuming anything from the read queue.
+            # Forcing the ordering makes the case deterministic instead of
+            # leaving it to how the PTY happened to schedule delivery.
+            process.wait()
             process.expect("lifecycle", timeout=20)
-            # `expect` has consumed the stream, so a further read has nothing
-            # to give and reports that by raising -- which is the contract.
-            with self.assertRaises((TimeoutError, EOFError)):
-                process.read_text(timeout=0.2)
+            # Whatever is queued therefore stays queued -- child output, or
+            # a terminal control sequence the PTY itself emitted (ConPTY
+            # sends a cursor-position report). So drain first: the emptiness
+            # contract below is about a drained stream, not about `expect`.
+            #
             # A drained-and-closed stream raises rather than returning empty
             # on POSIX, and returns empty on ConPTY. Both mean "nothing left".
             for drain in (process.drain, process.drain_echo):
@@ -288,6 +297,10 @@ class TestPtyLifecycleSync(unittest.TestCase):
                     self.assertIsInstance(drain(), (bytes, bytearray, str, list))
                 except EOFError:
                     pass
+            # Now a further read has nothing to give and reports that by
+            # raising -- which is the contract.
+            with self.assertRaises((TimeoutError, EOFError)):
+                process.read_text(timeout=0.2)
             self.assertGreater(process.output_bytes, 0)
             process.discard_output()
             self.assertEqual(process.output_bytes, 0)
