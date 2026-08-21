@@ -218,16 +218,51 @@ fn send_connection_with_payload(
     connection_fd: std::os::fd::RawFd,
     sideband_payload: &[u8],
 ) -> Result<(), crate::platform::ipc::HandoffTransferError> {
-    use crate::platform::ipc::{HandoffTransferError, HandoffTransferErrorKind};
+    use crate::platform::ipc::HandoffTransferError;
 
-    if sideband_payload.is_empty() {
-        return Err(HandoffTransferError::new(
+    legacy_send_fd_over(control_fd, connection_fd, sideband_payload).map_err(|error| {
+        let may_have_reached_backend = error
+            .partial_counts()
+            .is_some_and(|(transferred, _)| transferred > 0);
+        HandoffTransferError::new(
+            error.kind(),
+            may_have_reached_backend,
+            error
+                .detail()
+                .unwrap_or("SCM_RIGHTS connection transfer failed"),
+        )
+    })
+}
+
+pub fn legacy_send_fd_to(
+    socket: &std::path::Path,
+    sent_fd: i32,
+    payload: &[u8],
+) -> Result<(), crate::LegacyHandoffError> {
+    use std::os::fd::AsRawFd as _;
+
+    let stream = std::os::unix::net::UnixStream::connect(socket)
+        .map_err(legacy_connect_error)?;
+    stream.set_nonblocking(true).map_err(legacy_connect_error)?;
+    legacy_send_fd_over(stream.as_raw_fd(), sent_fd, payload)
+}
+
+pub fn legacy_send_fd_over(
+    socket_fd: i32,
+    sent_fd: i32,
+    payload: &[u8],
+) -> Result<(), crate::LegacyHandoffError> {
+    use crate::platform::ipc::HandoffTransferErrorKind;
+    use crate::LegacyHandoffError;
+
+    if payload.is_empty() {
+        return Err(LegacyHandoffError::with_detail(
             HandoffTransferErrorKind::Failed,
-            false,
+            None,
             "connection transfer requires a non-empty sideband payload",
         ));
     }
-    let mut payload = sideband_payload.to_vec();
+    let mut payload = payload.to_vec();
     let mut iov = libc::iovec {
         iov_base: payload.as_mut_ptr().cast(),
         iov_len: payload.len(),
@@ -253,57 +288,70 @@ fn send_connection_with_payload(
     unsafe {
         let header = libc::CMSG_FIRSTHDR(&message);
         if header.is_null() {
-            return Err(HandoffTransferError::new(
+            return Err(LegacyHandoffError::with_detail(
                 HandoffTransferErrorKind::Failed,
-                false,
+                None,
                 "could not construct SCM_RIGHTS control message",
             ));
         }
         (*header).cmsg_level = libc::SOL_SOCKET;
         (*header).cmsg_type = libc::SCM_RIGHTS;
         (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as _) as _;
-        *libc::CMSG_DATA(header).cast::<libc::c_int>() = connection_fd;
+        *libc::CMSG_DATA(header).cast::<libc::c_int>() = sent_fd;
     }
 
     let flags = libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL;
     // SAFETY: both descriptors are borrowed from live opaque streams for the
     // duration of this call and every msghdr pointer references live storage.
-    let sent = unsafe { libc::sendmsg(control_fd, &message, flags) };
+    let sent = unsafe { libc::sendmsg(socket_fd, &message, flags) };
     if sent < 0 {
         let error = io::Error::last_os_error();
         let raw = error.raw_os_error();
-        let kind = if error.kind() == io::ErrorKind::PermissionDenied {
-            HandoffTransferErrorKind::PermissionDenied
-        } else if error.kind() == io::ErrorKind::WouldBlock || raw == Some(libc::ENOBUFS) {
-            HandoffTransferErrorKind::WouldBlock
-        } else if matches!(
-            error.kind(),
-            io::ErrorKind::ConnectionRefused
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::BrokenPipe
-                | io::ErrorKind::NotConnected
-        ) {
-            HandoffTransferErrorKind::BackendUnavailable
-        } else {
-            HandoffTransferErrorKind::Failed
-        };
-        return Err(HandoffTransferError::new(
+        let kind = legacy_send_error_kind(&error);
+        return Err(LegacyHandoffError::with_detail(
             kind,
-            false,
+            raw,
             format!("SCM_RIGHTS connection transfer failed: {error}"),
         ));
     }
     if sent as usize != payload.len() {
-        return Err(HandoffTransferError::new(
-            HandoffTransferErrorKind::Failed,
-            sent > 0,
-            format!(
-                "SCM_RIGHTS connection transfer was partial ({sent}/{} bytes)",
-                payload.len()
-            ),
-        ));
+        return Err(LegacyHandoffError::partial(sent as usize, payload.len()));
     }
     Ok(())
+}
+
+fn legacy_send_error_kind(error: &io::Error) -> crate::platform::ipc::HandoffTransferErrorKind {
+    use crate::platform::ipc::HandoffTransferErrorKind;
+
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        HandoffTransferErrorKind::PermissionDenied
+    } else if error.kind() == io::ErrorKind::WouldBlock
+        || error.raw_os_error() == Some(libc::ENOBUFS)
+    {
+        HandoffTransferErrorKind::WouldBlock
+    } else if matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::NotConnected
+    ) {
+        HandoffTransferErrorKind::BackendUnavailable
+    } else {
+        HandoffTransferErrorKind::Failed
+    }
+}
+
+fn legacy_connect_error(error: io::Error) -> crate::LegacyHandoffError {
+    use crate::platform::ipc::HandoffTransferErrorKind;
+    use crate::LegacyHandoffError;
+
+    let kind = match error.kind() {
+        io::ErrorKind::PermissionDenied => HandoffTransferErrorKind::PermissionDenied,
+        io::ErrorKind::WouldBlock => HandoffTransferErrorKind::WouldBlock,
+        _ => HandoffTransferErrorKind::BackendUnavailable,
+    };
+    LegacyHandoffError::new(kind, error.raw_os_error())
 }
 
 impl PeerIdentitySource for Stream {
@@ -627,6 +675,127 @@ impl AsyncListener {
 
     pub fn do_not_reclaim_name_on_drop(&mut self) {
         self.0.do_not_reclaim_name_on_drop();
+    }
+}
+
+#[cfg(test)]
+mod legacy_handoff_tests {
+    use std::io::Write as _;
+    use std::os::fd::{AsRawFd as _, RawFd};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::{legacy_send_error_kind, legacy_send_fd_over, legacy_send_fd_to};
+    use crate::platform::ipc::HandoffTransferErrorKind;
+
+    #[test]
+    fn sendmsg_flags_always_include_per_call_nonblocking() {
+        assert_ne!(libc::MSG_DONTWAIT, 0);
+        assert_ne!(libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL, 0);
+    }
+
+    #[test]
+    fn send_scm_rights_to_backend_socket_transfers_fd_and_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("handoff.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let receiver = std::thread::spawn(move || receive(listener.accept().unwrap().0));
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let payload = [0x41; 16];
+        legacy_send_fd_to(&socket, file.as_raw_fd(), &payload).unwrap();
+        let (received_fd, received_payload) = receiver.join().unwrap();
+        assert_eq!(received_payload, payload);
+        assert_ne!(received_fd, file.as_raw_fd());
+        // SAFETY: recvmsg returned a newly owned descriptor.
+        unsafe { libc::close(received_fd) };
+    }
+
+    #[test]
+    fn missing_backend_socket_maps_to_fallback_safe_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = legacy_send_fd_to(&directory.path().join("missing.sock"), -1, &[0x44; 16])
+            .unwrap_err();
+        assert_eq!(error.kind(), HandoffTransferErrorKind::BackendUnavailable);
+    }
+
+    #[test]
+    fn ancillary_queue_enobufs_maps_to_silent_would_block() {
+        let error = std::io::Error::from_raw_os_error(libc::ENOBUFS);
+        assert_eq!(
+            legacy_send_error_kind(&error),
+            HandoffTransferErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn send_scm_rights_over_connected_socket_transfers_fd_and_token() {
+        let (sender, receiver) = std::os::unix::net::UnixStream::pair().unwrap();
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let payload = [0x43; 16];
+        legacy_send_fd_over(sender.as_raw_fd(), file.as_raw_fd(), &payload).unwrap();
+        let (received_fd, received_payload) = receive(receiver);
+        assert_eq!(received_payload, payload);
+        assert_ne!(received_fd, file.as_raw_fd());
+        // SAFETY: recvmsg returned a newly owned descriptor.
+        unsafe { libc::close(received_fd) };
+    }
+
+    #[test]
+    fn saturated_blocking_handoff_socket_returns_silent_would_block_promptly() {
+        let (mut sender, receiver) = std::os::unix::net::UnixStream::pair().unwrap();
+        sender.set_nonblocking(true).unwrap();
+        let fill = [0_u8; 64 * 1024];
+        loop {
+            match sender.write(&fill) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("fill handoff socket: {error}"),
+            }
+        }
+        sender.set_nonblocking(false).unwrap();
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let send_thread = std::thread::spawn(move || {
+            done_tx
+                .send(legacy_send_fd_over(
+                    sender.as_raw_fd(),
+                    file.as_raw_fd(),
+                    &[0x44; 16],
+                ))
+                .unwrap();
+        });
+        let result = done_rx.recv_timeout(Duration::from_millis(500));
+        drop(receiver);
+        send_thread.join().unwrap();
+        let error = result.expect("send must remain nonblocking").unwrap_err();
+        assert_eq!(error.kind(), HandoffTransferErrorKind::WouldBlock);
+    }
+
+    fn receive(stream: std::os::unix::net::UnixStream) -> (RawFd, [u8; 16]) {
+        let mut payload = [0_u8; 16];
+        let mut iov = libc::iovec {
+            iov_base: payload.as_mut_ptr().cast(),
+            iov_len: payload.len(),
+        };
+        // SAFETY: CMSG_SPACE only computes aligned ancillary storage size.
+        let control_len = unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) };
+        let slots = (control_len as usize).div_ceil(std::mem::size_of::<libc::cmsghdr>());
+        let mut control = (0..slots)
+            .map(|_| unsafe { std::mem::zeroed::<libc::cmsghdr>() })
+            .collect::<Vec<_>>();
+        let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        message.msg_iov = &mut iov;
+        message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = control_len as _;
+        // SAFETY: every msghdr pointer references live, correctly sized storage.
+        let received = unsafe { libc::recvmsg(stream.as_raw_fd(), &mut message, 0) };
+        assert_eq!(received as usize, payload.len());
+        // SAFETY: recvmsg initialized the asserted SCM_RIGHTS header and payload.
+        let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+        assert!(!header.is_null());
+        let received_fd = unsafe { *libc::CMSG_DATA(header).cast::<libc::c_int>() };
+        (received_fd, payload)
     }
 }
 

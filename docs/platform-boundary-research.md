@@ -27,6 +27,14 @@ final return/callback boundaries and a facade-owned input conversion trait for
 the legacy listener, but `platform::ipc` returns only opaque transport values
 and product mechanics may not inspect the concrete transport.
 
+The public 4.x broker handoff model also retains `UnixFileDescriptor`,
+`WindowsHandleValue`, `try_send_scm_rights[_over]`, and
+`try_duplicate_handle` until 5.0. Their native operations use hidden root-only
+compatibility adapters selected by the platform package; production handoff
+continues to use opaque `platform::ipc::Stream` operations. These deprecated
+numeric wrappers must not be consumed by new product mechanics or added to the
+neutral facade.
+
 ## Toolchain and packaging proof
 
 `std::cfg_select!` is stable since Rust 1.95.0 ([Rust source](https://doc.rust-lang.org/src/core/macros/mod.rs.html#231-235)); the current 1.94.1 toolchain and declared MSRV 1.85 cannot use it. Phase 2 raises the root toolchain pin and workspace `rust-version` to **1.95.0** (or a later reviewed patch release) atomically. The CI Dylint lane remains independently pinned to `nightly-2026-04-16` until its upgrade is separately validated.

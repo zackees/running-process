@@ -33,7 +33,6 @@ pub use latency::{
     collect_latency_samples, compare_handoff_latency, summarize_latency_samples,
     HandoffLatencyComparison, HandoffLatencyError, HandoffLatencySummary,
 };
-#[cfg(windows)]
 pub use orchestrate::execute_verified_windows_handoff;
 pub use orchestrate::{
     execute_windows_handoff, execute_windows_handoff_with_transport, CompletedWindowsHandoff,
@@ -49,7 +48,6 @@ pub use pending::{
     PendingHandoffOverflow, PendingHandoffQueue, PendingHandoffQueueConfig,
     DEFAULT_MAX_PENDING_HANDOFFS, DEFAULT_PENDING_HANDOFF_TTL,
 };
-#[cfg(unix)]
 pub use unix::try_send_scm_rights_over;
 pub use unix::{
     try_send_scm_rights, ScmRightsAttempt, ScmRightsError, ScmRightsResult, ScmRightsSuccess,

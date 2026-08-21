@@ -200,19 +200,27 @@ fn scm_rights_errors_map_to_fallback_safe_policy() {
     );
 }
 
-#[cfg(not(unix))]
 #[test]
 fn scm_rights_transport_reports_unsupported_off_unix() {
+    let directory = tempfile::tempdir().expect("temporary handoff directory");
     let attempt = ScmRightsAttempt::new(
         UnixFileDescriptor::new(17),
-        UnixHandoffSocket::new("/tmp/running-process-handoff.sock"),
+        UnixHandoffSocket::new(directory.path().join("missing.sock")),
         token(0x55),
     );
 
     let err = running_process::broker::server::handoff::try_send_scm_rights(&attempt).unwrap_err();
 
-    assert_eq!(err, ScmRightsError::UnsupportedPlatform);
+    if running_process::broker::server::handoff::SCM_RIGHTS_TRANSPORT_SUPPORTED {
+        assert!(matches!(
+            err,
+            ScmRightsError::BackendSocketUnavailable { .. }
+        ));
+    } else {
+        assert_eq!(err, ScmRightsError::UnsupportedPlatform);
+    }
     assert!(err.is_fallback_safe());
+    assert!(!err.fallback_decision().sends_client_error());
 }
 
 #[cfg(windows)]
@@ -276,6 +284,22 @@ fn duplicate_handle_transport_duplicates_real_pipe_handle() {
 
     assert_ne!(read_ok, 0, "ReadFile must read from the duplicated handle");
     assert_eq!(&buffer[..bytes_read as usize], payload);
+
+    let missing_backend = DuplicateHandleAttempt::new(
+        WindowsHandleValue::new(unsafe {
+            windows_sys::Win32::System::Threading::GetCurrentProcess()
+        } as usize),
+        u32::MAX,
+        token(0x67),
+    );
+    let error = try_duplicate_handle(&missing_backend).unwrap_err();
+    assert!(matches!(
+        error,
+        DuplicateHandleError::CannotOpenBackend { .. }
+            | DuplicateHandleError::PermissionDenied { .. }
+    ));
+    assert!(error.is_fallback_safe());
+    assert!(!error.fallback_decision().sends_client_error());
 
     fn assert_valid_handle(handle: HANDLE) {
         assert!(!handle.is_null());

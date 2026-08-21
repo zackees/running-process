@@ -283,7 +283,6 @@ impl BackendHandle {
     /// and the optional Phase 6 `DuplicateHandle` transport. The caller still
     /// owns delivery of the paired handoff token to the backend and must wait
     /// for backend acknowledgement before reporting handoff success.
-    #[cfg(windows)]
     pub fn try_duplicate_windows_handoff_handle(
         &self,
         pipe_handle: crate::broker::server::handoff::WindowsHandleValue,

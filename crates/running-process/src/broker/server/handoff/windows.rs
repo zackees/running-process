@@ -1,9 +1,8 @@
 //! Windows `DuplicateHandle` handoff transport model.
 //!
-//! This module owns the broker-side `DuplicateHandle` call used to pass an
-//! already-accepted client pipe into a backend process. The backend still has
-//! to verify the one-time token before adopting the connection; failures map
-//! into the existing silent reconnect fallback policy.
+//! This module preserves the public 4.x transport model and maps the selected
+//! platform IPC primitive into the existing silent reconnect fallback policy.
+//! Native `DuplicateHandle` mechanics live in the platform package.
 
 use super::{
     HandoffAttemptDecision, HandoffAttemptFailure, HandoffFallbackDecision, HandoffFallbackReason,
@@ -11,7 +10,8 @@ use super::{
 };
 
 /// Whether this build target can eventually use the Windows handoff transport.
-pub const DUPLICATE_HANDLE_TRANSPORT_SUPPORTED: bool = cfg!(windows);
+pub const DUPLICATE_HANDLE_TRANSPORT_SUPPORTED: bool =
+    running_process_platform_internal::LEGACY_DUPLICATE_HANDLE_TRANSPORT_SUPPORTED;
 
 /// Opaque raw Windows handle value held by the broker or duplicated into a backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -26,16 +26,6 @@ impl WindowsHandleValue {
     /// Return the raw opaque handle value.
     pub fn get(self) -> usize {
         self.0
-    }
-
-    #[cfg(windows)]
-    fn from_handle(handle: windows_sys::Win32::Foundation::HANDLE) -> Self {
-        Self(handle as usize)
-    }
-
-    #[cfg(windows)]
-    fn as_handle(self) -> windows_sys::Win32::Foundation::HANDLE {
-        self.0 as windows_sys::Win32::Foundation::HANDLE
     }
 }
 
@@ -101,7 +91,39 @@ pub type DuplicateHandleResult = Result<DuplicateHandleSuccess, DuplicateHandleE
 /// broker-to-backend control channel and wait for backend acknowledgement
 /// before reporting handoff success to the client.
 pub fn try_duplicate_handle(attempt: &DuplicateHandleAttempt) -> DuplicateHandleResult {
-    platform_try_duplicate_handle(attempt)
+    let duplicated = running_process_platform_internal::legacy_duplicate_handle(
+        attempt.pipe_handle.get(),
+        attempt.backend_pid,
+    )
+    .map_err(|error| legacy_error(attempt.backend_pid, error))?;
+    Ok(DuplicateHandleSuccess::new(
+        WindowsHandleValue::new(duplicated),
+        attempt.backend_pid,
+        attempt.handoff_token,
+    ))
+}
+
+fn legacy_error(
+    backend_pid: u32,
+    error: running_process_platform_internal::LegacyHandoffError,
+) -> DuplicateHandleError {
+    use running_process_platform_internal::platform::ipc::HandoffTransferErrorKind;
+
+    match error.kind() {
+        HandoffTransferErrorKind::Unsupported => DuplicateHandleError::UnsupportedPlatform,
+        HandoffTransferErrorKind::PermissionDenied => {
+            DuplicateHandleError::PermissionDenied { backend_pid }
+        }
+        HandoffTransferErrorKind::BackendUnavailable => {
+            DuplicateHandleError::CannotOpenBackend { backend_pid }
+        }
+        HandoffTransferErrorKind::WouldBlock | HandoffTransferErrorKind::Failed => {
+            DuplicateHandleError::DuplicateFailed {
+                backend_pid,
+                raw_os_error: error.raw_os_error(),
+            }
+        }
+    }
 }
 
 /// Failure from a future `DuplicateHandle` handoff attempt.
@@ -142,140 +164,6 @@ pub enum DuplicateHandleError {
         /// Backend process ID targeted by the handoff.
         backend_pid: u32,
     },
-}
-
-#[cfg(windows)]
-fn platform_try_duplicate_handle(attempt: &DuplicateHandleAttempt) -> DuplicateHandleResult {
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
-    };
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
-    };
-
-    let backend_process = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, attempt.backend_pid) };
-    if is_invalid_handle(backend_process) {
-        return Err(open_process_error(attempt.backend_pid));
-    }
-
-    let mut duplicated: HANDLE = std::ptr::null_mut();
-    let ok = unsafe {
-        DuplicateHandle(
-            GetCurrentProcess(),
-            attempt.pipe_handle.as_handle(),
-            backend_process,
-            &mut duplicated,
-            0,
-            0,
-            DUPLICATE_SAME_ACCESS,
-        )
-    };
-    let duplicate_error = std::io::Error::last_os_error();
-    unsafe {
-        CloseHandle(backend_process);
-    }
-
-    if ok == 0 || is_invalid_handle(duplicated) {
-        return Err(duplicate_handle_error(
-            attempt.backend_pid,
-            duplicate_error.raw_os_error(),
-        ));
-    }
-
-    Ok(DuplicateHandleSuccess::new(
-        WindowsHandleValue::from_handle(duplicated),
-        attempt.backend_pid,
-        attempt.handoff_token,
-    ))
-}
-
-#[cfg(not(windows))]
-fn platform_try_duplicate_handle(_attempt: &DuplicateHandleAttempt) -> DuplicateHandleResult {
-    Err(DuplicateHandleError::UnsupportedPlatform)
-}
-
-#[cfg(windows)]
-fn is_invalid_handle(handle: windows_sys::Win32::Foundation::HANDLE) -> bool {
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-
-    handle.is_null() || handle == INVALID_HANDLE_VALUE
-}
-
-#[cfg(windows)]
-fn open_process_error(backend_pid: u32) -> DuplicateHandleError {
-    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
-
-    if std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
-        DuplicateHandleError::PermissionDenied { backend_pid }
-    } else {
-        DuplicateHandleError::CannotOpenBackend { backend_pid }
-    }
-}
-
-#[cfg(windows)]
-fn duplicate_handle_error(backend_pid: u32, raw_os_error: Option<i32>) -> DuplicateHandleError {
-    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
-
-    if raw_os_error == Some(ERROR_ACCESS_DENIED as i32) {
-        DuplicateHandleError::PermissionDenied { backend_pid }
-    } else {
-        DuplicateHandleError::DuplicateFailed {
-            backend_pid,
-            raw_os_error,
-        }
-    }
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn duplicate_handle_into_current_process_returns_backend_owned_handle() {
-        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-        use windows_sys::Win32::System::Threading::GetCurrentProcess;
-
-        let token = HandoffToken::from_bytes([7; 16]);
-        let attempt = DuplicateHandleAttempt::new(
-            WindowsHandleValue::new(unsafe { GetCurrentProcess() } as usize),
-            std::process::id(),
-            token,
-        );
-
-        let success = try_duplicate_handle(&attempt).unwrap();
-
-        assert_eq!(success.backend_pid, std::process::id());
-        assert_eq!(success.handoff_token, token);
-        assert_ne!(success.duplicated_handle.get(), 0);
-        assert_ne!(
-            success.duplicated_handle.get(),
-            INVALID_HANDLE_VALUE as usize
-        );
-
-        unsafe {
-            CloseHandle(success.duplicated_handle.get() as HANDLE);
-        }
-    }
-
-    #[test]
-    fn missing_backend_pid_maps_to_fallback_safe_error() {
-        let attempt = DuplicateHandleAttempt::new(
-            WindowsHandleValue::new(unsafe {
-                windows_sys::Win32::System::Threading::GetCurrentProcess()
-            } as usize),
-            u32::MAX,
-            HandoffToken::from_bytes([9; 16]),
-        );
-
-        let err = try_duplicate_handle(&attempt).unwrap_err();
-
-        assert!(matches!(
-            err,
-            DuplicateHandleError::CannotOpenBackend { .. }
-                | DuplicateHandleError::PermissionDenied { .. }
-        ));
-        assert!(err.is_fallback_safe());
-    }
 }
 
 impl DuplicateHandleError {
