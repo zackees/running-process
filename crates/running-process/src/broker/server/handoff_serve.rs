@@ -262,7 +262,14 @@ fn negotiated_with_handoff(reply: &HelloReply) -> Option<&Negotiated> {
     Some(negotiated)
 }
 
-#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlatformHandoffStage {
+    Transfer,
+    Deliver,
+    AwaitAck,
+    Acknowledge,
+}
+
 fn run_platform_handoff(
     ctx: &ServeHandoffContext<'_>,
     client_stream: &crate::platform::ipc::Stream,
@@ -271,23 +278,21 @@ fn run_platform_handoff(
     acks: &mut HandoffAckRegistry,
     delivery: &mut WireHandoffDelivery<crate::platform::ipc::Stream>,
 ) -> bool {
-    use super::handoff::{HandoffDelivery, WindowsHandoffStage};
+    use super::handoff::HandoffDelivery;
 
-    // The accept loop is sequential, so holding the registry lock for the
-    // duration of one handoff cannot deadlock against another connection.
+    // Windows needs the verified process id; Unix transfers over the already
+    // connected control stream and ignores it. Zero is not a valid backend
+    // process id, so the Windows facade rejects a vanished registry entry
+    // through its existing process-open failure path.
     let backend_pid = {
         let registry = ctx
             .registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(backend) =
-            registry.get_any_build(ctx.instance, ctx.service_name, ctx.service_version)
-        else {
-            acks.abandon(tokens, &issued);
-            log_handoff_fallback("registered backend disappeared before handoff delivery");
-            return false;
-        };
-        backend.daemon_process.pid
+        registry
+            .get_any_build(ctx.instance, ctx.service_name, ctx.service_version)
+            .map(|backend| backend.daemon_process.pid)
+            .unwrap_or_default()
     };
 
     let endpoint = match crate::platform::ipc::Endpoint::new(ctx.handoff_endpoint.to_owned()) {
@@ -306,22 +311,37 @@ fn run_platform_handoff(
     ) {
         Ok(attachment) => attachment,
         Err(error) => {
+            let backend_may_adopt = error.may_have_reached_backend();
             acks.abandon(tokens, &issued);
+            let ownership = if backend_may_adopt {
+                "; a connection copy may already have reached the backend"
+            } else {
+                ""
+            };
             log_handoff_fallback(&format!(
-                "abandoned at {:?} stage: {error}",
-                WindowsHandoffStage::Duplicate
+                "abandoned at {:?} stage: {error}{ownership}",
+                PlatformHandoffStage::Transfer
             ));
-            return false;
+            return fallback_requires_relinquish(
+                PlatformHandoffStage::Transfer,
+                backend_may_adopt,
+                false,
+            );
         }
     };
     if let Err(error) = delivery.deliver_attachment(attachment, &issued) {
+        let backend_may_adopt = attachment.backend_may_adopt_before_offer();
         acks.abandon(tokens, &issued);
         log_handoff_fallback(&format!(
-            "abandoned at {:?} stage: {error}; duplicated connection handle leaks in backend pid \
-             {backend_pid} until it exits",
-            WindowsHandoffStage::Deliver
+            "abandoned at {:?} stage: {error}; a transferred connection copy remains in the \
+             backend",
+            PlatformHandoffStage::Deliver
         ));
-        return false;
+        return fallback_requires_relinquish(
+            PlatformHandoffStage::Deliver,
+            backend_may_adopt,
+            false,
+        );
     }
 
     let deadline = Instant::now()
@@ -333,12 +353,13 @@ fn run_platform_handoff(
             acks.abandon(tokens, &issued);
             let explicitly_rejected = delivery.backend_explicitly_rejected();
             log_handoff_fallback(&format!(
-                "abandoned at {:?} stage: {error}; duplicated connection handle leaks in backend \
-                 pid {backend_pid} until it exits",
-                WindowsHandoffStage::AwaitAck
+                "abandoned at {:?} stage: {error}; a transferred connection copy remains in the \
+                 backend",
+                PlatformHandoffStage::AwaitAck
             ));
-            return windows_fallback_requires_relinquish(
-                WindowsHandoffStage::AwaitAck,
+            return fallback_requires_relinquish(
+                PlatformHandoffStage::AwaitAck,
+                true,
                 explicitly_rejected,
             );
         }
@@ -346,177 +367,23 @@ fn run_platform_handoff(
     if let Err(error) = acks.acknowledge(tokens, &issued, acknowledged_at) {
         tokens.revoke(&issued);
         log_handoff_fallback(&format!(
-            "abandoned at {:?} stage: {error}; duplicated connection handle remains owned by \
-             backend pid {backend_pid}",
-            WindowsHandoffStage::Acknowledge
+            "abandoned at {:?} stage: {error}; the transferred connection remains owned by the \
+             backend",
+            PlatformHandoffStage::Acknowledge
         ));
     }
     true
 }
 
-#[cfg(unix)]
-fn run_platform_handoff(
-    ctx: &ServeHandoffContext<'_>,
-    client_stream: &crate::platform::ipc::Stream,
-    issued: HandoffToken,
-    tokens: &mut HandoffTokenStore,
-    acks: &mut HandoffAckRegistry,
-    delivery: &mut WireHandoffDelivery<crate::platform::ipc::Stream>,
-) -> bool {
-    use std::cell::RefCell;
-    use std::time::Instant;
-
-    use super::handoff::{
-        execute_unix_handoff_with_transport, HandoffDelivery, HandoffDeliveryError,
-        ScmRightsAttempt, ScmRightsError, ScmRightsResult, UnixFileDescriptor, UnixHandoffAckWait,
-        UnixHandoffOutcome, UnixHandoffRequest, UnixHandoffSocket, WindowsHandleValue,
-    };
-
-    use crate::platform::ipc::HandoffTransferErrorKind;
-
-    let endpoint = match crate::platform::ipc::Endpoint::new(ctx.handoff_endpoint.to_owned()) {
-        Ok(endpoint) => endpoint,
-        Err(error) => {
-            acks.abandon(tokens, &issued);
-            log_handoff_fallback(&format!("invalid backend handoff endpoint: {error}"));
-            return false;
-        }
-    };
-    let request = UnixHandoffRequest::new(
-        UnixFileDescriptor::new(0),
-        UnixHandoffSocket::new(ctx.handoff_endpoint),
-        issued,
-    );
-
-    // The transport closure and the ACK wait both need the one wire
-    // delivery channel; they run strictly one after the other, so a
-    // RefCell resolves the shared mutable borrow safely.
-    let delivery = RefCell::new(delivery);
-    let transport = |attempt: &ScmRightsAttempt| -> ScmRightsResult {
-        let mut delivery = delivery.borrow_mut();
-        client_stream
-            .transfer_to_backend(
-                delivery.stream(),
-                &endpoint,
-                0,
-                attempt.handoff_token.as_bytes(),
-            )
-            .map_err(|error| {
-                if error.may_have_reached_backend() {
-                    return ScmRightsError::PartialSend {
-                        fd: -1,
-                        socket: attempt.backend_socket.path.clone(),
-                        sent_bytes: 1,
-                        expected_bytes: attempt.handoff_token.as_bytes().len(),
-                    };
-                }
-                match error.kind() {
-                    HandoffTransferErrorKind::Unsupported => ScmRightsError::UnsupportedPlatform,
-                    HandoffTransferErrorKind::PermissionDenied => {
-                        ScmRightsError::PermissionDenied {
-                            fd: -1,
-                            socket: attempt.backend_socket.path.clone(),
-                        }
-                    }
-                    HandoffTransferErrorKind::BackendUnavailable => {
-                        ScmRightsError::BackendSocketUnavailable {
-                            socket: attempt.backend_socket.path.clone(),
-                        }
-                    }
-                    HandoffTransferErrorKind::WouldBlock => ScmRightsError::WouldBlock {
-                        socket: attempt.backend_socket.path.clone(),
-                    },
-                    HandoffTransferErrorKind::Failed => ScmRightsError::SendFailed {
-                        fd: -1,
-                        socket: attempt.backend_socket.path.clone(),
-                        raw_os_error: None,
-                    },
-                }
-            })?;
-        delivery
-            .deliver(WindowsHandleValue::new(0), &attempt.handoff_token)
-            .map_err(|error| {
-                log_handoff_fallback(&format!("failed to write HandoffOffer frame: {error}"));
-                ScmRightsError::PostTransferDeliveryFailed {
-                    fd: attempt.fd.raw(),
-                    socket: attempt.backend_socket.path.clone(),
-                }
-            })?;
-        Ok(super::handoff::ScmRightsSuccess::new(
-            attempt.fd,
-            attempt.backend_socket.clone(),
-            attempt.handoff_token,
-        ))
-    };
-
-    struct DeliveryAckWait<'a, 'b> {
-        delivery: &'a RefCell<&'b mut WireHandoffDelivery<crate::platform::ipc::Stream>>,
-    }
-    impl UnixHandoffAckWait for DeliveryAckWait<'_, '_> {
-        fn await_backend_ack(
-            &mut self,
-            token: &HandoffToken,
-            deadline: Instant,
-        ) -> Result<Instant, HandoffDeliveryError> {
-            self.delivery
-                .borrow_mut()
-                .await_backend_ack(token, deadline)
-        }
-    }
-    let mut ack_wait = DeliveryAckWait {
-        delivery: &delivery,
-    };
-
-    let outcome =
-        execute_unix_handoff_with_transport(tokens, acks, &request, transport, &mut ack_wait);
-    let explicitly_rejected = delivery.borrow().backend_explicitly_rejected();
-    match outcome {
-        UnixHandoffOutcome::Completed(_) => true,
-        UnixHandoffOutcome::FallbackToReconnect(fallback) => {
-            let reached = if fallback.fd_reached_backend {
-                "; a duplicated descriptor already reached the backend and lives until it closes it"
-            } else {
-                ""
-            };
-            log_handoff_fallback(&format!(
-                "abandoned at {:?} stage: {}{reached}",
-                fallback.stage, fallback.detail
-            ));
-            unix_fallback_requires_relinquish(
-                fallback.stage,
-                fallback.fd_reached_backend,
-                explicitly_rejected,
-            )
-        }
-    }
-}
-
-#[cfg(windows)]
-fn windows_fallback_requires_relinquish(
-    stage: super::handoff::WindowsHandoffStage,
+fn fallback_requires_relinquish(
+    stage: PlatformHandoffStage,
+    backend_may_adopt: bool,
     explicitly_rejected: bool,
 ) -> bool {
-    use super::handoff::WindowsHandoffStage;
-
     match stage {
-        WindowsHandoffStage::Duplicate | WindowsHandoffStage::Deliver => false,
-        WindowsHandoffStage::AwaitAck => !explicitly_rejected,
-        WindowsHandoffStage::Acknowledge => true,
-    }
-}
-
-#[cfg(unix)]
-fn unix_fallback_requires_relinquish(
-    stage: super::handoff::UnixHandoffStage,
-    fd_reached_backend: bool,
-    explicitly_rejected: bool,
-) -> bool {
-    use super::handoff::UnixHandoffStage;
-
-    match stage {
-        UnixHandoffStage::Send => fd_reached_backend,
-        UnixHandoffStage::AwaitAck => !explicitly_rejected,
-        UnixHandoffStage::Acknowledge => true,
+        PlatformHandoffStage::Transfer | PlatformHandoffStage::Deliver => backend_may_adopt,
+        PlatformHandoffStage::AwaitAck => !explicitly_rejected,
+        PlatformHandoffStage::Acknowledge => true,
     }
 }
 
@@ -559,60 +426,40 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn explicit_rejection_is_safe_but_an_unobserved_ack_is_ambiguous() {
-        use super::super::handoff::UnixHandoffStage;
-
-        assert!(!unix_fallback_requires_relinquish(
-            UnixHandoffStage::Send,
+        assert!(!fallback_requires_relinquish(
+            PlatformHandoffStage::Transfer,
             false,
             false
         ));
-        assert!(unix_fallback_requires_relinquish(
-            UnixHandoffStage::Send,
+        assert!(fallback_requires_relinquish(
+            PlatformHandoffStage::Transfer,
             true,
             false
         ));
-        assert!(!unix_fallback_requires_relinquish(
-            UnixHandoffStage::AwaitAck,
+        assert!(!fallback_requires_relinquish(
+            PlatformHandoffStage::Deliver,
+            false,
+            false,
+        ));
+        assert!(fallback_requires_relinquish(
+            PlatformHandoffStage::Deliver,
+            true,
+            false,
+        ));
+        assert!(!fallback_requires_relinquish(
+            PlatformHandoffStage::AwaitAck,
             true,
             true
         ));
-        assert!(unix_fallback_requires_relinquish(
-            UnixHandoffStage::AwaitAck,
+        assert!(fallback_requires_relinquish(
+            PlatformHandoffStage::AwaitAck,
             true,
             false
         ));
-        assert!(unix_fallback_requires_relinquish(
-            UnixHandoffStage::Acknowledge,
-            true,
-            false
-        ));
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn explicit_rejection_is_safe_but_an_unobserved_ack_is_ambiguous() {
-        use super::super::handoff::WindowsHandoffStage;
-
-        assert!(!windows_fallback_requires_relinquish(
-            WindowsHandoffStage::Duplicate,
-            false
-        ));
-        assert!(!windows_fallback_requires_relinquish(
-            WindowsHandoffStage::Deliver,
-            false
-        ));
-        assert!(!windows_fallback_requires_relinquish(
-            WindowsHandoffStage::AwaitAck,
-            true
-        ));
-        assert!(windows_fallback_requires_relinquish(
-            WindowsHandoffStage::AwaitAck,
-            false
-        ));
-        assert!(windows_fallback_requires_relinquish(
-            WindowsHandoffStage::Acknowledge,
+        assert!(fallback_requires_relinquish(
+            PlatformHandoffStage::Acknowledge,
+            false,
             false
         ));
     }

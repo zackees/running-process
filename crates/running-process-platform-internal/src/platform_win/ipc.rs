@@ -289,7 +289,7 @@ impl Stream {
             ));
         }
 
-        Ok(HandoffAttachment::new(duplicated as usize as u64))
+        Ok(HandoffAttachment::new(duplicated as usize as u64, false))
     }
 }
 

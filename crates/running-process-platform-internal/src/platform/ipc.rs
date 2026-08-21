@@ -19,11 +19,17 @@ pub use crate::{
 /// caller's existing protocol. On Unix the descriptor travels out-of-band via
 /// `SCM_RIGHTS`. Native handle and descriptor values never cross the facade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HandoffAttachment(u64);
+pub struct HandoffAttachment {
+    protocol_value: u64,
+    backend_may_adopt_before_offer: bool,
+}
 
 impl HandoffAttachment {
-    pub(crate) fn new(protocol_value: u64) -> Self {
-        Self(protocol_value)
+    pub(crate) fn new(protocol_value: u64, backend_may_adopt_before_offer: bool) -> Self {
+        Self {
+            protocol_value,
+            backend_may_adopt_before_offer,
+        }
     }
 
     /// Append this attachment's opaque value as an unsigned protobuf varint.
@@ -31,12 +37,22 @@ impl HandoffAttachment {
     /// The caller owns the wire envelope while this facade retains ownership
     /// of the native value and its representation.
     pub fn append_unsigned_varint(self, output: &mut Vec<u8>) {
-        let mut value = self.0;
+        let mut value = self.protocol_value;
         while value >= 0x80 {
             output.push((value as u8 & 0x7f) | 0x80);
             value >>= 7;
         }
         output.push(value as u8);
+    }
+
+    /// Whether the backend may adopt the connection before its offer arrives.
+    ///
+    /// Unix transfers the descriptor and token together in the sideband
+    /// message, while Windows requires the later offer to identify the
+    /// duplicated handle. Callers use this transport fact to make their own
+    /// proxy-fallback ownership decision without selecting a host.
+    pub fn backend_may_adopt_before_offer(self) -> bool {
+        self.backend_may_adopt_before_offer
     }
 }
 
@@ -146,8 +162,14 @@ mod tests {
     #[test]
     fn handoff_attachment_can_be_encoded_without_exposing_its_value() {
         let mut encoded = Vec::new();
-        HandoffAttachment::new(300).append_unsigned_varint(&mut encoded);
+        HandoffAttachment::new(300, false).append_unsigned_varint(&mut encoded);
         assert_eq!(encoded, [0xac, 0x02]);
+    }
+
+    #[test]
+    fn handoff_attachment_reports_pre_offer_adoption_semantics() {
+        assert!(HandoffAttachment::new(0, true).backend_may_adopt_before_offer());
+        assert!(!HandoffAttachment::new(0, false).backend_may_adopt_before_offer());
     }
 
     #[test]
