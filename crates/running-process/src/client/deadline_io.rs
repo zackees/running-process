@@ -223,14 +223,17 @@ mod tests {
 
     #[test]
     fn connect_with_timeout_errors_on_missing_socket() {
-        // A path that does not exist should fail promptly (connection
-        // refused / not found), never hang.
-        let bogus = if cfg!(windows) {
-            r"\\.\pipe\running-process-nonexistent-test-endpoint"
-        } else {
-            "/tmp/running-process-nonexistent-test-endpoint.sock"
-        };
-        assert!(connect_with_timeout(bogus).is_err());
+        // An endpoint that does not exist should fail promptly (connection
+        // refused / not found), never hang. The address is derived through
+        // the platform facade so this test names no host spelling of its
+        // own: whatever this host treats as a valid endpoint address,
+        // nothing is listening on it.
+        let bogus = crate::platform::ipc::broker_v1_endpoint_path(
+            "running-process-nonexistent-test-endpoint",
+        )
+        .expect("a short bare name fits every host budget");
+
+        assert!(connect_with_timeout(&bogus).is_err());
     }
 
     /// A reader that is permanently `WouldBlock` — models a daemon that
