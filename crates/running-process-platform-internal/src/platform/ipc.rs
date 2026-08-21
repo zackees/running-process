@@ -6,10 +6,17 @@
 
 #[cfg(feature = "ipc")]
 pub use crate::{
-    ipc_current_user_id as current_user_id, IpcEndpoint as Endpoint, IpcListener as Listener,
+    ipc_current_user_id as current_user_id, IpcEndpoint as Endpoint,
+    IpcInheritedListener as InheritedListener, IpcListener as Listener,
     IpcListenerNonblockingMode as ListenerNonblockingMode, IpcPeerIdentity as PeerIdentity,
     IpcPeerIdentitySource as PeerIdentitySource, IpcStream as Stream,
 };
+
+/// Resolve a broker endpoint name using selected-host path and pipe rules.
+#[cfg(feature = "ipc")]
+pub fn broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::Result<String> {
+    crate::IpcBrokerEndpointName(bare_name, path_scoped)
+}
 
 #[cfg(feature = "ipc-async")]
 pub use crate::{

@@ -1,7 +1,7 @@
 error[E0185]: method `bind` has a `&self` declaration in the impl, but not in the trait
- --> tests/ui-unix/brokered_backend_state_in_bind.rs
+ --> tests/ui-macos/brokered_backend_state_in_bind.rs
   |
   |     fn bind(&self, _endpoint: &Endpoint) -> Result<IpcListener, BindError> {
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&self` used in impl
   |
-  = note: `bind` from trait: `fn(&str) -> std::result::Result<running_process_platform_internal::platform_linux::ipc::Listener, BindError>`
+  = note: `bind` from trait: `fn(&str) -> std::result::Result<running_process_platform_internal::platform_macos::ipc::Listener, BindError>`

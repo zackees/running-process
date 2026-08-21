@@ -82,7 +82,6 @@ fn main() {
 
 /// Accept exactly one connection and answer it.
 fn serve_once(listener: IpcListener) -> std::io::Result<()> {
-    use interprocess::local_socket::traits::Listener as _;
     use std::io::Write as _;
 
     let mut stream = listener.accept()?;

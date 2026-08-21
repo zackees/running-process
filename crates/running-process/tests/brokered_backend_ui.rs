@@ -24,16 +24,25 @@
 #[test]
 fn brokered_backend_compile_fail_ui_snapshots() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let windows_fixture = manifest.join("tests/ui/brokered_backend_state_in_bind.rs");
-    let unix_fixture = manifest.join("tests/ui-unix/brokered_backend_state_in_bind.rs");
-    assert_eq!(
-        std::fs::read(&windows_fixture).expect("read Windows trybuild fixture"),
-        std::fs::read(&unix_fixture).expect("read Unix trybuild fixture"),
-        "platform-specific trybuild fixtures must stay identical",
-    );
+    let fixtures = ["ui", "ui-unix", "ui-macos", "ui-windows"]
+        .map(|directory| manifest.join(format!("tests/{directory}/brokered_backend_state_in_bind.rs")));
+    for fixture in fixtures.iter().skip(1) {
+        assert_eq!(
+            std::fs::read(&fixtures[0]).expect("read primary trybuild fixture"),
+            std::fs::read(fixture).expect("read platform trybuild fixture"),
+            "platform-specific trybuild fixtures must stay identical",
+        );
+    }
 
-    let normalized_spans = cfg!(not(windows)) || std::env::var_os("CI").is_some();
-    let platform_dir = if normalized_spans { "ui-unix" } else { "ui" };
+    let platform_dir = if cfg!(target_os = "macos") {
+        "ui-macos"
+    } else if cfg!(windows) && std::env::var_os("CI").is_some() {
+        "ui-windows"
+    } else if cfg!(windows) {
+        "ui"
+    } else {
+        "ui-unix"
+    };
     let pattern = format!(
         "{}/tests/{platform_dir}/brokered_backend_*.rs",
         manifest.display()

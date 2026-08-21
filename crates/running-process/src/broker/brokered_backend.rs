@@ -97,15 +97,8 @@ impl From<std::io::Error> for BindError {
 #[derive(Debug)]
 pub enum Never {}
 
-/// Cross-platform `IpcListener` placeholder.
-///
-/// Until the v2 broker baseline lands a unified listener wrapper
-/// (subsequent slice of #488), this type alias points at the existing
-/// `interprocess::local_socket::Listener` so daemons can start
-/// implementing [`BrokeredBackend`] today. A typedef shift later
-/// won't break implementers since they construct the listener via
-/// platform-neutral helpers, not by naming the type.
-pub type IpcListener = interprocess::local_socket::Listener;
+/// Opaque listener owned by the selected local-IPC platform facade.
+pub type IpcListener = crate::platform::ipc::Listener;
 
 /// Opaque endpoint identifier the broker hands the daemon's [`bind`]
 /// method. Today a plain string (matches `ServiceDefinition`'s endpoint
@@ -210,7 +203,6 @@ pub fn bootstrap<B: BrokeredBackend>(endpoint: &Endpoint) -> Result<(), BindErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interprocess::local_socket::ListenerOptions;
 
     /// Reference implementation used to verify the trait shape compiles.
     struct StubBackend;
@@ -219,31 +211,8 @@ mod tests {
         type State = ();
 
         fn bind(endpoint: &Endpoint) -> Result<IpcListener, BindError> {
-            // Bind a real platform listener at a unique test name so the
-            // path exercises the actual interprocess API surface, not
-            // just trait dispatch. The caller passes a per-test
-            // suffix via `endpoint` so parallel cargo-test runs don't
-            // collide on the same name.
-            #[cfg(windows)]
-            let name = {
-                let bare = format!("rp-brokered-backend-stub-{endpoint}");
-                crate::broker::server::singleton_bind::wrap_socket_name(&bare)
-                    .map_err(std::io::Error::other)?
-                    .into_owned()
-            };
-            #[cfg(unix)]
-            let name = {
-                let path =
-                    std::env::temp_dir().join(format!("rp-brokered-backend-stub-{endpoint}.sock"));
-                let _ = std::fs::remove_file(&path);
-                crate::broker::server::singleton_bind::wrap_socket_name(
-                    path.to_string_lossy().as_ref(),
-                )
-                .map_err(std::io::Error::other)?
-                .into_owned()
-            };
-            let listener = ListenerOptions::new().name(name).create_sync()?;
-            Ok(listener)
+            let endpoint = crate::platform::ipc::Endpoint::test(endpoint)?;
+            crate::platform::ipc::Listener::bind(&endpoint).map_err(Into::into)
         }
 
         fn serve(_listener: IpcListener) -> Never {

@@ -20,28 +20,7 @@ use interprocess::local_socket::{Listener, ListenerOptions};
 /// runtime directory on Unix (macOS additionally hashes the leaf to fit
 /// `sun_path`'s 104-byte limit).
 pub fn resolve_socket_path(bare_name: &str) -> Result<String, String> {
-    #[cfg(windows)]
-    {
-        Ok(format!(r"\\.\pipe\{bare_name}"))
-    }
-    #[cfg(unix)]
-    {
-        let dir = unix_socket_dir();
-        let leaf = if cfg!(target_os = "macos") {
-            let mut hash = blake3::Hasher::new();
-            hash.update(bare_name.as_bytes());
-            let bytes = hash.finalize();
-            let mut hex = String::with_capacity(16);
-            for b in bytes.as_bytes().iter().take(8) {
-                use std::fmt::Write as _;
-                let _ = write!(hex, "{b:02x}");
-            }
-            format!("{hex}.sock")
-        } else {
-            format!("{bare_name}.sock")
-        };
-        Ok(dir.join(leaf).to_string_lossy().into_owned())
-    }
+    crate::platform::ipc::broker_endpoint_name(bare_name, false).map_err(|error| error.to_string())
 }
 
 /// Resolve an install-path-scoped broker name without adding user identity.
@@ -53,48 +32,7 @@ pub fn resolve_socket_path(bare_name: &str) -> Result<String, String> {
 /// Unix uses the machine-global temporary root and a compact hash to stay
 /// within every platform's `sun_path` limit.
 pub fn resolve_path_scoped_socket_path(bare_name: &str) -> Result<String, String> {
-    #[cfg(windows)]
-    {
-        Ok(format!(r"\\.\pipe\{bare_name}"))
-    }
-    #[cfg(unix)]
-    {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"running-process:path-scoped-socket:v1\0");
-        hash.update(bare_name.as_bytes());
-        let digest = hash.finalize();
-        let mut leaf_hash = String::with_capacity(32);
-        for byte in digest.as_bytes().iter().take(16) {
-            use std::fmt::Write as _;
-            let _ = write!(leaf_hash, "{byte:02x}");
-        }
-        Ok(std::path::Path::new("/tmp")
-            .join(format!(".rp-path-{leaf_hash}.sock"))
-            .to_string_lossy()
-            .into_owned())
-    }
-}
-
-#[cfg(unix)]
-fn unix_socket_dir() -> std::path::PathBuf {
-    use std::path::PathBuf;
-    #[cfg(target_os = "macos")]
-    {
-        let uid = unsafe { libc::getuid() };
-        let tmp = std::env::var_os("TMPDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        tmp.join(format!(".rp-{uid}-broker-v2"))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
-            PathBuf::from(d).join("running-process").join("broker-v2")
-        } else {
-            let uid = unsafe { libc::getuid() };
-            PathBuf::from(format!("/tmp/running-process-{uid}/broker-v2"))
-        }
-    }
+    crate::platform::ipc::broker_endpoint_name(bare_name, true).map_err(|error| error.to_string())
 }
 
 /// Classify a [`ListenerOptions::create_sync`] error as "another process is

@@ -48,18 +48,14 @@ impl Endpoint {
         }
     }
 
-    #[cfg(test)]
+    /// Allocate a unique endpoint for a caller-owned test or probe.
     pub fn test(label: &str) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        Self::new(
-            std::env::temp_dir()
-                .join(format!("rp-ipc-{label}-{}-{nonce}.sock", std::process::id()))
-                .to_string_lossy()
-                .into_owned(),
-        )
+        let digest = blake3::hash(format!("{label}-{}-{nonce}", std::process::id()).as_bytes());
+        Self::new(format!("/tmp/rp-ipc-{}.sock", &digest.to_hex()[..16]))
     }
 }
 
@@ -243,6 +239,127 @@ impl Listener {
 
     pub fn do_not_reclaim_name_on_drop(&mut self) {
         self.0.do_not_reclaim_name_on_drop();
+    }
+}
+
+/// A Unix-domain listener deliberately inherited by a child process.
+///
+/// The descriptor and its close-on-exec state never leave this platform
+/// implementation. Callers provide their product-owned environment key and
+/// command, then receive/return only opaque IPC values.
+pub struct InheritedListener {
+    listener: interprocess::os::unix::uds_local_socket::Listener,
+}
+
+impl InheritedListener {
+    pub fn supported() -> bool {
+        true
+    }
+
+    pub fn bind(endpoint: &Endpoint) -> io::Result<Self> {
+        use interprocess::os::unix::uds_local_socket::Listener as UdsListener;
+
+        ListenerOptions::new()
+            .name(name(endpoint.display())?)
+            .create_sync_as::<UdsListener>()
+            .map(|listener| Self { listener })
+    }
+
+    pub fn prepare(&self, command: &mut std::process::Command, env_key: &str) -> io::Result<()> {
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+
+        let fd = self.listener.as_fd();
+        clear_cloexec(&fd)?;
+        command.env(env_key, fd.as_raw_fd().to_string());
+        Ok(())
+    }
+
+    pub fn disown_endpoint(&mut self) {
+        use interprocess::local_socket::traits::Listener as _;
+
+        self.listener.do_not_reclaim_name_on_drop();
+    }
+
+    pub fn recover_from_env(env_key: &str) -> io::Result<Option<Listener>> {
+        let Some(raw) = std::env::var_os(env_key) else {
+            return Ok(None);
+        };
+        let raw = raw.to_string_lossy();
+        let fd = parse_descriptor(env_key, &raw)?;
+        if !is_listening_socket(fd)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{env_key}={fd} does not name a listening socket"),
+            ));
+        }
+        use interprocess::os::unix::uds_local_socket::Listener as UdsListener;
+        use std::os::fd::{FromRawFd as _, OwnedFd};
+        // SAFETY: the descriptor was validated as a live stream listener and
+        // is inherited into this fresh process descriptor table.
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        Ok(Some(Listener(UdsListener::from(owned).into())))
+    }
+}
+
+fn parse_descriptor(env_key: &str, raw: &str) -> io::Result<i32> {
+    let fd: i32 = raw.trim().parse().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{env_key}={raw:?} is not a descriptor number"),
+        )
+    })?;
+    if fd < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{env_key}={fd} is not a valid descriptor"),
+        ));
+    }
+    Ok(fd)
+}
+
+fn clear_cloexec(fd: &std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+
+    let raw = fd.as_raw_fd();
+    // SAFETY: `raw` is borrowed from a live listener for both operations.
+    let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above; only FD_CLOEXEC is cleared from the returned flags.
+    if unsafe { libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn socket_option(fd: i32, option: libc::c_int) -> io::Result<libc::c_int> {
+    let mut value: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `value` and `len` are correctly sized writable locals.
+    if unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            option,
+            std::ptr::addr_of_mut!(value).cast(),
+            std::ptr::addr_of_mut!(len),
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(value)
+}
+
+fn is_listening_socket(fd: i32) -> io::Result<bool> {
+    if socket_option(fd, libc::SO_TYPE)? != libc::SOCK_STREAM {
+        return Ok(false);
+    }
+    match socket_option(fd, libc::SO_ACCEPTCONN) {
+        Ok(listening) => Ok(listening != 0),
+        Err(error) if error.raw_os_error() == Some(libc::ENOPROTOOPT) => Ok(true),
+        Err(error) => Err(error),
     }
 }
 
