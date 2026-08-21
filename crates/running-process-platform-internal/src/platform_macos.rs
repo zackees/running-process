@@ -4,11 +4,19 @@
 #[path = "platform_macos/ipc.rs"]
 pub(crate) mod ipc;
 #[cfg(feature = "ipc")]
+#[path = "platform_macos/ipc_private_dir.rs"]
+mod ipc_private_dir;
+#[cfg(feature = "ipc")]
 pub use ipc::{
     current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint,
     InheritedListener as IpcInheritedListener, Listener as IpcListener,
     ListenerNonblockingMode as IpcListenerNonblockingMode, PeerIdentity as IpcPeerIdentity,
     PeerIdentitySource as IpcPeerIdentitySource, Stream as IpcStream,
+};
+#[cfg(feature = "ipc")]
+pub use ipc_private_dir::{
+    ensure_owner_private_directory as ipc_ensure_owner_private_directory,
+    owner_private_directory as ipc_owner_private_directory,
 };
 #[cfg(feature = "ipc")]
 pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::Result<String> {

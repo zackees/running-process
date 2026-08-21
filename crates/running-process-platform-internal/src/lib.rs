@@ -67,7 +67,8 @@ pub use platform_imp::terminal_input;
 
 #[cfg(feature = "ipc")]
 pub use platform_imp::{
-    ipc_broker_endpoint_name as IpcBrokerEndpointName, ipc_current_user_id, IpcEndpoint,
+    ipc_broker_endpoint_name as IpcBrokerEndpointName, ipc_current_user_id,
+    ipc_ensure_owner_private_directory, ipc_owner_private_directory, IpcEndpoint,
     IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
     IpcPeerIdentitySource, IpcStream,
 };
