@@ -37,7 +37,7 @@ use crate::broker::protocol::{read_frame, write_frame, Endpoint, Frame, FrameKin
 /// # }
 /// ```
 pub struct FrameClient {
-    stream: io::BufReader<interprocess::local_socket::Stream>,
+    stream: io::BufReader<crate::platform::ipc::Stream>,
     next_request_id: u64,
 }
 
@@ -53,7 +53,7 @@ impl FrameClient {
     /// Wrap an already-connected local-socket stream (e.g. one opened
     /// through a verified
     /// [`BackendHandle`](crate::broker::backend_handle::BackendHandle)).
-    pub fn from_stream(stream: interprocess::local_socket::Stream) -> Self {
+    pub fn from_stream(stream: crate::platform::ipc::Stream) -> Self {
         Self {
             stream: io::BufReader::new(stream),
             next_request_id: 1,
@@ -128,7 +128,7 @@ impl FrameClient {
     /// freshly adopted session that has issued no request.
     ///
     /// [`BrokerSession::into_backend_io`]: crate::broker::adopt::BrokerSession::into_backend_io
-    pub fn into_stream(self) -> interprocess::local_socket::Stream {
+    pub fn into_stream(self) -> crate::platform::ipc::Stream {
         self.stream.into_inner()
     }
 }

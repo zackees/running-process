@@ -301,12 +301,20 @@ impl ClientSession {
     /// The broker stream is dropped here, as v1 drops it: its job ended with
     /// the reply.
     pub fn connect_backend(self) -> Result<LegacyStream, BackendDialError> {
+        self.connect_backend_ipc().map(into_legacy_ipc_stream)
+    }
+
+    /// [`connect_backend`](Self::connect_backend) without the legacy
+    /// source-compatibility unwrap.
+    ///
+    /// `connect_backend` predates the opaque IPC facade and keeps handing back
+    /// the transport type until the next major release. In-repo callers use
+    /// this instead so the native type never leaves `platform::ipc`.
+    pub(crate) fn connect_backend_ipc(self) -> Result<ipc::Stream, BackendDialError> {
         if self.negotiated.backend_pipe.is_empty() {
             return Err(BackendDialError::EmptyBackendPipe);
         }
-        connect_ipc_stream(&self.negotiated.backend_pipe)
-            .map(into_legacy_ipc_stream)
-            .map_err(BackendDialError::Connect)
+        connect_ipc_stream(&self.negotiated.backend_pipe).map_err(BackendDialError::Connect)
     }
 
     /// [`connect_backend`](Self::connect_backend), handed back as an owned OS
@@ -326,7 +334,7 @@ impl ClientSession {
     /// already re-dials with its own transport on Windows for that reason, so
     /// this parity is what keeps its two platform lanes unchanged.
     pub fn into_backend_io(self) -> Result<OwnedBackendIo, BackendDialError> {
-        let stream = self.connect_backend()?;
+        let stream = self.connect_backend_ipc()?;
         OwnedBackendIo::from_local_socket_stream(stream).map_err(BackendDialError::IntoBackendIo)
     }
 }

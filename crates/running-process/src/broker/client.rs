@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use prost::Message;
-use running_process_platform_internal::{into_legacy_ipc_stream, platform::ipc};
+use running_process_platform_internal::platform::ipc;
 
 use crate::broker::capabilities::{handoff_transport_available, CAP_HANDLE_PASSING};
 use crate::broker::protocol::{
@@ -189,7 +189,7 @@ pub enum BackendConnectionRoute {
 #[derive(Debug)]
 pub struct BackendConnection {
     /// Connected local socket stream.
-    pub stream: interprocess::local_socket::Stream,
+    pub stream: ipc::Stream,
     /// Endpoint that was connected.
     ///
     /// For [`BackendConnectionRoute::HandlePassed`] this is the negotiated
@@ -249,7 +249,7 @@ pub fn connect_to_backend(
 ) -> Result<BackendConnection, BrokerClientError> {
     #[cfg(feature = "test-seams")]
     if let Some(endpoint) = fake_backend_endpoint_from_env() {
-        let stream = connect_local_socket(&endpoint).map_err(BrokerClientError::BackendConnect)?;
+        let stream = connect_ipc_stream(&endpoint).map_err(BrokerClientError::BackendConnect)?;
         return Ok(BackendConnection {
             stream,
             endpoint,
@@ -260,7 +260,7 @@ pub fn connect_to_backend(
 
     if request.can_hello_skip() {
         if let Some(endpoint) = request.cached_backend_endpoint {
-            if let Ok(stream) = connect_local_socket(endpoint) {
+            if let Ok(stream) = connect_ipc_stream(endpoint) {
                 return Ok(BackendConnection {
                     stream,
                     endpoint: endpoint.into(),
@@ -280,7 +280,7 @@ pub fn connect_to_backend(
         ) {
             return Ok(BackendConnection {
                 endpoint: negotiated.backend_pipe.clone(),
-                stream: into_legacy_ipc_stream(adopted),
+                stream: adopted,
                 route: BackendConnectionRoute::HandlePassed,
                 negotiated: Some(negotiated),
             });
@@ -290,8 +290,8 @@ pub fn connect_to_backend(
     if negotiated.backend_pipe.is_empty() {
         return Err(BrokerClientError::EmptyBackendPipe);
     }
-    let stream = connect_local_socket(&negotiated.backend_pipe)
-        .map_err(BrokerClientError::BackendConnect)?;
+    let stream =
+        connect_ipc_stream(&negotiated.backend_pipe).map_err(BrokerClientError::BackendConnect)?;
     Ok(BackendConnection {
         endpoint: negotiated.backend_pipe.clone(),
         stream,
@@ -464,8 +464,8 @@ fn send_admin_request_unbounded(
 }
 
 /// Open a platform local socket by broker endpoint string.
-pub fn connect_local_socket(endpoint: &str) -> io::Result<interprocess::local_socket::Stream> {
-    connect_ipc_stream(endpoint).map(into_legacy_ipc_stream)
+pub fn connect_local_socket(endpoint: &str) -> io::Result<ipc::Stream> {
+    connect_ipc_stream(endpoint)
 }
 
 pub(crate) fn connect_ipc_stream(endpoint: &str) -> io::Result<ipc::Stream> {
