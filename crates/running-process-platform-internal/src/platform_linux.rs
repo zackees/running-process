@@ -105,6 +105,25 @@ pub fn ipc_broker_v1_endpoint_path(
     }
     Ok(candidate.into_owned())
 }
+
+#[cfg(feature = "ipc")]
+pub fn ipc_endpoint_scope_bytes(path: &std::path::Path) -> Vec<u8> {
+    // Linux paths are opaque byte strings; no spelling difference is
+    // meaningless, so the bytes are hashed exactly as the OS reports them.
+    use std::os::unix::ffi::OsStrExt as _;
+
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(feature = "ipc")]
+pub fn ipc_broker_v2_runtime_dir() -> std::path::PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(dir) => std::path::PathBuf::from(dir)
+            .join("running-process")
+            .join("broker-v2"),
+        None => crate::platform::ipc::per_user_runtime_fallback(),
+    }
+}
 #[cfg(feature = "ipc")]
 pub fn into_legacy_ipc_stream(stream: IpcStream) -> interprocess::local_socket::Stream {
     stream.0
@@ -729,4 +748,20 @@ mod endpoint_naming_tests {
         assert_eq!(limit.max_bytes, LINUX_SUN_PATH_MAX);
         assert_eq!(limit.label, "Linux sun_path");
     }
+
+    #[test]
+    fn the_scope_spelling_is_the_verbatim_path_bytes() {
+        // Paths are opaque byte strings here: no spelling difference is
+        // meaningless, and case is significant. This pins the spelling --
+        // changing it re-scopes every deployed broker, and the stability
+        // tests upstream would not notice.
+        use super::ipc_endpoint_scope_bytes;
+
+        let bytes = ipc_endpoint_scope_bytes(std::path::Path::new("/usr/local/bin/Broker"));
+        assert_eq!(bytes, b"/usr/local/bin/Broker".to_vec());
+
+        let lowered = ipc_endpoint_scope_bytes(std::path::Path::new("/usr/local/bin/broker"));
+        assert_ne!(bytes, lowered, "case must remain significant");
+    }
+
 }

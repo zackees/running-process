@@ -68,10 +68,11 @@ pub use platform_imp::terminal_input;
 #[cfg(feature = "ipc")]
 pub use platform_imp::{
     ipc_broker_endpoint_name as IpcBrokerEndpointName, ipc_broker_v1_endpoint_path,
-    ipc_current_user_id, ipc_endpoint_is_filesystem_backed, ipc_endpoint_name_limit,
-    ipc_ensure_owner_private_directory, ipc_nonblocking_zero_read_is_pending,
-    ipc_owner_private_directory, ipc_select_endpoint_address, IpcEndpoint, IpcInheritedListener,
-    IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity, IpcPeerIdentitySource, IpcStream,
+    ipc_broker_v2_runtime_dir, ipc_current_user_id, ipc_endpoint_is_filesystem_backed,
+    ipc_endpoint_name_limit, ipc_endpoint_scope_bytes, ipc_ensure_owner_private_directory,
+    ipc_nonblocking_zero_read_is_pending, ipc_owner_private_directory, ipc_select_endpoint_address,
+    IpcEndpoint, IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
+    IpcPeerIdentitySource, IpcStream,
 };
 
 /// Failure details for the deprecated 4.x raw descriptor/handle handoff API.

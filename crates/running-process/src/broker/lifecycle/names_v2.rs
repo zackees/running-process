@@ -57,26 +57,9 @@ pub fn broker_path_scope_hash(
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"running-process:broker-install-path:v1\0");
-    #[cfg(windows)]
-    {
-        // Windows paths and named pipes are case-insensitive. Hash one
-        // slash/case-normalized spelling so callers cannot split the broker
-        // merely by varying path presentation.
-        let normalized = canonical
-            .to_string_lossy()
-            .replace('\\', "/")
-            .to_lowercase();
-        hasher.update(normalized.as_bytes());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-        hasher.update(canonical.as_os_str().as_bytes());
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        hasher.update(canonical.to_string_lossy().as_bytes());
-    }
+    // The host decides which spelling differences are meaningless; this
+    // module owns the domain separator and the encoding below.
+    hasher.update(&crate::platform::ipc::endpoint_scope_bytes(&canonical));
 
     let digest = hasher.finalize();
     let mut scope = String::with_capacity(16);
@@ -185,67 +168,25 @@ fn validate_sid_hash(sid_hash: &str) -> Result<(), PipePathError> {
 ///
 /// # Why no `getuid()`
 ///
-/// The obvious way to keep two users on one host apart is a uid in the path,
-/// and that is what the binary's socket-directory helper does. But `libc`'s
-/// `getuid` is an `unsafe` call, and `crates/running-process/src/broker/` is
-/// covered by an unsafe inventory that is reviewed as a security surface
-/// (`tests/security/unsafe_inventory.rs`). Adding `unsafe` there to look up a
-/// uid is not a trade worth making.
-///
-/// Every branch below instead lands inside a location the OS already scopes
-/// to one user — `XDG_RUNTIME_DIR`, macOS's per-user `TMPDIR`, `LOCALAPPDATA`,
-/// or the per-user cache directory. Separation comes from the base directory
+/// The obvious way to keep two users on one host apart is a uid in the path.
+/// Every branch instead lands inside a location the OS already scopes to one
+/// user -- `XDG_RUNTIME_DIR`, macOS's per-user `TMPDIR`, `LOCALAPPDATA`, or
+/// the per-user cache directory. Separation comes from the base directory
 /// rather than from a uid spelled into the leaf, and the file itself is
 /// written owner-only by `broker_http_discovery::publish_http_port`.
+///
+/// That choice originally also kept `libc::getuid`, an `unsafe` call, out of
+/// `crates/running-process/src/broker/` and its reviewed unsafe inventory
+/// (`tests/security/unsafe_inventory.rs`). The placement now lives behind
+/// `platform::ipc`, so that particular pressure no longer applies -- but the
+/// design is retained deliberately: an OS-scoped base directory needs no
+/// privilege to read and cannot be spoofed by a caller supplying a uid.
 ///
 /// A consequence worth stating: this is *not* guaranteed to be the same
 /// directory the Unix socket lives in. It is the agreed home for broker-v2
 /// runtime *files*, which is all the publisher and reader need to share.
 pub fn broker_v2_runtime_dir() -> std::path::PathBuf {
-    use std::path::PathBuf;
-
-    // Last resort, and deliberately not `/tmp`: a per-user directory keeps
-    // two accounts on one host from colliding without naming a uid. Only
-    // reached when the platform's runtime/temp variable is unset — cron and
-    // sessionless ssh being the realistic cases.
-    fn per_user_fallback() -> PathBuf {
-        dirs::cache_dir()
-            .or_else(dirs::data_local_dir)
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("running-process")
-            .join("broker-v2")
-    }
-
-    #[cfg(windows)]
-    {
-        // Named pipes have no directory, so this is chosen rather than
-        // derived. `data_local_dir` is per-user and non-roaming, which is
-        // what a machine-local endpoint file wants — a roaming profile
-        // would carry a port from another machine.
-        dirs::data_local_dir()
-            .map(|d| d.join("running-process").join("broker-v2"))
-            .unwrap_or_else(per_user_fallback)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // macOS hands each user a private `TMPDIR` (`/var/folders/…`), so it
-        // is already per-user. The short leaf matters here: the broker's
-        // sockets share this root and `sun_path` is only 104 bytes.
-        match std::env::var_os("TMPDIR") {
-            Some(tmp) => PathBuf::from(tmp).join("rp-broker-v2"),
-            None => per_user_fallback(),
-        }
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        match std::env::var_os("XDG_RUNTIME_DIR") {
-            Some(d) => PathBuf::from(d).join("running-process").join("broker-v2"),
-            None => per_user_fallback(),
-        }
-    }
+    crate::platform::ipc::broker_v2_runtime_dir()
 }
 
 /// Path of the identity file a daemon publishes for `service`.
