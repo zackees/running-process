@@ -13,7 +13,7 @@
 
 use std::io;
 
-use interprocess::local_socket::{Listener, ListenerOptions};
+use crate::platform::ipc::Listener;
 
 /// Resolve the bare pipe/socket name into a full, platform-specific bind
 /// path: `\\.\pipe\<bare_name>` on Windows, or a file under a per-user
@@ -35,8 +35,8 @@ pub fn resolve_path_scoped_socket_path(bare_name: &str) -> Result<String, String
     crate::platform::ipc::broker_endpoint_name(bare_name, true).map_err(|error| error.to_string())
 }
 
-/// Classify a [`ListenerOptions::create_sync`] error as "another process is
-/// already bound at this name" vs any other bind failure.
+/// Classify a [`Listener::bind`] error as "another process is already bound at
+/// this name" vs any other bind failure.
 ///
 /// `AddrInUse` / `WouldBlock` are the canonical "another listener already
 /// owns this name" signals on Unix-style transports. **Windows named-pipe
@@ -78,8 +78,7 @@ pub fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket:
 /// Why [`bind_singleton`] refused to bind.
 #[derive(Debug)]
 pub enum BindSingletonError {
-    /// Building the platform [`Name`](interprocess::local_socket::Name)
-    /// from `socket_path` failed.
+    /// Resolving `socket_path` into a platform endpoint failed.
     InvalidName(String),
     /// Another process already holds this name — the singleton refusal
     /// path. Callers typically map this to an actionable "already running"
@@ -110,22 +109,18 @@ pub enum BindSingletonError {
 /// On Unix, the parent directory of `socket_path` is created if missing
 /// before the first bind attempt.
 pub fn bind_singleton(socket_path: &str) -> Result<Listener, BindSingletonError> {
-    let name = wrap_socket_name(socket_path).map_err(BindSingletonError::InvalidName)?;
     let endpoint = crate::platform::ipc::Endpoint::new(socket_path.to_owned())
         .map_err(|error| BindSingletonError::InvalidName(error.to_string()))?;
     endpoint
         .ensure_parent_exists()
         .map_err(BindSingletonError::Other)?;
     #[allow(unused_mut)]
-    let mut listener_result = ListenerOptions::new().name(name).create_sync();
+    let mut listener_result = Listener::bind(&endpoint);
 
     if let Err(err) = &listener_result {
         if is_already_bound_error(err) && endpoint.is_stale() {
             let _ = endpoint.retire();
-            listener_result = match wrap_socket_name(socket_path) {
-                Ok(retry_name) => ListenerOptions::new().name(retry_name).create_sync(),
-                Err(_) => listener_result,
-            };
+            listener_result = Listener::bind(&endpoint);
         }
     }
 

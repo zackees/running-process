@@ -66,8 +66,6 @@ mod tests {
     use super::*;
 
     #[cfg(feature = "client-async")]
-    use interprocess::local_socket::traits::Listener as _;
-    #[cfg(feature = "client-async")]
     use prost::Message as _;
 
     /// Build a typed v2 refusal for classification parity tests.
@@ -194,7 +192,7 @@ mod tests {
     }
 
     #[cfg(feature = "client-async")]
-    fn bind_test_listener(endpoint: &str) -> interprocess::local_socket::Listener {
+    fn bind_test_listener(endpoint: &str) -> crate::platform::ipc::Listener {
         crate::broker::server::singleton_bind::bind_singleton(endpoint).expect("bind test listener")
     }
 

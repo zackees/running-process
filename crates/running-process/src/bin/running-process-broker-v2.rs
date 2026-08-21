@@ -53,8 +53,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::traits::{Listener as _, Stream as _};
-use interprocess::local_socket::ListenerNonblockingMode;
 use prost::Message;
 use running_process::broker::broker_http_discovery;
 use running_process::broker::broker_http_port::BrokerHttpPort;
@@ -72,6 +70,7 @@ use running_process::broker::protocol_v2::ServiceDefinitionLoader;
 use running_process::broker::server::deadline_stream::{hello_read_deadline, DeadlineStream};
 use running_process::broker::server::service_def_loader::ServiceDefinitionError;
 use running_process::broker::server::singleton_bind;
+use running_process::client::{IpcListener, IpcStream, ListenerNonblockingMode};
 
 /// Write a line to stdout, tolerating a reader that has gone away.
 ///
@@ -582,7 +581,7 @@ fn start_http_surface(
 /// connection, bounded by `MAX_INFLIGHT_HANDLERS`. A nonblocking listener
 /// makes the shutdown flag observable within [`ACCEPT_POLL_INTERVAL`].
 fn accept_loop(
-    listener: &interprocess::local_socket::Listener,
+    listener: &IpcListener,
     loader: Arc<ServiceDefinitionLoader>,
     inflight: Arc<AtomicUsize>,
     shutdown: &AtomicBool,
@@ -716,7 +715,7 @@ fn drain_handlers(handlers: &mut Vec<thread::JoinHandle<()>>, timeout: Duration)
 /// One-shot accept (replaces the prior scaffold behavior; used by
 /// `--once` for tests + by the slice-3c integration test).
 fn accept_one(
-    listener: &interprocess::local_socket::Listener,
+    listener: &IpcListener,
     loader: Arc<ServiceDefinitionLoader>,
     http: Option<Arc<HttpEndpointRegistry>>,
 ) -> ExitCode {
@@ -745,7 +744,7 @@ fn accept_one(
 }
 
 fn handle_hello_with_deadline(
-    stream: &mut interprocess::local_socket::Stream,
+    stream: &mut IpcStream,
     loader: &ServiceDefinitionLoader,
 ) -> Result<String, String> {
     stream

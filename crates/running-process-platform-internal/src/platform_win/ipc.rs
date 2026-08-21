@@ -400,6 +400,12 @@ impl From<ListenerNonblockingMode> for interprocess::local_socket::ListenerNonbl
 
 pub struct Listener(interprocess::local_socket::Listener);
 
+impl std::fmt::Debug for Listener {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("IpcListener")
+    }
+}
+
 impl Listener {
     pub fn bind(endpoint: &Endpoint) -> io::Result<Self> {
         Self::bind_with_options(endpoint, true, ListenerNonblockingMode::Neither)
