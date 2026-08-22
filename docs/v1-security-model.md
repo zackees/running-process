@@ -223,6 +223,15 @@ backend spawn coordinator contains no native `unsafe` sites. The broker retains
 the policy around them: lock lifetime, the identity re-check that detects a
 replaced lock file, retry budgets, and error classification.
 
+The former `manifest.rs` entry was retired by #972. Its single `unsafe` token
+was the `ReplaceFileW` call that swaps a freshly written manifest onto the
+published path. Atomic replacement now executes inside the audited platform
+filesystem facade, which is also where the Unix `rename` and the parent-
+directory fsync live, so one reviewed implementation covers durability on every
+host. The broker retains what it always owned: the temporary file's name, the
+content it writes, the SHA-256 it records, and when a replacement is
+attempted.
+
 The former `lifecycle/names.rs` entry was retired by #971. Its two inventoried
 `unsafe` tokens were both `libc::getuid()` reads used to derive the Unix
 fallback socket directory. Endpoint directory placement and the `sun_path` /

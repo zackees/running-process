@@ -195,3 +195,63 @@ pub fn decode_path_bytes(bytes: &[u8]) -> io::Result<PathBuf> {
         .collect::<Vec<_>>();
     Ok(PathBuf::from(std::ffi::OsString::from_wide(&wide)))
 }
+
+/// Directory for `product`'s shared application data.
+///
+/// Distinct from [`user_state_dir`]: state is this machine's private
+/// bookkeeping, while this is the data a user expects to follow their account.
+/// That is exactly the roaming/local split, so this uses the roaming root
+/// while the state and runtime roles use the local one.
+pub fn user_data_dir(product: &str) -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join(product)
+}
+
+/// Move `tmp` onto `target`, replacing it, without a window where neither is
+/// readable.
+///
+/// `ReplaceFileW` is the call that gives that guarantee here; a bare rename
+/// onto an existing file fails on Windows. With no file to replace there is
+/// nothing for it to do, so a rename is both correct and cheaper.
+pub fn replace_file(tmp: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+
+    if !target.exists() {
+        return std::fs::rename(tmp, target);
+    }
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let target_w = wide(target);
+    let tmp_w = wide(tmp);
+    let ok = unsafe {
+        ReplaceFileW(
+            target_w.as_ptr(),
+            tmp_w.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Make a directory entry created by [`replace_file`] durable.
+///
+/// Nothing to do here: `REPLACEFILE_WRITE_THROUGH` already committed the
+/// change, and Windows does not expose a directory handle to flush.
+pub fn sync_directory(_directory: &Path) -> io::Result<()> {
+    Ok(())
+}
