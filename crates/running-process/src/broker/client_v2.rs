@@ -742,16 +742,19 @@ fn resolve_socket_path(bare_name: &str) -> String {
     }
 }
 
+/// Resolve a test endpoint the same way the code under test does.
+///
+/// Deliberately goes through `platform::ipc` rather than re-deriving a name:
+/// every bind and dial must share the canonical conversion boundary so a
+/// resolved Windows pipe cannot acquire its namespace twice.
 #[cfg(test)]
-fn wrap_socket_name(socket_path: &str) -> Result<interprocess::local_socket::Name<'_>, String> {
-    crate::broker::server::singleton_bind::wrap_socket_name(socket_path)
+fn test_endpoint(socket_path: &str) -> ipc::Endpoint {
+    ipc::Endpoint::new(socket_path.to_owned()).expect("test endpoint")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interprocess::local_socket::traits::Listener as _;
-    use interprocess::local_socket::ListenerOptions;
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -911,7 +914,7 @@ mod tests {
     fn spawn_stub_broker(socket_path: String) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            let endpoint = test_endpoint(&socket_path);
             #[cfg(unix)]
             let _cleanup = {
                 let _ =
@@ -919,10 +922,7 @@ mod tests {
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
-            let listener = ListenerOptions::new()
-                .name(name)
-                .create_sync()
-                .expect("ListenerOptions create_sync");
+            let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
             let (hello, request_id) = read_hello_frame(&mut stream);
@@ -992,7 +992,7 @@ mod tests {
         let (ready_tx, ready_rx) = mpsc::channel();
         let (hello_tx, hello_rx) = mpsc::channel();
         thread::spawn(move || {
-            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            let endpoint = test_endpoint(&socket_path);
             #[cfg(unix)]
             let _cleanup = {
                 let _ =
@@ -1000,10 +1000,7 @@ mod tests {
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
-            let listener = ListenerOptions::new()
-                .name(name)
-                .create_sync()
-                .expect("ListenerOptions create_sync");
+            let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             ready_tx.send(()).expect("ready");
             let mut stream = listener.accept().expect("accept");
             let (hello, request_id) = read_hello_frame(&mut stream);
@@ -1050,7 +1047,7 @@ mod tests {
     fn spawn_stall_broker(socket_path: String) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            let endpoint = test_endpoint(&socket_path);
             #[cfg(unix)]
             let _cleanup = {
                 let _ =
@@ -1058,10 +1055,7 @@ mod tests {
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
-            let listener = ListenerOptions::new()
-                .name(name)
-                .create_sync()
-                .expect("ListenerOptions create_sync");
+            let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let _stream = listener.accept().expect("accept");
             // Stall — never reads the Hello, never replies. The deadline
@@ -1104,7 +1098,7 @@ mod tests {
     fn spawn_refusing_broker(socket_path: String, retry_after_ms: u64) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            let endpoint = test_endpoint(&socket_path);
             #[cfg(unix)]
             let _cleanup = {
                 let _ =
@@ -1112,10 +1106,7 @@ mod tests {
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
-            let listener = ListenerOptions::new()
-                .name(name)
-                .create_sync()
-                .expect("ListenerOptions create_sync");
+            let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
             let (_hello, request_id) = read_hello_frame(&mut stream);
@@ -1139,7 +1130,7 @@ mod tests {
     fn spawn_multi_accept_stub_broker(socket_path: String, count: usize) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            let endpoint = test_endpoint(&socket_path);
             #[cfg(unix)]
             let _cleanup = {
                 let _ =
@@ -1147,10 +1138,7 @@ mod tests {
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
-            let listener = ListenerOptions::new()
-                .name(name)
-                .create_sync()
-                .expect("ListenerOptions create_sync");
+            let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             for _ in 0..count {
                 let mut stream = match listener.accept() {
@@ -1225,7 +1213,7 @@ mod tests {
     fn spawn_missing_result_broker(socket_path: String) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            let endpoint = test_endpoint(&socket_path);
             #[cfg(unix)]
             let _cleanup = {
                 let _ =
@@ -1233,10 +1221,7 @@ mod tests {
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
-            let listener = ListenerOptions::new()
-                .name(name)
-                .create_sync()
-                .expect("ListenerOptions create_sync");
+            let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
             let (_hello, request_id) = read_hello_frame(&mut stream);
@@ -1280,7 +1265,7 @@ mod tests {
     fn spawn_drop_on_accept_broker(socket_path: String) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let name = wrap_socket_name(&socket_path).expect("wrap_socket_name");
+            let endpoint = test_endpoint(&socket_path);
             #[cfg(unix)]
             let _cleanup = {
                 let _ =
@@ -1288,10 +1273,7 @@ mod tests {
                 let _ = std::fs::remove_file(&socket_path);
                 SocketCleanup(std::path::PathBuf::from(&socket_path))
             };
-            let listener = ListenerOptions::new()
-                .name(name)
-                .create_sync()
-                .expect("ListenerOptions create_sync");
+            let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let stream = listener.accept().expect("accept");
             drop(stream); // immediate close
@@ -1503,8 +1485,6 @@ mod tests {
 #[cfg(test)]
 mod backend_dial_tests {
     use super::*;
-    use interprocess::local_socket::traits::Listener as _;
-    use interprocess::local_socket::ListenerOptions;
 
     /// Build a session with a chosen `backend_pipe`.
     ///
@@ -1521,15 +1501,6 @@ mod backend_dial_tests {
                 ..Default::default()
             },
         }
-    }
-
-    /// Resolve a name the same way the code under test does.
-    ///
-    /// Deliberately delegates to production's `local_socket_name` rather than
-    /// re-deriving it. Every bind and dial must share the canonical conversion
-    /// boundary so a resolved Windows pipe cannot acquire its namespace twice.
-    fn socket_name(path: &str) -> interprocess::local_socket::Name<'_> {
-        crate::broker::server::connection::local_socket_name(path).expect("socket name")
     }
 
     fn temp_endpoint(tag: &str) -> (tempfile::TempDir, String) {
@@ -1552,10 +1523,7 @@ mod backend_dial_tests {
     #[test]
     fn a_negotiated_reply_with_no_backend_pipe_is_its_own_error() {
         let (_dir, path) = temp_endpoint("empty");
-        let listener = ListenerOptions::new()
-            .name(socket_name(&path))
-            .create_sync()
-            .expect("bind");
+        let listener = ipc::Listener::bind(&test_endpoint(&path)).expect("bind");
         let session = session_with(&path, "");
         let _accepted = listener.accept().expect("accept");
 
@@ -1577,15 +1545,11 @@ mod backend_dial_tests {
     #[test]
     fn the_dial_connects_to_the_backend_and_carries_traffic() {
         let (_bdir, broker_path) = temp_endpoint("broker");
-        let broker_listener = ListenerOptions::new()
-            .name(socket_name(&broker_path))
-            .create_sync()
-            .expect("bind broker");
+        let broker_listener =
+            ipc::Listener::bind(&test_endpoint(&broker_path)).expect("bind broker");
         let (_kdir, backend_path) = temp_endpoint("backend");
-        let backend_listener = ListenerOptions::new()
-            .name(socket_name(&backend_path))
-            .create_sync()
-            .expect("bind backend");
+        let backend_listener =
+            ipc::Listener::bind(&test_endpoint(&backend_path)).expect("bind backend");
         let session = session_with(&broker_path, &backend_path);
         let _broker_accepted = broker_listener.accept().expect("accept broker");
 
@@ -1620,10 +1584,8 @@ mod backend_dial_tests {
     #[test]
     fn a_backend_that_is_not_listening_reports_a_connect_error() {
         let (_bdir, broker_path) = temp_endpoint("broker2");
-        let broker_listener = ListenerOptions::new()
-            .name(socket_name(&broker_path))
-            .create_sync()
-            .expect("bind broker");
+        let broker_listener =
+            ipc::Listener::bind(&test_endpoint(&broker_path)).expect("bind broker");
         let (_kdir, dead_path) = temp_endpoint("nobody-home");
         let session = session_with(&broker_path, &dead_path);
         let _broker_accepted = broker_listener.accept().expect("accept broker");
@@ -1656,15 +1618,11 @@ mod backend_dial_tests {
     #[test]
     fn the_async_dial_reaches_the_backend() {
         let (_bdir, broker_path) = temp_endpoint("abroker");
-        let broker_listener = ListenerOptions::new()
-            .name(socket_name(&broker_path))
-            .create_sync()
-            .expect("bind broker");
+        let broker_listener =
+            ipc::Listener::bind(&test_endpoint(&broker_path)).expect("bind broker");
         let (_kdir, backend_path) = temp_endpoint("abackend");
-        let backend_listener = ListenerOptions::new()
-            .name(socket_name(&backend_path))
-            .create_sync()
-            .expect("bind backend");
+        let backend_listener =
+            ipc::Listener::bind(&test_endpoint(&backend_path)).expect("bind backend");
         let inner = session_with(&broker_path, &backend_path);
         let _broker_accepted = broker_listener.accept().expect("accept broker");
 
@@ -1700,10 +1658,8 @@ mod backend_dial_tests {
     #[test]
     fn a_dial_failure_is_not_reported_as_a_runtime_failure() {
         let (_bdir, broker_path) = temp_endpoint("abroker2");
-        let broker_listener = ListenerOptions::new()
-            .name(socket_name(&broker_path))
-            .create_sync()
-            .expect("bind broker");
+        let broker_listener =
+            ipc::Listener::bind(&test_endpoint(&broker_path)).expect("bind broker");
         let (_kdir, dead_path) = temp_endpoint("anobody");
         let inner = session_with(&broker_path, &dead_path);
         let _broker_accepted = broker_listener.accept().expect("accept broker");
@@ -1722,10 +1678,7 @@ mod backend_dial_tests {
     #[test]
     fn an_empty_backend_pipe_survives_the_async_hop() {
         let (_dir, path) = temp_endpoint("aempty");
-        let listener = ListenerOptions::new()
-            .name(socket_name(&path))
-            .create_sync()
-            .expect("bind");
+        let listener = ipc::Listener::bind(&test_endpoint(&path)).expect("bind");
         let inner = session_with(&path, "");
         let _accepted = listener.accept().expect("accept");
 
