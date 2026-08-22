@@ -5,7 +5,9 @@
 pub(crate) mod fs;
 #[cfg(feature = "fs")]
 pub use fs::{
-    file_identity as fs_file_identity, path_identity as fs_path_identity,
+    file_identity as fs_file_identity, is_lock_conflict as fs_is_lock_conflict,
+    open_lock_file as fs_open_lock_file, path_identity as fs_path_identity,
+    try_lock_exclusive as fs_try_lock_exclusive, unlock as fs_unlock,
     user_run_data_root as fs_user_run_data_root, user_runtime_dir as fs_user_runtime_dir,
     user_state_dir as fs_user_state_dir, FileIdentity as FsFileIdentity,
 };

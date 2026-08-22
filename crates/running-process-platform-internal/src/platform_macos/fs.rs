@@ -75,3 +75,56 @@ pub fn path_identity(path: &Path) -> io::Result<Option<FileIdentity>> {
         file: metadata.ino(),
     }))
 }
+
+/// Open `path` for use as an advisory lock file, creating it if absent.
+///
+/// The mode matters as much as the open: a lock file another account can
+/// rewrite is not a lock. Unix answers that with owner-only permissions.
+pub fn open_lock_file(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        // Never truncate: an existing lock file may be held right now,
+        // and its contents are not ours to clear.
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+}
+
+/// Take an exclusive advisory lock without waiting.
+///
+/// Returns immediately when another holder has it; the caller decides whether
+/// that is a conflict worth retrying, via [`is_lock_conflict`].
+pub fn try_lock_exclusive(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd as _;
+
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Release a lock taken by [`try_lock_exclusive`].
+pub fn unlock(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd as _;
+
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Whether `error` means "someone else holds it", rather than a real failure.
+///
+/// Hosts spell this differently and callers must not have to know which; the
+/// distinction decides whether waiting is worthwhile.
+pub fn is_lock_conflict(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(libc::EWOULDBLOCK) || error.raw_os_error() == Some(libc::EAGAIN)
+}

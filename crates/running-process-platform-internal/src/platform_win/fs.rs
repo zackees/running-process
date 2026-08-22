@@ -81,3 +81,80 @@ pub fn path_identity(path: &Path) -> io::Result<Option<FileIdentity>> {
         .open(path)?;
     file_identity(&file)
 }
+
+/// Open `path` for use as an advisory lock file, creating it if absent.
+///
+/// The share mode is permissive on purpose: exclusion must come from the lock,
+/// not from the open, or a second opener fails before it can even ask.
+pub fn open_lock_file(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use winapi::um::winnt::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        // Never truncate: an existing lock file may be held right now,
+        // and its contents are not ours to clear.
+        .truncate(false)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)
+}
+
+/// Take an exclusive advisory lock without waiting.
+pub fn try_lock_exclusive(file: &File) -> io::Result<()> {
+    use std::mem;
+    use std::os::windows::io::AsRawHandle as _;
+    use winapi::um::fileapi::LockFileEx;
+    use winapi::um::minwinbase::{LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, OVERLAPPED};
+    use winapi::um::winnt::HANDLE;
+
+    let mut overlapped: OVERLAPPED = unsafe { mem::zeroed() };
+    let result = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as HANDLE,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Release a lock taken by [`try_lock_exclusive`].
+pub fn unlock(file: &File) -> io::Result<()> {
+    use std::mem;
+    use std::os::windows::io::AsRawHandle as _;
+    use winapi::um::fileapi::UnlockFileEx;
+    use winapi::um::minwinbase::OVERLAPPED;
+    use winapi::um::winnt::HANDLE;
+
+    let mut overlapped: OVERLAPPED = unsafe { mem::zeroed() };
+    let result = unsafe {
+        UnlockFileEx(
+            file.as_raw_handle() as HANDLE,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether `error` means "someone else holds it", rather than a real failure.
+pub fn is_lock_conflict(error: &io::Error) -> bool {
+    use winapi::shared::winerror::ERROR_LOCK_VIOLATION;
+
+    error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32)
+}

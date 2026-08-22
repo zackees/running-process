@@ -8,7 +8,9 @@
 
 #[cfg(feature = "fs")]
 pub use crate::{
-    fs_file_identity as file_identity, fs_path_identity as path_identity,
+    fs_file_identity as file_identity, fs_is_lock_conflict as is_lock_conflict,
+    fs_open_lock_file as open_lock_file, fs_path_identity as path_identity,
+    fs_try_lock_exclusive as try_lock_exclusive, fs_unlock as unlock,
     fs_user_run_data_root as user_run_data_root, fs_user_runtime_dir as user_runtime_dir,
     fs_user_state_dir as user_state_dir, FsFileIdentity as FileIdentity,
 };
@@ -91,6 +93,46 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An exclusive lock excludes a second holder, and releasing readmits one.
+    ///
+    /// Both handles are opened through the facade, so this exercises the open
+    /// and the lock together -- on Windows the two interact, because a
+    /// restrictive share mode would fail the second open before it could ask
+    /// for the lock.
+    #[test]
+    fn an_exclusive_lock_excludes_a_second_holder_until_released() {
+        let dir = std::env::temp_dir().join(format!("rp-fs-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join("guard.lock");
+
+        let first = open_lock_file(&path).expect("open first");
+        let second = open_lock_file(&path).expect("open second");
+
+        try_lock_exclusive(&first).expect("first acquires");
+        let conflict = try_lock_exclusive(&second).expect_err("second must be refused");
+        assert!(
+            is_lock_conflict(&conflict),
+            "refusal must classify as a conflict, got {conflict:?}"
+        );
+
+        unlock(&first).expect("release first");
+        try_lock_exclusive(&second).expect("second acquires after release");
+        unlock(&second).expect("release second");
+
+        drop((first, second));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A genuine failure is not reported as a conflict, so a caller does not
+    /// retry forever on something waiting cannot fix.
+    #[test]
+    fn an_unrelated_error_is_not_a_lock_conflict() {
+        let missing = std::env::temp_dir().join("rp-fs-lock-no-such-file");
+        let _ = std::fs::remove_file(&missing);
+        let error = std::fs::File::open(&missing).expect_err("must not exist");
+        assert!(!is_lock_conflict(&error));
     }
 
     /// The roles are stable: asking twice gives the same answer, so a path

@@ -210,15 +210,18 @@ public error and fallback policy, and reaches the mechanics only through hidden
 crate-root compatibility adapters, so the shared handoff path contains no
 native `unsafe` sites.
 
-The `server/spawn_coordinator.rs` inventory dropped from eight `unsafe`
-tokens to six in #972. The two retired tokens were the Windows lock-file
-identity probe: a `BY_HANDLE_FILE_INFORMATION` `assume_init` and the
-`GetFileInformationByHandle` call behind it. Stable file identity now executes
-inside the audited platform filesystem facade, which answers "is this still the
-same file" for every host. The broker retains the six remaining tokens -- the
-Unix `flock` pair and the two Windows `LockFileEx` / `UnlockFileEx` sites with
-their zero-initialized `OVERLAPPED` structs -- along with all lock lifetime,
-conflict-classification, and retry policy.
+The former `server/spawn_coordinator.rs` entry was retired by #972, in two
+steps. First the Windows lock-file identity probe moved out -- a
+`BY_HANDLE_FILE_INFORMATION` `assume_init` and the `GetFileInformationByHandle`
+behind it -- taking the count from eight to six. Then the advisory file lock
+itself moved: the Unix `flock` pair and the two Windows `LockFileEx` /
+`UnlockFileEx` sites with their zero-initialized `OVERLAPPED` structs. Opening
+a lock file with host-appropriate permissions, taking and releasing an
+exclusive lock, telling a contended lock from a failed one, and proving file
+identity all now execute inside the audited platform filesystem facade, so the
+backend spawn coordinator contains no native `unsafe` sites. The broker retains
+the policy around them: lock lifetime, the identity re-check that detects a
+replaced lock file, retry budgets, and error classification.
 
 The former `lifecycle/names.rs` entry was retired by #971. Its two inventoried
 `unsafe` tokens were both `libc::getuid()` reads used to derive the Unix
