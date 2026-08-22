@@ -1140,9 +1140,6 @@ crates/running-process/src/observer/mod.rs	attr_cfg	target_os	0
 crates/running-process/src/observer/mod.rs	attr_cfg	target_os	1
 crates/running-process/src/observer/mod.rs	attr_cfg	target_os	2
 crates/running-process/src/observer/mod.rs	attr_cfg	target_os	3
-crates/running-process/src/probe/capture.rs	attr_cfg	unix	0
-crates/running-process/src/probe/capture.rs	native_import	std::os::unix	0
-crates/running-process/src/probe/capture.rs	native_import	std::os::unix	1
 crates/running-process/src/probe/client.rs	cfg_macro	windows	0
 crates/running-process/src/probe/mod.rs	cfg_macro	windows	0
 crates/running-process/src/probe/mod.rs	cfg_macro	windows	1

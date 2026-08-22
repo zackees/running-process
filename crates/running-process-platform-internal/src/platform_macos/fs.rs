@@ -176,3 +176,19 @@ pub fn replace_file(tmp: &Path, target: &Path) -> io::Result<()> {
 pub fn sync_directory(directory: &Path) -> io::Result<()> {
     File::open(directory)?.sync_all()
 }
+
+/// Create a new file that only its owner can read, failing if it exists.
+///
+/// `create_new` is part of the contract, not a convenience: a private file
+/// opened over one that already exists inherits whatever that one allowed.
+/// Unix sets the mode at creation, so there is no window where the file exists
+/// with broader permissions.
+pub fn create_private_file(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}

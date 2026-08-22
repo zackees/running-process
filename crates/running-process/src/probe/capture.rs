@@ -5,7 +5,6 @@
 //! modules before ASLR makes them meaningless. The artifact handed to the
 //! daemon contains module indexes and relative offsets only.
 
-use std::fs::OpenOptions;
 use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -199,14 +198,9 @@ fn create_artifact(payload: &RawCapture) -> io::Result<PathBuf> {
         std::process::id()
     ));
 
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&path)?;
+    // The temp directory is already per-user on every host we support, and the
+    // facade adds owner-only permissions where the host expresses them.
+    let mut file = crate::platform::fs::create_private_file(&path)?;
     serde_json::to_writer(&mut file, payload)
         .map_err(|error| io::Error::other(format!("encode capture: {error}")))?;
     file.flush()?;

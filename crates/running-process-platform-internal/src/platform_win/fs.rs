@@ -255,3 +255,20 @@ pub fn replace_file(tmp: &Path, target: &Path) -> io::Result<()> {
 pub fn sync_directory(_directory: &Path) -> io::Result<()> {
     Ok(())
 }
+
+/// Create a new file that only its owner can read, failing if it exists.
+///
+/// `create_new` is part of the contract, not a convenience: a private file
+/// opened over one that already exists inherits whatever that one allowed.
+///
+/// Windows carries no mode bits here; the file inherits its directory's ACL.
+/// That is the same protection by a different route as long as the caller
+/// creates it somewhere already scoped to one user -- a per-user temp
+/// directory, or one of the [`user_runtime_dir`] roles -- which is why the
+/// directory choice is the caller's and matters.
+pub fn create_private_file(path: &Path) -> io::Result<File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+}

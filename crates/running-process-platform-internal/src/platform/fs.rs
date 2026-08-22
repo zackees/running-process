@@ -8,14 +8,14 @@
 
 #[cfg(feature = "fs")]
 pub use crate::{
-    fs_decode_path_bytes as decode_path_bytes, fs_encode_path_bytes as encode_path_bytes,
-    fs_file_identity as file_identity, fs_is_lock_conflict as is_lock_conflict,
-    fs_open_lock_file as open_lock_file, fs_path_identity as path_identity,
-    fs_replace_file as replace_file, fs_sync_directory as sync_directory,
-    fs_try_lock_exclusive as try_lock_exclusive, fs_unlock as unlock,
-    fs_user_data_dir as user_data_dir, fs_user_run_data_root as user_run_data_root,
-    fs_user_runtime_dir as user_runtime_dir, fs_user_state_dir as user_state_dir,
-    FsFileIdentity as FileIdentity,
+    fs_create_private_file as create_private_file, fs_decode_path_bytes as decode_path_bytes,
+    fs_encode_path_bytes as encode_path_bytes, fs_file_identity as file_identity,
+    fs_is_lock_conflict as is_lock_conflict, fs_open_lock_file as open_lock_file,
+    fs_path_identity as path_identity, fs_replace_file as replace_file,
+    fs_sync_directory as sync_directory, fs_try_lock_exclusive as try_lock_exclusive,
+    fs_unlock as unlock, fs_user_data_dir as user_data_dir,
+    fs_user_run_data_root as user_run_data_root, fs_user_runtime_dir as user_runtime_dir,
+    fs_user_state_dir as user_state_dir, FsFileIdentity as FileIdentity,
 };
 
 #[cfg(all(test, feature = "fs"))]
@@ -202,6 +202,31 @@ mod tests {
         let data = user_data_dir(PRODUCT);
         assert!(data.is_absolute());
         assert!(data.to_string_lossy().contains(PRODUCT));
+    }
+
+    /// A private file is created, and refuses to open over an existing one.
+    ///
+    /// The refusal is the security-relevant half: opening over a file someone
+    /// else made would inherit their permissions, so it must fail rather than
+    /// succeed with weaker protection than the caller asked for.
+    #[test]
+    fn a_private_file_is_created_once_and_refuses_to_reopen() {
+        let dir = std::env::temp_dir().join(format!("rp-fs-private-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join("artifact.json");
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut file = create_private_file(&path).expect("create private file");
+            use std::io::Write as _;
+            file.write_all(b"payload").expect("write");
+        }
+        assert_eq!(std::fs::read(&path).expect("read back"), b"payload");
+
+        let second = create_private_file(&path).expect_err("must not open over an existing file");
+        assert_eq!(second.kind(), std::io::ErrorKind::AlreadyExists);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The roles are stable: asking twice gives the same answer, so a path

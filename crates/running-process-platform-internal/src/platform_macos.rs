@@ -5,6 +5,7 @@
 pub(crate) mod fs;
 #[cfg(feature = "fs")]
 pub use fs::{
+    create_private_file as fs_create_private_file,
     decode_path_bytes as fs_decode_path_bytes,
     replace_file as fs_replace_file, sync_directory as fs_sync_directory,
     user_data_dir as fs_user_data_dir, encode_path_bytes as fs_encode_path_bytes,
