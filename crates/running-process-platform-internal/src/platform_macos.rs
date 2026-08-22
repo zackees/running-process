@@ -4,6 +4,7 @@
 pub(crate) mod host;
 pub use host::{
     current_process_privilege as host_current_process_privilege,
+    user_machine_identity as host_user_machine_identity,
     PrivilegedIdentity as HostPrivilegedIdentity,
 };
 

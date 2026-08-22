@@ -38,6 +38,57 @@ fn privilege_from_effective_uid(euid: libc::uid_t) -> Option<PrivilegedIdentity>
     (euid == 0).then_some(PrivilegedIdentity::UnixRoot)
 }
 
+
+/// A stable identity for this user on this machine.
+///
+/// The uid alone is not enough -- two machines both have a uid 501 -- so it is
+/// paired with the platform UUID. Callers hash this; they do not parse it.
+pub fn user_machine_identity() -> io::Result<String> {
+    let uid = unsafe { libc::getuid() };
+    let uuid = platform_uuid()?;
+    Ok(format!("{uid}:{uuid}"))
+}
+
+/// This machine's `IOPlatformUUID`.
+///
+/// `ioreg -d2 -c IOPlatformExpertDevice` prints a block containing a line like
+/// `"IOPlatformUUID" = "ABCDEF..."`. Parsing that one line is cheaper and more
+/// predictable than a full plist parser for a value of this shape.
+///
+/// This is a fixed-argument, read-only system query with no caller input. It
+/// deliberately does not route through the sanitized spawn layer: it runs
+/// before any broker endpoint is bound, because the identity it produces is an
+/// *input* to the endpoint name.
+fn platform_uuid() -> io::Result<String> {
+    let output = std::process::Command::new("ioreg")
+        .args(["-d2", "-c", "IOPlatformExpertDevice"])
+        .output()
+        .map_err(|e| io::Error::other(format!("spawn ioreg: {e}")))?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "ioreg failed (status={:?})",
+            output.status.code()
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("\"IOPlatformUUID\"") {
+            // rest looks like ` = "ABCDEF-..."`
+            if let Some(eq_idx) = rest.find('=') {
+                let value = rest[eq_idx + 1..].trim();
+                let unquoted = value.trim_matches('"');
+                if !unquoted.is_empty() {
+                    return Ok(unquoted.to_string());
+                }
+            }
+        }
+    }
+    Err(io::Error::other(
+        "ioreg output did not contain IOPlatformUUID",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
