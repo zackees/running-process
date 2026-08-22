@@ -94,6 +94,9 @@ pub fn open_lock_file(path: &Path) -> io::Result<File> {
         .read(true)
         .write(true)
         .create(true)
+        // Never truncate: an existing lock file may be held right now,
+        // and its contents are not ours to clear.
+        .truncate(false)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .open(path)
 }
