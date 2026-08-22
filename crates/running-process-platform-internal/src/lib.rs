@@ -67,6 +67,9 @@ pub use platform_imp::{
     executable_file_name, executable_sibling_of_current_image, EXECUTABLE_EXTENSION,
 };
 
+#[cfg(feature = "fs")]
+pub use platform_imp::{fs_user_run_data_root, fs_user_runtime_dir, fs_user_state_dir};
+
 pub use platform_imp::terminal_input;
 
 #[cfg(feature = "ipc")]
