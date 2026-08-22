@@ -1,5 +1,13 @@
 //! Windows implementation root for the process capability.
 
+#[path = "platform_win/autostart.rs"]
+pub(crate) mod autostart;
+pub use autostart::{
+    register as autostart_register,
+    render_registration as autostart_render_registration,
+    unregister as autostart_unregister,
+};
+
 #[path = "platform_win/host.rs"]
 pub(crate) mod host;
 pub use host::{
