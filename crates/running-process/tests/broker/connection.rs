@@ -395,13 +395,12 @@ fn serve_local_socket_connections_handles_herd_at_attachment_cap() {
     });
 
     let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let streams = connect_herd(&name, MAX_BROKER_PIPE_ATTACHMENTS);
     let herd = Arc::new(Barrier::new(MAX_BROKER_PIPE_ATTACHMENTS));
     let mut clients = Vec::with_capacity(MAX_BROKER_PIPE_ATTACHMENTS);
-    for index in 0..MAX_BROKER_PIPE_ATTACHMENTS {
-        let name = name.clone();
+    for (index, mut client) in streams.into_iter().enumerate() {
         let herd = Arc::clone(&herd);
         clients.push(thread::spawn(move || {
-            let mut client = connect_with_retry(name);
             herd.wait();
 
             let mut request = hello(0);
@@ -583,13 +582,12 @@ fn serve_local_socket_connections_rate_limits_concurrent_hello_flood() {
     });
 
     let name = local_socket_name(&socket_name).unwrap().into_owned();
+    let streams = connect_herd(&name, CLIENTS);
     let herd = Arc::new(Barrier::new(CLIENTS));
     let mut clients = Vec::with_capacity(CLIENTS);
-    for index in 0..CLIENTS {
-        let name = name.clone();
+    for (index, mut client) in streams.into_iter().enumerate() {
         let herd = Arc::clone(&herd);
         clients.push(thread::spawn(move || {
-            let mut client = connect_with_retry(name);
             herd.wait();
 
             let mut request = hello(0);
@@ -645,6 +643,29 @@ fn serve_local_socket_connections_rate_limits_concurrent_hello_flood() {
         CLIENTS - RATE_LIMIT,
         "every over-budget client should receive ERROR_RATE_LIMITED"
     );
+}
+
+/// Connect `count` clients up front, before any of them is handed to a thread.
+///
+/// The concurrency these tests are about starts at the barrier -- a Hello
+/// flood, or a herd arriving at the attachment cap. Connecting is only setup,
+/// but it used to run inside the spawned threads, so every client raced the
+/// server's `bind` on its own fixed 3s budget. Under load the single server
+/// thread can lose that race to N clients spinning on retry, and they then
+/// panic "timed out connecting to broker local socket" -- which is how these
+/// two tests failed on unrelated PRs (#1069). Reproduced here at 3x CPU
+/// oversubscription: 3 of 8 runs failed that way, never on an assertion.
+///
+/// Connecting serially in the caller means the first connect proves the
+/// endpoint exists before any client thread starts, and the flood past the
+/// barrier is unchanged.
+fn connect_herd(
+    name: &interprocess::local_socket::Name<'static>,
+    count: usize,
+) -> Vec<interprocess::local_socket::Stream> {
+    (0..count)
+        .map(|_| connect_with_retry(name.clone()))
+        .collect()
 }
 
 fn connect_with_retry(
