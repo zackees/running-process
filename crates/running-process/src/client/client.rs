@@ -889,24 +889,20 @@ fn daemon_unavailable_error(scope_hash: Option<&str>) -> ClientError {
     ))
 }
 
+/// Program name of the daemon, unqualified by any host file spelling.
+const DAEMON_PROGRAM: &str = "running-process-daemon";
+
 /// Determine the path to the daemon executable.
 ///
 /// Looks next to the current executable first, then falls back to expecting
 /// it on `$PATH`.
 fn daemon_exe_path() -> String {
-    if let Ok(mut path) = std::env::current_exe() {
-        path.pop(); // remove current binary name
-        let candidate = path.join(if cfg!(windows) {
-            "running-process-daemon.exe"
-        } else {
-            "running-process-daemon"
-        });
-        if candidate.exists() {
-            return candidate.to_string_lossy().into_owned();
-        }
+    if let Some(sibling) = crate::platform::executable::sibling_of_current_image(DAEMON_PROGRAM) {
+        return sibling.to_string_lossy().into_owned();
     }
-    // Fallback: assume it is on PATH.
-    String::from("running-process-daemon")
+    // Fallback: assume it is on PATH. Left as the bare program name -- a PATH
+    // search supplies the host's own spelling.
+    String::from(DAEMON_PROGRAM)
 }
 
 #[cfg(test)]
