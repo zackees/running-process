@@ -3,6 +3,7 @@
 //! Concrete host selection and implementations are private to this package.
 //! Callers will use these stable capability names rather than selecting a host.
 
+pub mod autostart;
 pub mod executable;
 pub mod fs;
 pub mod host;

@@ -7,7 +7,7 @@
 # Adding tests never requires an update. Regenerate only when a removal is
 # intended, and say why in the PR: the diff is the record.
 
-# sync tests: 3172
+# sync tests: 3175
 # of those, skip-decorated: 11
 
 a_backend_that_has_not_reported_a_port_renders_as_starting
@@ -128,6 +128,7 @@ a_real_pdb_yields_symbols
 a_real_profile_exports_to_all_three_formats
 a_record_query_without_a_limit_is_not_served
 a_refused_crash_query_comes_back_on_the_crash_reply_body
+a_registration_names_the_program_it_starts
 a_reply_answering_a_different_request_is_refused
 a_reply_never_carries_the_artifact_path_or_the_inline_report
 a_reply_that_answers_the_request_is_accepted
@@ -868,6 +869,7 @@ extract_helper_blob_sets_executable_bit_on_unix
 extract_helper_blob_smoke_test_against_real_cache_dir
 extract_helper_blob_writes_and_is_idempotent
 facade_does_not_depend_on_the_probe_daemon_crate
+facade_errors_keep_their_kind
 facade_has_no_global_constructors
 failed_external_handler_rearm_is_reported_unarmed
 failed_handoff_attempts_are_bounded_and_then_rate_limited
@@ -2936,6 +2938,7 @@ the_period_follows_the_clamped_frequency
 the_pprof_carries_all_five_value_types
 the_pprof_string_table_starts_with_the_empty_string
 the_process_category_is_usable_for_this_scope
+the_rendered_registration_is_for_the_runpm_daemon
 the_rendered_stack_matches_whether_the_opt_in_is_set
 the_reported_budget_is_max_path
 the_reported_budget_is_sun_path

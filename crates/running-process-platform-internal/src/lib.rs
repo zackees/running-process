@@ -63,6 +63,8 @@ pub use platform_imp::{
     TracedChild, WindowsJobHandle,
 };
 
+pub use platform_imp::{autostart_register, autostart_render_registration, autostart_unregister};
+
 pub use platform_imp::{
     executable_file_name, executable_sibling_of_current_image, EXECUTABLE_EXTENSION,
 };
