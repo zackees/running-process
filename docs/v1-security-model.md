@@ -243,6 +243,16 @@ every part of the decision that is policy rather than fact: that privileged
 startup is refused at all, the `RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED` escape
 hatch for isolated test environments, and the operator-facing error.
 
+The former `lifecycle/sid.rs` entry was retired by #973. Its five `unsafe`
+tokens derived the per-user identity the broker hashes into its endpoint scope:
+the Windows process-token query for `TOKEN_USER`, the `CloseHandle` guard, the
+SID validity and length checks, the raw-slice read of the SID bytes, and the
+`getuid` reads on Unix. Producing that identity now executes inside the audited
+platform host facade, which owns all three shapes -- a Windows SID, a
+uid-plus-machine-id on Linux, a uid-plus-platform-UUID on macOS. The broker
+retains the parts that are its own: the BLAKE3 hash, its 16-hex truncation, and
+what the resulting scope is used for.
+
 The former `lifecycle/names.rs` entry was retired by #971. Its two inventoried
 `unsafe` tokens were both `libc::getuid()` reads used to derive the Unix
 fallback socket directory. Endpoint directory placement and the `sun_path` /

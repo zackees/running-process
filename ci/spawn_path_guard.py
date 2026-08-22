@@ -90,15 +90,16 @@ ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process/src/daemon/handlers/spawn.rs"),
     Path("crates/running-process/src/daemon/platform/windows.rs"),
     Path("crates/running-process/src/daemon/shadow.rs"),
-    # Broker SID-hash bootstrap: derives the per-user identity hash on
-    # macOS via `ioreg -d2 -c IOPlatformExpertDevice`. This runs before
-    # any broker pipe is bound (the hash is an *input* to the pipe-name
-    # derivation), so it cannot route through the broker's own spawn
-    # layer. The invocation is a fixed-argument read-only system query
-    # with no user input, parsed for the `IOPlatformUUID` line. See
-    # `crates/running-process/src/broker/lifecycle/sid.rs` for the
-    # full justification in the module docs.
-    Path("crates/running-process/src/broker/lifecycle/sid.rs"),
+    # Per-user host identity on macOS via `ioreg -d2 -c
+    # IOPlatformExpertDevice`. This runs before any broker pipe is bound
+    # (the identity is an *input* to the pipe-name derivation), so it
+    # cannot route through the broker's own spawn layer. The invocation
+    # is a fixed-argument read-only system query with no user input,
+    # parsed for the `IOPlatformUUID` line. Moved here from
+    # `broker/lifecycle/sid.rs` by #973: the concrete platform tree is
+    # where host mechanics belong, and the caller now asks the facade
+    # for an identity rather than spawning anything itself.
+    Path("crates/running-process-platform-internal/src/platform_macos/host.rs"),
     # systemd KillMode startup probe (Linux only): fixed-argument
     # read-only `systemctl show -p KillMode <unit>` query at daemon
     # startup, before any child is spawned, with no user input. See

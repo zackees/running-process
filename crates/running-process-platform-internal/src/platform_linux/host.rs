@@ -38,6 +38,20 @@ fn privilege_from_effective_uid(euid: libc::uid_t) -> Option<PrivilegedIdentity>
     (euid == 0).then_some(PrivilegedIdentity::UnixRoot)
 }
 
+
+/// A stable identity for this user on this machine.
+///
+/// The uid alone is not enough -- two machines both have a uid 1000 -- so it
+/// is paired with a machine-scoped id. Callers hash this; they do not parse it.
+pub fn user_machine_identity() -> io::Result<String> {
+    let uid = unsafe { libc::getuid() };
+    let machine_id = crate::platform::host::machine_id_from(
+        &["/etc/machine-id", "/var/lib/dbus/machine-id"],
+        "/proc/sys/kernel/random/boot_id",
+    )?;
+    Ok(format!("{uid}:{machine_id}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
