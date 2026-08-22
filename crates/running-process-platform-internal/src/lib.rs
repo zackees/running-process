@@ -68,7 +68,10 @@ pub use platform_imp::{
 };
 
 #[cfg(feature = "fs")]
-pub use platform_imp::{fs_user_run_data_root, fs_user_runtime_dir, fs_user_state_dir};
+pub use platform_imp::{
+    fs_file_identity, fs_path_identity, fs_user_run_data_root, fs_user_runtime_dir,
+    fs_user_state_dir, FsFileIdentity,
+};
 
 pub use platform_imp::terminal_input;
 

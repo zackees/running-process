@@ -1,6 +1,8 @@
 //! macOS per-user directory placement for product runtime artifacts.
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::io;
+use std::path::{Path, PathBuf};
 
 /// Directory for `product`'s ephemeral runtime artifacts (sockets, pid files).
 ///
@@ -35,4 +37,41 @@ pub fn user_run_data_root(product: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("Library/Caches")
         .join(product)
+}
+
+/// Stable identity of an open file on this host.
+///
+/// Two paths that resolve to the same bytes on disk report the same identity,
+/// which is what lets a caller notice that the file it opened has since been
+/// replaced. The two fields are whatever this host uses to say that: a device
+/// and inode, a volume serial and file index, or an equivalent pair. Callers
+/// compare them; they do not interpret them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileIdentity {
+    /// Device, volume, or platform-equivalent file namespace.
+    pub device: u64,
+    /// Inode, file index, or platform-equivalent file number.
+    pub file: u64,
+}
+
+/// Identity of an already-open file.
+pub fn file_identity(file: &File) -> io::Result<Option<FileIdentity>> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = file.metadata()?;
+    Ok(Some(FileIdentity {
+        device: metadata.dev(),
+        file: metadata.ino(),
+    }))
+}
+
+/// Identity of the file a path currently names.
+pub fn path_identity(path: &Path) -> io::Result<Option<FileIdentity>> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = path.metadata()?;
+    Ok(Some(FileIdentity {
+        device: metadata.dev(),
+        file: metadata.ino(),
+    }))
 }
