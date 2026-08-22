@@ -165,21 +165,7 @@ impl EmergencyReserve {
 
 /// True when `err` signals an out-of-space condition.
 pub fn is_disk_full_error(err: &io::Error) -> bool {
-    if matches!(err.kind(), io::ErrorKind::StorageFull) {
-        return true;
-    }
-    let Some(code) = err.raw_os_error() else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        code == libc::ENOSPC || code == libc::EDQUOT
-    }
-    #[cfg(windows)]
-    {
-        // ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL.
-        code == 39 || code == 112
-    }
+    crate::platform::resources::signals_storage_exhaustion(err)
 }
 
 /// True when an error string mentions a full disk (SQLite / wrapped errors).
@@ -193,14 +179,7 @@ pub fn message_signals_disk_full(message: &str) -> bool {
 
 /// One platform-appropriate disk-full error (test helper).
 pub fn disk_full_error_for_tests() -> io::Error {
-    #[cfg(unix)]
-    {
-        io::Error::from_raw_os_error(libc::ENOSPC)
-    }
-    #[cfg(windows)]
-    {
-        io::Error::from_raw_os_error(112)
-    }
+    crate::platform::resources::storage_exhaustion_error()
 }
 
 fn preallocate(path: &Path, size: u64) -> io::Result<()> {

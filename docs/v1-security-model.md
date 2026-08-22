@@ -167,11 +167,19 @@ path identity probe. That probe opens the target process with limited query
 rights, calls `QueryFullProcessImageNameW`, and closes the OS handle before the
 stored daemon executable path and SHA-256 are accepted.
 
-The `fs_health.rs` inventory covers the Unix inode-pressure probe (#390): two
-`unsafe` sites zero-initialize a `libc::statvfs` struct and call
-`libc::statvfs(3)` on the daemon data directory path. The path is a
-broker-owned constant (never peer-supplied), the struct is stack-local, and
-only the inode counters are read out.
+The former `fs_health.rs` entry was retired by #973. Its two `unsafe` sites
+zero-initialized a `libc::statvfs` struct and called `libc::statvfs(3)` on the
+daemon data directory path; both now execute inside the audited platform
+resources facade, under the same conditions -- the path is broker-owned and
+never peer-supplied, the struct is stack-local, and only the inode counters are
+read out. The broker keeps where to probe and how to present the result.
+
+The same facade also owns the exhaustion classifiers that
+`server/fd_pressure.rs` and `daemon/emergency_reserve.rs` used to spell out
+inline as raw errno and Win32 comparisons. Neither file carried inventoried
+`unsafe`, but both keyed security-relevant backpressure on numbers whose
+meaning differed per host; a caller now asks which wall it hit and decides what
+to do about it.
 
 The former `host_identity.rs` entry was retired by #973. Its thirteen `unsafe`
 tokens read the five facts a cache manifest records about the host that wrote

@@ -2,6 +2,17 @@
 
 #[path = "platform_linux/autostart.rs"]
 pub(crate) mod autostart;
+
+#[path = "platform_linux/resources.rs"]
+pub(crate) mod resources;
+pub use resources::{
+    fd_exhaustion_error as resources_fd_exhaustion_error,
+    inode_capacity as resources_inode_capacity,
+    signals_fd_exhaustion as resources_signals_fd_exhaustion,
+    signals_storage_exhaustion as resources_signals_storage_exhaustion,
+    storage_exhaustion_error as resources_storage_exhaustion_error,
+};
+
 pub use autostart::{
     register as autostart_register,
     render_registration as autostart_render_registration,
