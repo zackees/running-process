@@ -154,6 +154,10 @@ pub use originator::{
 pub use output_log::{
     CursorRead, OutputCursor, OutputLog, OutputRecord, SharedOutputCursor, SharedOutputLog,
 };
+/// Executable naming and image-relative discovery, for binaries in this
+/// workspace that must name a sibling program without spelling it per host.
+#[doc(hidden)]
+pub use running_process_platform_internal::platform::executable as platform_executable;
 #[cfg(target_os = "linux")]
 pub use running_process_platform_internal::platform::process::current_executable_build_id;
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};

@@ -1,5 +1,13 @@
 //! macOS implementation root for the process capability.
 
+#[path = "platform_macos/executable.rs"]
+pub(crate) mod executable;
+pub use executable::{
+    file_name as executable_file_name,
+    sibling_of_current_image as executable_sibling_of_current_image,
+    EXECUTABLE_EXTENSION,
+};
+
 #[cfg(feature = "ipc")]
 #[path = "platform_macos/ipc.rs"]
 pub(crate) mod ipc;

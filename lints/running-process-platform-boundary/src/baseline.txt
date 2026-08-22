@@ -644,9 +644,6 @@ crates/running-process/src/bin/running-process-broker-v2.rs	native_import	libc	6
 crates/running-process/src/bin/running-process-broker-v2/tests.rs	attr_cfg	windows	0
 crates/running-process/src/bin/running-process-broker-v2/tests.rs	attr_cfg	windows	1
 crates/running-process/src/bin/running-process-broker-v2/tests.rs	attr_cfg	windows	2
-crates/running-process/src/bin/runpm.rs	attr_cfg	windows	0
-crates/running-process/src/bin/runpm.rs	attr_cfg	windows	1
-crates/running-process/src/bin/runpm.rs	cfg_macro	windows	0
 crates/running-process/src/boot_autostart/mod.rs	attr_cfg	target_os	0
 crates/running-process/src/boot_autostart/mod.rs	attr_cfg	target_os	1
 crates/running-process/src/boot_autostart/mod.rs	attr_cfg	target_os	2
@@ -1040,7 +1037,6 @@ crates/running-process/src/cleanup/verify_basic.rs	attr_cfg	unix	0
 crates/running-process/src/cleanup/verify_basic.rs	attr_cfg	windows	0
 crates/running-process/src/cleanup/verify_basic.rs	native_import	libc	0
 crates/running-process/src/cleanup/verify_basic.rs	native_import	libc	1
-crates/running-process/src/client/client.rs	cfg_macro	windows	0
 crates/running-process/src/client/paths.rs	attr_cfg	target_os	0
 crates/running-process/src/client/paths.rs	attr_cfg	target_os	1
 crates/running-process/src/client/paths.rs	attr_cfg	unix	0

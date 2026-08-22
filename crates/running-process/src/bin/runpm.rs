@@ -568,40 +568,30 @@ fn cmd_unstartup() -> Result<()> {
     Ok(())
 }
 
+/// Program name of the daemon, unqualified by any host file spelling.
+const DAEMON_PROGRAM: &str = "running-process-daemon";
+
 /// Resolve the absolute path of the `running-process-daemon` binary the
 /// boot autostart unit should launch. Strategy:
-///   1. Look next to the currently-running `runpm` executable for
-///      `running-process-daemon{exe_suffix}`. This is the layout that
+///   1. Look next to the currently-running `runpm` executable, under whatever
+///      file name this host gives an executable. This is the layout that
 ///      `cargo install running-process` and any system package would
 ///      produce.
 ///   2. Fall back to `which running-process-daemon` (via `Command::new`
 ///      with no path qualifier — the OS PATH search does the heavy lifting).
 fn resolve_daemon_binary() -> Result<PathBuf> {
-    let exe = std::env::current_exe().context("could not resolve current_exe for runpm")?;
-    let sibling = exe.parent().map(|p| {
-        #[cfg(windows)]
-        {
-            p.join("running-process-daemon.exe")
-        }
-        #[cfg(not(windows))]
-        {
-            p.join("running-process-daemon")
-        }
-    });
-    if let Some(p) = sibling {
-        if p.is_file() {
-            return Ok(p);
-        }
+    if let Some(sibling) =
+        running_process::platform_executable::sibling_of_current_image(DAEMON_PROGRAM)
+    {
+        return Ok(sibling);
     }
     // Fall back to a bare name; whatever PATH resolves wins. We do NOT
     // probe with `which` because the daemon's not actually invoked
     // here, just referenced; if the PATH lookup turns out wrong, the
     // operator will see it the first time the unit fires.
-    Ok(PathBuf::from(if cfg!(windows) {
-        "running-process-daemon.exe"
-    } else {
-        "running-process-daemon"
-    }))
+    Ok(PathBuf::from(
+        running_process::platform_executable::file_name(DAEMON_PROGRAM),
+    ))
 }
 
 // ---------------------------------------------------------------------------
