@@ -3,7 +3,9 @@
 #[path = "platform_win/host.rs"]
 pub(crate) mod host;
 pub use host::{
-    current_process_privilege as host_current_process_privilege,
+    boot_id as host_boot_id, current_process_privilege as host_current_process_privilege,
+    filesystem_device_id as host_filesystem_device_id, hostname as host_hostname,
+    machine_id as host_machine_id, namespace_id as host_namespace_id,
     user_machine_identity as host_user_machine_identity,
     PrivilegedIdentity as HostPrivilegedIdentity,
 };

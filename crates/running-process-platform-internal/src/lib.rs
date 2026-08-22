@@ -76,7 +76,8 @@ pub use platform_imp::{
 };
 
 pub use platform_imp::{
-    host_current_process_privilege, host_user_machine_identity, HostPrivilegedIdentity,
+    host_boot_id, host_current_process_privilege, host_filesystem_device_id, host_hostname,
+    host_machine_id, host_namespace_id, host_user_machine_identity, HostPrivilegedIdentity,
 };
 
 pub use platform_imp::terminal_input;

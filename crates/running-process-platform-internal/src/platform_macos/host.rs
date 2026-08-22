@@ -1,6 +1,7 @@
 //! macOS host facts, directories, user identity, resources, and autostart.
 
 use std::io;
+use std::path::Path;
 
 /// A privileged system identity this process may be running as.
 ///
@@ -89,6 +90,79 @@ fn platform_uuid() -> io::Result<String> {
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Host identity facts
+// ---------------------------------------------------------------------------
+
+/// This machine's name as the host reports it.
+pub fn hostname() -> Option<String> {
+    let mut buf = [0_u8; 256];
+    // SAFETY: `buf` is writable for its full length, which is what is passed
+    // as the bound. The kernel NUL-terminates within it on success.
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if ok != 0 {
+        return None;
+    }
+    let nul = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..nul]).into_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The filesystem device this path lives on.
+pub fn filesystem_device_id(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+
+    std::fs::metadata(path).ok().map(|meta| meta.dev())
+}
+
+/// A durable per-machine identifier that survives reboots.
+///
+/// The hardware answer is `IOPlatformUUID`, which [`user_machine_identity`]
+/// already reads. This fact keeps the hostname-derived form instead: it is
+/// recorded verbatim into on-disk manifests, and changing the spelling would
+/// make every manifest written by an older build compare as a different
+/// machine. Switching the two onto one source is a data-format change, not a
+/// refactor, so it is left to whoever is willing to migrate the manifests.
+pub fn machine_id() -> Option<String> {
+    hostname().map(|name| format!("macos-{name}"))
+}
+
+/// An identifier that changes on every boot of this machine.
+///
+/// macOS has no boot uuid, so the kernel's recorded boot instant stands in for
+/// one: it is fixed for the life of a boot and differs across boots.
+pub fn boot_id() -> Option<String> {
+    boot_time().map(|(seconds, micros)| format!("macos-boot-{seconds}-{micros}"))
+}
+
+fn boot_time() -> Option<(i64, i64)> {
+    use std::ffi::CString;
+
+    let name = CString::new("kern.boottime").expect("static sysctl name");
+    // SAFETY: `boot` is a plain-old-data timeval, and an all-zero bit pattern
+    // is a valid one.
+    let mut boot: libc::timeval = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::timeval>();
+    // SAFETY: the name is a NUL-terminated static string alive for the call,
+    // and `boot`/`len` are valid writable storage of exactly the size the
+    // kernel is told to write.
+    let ok = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&mut boot as *mut libc::timeval).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let recorded = (boot.tv_sec as i64, boot.tv_usec as i64);
+    (ok == 0).then_some(recorded)
+}
+
+/// macOS has no process namespaces of the kind this identity distinguishes.
+pub fn namespace_id() -> Option<String> {
+    None
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +174,45 @@ mod tests {
             Some(PrivilegedIdentity::UnixRoot)
         );
         assert_eq!(privilege_from_effective_uid(1000), None);
+    }
+
+    /// The three string facts either answer or say they cannot; an empty
+    /// string is never a valid answer, because a caller comparing two hosts
+    /// would read two empties as a match.
+    #[test]
+    fn host_identity_facts_are_never_empty_strings() {
+        let facts = [hostname(), machine_id(), boot_id(), namespace_id()];
+        for value in facts.into_iter().flatten() {
+            assert!(!value.is_empty(), "a reported fact must carry a value");
+        }
+    }
+
+    /// This host has a name and a machine id, whatever they turn out to be.
+    #[test]
+    fn this_host_reports_a_name_and_a_machine_id() {
+        assert!(hostname().is_some(), "a running host has a name");
+        assert!(machine_id().is_some(), "a running host has a machine id");
+    }
+
+    /// The device id is a property of the volume, so a path and its parent
+    /// answer alike, and a directory that exists always answers.
+    #[test]
+    fn filesystem_device_id_answers_for_an_existing_directory() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let dev = filesystem_device_id(&cwd).expect("an existing directory has a device");
+        assert_eq!(filesystem_device_id(&cwd), Some(dev), "stable across reads");
+    }
+
+    /// A path that does not exist has no device to report. Unlike the volume
+    /// probe on Windows, there is nothing to walk up to here: the caller asked
+    /// about a path, and the honest answer is that the host does not know.
+    #[test]
+    fn filesystem_device_id_declines_a_missing_path() {
+        let missing = std::env::temp_dir().join(format!(
+            "rp-host-absent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        assert_eq!(filesystem_device_id(&missing), None);
     }
 }
