@@ -42,7 +42,7 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
     },
     UnsafeInventoryEntry {
         path: "src/broker/server/spawn_coordinator.rs",
-        unsafe_count: 8,
+        unsafe_count: 6,
     },
 ];
 

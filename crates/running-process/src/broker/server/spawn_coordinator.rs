@@ -63,9 +63,9 @@ where
         }
     })?;
 
-    let opened_identity =
-        file_identity(&file).map_err(|source| lock_identity_error(&path_buf, &file, source))?;
-    let current_identity = match path_identity(path) {
+    let opened_identity = crate::platform::fs::file_identity(&file)
+        .map_err(|source| lock_identity_error(&path_buf, &file, source))?;
+    let current_identity = match crate::platform::fs::path_identity(path) {
         Ok(identity) => identity,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
             let _ = try_unlock_file(&file);
@@ -130,13 +130,11 @@ impl Drop for SpawnLockGuard {
 }
 
 /// Stable identity for an opened lock file on platforms that expose it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SpawnLockFileIdentity {
-    /// Device, volume, or platform-equivalent file namespace.
-    pub device: u64,
-    /// Inode, file index, or platform-equivalent file number.
-    pub file: u64,
-}
+///
+/// Kept under this name for callers that already match on it; the mechanic is
+/// the facade's, because "is this still the same file" is a question only the
+/// host can answer.
+pub use crate::platform::fs::FileIdentity as SpawnLockFileIdentity;
 
 /// Errors returned while acquiring a backend spawn lock.
 #[derive(Debug, thiserror::Error)]
@@ -482,28 +480,6 @@ fn is_lock_conflict(error: &io::Error) -> bool {
     error.raw_os_error() == Some(libc::EWOULDBLOCK) || error.raw_os_error() == Some(libc::EAGAIN)
 }
 
-#[cfg(unix)]
-fn file_identity(file: &File) -> io::Result<Option<SpawnLockFileIdentity>> {
-    use std::os::unix::fs::MetadataExt;
-
-    let metadata = file.metadata()?;
-    Ok(Some(SpawnLockFileIdentity {
-        device: metadata.dev(),
-        file: metadata.ino(),
-    }))
-}
-
-#[cfg(unix)]
-fn path_identity(path: &Path) -> io::Result<Option<SpawnLockFileIdentity>> {
-    use std::os::unix::fs::MetadataExt;
-
-    let metadata = path.metadata()?;
-    Ok(Some(SpawnLockFileIdentity {
-        device: metadata.dev(),
-        file: metadata.ino(),
-    }))
-}
-
 #[cfg(windows)]
 fn try_lock_file(file: &File) -> io::Result<()> {
     use std::mem;
@@ -562,36 +538,6 @@ fn is_lock_conflict(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32)
 }
 
-#[cfg(windows)]
-fn file_identity(file: &File) -> io::Result<Option<SpawnLockFileIdentity>> {
-    use std::mem::MaybeUninit;
-    use std::os::windows::io::AsRawHandle;
-    use winapi::um::fileapi::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
-    use winapi::um::winnt::HANDLE;
-
-    let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
-    let result =
-        unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, info.as_mut_ptr()) };
-    if result == 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    let info = unsafe { info.assume_init() };
-    Ok(Some(SpawnLockFileIdentity {
-        device: info.dwVolumeSerialNumber as u64,
-        file: ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
-    }))
-}
-
-#[cfg(windows)]
-fn path_identity(path: &Path) -> io::Result<Option<SpawnLockFileIdentity>> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true);
-    configure_lock_file_options(&mut options);
-    let file = options.open(path)?;
-    file_identity(&file)
-}
-
 #[cfg(not(any(unix, windows)))]
 fn try_lock_file(_file: &File) -> io::Result<()> {
     Err(io::Error::new(
@@ -608,16 +554,6 @@ fn try_unlock_file(_file: &File) -> io::Result<()> {
 #[cfg(not(any(unix, windows)))]
 fn is_lock_conflict(_error: &io::Error) -> bool {
     false
-}
-
-#[cfg(not(any(unix, windows)))]
-fn file_identity(_file: &File) -> io::Result<Option<SpawnLockFileIdentity>> {
-    Ok(None)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn path_identity(_path: &Path) -> io::Result<Option<SpawnLockFileIdentity>> {
-    Ok(None)
 }
 
 #[cfg(test)]
