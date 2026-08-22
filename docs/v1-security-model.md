@@ -232,6 +232,17 @@ host. The broker retains what it always owned: the temporary file's name, the
 content it writes, the SHA-256 it records, and when a replacement is
 attempted.
 
+The former `lifecycle/privilege.rs` entry was retired by #973. Its three
+`unsafe` tokens were the Windows process-token query that decides whether the
+broker is running as LocalSystem: `OpenProcessToken`, the two-step
+`GetTokenInformation` size-then-read of `TOKEN_USER`, and the `CloseHandle` in
+the owning guard's `Drop`. Asking "is this process a privileged system
+identity" now executes inside the audited platform host facade, alongside the
+Unix `geteuid` comparison that answers the same question. The broker retains
+every part of the decision that is policy rather than fact: that privileged
+startup is refused at all, the `RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED` escape
+hatch for isolated test environments, and the operator-facing error.
+
 The former `lifecycle/names.rs` entry was retired by #971. Its two inventoried
 `unsafe` tokens were both `libc::getuid()` reads used to derive the Unix
 fallback socket directory. Endpoint directory placement and the `sun_path` /

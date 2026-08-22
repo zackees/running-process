@@ -73,5 +73,5 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
-winapi = { version = "0.3", features = ["consoleapi", "fileapi", "handleapi", "ioapiset", "jobapi2", "minwindef", "namedpipeapi", "processenv", "processthreadsapi", "synchapi", "tlhelp32", "winbase", "wincon", "wincontypes", "windef", "winerror", "winnt", "winuser"] }
+winapi = { version = "0.3", features = ["consoleapi", "errhandlingapi", "fileapi", "handleapi", "ioapiset", "jobapi2", "minwindef", "namedpipeapi", "processenv", "processthreadsapi", "securitybaseapi", "synchapi", "tlhelp32", "winbase", "wincon", "wincontypes", "windef", "winerror", "winnt", "winuser"] }
 widestring = "1"
