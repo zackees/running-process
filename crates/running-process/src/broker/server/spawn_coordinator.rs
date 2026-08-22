@@ -6,7 +6,7 @@
 //! process-wide file locks for backend spawn ownership.
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -43,15 +43,16 @@ where
     F: FnMut(&Path, &File),
 {
     let path_buf = path.to_path_buf();
-    let file = open_lock_file(path).map_err(|source| SpawnLockError::Open {
-        path: path_buf.clone(),
-        source,
-    })?;
+    let file =
+        crate::platform::fs::open_lock_file(path).map_err(|source| SpawnLockError::Open {
+            path: path_buf.clone(),
+            source,
+        })?;
 
     before_lock(path, &file);
 
-    try_lock_file(&file).map_err(|source| {
-        if is_lock_conflict(&source) {
+    crate::platform::fs::try_lock_exclusive(&file).map_err(|source| {
+        if crate::platform::fs::is_lock_conflict(&source) {
             SpawnLockError::AlreadyLocked {
                 path: path_buf.clone(),
             }
@@ -68,7 +69,7 @@ where
     let current_identity = match crate::platform::fs::path_identity(path) {
         Ok(identity) => identity,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            let _ = try_unlock_file(&file);
+            let _ = crate::platform::fs::unlock(&file);
             return Err(SpawnLockError::DeletedOrRecreated {
                 path: path_buf,
                 opened_identity,
@@ -79,7 +80,7 @@ where
     };
 
     if opened_identity != current_identity {
-        let _ = try_unlock_file(&file);
+        let _ = crate::platform::fs::unlock(&file);
         return Err(SpawnLockError::DeletedOrRecreated {
             path: path_buf,
             opened_identity,
@@ -95,7 +96,7 @@ where
 }
 
 fn lock_identity_error(path: &Path, file: &File, source: io::Error) -> SpawnLockError {
-    let _ = try_unlock_file(file);
+    let _ = crate::platform::fs::unlock(file);
     SpawnLockError::Identity {
         path: path.to_path_buf(),
         source,
@@ -125,7 +126,7 @@ impl SpawnLockGuard {
 
 impl Drop for SpawnLockGuard {
     fn drop(&mut self) {
-        let _ = try_unlock_file(&self.file);
+        let _ = crate::platform::fs::unlock(&self.file);
     }
 }
 
@@ -424,136 +425,6 @@ fn retry_after(window_started_at: Instant, now: Instant, window: Duration) -> Du
 fn elapsed_since(started_at: Instant, now: Instant) -> Duration {
     now.checked_duration_since(started_at)
         .unwrap_or(Duration::ZERO)
-}
-
-fn open_lock_file(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true);
-    configure_lock_file_options(&mut options);
-    options.open(path)
-}
-
-#[cfg(unix)]
-fn configure_lock_file_options(options: &mut OpenOptions) {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    options.mode(0o600);
-}
-
-#[cfg(windows)]
-fn configure_lock_file_options(options: &mut OpenOptions) {
-    use std::os::windows::fs::OpenOptionsExt;
-    use winapi::um::winnt::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
-
-    options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
-}
-
-#[cfg(not(any(unix, windows)))]
-fn configure_lock_file_options(_options: &mut OpenOptions) {}
-
-#[cfg(unix)]
-fn try_lock_file(file: &File) -> io::Result<()> {
-    use std::os::unix::io::AsRawFd;
-
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(unix)]
-fn try_unlock_file(file: &File) -> io::Result<()> {
-    use std::os::unix::io::AsRawFd;
-
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(unix)]
-fn is_lock_conflict(error: &io::Error) -> bool {
-    error.raw_os_error() == Some(libc::EWOULDBLOCK) || error.raw_os_error() == Some(libc::EAGAIN)
-}
-
-#[cfg(windows)]
-fn try_lock_file(file: &File) -> io::Result<()> {
-    use std::mem;
-    use std::os::windows::io::AsRawHandle;
-    use winapi::um::fileapi::LockFileEx;
-    use winapi::um::minwinbase::{LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, OVERLAPPED};
-    use winapi::um::winnt::HANDLE;
-
-    let mut overlapped: OVERLAPPED = unsafe { mem::zeroed() };
-    let result = unsafe {
-        LockFileEx(
-            file.as_raw_handle() as HANDLE,
-            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-            0,
-            u32::MAX,
-            u32::MAX,
-            &mut overlapped,
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-fn try_unlock_file(file: &File) -> io::Result<()> {
-    use std::mem;
-    use std::os::windows::io::AsRawHandle;
-    use winapi::um::fileapi::UnlockFileEx;
-    use winapi::um::minwinbase::OVERLAPPED;
-    use winapi::um::winnt::HANDLE;
-
-    let mut overlapped: OVERLAPPED = unsafe { mem::zeroed() };
-    let result = unsafe {
-        UnlockFileEx(
-            file.as_raw_handle() as HANDLE,
-            0,
-            u32::MAX,
-            u32::MAX,
-            &mut overlapped,
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-fn is_lock_conflict(error: &io::Error) -> bool {
-    use winapi::shared::winerror::ERROR_LOCK_VIOLATION;
-
-    error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn try_lock_file(_file: &File) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "backend spawn file locks are supported only on Unix and Windows",
-    ))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn try_unlock_file(_file: &File) -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn is_lock_conflict(_error: &io::Error) -> bool {
-    false
 }
 
 #[cfg(test)]
