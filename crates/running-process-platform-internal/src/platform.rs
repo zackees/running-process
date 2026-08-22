@@ -9,6 +9,7 @@ pub mod fs;
 pub mod host;
 pub mod ipc;
 pub mod process;
+pub mod resources;
 pub mod terminal;
 pub mod terminal_input;
 pub mod window_icon;

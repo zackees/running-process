@@ -150,30 +150,12 @@ impl FdPressureGuard {
 
 /// True when `err` signals process- or system-wide fd exhaustion.
 pub fn is_fd_exhaustion_error(err: &io::Error) -> bool {
-    let Some(code) = err.raw_os_error() else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        code == libc::EMFILE || code == libc::ENFILE
-    }
-    #[cfg(windows)]
-    {
-        // WSAEMFILE, ERROR_TOO_MANY_OPEN_FILES, ERROR_NO_SYSTEM_RESOURCES.
-        code == 10024 || code == 4 || code == 1450
-    }
+    crate::platform::resources::signals_fd_exhaustion(err)
 }
 
 /// One platform-appropriate fd-exhaustion raw error code (test helper).
 pub fn fd_exhaustion_error_for_tests() -> io::Error {
-    #[cfg(unix)]
-    {
-        io::Error::from_raw_os_error(libc::EMFILE)
-    }
-    #[cfg(windows)]
-    {
-        io::Error::from_raw_os_error(10024)
-    }
+    crate::platform::resources::fd_exhaustion_error()
 }
 
 #[cfg(test)]

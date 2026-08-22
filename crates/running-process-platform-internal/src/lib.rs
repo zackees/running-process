@@ -66,6 +66,11 @@ pub use platform_imp::{
 pub use platform_imp::{autostart_register, autostart_render_registration, autostart_unregister};
 
 pub use platform_imp::{
+    resources_fd_exhaustion_error, resources_inode_capacity, resources_signals_fd_exhaustion,
+    resources_signals_storage_exhaustion, resources_storage_exhaustion_error,
+};
+
+pub use platform_imp::{
     executable_file_name, executable_sibling_of_current_image, EXECUTABLE_EXTENSION,
 };
 

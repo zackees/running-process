@@ -1,10 +1,10 @@
 //! Filesystem-health probes for status/doctor visibility (#390).
 //!
-//! Inode usage matters on Unix filesystems with fixed inode tables
-//! (ext4 most prominently): the daemon data dir can fail writes with
-//! ENOSPC while plenty of bytes remain free. Windows filesystems have no
-//! fixed inode table, so the probe reports "not applicable" there instead
-//! of faking numbers.
+//! Inode usage matters where a filesystem has a fixed inode table (ext4 most
+//! prominently): the daemon data dir can fail writes with `ENOSPC` while
+//! plenty of bytes remain free. Which hosts and filesystems have one to report
+//! is [`crate::platform::resources`]'s answer; what this module owns is where
+//! to probe and how to present the result.
 
 use std::path::Path;
 
@@ -35,38 +35,16 @@ impl InodeUsage {
 
 /// Probe inode usage for the filesystem containing `path`.
 ///
-/// Returns `Ok(None)` when inode accounting does not apply: always on
-/// Windows, and on Unix filesystems that report a zero inode table
-/// (e.g. btrfs). Errors are real probe failures (missing path, EACCES).
+/// Returns `Ok(None)` when inode accounting does not apply -- a host with no
+/// fixed inode table, or a filesystem that reports an empty one. Errors are
+/// real probe failures (missing path, permission denied).
 pub fn inode_usage(path: &Path) -> std::io::Result<Option<InodeUsage>> {
-    #[cfg(windows)]
-    {
-        let _ = path;
-        Ok(None)
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-
-        let bytes = path.as_os_str().as_bytes();
-        let c_path = std::ffi::CString::new(bytes)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-        let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
-        let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut stats) };
-        if rc != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if stats.f_files == 0 {
-            return Ok(None);
-        }
-        // fsfilcnt_t is u64 on Linux but u32 on macOS; keep explicit casts.
-        #[allow(clippy::unnecessary_cast)]
-        let usage = InodeUsage {
-            total: stats.f_files as u64,
-            free: stats.f_favail as u64,
-        };
-        Ok(Some(usage))
-    }
+    Ok(
+        crate::platform::resources::inode_capacity(path)?.map(|capacity| InodeUsage {
+            total: capacity.total,
+            free: capacity.free,
+        }),
+    )
 }
 
 /// Probe inode usage for the daemon data directory (where the SQLite
@@ -104,21 +82,17 @@ mod tests {
         assert!((usage.used_ratio() - 0.75).abs() < f64::EPSILON);
     }
 
-    #[cfg(unix)]
+    /// Whatever this host reports for a directory that exists, it is either a
+    /// coherent usage or an explicit "not applicable" -- never an error. Which
+    /// of the two is the host's business, and is asserted where the host is.
     #[test]
     fn inode_usage_probes_temp_dir() {
-        let result = inode_usage(&std::env::temp_dir()).expect("statvfs on temp dir");
+        let result = inode_usage(&std::env::temp_dir()).expect("probing temp dir must succeed");
         if let Some(usage) = result {
             assert!(usage.total > 0);
             assert!(usage.free <= usage.total);
+            assert!(usage.used() <= usage.total);
         }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn inode_usage_is_not_applicable_on_windows() {
-        let result = inode_usage(&std::env::temp_dir()).expect("probe never fails on windows");
-        assert_eq!(result, None);
     }
 
     #[test]
