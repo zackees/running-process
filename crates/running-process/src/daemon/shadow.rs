@@ -46,40 +46,17 @@ pub fn is_in_build_output(exe: &Path) -> bool {
 // Shadow directory
 // ---------------------------------------------------------------------------
 
-/// Platform-appropriate directory for shadow-copied daemon binaries.
+/// Directory for shadow-copied daemon binaries.
 ///
-/// * **Windows**: `<LocalAppData>/running-process/run`
-/// * **macOS**: `<CacheDir>/running-process/run`
-/// * **Linux**: `$XDG_RUNTIME_DIR/running-process/run`, falling back to
-///   `<LocalDataDir>/running-process/run`
+/// This is the same directory the cleanup verifier inspects, and deliberately
+/// the same call: a writer and a checker that derive a path separately will
+/// agree right up until they do not. These two had already drifted apart on
+/// their fallbacks -- with no `XDG_RUNTIME_DIR` this wrote under
+/// `data_local_dir()` while the verifier looked under `/tmp/<product>-<uid>`,
+/// and on macOS with no home directory the two `/tmp` shapes differed. The
+/// primary paths always agreed, which is why it went unnoticed.
 pub fn shadow_dir() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        dirs::cache_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("running-process")
-            .join("run")
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-            PathBuf::from(runtime).join("running-process").join("run")
-        } else {
-            dirs::data_local_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("running-process")
-                .join("run")
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("C:\\ProgramData"))
-            .join("running-process")
-            .join("run")
-    }
+    crate::client::paths::shadow_dir_view()
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +159,17 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
     use std::sync::Mutex;
+
+    /// The daemon writes its shadow copy where the cleanup verifier looks.
+    ///
+    /// These were separate derivations that agreed on their primary paths and
+    /// disagreed on their fallbacks, so nothing caught the drift. Asserting
+    /// the two are equal pins the property rather than either answer, and
+    /// holds on every host without naming one.
+    #[test]
+    fn the_shadow_directory_is_the_one_the_verifier_inspects() {
+        assert_eq!(shadow_dir(), crate::client::paths::shadow_dir_view());
+    }
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
