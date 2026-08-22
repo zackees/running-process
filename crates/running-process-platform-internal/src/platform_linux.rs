@@ -1,5 +1,12 @@
 //! Linux implementation root for the process capability.
 
+#[path = "platform_linux/host.rs"]
+pub(crate) mod host;
+pub use host::{
+    current_process_privilege as host_current_process_privilege,
+    PrivilegedIdentity as HostPrivilegedIdentity,
+};
+
 #[cfg(feature = "fs")]
 #[path = "platform_linux/fs.rs"]
 pub(crate) mod fs;

@@ -25,10 +25,6 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
         unsafe_count: 13,
     },
     UnsafeInventoryEntry {
-        path: "src/broker/lifecycle/privilege.rs",
-        unsafe_count: 3,
-    },
-    UnsafeInventoryEntry {
         path: "src/broker/lifecycle/process_tree.rs",
         unsafe_count: 7,
     },

@@ -75,6 +75,8 @@ pub use platform_imp::{
     fs_user_state_dir, FsFileIdentity,
 };
 
+pub use platform_imp::{host_current_process_privilege, HostPrivilegedIdentity};
+
 pub use platform_imp::terminal_input;
 
 #[cfg(feature = "ipc")]
