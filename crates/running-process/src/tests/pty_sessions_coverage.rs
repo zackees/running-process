@@ -235,12 +235,15 @@ fn unstarted_process_errors_and_termination_classification_cover_control_paths()
         session.classify_termination(now + 0.1),
         TerminationOutcome::HardKilled
     );
+    // An unstarted session has no process to signal, on every platform.
+    // `terminate` propagates `terminate_tree_impl`, whose no-pid branch is
+    // plain Rust over `pid()` and `returncode` -- no `cfg`, no PTY backend
+    // dispatch -- and returns `NotRunning` when neither is set. The Windows
+    // arm here asserted `Ok` instead and was never executed: the test is
+    // behind `daemon`, the Windows preflight builds default features, and the
+    // only `--all-features` job runs on Linux (#1081).
     let termination = session.terminate(Duration::ZERO);
-    if std::env::consts::OS == "windows" {
-        assert!(termination.is_ok());
-    } else {
-        assert!(matches!(termination, Err(crate::pty::PtyError::NotRunning)));
-    }
+    assert!(matches!(termination, Err(crate::pty::PtyError::NotRunning)));
 }
 
 #[test]
