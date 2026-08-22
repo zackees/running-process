@@ -8,6 +8,7 @@
 
 #[cfg(feature = "fs")]
 pub use crate::{
+    fs_decode_path_bytes as decode_path_bytes, fs_encode_path_bytes as encode_path_bytes,
     fs_file_identity as file_identity, fs_is_lock_conflict as is_lock_conflict,
     fs_open_lock_file as open_lock_file, fs_path_identity as path_identity,
     fs_try_lock_exclusive as try_lock_exclusive, fs_unlock as unlock,
@@ -133,6 +134,35 @@ mod tests {
         let _ = std::fs::remove_file(&missing);
         let error = std::fs::File::open(&missing).expect_err("must not exist");
         assert!(!is_lock_conflict(&error));
+    }
+
+    /// The pair round-trips, which is the only contract a wire encoding owes
+    /// its decoder: the far end must reconstruct exactly the path that was
+    /// named, not an equivalent one.
+    #[test]
+    fn a_path_survives_encoding_and_decoding_unchanged() {
+        for original in [
+            std::path::PathBuf::from("relative/leaf.log"),
+            std::env::temp_dir()
+                .join("rp path with spaces")
+                .join("t.log"),
+            std::env::current_exe().expect("current image"),
+        ] {
+            let decoded =
+                decode_path_bytes(&encode_path_bytes(&original)).expect("decode what we encoded");
+            assert_eq!(decoded, original);
+        }
+    }
+
+    /// An empty path is a path, and must not become an error or a surprise.
+    #[test]
+    fn an_empty_path_round_trips_as_empty() {
+        let empty = std::path::PathBuf::new();
+        assert!(encode_path_bytes(&empty).is_empty());
+        assert_eq!(
+            decode_path_bytes(&encode_path_bytes(&empty)).expect("decode empty"),
+            empty
+        );
     }
 
     /// The roles are stable: asking twice gives the same answer, so a path

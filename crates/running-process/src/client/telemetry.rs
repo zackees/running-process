@@ -2,11 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
-
 use crate::client::{ClientError, DaemonClient};
 use crate::proto::daemon::{
     DaemonRequest, GetSessionTeeStatusRequest, RegisterSessionTeeRequest, RequestType, StatusCode,
@@ -150,7 +145,7 @@ impl DaemonClient {
                 session_kind: proto_session_kind(request.session_kind) as i32,
                 stream: proto_stream_kind(request.stream) as i32,
                 sink_kind: TeeSinkKind::File as i32,
-                file_path: encode_os_path(&request.path),
+                file_path: crate::platform::fs::encode_path_bytes(&request.path),
                 file_mode: proto_file_mode(request.mode) as i32,
                 queue_capacity: request.queue_capacity,
                 suppress_missed_markers: !request.write_missed_markers,
@@ -282,19 +277,6 @@ fn proto_backpressure(backpressure: SessionTeeBackpressure) -> ProtoTeeBackpress
         SessionTeeBackpressure::DropOldest => ProtoTeeBackpressure::DropOldest,
         SessionTeeBackpressure::Block => ProtoTeeBackpressure::Block,
     }
-}
-
-#[cfg(unix)]
-fn encode_os_path(path: &Path) -> Vec<u8> {
-    path.as_os_str().as_bytes().to_vec()
-}
-
-#[cfg(windows)]
-fn encode_os_path(path: &Path) -> Vec<u8> {
-    path.as_os_str()
-        .encode_wide()
-        .flat_map(u16::to_le_bytes)
-        .collect()
 }
 
 #[cfg(test)]

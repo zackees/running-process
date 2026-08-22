@@ -1,11 +1,5 @@
-use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
-
-#[cfg(unix)]
-use std::os::unix::ffi::OsStringExt;
-#[cfg(windows)]
-use std::os::windows::ffi::OsStringExt;
 
 use crate::daemon::pipe_sessions::PipeStreamSelect;
 use crate::daemon::telemetry::{
@@ -68,7 +62,7 @@ pub fn handle_register_session_tee(request: &DaemonRequest, state: &DaemonState)
             );
         }
     };
-    let path = match decode_os_path(&req.file_path) {
+    let path = match crate::platform::fs::decode_path_bytes(&req.file_path) {
         Ok(path) => path,
         Err(e) => {
             return error_pty_response(
@@ -350,26 +344,6 @@ fn status_response(status: TeeStatus) -> GetSessionTeeStatusResponse {
         missed_bytes: status.missed_bytes,
         disconnected: status.disconnected,
     }
-}
-
-#[cfg(unix)]
-fn decode_os_path(bytes: &[u8]) -> io::Result<PathBuf> {
-    Ok(PathBuf::from(OsString::from_vec(bytes.to_vec())))
-}
-
-#[cfg(windows)]
-fn decode_os_path(bytes: &[u8]) -> io::Result<PathBuf> {
-    if bytes.len() % 2 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Windows path bytes must be little-endian UTF-16",
-        ));
-    }
-    let wide = bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-        .collect::<Vec<_>>();
-    Ok(PathBuf::from(OsString::from_wide(&wide)))
 }
 
 enum RegistrationError {

@@ -46,22 +46,13 @@ fn register_request() -> DaemonRequest {
             session_kind: TeeSessionKind::Pty as i32,
             stream: TeeStreamKind::PtyOutput as i32,
             sink_kind: TeeSinkKind::File as i32,
-            file_path: encode_path(std::path::Path::new("coverage.log")),
+            file_path: crate::platform::fs::encode_path_bytes(std::path::Path::new("coverage.log")),
             file_mode: ProtoTeeFileMode::Append as i32,
             queue_capacity: 0,
             suppress_missed_markers: false,
             backpressure: ProtoTeeBackpressure::DropOldest as i32,
         }),
         ..Default::default()
-    }
-}
-
-fn encode_path(path: &std::path::Path) -> Vec<u8> {
-    let text = path.to_string_lossy();
-    if std::env::consts::OS == "windows" {
-        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
-    } else {
-        text.as_bytes().to_vec()
     }
 }
 
@@ -312,10 +303,11 @@ fn option_status_path_and_error_conversions_cover_all_variants() {
         assert!(response.disconnected);
     }
 
-    assert!(!decode_os_path(&encode_path(std::path::Path::new("x")))
-        .unwrap()
-        .as_os_str()
-        .is_empty());
+    let round_tripped = crate::platform::fs::decode_path_bytes(
+        &crate::platform::fs::encode_path_bytes(std::path::Path::new("x")),
+    )
+    .expect("decode what the facade encoded");
+    assert_eq!(round_tripped, std::path::Path::new("x"));
     let invalid = RegistrationError::from_io(io::Error::new(io::ErrorKind::InvalidInput, "bad"));
     assert_eq!(
         invalid.into_response(10).code,
