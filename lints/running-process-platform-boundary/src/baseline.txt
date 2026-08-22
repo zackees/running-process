@@ -999,9 +999,15 @@ crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	libc
 crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::unix	0
 crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::unix	1
 crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::unix	2
+crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::unix	3
+crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::unix	4
+crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::unix	5
 crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::windows	0
 crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::windows	1
 crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::windows	2
+crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::windows	3
+crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::windows	4
+crates/running-process/src/broker/server/spawn_coordinator.rs	native_import	std::os::windows	5
 crates/running-process/src/broker/session_pump.rs	attr_cfg	unix	0
 crates/running-process/src/broker/session_pump.rs	attr_cfg	windows	0
 crates/running-process/src/broker/session_pump.rs	native_import	std::os::unix	0
