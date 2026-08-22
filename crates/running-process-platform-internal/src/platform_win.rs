@@ -12,11 +12,13 @@ pub use autostart::{
 pub(crate) mod host;
 pub use host::{
     boot_id as host_boot_id, current_process_privilege as host_current_process_privilege,
+    environment_keys_are_case_insensitive as host_environment_keys_are_case_insensitive,
     filesystem_device_id as host_filesystem_device_id, hostname as host_hostname,
-    machine_id as host_machine_id, namespace_id as host_namespace_id,
-    user_machine_identity as host_user_machine_identity,
+    login_environment as host_login_environment, machine_id as host_machine_id,
+    namespace_id as host_namespace_id, user_machine_identity as host_user_machine_identity,
     PrivilegedIdentity as HostPrivilegedIdentity,
 };
+pub use host::login_environment_block as host_login_environment_block;
 
 #[cfg(feature = "fs")]
 #[path = "platform_win/fs.rs"]

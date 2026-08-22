@@ -1,5 +1,6 @@
 //! Linux host facts, directories, user identity, resources, and autostart.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 
@@ -125,6 +126,149 @@ fn read_link_lossy(path: &str) -> Option<String> {
         .ok()
         .map(|p| p.to_string_lossy().into_owned())
 }
+
+// ---------------------------------------------------------------------------
+// Login environment
+// ---------------------------------------------------------------------------
+
+/// The logged-in user's environment, as a fresh login would see it.
+///
+/// Unix has no API that reconstructs a login environment, so this is rebuilt
+/// from the user's identity rather than copied from this process: `getpwuid_r`
+/// supplies `USER`/`LOGNAME`/`HOME`/`SHELL`, `PATH` gets this host's login
+/// default, and the session-describing variables are carried over.
+///
+/// A user with no resolvable passwd entry -- a uid absent from NSS -- has no
+/// identity to rebuild from, so the current process environment is returned
+/// instead. That is a worse answer than a real login environment and a much
+/// better one than nothing.
+pub fn login_environment() -> io::Result<Vec<(OsString, OsString)>> {
+    Ok(passwd_login_environment().unwrap_or_else(|| std::env::vars_os().collect()))
+}
+
+/// Unix environment variable names compare byte for byte.
+pub fn environment_keys_are_case_insensitive() -> bool {
+    false
+}
+
+/// Build the login environment from the passwd entry, or `None` when there is
+/// no entry to build it from.
+fn passwd_login_environment() -> Option<Vec<(OsString, OsString)>> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStringExt;
+
+    // SAFETY: an all-zero `passwd` is a valid one; `getpwuid_r` fills it.
+    let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    // sysconf(_SC_GETPW_R_SIZE_MAX) is allowed to return -1 ("no limit");
+    // 1 KiB covers real-world passwd entries and getpwuid_r reports ERANGE
+    // if it does not, in which case we grow and retry.
+    let mut buf = vec![0u8; 1024];
+    loop {
+        // SAFETY: `passwd`, `buf`, and `result` are all live and writable for
+        // the sizes handed over, and `buf.len()` is the buffer's real length.
+        let rc = unsafe {
+            libc::getpwuid_r(
+                libc::getuid(),
+                &mut passwd,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == libc::ERANGE && buf.len() < 1 << 20 {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || result.is_null() {
+            return None;
+        }
+        break;
+    }
+
+    let field = |ptr: *const libc::c_char| -> Option<OsString> {
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: a non-null passwd field points at a NUL-terminated string
+        // inside `buf`, which outlives this read.
+        let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes();
+        (!bytes.is_empty()).then(|| OsString::from_vec(bytes.to_vec()))
+    };
+    let name = field(passwd.pw_name)?;
+    let home = field(passwd.pw_dir)?;
+
+    let mut env: Vec<(OsString, OsString)> = vec![
+        (OsString::from("USER"), name.clone()),
+        (OsString::from("LOGNAME"), name),
+        (OsString::from("HOME"), home),
+        (OsString::from("PATH"), OsString::from(LOGIN_DEFAULT_PATH)),
+    ];
+    if let Some(shell) = field(passwd.pw_shell) {
+        env.push((OsString::from("SHELL"), shell));
+    }
+    env.extend(carried_session_variables());
+    Some(env)
+}
+
+/// Variables that describe the login *session* rather than this process.
+///
+/// Locale, timezone, and the per-user runtime/tmp dirs are set by the login
+/// session (PAM/logind), not by `getpwuid_r` or by profile scripts, so a
+/// reconstructed baseline can only obtain them by carrying them over. Children
+/// then keep rendering text and resolving paths the way the user does.
+///
+/// `XDG_RUNTIME_DIR` and `TMPDIR` are the runtime-dir variables the broker's
+/// own endpoint placement keys on. Dropping `XDG_RUNTIME_DIR` made a daemon
+/// fall back to `/tmp` while its session-resident clients dialled
+/// `$XDG_RUNTIME_DIR/…` -- every request then missed the socket
+/// (zackees/soldr#2442).
+fn carried_session_variables() -> Vec<(OsString, OsString)> {
+    std::env::vars_os()
+        .filter(|(key, _)| describes_the_login_session(key))
+        .collect()
+}
+
+fn describes_the_login_session(key: &OsString) -> bool {
+    key == "LANG"
+        || key == "TZ"
+        || key == "TMPDIR"
+        || key == "XDG_RUNTIME_DIR"
+        || key.to_str().is_some_and(|k| k.starts_with("LC_"))
+}
+
+/// The `PATH` a fresh login starts from: the customary `login(1)` default.
+const LOGIN_DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// The login environment in the double-NUL-terminated UTF-16 block form.
+///
+/// This shape exists because `CreateProcessW` consumes it on Windows. It is
+/// provided on every host so the facade has one signature rather than one per
+/// host, and because the encoding is the same data either way -- a caller
+/// driving a Windows API through a cross-platform code path should not have to
+/// choose between a `cfg` and a hand-rolled encoder.
+pub fn login_environment_block() -> io::Result<Vec<u16>> {
+    Ok(encode_environment_block(&login_environment()?))
+}
+
+/// Encode `key=value` pairs as one double-NUL-terminated UTF-16 block.
+///
+/// Unix environment strings are bytes, not UTF-16, so a name or value that is
+/// not valid UTF-8 is encoded lossily. That is a real narrowing and it is the
+/// block format's, not this function's: the format has no way to carry a byte
+/// that is not a character.
+fn encode_environment_block(entries: &[(OsString, OsString)]) -> Vec<u16> {
+    let mut block = Vec::new();
+    for (key, value) in entries {
+        let entry = format!("{}={}", key.to_string_lossy(), value.to_string_lossy());
+        block.extend(entry.encode_utf16());
+        block.push(0);
+    }
+    // An empty environment is still a block: a lone terminator, never zero
+    // bytes, so a consumer reading the shape finds the end where it expects to.
+    block.push(0);
+    block
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +320,98 @@ mod tests {
             std::thread::current().id()
         ));
         assert_eq!(filesystem_device_id(&missing), None);
+    }
+
+    /// The reconstructed login environment carries the identity the passwd
+    /// entry supplies, and a `PATH` to start from.
+    #[test]
+    fn login_environment_contains_identity_and_default_path() {
+        let env = login_environment().unwrap();
+        let get = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
+        let user = get("USER").expect("baseline must contain USER");
+        assert!(!user.is_empty());
+        assert_eq!(get("LOGNAME").as_ref(), Some(&user));
+        assert!(!get("HOME").expect("baseline must contain HOME").is_empty());
+        assert!(!get("PATH").expect("baseline must contain PATH").is_empty());
+    }
+
+    /// A variable that exists only in this process must not survive into the
+    /// login baseline -- carrying everything is what `Inherit` is for.
+    #[test]
+    fn login_environment_does_not_leak_arbitrary_process_vars() {
+        std::env::set_var("RUNNING_PROCESS_BASELINE_CANARY", "1");
+        let env = passwd_login_environment().expect("test user must have a passwd entry");
+        std::env::remove_var("RUNNING_PROCESS_BASELINE_CANARY");
+        assert!(
+            !env.iter()
+                .any(|(key, _)| key == "RUNNING_PROCESS_BASELINE_CANARY"),
+            "process-local variables must not leak into the login baseline"
+        );
+    }
+
+    /// The broker keys its socket path on `XDG_RUNTIME_DIR`. A baseline that
+    /// drops it makes a daemon bind under `/tmp` while its session-resident
+    /// clients dial `$XDG_RUNTIME_DIR/…`, stranding every request
+    /// (zackees/soldr#2442).
+    #[test]
+    fn login_environment_carries_xdg_runtime_dir() {
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/4242");
+        let env = passwd_login_environment().expect("test user must have a passwd entry");
+        let carried = env
+            .iter()
+            .find(|(key, _)| key == "XDG_RUNTIME_DIR")
+            .map(|(_, value)| value.clone());
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        assert_eq!(
+            carried.as_deref(),
+            Some(std::ffi::OsStr::new("/run/user/4242")),
+            "login baseline must carry XDG_RUNTIME_DIR when the session sets it"
+        );
+    }
+
+    /// The carry rule is what separates a session variable from a process one,
+    /// so it is asserted directly rather than only through a live environment.
+    #[test]
+    fn only_session_describing_variables_are_carried() {
+        for carried in ["LANG", "TZ", "TMPDIR", "XDG_RUNTIME_DIR", "LC_ALL", "LC_TIME"] {
+            assert!(
+                describes_the_login_session(&OsString::from(carried)),
+                "{carried} describes the login session"
+            );
+        }
+        for dropped in ["PWD", "OLDPWD", "SSH_AUTH_SOCK", "LCD_BRIGHTNESS", "L"] {
+            assert!(
+                !describes_the_login_session(&OsString::from(dropped)),
+                "{dropped} belongs to this process, not the session"
+            );
+        }
+    }
+
+    /// The block always ends where a consumer looks for the end, including
+    /// when there is nothing in it.
+    #[test]
+    fn an_encoded_block_is_double_nul_terminated() {
+        let live = login_environment_block().expect("this host has a login environment");
+        assert!(live.len() >= 2);
+        assert_eq!(&live[live.len() - 2..], &[0, 0]);
+
+        let empty = encode_environment_block(&[]);
+        assert_eq!(empty, vec![0]);
+    }
+
+    /// Every variable survives the encoding, in order.
+    #[test]
+    fn an_encoded_block_carries_every_entry_in_order() {
+        let block = encode_environment_block(&[
+            (OsString::from("FIRST"), OsString::from("one")),
+            (OsString::from("SECOND"), OsString::from("two")),
+        ]);
+        let text = String::from_utf16_lossy(&block);
+        let entries: Vec<&str> = text.split(' ').filter(|s| !s.is_empty()).collect();
+        assert_eq!(entries, vec!["FIRST=one", "SECOND=two"]);
     }
 }
