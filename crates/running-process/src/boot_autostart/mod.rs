@@ -137,8 +137,15 @@ pub fn render_unit(daemon_binary: &Path) -> String {
 mod tests {
     use super::*;
 
-    /// Whatever this host writes, it is a registration for runpm, naming the
+    /// Whatever this host writes, it is identifiably runpm's, and it names the
     /// binary it was handed.
+    ///
+    /// Which of the three names appears is the host's choice, not ours: the
+    /// systemd unit carries the identifier in its *filename* and only the
+    /// description in its body, launchd puts the reverse-DNS label in the
+    /// plist, and Task Scheduler puts the plain stem in `/TN`. So this asserts
+    /// what is true of all three -- an operator reading the registration can
+    /// tell whose it is -- rather than picking one host's spelling.
     #[test]
     fn the_rendered_registration_is_for_the_runpm_daemon() {
         let rendered = render_unit(Path::new("/usr/local/bin/running-process-daemon"));
@@ -147,8 +154,8 @@ mod tests {
             "must name the daemon binary: {rendered}"
         );
         assert!(
-            rendered.contains(IDENTIFIER) || rendered.contains(LABEL),
-            "must carry a runpm name: {rendered}"
+            rendered.contains("runpm"),
+            "an operator must be able to tell whose registration this is: {rendered}"
         );
     }
 
