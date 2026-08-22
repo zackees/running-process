@@ -158,3 +158,40 @@ pub fn is_lock_conflict(error: &io::Error) -> bool {
 
     error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32)
 }
+
+/// Encode `path` as the bytes this host uses to spell it.
+///
+/// Faithful, not canonical: this is the encoding a path is carried in so the
+/// other end can reconstruct exactly the path that was named. It is
+/// deliberately not `ipc::endpoint_scope_bytes`, which folds away differences
+/// a host considers meaningless in order to hash two spellings to one identity.
+/// Round-tripping through the pair here must return the original path;
+/// round-tripping through that one need not.
+pub fn encode_path_bytes(path: &Path) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    path.as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+/// Reconstruct a path from [`encode_path_bytes`] output produced on this host.
+///
+/// Windows paths are UTF-16, so an odd byte count cannot have come from this
+/// encoder and is rejected rather than silently truncated.
+pub fn decode_path_bytes(bytes: &[u8]) -> io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt as _;
+
+    if !bytes.len().is_multiple_of(2) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows path bytes must be little-endian UTF-16",
+        ));
+    }
+    let wide = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(&wide)))
+}

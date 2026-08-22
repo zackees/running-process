@@ -128,3 +128,24 @@ pub fn unlock(file: &File) -> io::Result<()> {
 pub fn is_lock_conflict(error: &io::Error) -> bool {
     error.raw_os_error() == Some(libc::EWOULDBLOCK) || error.raw_os_error() == Some(libc::EAGAIN)
 }
+
+/// Encode `path` as the bytes this host uses to spell it.
+///
+/// Faithful, not canonical: this is the encoding a path is carried in so the
+/// other end can reconstruct exactly the path that was named. It is
+/// deliberately not `ipc::endpoint_scope_bytes`, which folds away differences
+/// a host considers meaningless in order to hash two spellings to one identity.
+/// Round-tripping through the pair here must return the original path;
+/// round-tripping through that one need not.
+pub fn encode_path_bytes(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    path.as_os_str().as_bytes().to_vec()
+}
+
+/// Reconstruct a path from [`encode_path_bytes`] output produced on this host.
+pub fn decode_path_bytes(bytes: &[u8]) -> io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec())))
+}
