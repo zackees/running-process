@@ -3,6 +3,8 @@ use running_process_probe::snapshot::attribute::{
     AttributedFrame, AttributedModule, AttributedThread,
 };
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 struct ArtifactGuard(PathBuf);
 
@@ -121,13 +123,44 @@ fn artifact_creation_writes_private_json_and_live_capture_returns_evidence() {
         serde_json::from_slice(&std::fs::read(artifact.path()).unwrap()).unwrap();
     assert_eq!(value["format"], "cooperative_frames");
 
+    // A capture samples *sibling* threads -- every backend excludes the
+    // calling thread -- so asserting a nonzero count means first guaranteeing
+    // a sibling exists. Without one the count is whatever else the test binary
+    // happens to be running, which is why this assertion failed under load on
+    // a PR that touched no probe code (#1066). The probe crate's own capture
+    // tests spawn their subjects for the same reason; this follows them.
+    let release = Arc::new(AtomicBool::new(false));
+    let ready = Arc::new(AtomicBool::new(false));
+    let sibling = {
+        let release = Arc::clone(&release);
+        let ready = Arc::clone(&ready);
+        std::thread::spawn(move || {
+            ready.store(true, Ordering::Release);
+            while !release.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+        })
+    };
+    while !ready.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
+
     let reply = capture(&CaptureStackRequest {
         max_depth: 8,
         ..Default::default()
     });
+
+    release.store(true, Ordering::Release);
+    sibling.join().unwrap();
+
     let live_artifact = ArtifactGuard::new(PathBuf::from(&reply.artifact_path));
     assert_eq!(reply.error, 0, "{}", reply.detail);
     assert!(reply.started_unix_ms > 0);
-    assert!(reply.threads_captured > 0);
+    assert!(
+        reply.threads_captured > 0,
+        "the spawned sibling must appear: captured={} dropped={}",
+        reply.threads_captured,
+        reply.threads_dropped
+    );
     assert!(live_artifact.path().is_file());
 }
