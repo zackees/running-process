@@ -1,5 +1,14 @@
 //! Linux implementation root for the process capability.
 
+#[cfg(feature = "fs")]
+#[path = "platform_linux/fs.rs"]
+pub(crate) mod fs;
+#[cfg(feature = "fs")]
+pub use fs::{
+    user_run_data_root as fs_user_run_data_root, user_runtime_dir as fs_user_runtime_dir,
+    user_state_dir as fs_user_state_dir,
+};
+
 #[path = "platform_linux/executable.rs"]
 pub(crate) mod executable;
 pub use executable::{

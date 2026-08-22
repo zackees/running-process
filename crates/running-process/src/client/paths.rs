@@ -5,6 +5,9 @@
 
 use std::path::PathBuf;
 
+/// Directory name this product owns beneath each host location.
+const PRODUCT: &str = "running-process";
+
 /// Returns the local socket name the daemon listens on.
 ///
 /// - **Linux/macOS**: `$XDG_RUNTIME_DIR/running-process/daemon{-hash}.sock`
@@ -16,12 +19,12 @@ use std::path::PathBuf;
 /// That shared boundary prevents Windows pipe paths from acquiring the
 /// namespace prefix more than once.
 pub fn socket_path(scope_hash: Option<&str>) -> String {
-    #[cfg(unix)]
-    {
-        // This is a product-owned, dedicated leaf, so the caller is allowed
-        // to repair legacy permissions before the platform bind verifies it.
-        let directory = runtime_dir_unix();
-        let _ = crate::broker::secure_dir::ensure_private_dir(&directory);
+    // This is a product-owned, dedicated leaf, so the caller is allowed to
+    // repair legacy permissions before the platform bind verifies it. A host
+    // whose sockets live in a kernel namespace rather than a directory has
+    // nothing there to repair.
+    if crate::platform::ipc::endpoint_is_filesystem_backed() {
+        let _ = crate::broker::secure_dir::ensure_private_dir(&runtime_dir());
     }
     socket_path_view(scope_hash)
 }
@@ -34,16 +37,11 @@ pub fn socket_path_view(scope_hash: Option<&str>) -> String {
         None => String::new(),
     };
 
-    #[cfg(windows)]
-    {
-        let username = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
-        format!(r"\\.\pipe\running-process-daemon-{username}{suffix}")
+    if crate::platform::ipc::endpoint_is_filesystem_backed() {
+        return format!("{}/daemon{suffix}.sock", runtime_dir().display());
     }
-
-    #[cfg(unix)]
-    {
-        format!("{}/daemon{suffix}.sock", runtime_dir_unix().display())
-    }
+    let username = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
+    format!(r"\\.\pipe\running-process-daemon-{username}{suffix}")
 }
 
 /// Build an opaque local IPC endpoint from the path returned by [`socket_path`].
@@ -74,15 +72,7 @@ pub fn pid_file_path_view(scope_hash: Option<&str>) -> PathBuf {
         None => String::new(),
     };
 
-    #[cfg(windows)]
-    {
-        local_app_data_dir().join(format!("daemon{suffix}.pid"))
-    }
-
-    #[cfg(unix)]
-    {
-        runtime_dir_unix().join(format!("daemon{suffix}.pid"))
-    }
+    runtime_dir().join(format!("daemon{suffix}.pid"))
 }
 
 /// Returns the path to the daemon SQLite database.
@@ -122,67 +112,17 @@ pub fn shadow_dir() -> PathBuf {
 /// Read-only variant of [`shadow_dir`]: derives the same path without
 /// creating any directory. Used by read-only inspectors (#391).
 pub fn shadow_dir_view() -> PathBuf {
-    #[cfg(windows)]
-    {
-        local_app_data_dir().join("run")
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        home.join("Library/Caches/running-process/run")
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        runtime_dir_unix().join("run")
-    }
+    crate::platform::fs::user_run_data_root(PRODUCT).join("run")
 }
 
 /// Returns the daemon data directory (where the SQLite tracking database
 /// lives) WITHOUT creating it. Read-only callers (doctor, status probes)
 /// use this; [`db_path`] keeps its create-on-derive behavior.
 pub fn data_dir() -> PathBuf {
-    #[cfg(windows)]
-    {
-        local_app_data_dir()
-    }
-
-    #[cfg(unix)]
-    {
-        state_dir_unix()
-    }
+    crate::platform::fs::user_state_dir(PRODUCT)
 }
 
-// ---------------------------------------------------------------------------
-// Platform helpers
-// ---------------------------------------------------------------------------
-
-#[cfg(windows)]
-fn local_app_data_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-        .join("running-process")
-}
-
-#[cfg(unix)]
-fn runtime_dir_unix() -> PathBuf {
-    if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
-        PathBuf::from(d).join("running-process")
-    } else {
-        // Fallback: /tmp/running-process-{uid}
-        let uid = unsafe { libc::getuid() };
-        PathBuf::from(format!("/tmp/running-process-{uid}"))
-    }
-}
-
-#[cfg(unix)]
-fn state_dir_unix() -> PathBuf {
-    if let Some(d) = std::env::var_os("XDG_STATE_HOME") {
-        PathBuf::from(d).join("running-process")
-    } else if let Some(home) = dirs::home_dir() {
-        home.join(".local/state/running-process")
-    } else {
-        PathBuf::from("/tmp/running-process-state")
-    }
+/// Where this host keeps our ephemeral runtime artifacts.
+fn runtime_dir() -> PathBuf {
+    crate::platform::fs::user_runtime_dir(PRODUCT)
 }
