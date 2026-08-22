@@ -1,5 +1,6 @@
 //! Windows host facts, directories, user identity, resources, and autostart.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 
@@ -523,6 +524,124 @@ fn existing_volume_probe_path(path: &Path) -> Option<std::path::PathBuf> {
 fn wide_str(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
+
+// ---------------------------------------------------------------------------
+// Login environment
+// ---------------------------------------------------------------------------
+
+/// The logged-in user's environment, as a fresh login would see it.
+///
+/// Built from machine and user settings rather than copied from this process,
+/// so variables that exist only here do not leak into it.
+pub fn login_environment() -> io::Result<Vec<(OsString, OsString)>> {
+    Ok(parse_environment_block(&login_environment_block()?))
+}
+
+/// The same environment in the double-NUL-terminated UTF-16 block form that
+/// `CreateProcessW` takes, for callers driving that API themselves.
+pub fn login_environment_block() -> io::Result<Vec<u16>> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY};
+    use windows_sys::Win32::System::Environment::{
+        CreateEnvironmentBlock, DestroyEnvironmentBlock,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // CreateEnvironmentBlock documents that the token needs TOKEN_QUERY,
+    // TOKEN_DUPLICATE, and TOKEN_IMPERSONATE. With TOKEN_QUERY alone the
+    // call still *succeeds* but silently omits the per-user dynamic
+    // variables (USERNAME, USERDOMAIN) -- downstream consumers that key
+    // behavior on USERNAME (e.g. soldr's daemon pipe name) then diverge
+    // from processes holding the real login environment.
+    let mut token = std::ptr::null_mut();
+    // SAFETY: `token` is valid writable storage, and the pseudo-handle from
+    // GetCurrentProcess is owned by Windows and never closed here.
+    let opened = unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
+            &mut token,
+        )
+    };
+    if opened == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut raw_block: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: `raw_block` is valid writable storage and `token` is the live
+    // handle opened above.
+    let created = unsafe { CreateEnvironmentBlock(&mut raw_block, token, 0) };
+    let create_error = if created == 0 {
+        Some(io::Error::last_os_error())
+    } else {
+        None
+    };
+    // SAFETY: `token` is owned here and is not used again after this close.
+    unsafe {
+        CloseHandle(token);
+    }
+    if let Some(error) = create_error {
+        return Err(error);
+    }
+
+    // SAFETY: on success `raw_block` points at a Windows-owned, double-NUL
+    // terminated UTF-16 block, which is exactly what the copy walks.
+    let copied = unsafe { copy_environment_block(raw_block.cast::<u16>()) };
+    // SAFETY: `raw_block` came from CreateEnvironmentBlock and is released
+    // exactly once, after the copy has finished reading it.
+    unsafe {
+        DestroyEnvironmentBlock(raw_block);
+    }
+    Ok(copied)
+}
+
+/// # Safety
+/// `cursor` must point at a double-NUL terminated UTF-16 block.
+unsafe fn copy_environment_block(cursor: *const u16) -> Vec<u16> {
+    let mut len = 0usize;
+    loop {
+        if *cursor.add(len) == 0 && *cursor.add(len + 1) == 0 {
+            len += 2;
+            break;
+        }
+        len += 1;
+    }
+    std::slice::from_raw_parts(cursor, len).to_vec()
+}
+
+fn parse_environment_block(block: &[u16]) -> Vec<(OsString, OsString)> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut env = Vec::new();
+    let mut offset = 0usize;
+    while offset < block.len() && block[offset] != 0 {
+        let Some(relative_end) = block[offset..].iter().position(|value| *value == 0) else {
+            break;
+        };
+        let end = offset + relative_end;
+        let entry = &block[offset..end];
+        // Drive-current-directory pseudo variables have the shape
+        // `=C:=C:\path`; skip index zero so their second '=' is the
+        // key/value separator.
+        if let Some(separator) = entry
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, value)| (*value == b'=' as u16).then_some(index))
+        {
+            let key = OsString::from_wide(&entry[..separator]);
+            let value = OsString::from_wide(&entry[separator + 1..]);
+            env.push((key, value));
+        }
+        offset = end + 1;
+    }
+    env
+}
+
+/// Windows environment variable names compare without regard to case.
+pub fn environment_keys_are_case_insensitive() -> bool {
+    true
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,5 +734,55 @@ mod tests {
     #[test]
     fn windows_reports_no_process_namespace() {
         assert_eq!(namespace_id(), None);
+    }
+
+    #[test]
+    fn parser_preserves_drive_current_directory_entries() {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        let block: Vec<u16> = OsStr::new("=C:=C:\\work")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .chain(OsStr::new("Path=C:\\Windows").encode_wide())
+            .chain(std::iter::once(0))
+            .chain(std::iter::once(0))
+            .collect();
+        assert_eq!(
+            parse_environment_block(&block),
+            vec![
+                (OsString::from("=C:"), OsString::from("C:\\work")),
+                (OsString::from("Path"), OsString::from("C:\\Windows")),
+            ]
+        );
+    }
+
+    #[test]
+    fn live_user_baseline_is_double_nul_terminated() {
+        let block = login_environment_block().unwrap();
+        assert!(block.len() >= 2);
+        assert_eq!(&block[block.len() - 2..], &[0, 0]);
+    }
+
+    /// Regression: with TOKEN_QUERY-only access, CreateEnvironmentBlock
+    /// succeeds but silently drops the per-user dynamic variables. The
+    /// baseline must contain USERNAME (and it must match the live value
+    /// when the current process has one).
+    #[test]
+    fn live_user_baseline_contains_username() {
+        let env = login_environment().unwrap();
+        let username = env
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("USERNAME"))
+            .map(|(_, value)| value.clone())
+            .expect("baseline environment must contain USERNAME");
+        assert!(!username.is_empty(), "USERNAME must be non-empty");
+        if let Ok(live) = std::env::var("USERNAME") {
+            assert_eq!(
+                username.to_string_lossy(),
+                live,
+                "baseline USERNAME must match the live login USERNAME"
+            );
+        }
     }
 }

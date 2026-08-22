@@ -9,11 +9,14 @@ use std::io;
 
 pub use crate::{
     host_boot_id as boot_id, host_current_process_privilege as current_process_privilege,
+    host_environment_keys_are_case_insensitive as environment_keys_are_case_insensitive,
     host_filesystem_device_id as filesystem_device_id, host_hostname as hostname,
-    host_machine_id as machine_id, host_namespace_id as namespace_id,
-    host_user_machine_identity as user_machine_identity,
+    host_login_environment as login_environment, host_machine_id as machine_id,
+    host_namespace_id as namespace_id, host_user_machine_identity as user_machine_identity,
     HostPrivilegedIdentity as PrivilegedIdentity,
 };
+
+pub use crate::host_login_environment_block as login_environment_block;
 
 /// Resolve a machine identity from the first readable of `machine_id_paths`,
 /// falling back to a boot-scoped id.
