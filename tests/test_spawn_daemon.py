@@ -37,6 +37,19 @@ requires_trampoline = pytest.mark.skipif(
     reason="Trampoline binary not bundled in this build",
 )
 
+# One process-name probe's own bound. The slow part is a cold `powershell`
+# (or `ps`) start on a loaded runner, not the daemon becoming visible.
+PROBE_TIMEOUT_SECONDS = 10.0
+# How long to keep probing. This must comfortably exceed a single probe, or a
+# slow probe cannot be retried at all -- which is exactly how the process-name
+# test failed in CI (#1086): the probe was bounded at 10s while the whole loop
+# had 5s, so one slow PowerShell start ended the test outright.
+NAME_VISIBLE_DEADLINE_SECONDS = 30.0
+# A probe spawns a process on Windows and macOS. Probing every 0.1s meant
+# dozens of shells inside the window, adding to the very load that makes them
+# slow to start.
+PROBE_INTERVAL_SECONDS = 0.5
+
 
 @requires_trampoline
 class TestSpawnDaemon(unittest.TestCase):
@@ -214,20 +227,36 @@ class TestSpawnDaemon(unittest.TestCase):
         # hide the intended executable name.
         name = f"rpd{os.getpid() % 10000}"
         self._daemon_name = name
+        # Outlive the probing deadline, so a failure means the name never
+        # resolved rather than the child having exited underneath the probe.
+        # The `finally` below kills it, so the longer sleep costs nothing.
         handle = spawn_daemon(
-            [sys.executable, "-c", "import time; time.sleep(10)"],
+            [sys.executable, "-c", "import time; time.sleep(60)"],
             name=name,
         )
         try:
-            deadline = time.monotonic() + 5.0
+            # A probe that does not answer in time means "no reading yet", the
+            # same as a probe that answers with nothing. Letting
+            # `TimeoutExpired` escape here fails the test on a slow runner even
+            # though the loop exists precisely to retry (#1086).
+            timeouts = 0
+            deadline = time.monotonic() + NAME_VISIBLE_DEADLINE_SECONDS
             while time.monotonic() < deadline:
-                actual = self._process_name(handle.pid)
+                try:
+                    actual = self._process_name(handle.pid)
+                except subprocess.TimeoutExpired:
+                    timeouts += 1
+                    actual = None
                 if actual is not None:
                     self.assertEqual(actual, name)
                     break
-                time.sleep(0.1)
+                time.sleep(PROBE_INTERVAL_SECONDS)
             else:
-                self.fail(f"Could not resolve process name for daemon pid {handle.pid}")
+                self.fail(
+                    f"Could not resolve process name for daemon pid "
+                    f"{handle.pid} within {NAME_VISIBLE_DEADLINE_SECONDS}s "
+                    f"({timeouts} probe(s) timed out)"
+                )
         finally:
             self._kill_pid(handle.pid)
 
@@ -284,7 +313,7 @@ class TestSpawnDaemon(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=10,
+                timeout=PROBE_TIMEOUT_SECONDS,
             )
             name = result.stdout.strip()
             return name or None
@@ -302,7 +331,7 @@ class TestSpawnDaemon(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
-            timeout=10,
+            timeout=PROBE_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
             return None
