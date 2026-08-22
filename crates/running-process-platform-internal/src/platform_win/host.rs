@@ -1,6 +1,7 @@
 //! Windows host facts, directories, user identity, resources, and autostart.
 
 use std::io;
+use std::path::Path;
 
 /// A privileged system identity this process may be running as.
 ///
@@ -234,6 +235,294 @@ fn nibble_to_hex(n: u8) -> char {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Host identity facts
+// ---------------------------------------------------------------------------
+
+/// This machine's name as the host reports it.
+pub fn hostname() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok().filter(|n| !n.is_empty())
+}
+
+/// A durable per-machine identifier that survives reboots.
+///
+/// The cryptography MachineGuid is the value Windows itself treats as the
+/// machine's installation identity. A host whose registry hive is unreadable
+/// falls back to the computer name: weaker, but still machine-scoped, which is
+/// what the caller is asking about.
+pub fn machine_id() -> Option<String> {
+    machine_guid().or_else(hostname)
+}
+
+/// An identifier that changes on every boot of this machine.
+///
+/// `None` means neither boot-counter source answered -- the caller decides
+/// what an unknown boot means, because only it knows what it is comparing.
+pub fn boot_id() -> Option<String> {
+    boot_counter().map(|counter| format!("windows-boot-{counter}"))
+}
+
+/// The volume this path lives on, as the host identifies volumes.
+pub fn filesystem_device_id(path: &Path) -> Option<u64> {
+    volume_serial(path)
+}
+
+/// Windows has no process namespaces of the kind this identity distinguishes.
+pub fn namespace_id() -> Option<String> {
+    None
+}
+
+fn boot_counter() -> Option<u32> {
+    select_boot_counter(registry_boot_counter(), process_boot_counter)
+}
+
+fn select_boot_counter(registry: Option<u32>, process: impl FnOnce() -> Option<u32>) -> Option<u32> {
+    registry.or_else(process)
+}
+
+fn registry_boot_counter() -> Option<u32> {
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD,
+    };
+
+    let subkey = wide_str(
+        "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters",
+    );
+    let value = wide_str("BootId");
+    let mut ty = 0_u32;
+    let mut counter = 0_u32;
+    let mut bytes = std::mem::size_of::<u32>() as u32;
+    // SAFETY: both name pointers are NUL-terminated wide strings that outlive
+    // the call, and `ty`/`counter`/`bytes` are valid writable storage sized as
+    // the DWORD request requires.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            &mut ty,
+            (&mut counter as *mut u32).cast(),
+            &mut bytes,
+        )
+    };
+    registry_dword(status, ty, bytes, counter)
+}
+
+/// Accept a registry read only when it succeeded *and* returned exactly the
+/// DWORD that was asked for. A wrong type or a short read is a miss, not a
+/// value, so the caller falls through to the other source.
+fn registry_dword(status: u32, ty: u32, bytes: u32, value: u32) -> Option<u32> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::REG_DWORD;
+
+    (status == ERROR_SUCCESS && ty == REG_DWORD && bytes as usize == std::mem::size_of::<u32>())
+        .then_some(value)
+}
+
+/// Read the kernel boot counter through process telemetry when the registry
+/// value is missing, inaccessible, or has an unexpected type.
+fn process_boot_counter() -> Option<u32> {
+    use windows_sys::Wdk::System::Threading::{
+        NtQueryInformationProcess, ProcessTelemetryIdInformation,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    #[repr(C)]
+    struct ProcessTelemetryInfo {
+        header_size: u32,
+        process_id: u32,
+        process_start_key: u64,
+        create_time: u64,
+        create_interrupt_time: u64,
+        create_unbiased_interrupt_time: u64,
+        process_sequence_number: u64,
+        session_create_time: u64,
+        session_id: u32,
+        boot_id: u32,
+        image_checksum: u32,
+        image_time_date_stamp: u32,
+        user_sid_offset: u32,
+        image_path_offset: u32,
+        package_name_offset: u32,
+        relative_app_name_offset: u32,
+        command_line_offset: u32,
+    }
+
+    let boot_id_offset = std::mem::offset_of!(ProcessTelemetryInfo, boot_id);
+    let boot_id_end = boot_id_offset + std::mem::size_of::<u32>();
+    const MAX_PROCESS_TELEMETRY_BYTES: usize = 1024 * 1024;
+
+    // SAFETY: GetCurrentProcess returns a pseudo-handle owned by Windows; it
+    // must not and will not be closed by this process.
+    let process = unsafe { GetCurrentProcess() };
+    let mut needed = 0_u32;
+    // SAFETY: a zero-length probe with a null output buffer asks the kernel for
+    // the required allocation size. `needed` is valid writable storage.
+    unsafe {
+        NtQueryInformationProcess(
+            process,
+            ProcessTelemetryIdInformation,
+            std::ptr::null_mut(),
+            0,
+            &mut needed,
+        );
+    };
+    if (needed as usize) < boot_id_end || needed as usize > MAX_PROCESS_TELEMETRY_BYTES {
+        return None;
+    }
+
+    // The telemetry header is followed by variable-length strings. Size the
+    // buffer from the kernel's first response and retry once if it grows.
+    for _ in 0..2 {
+        let words = (needed as usize).div_ceil(std::mem::size_of::<u64>());
+        let mut buffer = vec![0_u64; words];
+        let capacity = buffer.len() * std::mem::size_of::<u64>();
+        let mut returned = needed;
+        // SAFETY: `buffer` is writable for `capacity` bytes and is aligned more
+        // strictly than the telemetry header. The current-process pseudo-handle
+        // remains valid for the lifetime of this call.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process,
+                ProcessTelemetryIdInformation,
+                buffer.as_mut_ptr().cast(),
+                capacity as u32,
+                &mut returned,
+            )
+        };
+        if status >= 0 && returned as usize >= boot_id_end {
+            // SAFETY: the successful query reported at least `boot_id_end`
+            // initialized bytes. `read_unaligned` avoids relying on the buffer's
+            // alignment for the field read.
+            let boot_id = unsafe {
+                std::ptr::read_unaligned(
+                    buffer
+                        .as_ptr()
+                        .cast::<u8>()
+                        .add(boot_id_offset)
+                        .cast::<u32>(),
+                )
+            };
+            return Some(boot_id);
+        }
+        if returned as usize <= capacity || returned as usize > MAX_PROCESS_TELEMETRY_BYTES {
+            return None;
+        }
+        needed = returned;
+    }
+    None
+}
+
+fn machine_guid() -> Option<String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, REG_SZ, RRF_RT_REG_SZ,
+    };
+
+    let subkey = wide_str("SOFTWARE\\Microsoft\\Cryptography");
+    let value = wide_str("MachineGuid");
+    let mut ty = 0_u32;
+    let mut buf = [0_u16; 128];
+    let mut bytes = (buf.len() * std::mem::size_of::<u16>()) as u32;
+    // SAFETY: the name pointers are NUL-terminated wide strings that outlive
+    // the call, and `buf` is writable for the `bytes` capacity handed over.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            &mut ty,
+            buf.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    if status != ERROR_SUCCESS || ty != REG_SZ {
+        return None;
+    }
+
+    let len = (bytes as usize / std::mem::size_of::<u16>()).min(buf.len());
+    let nul = buf[..len].iter().position(|ch| *ch == 0).unwrap_or(len);
+    let guid = String::from_utf16_lossy(&buf[..nul]).trim().to_string();
+    if guid.is_empty() {
+        None
+    } else {
+        Some(guid)
+    }
+}
+
+fn volume_serial(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetVolumeInformationByHandleW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let probe = existing_volume_probe_path(path)?;
+    let wide: Vec<u16> = probe
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` is a NUL-terminated path buffer alive for the call. The
+    // open requests no access rights, so it succeeds on a directory handle
+    // used only to identify the volume.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+
+    let mut serial = 0_u32;
+    // SAFETY: `handle` is a live handle from the call above and `serial` is
+    // valid writable storage; every other out-parameter is explicitly declined.
+    let ok = unsafe {
+        GetVolumeInformationByHandleW(
+            handle,
+            std::ptr::null_mut(),
+            0,
+            &mut serial,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    // SAFETY: `handle` is owned here and is not used again after this close.
+    unsafe {
+        CloseHandle(handle);
+    }
+    if ok == 0 {
+        None
+    } else {
+        Some(serial as u64)
+    }
+}
+
+/// Volume identity is a property of the volume, not of the leaf, so a path
+/// that does not exist yet is answered by its nearest existing ancestor.
+fn existing_volume_probe_path(path: &Path) -> Option<std::path::PathBuf> {
+    path.ancestors()
+        .find(|candidate| !candidate.as_os_str().is_empty() && candidate.exists())
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+}
+
+fn wide_str(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +533,87 @@ mod tests {
         assert!(!is_local_system_sid(&[
             1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0
         ]));
+    }
+
+    /// The machine id must be the installation GUID, not a restatement of the
+    /// computer name -- the fallback exists, but a healthy host never uses it.
+    #[test]
+    fn windows_identity_uses_machine_and_volume_ids() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_ne!(machine_id(), hostname());
+        assert_ne!(filesystem_device_id(&cwd), Some(0));
+        assert!(filesystem_device_id(&cwd).is_some());
+    }
+
+    #[test]
+    fn windows_boot_id_is_the_stable_os_boot_counter() {
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::System::Registry::{
+            RegGetValueW, HKEY_LOCAL_MACHINE, REG_DWORD, RRF_RT_REG_DWORD,
+        };
+
+        let subkey = wide_str(
+            "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters",
+        );
+        let value = wide_str("BootId");
+        let mut ty = 0_u32;
+        let mut counter = 0_u32;
+        let mut bytes = std::mem::size_of::<u32>() as u32;
+        // SAFETY: the same documented RegGetValueW contract the implementation
+        // uses; every pointer here outlives the call.
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                subkey.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_DWORD,
+                &mut ty,
+                (&mut counter as *mut u32).cast(),
+                &mut bytes,
+            )
+        };
+        assert_eq!(status, ERROR_SUCCESS, "Windows must expose its BootId");
+        assert_eq!(ty, REG_DWORD);
+        assert_eq!(bytes as usize, std::mem::size_of::<u32>());
+
+        let expected = Some(format!("windows-boot-{counter}"));
+        for _ in 0..1_000 {
+            assert_eq!(boot_id(), expected);
+        }
+    }
+
+    #[test]
+    fn windows_process_telemetry_boot_counter_is_stable() {
+        let expected = process_boot_counter().expect("Windows process telemetry BootId");
+        assert_ne!(expected, 0);
+        for _ in 0..1_000 {
+            assert_eq!(process_boot_counter(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn windows_boot_counter_falls_back_for_missing_or_wrong_registry_value() {
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::System::Registry::REG_SZ;
+
+        let process_counter = Some(42);
+        assert_eq!(
+            select_boot_counter(registry_dword(2, 0, 0, 0), || process_counter),
+            process_counter
+        );
+        assert_eq!(
+            select_boot_counter(
+                registry_dword(ERROR_SUCCESS, REG_SZ, std::mem::size_of::<u32>() as u32, 7),
+                || process_counter
+            ),
+            process_counter
+        );
+    }
+
+    /// Windows reports no namespace, and that is a fact rather than a gap: the
+    /// identity consumer must not read an empty string as "same namespace".
+    #[test]
+    fn windows_reports_no_process_namespace() {
+        assert_eq!(namespace_id(), None);
     }
 }

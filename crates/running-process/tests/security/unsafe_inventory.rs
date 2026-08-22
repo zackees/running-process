@@ -21,10 +21,6 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
         unsafe_count: 2,
     },
     UnsafeInventoryEntry {
-        path: "src/broker/host_identity.rs",
-        unsafe_count: 13,
-    },
-    UnsafeInventoryEntry {
         path: "src/broker/lifecycle/process_tree.rs",
         unsafe_count: 7,
     },

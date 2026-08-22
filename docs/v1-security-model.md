@@ -173,17 +173,29 @@ The `fs_health.rs` inventory covers the Unix inode-pressure probe (#390): two
 broker-owned constant (never peer-supplied), the struct is stack-local, and
 only the inode counters are read out.
 
-The `host_identity.rs` inventory includes the Windows boot-identity fix
-(#757). The primary path calls `RegGetValueW` for the fixed, machine-local
+The former `host_identity.rs` entry was retired by #973. Its thirteen `unsafe`
+tokens read the five facts a cache manifest records about the host that wrote
+it: the machine name, a reboot-surviving machine id, a per-boot id, the
+filesystem device, and the process namespaces. All five now execute inside the
+audited platform host facade.
+
+The Windows boot-identity fix (#757) moved with them, unchanged in substance.
+The primary path calls `RegGetValueW` for the fixed, machine-local
 `PrefetchParameters\BootId` DWORD and accepts it only after validating the
 return status, registry type, and exact four-byte length. If that value is
 unavailable, the fallback queries the current process's documented
 `ProcessTelemetryIdInformation` through `NtQueryInformationProcess`. It uses
 the non-owning current-process pseudo-handle, probes the kernel-reported buffer
 size, caps allocation at 1 MiB, retries once if the size grows, and reads
-`BootId` only after the returned length covers that field. The final fallback
-is a process-stable unique token, so loss of both OS sources fails closed
-instead of accepting an identity with a cross-boot constant.
+`BootId` only after the returned length covers that field.
+
+What the broker keeps is the part that was never a host mechanic: what an
+*absent* fact means. A host that cannot name the current boot still gets a
+process-stable unique token rather than a shared constant, so loss of both OS
+sources fails closed instead of accepting an identity that every process on
+every such host would agree on. That decision belongs to the comparison the
+identity exists to support, so it stays with the comparison -- and it is now
+reachable, and tested, without any `unsafe` at all.
 
 The former `server/connection.rs` inventory entry was retired by #971. Local
 IPC peer-identity and Windows SID extraction now run behind the audited

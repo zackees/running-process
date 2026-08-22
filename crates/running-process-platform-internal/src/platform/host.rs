@@ -8,7 +8,9 @@
 use std::io;
 
 pub use crate::{
-    host_current_process_privilege as current_process_privilege,
+    host_boot_id as boot_id, host_current_process_privilege as current_process_privilege,
+    host_filesystem_device_id as filesystem_device_id, host_hostname as hostname,
+    host_machine_id as machine_id, host_namespace_id as namespace_id,
     host_user_machine_identity as user_machine_identity,
     HostPrivilegedIdentity as PrivilegedIdentity,
 };
