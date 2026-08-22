@@ -10,8 +10,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(not(windows))]
-use std::fs::File;
+/// Directory name this product owns beneath each host location.
+const PRODUCT: &str = "running-process";
 
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -185,37 +185,7 @@ pub fn central_registry_dir() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    #[cfg(windows)]
-    {
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-            .join("running-process")
-            .join("manifests")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        dirs::home_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Library")
-            .join("Application Support")
-            .join("running-process")
-            .join("manifests")
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-            PathBuf::from(data_home)
-                .join("running-process")
-                .join("manifests")
-        } else {
-            dirs::home_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join(".local")
-                .join("share")
-                .join("running-process")
-                .join("manifests")
-        }
-    }
+    crate::platform::fs::user_data_dir(PRODUCT).join("manifests")
 }
 
 /// Ensure the central-registry directory exists with private permissions.
@@ -320,8 +290,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ManifestError> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        replace_file(&tmp, path)?;
-        sync_parent(parent)?;
+        crate::platform::fs::replace_file(&tmp, path)?;
+        crate::platform::fs::sync_directory(parent)?;
         Ok(())
     })();
 
@@ -341,56 +311,6 @@ fn temp_path_for(path: &Path) -> PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     path.with_file_name(format!(".{file_name}.tmp-{}-{nanos}", std::process::id()))
-}
-
-#[cfg(not(windows))]
-fn replace_file(tmp: &Path, target: &Path) -> io::Result<()> {
-    fs::rename(tmp, target)
-}
-
-#[cfg(windows)]
-fn replace_file(tmp: &Path, target: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
-
-    if !target.exists() {
-        return fs::rename(tmp, target);
-    }
-
-    fn wide(path: &Path) -> Vec<u16> {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
-    }
-
-    let target_w = wide(target);
-    let tmp_w = wide(tmp);
-    let ok = unsafe {
-        ReplaceFileW(
-            target_w.as_ptr(),
-            tmp_w.as_ptr(),
-            std::ptr::null(),
-            REPLACEFILE_WRITE_THROUGH,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-fn sync_parent(parent: &Path) -> io::Result<()> {
-    File::open(parent)?.sync_all()
-}
-
-#[cfg(windows)]
-fn sync_parent(_parent: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

@@ -147,3 +147,33 @@ pub fn decode_path_bytes(bytes: &[u8]) -> io::Result<PathBuf> {
 
     Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec())))
 }
+
+/// Directory for `product`'s shared application data.
+///
+/// Distinct from [`user_state_dir`]: state is this machine's private
+/// bookkeeping, while this is the data a user expects to follow their account.
+/// On hosts that distinguish the two, this is the one that roams.
+pub fn user_data_dir(product: &str) -> PathBuf {
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+        return PathBuf::from(data_home).join(product);
+    }
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".local")
+        .join("share")
+        .join(product)
+}
+
+/// Move `tmp` onto `target`, replacing it, without a window where neither is
+/// readable.
+pub fn replace_file(tmp: &Path, target: &Path) -> io::Result<()> {
+    std::fs::rename(tmp, target)
+}
+
+/// Make a directory entry created by [`replace_file`] durable.
+///
+/// A rename is only as durable as the directory recording it, which Unix does
+/// not flush with the file.
+pub fn sync_directory(directory: &Path) -> io::Result<()> {
+    File::open(directory)?.sync_all()
+}

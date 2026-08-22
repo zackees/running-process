@@ -11,9 +11,11 @@ pub use crate::{
     fs_decode_path_bytes as decode_path_bytes, fs_encode_path_bytes as encode_path_bytes,
     fs_file_identity as file_identity, fs_is_lock_conflict as is_lock_conflict,
     fs_open_lock_file as open_lock_file, fs_path_identity as path_identity,
+    fs_replace_file as replace_file, fs_sync_directory as sync_directory,
     fs_try_lock_exclusive as try_lock_exclusive, fs_unlock as unlock,
-    fs_user_run_data_root as user_run_data_root, fs_user_runtime_dir as user_runtime_dir,
-    fs_user_state_dir as user_state_dir, FsFileIdentity as FileIdentity,
+    fs_user_data_dir as user_data_dir, fs_user_run_data_root as user_run_data_root,
+    fs_user_runtime_dir as user_runtime_dir, fs_user_state_dir as user_state_dir,
+    FsFileIdentity as FileIdentity,
 };
 
 #[cfg(all(test, feature = "fs"))]
@@ -163,6 +165,43 @@ mod tests {
             decode_path_bytes(&encode_path_bytes(&empty)).expect("decode empty"),
             empty
         );
+    }
+
+    /// Replacing works whether or not the target already exists.
+    ///
+    /// Both cases matter: a bare rename onto an existing file fails on
+    /// Windows, and the no-target case is the one a first write takes.
+    #[test]
+    fn a_file_is_replaced_whether_or_not_the_target_exists() {
+        let dir = std::env::temp_dir().join(format!("rp-fs-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let target = dir.join("manifest");
+
+        let first = dir.join("first.tmp");
+        std::fs::write(&first, b"first").expect("write first");
+        replace_file(&first, &target).expect("replace absent target");
+        assert_eq!(std::fs::read(&target).expect("read"), b"first");
+
+        let second = dir.join("second.tmp");
+        std::fs::write(&second, b"second").expect("write second");
+        replace_file(&second, &target).expect("replace existing target");
+        assert_eq!(std::fs::read(&target).expect("read"), b"second");
+
+        // The replaced-from paths are consumed by the move, not left behind.
+        assert!(!first.exists());
+        assert!(!second.exists());
+
+        sync_directory(&dir).expect("sync the directory that records it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Shared data and machine-local state are different roles, and a host
+    /// that distinguishes them must not collapse the two.
+    #[test]
+    fn shared_data_is_its_own_role() {
+        let data = user_data_dir(PRODUCT);
+        assert!(data.is_absolute());
+        assert!(data.to_string_lossy().contains(PRODUCT));
     }
 
     /// The roles are stable: asking twice gives the same answer, so a path
