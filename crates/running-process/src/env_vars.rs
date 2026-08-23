@@ -58,7 +58,15 @@ pub enum EnvKind {
     /// Free text -- a name, scope, endpoint, or token.
     Text,
     /// A number: a count, a timeout in milliseconds, a port, a descriptor.
-    Number,
+    ///
+    /// `zero_selects_default` records what `0` means for *this* variable,
+    /// because it is not the same answer everywhere. A connect timeout of zero
+    /// makes every connection fail instantly and is never what anyone wants,
+    /// so zero falls back to the default. A drain timeout of zero means "do
+    /// not wait", which is a perfectly reasonable thing to ask for, so zero is
+    /// honoured. Leaving this unstated is how the two ended up parsed
+    /// differently by accident.
+    Number { zero_selects_default: bool },
 }
 
 /// Who decides what values a variable may take.
@@ -102,6 +110,69 @@ impl EnvVar {
             }
             other => panic!("{} is declared as {other:?}, not a flag", self.name),
         }
+    }
+}
+
+impl EnvVar {
+    /// Read this variable as a count, falling back to `default`.
+    ///
+    /// A value that is not a number is not a smaller number: it is a mistake,
+    /// and the default is a better answer than a silently-wrong one.
+    pub fn count_or(&self, default: usize) -> usize {
+        self.parsed::<usize>().unwrap_or(default)
+    }
+
+    /// Read this variable as a millisecond duration, falling back to `default`.
+    pub fn millis_or(&self, default: std::time::Duration) -> std::time::Duration {
+        self.parsed::<u64>()
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(default)
+    }
+
+    /// Read this variable as a port number, if it names one.
+    pub fn port(&self) -> Option<u16> {
+        self.parsed::<u16>()
+    }
+
+    /// Read this variable as text, if it is set to anything.
+    pub fn text(&self) -> Option<String> {
+        std::env::var(self.name)
+            .ok()
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Read this variable as a path, if it is set to anything.
+    ///
+    /// Takes the value as the host wrote it: a path that is not valid Unicode
+    /// is still a path, and lossily repairing it would point somewhere else.
+    pub fn path(&self) -> Option<std::path::PathBuf> {
+        std::env::var_os(self.name)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+    }
+
+    /// Parse the value, applying this variable's declared rule for zero.
+    ///
+    /// # Panics
+    /// If the variable is not declared as a number. A programming error in
+    /// this crate, not something the environment can cause.
+    fn parsed<T>(&self) -> Option<T>
+    where
+        T: std::str::FromStr + Default + PartialEq,
+    {
+        let EnvKind::Number {
+            zero_selects_default,
+        } = self.kind
+        else {
+            panic!("{} is declared as {:?}, not a number", self.name, self.kind);
+        };
+        let parsed: T = std::env::var(self.name)
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+            .filter(|value: &T| !(zero_selects_default && *value == T::default()))?;
+        Some(parsed)
     }
 }
 
@@ -187,7 +258,7 @@ declare! {
         EnvKind::ExactValue("1"), Owner::Crate, "privileged startup is refused",
         "Opt out of the broker's refusal to start as root or LocalSystem.";
     BROKER_CLIENT_TIMEOUT_MS => "RUNNING_PROCESS_BROKER_CLIENT_TIMEOUT_MS",
-        EnvKind::Number, Owner::Crate, "the built-in client timeout",
+        EnvKind::Number { zero_selects_default: true }, Owner::Crate, "the built-in client timeout",
         "Broker client request timeout, in milliseconds.";
     BROKER_CRASH_DUMP_DIR => "RUNNING_PROCESS_BROKER_CRASH_DUMP_DIR",
         EnvKind::Path, Owner::Crate, "the standard diagnostic-artifact location",
@@ -196,19 +267,19 @@ declare! {
         EnvKind::OwnedFlag, Owner::Crate, "the guard does not run",
         "Run the broker Hello latency guard.";
     BROKER_HELLO_TIMEOUT_MS => "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS",
-        EnvKind::Number, Owner::Crate, "the built-in Hello timeout",
+        EnvKind::Number { zero_selects_default: true }, Owner::Crate, "the built-in Hello timeout",
         "Broker Hello handshake timeout, in milliseconds.";
     BROKER_HTTP_BIND => "RUNNING_PROCESS_BROKER_HTTP_BIND",
         EnvKind::Text, Owner::Crate, "the loopback bind address",
         "Bind address for the broker HTTP aggregator.";
     BROKER_HTTP_PORT => "RUNNING_PROCESS_BROKER_HTTP_PORT",
-        EnvKind::Number, Owner::Crate, "an ephemeral port",
+        EnvKind::Number { zero_selects_default: false }, Owner::Crate, "an ephemeral port",
         "Port for the broker HTTP aggregator.";
     BROKER_LISTENER_FD => "RUNNING_PROCESS_BROKER_LISTENER_FD",
-        EnvKind::Number, Owner::Foreign, "the daemon binds its own endpoint",
+        EnvKind::Number { zero_selects_default: false }, Owner::Foreign, "the daemon binds its own endpoint",
         "Descriptor of a listening socket the broker already bound and passed.";
     BROKER_MAX_INFLIGHT_HANDLERS => "RUNNING_PROCESS_BROKER_MAX_INFLIGHT_HANDLERS",
-        EnvKind::Number, Owner::Crate, "the built-in concurrency cap",
+        EnvKind::Number { zero_selects_default: true }, Owner::Crate, "the built-in concurrency cap",
         "Maximum broker request handlers running at once.";
     BROKER_OWNED_BIND => "RUNNING_PROCESS_BROKER_OWNED_BIND",
         EnvKind::OptOutFlag, Owner::Crate, "broker-owned bind is used",
@@ -244,10 +315,10 @@ declare! {
         EnvKind::Path, Owner::Foreign, "spawned child PIDs are not logged",
         "Append each spawned child PID to this file (test harness seam).";
     CLIENT_CONNECT_TIMEOUT_MS => "RUNNING_PROCESS_CLIENT_CONNECT_TIMEOUT_MS",
-        EnvKind::Number, Owner::Crate, "the built-in connect timeout",
+        EnvKind::Number { zero_selects_default: true }, Owner::Crate, "the built-in connect timeout",
         "Daemon client connect timeout, in milliseconds.";
     CLIENT_RPC_TIMEOUT_MS => "RUNNING_PROCESS_CLIENT_RPC_TIMEOUT_MS",
-        EnvKind::Number, Owner::Crate, "the built-in RPC timeout",
+        EnvKind::Number { zero_selects_default: true }, Owner::Crate, "the built-in RPC timeout",
         "Daemon client RPC timeout, in milliseconds.";
     DAEMON_SCOPE => "RUNNING_PROCESS_DAEMON_SCOPE",
         EnvKind::Text, Owner::Crate, "the user-wide scope",
@@ -265,7 +336,7 @@ declare! {
         EnvKind::ForeignFlag, Owner::Crate, "the process is not a daemon",
         "Marks a process spawned as a daemon, for originator reaping.";
     KILL_DRAIN_TIMEOUT_MS => "RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS",
-        EnvKind::Number, Owner::Crate, "two seconds",
+        EnvKind::Number { zero_selects_default: false }, Owner::Crate, "two seconds",
         "How long `kill()` waits for output capture to drain, in milliseconds.";
     MANIFEST_DIR => "RUNNING_PROCESS_MANIFEST_DIR",
         EnvKind::Path, Owner::Foreign, "the standard manifest location",

@@ -5,17 +5,10 @@ use std::time::{Duration, Instant};
 
 const CONTROL_IO_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const DEFAULT_HELLO_READ_TIMEOUT: Duration = Duration::from_secs(30);
-const HELLO_READ_TIMEOUT_ENV: &str = "RUNNING_PROCESS_BROKER_HELLO_TIMEOUT_MS";
 
 #[doc(hidden)]
 pub fn hello_read_deadline() -> Instant {
-    let timeout = std::env::var(HELLO_READ_TIMEOUT_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|&ms| ms > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_HELLO_READ_TIMEOUT);
-    Instant::now() + timeout
+    Instant::now() + crate::env_vars::BROKER_HELLO_TIMEOUT_MS.millis_or(DEFAULT_HELLO_READ_TIMEOUT)
 }
 
 /// Stream capability required by [`with_nonblocking_deadline`].

@@ -72,12 +72,8 @@ impl BrokerHttpPort {
 }
 
 fn parse_port_env() -> Option<u16> {
-    let raw = env::var(PORT_OVERRIDE_ENV).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    trimmed.parse::<u16>().ok()
+    // Port 0 is honoured: it is how a caller asks for an ephemeral port.
+    crate::env_vars::BROKER_HTTP_PORT.port()
 }
 
 fn parse_bind_env() -> Option<IpAddr> {

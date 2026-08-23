@@ -115,7 +115,6 @@ const SCAFFOLD_PIPE_IDX: u32 = 0;
 /// Maximum in-flight Hello handlers. Conservative cap; the OS thread
 /// cap is the hard upper bound but we want backpressure before that.
 const MAX_INFLIGHT_HANDLERS: usize = 256;
-const MAX_INFLIGHT_HANDLERS_ENV: &str = "RUNNING_PROCESS_BROKER_MAX_INFLIGHT_HANDLERS";
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const HANDLER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -240,11 +239,7 @@ fn flush_coverage_profile() -> Result<(), String> {
 }
 
 fn max_inflight_handlers() -> usize {
-    std::env::var(MAX_INFLIGHT_HANDLERS_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|&limit| limit > 0)
-        .unwrap_or(MAX_INFLIGHT_HANDLERS)
+    running_process::env_vars::BROKER_MAX_INFLIGHT_HANDLERS.count_or(MAX_INFLIGHT_HANDLERS)
 }
 
 struct InflightGuard(Arc<AtomicUsize>);
