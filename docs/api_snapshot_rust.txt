@@ -11,6 +11,7 @@
     pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
     pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
     pub use content_hash::blake3_file;
+    pub use daemon::telemetry;
     pub use observer::{ CapabilitySupport, CaptureSource, CategoryCapability, DumpResult, EventCategory, ObservationGrade, ObservationPolicy, ObserverCapabilities, ObserverConfig, ObserverEvent, ObserverEventKind, ObserverSubscriber, ProcessEvent, ProcessEventKind, ProcessIdentity, ProcessObservation, ProcessObservationCapabilities, ProcessObservationError, ProcessWatch, ProcessWatchConfigurationError, ProcessWatchCursor, ProcessWatchGap, ProcessWatchLoss, ProcessWatchMatch, ProcessWatchRead, ProcessWatchSubscriber, StackCapture, StackDump, };
     pub use originator::{ find_declared_daemon_pids, find_processes_by_originator, OriginatorProcessInfo, };
     pub use output_log::{ CursorRead, OutputCursor, OutputLog, OutputRecord, SharedOutputCursor, SharedOutputLog, };
