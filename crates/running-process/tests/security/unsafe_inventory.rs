@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[UnsafeInventoryEntry {
-    // Slice 4 of #488 (PR #491): `unsafe { libc::getuid() }` in
-    // `resolve_socket_path` for the unix bind dir. The matching v1 site
-    // in `lifecycle/names.rs` was retired by #971; this one remains.
-    path: "src/broker/client_v2.rs",
-    unsafe_count: 2,
-}];
+/// The broker's reviewed `unsafe` sites. There are none.
+///
+/// This is deliberately empty rather than deleted. Every host mechanic the
+/// broker once performed inline now runs behind the platform facade, so the
+/// guard has become a stronger statement than the inventory it began as: no
+/// `unsafe` may appear under `src/broker/` at all without a security review
+/// adding it back here and saying why.
+const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[];
 
 #[derive(Clone, Copy, Debug)]
 struct UnsafeInventoryEntry {

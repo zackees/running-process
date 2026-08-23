@@ -162,6 +162,10 @@ Every broker unsafe-site count change is security-review relevant. Adding,
 removing, or moving broker `unsafe` usage requires updating the inventory and
 reviewing why the platform API boundary changed.
 
+The inventory is currently empty, which makes the guard a stronger statement
+than it began as: any `unsafe` appearing under `src/broker/` now fails the
+gate outright, rather than only a change to an approved count.
+
 The former `backend_lifecycle/verify_pid.rs` entry was retired by #969. Its
 twenty-one `unsafe` tokens were the three ways a host answers "is that still
 the process I meant" -- a Linux pidfd, a macOS `kqueue`/`EVFILT_PROC`
@@ -309,8 +313,25 @@ fallback socket directory. Endpoint directory placement and the `sun_path` /
 `MAX_PATH` budgets now execute inside the audited platform IPC facade, so the
 broker derives a v1 endpoint address without a native call of its own. The
 broker retains the naming policy: the `rpb-v1-` prefix, service and version
-validation, and the SID-hash check. The equivalent `client_v2.rs` read is
-unchanged and still inventoried.
+validation, and the SID-hash check.
+
+The matching `client_v2.rs` read was retired the same way, and the inventory
+is now **empty**: no file under `src/broker/` contains `unsafe` at all.
+
+Its two `getuid()` calls derived the per-user broker-v2 socket path by hand --
+`XDG_RUNTIME_DIR`, macOS's `TMPDIR` plus a hashed leaf sized for `sun_path`,
+and the Windows pipe prefix. The server half of that same endpoint already
+asked `platform::ipc::broker_endpoint_name` for it, so the client now asks the
+same function with `path_scoped: false`.
+
+That is a correctness fix as well as an inventory one. Two independent
+derivations of one endpoint fail silently when they drift -- the client
+reports "no broker running" forever -- and these had already drifted: the
+client read `TMPDIR` and `XDG_RUNTIME_DIR` through the declared environment
+table, where an empty value means unset, while the facade reads them with
+`var_os`, where an empty value is a real value that joins into a *relative*
+socket path. A caller with `TMPDIR=""` got one path from the client and
+another from the server.
 
 ## Fuzz Campaign And Reviewer Signoff
 
