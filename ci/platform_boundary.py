@@ -156,6 +156,61 @@ ARTIFACT_ZONES: tuple[ArtifactZone, ...] = (
             {"libc", "windows_sys", "std::os::unix", "std::os::windows"}
         ),
     ),
+    ArtifactZone(
+        name="probe-capture",
+        prefix="crates/running-process-probe/src/snapshot/mod.rs",
+        reason=(
+            "Suspend/resume sequencing. Between the suspend and the resume the "
+            "other threads are stopped, so this window has the same rule as a "
+            "signal handler and for the same reason: anything that could block "
+            "on a resource a stopped thread holds can deadlock the process it "
+            "is trying to observe. Which host mechanism does the stopping is "
+            "the decision this file exists to make."
+        ),
+        host_keys=frozenset({"windows", "target_os", "target_arch"}),
+        host_values=frozenset({"linux", "macos", "x86_64"}),
+        native_imports=frozenset({"libc"}),
+    ),
+    ArtifactZone(
+        name="probe-capture-linux",
+        prefix="crates/running-process-probe/src/snapshot/linux.rs",
+        reason=(
+            "The reserved-realtime-signal capture. The handler touches only "
+            "atomics because it runs on a thread that was interrupted "
+            "arbitrarily, and the register set it copies differs per "
+            "architecture. Note the contract permits no target_os: this file "
+            "is selected structurally by the module tree, so a target_os "
+            "inside it would mean the selection had gone wrong twice."
+        ),
+        host_keys=frozenset({"target_arch"}),
+        host_values=frozenset({"x86_64", "aarch64"}),
+        native_imports=frozenset({"libc"}),
+    ),
+    ArtifactZone(
+        name="probe-capture-macos",
+        prefix="crates/running-process-probe/src/snapshot/macos.rs",
+        reason=(
+            "thread_suspend plus Mach VM reads, which is how a macOS capture "
+            "reads a stopped thread's stack without faulting the host when a "
+            "mapping has gone away."
+        ),
+        host_keys=frozenset({"target_arch"}),
+        host_values=frozenset({"x86_64", "aarch64"}),
+        native_imports=frozenset({"libc"}),
+    ),
+    ArtifactZone(
+        name="probe-capture-windows",
+        prefix="crates/running-process-probe/src/snapshot/windows.rs",
+        reason=(
+            "SuspendThread/GetThreadContext. The contract permits no native "
+            "import at all today, which is deliberately tighter than its "
+            "siblings: if this file grows one, that is worth a moment's "
+            "thought rather than a silent pass."
+        ),
+        host_keys=frozenset({"target_arch"}),
+        host_values=frozenset({"x86_64", "aarch64"}),
+        native_imports=frozenset(),
+    ),
 )
 
 ZONE_PREFIXES = tuple(zone.prefix for zone in ARTIFACT_ZONES)
@@ -593,7 +648,11 @@ def zone_dylint_alignment_violations() -> list[str]:
         return [f"cannot read the Dylint lint source: {exc}"]
     failures: list[str] = []
     for zone in ARTIFACT_ZONES:
-        if f'"{zone.prefix}/"' not in text:
+        # A zone prefix may name a directory or a single file. Dylint spells
+        # the first with a trailing slash so it cannot match a sibling whose
+        # name merely starts the same way, and the second without one.
+        spellings = (f'"{zone.prefix}/"', f'"{zone.prefix}"')
+        if not any(spelling in text for spelling in spellings):
             failures.append(
                 f"zone {zone.name!r} is registered here but not in "
                 f"SPECIALIZED_ARTIFACT_PREFIXES; Dylint would still report its "
