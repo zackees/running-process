@@ -6,6 +6,8 @@
 
 use std::{io, time::Duration};
 
+use crate::platform::process::{OwnerDeathCleanup, OwnerDeathCleanupError, OwnerDeathCleanupStage};
+
 /// Cleanup mechanism installed, or concrete lifecycle contract selected, for
 /// the current broker process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,256 +154,135 @@ pub enum ProcessTreeError {
 /// Other platforms currently return
 /// [`ProcessTreeCleanup::UnsupportedNoop`].
 pub fn install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
-    platform_install_cleanup()
+    crate::platform::process::install_owner_death_cleanup()
+        .map(from_facade)
+        .map_err(from_facade_error)
 }
 
 /// Return the cleanup mechanism this platform attempts to install.
 pub fn cleanup_target() -> ProcessTreeCleanup {
-    cleanup_target_for_platform(current_platform())
+    from_facade(crate::platform::process::owner_death_cleanup_target())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CleanupPlatform {
-    #[cfg(any(target_os = "linux", test))]
-    Linux,
-    #[cfg(any(windows, test))]
-    Windows,
-    #[cfg(any(target_os = "macos", test))]
-    Macos,
-    #[cfg(any(
-        all(unix, not(any(target_os = "linux", target_os = "macos"))),
-        all(not(unix), not(windows)),
-        test
-    ))]
-    Other,
-}
-
-fn cleanup_target_for_platform(platform: CleanupPlatform) -> ProcessTreeCleanup {
-    match platform {
-        #[cfg(any(target_os = "linux", test))]
-        CleanupPlatform::Linux => ProcessTreeCleanup::LinuxParentDeathSignal,
-        #[cfg(any(windows, test))]
-        CleanupPlatform::Windows => ProcessTreeCleanup::WindowsKillOnJobClose,
-        #[cfg(any(target_os = "macos", test))]
-        CleanupPlatform::Macos => ProcessTreeCleanup::MacosKqueueSupervisorContract,
-        #[cfg(any(
-            all(unix, not(any(target_os = "linux", target_os = "macos"))),
-            all(not(unix), not(windows)),
-            test
-        ))]
-        CleanupPlatform::Other => ProcessTreeCleanup::UnsupportedNoop,
+/// Read this host's answer and say it in the broker's own vocabulary.
+///
+/// The facade reports the *guarantee* it installed; this maps that onto the
+/// names this module's public API has always used. The mapping is not purely
+/// mechanical: `SupervisorRequired` becomes the macOS kqueue contract,
+/// because on that host "the kernel will not reap for you" is precisely what
+/// obliges the supervisor the contract describes.
+fn from_facade(cleanup: OwnerDeathCleanup) -> ProcessTreeCleanup {
+    match cleanup {
+        OwnerDeathCleanup::OwnerDeathSignal => ProcessTreeCleanup::LinuxParentDeathSignal,
+        OwnerDeathCleanup::KillOnOwnerHandleClose => ProcessTreeCleanup::WindowsKillOnJobClose,
+        OwnerDeathCleanup::AlreadyContained => ProcessTreeCleanup::WindowsAlreadyInJob,
+        OwnerDeathCleanup::SupervisorRequired => ProcessTreeCleanup::MacosKqueueSupervisorContract,
+        OwnerDeathCleanup::Unsupported => ProcessTreeCleanup::UnsupportedNoop,
     }
 }
 
-#[cfg(target_os = "linux")]
-fn current_platform() -> CleanupPlatform {
-    CleanupPlatform::Linux
-}
-
-#[cfg(windows)]
-fn current_platform() -> CleanupPlatform {
-    CleanupPlatform::Windows
-}
-
-#[cfg(target_os = "macos")]
-fn current_platform() -> CleanupPlatform {
-    CleanupPlatform::Macos
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn current_platform() -> CleanupPlatform {
-    CleanupPlatform::Other
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn current_platform() -> CleanupPlatform {
-    CleanupPlatform::Other
-}
-
-#[cfg(target_os = "linux")]
-fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
-    let rc = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, linux_parent_death_signal()) };
-    if rc == -1 {
-        Err(ProcessTreeError::LinuxParentDeathSignal(
-            io::Error::last_os_error(),
-        ))
-    } else {
-        Ok(ProcessTreeCleanup::LinuxParentDeathSignal)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn linux_parent_death_signal() -> libc::c_int {
-    libc::SIGTERM
-}
-
-#[cfg(windows)]
-fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
-    if JOB_HANDLE.get().is_some() {
-        return Ok(ProcessTreeCleanup::WindowsKillOnJobClose);
-    }
-
-    let job = create_kill_on_close_job()?;
-    match assign_current_process_to_job(job.as_raw()) {
-        Ok(()) => match JOB_HANDLE.set(job) {
-            Ok(()) => Ok(ProcessTreeCleanup::WindowsKillOnJobClose),
-            Err(job) => {
-                // Avoid closing a job handle that may contain the current
-                // process. Leaking the duplicate setup handle is preferable
-                // to terminating the broker in an impossible double-install
-                // race.
-                std::mem::forget(job);
-                Ok(ProcessTreeCleanup::WindowsAlreadyInJob)
-            }
-        },
-        Err(source) if windows_error_is_access_denied(&source) => {
-            Ok(ProcessTreeCleanup::WindowsAlreadyInJob)
+/// Map a facade failure onto the variant this module has always reported.
+///
+/// The stage travels with the error precisely so this is a lookup rather than
+/// a guess: "could not build the container" and "built it, could not join it"
+/// are different situations for an operator, and these messages have
+/// distinguished them since #427.
+fn from_facade_error(error: OwnerDeathCleanupError) -> ProcessTreeError {
+    match error.stage {
+        OwnerDeathCleanupStage::RequestSignal => {
+            ProcessTreeError::LinuxParentDeathSignal(error.source)
         }
-        Err(source) => Err(ProcessTreeError::WindowsJobAssign(source)),
+        OwnerDeathCleanupStage::CreateContainer => ProcessTreeError::WindowsJobCreate(error.source),
+        OwnerDeathCleanupStage::JoinContainer => ProcessTreeError::WindowsJobAssign(error.source),
     }
-}
-
-#[cfg(target_os = "macos")]
-fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
-    Ok(ProcessTreeCleanup::MacosKqueueSupervisorContract)
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
-    Ok(ProcessTreeCleanup::UnsupportedNoop)
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn platform_install_cleanup() -> Result<ProcessTreeCleanup, ProcessTreeError> {
-    Ok(ProcessTreeCleanup::UnsupportedNoop)
-}
-
-#[cfg(windows)]
-static JOB_HANDLE: std::sync::OnceLock<WindowsJobHandle> = std::sync::OnceLock::new();
-
-#[cfg(windows)]
-struct WindowsJobHandle(usize);
-
-#[cfg(windows)]
-impl WindowsJobHandle {
-    fn as_raw(&self) -> winapi::um::winnt::HANDLE {
-        self.0 as winapi::um::winnt::HANDLE
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsJobHandle {
-    fn drop(&mut self) {
-        unsafe {
-            winapi::um::handleapi::CloseHandle(self.as_raw());
-        }
-    }
-}
-
-#[cfg(windows)]
-fn create_kill_on_close_job() -> Result<WindowsJobHandle, ProcessTreeError> {
-    use winapi::shared::minwindef::FALSE;
-    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-    use winapi::um::jobapi2::{CreateJobObjectW, SetInformationJobObject};
-    use winapi::um::winnt::{
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-
-    let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
-    if job.is_null() || job == INVALID_HANDLE_VALUE {
-        return Err(ProcessTreeError::WindowsJobCreate(
-            io::Error::last_os_error(),
-        ));
-    }
-
-    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-    info.BasicLimitInformation.LimitFlags =
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
-    let ok = unsafe {
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            (&mut info as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )
-    };
-    if ok == FALSE {
-        let err = io::Error::last_os_error();
-        unsafe { CloseHandle(job) };
-        return Err(ProcessTreeError::WindowsJobCreate(err));
-    }
-
-    Ok(WindowsJobHandle(job as usize))
-}
-
-#[cfg(windows)]
-fn assign_current_process_to_job(job: winapi::um::winnt::HANDLE) -> Result<(), io::Error> {
-    use winapi::shared::minwindef::FALSE;
-    use winapi::um::jobapi2::AssignProcessToJobObject;
-    use winapi::um::processthreadsapi::GetCurrentProcess;
-
-    let ok = unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) };
-    if ok == FALSE {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-fn windows_error_is_access_denied(err: &io::Error) -> bool {
-    use winapi::shared::winerror::ERROR_ACCESS_DENIED;
-
-    err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Every guarantee a host can report maps to a stated contract.
+    ///
+    /// This used to walk a private `CleanupPlatform` enum that restated the
+    /// mapping it was checking, so it could only ever agree with itself. It
+    /// now walks the facade's own variants: if a host learns to report
+    /// something new, this stops compiling until someone decides what the
+    /// broker should call it.
     #[test]
     fn cleanup_target_model_states_phase_5_platform_contracts() {
-        assert_eq!(
-            cleanup_target_for_platform(CleanupPlatform::Linux),
-            ProcessTreeCleanup::LinuxParentDeathSignal
-        );
-        assert_eq!(
-            cleanup_target_for_platform(CleanupPlatform::Windows),
-            ProcessTreeCleanup::WindowsKillOnJobClose
-        );
-        assert_eq!(
-            cleanup_target_for_platform(CleanupPlatform::Macos),
-            ProcessTreeCleanup::MacosKqueueSupervisorContract
-        );
-        assert_eq!(
-            cleanup_target_for_platform(CleanupPlatform::Other),
-            ProcessTreeCleanup::UnsupportedNoop
-        );
+        for (reported, expected) in [
+            (
+                OwnerDeathCleanup::OwnerDeathSignal,
+                ProcessTreeCleanup::LinuxParentDeathSignal,
+            ),
+            (
+                OwnerDeathCleanup::KillOnOwnerHandleClose,
+                ProcessTreeCleanup::WindowsKillOnJobClose,
+            ),
+            (
+                OwnerDeathCleanup::AlreadyContained,
+                ProcessTreeCleanup::WindowsAlreadyInJob,
+            ),
+            (
+                OwnerDeathCleanup::SupervisorRequired,
+                ProcessTreeCleanup::MacosKqueueSupervisorContract,
+            ),
+            (
+                OwnerDeathCleanup::Unsupported,
+                ProcessTreeCleanup::UnsupportedNoop,
+            ),
+        ] {
+            assert_eq!(from_facade(reported), expected, "{reported:?}");
+        }
     }
 
+    /// A failure keeps the step it failed at.
+    ///
+    /// The three variants have distinguished "could not build the container"
+    /// from "built it, could not join it" since #427, and an operator reads
+    /// them differently. Routing through the facade must not flatten that.
+    #[test]
+    fn a_failure_keeps_the_step_it_failed_at() {
+        use crate::platform::process::OwnerDeathCleanupStage;
+
+        let staged = |stage| OwnerDeathCleanupError {
+            stage,
+            source: io::Error::from_raw_os_error(5),
+        };
+        assert!(matches!(
+            from_facade_error(staged(OwnerDeathCleanupStage::RequestSignal)),
+            ProcessTreeError::LinuxParentDeathSignal(_)
+        ));
+        assert!(matches!(
+            from_facade_error(staged(OwnerDeathCleanupStage::CreateContainer)),
+            ProcessTreeError::WindowsJobCreate(_)
+        ));
+        assert!(matches!(
+            from_facade_error(staged(OwnerDeathCleanupStage::JoinContainer)),
+            ProcessTreeError::WindowsJobAssign(_)
+        ));
+    }
+
+    /// Whatever this host is, it names a contract.
+    ///
+    /// This used to spell out the expected answer per host, which duplicated
+    /// what the platform trees now assert next to the code that produces it.
+    /// The claim worth making *here* is the one a caller depends on: every
+    /// host the broker ships for has a stated containment story, so a caller
+    /// deciding whether to spawn a supervisor always gets an answer.
     #[test]
     fn cleanup_target_is_explicit_for_current_platform() {
-        #[cfg(target_os = "linux")]
-        assert_eq!(cleanup_target(), ProcessTreeCleanup::LinuxParentDeathSignal);
-
-        #[cfg(windows)]
-        assert_eq!(cleanup_target(), ProcessTreeCleanup::WindowsKillOnJobClose);
-
-        #[cfg(target_os = "macos")]
-        assert_eq!(
-            cleanup_target(),
-            ProcessTreeCleanup::MacosKqueueSupervisorContract
+        let target = cleanup_target();
+        assert_ne!(
+            target,
+            ProcessTreeCleanup::UnsupportedNoop,
+            "every shipped host names a contract; UnsupportedNoop means one was not taught"
         );
-
-        #[cfg(all(not(any(target_os = "linux", target_os = "macos")), not(windows)))]
-        assert_eq!(cleanup_target(), ProcessTreeCleanup::UnsupportedNoop);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_parent_death_signal_is_sigterm() {
-        assert_eq!(linux_parent_death_signal(), libc::SIGTERM);
+        assert_eq!(
+            target,
+            install_cleanup().expect("installing must succeed where a target is claimed"),
+            "the target must be what installing actually reports"
+        );
     }
 
     #[test]

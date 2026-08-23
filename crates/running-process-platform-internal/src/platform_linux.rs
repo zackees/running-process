@@ -19,6 +19,13 @@ pub use autostart::{
     unregister as autostart_unregister,
 };
 
+#[path = "platform_linux/process_owner_death.rs"]
+pub(crate) mod process_owner_death;
+pub use process_owner_death::{
+    install_owner_death_cleanup as process_install_owner_death_cleanup,
+    owner_death_cleanup_target as process_owner_death_cleanup_target,
+};
+
 #[path = "platform_linux/host.rs"]
 pub(crate) mod host;
 pub use host::{

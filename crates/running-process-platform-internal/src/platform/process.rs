@@ -390,3 +390,67 @@ pub enum UnixSignalKind {
 pub use crate::{
     kill_tree, unix_set_priority, unix_signal_process, unix_signal_process_group, unix_signal_raw,
 };
+
+/// What this host installed so a child outlives its owner no longer than it
+/// should.
+///
+/// The variants name the *guarantee*, not the call that produced it. A caller
+/// deciding whether to spawn a supervisor cares that the kernel will not do
+/// the reaping for it; whether the kernel would have used a parent-death
+/// signal or a job object is not a distinction it can act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerDeathCleanup {
+    /// The kernel signals this process when its owner exits.
+    OwnerDeathSignal,
+    /// This process belongs to a container the kernel destroys with its owner.
+    KillOnOwnerHandleClose,
+    /// This process was already in such a container, installed by someone else.
+    AlreadyContained,
+    /// The host offers no kernel mechanism; a supervisor must do the reaping.
+    SupervisorRequired,
+    /// The host offers nothing and no supervisor contract is defined here.
+    Unsupported,
+}
+
+/// Which step of installing owner-death containment failed.
+///
+/// The caller's operator-facing messages distinguish these, and rightly: not
+/// being allowed to *build* a container is a different situation from
+/// building one and not being allowed to *join* it. Collapsing both into one
+/// error would make the two indistinguishable in a log, so the stage travels
+/// with the error rather than being inferred from the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerDeathCleanupStage {
+    /// Asking the kernel to signal this process when its owner exits.
+    RequestSignal,
+    /// Creating the container that the kernel destroys with its owner.
+    CreateContainer,
+    /// Placing this process inside that container.
+    JoinContainer,
+}
+
+/// A failure to install owner-death containment, and the step it failed at.
+#[derive(Debug)]
+pub struct OwnerDeathCleanupError {
+    /// The step that failed.
+    pub stage: OwnerDeathCleanupStage,
+    /// What the host reported.
+    pub source: std::io::Error,
+}
+
+impl std::fmt::Display for OwnerDeathCleanupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.stage, self.source)
+    }
+}
+
+impl std::error::Error for OwnerDeathCleanupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+pub use crate::{
+    process_install_owner_death_cleanup as install_owner_death_cleanup,
+    process_owner_death_cleanup_target as owner_death_cleanup_target,
+};
