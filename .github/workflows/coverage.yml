@@ -32,6 +32,13 @@ jobs:
       # while the instrumented PyO3 wheel records their native Rust execution.
       RUNNING_PROCESS_LIVE_TESTS: "1"
       RUNNING_PROCESS_GH_PTY_TESTS: "1"
+      # #1114: a client waits 750ms for a freshly spawned daemon to bind its
+      # socket. That is generous for a daemon running at normal speed and too
+      # short for an instrumented one, where every function entry writes a
+      # coverage counter -- the wait expires while the daemon is merely slow.
+      # Widened here rather than in the library, so a genuinely absent daemon
+      # still fails in 750ms for everyone not running under coverage.
+      RUNNING_PROCESS_DAEMON_START_TIMEOUT_MS: "8000"
     steps:
       - uses: actions/checkout@v4
 
