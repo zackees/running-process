@@ -517,3 +517,53 @@ pub use crate::{
     process_same_executable_path as same_executable_path,
     process_signal_terminate as signal_terminate, ProcessLiveness,
 };
+
+/// A standing request from the host that this process shut down.
+///
+/// Hosts deliver this differently -- a POSIX signal, a Windows console
+/// control event injected on a thread of the OS's choosing -- but both arrive
+/// in a context where almost nothing is safe to do. A handler may not
+/// allocate, log, take a lock, or join a thread. So neither host runs the
+/// caller's code: each sets one flag, and the caller reads it whenever it is
+/// somewhere it can act.
+///
+/// That is why this is a poll rather than a callback. A callback would invite
+/// exactly the work the delivery context forbids.
+pub struct ShutdownRequest {
+    flag: &'static std::sync::atomic::AtomicBool,
+}
+
+impl ShutdownRequest {
+    /// Build a handle watching a flag the caller already owns.
+    ///
+    /// The host implementations use this to hand out a view of their own
+    /// static. It is public because a caller that already has a shutdown flag
+    /// -- one set by a supervisor protocol, or by a test -- can present it
+    /// through the same type rather than the loop it feeds needing two shapes
+    /// of "should I stop".
+    ///
+    /// `'static` is not incidental: a handler set by the OS outlives any
+    /// scope, so the flag it writes has to as well.
+    pub fn watching(flag: &'static std::sync::atomic::AtomicBool) -> Self {
+        Self { flag }
+    }
+
+    /// Whether the host has asked this process to shut down.
+    ///
+    /// Latching, not edge-triggered: once true it stays true, so a caller that
+    /// checks between two pieces of work cannot miss a request delivered while
+    /// it was busy.
+    pub fn requested(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl std::fmt::Debug for ShutdownRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShutdownRequest")
+            .field("requested", &self.requested())
+            .finish()
+    }
+}
+
+pub use crate::process_install_shutdown_request_handler as install_shutdown_request_handler;

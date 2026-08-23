@@ -48,12 +48,16 @@
 use std::env;
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use prost::Message;
+use running_process_platform_internal::platform::process::{
+    install_shutdown_request_handler, ShutdownRequest,
+};
+
 use running_process::broker::broker_http_discovery;
 use running_process::broker::broker_http_port::BrokerHttpPort;
 use running_process::broker::broker_http_server::BrokerHttpServer;
@@ -117,104 +121,6 @@ const SCAFFOLD_PIPE_IDX: u32 = 0;
 const MAX_INFLIGHT_HANDLERS: usize = 256;
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const HANDLER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-
-#[cfg(unix)]
-static SIGNAL_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(unix)]
-extern "C" fn record_shutdown_signal(_signal: libc::c_int) {
-    // Async-signal-safe by construction: do not allocate, log, join threads,
-    // or call the LLVM profile runtime from this handler.
-    SIGNAL_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-}
-
-#[cfg(unix)]
-fn install_shutdown_signal_handlers() -> std::io::Result<()> {
-    SIGNAL_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
-    for signal in [libc::SIGTERM, libc::SIGINT] {
-        // SAFETY: `record_shutdown_signal` has C ABI, lives for the process
-        // lifetime, and performs only an atomic store.
-        let previous = unsafe {
-            libc::signal(
-                signal,
-                record_shutdown_signal as *const () as libc::sighandler_t,
-            )
-        };
-        if previous == libc::SIG_ERR {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
-/// Set when Windows delivers a console control event.
-///
-/// The Windows counterpart of `SIGNAL_SHUTDOWN_REQUESTED` (backticks, not a
-/// link: that static is `#[cfg(unix)]`, so the link cannot resolve in a
-/// Windows doc build). Without it the
-/// accept loop on Windows polled a flag nothing ever set, so the broker never
-/// drained or unbound — it only ever died when killed.
-#[cfg(windows)]
-static CONSOLE_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-/// Console control handler.
-///
-/// Windows runs this on a thread it injects into the process, so it does the
-/// same thing the Unix signal handler does and no more: one atomic store. No
-/// allocation, no logging, no joining threads.
-///
-/// Returning `TRUE` claims the event. For `CTRL_C_EVENT` and
-/// `CTRL_BREAK_EVENT` that suppresses the default terminate, which is the
-/// point — the accept loop needs to observe the flag and drain.
-#[cfg(windows)]
-unsafe extern "system" fn console_ctrl_handler(
-    ctrl_type: winapi::shared::minwindef::DWORD,
-) -> winapi::shared::minwindef::BOOL {
-    use winapi::um::wincon::{
-        CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
-    };
-
-    match ctrl_type {
-        CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT
-        | CTRL_SHUTDOWN_EVENT => {
-            CONSOLE_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-            winapi::shared::minwindef::TRUE
-        }
-        // Anything else is left to the next handler rather than swallowed.
-        _ => winapi::shared::minwindef::FALSE,
-    }
-}
-
-/// Install the console control handler.
-///
-/// # The close/logoff/shutdown events are on a clock
-///
-/// `CTRL_C_EVENT` and `CTRL_BREAK_EVENT` leave the process running once
-/// claimed. The other three do not: Windows gives a console process a few
-/// seconds after `CTRL_CLOSE_EVENT` (and less at logoff/shutdown) and then
-/// terminates it regardless of what the handler returns.
-///
-/// [`HANDLER_DRAIN_TIMEOUT`] is 5s, which is the same order as that budget —
-/// so on a window close a long-running handler may be cut off mid-drain. That
-/// is still strictly better than today's behavior, where the loop never even
-/// begins to drain, but it is a bound rather than a guarantee and should not
-/// be described as a graceful shutdown in every case.
-#[cfg(windows)]
-fn install_shutdown_console_handler() -> std::io::Result<()> {
-    CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
-    // SAFETY: `console_ctrl_handler` has the required `system` ABI, lives for
-    // the process lifetime, and performs only an atomic store.
-    let installed = unsafe {
-        winapi::um::consoleapi::SetConsoleCtrlHandler(
-            Some(console_ctrl_handler),
-            winapi::shared::minwindef::TRUE,
-        )
-    };
-    if installed == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
 
 #[cfg(coverage)]
 unsafe extern "C" {
@@ -453,32 +359,21 @@ fn main() -> ExitCode {
             http.as_ref().map(|h| Arc::clone(&h.registry)),
         )
     } else {
-        #[cfg(unix)]
-        if let Err(err) = install_shutdown_signal_handlers() {
-            say_err!("running-process-broker-v2: install shutdown signal handlers failed: {err}");
-            return ExitCode::from(1);
-        }
-
-        #[cfg(windows)]
-        if let Err(err) = install_shutdown_console_handler() {
-            say_err!("running-process-broker-v2: install console control handler failed: {err}");
-            return ExitCode::from(1);
-        }
-
-        #[cfg(unix)]
-        let shutdown = &SIGNAL_SHUTDOWN_REQUESTED;
-        #[cfg(windows)]
-        let shutdown = &CONSOLE_SHUTDOWN_REQUESTED;
-        // Kept so the loop still compiles on a target that is neither, where
-        // there is no shutdown source to observe.
-        #[cfg(not(any(unix, windows)))]
-        let shutdown = &AtomicBool::new(false);
+        let shutdown = match install_shutdown_request_handler() {
+            Ok(shutdown) => shutdown,
+            Err(err) => {
+                say_err!(
+                    "running-process-broker-v2: install shutdown request handler failed: {err}"
+                );
+                return ExitCode::from(1);
+            }
+        };
 
         accept_loop(
             &listener,
             Arc::clone(&loader),
             Arc::clone(&inflight),
-            shutdown,
+            &shutdown,
             http.as_ref().map(|h| Arc::clone(&h.registry)),
         )
     };
@@ -579,7 +474,7 @@ fn accept_loop(
     listener: &IpcListener,
     loader: Arc<ServiceDefinitionLoader>,
     inflight: Arc<AtomicUsize>,
-    shutdown: &AtomicBool,
+    shutdown: &ShutdownRequest,
     http: Option<Arc<HttpEndpointRegistry>>,
 ) -> ExitCode {
     if let Err(err) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
@@ -659,10 +554,10 @@ fn accept_loop(
 }
 
 fn poll_accept_until_shutdown<T>(
-    shutdown: &AtomicBool,
+    shutdown: &ShutdownRequest,
     mut accept: impl FnMut() -> std::io::Result<T>,
 ) -> std::io::Result<Option<T>> {
-    while !shutdown.load(Ordering::Relaxed) {
+    while !shutdown.requested() {
         match accept() {
             Ok(value) => return Ok(Some(value)),
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
