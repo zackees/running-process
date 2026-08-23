@@ -125,9 +125,9 @@ impl DaemonConfig {
 
 /// Check if we're in dev scope based on env var
 pub fn is_dev_scope() -> bool {
-    std::env::var("RUNNING_PROCESS_DAEMON_SCOPE")
-        .map(|v| v.eq_ignore_ascii_case("dev"))
-        .unwrap_or(false)
+    crate::env_vars::DAEMON_SCOPE
+        .text()
+        .is_some_and(|scope| scope.eq_ignore_ascii_case("dev"))
 }
 
 /// Check if tracking is disabled

@@ -68,8 +68,12 @@ impl ServiceDefinitionLoader {
 
 /// Return the platform service-definition directory.
 pub fn service_definition_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os(SERVICE_DEF_DIR_ENV) {
-        return PathBuf::from(path);
+    // An empty value is not a directory. It used to yield `PathBuf::from("")`,
+    // which resolves relative to the working directory -- so `…SERVICE_DEF_DIR=`
+    // silently moved service-definition lookup to wherever the broker happened
+    // to be started from, while `config --effective` still reported an override.
+    if let Some(path) = crate::env_vars::SERVICE_DEF_DIR.path() {
+        return path;
     }
 
     #[cfg(windows)]

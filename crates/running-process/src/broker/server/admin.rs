@@ -16,7 +16,7 @@ use crate::broker::protocol::{
 use super::backend_registry::BackendRegistry;
 use super::connection::{bind_local_socket, BrokerConnectionError, LocalSocketCleanup};
 use super::deadline_stream::{hello_read_deadline, with_nonblocking_deadline};
-use super::service_def_loader::{service_definition_dir, SERVICE_DEF_DIR_ENV};
+use super::service_def_loader::service_definition_dir;
 use super::spawn_coordinator::{
     SpawnBudgetSnapshot, DEFAULT_SPAWN_ATTEMPTS_PER_WINDOW, DEFAULT_SPAWN_BUDGET_WINDOW,
 };
@@ -687,7 +687,7 @@ fn effective_config_json(snapshot: &AdminSnapshot) -> serde_json::Value {
 }
 
 fn service_definition_dir_source() -> &'static str {
-    if std::env::var_os(SERVICE_DEF_DIR_ENV).is_some() {
+    if crate::env_vars::SERVICE_DEF_DIR.path().is_some() {
         "env:RUNNING_PROCESS_SERVICE_DEF_DIR"
     } else {
         "platform-default"

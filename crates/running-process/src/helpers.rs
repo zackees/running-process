@@ -6,8 +6,6 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub(crate) const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_PATH";
-
 /// Hard cap on how long `kill_impl()` will block on
 /// `wait_for_capture_completion` after the direct child has been
 /// reaped. Override via the `RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS`
@@ -95,7 +93,7 @@ pub(crate) fn child_signal_disposition<T>(
 }
 
 pub(crate) fn log_spawned_child_pid(pid: u32) -> Result<(), std::io::Error> {
-    let Some(path) = std::env::var_os(CHILD_PID_LOG_PATH_ENV) else {
+    let Some(path) = crate::env_vars::CHILD_PID_LOG_PATH.path() else {
         return Ok(());
     };
 
