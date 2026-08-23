@@ -16,10 +16,6 @@ const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
         path: "src/broker/client_v2.rs",
         unsafe_count: 2,
     },
-    UnsafeInventoryEntry {
-        path: "src/broker/lifecycle/process_tree.rs",
-        unsafe_count: 7,
-    },
 ];
 
 #[derive(Clone, Copy, Debug)]

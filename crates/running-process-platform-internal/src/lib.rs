@@ -65,6 +65,8 @@ pub use platform_imp::{
 
 pub use platform_imp::{autostart_register, autostart_render_registration, autostart_unregister};
 
+pub use platform_imp::{process_install_owner_death_cleanup, process_owner_death_cleanup_target};
+
 pub use platform_imp::{
     resources_fd_exhaustion_error, resources_inode_capacity, resources_signals_fd_exhaustion,
     resources_signals_storage_exhaustion, resources_storage_exhaustion_error,

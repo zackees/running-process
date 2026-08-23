@@ -263,6 +263,23 @@ every part of the decision that is policy rather than fact: that privileged
 startup is refused at all, the `RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED` escape
 hatch for isolated test environments, and the operator-facing error.
 
+The former `lifecycle/process_tree.rs` entry was retired by #969's remaining
+scope. Its seven `unsafe` tokens installed owner-death containment for the
+broker process itself: `prctl(PR_SET_PDEATHSIG)` on Linux, and on Windows the
+`CreateJobObjectW` / `SetInformationJobObject` / `AssignProcessToJobObject`
+sequence plus the `CloseHandle` guard for the retained job handle. All of it
+now executes inside the audited platform process facade.
+
+The containment properties are unchanged and worth restating, because they are
+the reason the handle is held rather than dropped: a kill-on-close job destroys
+its members when the last handle closes, so the handle is parked for the
+process lifetime and never taken out. A lost race on installation leaks that
+one duplicate handle deliberately -- closing it would close a handle to a job
+that already contains this process, terminating the broker. Windows reporting
+`ERROR_ACCESS_DENIED` on assignment still means "already inside someone else's
+job", which is containment rather than a failure to contain, and is reported as
+such.
+
 The former `lifecycle/sid.rs` entry was retired by #973. Its five `unsafe`
 tokens derived the per-user identity the broker hashes into its endpoint scope:
 the Windows process-token query for `TOKEN_USER`, the `CloseHandle` guard, the
