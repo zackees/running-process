@@ -421,3 +421,52 @@ fn empty_text_is_absent() {
         None
     );
 }
+
+/// Nothing outside this module reads an environment variable by name.
+///
+/// #1101 asks for a lint banning raw `env::var` once the tree is migrated, and
+/// defers it until then because landing it early "just produces a large
+/// allowlist that never shrinks". The migration is done, so this lands with no
+/// allowlist at all -- which is the only version of this rule worth having.
+///
+/// What it forbids is a read whose variable name is written as a string
+/// literal at the call site. Helpers that
+/// take a name as a parameter are untouched, because a generic save-and-restore
+/// around an arbitrary variable is not a policy decision about that variable
+/// and has nothing to declare.
+#[test]
+fn no_literal_environment_read_lives_outside_this_module() {
+    let mut offenders: Vec<String> = Vec::new();
+    for path in source_files() {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        // This module is where reading by name is supposed to happen.
+        if name == "env_vars.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read source file");
+        for read in READS {
+            let mut index = 0;
+            while let Some(start) = text[index..].find(read) {
+                let open = index + start + read.len();
+                let Some(len) = text[open..].find('"') else {
+                    break;
+                };
+                let named = &text[open..open + len];
+                if !NOT_ENVIRONMENT_READS.contains(&named) {
+                    offenders.push(format!("{}: {read}{named}\")", path.display()));
+                }
+                index = open + len;
+            }
+        }
+    }
+    offenders.sort();
+    assert!(
+        offenders.is_empty(),
+        "read these through `crate::env_vars` instead, so the variable is \
+         declared and parsed one way:\n  {}",
+        offenders.join("\n  ")
+    );
+}

@@ -7,7 +7,7 @@
 # Adding tests never requires an update. Regenerate only when a removal is
 # intended, and say why in the PR: the diff is the record.
 
-# sync tests: 3198
+# sync tests: 3199
 # of those, skip-decorated: 11
 
 a_backend_that_has_not_reported_a_port_renders_as_starting
@@ -1365,6 +1365,7 @@ no_asset_references_an_external_host
 no_env_returns_config_and_loopback_default
 no_environment_value_means_no_inherited_listener
 no_events_when_observation_not_configured
+no_literal_environment_read_lives_outside_this_module
 no_originator_returns_none
 no_symbols_is_distinct_from_identity_rejection
 non_empty_path_returns_ok

@@ -710,15 +710,15 @@ fn resolve_socket_path(bare_name: &str) -> String {
             #[cfg(target_os = "macos")]
             {
                 let uid = unsafe { libc::getuid() };
-                let tmp = std::env::var_os("TMPDIR")
-                    .map(PathBuf::from)
+                let tmp = crate::env_vars::TMPDIR
+                    .path()
                     .unwrap_or_else(|| PathBuf::from("/tmp"));
                 tmp.join(format!(".rp-{uid}-broker-v2"))
             }
             #[cfg(not(target_os = "macos"))]
             {
-                if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
-                    PathBuf::from(d).join("running-process").join("broker-v2")
+                if let Some(d) = crate::env_vars::XDG_RUNTIME_DIR.path() {
+                    d.join("running-process").join("broker-v2")
                 } else {
                     let uid = unsafe { libc::getuid() };
                     PathBuf::from(format!("/tmp/running-process-{uid}/broker-v2"))
