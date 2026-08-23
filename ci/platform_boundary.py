@@ -52,6 +52,14 @@ class ArtifactZone:
     host_keys: frozenset[str]
     host_values: frozenset[str]
     native_imports: frozenset[str]
+    #: Whether this zone's justification depends on the crate never shipping.
+    #:
+    #: Some exemptions are earned by what the artifact *is* -- an interposer is
+    #: an interposer on any release. Others are earned by where it runs: test
+    #: tooling can reach for a debugger because nothing downstream links it.
+    #: That second premise can quietly stop being true, so where a zone rests
+    #: on it, `zone_premise_violations` checks the manifest still says so.
+    requires_unpublished: bool = False
 
 
 ARTIFACT_ZONES: tuple[ArtifactZone, ...] = (
@@ -111,6 +119,22 @@ ARTIFACT_ZONES: tuple[ArtifactZone, ...] = (
         host_values=frozenset({"windows", "x86_64"}),
         native_imports=frozenset({"windows_sys", "std::os::windows"}),
     ),
+    ArtifactZone(
+        name="test-watchdog",
+        prefix="crates/test-watchdog",
+        reason=(
+            "A hang watchdog whose whole job is attaching an out-of-process "
+            "debugger: procdump on Windows, gdb or lldb on Unix. There is no "
+            "host-neutral spelling of that, and the facade should not grow one "
+            "-- it would put test-only tooling into a published crate's public "
+            "surface. The single libc call is prctl(PR_SET_PTRACER_ANY), a "
+            "Linux-only prerequisite for the Linux-only attach under Yama."
+        ),
+        host_keys=frozenset({"unix", "windows", "target_os"}),
+        host_values=frozenset({"linux", "macos"}),
+        native_imports=frozenset({"libc"}),
+        requires_unpublished=True,
+    ),
 )
 
 ZONE_PREFIXES = tuple(zone.prefix for zone in ARTIFACT_ZONES)
@@ -146,8 +170,14 @@ SPECIALIZED_ARTIFACTS = {
     "running-process-probe-interposer-macos",
     "running-process-probe-interposer-windows",
     "running-process-win-gnu-bridge",
+    # Its per-target table is the Linux-only `libc` it needs for
+    # prctl(PR_SET_PTRACER_ANY); the same host selection its zone permits in
+    # source. Grandfathering that in the manifest ledger instead would leave
+    # exactly the anonymous leftover #974 asks to eliminate.
+    "test-watchdog",
 }
 TARGET_TABLE = re.compile(r"^\s*\[target\..+\.dependencies\]\s*$", re.MULTILINE)
+PUBLISH_FALSE = re.compile(r"^\s*publish\s*=\s*false\s*$", re.MULTILINE)
 DEPENDENCY_KEY = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=", re.MULTILINE)
 ATTRIBUTE_CFG = re.compile(r"#\s*\[\s*cfg(?:_attr)?\s*\((.*?)\)\s*\]", re.DOTALL)
 CFG_MACRO = re.compile(r"\bcfg\s*!\s*\((.*?)\)", re.DOTALL)
@@ -499,6 +529,32 @@ def zone_text_violations(zone: ArtifactZone, path: str, text: str) -> list[str]:
 DYLINT_LINT_SOURCE = ROOT / "lints/running-process-platform-boundary/src/lib.rs"
 
 
+def zone_premise_violations() -> list[str]:
+    """Check the facts a zone's justification rests on, where they are checkable.
+
+    A reason written in prose stops being true silently. Where a zone is
+    exempt *because* its crate never ships, the manifest is the thing that
+    makes that so, and it can change without anyone revisiting the zone.
+    """
+    failures: list[str] = []
+    for zone in ARTIFACT_ZONES:
+        if not zone.requires_unpublished:
+            continue
+        manifest = ROOT / zone.prefix / "Cargo.toml"
+        try:
+            text = manifest.read_text(encoding="utf-8")
+        except OSError as exc:
+            failures.append(f"zone {zone.name!r}: cannot read {manifest}: {exc}")
+            continue
+        if not PUBLISH_FALSE.search(text):
+            failures.append(
+                f"zone {zone.name!r} is justified as unpublished test tooling, "
+                f"but {zone.prefix}/Cargo.toml does not set publish = false; "
+                "either restore that or re-argue the exemption"
+            )
+    return failures
+
+
 def zone_dylint_alignment_violations() -> list[str]:
     """The Dylint lint must recognise the same zones this file registers.
 
@@ -570,6 +626,7 @@ def main(argv: list[str] | None = None) -> int:
         *artifact_zone_violations(),
         *zone_manifest_alignment_violations(),
         *zone_dylint_alignment_violations(),
+        *zone_premise_violations(),
     ]
     if args.print_totals:
         print(totals(rows))
