@@ -338,6 +338,9 @@ declare! {
     DAEMON_SHADOWED => "RUNNING_PROCESS_DAEMON_SHADOWED",
         EnvKind::OwnedFlag, Owner::Crate, "a dev-build daemon relocates itself",
         "Marks a daemon already running from its shadow copy.";
+    DAEMON_START_TIMEOUT_MS => "RUNNING_PROCESS_DAEMON_START_TIMEOUT_MS",
+        EnvKind::Number { zero_selects_default: true }, Owner::Crate, "the built-in 750ms budget",
+        "How long a client waits for a freshly spawned daemon to bind its socket, in milliseconds.";
     DISABLE => "RUNNING_PROCESS_DISABLE",
         EnvKind::ExactValue("1"), Owner::Crate, "the broker is used",
         "Canonical escape hatch: bypass the broker entirely.";

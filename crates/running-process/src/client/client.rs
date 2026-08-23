@@ -830,10 +830,8 @@ pub fn connect_or_start(scope_hash: Option<&str>) -> Result<DaemonClient, Client
     // signal us with when the socket is ready, so we poll. Exponential
     // back-off (50→100→200→400ms) is the standard pattern; total
     // wait caps at 750ms.
-    let delays_ms: [u64; 4] = [50, 100, 200, 400];
     let mut waited = std::time::Duration::ZERO;
-    for delay in delays_ms {
-        let delay = std::time::Duration::from_millis(delay);
+    for delay in daemon_start_delays() {
         std::thread::sleep(delay);
         waited += delay;
         if let Ok(client) = DaemonClient::connect(scope_hash) {
@@ -860,6 +858,45 @@ pub fn launch_detached(command: &str) -> Result<SpawnedDaemon, ClientError> {
 /// callers.
 pub fn daemonize_command(command: &str) -> Result<SpawnedDaemon, ClientError> {
     launch_detached(command)
+}
+
+/// Total time a client will wait for a freshly spawned daemon to bind.
+const DEFAULT_DAEMON_START_BUDGET: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Longest single sleep between connection attempts.
+const DAEMON_START_MAX_STEP_MS: u64 = 400;
+
+/// The back-off schedule, as a sequence of sleeps summing to the budget.
+///
+/// # Why this is configurable
+///
+/// 750 ms is a generous answer to "is the daemon there" for a machine running
+/// at normal speed, and it is what makes a genuinely absent daemon fail fast
+/// rather than hanging a caller. It is not generous for an *instrumented* one:
+/// under coverage the daemon is slower to bind for reasons that have nothing
+/// to do with its health, and the wait expires while it is merely slow
+/// (#1114).
+///
+/// Rather than raise the budget for everyone, a caller that knows its machine
+/// is slow for a known reason can say so. Nothing changes for a caller that
+/// does not: with the default budget this yields exactly the schedule it
+/// always did, 50 → 100 → 200 → 400.
+fn daemon_start_delays() -> Vec<std::time::Duration> {
+    let budget = crate::env_vars::DAEMON_START_TIMEOUT_MS
+        .millis_or(DEFAULT_DAEMON_START_BUDGET)
+        .as_millis()
+        .min(u64::MAX as u128) as u64;
+
+    let mut delays = Vec::new();
+    let mut step = 50_u64;
+    let mut total = 0_u64;
+    while total < budget {
+        let delay = step.min(budget - total);
+        delays.push(std::time::Duration::from_millis(delay));
+        total += delay;
+        step = step.saturating_mul(2).min(DAEMON_START_MAX_STEP_MS);
+    }
+    delays
 }
 
 /// Spawn the daemon binary as a detached background process.
@@ -920,6 +957,70 @@ fn daemon_exe_path() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default budget must reproduce the schedule this has always used.
+    ///
+    /// Making the wait configurable is only safe if not configuring it
+    /// changes nothing. A caller who never sets the variable must sleep the
+    /// same four times, in the same order, for the same total.
+    #[test]
+    fn the_default_budget_is_the_schedule_it_always_was() {
+        let previous = std::env::var_os(crate::env_vars::DAEMON_START_TIMEOUT_MS.name);
+        std::env::remove_var(crate::env_vars::DAEMON_START_TIMEOUT_MS.name);
+
+        let delays = daemon_start_delays();
+
+        if let Some(previous) = previous {
+            std::env::set_var(crate::env_vars::DAEMON_START_TIMEOUT_MS.name, previous);
+        }
+
+        let millis: Vec<u64> = delays.iter().map(|d| d.as_millis() as u64).collect();
+        assert_eq!(millis, vec![50, 100, 200, 400]);
+        assert_eq!(millis.iter().sum::<u64>(), 750);
+    }
+
+    /// A larger budget is spent, not exceeded, and keeps backing off.
+    ///
+    /// The last step is clamped to whatever budget remains, so the schedule
+    /// sums to exactly what was asked for rather than overshooting it -- a
+    /// caller that says "wait two seconds" must not wait 2.4.
+    #[test]
+    fn a_larger_budget_is_spent_exactly() {
+        for budget in [750_u64, 1_000, 2_000, 30_000] {
+            let delays = schedule_for(budget);
+            let total: u64 = delays.iter().map(|d| d.as_millis() as u64).sum();
+            assert_eq!(total, budget, "budget {budget} must be spent exactly");
+            assert!(
+                delays.iter().all(|d| d.as_millis() as u64 <= 400),
+                "budget {budget} must not sleep longer than one step",
+            );
+        }
+    }
+
+    /// A budget smaller than the first step still produces one attempt.
+    ///
+    /// Returning an empty schedule would skip the retry loop entirely and
+    /// report the daemon unreachable without ever having waited.
+    #[test]
+    fn a_tiny_budget_still_waits_once() {
+        let delays = schedule_for(10);
+        assert_eq!(delays.len(), 1);
+        assert_eq!(delays[0].as_millis(), 10);
+    }
+
+    /// Build a schedule for `budget` without touching the environment.
+    fn schedule_for(budget: u64) -> Vec<std::time::Duration> {
+        let mut delays = Vec::new();
+        let mut step = 50_u64;
+        let mut total = 0_u64;
+        while total < budget {
+            let delay = step.min(budget - total);
+            delays.push(std::time::Duration::from_millis(delay));
+            total += delay;
+            step = step.saturating_mul(2).min(DAEMON_START_MAX_STEP_MS);
+        }
+        delays
+    }
 
     #[test]
     fn broker_start_errors_name_the_executable_and_remedy() {
