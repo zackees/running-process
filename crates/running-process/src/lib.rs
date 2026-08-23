@@ -109,9 +109,30 @@ pub mod test_support;
 
 // Lightweight tee sink primitives for callers that want transcript/log
 // fan-out without pulling in the full daemon runtime.
-#[cfg(feature = "telemetry")]
+//
+// The file lives under `daemon/` because that is who else uses it, and the
+// `daemon` feature loads it there as `daemon::telemetry`. Declaring it as a
+// module here too would load one file as two modules -- two copies of every
+// type, which are then not the same type -- so when both features are on this
+// re-exports the daemon's module instead of declaring a second one.
+#[cfg(all(feature = "telemetry", not(feature = "daemon")))]
 #[path = "daemon/telemetry.rs"]
 pub mod telemetry;
+
+#[cfg(all(feature = "telemetry", feature = "daemon"))]
+pub use daemon::telemetry;
+
+/// `telemetry` and `daemon::telemetry` must name one module, not two copies.
+///
+/// A `#[path]` module declaration alongside the daemon's own would compile --
+/// that was the bug -- but it would mint a second, incompatible set of types
+/// from the same source file, so a `TeeHandle` obtained through one path
+/// could not be passed to a function expecting the other. This conversion is
+/// the identity only while both paths resolve to the same item; if the
+/// duplicate declaration ever comes back, it stops compiling here rather than
+/// at whichever caller first tried to mix the two.
+#[cfg(all(feature = "telemetry", feature = "daemon"))]
+const _: fn(crate::telemetry::TeeHandle) -> daemon::telemetry::TeeHandle = |handle| handle;
 
 // Wave 5 of #165: daemon runtime absorbed from `running-process-daemon`.
 // Heavy deps (tokio, sqlite, etc.) gated behind `feature = "daemon"`.
