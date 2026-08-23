@@ -16,15 +16,12 @@ pub(crate) const CHILD_PID_LOG_PATH_ENV: &str = "RUNNING_PROCESS_CHILD_PID_LOG_P
 /// when a grandchild inherits the pipe and outlives the parent (FastLED
 /// Bug B).
 pub(crate) const DEFAULT_KILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
-pub(crate) const KILL_DRAIN_TIMEOUT_ENV: &str = "RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS";
 
 pub(crate) fn kill_drain_deadline() -> Instant {
-    let timeout = std::env::var(KILL_DRAIN_TIMEOUT_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_KILL_DRAIN_TIMEOUT);
-    Instant::now() + timeout
+    // Zero is honoured here rather than falling back: "do not wait for the
+    // drain" is a thing a caller can reasonably want. That rule is declared on
+    // the variable, not decided here.
+    Instant::now() + crate::env_vars::KILL_DRAIN_TIMEOUT_MS.millis_or(DEFAULT_KILL_DRAIN_TIMEOUT)
 }
 
 #[cfg(any(test, unix))]

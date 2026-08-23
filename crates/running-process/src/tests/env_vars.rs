@@ -300,3 +300,106 @@ fn describes_an_enabled_default(default: &str) -> bool {
         ),
     }
 }
+
+/// What `0` means is a property of the variable, and every numeric variable
+/// must have decided it.
+///
+/// This is where a real bug lived: three millisecond parsers guarded against
+/// zero and two did not, so `CLIENT_CONNECT_TIMEOUT_MS=0` produced a
+/// zero-duration connect timeout -- every connection failing instantly --
+/// while the same `0` on the RPC timeout fell back to the default. Neither
+/// behaviour was written down, so neither was wrong on purpose.
+#[test]
+fn zero_means_what_each_numeric_variable_declares() {
+    let mut checked = 0;
+    for var in DECLARED {
+        let EnvKind::Number {
+            zero_selects_default,
+        } = var.kind
+        else {
+            continue;
+        };
+        checked += 1;
+        let sentinel = std::time::Duration::from_millis(9_999);
+        let read = with_var(var.name, Some("0"), || var.millis_or(sentinel));
+        if zero_selects_default {
+            assert_eq!(
+                read, sentinel,
+                "{}: zero must fall back to the caller's default",
+                var.name
+            );
+        } else {
+            assert_eq!(
+                read,
+                std::time::Duration::ZERO,
+                "{}: zero must be honoured as zero",
+                var.name
+            );
+        }
+    }
+    assert!(checked >= 8, "expected the numeric variables to be checked");
+}
+
+/// A value that is not a number is a mistake, not a smaller number. Every
+/// numeric variable falls back rather than guessing.
+#[test]
+fn an_unparseable_number_falls_back_to_the_default() {
+    let sentinel = std::time::Duration::from_millis(4_242);
+    for var in DECLARED {
+        if !matches!(var.kind, EnvKind::Number { .. }) {
+            continue;
+        }
+        for junk in ["", "  ", "abc", "12ms", "-1", "1.5"] {
+            assert_eq!(
+                with_var(var.name, Some(junk), || var.millis_or(sentinel)),
+                sentinel,
+                "{}: {junk:?} is not a number and must not be read as one",
+                var.name
+            );
+        }
+    }
+}
+
+/// Whitespace around a number is a formatting accident, not a different value.
+#[test]
+fn a_number_is_read_through_surrounding_whitespace() {
+    let sentinel = std::time::Duration::from_millis(1);
+    assert_eq!(
+        with_var(CLIENT_RPC_TIMEOUT_MS.name, Some(" 250 "), || {
+            CLIENT_RPC_TIMEOUT_MS.millis_or(sentinel)
+        }),
+        std::time::Duration::from_millis(250)
+    );
+}
+
+/// A path is taken as the host wrote it. Repairing invalid Unicode would point
+/// somewhere else, and an empty value names no path at all.
+#[test]
+fn a_path_is_taken_verbatim_and_an_empty_one_is_absent() {
+    assert_eq!(
+        with_var(MANIFEST_DIR.name, Some("/tmp/manifests"), || MANIFEST_DIR
+            .path()),
+        Some(std::path::PathBuf::from("/tmp/manifests"))
+    );
+    assert_eq!(
+        with_var(MANIFEST_DIR.name, Some(""), || MANIFEST_DIR.path()),
+        None
+    );
+    assert_eq!(
+        with_var(MANIFEST_DIR.name, None, || MANIFEST_DIR.path()),
+        None
+    );
+}
+
+/// Text reads the same way: set-but-empty is not a value.
+#[test]
+fn empty_text_is_absent() {
+    assert_eq!(
+        with_var(DAEMON_SCOPE.name, Some("dev"), || DAEMON_SCOPE.text()),
+        Some("dev".to_owned())
+    );
+    assert_eq!(
+        with_var(DAEMON_SCOPE.name, Some(""), || DAEMON_SCOPE.text()),
+        None
+    );
+}

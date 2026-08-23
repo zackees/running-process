@@ -7,7 +7,7 @@
 # Adding tests never requires an update. Regenerate only when a removal is
 # intended, and say why in the PR: the diff is the record.
 
-# sync tests: 3193
+# sync tests: 3198
 # of those, skip-decorated: 11
 
 a_backend_that_has_not_reported_a_port_renders_as_starting
@@ -106,7 +106,9 @@ a_non_loopback_address_round_trips
 a_non_loopback_bind_is_refused_before_the_socket_exists
 a_non_owner_peer_cannot_read_crash_history
 a_nul_byte_in_the_service_name_is_refused_rather_than_crashing
+a_number_is_read_through_surrounding_whitespace
 a_partial_dump_says_so
+a_path_is_taken_verbatim_and_an_empty_one_is_absent
 a_path_survives_encoding_and_decoding_unchanged
 a_pathless_module_is_named_by_its_base
 a_permission_error_carries_actionable_remediation_and_never_offers_elevation
@@ -302,6 +304,7 @@ an_unknown_module_index_keeps_the_offset
 an_unknown_runtime_still_registers
 an_unknown_service_is_refused_rather_than_dropped
 an_unknown_stock_name_lists_the_valid_ones
+an_unparseable_number_falls_back_to_the_default
 an_unrecognized_console_event_is_declined
 an_unrelated_error_is_not_a_lock_conflict
 an_unrelated_os_error_signals_nothing
@@ -771,6 +774,7 @@ empty_path_returns_error
 empty_port_env_falls_back_to_config
 empty_registry_emit_is_cheap_and_safe
 empty_registry_has_no_state_for_unknown_backend
+empty_text_is_absent
 encode_outbound_maps_non_terminal_frames
 encode_outbound_maps_terminal_frames
 encode_pipe_frame_maps_non_terminal_frames
@@ -3203,3 +3207,4 @@ xml_escape_handles_metacharacters
 zero_capacity_is_treated_as_one
 zero_capacity_ring_reports_every_byte_missed
 zero_connection_server_returns_without_binding
+zero_means_what_each_numeric_variable_declares

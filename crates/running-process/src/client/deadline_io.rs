@@ -36,17 +36,10 @@ const NONBLOCKING_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// forever (issue #590, cluster B1). Override with
 /// `RUNNING_PROCESS_CLIENT_RPC_TIMEOUT_MS` (milliseconds).
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(30);
-const RPC_TIMEOUT_ENV: &str = "RUNNING_PROCESS_CLIENT_RPC_TIMEOUT_MS";
 
 /// Deadline for a single RPC response read, measured from now.
 pub(crate) fn rpc_read_deadline() -> Instant {
-    let timeout = std::env::var(RPC_TIMEOUT_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|&ms| ms > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_RPC_TIMEOUT);
-    Instant::now() + timeout
+    Instant::now() + crate::env_vars::CLIENT_RPC_TIMEOUT_MS.millis_or(DEFAULT_RPC_TIMEOUT)
 }
 
 fn wait_for_io(deadline: Instant) -> io::Result<()> {
@@ -141,14 +134,9 @@ pub(crate) fn read_frame_with_deadline<R: Read>(
 /// non-accepting socket can't wedge the caller. Override with
 /// `RUNNING_PROCESS_CLIENT_CONNECT_TIMEOUT_MS` (milliseconds).
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const CONNECT_TIMEOUT_ENV: &str = "RUNNING_PROCESS_CLIENT_CONNECT_TIMEOUT_MS";
 
 fn connect_timeout() -> Duration {
-    std::env::var(CONNECT_TIMEOUT_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_CONNECT_TIMEOUT)
+    crate::env_vars::CLIENT_CONNECT_TIMEOUT_MS.millis_or(DEFAULT_CONNECT_TIMEOUT)
 }
 
 /// Connect to `socket_path` on a helper thread, bounded by
