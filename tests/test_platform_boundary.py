@@ -6,7 +6,7 @@ from ci import platform_boundary
 def test_bootstrap_ledgers_are_valid() -> None:
     rows = platform_boundary.parse_ledger()
 
-    assert len(rows) == 680
+    assert len(rows) == 642
     assert not platform_boundary.validate_ledger(rows)
     assert not platform_boundary.manifest_dependency_violations()
     assert not platform_boundary.neutral_facade_contract_violations()
@@ -215,3 +215,43 @@ def test_zone_prefixes_may_name_a_file_or_a_directory() -> None:
     dirs = [z for z in platform_boundary.ARTIFACT_ZONES if not z.prefix.endswith(".rs")]
     assert files, "no file-scoped zone; the file spelling would be untested"
     assert dirs, "no directory-scoped zone; the slash spelling would be untested"
+
+
+def test_the_sidecar_zone_does_not_replace_the_sidecar_rule() -> None:
+    """Zoning where injection lives must not weaken the rule that it lives only there.
+
+    `probe-sidecar` says the hook-tier negotiation may name all three hosts.
+    It says nothing about `running-process` staying free of injection symbols,
+    which is the #539 contract that AV/EDR static analysis of consumers finds
+    no hooking surface. That is a different claim, enforced by a different
+    test, and this asserts that test still exists rather than assuming it.
+    """
+    guard = (
+        platform_boundary.ROOT / "crates/running-process/tests/probe_facade_surface.rs"
+    )
+    assert guard.is_file(), (
+        "the sidecar zone's reasoning cites this test; without it the zone "
+        "would be the only thing said about injection, and it is the wrong "
+        "thing to say alone"
+    )
+    text = guard.read_text(encoding="utf-8")
+    assert "CreateRemoteThread" in text, "the guard no longer names what it forbids"
+
+
+def test_a_zone_may_permit_no_host_selection_at_all() -> None:
+    """An empty contract is a real contract, not an unfilled one.
+
+    `probe-inject-windows` is a Windows-only file that needs no cfg: the
+    module tree selects it and the API it calls is Windows by construction.
+    Permitting nothing is therefore correct, and stricter than its siblings --
+    so a cfg appearing there later is a question, not a silent pass.
+    """
+    zones = {zone.name: zone for zone in platform_boundary.ARTIFACT_ZONES}
+    zone = zones["probe-inject-windows"]
+    assert not zone.host_keys
+    assert not zone.host_values
+
+    failures = platform_boundary.zone_text_violations(
+        zone, "fixture.rs", '#[cfg(target_os = "windows")] fn probe() {}'
+    )
+    assert failures, "a zone permitting no host key must reject every host key"

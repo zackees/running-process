@@ -104,6 +104,9 @@ const SPECIALIZED_ARTIFACT_PREFIXES: &[&str] = &[
     "crates/running-process-probe/src/snapshot/linux.rs",
     "crates/running-process-probe/src/snapshot/macos.rs",
     "crates/running-process-probe/src/snapshot/windows.rs",
+    "crates/running-process-probe/src/inject_unix.rs",
+    "crates/running-process-probe/src/inject_windows.rs",
+    "crates/running-process-probe/src/lib.rs",
 ];
 
 /// The transitional exact-occurrence baseline. Format per row:

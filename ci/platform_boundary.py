@@ -211,6 +211,49 @@ ARTIFACT_ZONES: tuple[ArtifactZone, ...] = (
         host_values=frozenset({"x86_64", "aarch64"}),
         native_imports=frozenset(),
     ),
+    ArtifactZone(
+        name="probe-inject-unix",
+        prefix="crates/running-process-probe/src/inject_unix.rs",
+        reason=(
+            "Sets the loader's own environment variable -- LD_PRELOAD on "
+            "Linux, DYLD_INSERT_LIBRARIES on macOS -- on a command about to "
+            "be spawned. The variable name *is* the platform decision; there "
+            "is nothing left to put behind a facade once it is chosen."
+        ),
+        host_keys=frozenset({"target_os"}),
+        host_values=frozenset({"linux", "macos"}),
+        native_imports=frozenset({"std::os::unix"}),
+    ),
+    ArtifactZone(
+        name="probe-inject-windows",
+        prefix="crates/running-process-probe/src/inject_windows.rs",
+        reason=(
+            "OpenProcess -> VirtualAllocEx -> WriteProcessMemory -> "
+            "CreateRemoteThread(LoadLibraryW). A remote-thread injection is "
+            "the Windows mechanism entire; a facade over it would describe "
+            "one implementation of one platform and serve no second caller."
+        ),
+        host_keys=frozenset(),
+        host_values=frozenset(),
+        native_imports=frozenset({"windows_sys", "std::os::windows"}),
+    ),
+    ArtifactZone(
+        name="probe-sidecar",
+        prefix="crates/running-process-probe/src/lib.rs",
+        reason=(
+            "Negotiates which hook tier a host supports and extracts the "
+            "matching helper blob, so it names all three hosts by design -- "
+            "the answer differs per host and callers ask it precisely to find "
+            "out. The injection vehicles it dispatches to are gated on "
+            "`embed-helper` and never compiled for ordinary consumers; "
+            "`crates/running-process/tests/probe_facade_surface.rs` asserts "
+            "that separately, which is what keeps this zone a statement about "
+            "where the machinery lives rather than a licence to spread it."
+        ),
+        host_keys=frozenset({"unix", "windows", "target_os"}),
+        host_values=frozenset({"linux", "macos", "windows"}),
+        native_imports=frozenset({"std::os::unix"}),
+    ),
 )
 
 ZONE_PREFIXES = tuple(zone.prefix for zone in ARTIFACT_ZONES)
