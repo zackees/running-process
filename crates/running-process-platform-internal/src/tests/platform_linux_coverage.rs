@@ -226,7 +226,8 @@ fn tokio_configuration_and_live_signal_helpers_reach_the_os() {
             .kill_on_drop(true);
         configure_compat_tokio_command(&mut command, false, true).unwrap();
         let mut child = command.spawn().unwrap();
-        after_compat_tokio_spawn(&child, true);
+        after_compat_tokio_spawn(&child, true)
+            .expect("containment must be reported, not assumed");
         unix_signal_process(child.id().unwrap(), UnixSignalKind::Terminate).unwrap();
         let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
             .await
@@ -238,7 +239,7 @@ fn tokio_configuration_and_live_signal_helpers_reach_the_os() {
         grouped.arg("30").kill_on_drop(true);
         configure_command(&mut grouped, true, false).unwrap();
         let mut child = grouped.spawn().unwrap();
-        after_spawn(&child, false);
+        after_spawn(&child, false).expect("a no-op must still succeed");
         let pid = child.id().unwrap();
         unix_signal_process_group(pid as i32, UnixSignalKind::Terminate).unwrap();
         let status = tokio::time::timeout(Duration::from_secs(2), child.wait())

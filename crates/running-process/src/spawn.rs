@@ -398,10 +398,14 @@ pub fn spawn_tokio(
 
     let child = command.spawn()?;
 
+    // A containment failure is reported, not swallowed. `kill_when_owner_dies`
+    // is asked for by callers that must not leak children -- zccache's compile
+    // workers are the case this exists for -- and a spawn that quietly returns
+    // an uncontained child hands them exactly the orphan they asked to avoid.
     running_process_platform_internal::after_compat_tokio_spawn(
         &child,
         options.kill_when_owner_dies,
-    );
+    )?;
 
     Ok(child)
 }

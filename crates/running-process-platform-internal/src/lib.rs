@@ -288,7 +288,7 @@ pub fn configure_compat_tokio_command(
 }
 
 /// Complete host-owned setup after a legacy Tokio child has been spawned.
-pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) {
+pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Result<()> {
     platform_imp::after_compat_tokio_spawn(child, kill_when_owner_dies)
 }
 
@@ -435,7 +435,7 @@ impl SpawnSpec {
         )?;
 
         let child = command.spawn()?;
-        platform_imp::after_spawn(&child, self.kill_when_owner_dies);
+        platform_imp::after_spawn(&child, self.kill_when_owner_dies)?;
         Ok(PlatformChild::new(child, self.create_process_group))
     }
 }

@@ -489,9 +489,11 @@ fn compat_tokio_creation_flags(show_console: bool) -> u32 {
     }
 }
 
-pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) {
+pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Result<()> {
     if kill_when_owner_dies {
-        assign(child.raw_handle());
+        assign(child.raw_handle())
+    } else {
+        Ok(())
     }
 }
 
@@ -531,9 +533,11 @@ pub(crate) fn configure_command(
     Ok(())
 }
 
-pub(crate) fn after_spawn(child: &Child, kill_when_owner_dies: bool) {
+pub(crate) fn after_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Result<()> {
     if kill_when_owner_dies {
-        assign(child.raw_handle());
+        assign(child.raw_handle())
+    } else {
+        Ok(())
     }
 }
 
@@ -578,10 +582,31 @@ fn create() -> Option<Job> {
     }
 }
 
-fn assign(child: Option<HANDLE>) {
-    let Some(child) = child else { return };
-    let Some(job) = JOB.get_or_init(create).as_ref() else { return };
-    unsafe { AssignProcessToJobObject(job.0, child); }
+/// Place a freshly spawned child in the owner-death job.
+///
+/// Every step here used to fail silently, which is the wrong shape for this
+/// operation: a caller passes `kill_when_owner_dies: true` precisely because
+/// it does not want the child to outlive it, and a caller that is told
+/// nothing cannot tell containment from its absence. All three failures are
+/// now reported.
+fn assign(child: Option<HANDLE>) -> io::Result<()> {
+    let Some(child) = child else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot contain a child that exposes no process handle",
+        ));
+    };
+    let Some(job) = JOB.get_or_init(create).as_ref() else {
+        return Err(io::Error::other(
+            "owner-death job object could not be created",
+        ));
+    };
+    // SAFETY: `job.0` is the process-wide job handle and `child` is the
+    // handle Tokio/std owns for the child just spawned.
+    if unsafe { AssignProcessToJobObject(job.0, child) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 #[path = "platform_win/sync_spawn.rs"]
 mod sync_spawn;
