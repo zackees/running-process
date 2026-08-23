@@ -106,3 +106,44 @@ fn force_killed_async_owner_reaps_child() {
         "async child {child_pid} survived owner {owner_pid} termination"
     );
 }
+
+/// Asking for containment and getting a child back is a promise, not a hint.
+///
+/// The post-spawn half of `kill_when_owner_dies` used to discard its result,
+/// so on Windows a caller could be handed a perfectly healthy child that
+/// nothing would ever reap: no process handle, a job object that failed to
+/// create, or an `AssignProcessToJobObject` that returned zero all looked
+/// exactly like success. This requires the call to report.
+///
+/// It deliberately does not assert the child *dies* with its owner --
+/// `force_killed_async_owner_reaps_child` above owns that, and needs a
+/// separate owner process to do it. What this pins is narrower and was the
+/// actual gap: a failure to contain is never silent.
+#[cfg(feature = "client-async")]
+#[test]
+fn a_contained_spawn_reports_whether_it_was_contained() {
+    use running_process::spawn::{spawn_tokio, TokioSpawnOptions};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        // The sleeper sleeps forever by design, which is what makes it a
+        // realistic thing to contain: this test owns killing it.
+        let mut command = tokio::process::Command::new(testbin_path("testbin-sleeper"));
+        command.stdin(Stdio::null()).stdout(Stdio::null());
+
+        let mut child = spawn_tokio(
+            &mut command,
+            TokioSpawnOptions {
+                kill_when_owner_dies: true,
+                ..TokioSpawnOptions::default()
+            },
+        )
+        .expect("a contained spawn must succeed or say why it could not");
+
+        child.kill().await.expect("kill contained child");
+        child.wait().await.expect("reap contained child");
+    });
+}

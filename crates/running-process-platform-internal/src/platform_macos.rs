@@ -624,7 +624,14 @@ pub fn configure_compat_tokio_command(
     configure_command(command, false, kill_when_owner_dies)
 }
 
-pub fn after_compat_tokio_spawn(_child: &Child, _kill_when_owner_dies: bool) {}
+/// Nothing to do on this host: the kqueue supervisor is installed in `pre_exec`, before the child
+/// ever runs, so nothing remains to do once it has.
+pub fn after_compat_tokio_spawn(
+    _child: &Child,
+    _kill_when_owner_dies: bool,
+) -> io::Result<()> {
+    Ok(())
+}
 
 pub(crate) fn configure_command(
     command: &mut Command,
@@ -659,7 +666,9 @@ fn configure_command_for_owner(
     Ok(())
 }
 
-pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) {}
+pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) -> io::Result<()> {
+    Ok(())
+}
 
 pub(crate) fn signal_process(pid: u32) -> io::Result<()> {
     unix_kill(pid as i32, libc::SIGKILL)

@@ -220,3 +220,12 @@ max_occurrences = 3
 owner = "probe"
 justification = "Legacy interposer fixture; Phase 4 migrates it to internal test support."
 expires_phase = 4
+
+[[exception]]
+id = "RP-RAW-TOKIO-004"
+symbol = "tokio::process::Command"
+path = "crates/running-process/tests/async_owner_death_test.rs"
+max_occurrences = 1
+owner = "running-process"
+justification = "Regression test for #887 owner-death containment. `spawn_tokio` takes `&mut tokio::process::Command` by signature, so a test that the containment result is reported rather than discarded has to build one. Deleted together with the compatibility function this exercises, in the same phase as RP-RAW-TOKIO-001."
+expires_phase = 2
