@@ -72,6 +72,21 @@ def _rust_coverage_doctest_command() -> list[str]:
     return cargo_command("test", "--workspace", "--all-features", "--doc")
 
 
+def _rust_all_features_test_args() -> list[str]:
+    """Extra nextest arguments for the every-feature pass (#1083).
+
+    `brokered_backend_ui` is excluded for the same reason the coverage pass
+    excludes it, arrived at differently: its trybuild snapshots record exact
+    rustc diagnostics, which differ by host as well as by instrumentation.
+    Running it here would compare Linux-authored snapshots against Windows
+    and macOS rustc output and fail for reasons that have nothing to do with
+    the feature gap this pass exists to close. It stays validated where its
+    snapshots were written -- the preflight `client` build on every OS, and
+    the Linux coverage lane.
+    """
+    return ["--all-features", "-E", "not binary(brokered_backend_ui)"]
+
+
 def _brokered_backend_ui_test_command() -> list[str]:
     """Run trybuild before LLVM instrumentation alters rustc diagnostics."""
     return cargo_command(
@@ -621,12 +636,16 @@ def _ensure_nextest_installed() -> bool:
     return True
 
 
-def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool, bool]:
+def parse_args(
+    argv: list[str] | None = None,
+) -> tuple[list[str], bool, bool, bool, bool, bool]:
     argv = list(sys.argv[1:] if argv is None else argv)
     raw_pytest_args: list[str] = []
     require_symbols = False
     coverage = False
     live_only = False
+    all_features = False
+    rust_only = False
     while argv:
         current = argv.pop(0)
         if current == "--no-skip":
@@ -638,12 +657,32 @@ def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool, bo
         if current == "--live-only":
             live_only = True
             continue
+        if current == "--all-features":
+            all_features = True
+            continue
+        if current == "--rust-only":
+            rust_only = True
+            continue
         raw_pytest_args.append(current)
-    return _normalize_pytest_args(raw_pytest_args), require_symbols, coverage, live_only
+    return (
+        _normalize_pytest_args(raw_pytest_args),
+        require_symbols,
+        coverage,
+        live_only,
+        all_features,
+        rust_only,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    pytest_args, require_symbols, coverage, live_only = parse_args(argv)
+    (
+        pytest_args,
+        require_symbols,
+        coverage,
+        live_only,
+        all_features,
+        rust_only,
+    ) = parse_args(argv)
     activate, _ = load_env_helpers()
     activate()
     if require_symbols:
@@ -810,6 +849,8 @@ def main(argv: list[str] | None = None) -> int:
 
             # Step 1: compile all test binaries (no supervisor, no timeout)
             build_args = cargo_command("nextest", "run", "--workspace", "--no-run")
+            if all_features:
+                build_args += _rust_all_features_test_args()
             if run(build_args) != 0:
                 return 1
 
@@ -818,6 +859,8 @@ def main(argv: list[str] | None = None) -> int:
             # output-idle watchdog. Quiet test compilation is not a hang, and
             # nextest already isolates, names, and terminates an overdue test.
             cargo_test_args = cargo_command("nextest", "run", "--workspace")
+            if all_features:
+                cargo_test_args += _rust_all_features_test_args()
             if sys.platform == "win32":
                 # Belt-and-braces: even with process-per-test isolation,
                 # filesystem and named-pipe races in the daemon test suite
@@ -871,8 +914,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
         # -- Python non-live tests --
+        # `--rust-only` exists for the every-feature lane (#1083), which adds
+        # Rust feature combinations that no other lane compiles. The Python
+        # suite it would otherwise re-run here is identical to the one the
+        # preflight lane already ran on this same OS, so running it twice
+        # buys nothing and costs a full second pass.
         cov_first = list(_COV_PYTEST_FIRST) if coverage else []
-        if not _pytest_exit_is_acceptable(
+        if not rust_only and not _pytest_exit_is_acceptable(
             run(
                 _supervised_pytest_command(
                     python, "-m", "not live", *cov_first, *pytest_args
@@ -882,17 +930,21 @@ def main(argv: list[str] | None = None) -> int:
         ):
             return 1
         if (
-            not coverage
+            not rust_only
+            and not coverage
             and not running_on_github_actions()
             and not skip_linux_docker_preflight()
         ):
             if run(_linux_unit_test_command(python, *pytest_args)) != 0:
                 return 1
-        if require_symbols and sys.platform == "win32":
+        if require_symbols and not rust_only and sys.platform == "win32":
             if run(_release_build_command(python)) != 0:
                 return 1
 
     # -- Python live tests --
+    if rust_only:
+        return 0
+
     if live_tests_enabled():
         cov_append = list(_COV_PYTEST_APPEND) if coverage else []
         if not _pytest_exit_is_acceptable(

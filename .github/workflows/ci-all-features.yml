@@ -1,0 +1,132 @@
+name: All-Features Tests (Windows/macOS)
+
+# Closes the gap #1083 describes: every test behind `daemon`, `probe`,
+# `client-async`, `telemetry` and friends is compiled by exactly one lane
+# (Linux coverage, which is `--all-features`), so a platform-specific
+# assertion inside one of them is exercised on the platform it was not
+# written for, or on none at all. #1081 was that bug: a Windows arm that
+# had been wrong since #1042 because nothing ever ran it.
+#
+# Deliberately NOT on every pull request. The measurement in #1083 found
+# the suite already green on Windows, so this is buying regression signal,
+# not triage -- and paying Windows and macOS compile time on every PR for
+# it would add exactly the queue backpressure the concurrency groups added
+# in #1109 were introduced to remove. Nightly plus opt-in gets the signal
+# without the latency.
+#
+# To make it run on a specific PR, add the `all-features` label. To make it
+# run on every PR, add `pull_request:` to the triggers below -- that is
+# option 1 in #1083, and nothing else here needs to change.
+
+on:
+  schedule:
+    # 07:00 UTC daily, after the US-evening / EU-morning push window and
+    # before the working day, so a red nightly is waiting rather than
+    # landing mid-review.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+  pull_request:
+    # `opened` matters for a PR created with the label already applied;
+    # without it the lane would first run on that PR's next push.
+    types: [opened, labeled, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
+  # per group, so a ref-only group silently cancels queued main-push SHAs.
+  group: ci-all-features-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: "always"
+
+jobs:
+  all-features:
+    # On a pull request this runs only when the `all-features` label is
+    # present, so `synchronize` re-runs it for a labelled PR's later pushes
+    # without subscribing every PR to the lane.
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'all-features') }}
+    name: all-features (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      # One host's failure is not evidence about the other, and finding out
+      # both are red in one run beats finding out twice.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x86
+          - os: macos-15-intel
+            label: macos-x86
+          - os: macos-14
+            label: macos-arm
+    env:
+      RUST_BACKTRACE: "full"
+      RUST_LIB_BACKTRACE: "full"
+      RUNNING_PROCESS_TEST_NOCAPTURE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Cache venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ matrix.os }}-py3.11-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-${{ matrix.os }}-py3.11-
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95.0"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      # A dedicated cache key. This lane's artifacts are built with a
+      # different feature set than the preflight lane's, so sharing
+      # `${label}-shared` would make each evict the other's objects on
+      # every run and leave both lanes permanently cold.
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.label }}-all-features
+          cache-on-failure: true
+
+      - name: Sync venv (frozen, no project install)
+        run: uv sync --frozen --group dev --no-install-project --python 3.11
+
+      # `ci.test` imports `running_process` at runtime, so the dev wheel has
+      # to be installed even though this lane asserts nothing about Python.
+      - name: Dev wheel build
+        id: build
+        run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
+
+      # `--rust-only`: the Python suite is identical to the one the preflight
+      # lane already ran on this OS. `--all-features` is the entire point.
+      - name: Unit Tests (--all-features)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test --all-features --rust-only
+
+      - name: Upload logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-features-logs-${{ matrix.label }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
