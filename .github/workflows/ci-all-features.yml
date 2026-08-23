@@ -26,7 +26,9 @@ on:
     - cron: "0 7 * * *"
   workflow_dispatch:
   pull_request:
-    types: [labeled, synchronize, reopened]
+    # `opened` matters for a PR created with the label already applied;
+    # without it the lane would first run on that PR's next push.
+    types: [opened, labeled, synchronize, reopened]
 
 permissions:
   contents: read
