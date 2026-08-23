@@ -166,12 +166,16 @@ fn measure_deployment(mode: Mode) -> HandoffLatencySummary {
         .arg(&services)
         .env("RUNNING_PROCESS_DAEMON_SCOPE", "dev");
     let mut server = ChildGuard::spawn(server_cmd, "server");
-    wait_for_file(&ready_file, Duration::from_secs(15));
+    wait_for_file_from(&ready_file, Duration::from_secs(15), &mut server);
     if mode == Mode::Reconnect {
         // Wait until the server has reclaimed the backend endpoint from
         // the startup-probe listener; otherwise an early client reconnect
         // would dial an unbound endpoint and burn a broker serve slot.
-        wait_for_file(&serving_marker(&ready_file), Duration::from_secs(15));
+        wait_for_file_from(
+            &serving_marker(&ready_file),
+            Duration::from_secs(15),
+            &mut server,
+        );
     }
 
     let samples = collect_latency_samples(WARMUP_ITERATIONS, MEASURED_ITERATIONS, || {
@@ -301,11 +305,31 @@ fn allow_for_instrumentation(base: Duration) -> Duration {
     }
 }
 
-fn wait_for_file(path: &Path, timeout: Duration) {
+/// Wait for `path`, giving up early if `writer` dies first.
+///
+/// Watching only the path is what made #1114 expensive to read: when the
+/// server panicked during startup, the marker it owed simply never arrived,
+/// so the failure surfaced a minute later as a timeout in a different process
+/// and a different file. The exit status is the actual answer and it is
+/// available immediately; waiting out the clock only buries it.
+fn wait_for_file_from(path: &Path, timeout: Duration, writer: &mut ChildGuard) {
     let timeout = allow_for_instrumentation(timeout);
     let started = Instant::now();
     let deadline = started + timeout;
     while !path.exists() {
+        if let Some(status) = writer.exited() {
+            // Re-check once: the child may have written the marker and exited
+            // between the two observations, which is success, not failure.
+            if path.exists() {
+                return;
+            }
+            panic!(
+                "{} process exited with {status} before writing {path:?} \
+                 (waited {:.1?}); its own failure is above this one",
+                writer.label,
+                started.elapsed(),
+            );
+        }
         if Instant::now() >= deadline {
             panic!("{}", readiness_failure(path, started.elapsed(), timeout));
         }
@@ -369,6 +393,16 @@ impl ChildGuard {
             child: Some(child),
             label,
         }
+    }
+
+    /// The child's exit status, if it has already finished.
+    ///
+    /// Non-blocking on purpose: this is asked while waiting for something the
+    /// child is supposed to produce, and blocking here would be the hang it
+    /// exists to detect.
+    fn exited(&mut self) -> Option<std::process::ExitStatus> {
+        let child = self.child.as_mut()?;
+        child.try_wait().ok().flatten()
     }
 
     fn wait_success(&mut self) {
