@@ -6,7 +6,7 @@ from ci import platform_boundary
 def test_bootstrap_ledgers_are_valid() -> None:
     rows = platform_boundary.parse_ledger()
 
-    assert len(rows) == 783
+    assert len(rows) == 680
     assert not platform_boundary.validate_ledger(rows)
     assert not platform_boundary.manifest_dependency_violations()
     assert not platform_boundary.neutral_facade_contract_violations()
@@ -178,3 +178,40 @@ def test_a_zone_may_be_narrower_than_a_crate() -> None:
             f"{zone.name} is narrower than its crate but nothing else in that "
             "crate is still in the ledger, so the narrowness buys nothing"
         )
+
+
+def test_a_host_specific_file_needs_no_host_cfg() -> None:
+    """A file the module tree already selects should not select again.
+
+    `snapshot/linux.rs` is reached because `snapshot/mod.rs` chose it, so a
+    `target_os` inside it would mean the selection happened twice and one of
+    the two is unchecked. Its contract permits `target_arch` -- the register
+    set really does differ -- and nothing else.
+    """
+    zones = {zone.name: zone for zone in platform_boundary.ARTIFACT_ZONES}
+    for name in ("probe-capture-linux", "probe-capture-macos", "probe-capture-windows"):
+        zone = zones[name]
+        assert (
+            "target_os" not in zone.host_keys
+        ), f"{name} permits target_os, but the module tree already selected it"
+        failures = platform_boundary.zone_text_violations(
+            zone, "fixture.rs", '#[cfg(target_os = "linux")] fn probe() {}'
+        )
+        assert failures, f"{name} accepted a redundant host selection"
+
+
+def test_zone_prefixes_may_name_a_file_or_a_directory() -> None:
+    """Both spellings must reach Dylint, or deleted rows come back as failures.
+
+    The alignment check originally looked only for a directory prefix with a
+    trailing slash, so the first file-scoped zone reported a false mismatch.
+    The trailing slash matters for directories -- without it a prefix would
+    also match a sibling whose name merely starts the same way -- so the check
+    accepts either spelling rather than dropping it.
+    """
+    assert not platform_boundary.zone_dylint_alignment_violations()
+
+    files = [z for z in platform_boundary.ARTIFACT_ZONES if z.prefix.endswith(".rs")]
+    dirs = [z for z in platform_boundary.ARTIFACT_ZONES if not z.prefix.endswith(".rs")]
+    assert files, "no file-scoped zone; the file spelling would be untested"
+    assert dirs, "no directory-scoped zone; the slash spelling would be untested"
