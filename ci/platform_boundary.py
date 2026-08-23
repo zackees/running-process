@@ -453,6 +453,35 @@ def zone_text_violations(zone: ArtifactZone, path: str, text: str) -> list[str]:
     return failures
 
 
+DYLINT_LINT_SOURCE = ROOT / "lints/running-process-platform-boundary/src/lib.rs"
+
+
+def zone_dylint_alignment_violations() -> list[str]:
+    """The Dylint lint must recognise the same zones this file registers.
+
+    The two halves answer different questions -- Dylint decides whether a file
+    is ordinary production code, this file decides what a registered artifact
+    may reference -- but they must agree on *which* paths are registered. When
+    they did not, deleting a zone's ledger rows here left Dylint still
+    reporting them, and the workspace gate failed with the boundary otherwise
+    green. Catching that locally is cheaper than a CI round trip, because the
+    Dylint lane needs a nightly toolchain and does not run in `./lint`.
+    """
+    try:
+        text = DYLINT_LINT_SOURCE.read_text(encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - the lint crate is checked in
+        return [f"cannot read the Dylint lint source: {exc}"]
+    failures: list[str] = []
+    for zone in ARTIFACT_ZONES:
+        if f'"{zone.prefix}/"' not in text:
+            failures.append(
+                f"zone {zone.name!r} is registered here but not in "
+                f"SPECIALIZED_ARTIFACT_PREFIXES; Dylint would still report its "
+                "occurrences after the ledger rows are deleted"
+            )
+    return failures
+
+
 def zone_manifest_alignment_violations() -> list[str]:
     """A zone's crate must also be allowed its per-target dependency table.
 
@@ -497,6 +526,7 @@ def main(argv: list[str] | None = None) -> int:
         *neutral_facade_contract_violations(),
         *artifact_zone_violations(),
         *zone_manifest_alignment_violations(),
+        *zone_dylint_alignment_violations(),
     ]
     if args.print_totals:
         print(totals(rows))

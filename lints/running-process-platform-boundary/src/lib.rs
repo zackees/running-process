@@ -87,6 +87,14 @@ const NATIVE_ROOTS: &[&str] = &["libc", "windows_sys"];
 /// Concrete platform module names — private to running-process-platform-internal.
 const CONCRETE_MODULES: &[&str] = &["platform_win", "platform_linux", "platform_macos"];
 
+/// Crates registered as specialized artifacts under #974.
+///
+/// Keep in step with `ARTIFACT_ZONES` in `ci/platform_boundary.py`, which owns
+/// what each of these may actually reference. A path here only says "this is
+/// not ordinary production code"; it does not say "anything goes", and the
+/// contract on the Python side is what makes that true.
+const SPECIALIZED_ARTIFACT_PREFIXES: &[&str] = &["crates/running-process-win-gnu-bridge/"];
+
 /// The transitional exact-occurrence baseline. Format per row:
 /// `path<TAB>kind<TAB>normalized<TAB>ordinal`.
 const BASELINE_TEXT: &str = include_str!("baseline.txt");
@@ -125,6 +133,18 @@ enum Scope {
     /// A concrete host tree (platform_win/platform_linux/platform_macos):
     /// host cfg and native APIs live here.
     Concrete,
+    /// A registered specialized artifact (#974): a component whose host
+    /// selection is its purpose rather than an accident, so it keeps it.
+    ///
+    /// This lint stops at "not ordinary production code". What the artifact
+    /// is then allowed to reference is the contract in
+    /// `ci/platform_boundary.py`'s `ARTIFACT_ZONES`, which checks host keys,
+    /// host values and native crates per artifact. Splitting it that way keeps
+    /// the per-artifact contract in one place instead of two that can
+    /// disagree; what must stay in step is only the list of paths, which
+    /// `zone_manifest_alignment_violations` and this arm both derive from the
+    /// same crate names.
+    SpecializedArtifact,
     /// Neutral facade files inside running-process-platform-internal: no host cfg, no native
     /// imports, no concrete names; `platform_imp` is the only bridge.
     Facade,
@@ -184,6 +204,12 @@ fn classify(path: &str) -> Scope {
         || path.starts_with("crates/running-process-platform-internal/src/platform_macos")
     {
         return Scope::Concrete;
+    }
+    if SPECIALIZED_ARTIFACT_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+    {
+        return Scope::SpecializedArtifact;
     }
     if path == "crates/running-process-platform-internal/src/lib.rs" {
         return Scope::Selector;
@@ -317,7 +343,10 @@ fn record_with(
     };
     let scope = classify(&path);
     match scope {
-        Scope::OutOfScope | Scope::Concrete | Scope::Selector => return,
+        Scope::OutOfScope
+        | Scope::Concrete
+        | Scope::Selector
+        | Scope::SpecializedArtifact => return,
         Scope::Facade => {
             if kind == Kind::ModuleRef && normalized == "platform_imp" {
                 return;
