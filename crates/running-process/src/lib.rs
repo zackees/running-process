@@ -27,6 +27,7 @@ pub use blocking_island::dispatch_blocking as blocking_island_dispatch;
 pub mod console_detect;
 pub mod containment;
 mod descendant_monitor;
+pub mod env_vars;
 pub mod environment;
 mod helpers;
 #[cfg(feature = "async-process")]

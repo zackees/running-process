@@ -54,12 +54,7 @@ fn refuse_process_privilege(identity: Option<PrivilegedIdentity>) -> Result<(), 
 }
 
 fn allow_privileged_from_env() -> bool {
-    let value = std::env::var(ALLOW_PRIVILEGED_ENV).ok();
-    allow_privileged_env_value(value.as_deref())
-}
-
-fn allow_privileged_env_value(value: Option<&str>) -> bool {
-    value == Some("1")
+    crate::env_vars::BROKER_ALLOW_PRIVILEGED.is_set()
 }
 
 fn current_process_privilege() -> Result<Option<PrivilegedIdentity>, PrivilegeError> {
@@ -70,6 +65,7 @@ fn current_process_privilege() -> Result<Option<PrivilegedIdentity>, PrivilegeEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env_vars::EnvKind;
 
     #[test]
     fn refuses_privileged_identity() {
@@ -87,12 +83,17 @@ mod tests {
         refuse_process_privilege(None).unwrap();
     }
 
+    /// The guard opens for `1` and for nothing else -- not for `true`, not for
+    /// `yes`. Refusing a plausible spelling is the safe direction here: the
+    /// variable exists to let an isolated test environment start as root, and
+    /// a typo must leave the refusal in place.
+    ///
+    /// The rule now lives in the declaration
+    /// (`env_vars::BROKER_ALLOW_PRIVILEGED`, an `ExactValue` kind), so this
+    /// asserts the behaviour the guard actually gets rather than a private
+    /// copy of the comparison.
     #[test]
     fn allow_env_value_requires_exact_one() {
-        assert!(allow_privileged_env_value(Some("1")));
-        assert!(!allow_privileged_env_value(None));
-        assert!(!allow_privileged_env_value(Some("")));
-        assert!(!allow_privileged_env_value(Some("true")));
-        assert!(!allow_privileged_env_value(Some("yes")));
+        assert!(crate::env_vars::BROKER_ALLOW_PRIVILEGED.kind == EnvKind::ExactValue("1"));
     }
 }
