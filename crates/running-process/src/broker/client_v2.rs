@@ -515,7 +515,7 @@ pub fn connect_service_with_scope_hash_and_deadline(
     deadline: Duration,
 ) -> Result<ClientSession, BrokerV2Error> {
     let pipe_name = v2_program_pipe(program, scope_hash, 0)?;
-    let socket_path = resolve_socket_path(&pipe_name);
+    let socket_path = resolve_socket_path(&pipe_name)?;
     connect_service_at_socket_with_deadline(
         program,
         socket_path,
@@ -698,48 +698,26 @@ fn map_response_frame_validation(error: FrameValidationError) -> ExplicitHelloEr
     })
 }
 
-fn resolve_socket_path(bare_name: &str) -> String {
-    #[cfg(windows)]
-    {
-        format!(r"\\.\pipe\{bare_name}")
-    }
-    #[cfg(unix)]
-    {
-        use std::path::PathBuf;
-        let dir: PathBuf = {
-            #[cfg(target_os = "macos")]
-            {
-                let uid = unsafe { libc::getuid() };
-                let tmp = crate::env_vars::TMPDIR
-                    .path()
-                    .unwrap_or_else(|| PathBuf::from("/tmp"));
-                tmp.join(format!(".rp-{uid}-broker-v2"))
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                if let Some(d) = crate::env_vars::XDG_RUNTIME_DIR.path() {
-                    d.join("running-process").join("broker-v2")
-                } else {
-                    let uid = unsafe { libc::getuid() };
-                    PathBuf::from(format!("/tmp/running-process-{uid}/broker-v2"))
-                }
-            }
-        };
-        let leaf = if cfg!(target_os = "macos") {
-            let mut hash = blake3::Hasher::new();
-            hash.update(bare_name.as_bytes());
-            let bytes = hash.finalize();
-            let mut hex = String::with_capacity(16);
-            for b in bytes.as_bytes().iter().take(8) {
-                use std::fmt::Write as _;
-                let _ = write!(hex, "{b:02x}");
-            }
-            format!("{hex}.sock")
-        } else {
-            format!("{bare_name}.sock")
-        };
-        dir.join(leaf).to_string_lossy().into_owned()
-    }
+/// Resolve the per-user endpoint a bare broker-v2 pipe name lives at.
+///
+/// # Why this is not derived here
+///
+/// It used to be: this function spelled out `XDG_RUNTIME_DIR`, macOS's
+/// `TMPDIR` plus a hashed leaf short enough for `sun_path`, a `getuid()` for
+/// the fallback directory, and the Windows pipe prefix. The server side of
+/// the same endpoint already asked `platform::ipc` for it (see
+/// `singleton_bind::resolve_path_scoped_socket_path`, which is this call with
+/// `path_scoped: true`).
+///
+/// Two independent derivations of one endpoint fail silently when they drift
+/// -- the client simply reports "no broker running" forever -- and they had
+/// already drifted. The copy here read `TMPDIR` and `XDG_RUNTIME_DIR` through
+/// the declared environment table, where an empty value means unset; the
+/// facade reads them with `var_os`, where an empty value is a real value that
+/// joins into a *relative* socket path. A caller with `TMPDIR=""` got one
+/// path from the client and another from the server.
+fn resolve_socket_path(bare_name: &str) -> Result<String, BrokerV2Error> {
+    crate::platform::ipc::broker_endpoint_name(bare_name, false).map_err(BrokerV2Error::Io)
 }
 
 /// Resolve a test endpoint the same way the code under test does.
@@ -952,7 +930,7 @@ mod tests {
         let program = "client-v2-stub";
         let sid = user_sid_hash().expect("user_sid_hash");
         let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
-        let socket_path = resolve_socket_path(&pipe_name);
+        let socket_path = resolve_socket_path(&pipe_name).expect("resolve endpoint");
 
         let ready = spawn_stub_broker(socket_path.clone());
         ready
@@ -987,7 +965,7 @@ mod tests {
         let service_name = "soldr-daemon-root-version-hash";
         let sid = user_sid_hash().expect("user_sid_hash");
         let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
-        let socket_path = resolve_socket_path(&pipe_name);
+        let socket_path = resolve_socket_path(&pipe_name).expect("resolve endpoint");
 
         let (ready_tx, ready_rx) = mpsc::channel();
         let (hello_tx, hello_rx) = mpsc::channel();
@@ -1072,7 +1050,7 @@ mod tests {
         let program = "client-v2-stall-deadline";
         let sid = user_sid_hash().expect("user_sid_hash");
         let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
-        let socket_path = resolve_socket_path(&pipe_name);
+        let socket_path = resolve_socket_path(&pipe_name).expect("resolve endpoint");
         let ready = spawn_stall_broker(socket_path);
         ready
             .recv_timeout(Duration::from_secs(2))
@@ -1174,7 +1152,7 @@ mod tests {
         let program = "client-v2-concurrent-multi";
         let sid = user_sid_hash().expect("user_sid_hash");
         let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
-        let socket_path = resolve_socket_path(&pipe_name);
+        let socket_path = resolve_socket_path(&pipe_name).expect("resolve endpoint");
         const N: usize = 8;
         let ready = spawn_multi_accept_stub_broker(socket_path, N);
         ready
@@ -1236,7 +1214,7 @@ mod tests {
         let program = "client-v2-missing-result";
         let sid = user_sid_hash().expect("user_sid_hash");
         let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
-        let socket_path = resolve_socket_path(&pipe_name);
+        let socket_path = resolve_socket_path(&pipe_name).expect("resolve endpoint");
         let ready = spawn_missing_result_broker(socket_path);
         ready
             .recv_timeout(Duration::from_secs(2))
@@ -1286,7 +1264,7 @@ mod tests {
         let program = "client-v2-prem-disconnect";
         let sid = user_sid_hash().expect("user_sid_hash");
         let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
-        let socket_path = resolve_socket_path(&pipe_name);
+        let socket_path = resolve_socket_path(&pipe_name).expect("resolve endpoint");
         let ready = spawn_drop_on_accept_broker(socket_path);
         ready
             .recv_timeout(Duration::from_secs(2))
@@ -1351,7 +1329,7 @@ mod tests {
         let program = "client-v2-refused-u64-max";
         let sid = user_sid_hash().expect("user_sid_hash");
         let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
-        let socket_path = resolve_socket_path(&pipe_name);
+        let socket_path = resolve_socket_path(&pipe_name).expect("resolve endpoint");
         let ready = spawn_refusing_broker(socket_path, u64::MAX);
         ready
             .recv_timeout(Duration::from_secs(2))
@@ -1387,7 +1365,7 @@ mod tests {
         let program = "client-v2-refused-retry";
         let sid = user_sid_hash().expect("user_sid_hash");
         let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
-        let socket_path = resolve_socket_path(&pipe_name);
+        let socket_path = resolve_socket_path(&pipe_name).expect("resolve endpoint");
         let ready = spawn_refusing_broker(socket_path, 1234);
         ready
             .recv_timeout(Duration::from_secs(2))
@@ -1444,7 +1422,7 @@ mod tests {
         let program = "client-v2-async-nonblocking";
         let sid = user_sid_hash().expect("user_sid_hash");
         let pipe_name = v2_program_pipe(program, &sid, 0).expect("pipe name");
-        let socket_path = resolve_socket_path(&pipe_name);
+        let socket_path = resolve_socket_path(&pipe_name).expect("resolve endpoint");
         let ready = spawn_stall_broker(socket_path);
         ready
             .recv_timeout(Duration::from_secs(2))

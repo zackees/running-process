@@ -294,8 +294,6 @@ crates/running-process/src/broker/backend_handle.rs	attr_cfg	windows	2
 crates/running-process/src/broker/capabilities.rs	cfg_macro	unix	0
 crates/running-process/src/broker/capabilities.rs	cfg_macro	windows	0
 crates/running-process/src/broker/client.rs	cfg_macro	windows	0
-crates/running-process/src/broker/client_v2.rs	attr_cfg	target_os	0
-crates/running-process/src/broker/client_v2.rs	attr_cfg	target_os	1
 crates/running-process/src/broker/client_v2.rs	attr_cfg	unix	0
 crates/running-process/src/broker/client_v2.rs	attr_cfg	unix	1
 crates/running-process/src/broker/client_v2.rs	attr_cfg	unix	2
@@ -305,12 +303,7 @@ crates/running-process/src/broker/client_v2.rs	attr_cfg	unix	5
 crates/running-process/src/broker/client_v2.rs	attr_cfg	unix	6
 crates/running-process/src/broker/client_v2.rs	attr_cfg	unix	7
 crates/running-process/src/broker/client_v2.rs	attr_cfg	unix	8
-crates/running-process/src/broker/client_v2.rs	attr_cfg	unix	9
-crates/running-process/src/broker/client_v2.rs	attr_cfg	windows	0
-crates/running-process/src/broker/client_v2.rs	cfg_macro	target_os	0
 crates/running-process/src/broker/client_v2.rs	cfg_macro	windows	0
-crates/running-process/src/broker/client_v2.rs	native_import	libc	0
-crates/running-process/src/broker/client_v2.rs	native_import	libc	1
 crates/running-process/src/broker/doctor.rs	attr_cfg	unix	0
 crates/running-process/src/broker/doctor.rs	attr_cfg	unix	1
 crates/running-process/src/broker/doctor.rs	attr_cfg	windows	0
