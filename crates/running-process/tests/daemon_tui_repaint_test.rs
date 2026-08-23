@@ -107,6 +107,15 @@ fn drain_attachment(att: &mut PtyAttachment, deadline: Instant) -> Vec<u8> {
         match att.recv_frame_with_timeout(remaining) {
             Ok(Some(frame)) => match frame.frame {
                 Some(StreamOneof::Output(bytes)) => out.extend_from_slice(&bytes),
+                // `MissedBytes` reports that the session ring dropped output
+                // because this attachment fell behind. The daemon marks it
+                // non-final (`encode_outbound`), so the stream continues and
+                // so must this loop: treating it as an end condition threw
+                // away every frame after the first hiccup, which on a loaded
+                // machine is most of them.
+                Some(StreamOneof::MissedBytes(_)) => continue,
+                // `ExitCode` and the error/stolen frames are the ones the
+                // daemon does mark final.
                 Some(_) => break,
                 None => continue,
             },
@@ -218,8 +227,12 @@ async fn raw_ansi_bytes_flow_through_pty_to_ring_buffer() {
             PtyAttachment::attach_to(&socket_for_test, &spawned.session_id, 30, 100, false)
                 .expect("attach");
 
-        // ── Drain for a generous window: testbin runs ~500ms; allow 3s. ─
-        let deadline = Instant::now() + Duration::from_secs(3);
+        // ── Drain until the session exits, bounded by a deadline ───────
+        // The testbin runs ~500ms and the loop stops as soon as the session
+        // reports its exit code, so this bound is only reached when something
+        // is wrong. It is generous because the machines that drop bytes are
+        // the same slow, loaded ones that take longest to produce them.
+        let deadline = Instant::now() + Duration::from_secs(30);
         let bytes = drain_attachment(&mut att, deadline);
         assert!(
             !bytes.is_empty(),
