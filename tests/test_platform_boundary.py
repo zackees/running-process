@@ -6,7 +6,7 @@ from ci import platform_boundary
 def test_bootstrap_ledgers_are_valid() -> None:
     rows = platform_boundary.parse_ledger()
 
-    assert len(rows) == 899
+    assert len(rows) == 783
     assert not platform_boundary.validate_ledger(rows)
     assert not platform_boundary.manifest_dependency_violations()
     assert not platform_boundary.neutral_facade_contract_violations()
@@ -149,3 +149,32 @@ def test_a_zone_resting_on_an_unpublished_crate_checks_that_it_is() -> None:
         assert platform_boundary.PUBLISH_FALSE.search(
             manifest.read_text(encoding="utf-8")
         ), f"{zone.name} claims to be unpublished but its manifest does not say so"
+
+
+def test_a_zone_may_be_narrower_than_a_crate() -> None:
+    """A zone covers what is actually constrained, not the crate around it.
+
+    `probe-crash` is the first zone narrower than a crate: the crash handler
+    is signal-constrained, while `snapshot/modules.rs` and
+    `snapshot/unwind.rs` in the same crate run after every thread has resumed
+    and may allocate freely. Exempting the whole crate to reach the handler
+    would take the ordinary code with it.
+    """
+    narrow = [
+        zone for zone in platform_boundary.ARTIFACT_ZONES if zone.prefix.count("/") > 1
+    ]
+    assert narrow, "no narrower-than-crate zone; this check would be vacuous"
+
+    covered = platform_boundary.ZONE_PREFIXES
+    still_ledgered = {row.path for row in platform_boundary.parse_ledger()}
+    for zone in narrow:
+        crate = "/".join(zone.prefix.split("/")[:2])
+        siblings = {
+            path
+            for path in still_ledgered
+            if path.startswith(crate) and not path.startswith(covered)
+        }
+        assert siblings, (
+            f"{zone.name} is narrower than its crate but nothing else in that "
+            "crate is still in the ledger, so the narrowness buys nothing"
+        )
