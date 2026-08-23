@@ -454,3 +454,66 @@ pub use crate::{
     process_install_owner_death_cleanup as install_owner_death_cleanup,
     process_owner_death_cleanup_target as owner_death_cleanup_target,
 };
+
+/// Why a host could not answer a question about a process.
+///
+/// The three named cases are the ones a caller can act on: a PID that could
+/// never name a process, a process that is not there, and a question this
+/// host does not answer. Everything else is the host's own report, kept
+/// whole rather than flattened into one of the three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessInspectErrorKind {
+    /// The PID is outside the range this host issues.
+    InvalidPid,
+    /// No process on this host currently has that PID.
+    NotFound,
+    /// This host has no such primitive.
+    Unsupported,
+    /// The host was asked and refused, or failed.
+    Host,
+}
+
+/// A failure to inspect or signal a process, and what kind of failure it was.
+#[derive(Debug)]
+pub struct ProcessInspectError {
+    /// Which of the four situations this is.
+    pub kind: ProcessInspectErrorKind,
+    /// What the host reported.
+    pub source: std::io::Error,
+}
+
+impl ProcessInspectError {
+    /// Build an error of `kind` carrying the host's last reported error.
+    pub fn last_os_error(kind: ProcessInspectErrorKind) -> Self {
+        Self {
+            kind,
+            source: std::io::Error::last_os_error(),
+        }
+    }
+
+    /// Build an error of `kind` with a message this crate composed itself.
+    pub fn stated(kind: ProcessInspectErrorKind, message: &str) -> Self {
+        Self {
+            kind,
+            source: std::io::Error::other(message.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for ProcessInspectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.kind, self.source)
+    }
+}
+
+impl std::error::Error for ProcessInspectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+pub use crate::{
+    process_executable_path as executable_path, process_force_kill as force_kill,
+    process_same_executable_path as same_executable_path,
+    process_signal_terminate as signal_terminate, ProcessLiveness,
+};

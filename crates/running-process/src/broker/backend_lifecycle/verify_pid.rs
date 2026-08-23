@@ -1,11 +1,11 @@
 //! Process identity verification for backend handles.
 
-use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::broker::backend_lifecycle::identity::{self, DaemonProcess};
 use crate::broker::host_identity;
+use crate::platform::process::{self, ProcessInspectError, ProcessInspectErrorKind};
 
 /// Verify a daemon process identity and return an OS liveness handle.
 pub fn verify_daemon_process(expected: &DaemonProcess) -> Result<ProcessHandle, VerifyPidError> {
@@ -24,12 +24,13 @@ pub fn verify_daemon_process(expected: &DaemonProcess) -> Result<ProcessHandle, 
         });
     }
 
-    let handle = ProcessHandle::open(expected.pid)?;
-    let exe_path = process_exe_path(expected.pid).map_err(|source| VerifyPidError::ExePath {
-        pid: expected.pid,
-        source,
-    })?;
-    if !same_exe_path(&exe_path, &expected.exe_path) {
+    let handle = open_handle(expected.pid)?;
+    let exe_path =
+        process::executable_path(expected.pid).map_err(|source| VerifyPidError::ExePath {
+            pid: expected.pid,
+            source,
+        })?;
+    if !process::same_executable_path(&exe_path, &expected.exe_path) {
         return Err(VerifyPidError::ExePathMismatch {
             pid: expected.pid,
             expected: expected.exe_path.clone(),
@@ -52,19 +53,17 @@ pub fn verify_daemon_process(expected: &DaemonProcess) -> Result<ProcessHandle, 
 
 /// Return whether a process ID currently resolves to a live process.
 pub fn process_is_alive(pid: u32) -> bool {
-    ProcessHandle::open(pid)
-        .map(|handle| handle.is_alive())
-        .unwrap_or(false)
+    ProcessHandle::open(pid).is_ok_and(|handle| handle.is_alive())
 }
 
 /// Send a graceful terminate signal where the platform has one.
 pub fn signal_terminate(pid: u32) -> Result<(), VerifyPidError> {
-    platform_signal_terminate(pid)
+    process::signal_terminate(pid).map_err(|error| translate(pid, error))
 }
 
 /// Force-kill a process ID.
 pub fn force_kill_pid(pid: u32) -> Result<(), VerifyPidError> {
-    platform_force_kill(pid)
+    process::force_kill(pid).map_err(|error| translate(pid, error))
 }
 
 /// Errors returned while verifying a daemon process.
@@ -136,381 +135,91 @@ pub enum VerifyPidError {
     GracefulTerminateUnsupported,
 }
 
-#[cfg(unix)]
-mod platform {
-    use std::io;
+/// The OS liveness handle this module hands out.
+///
+/// It is the facade's handle: the ownership rules that make it trustworthy --
+/// a pidfd, a kqueue subscription, an open process handle -- belong to the
+/// host that issued it, not to this module's vocabulary.
+pub use crate::platform::process::ProcessLiveness as ProcessHandle;
 
-    #[cfg(target_os = "macos")]
-    use std::ptr;
+fn open_handle(pid: u32) -> Result<ProcessHandle, VerifyPidError> {
+    ProcessHandle::open(pid).map_err(|error| translate(pid, error))
+}
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    #[cfg(target_os = "macos")]
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    use super::VerifyPidError;
-
-    /// Platform liveness handle for a backend process.
-    pub struct ProcessHandle {
-        pid: u32,
-        #[cfg(target_os = "linux")]
-        pid_fd: Option<OwnedFd>,
-        #[cfg(target_os = "macos")]
-        exit_kqueue: OwnedFd,
-        #[cfg(target_os = "macos")]
-        exited: AtomicBool,
-    }
-
-    impl ProcessHandle {
-        pub(crate) fn open(pid: u32) -> Result<Self, VerifyPidError> {
-            validate_pid(pid)?;
-            #[cfg(target_os = "macos")]
-            {
-                Ok(Self {
-                    pid,
-                    exit_kqueue: open_exit_kqueue(pid)?,
-                    exited: AtomicBool::new(false),
-                })
-            }
-
-            #[cfg(target_os = "linux")]
-            {
-                if !process_exists(pid) {
-                    return Err(VerifyPidError::NotFound { pid });
-                }
-                Ok(Self {
-                    pid,
-                    pid_fd: try_pidfd_open(pid)?,
-                })
-            }
-
-            #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
-            {
-                if !process_exists(pid) {
-                    return Err(VerifyPidError::NotFound { pid });
-                }
-                Ok(Self { pid })
-            }
-        }
-
-        /// Process ID associated with this handle.
-        pub fn pid(&self) -> u32 {
-            self.pid
-        }
-
-        /// Return whether the process represented by this handle is alive.
-        pub fn is_alive(&self) -> bool {
-            #[cfg(target_os = "linux")]
-            {
-                if let Some(pid_fd) = self.pid_fd.as_ref() {
-                    return pidfd_is_alive(pid_fd);
-                }
-                process_exists(self.pid)
-            }
-
-            #[cfg(target_os = "macos")]
-            {
-                !self.exited.load(Ordering::Relaxed)
-                    && kqueue_process_is_alive(&self.exit_kqueue, &self.exited)
-            }
-
-            #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
-            {
-                process_exists(self.pid)
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) fn process_exists(pid: u32) -> bool {
-        let Ok(native_pid) = validate_pid(pid) else {
-            return false;
-        };
-        let rc = unsafe { libc::kill(native_pid, 0) };
-        if rc == 0 {
-            return true;
-        }
-        matches!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM))
-    }
-
-    pub(crate) fn platform_signal_terminate(pid: u32) -> Result<(), VerifyPidError> {
-        let native_pid = validate_pid(pid)?;
-        let rc = unsafe { libc::kill(native_pid, libc::SIGTERM) };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(VerifyPidError::Handle {
-                pid,
-                source: io::Error::last_os_error(),
-            })
-        }
-    }
-
-    pub(crate) fn platform_force_kill(pid: u32) -> Result<(), VerifyPidError> {
-        let native_pid = validate_pid(pid)?;
-        let rc = unsafe { libc::kill(native_pid, libc::SIGKILL) };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(VerifyPidError::Handle {
-                pid,
-                source: io::Error::last_os_error(),
-            })
-        }
-    }
-
-    fn validate_pid(pid: u32) -> Result<libc::pid_t, VerifyPidError> {
-        if pid == 0 || pid > libc::pid_t::MAX as u32 {
-            Err(VerifyPidError::InvalidPid(pid))
-        } else {
-            Ok(pid as libc::pid_t)
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    fn open_exit_kqueue(pid: u32) -> Result<OwnedFd, VerifyPidError> {
-        let native_pid = validate_pid(pid)?;
-        let raw_fd = unsafe { libc::kqueue() };
-        if raw_fd < 0 {
-            return Err(VerifyPidError::Handle {
-                pid,
-                source: io::Error::last_os_error(),
-            });
-        }
-
-        let kqueue_fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
-        let change = libc::kevent {
-            ident: native_pid as libc::uintptr_t,
-            filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD | libc::EV_CLEAR,
-            fflags: libc::NOTE_EXIT,
-            data: 0,
-            udata: ptr::null_mut(),
-        };
-        let rc = unsafe {
-            libc::kevent(
-                kqueue_fd.as_raw_fd(),
-                &change,
-                1,
-                ptr::null_mut(),
-                0,
-                ptr::null(),
-            )
-        };
-        if rc == 0 {
-            return Ok(kqueue_fd);
-        }
-
-        let source = io::Error::last_os_error();
-        if matches!(source.raw_os_error(), Some(libc::ESRCH)) {
-            Err(VerifyPidError::NotFound { pid })
-        } else {
-            Err(VerifyPidError::Handle { pid, source })
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    fn kqueue_process_is_alive(kqueue_fd: &OwnedFd, exited: &AtomicBool) -> bool {
-        let mut event = std::mem::MaybeUninit::<libc::kevent>::uninit();
-        let timeout = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        let rc = unsafe {
-            libc::kevent(
-                kqueue_fd.as_raw_fd(),
-                ptr::null(),
-                0,
-                event.as_mut_ptr(),
-                1,
-                &timeout,
-            )
-        };
-        if rc == 0 {
-            return true;
-        }
-
-        exited.store(true, Ordering::Relaxed);
-        false
-    }
-
-    #[cfg(target_os = "linux")]
-    fn try_pidfd_open(pid: u32) -> Result<Option<OwnedFd>, VerifyPidError> {
-        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0_u32) };
-        if raw >= 0 {
-            let fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
-            return Ok(Some(fd));
-        }
-
-        let err = io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(libc::ENOSYS | libc::EINVAL | libc::EPERM) => Ok(None),
-            Some(libc::ESRCH) => Err(VerifyPidError::NotFound { pid }),
-            _ => Ok(None),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn pidfd_is_alive(pid_fd: &OwnedFd) -> bool {
-        let mut poll_fd = libc::pollfd {
-            fd: pid_fd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let rc = unsafe { libc::poll(&mut poll_fd, 1, 0) };
-        rc == 0
+/// Say a host's answer in this module's vocabulary.
+///
+/// The three named kinds each have a variant here that predates the facade
+/// and that callers already match on. `Host` has no such variant because it
+/// is not a classification -- it is the host's own error, and it is carried
+/// through whole rather than being given a name it does not have.
+fn translate(pid: u32, error: ProcessInspectError) -> VerifyPidError {
+    match error.kind {
+        ProcessInspectErrorKind::InvalidPid => VerifyPidError::InvalidPid(pid),
+        ProcessInspectErrorKind::NotFound => VerifyPidError::NotFound { pid },
+        ProcessInspectErrorKind::Unsupported => VerifyPidError::GracefulTerminateUnsupported,
+        ProcessInspectErrorKind::Host => VerifyPidError::Handle {
+            pid,
+            source: error.source,
+        },
     }
 }
 
-#[cfg(windows)]
-mod platform {
-    use std::io;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_TERMINATE,
-    };
-
-    use super::VerifyPidError;
-
-    const STILL_ACTIVE: u32 = 259;
-
-    /// Platform liveness handle for a backend process.
-    pub struct ProcessHandle {
-        pid: u32,
-        handle: HANDLE,
-    }
-
-    impl ProcessHandle {
-        pub(crate) fn open(pid: u32) -> Result<Self, VerifyPidError> {
-            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-            if handle.is_null() {
-                return Err(VerifyPidError::NotFound { pid });
-            }
-            Ok(Self { pid, handle })
-        }
-
-        /// Process ID associated with this handle.
-        pub fn pid(&self) -> u32 {
-            self.pid
-        }
-
-        /// Return whether the process represented by this handle is alive.
-        pub fn is_alive(&self) -> bool {
-            let mut exit_code = 0_u32;
-            let ok = unsafe { GetExitCodeProcess(self.handle, &mut exit_code) };
-            ok != 0 && exit_code == STILL_ACTIVE
-        }
-    }
-
-    impl Drop for ProcessHandle {
-        fn drop(&mut self) {
-            unsafe {
-                CloseHandle(self.handle);
-            }
-        }
-    }
-
-    // SAFETY: Windows HANDLEs are process-scoped integer identifiers.
-    // The kernel does not move them between threads or processes, and
-    // sharing a handle across threads is the normal use pattern
-    // (WaitForMultipleObjects, etc.).
-    unsafe impl Send for ProcessHandle {}
-    unsafe impl Sync for ProcessHandle {}
-
-    pub(crate) fn platform_signal_terminate(_pid: u32) -> Result<(), VerifyPidError> {
-        Err(VerifyPidError::GracefulTerminateUnsupported)
-    }
-
-    pub(crate) fn platform_force_kill(pid: u32) -> Result<(), VerifyPidError> {
-        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-        if handle.is_null() {
-            return Err(VerifyPidError::NotFound { pid });
-        }
-        let ok = unsafe { TerminateProcess(handle, 1) };
-        let source = io::Error::last_os_error();
-        unsafe {
-            CloseHandle(handle);
-        }
-        if ok == 0 {
-            Err(VerifyPidError::Handle { pid, source })
-        } else {
-            Ok(())
-        }
-    }
-}
-
-pub use platform::ProcessHandle;
-use platform::{platform_force_kill, platform_signal_terminate};
-
-fn process_exe_path(pid: u32) -> Result<PathBuf, io::Error> {
-    #[cfg(target_os = "linux")]
-    {
-        std::fs::read_link(format!("/proc/{pid}/exe"))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    /// Every kind a host can report maps onto a variant callers already match.
+    ///
+    /// Walking the facade's own kinds rather than a local restatement of them
+    /// means a new kind stops this compiling until someone decides what this
+    /// module should call it.
+    #[test]
+    fn every_host_kind_has_a_name_here() {
+        let staged = |kind| ProcessInspectError {
+            kind,
+            source: io::Error::from_raw_os_error(1),
         };
-
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-
-        let mut path = vec![0_u16; 32768];
-        let mut len = path.len() as u32;
-        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut len) };
-        let source = io::Error::last_os_error();
-        unsafe {
-            CloseHandle(handle);
-        }
-        if ok == 0 {
-            return Err(source);
-        }
-
-        path.truncate(len as usize);
-        Ok(PathBuf::from(String::from_utf16_lossy(&path)))
+        assert!(matches!(
+            translate(7, staged(ProcessInspectErrorKind::InvalidPid)),
+            VerifyPidError::InvalidPid(7)
+        ));
+        assert!(matches!(
+            translate(7, staged(ProcessInspectErrorKind::NotFound)),
+            VerifyPidError::NotFound { pid: 7 }
+        ));
+        assert!(matches!(
+            translate(7, staged(ProcessInspectErrorKind::Unsupported)),
+            VerifyPidError::GracefulTerminateUnsupported
+        ));
+        assert!(matches!(
+            translate(7, staged(ProcessInspectErrorKind::Host)),
+            VerifyPidError::Handle { pid: 7, .. }
+        ));
     }
 
-    #[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
-    {
-        let mut system = sysinfo::System::new_all();
-        system.refresh_processes();
-        if let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) {
-            if let Some(exe) = process.exe() {
-                return Ok(exe.to_path_buf());
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "process executable path not found",
-        ))
-    }
-}
-
-fn same_exe_path(actual: &Path, expected: &Path) -> bool {
-    let actual = fs::canonicalize(actual).unwrap_or_else(|_| actual.to_path_buf());
-    let expected = fs::canonicalize(expected).unwrap_or_else(|_| expected.to_path_buf());
-
-    #[cfg(windows)]
-    {
-        comparable_windows_path(&actual) == comparable_windows_path(&expected)
+    /// The host's error survives translation.
+    ///
+    /// `Handle` exists so an operator can read what the kernel actually said;
+    /// replacing it with a message composed here would defeat that.
+    #[test]
+    fn a_host_error_is_carried_through_whole() {
+        let error = translate(
+            7,
+            ProcessInspectError {
+                kind: ProcessInspectErrorKind::Host,
+                source: io::Error::from_raw_os_error(13),
+            },
+        );
+        let VerifyPidError::Handle { source, .. } = error else {
+            panic!("expected a handle error");
+        };
+        assert_eq!(source.raw_os_error(), Some(13));
     }
 
-    #[cfg(not(windows))]
-    {
-        actual == expected
+    /// This process is alive; a PID that names nothing is not.
+    #[test]
+    fn liveness_answers_for_this_process() {
+        assert!(process_is_alive(std::process::id()));
+        assert!(!process_is_alive(0));
     }
-}
-
-#[cfg(windows)]
-fn comparable_windows_path(path: &Path) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
-    let path = path.strip_prefix("//?/").unwrap_or(&path);
-    path.to_ascii_lowercase()
 }

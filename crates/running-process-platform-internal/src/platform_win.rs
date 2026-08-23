@@ -19,6 +19,13 @@ pub use autostart::{
     unregister as autostart_unregister,
 };
 
+#[path = "platform_win/process_inspect.rs"]
+pub(crate) mod process_inspect;
+pub use process_inspect::{
+    process_executable_path, process_force_kill, process_same_executable_path,
+    process_signal_terminate, ProcessLiveness,
+};
+
 #[path = "platform_win/process_owner_death.rs"]
 pub(crate) mod process_owner_death;
 pub use process_owner_death::{

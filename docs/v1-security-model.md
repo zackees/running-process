@@ -162,10 +162,23 @@ Every broker unsafe-site count change is security-review relevant. Adding,
 removing, or moving broker `unsafe` usage requires updating the inventory and
 reviewing why the platform API boundary changed.
 
-The `backend_lifecycle/verify_pid.rs` inventory includes the Windows process
-path identity probe. That probe opens the target process with limited query
-rights, calls `QueryFullProcessImageNameW`, and closes the OS handle before the
-stored daemon executable path and SHA-256 are accepted.
+The former `backend_lifecycle/verify_pid.rs` entry was retired by #969. Its
+twenty-one `unsafe` tokens were the three ways a host answers "is that still
+the process I meant" -- a Linux pidfd, a macOS `kqueue`/`EVFILT_PROC`
+subscription, and a Windows process handle -- plus the executable-path probe
+and the signal and terminate calls. All now execute inside the audited
+platform process facade, under the same conditions.
+
+Two properties carried over deliberately, because the check is only worth as
+much as they are. The handle is what pins identity: a PID can be reissued
+between two questions, so each host takes a reference the kernel will not let
+it reuse, and the broker asks that reference rather than the number. And the
+executable comparison stays a comparison of paths as this host spells them --
+case-folded and verbatim-prefix-stripped on Windows, exact elsewhere -- rather
+than becoming an inode or file-index identity, which would newly accept a hard
+link or a bind mount as the same image. The broker still keeps which process
+to verify and what to do when verification fails; the stored executable path
+and its BLAKE3 hash are still both checked before a backend is accepted.
 
 The former `fs_health.rs` entry was retired by #973. Its two `unsafe` sites
 zero-initialized a `libc::statvfs` struct and called `libc::statvfs(3)` on the

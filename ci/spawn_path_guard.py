@@ -17,6 +17,15 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # #969 liveness handles: the only way to observe a *dead* process is to
+    # start one and let it exit, so these three files spawn a fixed shell
+    # command (`/bin/sh -c "exit 0"`, `cmd.exe /C "exit 0"`) inside
+    # `#[cfg(test)]`. Nothing here is reachable from production code: the
+    # non-test surface of each file only inspects and signals processes the
+    # caller already named, and never starts one.
+    Path("crates/running-process-platform-internal/src/platform_linux/process_inspect.rs"),
+    Path("crates/running-process-platform-internal/src/platform_macos/process_inspect.rs"),
+    Path("crates/running-process-platform-internal/src/platform_win/process_inspect.rs"),
     # Phase 0 of #850: this is the sole blessed owner of the asynchronous
     # process primitive. Higher layers may call its typed operations but may
     # not construct a platform command themselves.
@@ -168,6 +177,15 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
+    # #969 liveness handles: the only way to observe a *dead* process is to
+    # start one and let it exit, so these three files spawn a fixed shell
+    # command (`/bin/sh -c "exit 0"`, `cmd.exe /C "exit 0"`) inside
+    # `#[cfg(test)]`. Nothing here is reachable from production code: the
+    # non-test surface of each file only inspects and signals processes the
+    # caller already named, and never starts one.
+    Path("crates/running-process-platform-internal/src/platform_linux/process_inspect.rs"),
+    Path("crates/running-process-platform-internal/src/platform_macos/process_inspect.rs"),
+    Path("crates/running-process-platform-internal/src/platform_win/process_inspect.rs"),
     # Phase 0 of #850: the internal platform crate is the canonical async
     # process boundary; its spawn call is the reviewed blessed operation.
     Path("crates/running-process-platform-internal/src/lib.rs"),
