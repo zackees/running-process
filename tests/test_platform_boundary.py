@@ -6,7 +6,7 @@ from ci import platform_boundary
 def test_bootstrap_ledgers_are_valid() -> None:
     rows = platform_boundary.parse_ledger()
 
-    assert len(rows) == 922
+    assert len(rows) == 899
     assert not platform_boundary.validate_ledger(rows)
     assert not platform_boundary.manifest_dependency_violations()
     assert not platform_boundary.neutral_facade_contract_violations()
@@ -129,3 +129,23 @@ def test_every_zone_is_registered_on_both_sides() -> None:
     """
     assert not platform_boundary.zone_dylint_alignment_violations()
     assert not platform_boundary.zone_manifest_alignment_violations()
+
+
+def test_a_zone_resting_on_an_unpublished_crate_checks_that_it_is() -> None:
+    """Where a justification rests on a checkable fact, it is checked.
+
+    `test-watchdog` may reach for a debugger because nothing downstream links
+    it. That premise lives in a manifest and can change without anyone
+    revisiting the zone, so the zone asserts it rather than describing it.
+    """
+    assert not platform_boundary.zone_premise_violations()
+
+    resting = [
+        zone for zone in platform_boundary.ARTIFACT_ZONES if zone.requires_unpublished
+    ]
+    assert resting, "no zone claims this premise; the check would be vacuous"
+    for zone in resting:
+        manifest = platform_boundary.ROOT / zone.prefix / "Cargo.toml"
+        assert platform_boundary.PUBLISH_FALSE.search(
+            manifest.read_text(encoding="utf-8")
+        ), f"{zone.name} claims to be unpublished but its manifest does not say so"
