@@ -170,7 +170,7 @@ pub fn probe() -> KillModeAssessment {
 
 #[cfg(target_os = "linux")]
 fn gather_inputs_linux() -> SystemdProbeInputs {
-    let invocation_id = std::env::var("INVOCATION_ID").ok();
+    let invocation_id = crate::env_vars::INVOCATION_ID.text();
     let systemd_managed = invocation_id
         .as_deref()
         .map(|id| !id.trim().is_empty())

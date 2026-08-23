@@ -60,12 +60,8 @@ pub fn render_json(instances: &[BrokerInstance]) -> String {
 #[cfg(unix)]
 fn unix_instance_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        dirs.push(
-            PathBuf::from(runtime)
-                .join("running-process")
-                .join("broker"),
-        );
+    if let Some(runtime) = crate::env_vars::XDG_RUNTIME_DIR.path() {
+        dirs.push(runtime.join("running-process").join("broker"));
     }
     dirs.push(std::env::temp_dir());
     dirs

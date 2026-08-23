@@ -352,7 +352,7 @@ mod tests {
         );
         assert_eq!(
             disclosed.disclosed_env.get("PATH"),
-            std::env::var("PATH").ok().as_ref(),
+            crate::env_vars::PATH.text().as_ref(),
             "only the explicitly allowlisted value is copied"
         );
         assert_eq!(disclosed.disclosed_env.len(), 1);

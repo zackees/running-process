@@ -6,7 +6,6 @@
 //! so the env-override surface is visible exactly once in the code path
 //! and the rest of the broker handles only the resolved enum.
 
-use std::env;
 use std::net::{IpAddr, Ipv4Addr};
 
 /// Broker HTTP port mode declared in `BrokerConfig`.
@@ -77,17 +76,17 @@ fn parse_port_env() -> Option<u16> {
 }
 
 fn parse_bind_env() -> Option<IpAddr> {
-    let raw = env::var(BIND_OVERRIDE_ENV).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    trimmed.parse::<IpAddr>().ok()
+    crate::env_vars::BROKER_HTTP_BIND
+        .text()?
+        .trim()
+        .parse::<IpAddr>()
+        .ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
     use std::sync::Mutex;
 
     // The env mutation tests share global state (`std::env`). Serialize

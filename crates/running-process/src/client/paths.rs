@@ -40,7 +40,9 @@ pub fn socket_path_view(scope_hash: Option<&str>) -> String {
     if crate::platform::ipc::endpoint_is_filesystem_backed() {
         return format!("{}/daemon{suffix}.sock", runtime_dir().display());
     }
-    let username = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
+    let username = crate::env_vars::USERNAME
+        .text()
+        .unwrap_or_else(|| "unknown".into());
     format!(r"\\.\pipe\running-process-daemon-{username}{suffix}")
 }
 

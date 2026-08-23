@@ -41,8 +41,8 @@ pub fn runtime_root() -> PathBuf {
 fn app_root() -> PathBuf {
     #[cfg(windows)]
     {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
+        let base = crate::env_vars::LOCALAPPDATA
+            .path()
             .or_else(|| dirs::home_dir().map(|home| home.join("AppData").join("Local")))
             .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
         base.join("running-process")
@@ -58,8 +58,8 @@ fn app_root() -> PathBuf {
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let base = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
+        let base = crate::env_vars::XDG_DATA_HOME
+            .path()
             .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
             .unwrap_or_else(|| PathBuf::from("/tmp"));
         base.join("running-process")

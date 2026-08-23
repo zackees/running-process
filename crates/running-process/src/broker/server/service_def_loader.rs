@@ -94,10 +94,8 @@ pub fn service_definition_dir() -> PathBuf {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
-            PathBuf::from(config_home)
-                .join("running-process")
-                .join("services")
+        if let Some(config_home) = crate::env_vars::XDG_CONFIG_HOME.path() {
+            config_home.join("running-process").join("services")
         } else {
             dirs::home_dir()
                 .unwrap_or_else(std::env::temp_dir)
