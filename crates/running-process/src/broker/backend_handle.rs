@@ -71,9 +71,14 @@ pub struct BackendHandle {
     pub service_version: String,
     /// Verified daemon process identity.
     pub daemon_process: DaemonProcess,
-    #[cfg(unix)]
-    pub(crate) pid_handle: Option<ProcessHandle>,
-    #[cfg(windows)]
+    /// The OS reference proving this backend is the process we verified.
+    ///
+    /// This used to be two fields under two names -- `pid_handle` on Unix,
+    /// `process_handle` on Windows -- holding the same type on both. The
+    /// hosts differ in what the handle *is* (a pidfd, a kqueue subscription,
+    /// an open process handle), and `platform::process` owns that difference;
+    /// nothing about it reaches this struct, which only ever asks whether the
+    /// process is still alive.
     pub(crate) process_handle: Option<ProcessHandle>,
 }
 
@@ -366,37 +371,16 @@ impl BackendHandle {
         daemon_process: DaemonProcess,
         process_handle: ProcessHandle,
     ) -> Self {
-        #[cfg(unix)]
-        {
-            Self {
-                service_name,
-                service_version,
-                daemon_process,
-                pid_handle: Some(process_handle),
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            Self {
-                service_name,
-                service_version,
-                daemon_process,
-                process_handle: Some(process_handle),
-            }
+        Self {
+            service_name,
+            service_version,
+            daemon_process,
+            process_handle: Some(process_handle),
         }
     }
 
     fn platform_handle(&self) -> Option<&ProcessHandle> {
-        #[cfg(unix)]
-        {
-            self.pid_handle.as_ref()
-        }
-
-        #[cfg(windows)]
-        {
-            self.process_handle.as_ref()
-        }
+        self.process_handle.as_ref()
     }
 }
 
@@ -462,19 +446,33 @@ pub enum BackendHandleError {
 /// the name there could unlink the socket of a daemon that is still serving —
 /// turning a failed kill into an unreachable-but-live backend, which is worse
 /// than a stale file.
-#[cfg(unix)]
+///
+/// # Why this asks rather than branches on the host
+///
+/// The question is not "am I on Unix", it is "does this endpoint have a name
+/// in the filesystem". A Windows named pipe has no directory entry -- it
+/// disappears with its last handle -- so there is nothing to unlink, and
+/// `platform::ipc` already answers that for whichever transport the host
+/// uses. Branching on the host restates that answer and can disagree with it.
 fn remove_endpoint_socket(endpoint: &Endpoint) {
-    let _ = std::fs::remove_file(&endpoint.path);
+    if crate::platform::ipc::endpoint_is_filesystem_backed() {
+        let _ = std::fs::remove_file(&endpoint.path);
+    }
 }
 
-/// A Windows named pipe has no directory entry — it disappears with its last
-/// handle — so there is nothing to remove.
-#[cfg(not(unix))]
-fn remove_endpoint_socket(_endpoint: &Endpoint) {}
-
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod endpoint_socket_tests {
     use super::*;
+
+    /// Whether this host names endpoints in the filesystem.
+    ///
+    /// These tests used to be `#[cfg(unix)]`, which said the same thing
+    /// in host terms and so said nothing on a host that changed its
+    /// transport. Asking the facade means the no-unlink case is asserted
+    /// too, rather than the tests simply not existing there.
+    fn endpoints_are_files() -> bool {
+        crate::platform::ipc::endpoint_is_filesystem_backed()
+    }
 
     fn endpoint_at(path: &std::path::Path) -> Endpoint {
         Endpoint {
@@ -496,7 +494,14 @@ mod endpoint_socket_tests {
 
         remove_endpoint_socket(&endpoint_at(&path));
 
-        assert!(!path.exists(), "the endpoint name outlived its daemon");
+        if endpoints_are_files() {
+            assert!(!path.exists(), "the endpoint name outlived its daemon");
+        } else {
+            assert!(
+                path.exists(),
+                "a host whose endpoints are not files must not unlink one",
+            );
+        }
     }
 
     #[test]

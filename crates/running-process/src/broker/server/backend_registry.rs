@@ -231,9 +231,6 @@ mod tests {
             service_name: service_name.into(),
             service_version: version.into(),
             daemon_process: daemon,
-            #[cfg(unix)]
-            pid_handle: None,
-            #[cfg(windows)]
             process_handle: None,
         }
     }
