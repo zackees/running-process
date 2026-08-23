@@ -16,6 +16,18 @@ on:
         required: false
         default: "3600"
 
+# Supersede, do not queue. A second push to a pull request makes the first
+# run's verdict irrelevant, so cancel it rather than paying for both -- the
+# matrix is twelve jobs at up to 90 minutes each, so a superseded round runs no smaller than the queue it was waiting in.
+#
+# Only for `pull_request`. A push to main keeps its own run to completion,
+# because main's per-commit verdict is what release signoff and bisecting
+# read; and a scheduled run is never superseded by anything, since it is in
+# a different group than any pull request.
+concurrency:
+  group: security-fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   cargo-fuzz:
     name: cargo-fuzz (${{ matrix.target }})
@@ -46,8 +58,25 @@ jobs:
       - name: Install nightly toolchain
         run: rustup toolchain install nightly --profile minimal
 
+      # Prebuilt binary, as every other workflow here does. Building
+      # cargo-fuzz from source is a release build of a tool we do not ship,
+      # repeated across all twelve matrix jobs on every run.
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      # The fuzz crate is its own workspace, so its target directory is not
+      # the one the rest of CI caches. Without this each of the twelve jobs
+      # rebuilds every dependency of the fuzz targets from scratch -- on a
+      # pull request that is minutes of build to buy thirty seconds of
+      # fuzzing.
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/running-process/fuzz -> target
+          key: ubuntu-latest-security-fuzz
+          cache-on-failure: true
 
       - name: Restore fuzz corpus
         uses: actions/cache@v4

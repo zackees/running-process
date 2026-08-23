@@ -18,6 +18,18 @@ on:
     - cron: "41 10 * * *"
   workflow_dispatch:
 
+# Supersede, do not queue. A second push to a pull request makes the first
+# run's verdict irrelevant, so cancel it rather than paying for both -- the
+# job is short, but it runs no smaller than the queue it was waiting in.
+#
+# Only for `pull_request`. A push to main keeps its own run to completion,
+# because main's per-commit verdict is what release signoff and bisecting
+# read; and a scheduled run is never superseded by anything, since it is in
+# a different group than any pull request.
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   cargo-audit:
     name: cargo audit
