@@ -215,7 +215,7 @@ fn probe_roundtrip(connection: &mut BackendConnection) -> u8 {
 /// broker socket is not yet bound. Each successful dial performs one full
 /// Hello negotiation against the real serve loop.
 fn connect_with_retry(broker_endpoint: &str, adopt: bool) -> BackendConnection {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + allow_for_instrumentation(Duration::from_secs(30));
     loop {
         let mut request = ConnectBackendRequest::new(
             broker_endpoint,
@@ -224,7 +224,7 @@ fn connect_with_retry(broker_endpoint: &str, adopt: bool) -> BackendConnection {
             SERVICE_VERSION,
         );
         request.adopt_handed_off_connection = adopt;
-        request.handoff_ready_timeout = Duration::from_secs(10);
+        request.handoff_ready_timeout = allow_for_instrumentation(Duration::from_secs(10));
         match connect_to_backend(request) {
             Ok(connection) => return connection,
             Err(err) => {
@@ -280,15 +280,77 @@ fn serving_marker(ready_file: &Path) -> PathBuf {
     PathBuf::from(marker)
 }
 
+/// Stretch a deadline when the build is instrumented for coverage.
+///
+/// Every deadline in this harness was chosen against an ordinary debug build.
+/// Under `-C instrument-coverage` the same work takes several times longer --
+/// every function entry writes a counter, and the server this waits on is
+/// itself instrumented -- so those deadlines stop describing "something is
+/// wrong" and start describing "the machine is busy". That produced a ~10%
+/// failure rate on the Coverage job, on `main` as often as on branches (#1114).
+///
+/// `LLVM_PROFILE_FILE` is how cargo-llvm-cov tells an instrumented binary where
+/// to write its profile, so its presence at *runtime* is the instrumented
+/// build telling us about itself. A compile-time `cfg` would not survive into
+/// the child processes this harness spawns.
+fn allow_for_instrumentation(base: Duration) -> Duration {
+    if std::env::var_os("LLVM_PROFILE_FILE").is_some() {
+        base * 4
+    } else {
+        base
+    }
+}
+
 fn wait_for_file(path: &Path, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
+    let timeout = allow_for_instrumentation(timeout);
+    let started = Instant::now();
+    let deadline = started + timeout;
     while !path.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for readiness marker {path:?}"
-        );
+        if Instant::now() >= deadline {
+            panic!("{}", readiness_failure(path, started.elapsed(), timeout));
+        }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Say what was actually observed when a readiness wait gave up.
+///
+/// A bare "timed out waiting for X" cannot be told apart from a real hang
+/// without re-running the job, which is most of what made #1114 expensive: the
+/// only way to classify a red Coverage run was to check whether `main` had
+/// failed the same way recently. Naming what is on disk distinguishes "the
+/// server never started" from "the server started and is slow" from "it wrote
+/// the file somewhere else" -- at the moment of failure, in the log.
+fn readiness_failure(path: &Path, waited: Duration, timeout: Duration) -> String {
+    let instrumented = std::env::var_os("LLVM_PROFILE_FILE").is_some();
+    let parent = path.parent();
+    let parent_state = match parent {
+        Some(dir) if dir.exists() => match std::fs::read_dir(dir) {
+            Ok(entries) => {
+                let mut names: Vec<String> = entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                if names.is_empty() {
+                    "exists, empty".to_owned()
+                } else {
+                    format!("contains {names:?}")
+                }
+            }
+            Err(error) => format!("exists, unreadable: {error}"),
+        },
+        Some(_) => "does not exist".to_owned(),
+        None => "no parent".to_owned(),
+    };
+    format!(
+        "timed out waiting for readiness marker {path:?} after {waited:.1?}          (limit {timeout:.1?}{}); parent directory {parent_state}",
+        if instrumented {
+            ", instrumented"
+        } else {
+            ", not instrumented"
+        }
+    )
 }
 
 /// Kill-on-drop child wrapper so a panicking benchmark never leaks the
@@ -439,7 +501,7 @@ fn run_reconnect_server(
         answer_probe_once(probe_listener, &endpoint);
         // Rebind with retry while the just-dropped probe listener may
         // still hold the pipe name.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + allow_for_instrumentation(Duration::from_secs(10));
         let listener = loop {
             match bind_socket(&endpoint) {
                 Ok(listener) => break listener,
