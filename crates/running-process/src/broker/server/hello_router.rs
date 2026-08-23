@@ -579,9 +579,6 @@ mod tests {
             service_name: "zccache".into(),
             service_version: "1.11.20".into(),
             daemon_process: daemon,
-            #[cfg(unix)]
-            pid_handle: None,
-            #[cfg(windows)]
             process_handle: None,
         }
     }
