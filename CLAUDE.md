@@ -88,6 +88,19 @@ uv run --no-sync python -m ci guard-jemalloc  # run one guard
 uv run --no-sync python -m ci lint            # what `./lint` wraps
 ```
 
+**Feature-gated tests on Windows and macOS** (#1083). The default suite runs
+with default features, and the only `--all-features` lane is Linux coverage —
+so a test behind `daemon`, `probe`, `client-async` or `telemetry` compiles on
+exactly one platform. `.github/workflows/ci-all-features.yml` closes that gap
+nightly, on `workflow_dispatch`, and on any PR carrying the `all-features`
+label. Reproduce it locally with the same module CI invokes:
+```bash
+uv run --no-sync --module ci.test --all-features --rust-only
+```
+`--rust-only` skips the Python suite, which the preflight lane already ran on
+that OS. The pass excludes `brokered_backend_ui`: its trybuild snapshots record
+exact rustc diagnostics, which differ per host.
+
 **Linting:**
 ```bash
 ./lint                           # Full suite: ruff + black + isort + pyright + KBI checker + spawn-path-guard

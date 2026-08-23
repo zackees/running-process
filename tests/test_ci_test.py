@@ -495,7 +495,7 @@ def test_main_skips_linux_docker_preflight_when_env_requests_it(monkeypatch) -> 
 def test_parse_args_converts_target_and_selector_to_pytest_k_expr(monkeypatch) -> None:
     monkeypatch.delenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", raising=False)
 
-    pytest_args, require_symbols, coverage, live_only = ci_test.parse_args(
+    pytest_args, require_symbols, coverage, live_only, _, _ = ci_test.parse_args(
         ["tests/test_pty_support.py", "timeout_does_not_arm_next_expect"]
     )
 
@@ -510,7 +510,7 @@ def test_parse_args_converts_target_and_selector_to_pytest_k_expr(monkeypatch) -
 
 
 def test_parse_args_preserves_explicit_pytest_flags() -> None:
-    pytest_args, require_symbols, coverage, live_only = ci_test.parse_args(
+    pytest_args, require_symbols, coverage, live_only, _, _ = ci_test.parse_args(
         ["tests/test_pty_support.py", "-k", "timeout_does_not_arm_next_expect", "-ra"]
     )
 
@@ -528,7 +528,7 @@ def test_parse_args_preserves_explicit_pytest_flags() -> None:
 def test_parse_args_tracks_no_skip_without_mutating_env(monkeypatch) -> None:
     monkeypatch.delenv("RUNNING_PROCESS_REQUIRE_NATIVE_DEBUGGER_SYMBOLS", raising=False)
 
-    pytest_args, require_symbols, coverage, live_only = ci_test.parse_args(
+    pytest_args, require_symbols, coverage, live_only, _, _ = ci_test.parse_args(
         ["--no-skip", "tests/test_version.py"]
     )
 
@@ -540,7 +540,7 @@ def test_parse_args_tracks_no_skip_without_mutating_env(monkeypatch) -> None:
 
 
 def test_parse_args_tracks_live_only_flag() -> None:
-    pytest_args, require_symbols, coverage, live_only = ci_test.parse_args(
+    pytest_args, require_symbols, coverage, live_only, _, _ = ci_test.parse_args(
         ["--live-only", "tests/test_pty_support.py"]
     )
 
@@ -878,3 +878,51 @@ def test_main_runs_coverage_when_the_preflight_passes(
     for example_command in ci_test._rust_coverage_example_commands():
         assert example_command in commands
     assert not any("ci.linux_docker" in " ".join(cmd) for cmd in commands)
+
+
+def test_all_features_pass_is_opt_in_and_names_what_it_skips() -> None:
+    """#1083's lane must not turn itself on for ordinary runs.
+
+    Every other lane calls `ci.test` with no flags. If either switch
+    defaulted to on, the every-feature pass would silently become the
+    normal cost of running the suite anywhere.
+    """
+    _, _, _, _, all_features, rust_only = ci_test.parse_args([])
+    assert all_features is False
+    assert rust_only is False
+
+    _, _, _, _, all_features, rust_only = ci_test.parse_args(
+        ["--all-features", "--rust-only"]
+    )
+    assert all_features is True
+    assert rust_only is True
+
+
+def test_all_features_args_exclude_only_the_host_sensitive_ui_binary() -> None:
+    """The one exclusion is deliberate and stays visible.
+
+    `brokered_backend_ui` compares recorded rustc diagnostics, which differ
+    per host; the rest of the workspace is exactly what this pass exists to
+    compile. A second exclusion appearing here silently would narrow the
+    lane's coverage without anyone deciding to.
+    """
+    assert ci_test._rust_all_features_test_args() == [
+        "--all-features",
+        "-E",
+        "not binary(brokered_backend_ui)",
+    ]
+
+
+def test_flags_do_not_leak_into_pytest_arguments() -> None:
+    """Both switches are consumed by `ci.test`, not forwarded.
+
+    `parse_args` passes anything it does not recognise through to pytest,
+    so a mis-parsed switch would reach pytest as an unknown argument and
+    fail the run for a reason unrelated to the tests.
+    """
+    pytest_args, _, _, _, _, _ = ci_test.parse_args(
+        ["--all-features", "--rust-only", "-k", "broker"]
+    )
+    assert "--all-features" not in pytest_args
+    assert "--rust-only" not in pytest_args
+    assert pytest_args[-2:] == ["-k", "broker"]
