@@ -3,7 +3,7 @@
 //! An environment variable is an interface. Other repositories embed this
 //! crate -- soldr vendors it -- and have to reason about what it reads, which
 //! until now meant grepping every call site. [`DECLARED`] is that list, and
-//! [`declaration_table_covers_every_variable`] keeps it honest: a new
+//! `declaration_table_covers_every_variable` keeps it honest: a new
 //! `RUNNING_PROCESS_*` literal anywhere in the crate fails the build unless it
 //! is declared here.
 //!
@@ -33,7 +33,7 @@
 //! parser disagreed -- `BROKER_OWNED_BIND` is documented as on by default but
 //! was first declared with semantics that read unset as off. That is the class
 //! of bug this module exists to end, so
-//! [`an_unset_flag_matches_its_declared_default`] now checks the two against
+//! `an_unset_flag_matches_its_declared_default` now checks the two against
 //! each other for every declared flag.
 
 use std::ffi::OsStr;
@@ -90,7 +90,7 @@ impl EnvVar {
     ///
     /// # Panics
     /// If the variable is not declared as a flag. That is a programming error
-    /// in this crate, caught by [`every_flag_read_matches_its_declared_kind`],
+    /// in this crate, caught by `an_unset_flag_matches_its_declared_default`,
     /// not something a value in the environment can cause.
     pub fn is_set(&self) -> bool {
         match self.kind {
@@ -176,7 +176,7 @@ macro_rules! declare {
         /// Every environment variable this crate reads.
         ///
         /// Kept in the same order as the declarations above, which
-        /// [`declarations_are_sorted_and_unique`] holds to alphabetical so a
+        /// `declarations_are_sorted_and_unique` holds to alphabetical so a
         /// reader can find a name without searching.
         pub const DECLARED: &[EnvVar] = &[$($ident),*];
     };
