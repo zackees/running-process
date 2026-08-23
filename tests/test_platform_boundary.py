@@ -6,7 +6,7 @@ from ci import platform_boundary
 def test_bootstrap_ledgers_are_valid() -> None:
     rows = platform_boundary.parse_ledger()
 
-    assert len(rows) == 1019
+    assert len(rows) == 922
     assert not platform_boundary.validate_ledger(rows)
     assert not platform_boundary.manifest_dependency_violations()
     assert not platform_boundary.neutral_facade_contract_violations()
@@ -91,3 +91,41 @@ def test_a_zone_covering_nothing_is_a_failure() -> None:
         assert any("covers no sources" in failure for failure in failures)
     finally:
         platform_boundary.ARTIFACT_ZONES = original
+
+
+def test_each_zone_rejects_its_neighbours_mechanics() -> None:
+    """One interposer's mechanics are wrong in another's zone.
+
+    This is what a path-based exemption cannot express. The three interposers
+    are the same *kind* of artifact and would look identical to a rule that
+    only asked "is this file exempt?" -- but a Windows import inside the Linux
+    interposer, or `libc` inside the Windows one, is a mistake in exactly the
+    way an out-of-zone reference elsewhere in the tree would be.
+    """
+    zones = {zone.name: zone for zone in platform_boundary.ARTIFACT_ZONES}
+    cases = [
+        ("interposer-linux", '#[cfg(target_os = "windows")] fn p() {}', "target_os"),
+        ("interposer-linux", "fn p() -> windows_sys::X { }", "windows_sys"),
+        ("interposer-macos", '#[cfg(target_os = "linux")] fn p() {}', "target_os"),
+        ("interposer-windows", "fn p() -> libc::c_int { 0 }", "libc"),
+        ("interposer-windows", '#[cfg(target_env = "gnu")] fn p() {}', "target_env"),
+    ]
+    for zone_name, snippet, expected in cases:
+        failures = platform_boundary.zone_text_violations(
+            zones[zone_name], "fixture.rs", snippet
+        )
+        assert any(
+            expected in failure for failure in failures
+        ), f"{zone_name} accepted {expected!r}, which belongs to another host"
+
+
+def test_every_zone_is_registered_on_both_sides() -> None:
+    """A zone the Dylint lint does not know about deletes rows it still reports.
+
+    The two halves are checked against each other rather than trusted to stay
+    in step, because the Dylint lane needs a nightly toolchain and does not run
+    in `./lint` -- so a drift shows up only as a red workspace gate on a branch
+    whose local gates were green.
+    """
+    assert not platform_boundary.zone_dylint_alignment_violations()
+    assert not platform_boundary.zone_manifest_alignment_violations()

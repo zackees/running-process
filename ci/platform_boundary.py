@@ -68,6 +68,49 @@ ARTIFACT_ZONES: tuple[ArtifactZone, ...] = (
         host_values=frozenset({"windows", "gnu", "msvc"}),
         native_imports=frozenset({"windows_sys"}),
     ),
+    ArtifactZone(
+        name="interposer-linux",
+        prefix="crates/running-process-probe-interposer-linux",
+        reason=(
+            "An LD_PRELOAD interposer is defined by the loader it plugs into. "
+            "Its file-API detours resolve through dlsym(RTLD_NEXT, ...), which "
+            "only means anything inside this cdylib; routing them through the "
+            "facade would put the indirection between the detour and the "
+            "function it is replacing."
+        ),
+        # `musl` is permitted because the crate-root guard is
+        # `not(target_env = "musl")`: a statically linked musl process has no
+        # loader namespace to interpose in, so the crate compiles to an inert
+        # rlib there. The value appears in order to be excluded.
+        host_keys=frozenset({"target_os", "target_env"}),
+        host_values=frozenset({"linux", "musl"}),
+        native_imports=frozenset({"libc"}),
+    ),
+    ArtifactZone(
+        name="interposer-macos",
+        prefix="crates/running-process-probe-interposer-macos",
+        reason=(
+            "The DYLD_INSERT_LIBRARIES counterpart of the Linux interposer, "
+            "with the same reason to keep its host selection: the detours are "
+            "the artifact."
+        ),
+        host_keys=frozenset({"target_os"}),
+        host_values=frozenset({"macos"}),
+        native_imports=frozenset({"libc"}),
+    ),
+    ArtifactZone(
+        name="interposer-windows",
+        prefix="crates/running-process-probe-interposer-windows",
+        reason=(
+            "Inline trampolines via retour, which is x86_64-only because "
+            "iced-x86 does not decode ARM64 -- so the architecture guard is "
+            "load-bearing rather than incidental, and is part of what this "
+            "zone permits."
+        ),
+        host_keys=frozenset({"target_os", "target_arch"}),
+        host_values=frozenset({"windows", "x86_64"}),
+        native_imports=frozenset({"windows_sys", "std::os::windows"}),
+    ),
 )
 
 ZONE_PREFIXES = tuple(zone.prefix for zone in ARTIFACT_ZONES)
