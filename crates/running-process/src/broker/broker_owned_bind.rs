@@ -12,11 +12,7 @@ pub const LAUNCHER_OPT_IN_ENV: &str = "RUNNING_PROCESS_BROKER_OWNED_BIND";
 
 /// Whether the launcher should bind the endpoint itself.
 pub fn launcher_opt_in() -> bool {
-    opted_in(std::env::var_os(LAUNCHER_OPT_IN_ENV))
-}
-
-fn opted_in(value: Option<std::ffi::OsString>) -> bool {
-    value.is_none_or(|value| value != "0")
+    crate::env_vars::BROKER_OWNED_BIND.is_set()
 }
 
 /// Whether this platform can hand a bound listener to a spawned daemon.

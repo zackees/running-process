@@ -132,9 +132,7 @@ pub fn is_dev_scope() -> bool {
 
 /// Check if tracking is disabled
 pub fn is_tracking_disabled() -> bool {
-    std::env::var("RUNNING_PROCESS_NO_TRACKING")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    crate::env_vars::NO_TRACKING.is_set()
 }
 
 #[cfg(test)]

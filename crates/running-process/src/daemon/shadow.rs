@@ -75,7 +75,7 @@ const SHADOW_MARKER_ENV: &str = "RUNNING_PROCESS_DAEMON_SHADOWED";
 ///   build).
 pub fn maybe_self_relocate() -> Result<bool, Box<dyn std::error::Error>> {
     // If we are already the shadow copy, nothing to do.
-    if std::env::var(SHADOW_MARKER_ENV).is_ok() {
+    if crate::env_vars::DAEMON_SHADOWED.is_set() {
         return Ok(false);
     }
 

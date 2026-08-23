@@ -184,11 +184,12 @@ pub fn find_declared_daemon_pids() -> std::collections::HashSet<u32> {
 /// consumer setting it by hand is not silently ignored. Anything empty or
 /// explicitly falsey means "not declared" — a stray `…=0` must never exempt a
 /// process from reaping.
+///
+/// This rule is now [`crate::env_vars`]'s, so the same spelling means the same
+/// thing whether it is read from our own environment or scanned out of
+/// another process's block.
 fn is_truthy_marker(value: &str) -> bool {
-    !matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "" | "0" | "false" | "no" | "off"
-    )
+    crate::env_vars::value_is_affirmative_foreign(value)
 }
 
 /// Check whether the parent PID is alive and is plausibly the original parent.

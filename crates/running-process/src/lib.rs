@@ -27,6 +27,8 @@ pub use blocking_island::dispatch_blocking as blocking_island_dispatch;
 pub mod console_detect;
 pub mod containment;
 mod descendant_monitor;
+/// Every environment variable this crate reads, declared in one place (#1101).
+pub mod env_vars;
 pub mod environment;
 mod helpers;
 #[cfg(feature = "async-process")]
