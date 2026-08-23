@@ -132,11 +132,7 @@ pub use daemon::telemetry;
 /// duplicate declaration ever comes back, it stops compiling here rather than
 /// at whichever caller first tried to mix the two.
 #[cfg(all(feature = "telemetry", feature = "daemon"))]
-const _: () = {
-    fn one_module_not_two(handle: crate::telemetry::TeeHandle) -> daemon::telemetry::TeeHandle {
-        handle
-    }
-};
+const _: fn(crate::telemetry::TeeHandle) -> daemon::telemetry::TeeHandle = |handle| handle;
 
 // Wave 5 of #165: daemon runtime absorbed from `running-process-daemon`.
 // Heavy deps (tokio, sqlite, etc.) gated behind `feature = "daemon"`.
