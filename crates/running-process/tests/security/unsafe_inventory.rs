@@ -2,21 +2,13 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[
-    UnsafeInventoryEntry {
-        path: "src/broker/backend_lifecycle/verify_pid.rs",
-        // +2 for unsafe impl Send + unsafe impl Sync on Windows ProcessHandle
-        // (required for HelloResponder: Sync bound in serve_*_concurrently)
-        unsafe_count: 21,
-    },
-    UnsafeInventoryEntry {
-        // Slice 4 of #488 (PR #491): `unsafe { libc::getuid() }` in
-        // `resolve_socket_path` for the unix bind dir. The matching v1 site
-        // in `lifecycle/names.rs` was retired by #971; this one remains.
-        path: "src/broker/client_v2.rs",
-        unsafe_count: 2,
-    },
-];
+const BROKER_UNSAFE_INVENTORY: &[UnsafeInventoryEntry] = &[UnsafeInventoryEntry {
+    // Slice 4 of #488 (PR #491): `unsafe { libc::getuid() }` in
+    // `resolve_socket_path` for the unix bind dir. The matching v1 site
+    // in `lifecycle/names.rs` was retired by #971; this one remains.
+    path: "src/broker/client_v2.rs",
+    unsafe_count: 2,
+}];
 
 #[derive(Clone, Copy, Debug)]
 struct UnsafeInventoryEntry {
