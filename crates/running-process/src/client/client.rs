@@ -831,14 +831,17 @@ pub fn connect_or_start(scope_hash: Option<&str>) -> Result<DaemonClient, Client
     // back-off (50→100→200→400ms) is the standard pattern; total
     // wait caps at 750ms.
     let delays_ms: [u64; 4] = [50, 100, 200, 400];
+    let mut waited = std::time::Duration::ZERO;
     for delay in delays_ms {
-        std::thread::sleep(std::time::Duration::from_millis(delay));
+        let delay = std::time::Duration::from_millis(delay);
+        std::thread::sleep(delay);
+        waited += delay;
         if let Ok(client) = DaemonClient::connect(scope_hash) {
             return Ok(client);
         }
     }
 
-    Err(daemon_unavailable_error(scope_hash))
+    Err(daemon_unavailable_error(scope_hash, waited))
 }
 
 /// Launch a detached shell command through the running-process daemon.
@@ -878,13 +881,22 @@ fn daemon_start_error(executable: &str, source: std::io::Error) -> ClientError {
     ))
 }
 
-fn daemon_unavailable_error(scope_hash: Option<&str>) -> ClientError {
+/// Report an unreachable broker, including how long we actually waited.
+///
+/// The duration is the point of this message. The budget is deliberately
+/// short -- a few hundred milliseconds is generous for a daemon binding a
+/// local socket -- but on a loaded or instrumented machine it can expire
+/// while the daemon is merely slow rather than broken. Without the number
+/// those two cases read identically, and the only way to tell them apart is
+/// to run it again (#1114).
+fn daemon_unavailable_error(scope_hash: Option<&str>, waited: std::time::Duration) -> ClientError {
     let endpoint = paths::socket_path_view(scope_hash);
     ClientError::Io(std::io::Error::new(
         std::io::ErrorKind::NotConnected,
         format!(
-            "running-process broker endpoint `{endpoint}` did not become reachable after \
-             startup; run `running-process-daemon start` or use a non-broker process API"
+            "running-process broker endpoint `{endpoint}` did not become reachable \
+             within {waited:.1?} of startup; run `running-process-daemon start` or \
+             use a non-broker process API"
         ),
     ))
 }
@@ -922,10 +934,19 @@ mod tests {
 
     #[test]
     fn unavailable_broker_errors_name_the_endpoint_and_remedy() {
-        let error = daemon_unavailable_error(Some("test-broker-endpoint"));
+        let error = daemon_unavailable_error(
+            Some("test-broker-endpoint"),
+            std::time::Duration::from_millis(750),
+        );
         let message = error.to_string();
         assert!(message.contains("test-broker-endpoint"));
         assert!(message.contains("running-process-daemon start"));
+        // The elapsed time is what separates "the daemon is broken" from "the
+        // daemon was slower than the budget" without running it a second time.
+        assert!(
+            message.contains("750"),
+            "the message must say how long it waited: {message}"
+        );
     }
 
     #[test]
