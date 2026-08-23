@@ -26,6 +26,10 @@ pub use process_inspect::{
     process_signal_terminate, ProcessLiveness,
 };
 
+#[path = "platform_linux/shutdown_request.rs"]
+pub(crate) mod shutdown_request;
+pub use shutdown_request::install_shutdown_request_handler as process_install_shutdown_request_handler;
+
 #[path = "platform_linux/process_owner_death.rs"]
 pub(crate) mod process_owner_death;
 pub use process_owner_death::{

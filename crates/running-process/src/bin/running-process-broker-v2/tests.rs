@@ -12,6 +12,7 @@
 use super::*;
 use running_process::broker::protocol::read_frame;
 use running_process::broker::protocol_v2::ServiceDefinitionBuilder;
+use std::sync::atomic::AtomicBool;
 use tempfile::tempdir;
 
 fn make_hello(service: &str, wanted: &str) -> Hello {
@@ -36,7 +37,8 @@ fn make_hello(service: &str, wanted: &str) -> Hello {
 
 #[test]
 fn accept_poll_exits_without_accepting_after_shutdown_request() {
-    let shutdown = AtomicBool::new(true);
+    static ALREADY_ASKED: AtomicBool = AtomicBool::new(true);
+    let shutdown = ShutdownRequest::watching(&ALREADY_ASKED);
     let result = poll_accept_until_shutdown(&shutdown, || -> std::io::Result<()> {
         panic!("accept must not run after shutdown")
     })
@@ -44,83 +46,14 @@ fn accept_poll_exits_without_accepting_after_shutdown_request() {
     assert!(result.is_none());
 }
 
-/// Every console event that means "you are going away" must set the flag.
-///
-/// Missing one would leave the broker in the state this change exists to
-/// fix: still polling a flag nothing sets, never draining, never
-/// unbinding.
-#[cfg(windows)]
-#[test]
-fn every_shutdown_console_event_requests_shutdown() {
-    use winapi::um::wincon::{
-        CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
-    };
-
-    for event in [
-        CTRL_C_EVENT,
-        CTRL_BREAK_EVENT,
-        CTRL_CLOSE_EVENT,
-        CTRL_LOGOFF_EVENT,
-        CTRL_SHUTDOWN_EVENT,
-    ] {
-        CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
-        // SAFETY: calling the handler directly; it only stores an atomic.
-        let handled = unsafe { console_ctrl_handler(event) };
-        assert_eq!(
-            handled,
-            winapi::shared::minwindef::TRUE,
-            "event {event} must be claimed, or Windows applies the default \
-             terminate and the drain never runs"
-        );
-        assert!(
-            CONSOLE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed),
-            "event {event} did not request shutdown"
-        );
-    }
-    CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
-}
-
-/// An event we do not recognize must be passed on, not swallowed.
-/// Claiming it would suppress whatever handler comes next for an event
-/// this broker has no opinion about.
-#[cfg(windows)]
-#[test]
-fn an_unrecognized_console_event_is_declined() {
-    CONSOLE_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
-    // SAFETY: as above.
-    let handled = unsafe { console_ctrl_handler(0xDEAD_BEEF) };
-    assert_eq!(handled, winapi::shared::minwindef::FALSE);
-    assert!(
-        !CONSOLE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed),
-        "an unrelated event must not request shutdown"
-    );
-}
-
-/// Registration has to actually succeed — the handler being correct is
-/// worth nothing if Windows never calls it.
-///
-/// This is the boundary of what is verified here: that the handler is
-/// installed and behaves correctly once invoked. That Windows delivers
-/// Ctrl+C to a registered handler is OS-defined behavior and is not
-/// re-tested, because generating a real console event would signal every
-/// process sharing this console, including the test runner.
-#[cfg(windows)]
-#[test]
-fn the_console_handler_installs() {
-    install_shutdown_console_handler().expect("SetConsoleCtrlHandler should accept the handler");
-    assert!(
-        !CONSOLE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed),
-        "installing must start from a clear flag, or the loop would exit at once"
-    );
-}
-
 #[test]
 fn accept_poll_observes_shutdown_while_listener_would_block() {
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let setter = Arc::clone(&shutdown);
+    static ASKED_MID_POLL: AtomicBool = AtomicBool::new(false);
+    ASKED_MID_POLL.store(false, Ordering::Relaxed);
+    let shutdown = ShutdownRequest::watching(&ASKED_MID_POLL);
     let signaler = thread::spawn(move || {
         thread::sleep(ACCEPT_POLL_INTERVAL);
-        setter.store(true, Ordering::Relaxed);
+        ASKED_MID_POLL.store(true, Ordering::Relaxed);
     });
     let start = Instant::now();
     let result = poll_accept_until_shutdown(&shutdown, || -> std::io::Result<()> {
