@@ -69,6 +69,8 @@ pub use platform_imp::{process_install_owner_death_cleanup, process_owner_death_
 
 pub use platform_imp::process_install_shutdown_request_handler;
 
+pub use platform_imp::fs_write_all_to_descriptor;
+
 pub use platform_imp::{
     process_executable_path, process_force_kill, process_same_executable_path,
     process_signal_terminate, ProcessLiveness,

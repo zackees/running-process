@@ -13,6 +13,10 @@ use std::sync::mpsc::{self, Receiver, SendError, SyncSender, TrySendError};
 use std::sync::Mutex;
 use std::thread;
 
+use crate::platform::fs::{write_all_to_descriptor, RawDescriptor};
+
+// The two entry points below take whatever this host's callers actually hold.
+// Everything past the conversion is host-neutral.
 #[cfg(unix)]
 use std::os::fd::RawFd;
 #[cfg(windows)]
@@ -281,15 +285,7 @@ impl TeeRegistry {
     /// Register a caller-owned raw file descriptor sink.
     #[cfg(unix)]
     pub fn add_raw_fd(&self, stream: TeeStream, fd: RawFd, options: TeeRawOptions) -> TeeHandle {
-        let (handle, receiver) = self.add_channel_with_options(
-            stream,
-            options.queue_capacity,
-            TeeOptions {
-                backpressure: options.backpressure,
-            },
-        );
-        thread::spawn(move || raw_fd_worker(fd, receiver, options));
-        handle
+        self.add_raw_descriptor(stream, RawDescriptor::from(fd), options)
     }
 
     /// Register a caller-owned raw Windows handle sink.
@@ -300,16 +296,30 @@ impl TeeRegistry {
         handle: RawHandle,
         options: TeeRawOptions,
     ) -> TeeHandle {
-        let handle_value = handle as usize;
-        let (tee_handle, receiver) = self.add_channel_with_options(
+        self.add_raw_descriptor(stream, RawDescriptor::from(handle), options)
+    }
+
+    /// Register a sink writing to a descriptor the caller owns.
+    ///
+    /// The two entry points above differ only in what the caller happens to
+    /// hold. Everything after the conversion -- the queue, the worker thread,
+    /// and writing whole buffers to something that may accept them in pieces
+    /// -- is the same work, and used to be written twice.
+    fn add_raw_descriptor(
+        &self,
+        stream: TeeStream,
+        descriptor: RawDescriptor,
+        options: TeeRawOptions,
+    ) -> TeeHandle {
+        let (handle, receiver) = self.add_channel_with_options(
             stream,
             options.queue_capacity,
             TeeOptions {
                 backpressure: options.backpressure,
             },
         );
-        thread::spawn(move || raw_handle_worker(handle_value, receiver, options));
-        tee_handle
+        thread::spawn(move || raw_descriptor_worker(descriptor, receiver, options));
+        handle
     }
 
     /// Remove a sink by handle. Returns true when a sink was removed.
@@ -369,13 +379,27 @@ fn missed_marker(n: u64) -> Vec<u8> {
     format!("\n[running-process tee missed {n} bytes]\n").into_bytes()
 }
 
-#[cfg(unix)]
-fn raw_fd_worker(fd: RawFd, receiver: Receiver<TeeEvent>, options: TeeRawOptions) {
+/// Drain queued events onto a caller-owned descriptor until the queue closes.
+///
+/// This was two functions and two write loops, one per host, differing only
+/// in which system call does the writing. `platform::fs` owns that now,
+/// including the part worth not writing twice: both hosts may accept fewer
+/// bytes than offered, and a tee that ignores a short write loses the middle
+/// of a line rather than reporting anything.
+///
+/// A write error ends the worker. The descriptor belongs to the caller, who
+/// may close it whenever they like, and a tee that kept retrying a dead sink
+/// would spin for the life of the session.
+fn raw_descriptor_worker(
+    descriptor: RawDescriptor,
+    receiver: Receiver<TeeEvent>,
+    options: TeeRawOptions,
+) {
     while let Ok(event) = receiver.recv() {
         let result = match event {
-            TeeEvent::Bytes(bytes) => write_all_raw_fd(fd, &bytes),
+            TeeEvent::Bytes(bytes) => write_all_to_descriptor(descriptor, &bytes),
             TeeEvent::MissedBytes(n) if options.write_missed_markers => {
-                write_all_raw_fd(fd, &missed_marker(n))
+                write_all_to_descriptor(descriptor, &missed_marker(n))
             }
             TeeEvent::MissedBytes(_) => Ok(()),
         };
@@ -383,77 +407,6 @@ fn raw_fd_worker(fd: RawFd, receiver: Receiver<TeeEvent>, options: TeeRawOptions
             break;
         }
     }
-}
-
-#[cfg(unix)]
-fn write_all_raw_fd(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
-    while !bytes.is_empty() {
-        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-        if written < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if written == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "raw fd write returned zero",
-            ));
-        }
-        bytes = &bytes[written as usize..];
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn raw_handle_worker(handle: usize, receiver: Receiver<TeeEvent>, options: TeeRawOptions) {
-    while let Ok(event) = receiver.recv() {
-        let result = match event {
-            TeeEvent::Bytes(bytes) => write_all_raw_handle(handle, &bytes),
-            TeeEvent::MissedBytes(n) if options.write_missed_markers => {
-                write_all_raw_handle(handle, &missed_marker(n))
-            }
-            TeeEvent::MissedBytes(_) => Ok(()),
-        };
-        if result.is_err() {
-            break;
-        }
-    }
-}
-
-#[cfg(windows)]
-fn write_all_raw_handle(handle: usize, mut bytes: &[u8]) -> io::Result<()> {
-    use std::ptr;
-    use winapi::shared::minwindef::DWORD;
-    use winapi::um::fileapi::WriteFile;
-    use winapi::um::winnt::HANDLE;
-
-    while !bytes.is_empty() {
-        let len = bytes.len().min(u32::MAX as usize) as DWORD;
-        let mut written: DWORD = 0;
-        let ok = unsafe {
-            WriteFile(
-                handle as HANDLE,
-                bytes.as_ptr().cast(),
-                len,
-                &mut written,
-                ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if written == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "raw handle write returned zero",
-            ));
-        }
-        bytes = &bytes[written as usize..];
-    }
-    Ok(())
 }
 
 struct TeeSink {

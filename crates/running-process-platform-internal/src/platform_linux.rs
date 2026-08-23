@@ -26,6 +26,10 @@ pub use process_inspect::{
     process_signal_terminate, ProcessLiveness,
 };
 
+#[path = "platform_linux/raw_write.rs"]
+pub(crate) mod raw_write;
+pub use raw_write::write_all_to_descriptor as fs_write_all_to_descriptor;
+
 #[path = "platform_linux/shutdown_request.rs"]
 pub(crate) mod shutdown_request;
 pub use shutdown_request::install_shutdown_request_handler as process_install_shutdown_request_handler;

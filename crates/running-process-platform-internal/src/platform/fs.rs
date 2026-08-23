@@ -6,6 +6,35 @@
 //! here. Callers still own their own layout beneath it: leaf names, extensions,
 //! and subdirectories are product conventions, not host mechanics.
 
+/// A descriptor the caller already owns and has asked us to write to.
+///
+/// Deliberately opaque. Callers hold host-specific things -- a `RawFd` on
+/// Unix, a `RawHandle` on Windows -- and there is no honest neutral spelling
+/// for *what they hold*, so the conversion into this type is host-specific
+/// and stays at the caller's edge. What is not host-specific is everything
+/// after: writing all of a buffer to it, retrying the partial writes and the
+/// interruptions that every host has in its own dialect.
+///
+/// This borrows. It does not close the descriptor, and it does not extend its
+/// lifetime: the caller who opened it still decides when it goes away, and
+/// using this after that is the same mistake as using the raw value would be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawDescriptor(usize);
+
+impl RawDescriptor {
+    /// Wrap a host descriptor value. Host trees call this; callers do not.
+    pub(crate) fn from_value(value: usize) -> Self {
+        Self(value)
+    }
+
+    /// The underlying host value, for the host tree that will use it.
+    pub(crate) fn value(self) -> usize {
+        self.0
+    }
+}
+
+pub use crate::fs_write_all_to_descriptor as write_all_to_descriptor;
+
 #[cfg(feature = "fs")]
 pub use crate::{
     fs_create_private_file as create_private_file, fs_decode_path_bytes as decode_path_bytes,
