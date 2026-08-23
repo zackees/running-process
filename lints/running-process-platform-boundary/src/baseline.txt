@@ -364,15 +364,10 @@ crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	1
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	2
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	3
-crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	4
-crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	5
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	windows	0
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	windows	1
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	windows	2
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	windows	3
-crates/running-process/src/daemon/telemetry.rs	attr_cfg	windows	4
-crates/running-process/src/daemon/telemetry.rs	attr_cfg	windows	5
-crates/running-process/src/daemon/telemetry.rs	native_import	libc	0
 crates/running-process/src/daemon/telemetry.rs	native_import	std::os::windows	0
 crates/running-process/src/daemon/telemetry.rs	native_import	std::os::windows	1
 crates/running-process/src/environment.rs	attr_cfg	windows	0
