@@ -254,6 +254,18 @@ macro_rules! declare {
 }
 
 declare! {
+    GITHUB_ACTIONS => "GITHUB_ACTIONS",
+        EnvKind::ForeignFlag, Owner::Foreign, "not running under GitHub Actions",
+        "Set by GitHub Actions; tests wait longer for a shared runner.";
+    INVOCATION_ID => "INVOCATION_ID",
+        EnvKind::Text, Owner::Foreign, "not started by systemd",
+        "Set by systemd for a unit invocation; identifies the launching unit.";
+    LOCALAPPDATA => "LOCALAPPDATA",
+        EnvKind::Path, Owner::Foreign, "the platform default is derived",
+        "Windows per-user application data root.";
+    PATH => "PATH",
+        EnvKind::Text, Owner::Foreign, "the child inherits no explicit PATH",
+        "Executable search path, forwarded to the symbolization worker.";
     BROKER_ALLOW_PRIVILEGED => "RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED",
         EnvKind::ExactValue("1"), Owner::Crate, "privileged startup is refused",
         "Opt out of the broker's refusal to start as root or LocalSystem.";
@@ -350,6 +362,21 @@ declare! {
     SERVICE_DEF_DIR => "RUNNING_PROCESS_SERVICE_DEF_DIR",
         EnvKind::Path, Owner::Foreign, "the standard service-definition location",
         "Where service definitions are read from.";
+    TMPDIR => "TMPDIR",
+        EnvKind::Path, Owner::Foreign, "the platform temporary directory",
+        "macOS per-session temporary directory; a broker endpoint root.";
+    USERNAME => "USERNAME",
+        EnvKind::Text, Owner::Foreign, "the endpoint is named `unknown`",
+        "Windows account name, mixed into the daemon pipe name.";
+    XDG_CONFIG_HOME => "XDG_CONFIG_HOME",
+        EnvKind::Path, Owner::Foreign, "`~/.config` is used",
+        "XDG per-user configuration root; where service definitions are read.";
+    XDG_DATA_HOME => "XDG_DATA_HOME",
+        EnvKind::Path, Owner::Foreign, "the platform default is derived",
+        "XDG per-user data root, used by the daemon runtime collector.";
+    XDG_RUNTIME_DIR => "XDG_RUNTIME_DIR",
+        EnvKind::Path, Owner::Foreign, "a per-user directory under /tmp",
+        "XDG per-user runtime root; where broker sockets are placed.";
 }
 
 #[cfg(test)]

@@ -152,21 +152,35 @@ fn declarations_are_documented() {
             var.name
         );
         assert!(!var.summary.is_empty(), "{} has no summary", var.name);
-        assert!(
-            var.name.starts_with("RUNNING_PROCESS_"),
-            "{} is not one of ours",
-            var.name
-        );
+        match var.owner {
+            Owner::Crate => assert!(
+                var.name.starts_with("RUNNING_PROCESS_"),
+                "{} is declared as ours but is not namespaced",
+                var.name
+            ),
+            // Foreign variables are named by whoever defines them -- XDG,
+            // systemd, Windows -- so there is no prefix to check. What matters
+            // is that they are listed at all: an embedder scrubbing the
+            // environment needs to know we read them.
+            Owner::Foreign => assert!(!var.name.is_empty()),
+        }
     }
 }
 
-/// The check that keeps the inventory true: every `RUNNING_PROCESS_*` literal
-/// in the crate's sources is declared here.
+/// The check that keeps the inventory true: every environment variable this
+/// crate reads by name is declared here.
+///
+/// Scanning for `env::var("...")` rather than for our own prefix is what makes
+/// the table answer the question an embedder actually asks. soldr vendors this
+/// crate and scrubs route-selecting variables from the environments it builds;
+/// it needs to know we read `XDG_RUNTIME_DIR` and `TMPDIR`, not only that we
+/// read our own switches. Dropping `XDG_RUNTIME_DIR` is precisely what
+/// stranded every request in zackees/soldr#2442.
 ///
 /// Without this, the table is a snapshot that silently rots the first time
-/// someone adds a variable -- which is the state this module was written to
-/// end. It reads the sources rather than the built binary because a string
-/// literal is what a future author will write.
+/// someone adds a variable -- the state this module was written to end. It
+/// reads the sources rather than the built binary because a string literal is
+/// what a future author will write.
 #[test]
 fn declaration_table_covers_every_variable() {
     let declared: std::collections::BTreeSet<&str> = DECLARED.iter().map(|var| var.name).collect();
@@ -203,27 +217,30 @@ const NOT_ENVIRONMENT_READS: &[&str] = &[
 
 const PREFIX: &str = "RUNNING_PROCESS_";
 
+/// The call shapes that read a variable by name.
+const READS: &[&str] = &["env::var(\"", "env::var_os(\""];
+
 fn literal_env_names(text: &str) -> Vec<String> {
     let mut found = Vec::new();
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    let opening = format!("\"{PREFIX}");
-    while let Some(start) = text[index..].find(&opening) {
-        let open = index + start + 1;
-        let Some(len) = bytes[open..].iter().position(|byte| *byte == b'"') else {
-            break;
-        };
-        let name = &text[open..open + len];
-        // The bare prefix appears in `starts_with` assertions and in string
-        // building; it names no variable, so it is not one to declare.
-        let is_a_name = name.len() > PREFIX.len()
-            && name
-                .chars()
-                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_');
-        if is_a_name && !NOT_ENVIRONMENT_READS.contains(&name) {
-            found.push(name.to_owned());
+    for read in READS {
+        let mut index = 0;
+        while let Some(start) = text[index..].find(read) {
+            let open = index + start + read.len();
+            let Some(len) = text[open..].find('"') else {
+                break;
+            };
+            let name = &text[open..open + len];
+            // A name, not an expression or a bare prefix used to build one.
+            let is_a_name = !name.is_empty()
+                && name != PREFIX
+                && name
+                    .chars()
+                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_');
+            if is_a_name && !NOT_ENVIRONMENT_READS.contains(&name) {
+                found.push(name.to_owned());
+            }
+            index = open + len;
         }
-        index = open + len;
     }
     found
 }
@@ -293,7 +310,8 @@ fn describes_an_enabled_default(default: &str) -> bool {
         | "processes are tracked"
         | "the guard does not run"
         | "the process is not a daemon"
-        | "a dev-build daemon relocates itself" => false,
+        | "a dev-build daemon relocates itself"
+        | "not running under GitHub Actions" => false,
         other => panic!(
             "default {other:?} is not a phrasing this check recognises; \
              add it rather than letting the assertion pass vacuously"
