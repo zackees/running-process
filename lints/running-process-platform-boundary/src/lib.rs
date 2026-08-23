@@ -93,7 +93,12 @@ const CONCRETE_MODULES: &[&str] = &["platform_win", "platform_linux", "platform_
 /// what each of these may actually reference. A path here only says "this is
 /// not ordinary production code"; it does not say "anything goes", and the
 /// contract on the Python side is what makes that true.
-const SPECIALIZED_ARTIFACT_PREFIXES: &[&str] = &["crates/running-process-win-gnu-bridge/"];
+const SPECIALIZED_ARTIFACT_PREFIXES: &[&str] = &[
+    "crates/running-process-win-gnu-bridge/",
+    "crates/running-process-probe-interposer-linux/",
+    "crates/running-process-probe-interposer-macos/",
+    "crates/running-process-probe-interposer-windows/",
+];
 
 /// The transitional exact-occurrence baseline. Format per row:
 /// `path<TAB>kind<TAB>normalized<TAB>ordinal`.
