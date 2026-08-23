@@ -389,17 +389,8 @@ fn read_handoff_ready(stream: &mut ipc::Stream, expected_token: &[u8]) -> Result
 /// caller forever (issue #590, cluster H). Override with
 /// `RUNNING_PROCESS_BROKER_CLIENT_TIMEOUT_MS` (milliseconds).
 const DEFAULT_BROKER_CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
-const BROKER_CLIENT_TIMEOUT_ENV: &str = "RUNNING_PROCESS_BROKER_CLIENT_TIMEOUT_MS";
-
-fn parse_broker_client_timeout(raw: Option<&str>) -> Duration {
-    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|&ms| ms > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_BROKER_CLIENT_TIMEOUT)
-}
-
 pub(crate) fn broker_client_deadline() -> Duration {
-    parse_broker_client_timeout(std::env::var(BROKER_CLIENT_TIMEOUT_ENV).ok().as_deref())
+    crate::env_vars::BROKER_CLIENT_TIMEOUT_MS.millis_or(DEFAULT_BROKER_CLIENT_TIMEOUT)
 }
 
 fn broker_client_timeout_err() -> BrokerClientError {
@@ -663,26 +654,40 @@ mod cluster_h_tests {
     use super::*;
     use std::time::Instant;
 
+    /// The rule these assert now lives on the declaration
+    /// (`env_vars::BROKER_CLIENT_TIMEOUT_MS`), so they exercise the real read
+    /// rather than a private copy of the parsing -- which is what would have
+    /// let this timeout drift away from its neighbours in the first place.
+    fn with_timeout_env<T>(value: Option<&str>, body: impl FnOnce() -> T) -> T {
+        let name = crate::env_vars::BROKER_CLIENT_TIMEOUT_MS.name;
+        let previous = std::env::var_os(name);
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+        let outcome = body();
+        match previous {
+            Some(previous) => std::env::set_var(name, previous),
+            None => std::env::remove_var(name),
+        }
+        outcome
+    }
+
     #[test]
     fn broker_client_timeout_defaults_when_unset_or_invalid() {
-        assert_eq!(
-            parse_broker_client_timeout(None),
-            DEFAULT_BROKER_CLIENT_TIMEOUT
-        );
-        assert_eq!(
-            parse_broker_client_timeout(Some("nope")),
-            DEFAULT_BROKER_CLIENT_TIMEOUT
-        );
-        assert_eq!(
-            parse_broker_client_timeout(Some("0")),
-            DEFAULT_BROKER_CLIENT_TIMEOUT
-        );
+        for value in [None, Some("nope"), Some("0")] {
+            assert_eq!(
+                with_timeout_env(value, broker_client_deadline),
+                DEFAULT_BROKER_CLIENT_TIMEOUT,
+                "{value:?} must leave the default in place"
+            );
+        }
     }
 
     #[test]
     fn broker_client_timeout_honors_valid_override() {
         assert_eq!(
-            parse_broker_client_timeout(Some("750")),
+            with_timeout_env(Some("750"), broker_client_deadline),
             Duration::from_millis(750)
         );
     }

@@ -10,7 +10,7 @@ use running_process::broker::server::admin::{
     AdminSnapshot,
 };
 use running_process::broker::server::service_def_loader::{
-    service_definition_dir, write_service_definition, SERVICE_DEF_DIR_ENV,
+    service_definition_dir, write_service_definition,
 };
 use running_process::broker::server::{
     serve_launching_backends, serve_one_local_socket, serve_registered_backend,
@@ -348,7 +348,7 @@ fn run_servicedef_install(args: &[String]) -> ! {
 /// Match the `paths.service_definition_dir` source label reported by
 /// `config --effective --json`.
 fn default_service_definition_dir_source() -> &'static str {
-    if std::env::var_os(SERVICE_DEF_DIR_ENV).is_some() {
+    if running_process::env_vars::SERVICE_DEF_DIR.path().is_some() {
         "env:RUNNING_PROCESS_SERVICE_DEF_DIR"
     } else {
         "platform-default"

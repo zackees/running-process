@@ -80,10 +80,10 @@ pub fn install(component: &str) -> Result<(), CrashDumpError> {
 }
 
 fn default_crash_dump_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os(CRASH_DUMP_DIR_ENV) {
-        if !path.as_os_str().is_empty() {
-            return PathBuf::from(path);
-        }
+    // `.path()` already declines an empty value, so the emptiness check that
+    // used to guard this is now part of reading the variable at all.
+    if let Some(path) = crate::env_vars::BROKER_CRASH_DUMP_DIR.path() {
+        return path;
     }
     std::env::temp_dir()
         .join("running-process")

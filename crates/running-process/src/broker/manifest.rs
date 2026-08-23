@@ -181,8 +181,8 @@ pub fn scan_central(registry_dir: &Path) -> Vec<ManifestScanEntry> {
 /// `RUNNING_PROCESS_MANIFEST_DIR` is honored as a test/development
 /// override. Production callers should leave it unset.
 pub fn central_registry_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os(RUNNING_PROCESS_MANIFEST_DIR_ENV) {
-        return PathBuf::from(path);
+    if let Some(path) = crate::env_vars::MANIFEST_DIR.path() {
+        return path;
     }
 
     crate::platform::fs::user_data_dir(PRODUCT).join("manifests")
