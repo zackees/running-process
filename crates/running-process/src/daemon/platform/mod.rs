@@ -1,8 +1,3 @@
-#[cfg(unix)]
-pub mod unix;
-#[cfg(windows)]
-pub mod windows;
-
 use std::path::Path;
 
 /// Write the current process ID to the given PID file, creating parent
