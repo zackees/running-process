@@ -619,3 +619,59 @@ fn unique_socket_name() -> String {
 fn unique_backend_endpoint() -> String {
     crate::socket_common::unique_socket_name("backend-endpoint")
 }
+
+/// The startup probe deadline defaults to the library's budget (#1114).
+///
+/// Every existing caller builds this config without mentioning a probe
+/// timeout, and must keep getting the default. A `Some` here would mean the
+/// serve path had quietly acquired an opinion about how slow a healthy
+/// backend may be.
+#[test]
+fn a_serve_config_has_no_probe_deadline_of_its_own_until_asked() {
+    let tmp = write_service_definition_dir();
+    let service_root = tmp.path().join("services");
+    let backend_endpoint = unique_backend_endpoint();
+
+    let bounded = serve_config(
+        &service_root,
+        "unused-probe-default-socket",
+        backend_endpoint.clone(),
+        1,
+    );
+    let unbounded = BrokerServeConfig::unbounded(
+        "unused-probe-default-unbounded-socket",
+        "zccache",
+        "1.11.20",
+        backend_endpoint,
+    );
+
+    assert_eq!(bounded.endpoint_probe_timeout, None);
+    assert_eq!(unbounded.endpoint_probe_timeout, None);
+}
+
+/// Asking for a deadline records exactly what was asked for.
+///
+/// The point of #1114's fix is that a caller who knows its backend is slow
+/// for a reason unrelated to health can say so, without the default moving
+/// for anyone else. That only holds if the value survives unmodified.
+#[test]
+fn a_requested_probe_deadline_is_the_one_recorded() {
+    let tmp = write_service_definition_dir();
+    let service_root = tmp.path().join("services");
+
+    let requested = std::time::Duration::from_millis(2_000);
+    let config = serve_config(
+        &service_root,
+        "unused-probe-set-socket",
+        unique_backend_endpoint(),
+        1,
+    )
+    .with_endpoint_probe_timeout(requested);
+
+    assert_eq!(config.endpoint_probe_timeout, Some(requested));
+    assert_ne!(
+        requested,
+        running_process::broker::backend_lifecycle::probe::DEFAULT_ENDPOINT_PROBE_TIMEOUT,
+        "the test would prove nothing if it asked for the default",
+    );
+}

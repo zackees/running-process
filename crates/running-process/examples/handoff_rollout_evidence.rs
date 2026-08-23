@@ -63,7 +63,9 @@ use interprocess::local_socket::ListenerOptions;
 use prost::Message;
 use running_process::broker::backend_handle::DaemonProcess;
 use running_process::broker::backend_lib::wire::{read_handoff_offer, respond_to_handoff_offer};
-use running_process::broker::backend_lifecycle::probe::handle_endpoint_probe;
+use running_process::broker::backend_lifecycle::probe::{
+    handle_endpoint_probe, DEFAULT_ENDPOINT_PROBE_TIMEOUT,
+};
 use running_process::broker::client::{
     connect_to_backend, BackendConnection, BackendConnectionRoute, ConnectBackendRequest,
 };
@@ -479,6 +481,14 @@ fn serve_config(broker_socket: &str, backend_endpoint: &str, services: &Path) ->
     )
     .expect("serve config")
     .with_service_definition_dir(services)
+    // #1114: the serve loop probes its own backend endpoint before it can
+    // report ready, and 500 ms is a budget for an uninstrumented backend.
+    // Under coverage every function entry writes a counter, the probe times
+    // out, and the server dies before writing its ready file -- which the
+    // driver reports 60 s later, in a different process, as a readiness
+    // timeout. Scaled here rather than raised in the library, so a genuinely
+    // dead backend is still detected in 500 ms for every other caller.
+    .with_endpoint_probe_timeout(allow_for_instrumentation(DEFAULT_ENDPOINT_PROBE_TIMEOUT))
 }
 
 /// Handoff-mode server: answer the startup endpoint probe, run the

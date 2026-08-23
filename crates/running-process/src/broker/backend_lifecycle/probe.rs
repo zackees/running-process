@@ -32,12 +32,30 @@ pub fn probe_endpoint(
     endpoint: &Endpoint,
     expected: &DaemonProcess,
 ) -> Result<ProcessHandle, ProbeError> {
+    probe_endpoint_with_timeout(endpoint, expected, DEFAULT_ENDPOINT_PROBE_TIMEOUT)
+}
+
+/// [`probe_endpoint`] with a caller-chosen deadline for the response proof.
+///
+/// The default is a budget for a backend answering an identity probe, and it
+/// is the right budget for one running normally. A caller that knows its
+/// backend is running slower than normal for a reason unrelated to health --
+/// coverage instrumentation being the case this exists for (#1114) -- can say
+/// so here instead of the default being raised for everyone.
+///
+/// Only the response proof is bounded by `timeout`. The endpoint comparison
+/// and the process identity checks do no waiting.
+pub fn probe_endpoint_with_timeout(
+    endpoint: &Endpoint,
+    expected: &DaemonProcess,
+    timeout: Duration,
+) -> Result<ProcessHandle, ProbeError> {
     if !same_endpoint(endpoint, &expected.ipc_endpoint) {
         return Err(ProbeError::EndpointMismatch);
     }
     let process_handle =
         verify_pid::verify_daemon_process(expected).map_err(ProbeError::VerifyPid)?;
-    probe_endpoint_response(endpoint, expected)?;
+    probe_endpoint_response_with_timeout(endpoint, expected, timeout)?;
     Ok(process_handle)
 }
 

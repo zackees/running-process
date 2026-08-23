@@ -9,7 +9,7 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::broker::backend_handle::{BackendHandle, BackendHandleError, DaemonProcess};
 use crate::broker::backend_lifecycle::identity::IdentityError;
@@ -55,6 +55,15 @@ pub struct BrokerServeConfig {
     /// negotiated clients always reconnect through `backend_endpoint`. This
     /// matches the opt-in Phase 6 gate in `docs/v1-rollout-policy.md`.
     pub handoff_endpoint: Option<String>,
+    /// Optional deadline for the startup identity probe this serve run
+    /// performs against its own backend endpoint.
+    ///
+    /// `None` (the default) uses
+    /// [`probe::DEFAULT_ENDPOINT_PROBE_TIMEOUT`](crate::broker::backend_lifecycle::probe::DEFAULT_ENDPOINT_PROBE_TIMEOUT),
+    /// which is the right budget for a backend running at normal speed. Set it
+    /// when the backend is known to be slower for a reason unrelated to health
+    /// -- coverage instrumentation is the case this exists for (#1114).
+    pub endpoint_probe_timeout: Option<Duration>,
 }
 
 /// Configuration for serve mode that launches backends on Hello miss.
@@ -88,6 +97,7 @@ impl BrokerServeConfig {
                     .ok_or(BrokerServeError::InvalidMaxConnections)?,
             ),
             handoff_endpoint: None,
+            endpoint_probe_timeout: None,
         })
     }
 
@@ -107,6 +117,7 @@ impl BrokerServeConfig {
             service_definition_dir: service_definition_dir(),
             max_connections: None,
             handoff_endpoint: None,
+            endpoint_probe_timeout: None,
         }
     }
 
@@ -120,6 +131,14 @@ impl BrokerServeConfig {
     /// backend handoff endpoint the broker dials after negotiation (#387).
     pub fn with_handoff_endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.handoff_endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Set the startup identity-probe deadline for this serve run.
+    ///
+    /// See [`Self::endpoint_probe_timeout`].
+    pub fn with_endpoint_probe_timeout(mut self, timeout: Duration) -> Self {
+        self.endpoint_probe_timeout = Some(timeout);
         self
     }
 
@@ -309,11 +328,14 @@ fn build_registered_backend(
         path: config.backend_endpoint.clone(),
     };
     let daemon = DaemonProcess::current_process(endpoint.clone(), Some(30))?;
-    let handle = BackendHandle::probe_with_service(
+    let handle = BackendHandle::probe_with_service_and_timeout(
         config.service_name.clone(),
         config.service_version.clone(),
         &endpoint,
         &daemon,
+        config
+            .endpoint_probe_timeout
+            .unwrap_or(crate::broker::backend_lifecycle::probe::DEFAULT_ENDPOINT_PROBE_TIMEOUT),
     )?;
 
     let mut registry = BackendRegistry::new();

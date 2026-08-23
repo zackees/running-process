@@ -152,7 +152,31 @@ impl BackendHandle {
         endpoint: &Endpoint,
         expected: &DaemonProcess,
     ) -> Result<Self> {
-        let process_handle = probe::probe_endpoint(endpoint, expected)?;
+        Self::probe_with_service_and_timeout(
+            service_name,
+            service_version,
+            endpoint,
+            expected,
+            probe::DEFAULT_ENDPOINT_PROBE_TIMEOUT,
+        )
+    }
+
+    /// [`Self::probe_with_service`] with a caller-chosen probe deadline.
+    ///
+    /// The default budget assumes a backend running at normal speed. A caller
+    /// that knows its backend is slower for a reason unrelated to health --
+    /// coverage instrumentation (#1114) -- asks for more here rather than the
+    /// default being raised for every consumer.
+    ///
+    /// **BLOCKING.** Performs synchronous IPC up to `timeout`.
+    pub fn probe_with_service_and_timeout(
+        service_name: impl Into<String>,
+        service_version: impl Into<String>,
+        endpoint: &Endpoint,
+        expected: &DaemonProcess,
+        timeout: std::time::Duration,
+    ) -> Result<Self> {
+        let process_handle = probe::probe_endpoint_with_timeout(endpoint, expected, timeout)?;
         Ok(Self::from_verified(
             service_name.into(),
             service_version.into(),
