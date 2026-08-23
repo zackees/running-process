@@ -99,6 +99,7 @@ const SPECIALIZED_ARTIFACT_PREFIXES: &[&str] = &[
     "crates/running-process-probe-interposer-macos/",
     "crates/running-process-probe-interposer-windows/",
     "crates/test-watchdog/",
+    "crates/running-process-probe/src/crash/",
 ];
 
 /// The transitional exact-occurrence baseline. Format per row:

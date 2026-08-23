@@ -135,6 +135,27 @@ ARTIFACT_ZONES: tuple[ArtifactZone, ...] = (
         native_imports=frozenset({"libc"}),
         requires_unpublished=True,
     ),
+    ArtifactZone(
+        name="probe-crash",
+        prefix="crates/running-process-probe/src/crash",
+        reason=(
+            "The crash handler runs inside a signal handler, where the list of "
+            "things that are legal is short and does not include a call "
+            "through a facade: no allocation, no locks, no reentrant "
+            "bookkeeping. The register layout it reads is per-architecture and "
+            "the spool record it writes is a fixed layout shared byte-for-byte "
+            "with the daemon, so the host selection here is the contract "
+            "rather than an implementation detail of one."
+        ),
+        # aarch64/x86_64 because the captured register set differs; android
+        # alongside linux because bionic and glibc diverge on the handler
+        # entry. Both are load-bearing, not incidental breadth.
+        host_keys=frozenset({"unix", "windows", "target_os", "target_arch"}),
+        host_values=frozenset({"linux", "macos", "android", "x86_64", "aarch64"}),
+        native_imports=frozenset(
+            {"libc", "windows_sys", "std::os::unix", "std::os::windows"}
+        ),
+    ),
 )
 
 ZONE_PREFIXES = tuple(zone.prefix for zone in ARTIFACT_ZONES)
@@ -591,12 +612,20 @@ def zone_manifest_alignment_violations() -> list[str]:
     """
     failures: list[str] = []
     for zone in ARTIFACT_ZONES:
-        crate = zone.prefix.split("/")[-1]
+        # A zone may be narrower than a crate -- `probe-crash` covers one
+        # subtree of a crate whose other modules stay in the ledger. Only a
+        # zone covering a whole crate says anything about that crate's
+        # manifest; a narrower one does not, and demanding alignment for it
+        # would force an exemption nobody asked for.
+        parts = zone.prefix.split("/")
+        if len(parts) != 2 or parts[0] != "crates":
+            continue
+        crate = parts[1]
         if crate not in SPECIALIZED_ARTIFACTS:
             failures.append(
-                f"zone {zone.name!r} covers {crate!r}, which is not in "
-                "SPECIALIZED_ARTIFACTS; the manifest and source halves must "
-                "name the same crates"
+                f"zone {zone.name!r} covers the whole of {crate!r}, which is "
+                "not in SPECIALIZED_ARTIFACTS; a crate-wide zone and its "
+                "manifest exemption must name the same crate"
             )
     return failures
 
