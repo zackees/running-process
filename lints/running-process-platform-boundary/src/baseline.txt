@@ -349,17 +349,6 @@ crates/running-process/src/daemon/pipe_sessions.rs	attr_cfg	windows	2
 crates/running-process/src/daemon/pipe_sessions.rs	native_import	std::os::windows	0
 crates/running-process/src/daemon/platform/mod.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/platform/mod.rs	attr_cfg	windows	0
-crates/running-process/src/daemon/platform/unix.rs	attr_cfg	unix	0
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	0
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	1
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	2
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	3
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	4
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	5
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	6
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	7
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	8
-crates/running-process/src/daemon/platform/unix.rs	native_import	libc	9
 crates/running-process/src/daemon/pty_sessions.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/pty_sessions.rs	attr_cfg	unix	1
 crates/running-process/src/daemon/pty_sessions.rs	attr_cfg	unix	2
