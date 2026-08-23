@@ -54,8 +54,31 @@ jobs:
       - name: Install nightly toolchain
         run: rustup toolchain install nightly --profile minimal
 
+      # Prebuilt binary, as every other workflow here does. Building cargo-fuzz
+      # from source is a release build of a tool we do not ship, repeated
+      # across all twelve matrix jobs on every run.
+      #
+      # install-action has no cargo-fuzz recipe and falls back to
+      # cargo-binstall, which delivers the musl build. That matters: cargo-fuzz
+      # takes the *fuzz target's* build triple from its own, so a musl-built
+      # driver silently builds the targets for musl. The explicit --target on
+      # the run step below pins it whatever the driver was built for.
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      # The fuzz crate is its own workspace, so its target directory is not the
+      # one the rest of CI caches. Without this each of the twelve jobs rebuilds
+      # every dependency of the fuzz targets from scratch -- on a pull request
+      # that is minutes of build to buy thirty seconds of fuzzing
+      # (FUZZ_SECONDS defaults to 30 there).
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/running-process/fuzz -> target
+          key: ubuntu-latest-security-fuzz
+          cache-on-failure: true
 
       - name: Restore fuzz corpus
         uses: actions/cache@v4
@@ -102,7 +125,13 @@ jobs:
         run: |
           set -euo pipefail
           cd crates/running-process
-          cargo +nightly fuzz run "${{ matrix.target }}" -- -max_total_time="${FUZZ_SECONDS}" -timeout=30
+          # Pinned to the host triple on purpose. AddressSanitizer cannot be
+          # linked against a static libc, so a musl build fails outright with
+          # "sanitizer is incompatible with statically linked libc" -- and
+          # cargo-fuzz picks its default target from the triple it was itself
+          # built for, which depends on how it was installed rather than on
+          # anything this workflow states.
+          cargo +nightly fuzz run             --target x86_64-unknown-linux-gnu             "${{ matrix.target }}"             -- -max_total_time="${FUZZ_SECONDS}" -timeout=30
 
       - name: Write release evidence manifest
         if: ${{ success() && steps.fuzz-config.outputs.release_evidence == 'true' }}
