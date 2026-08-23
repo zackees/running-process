@@ -55,3 +55,32 @@ debug = false
 [profile.dev]
 debug = true
 strip = "none"
+
+# Build scripts and proc macros run on the host at build time. They are never
+# shipped, never stepped through, and never appear in a backtrace from a test
+# -- so their debug info is paid for and never read.
+#
+# Measured by building `-p running-process --features daemon --all-targets`
+# twice from clean, changing only this:
+#
+#            target/debug     of which PDB   of which build-script PDB
+#   before      0.980 GB         0.574 GB              0.370 GB
+#   after       0.410 GB         0.180 GB              0.140 GB
+#
+# 58% off the target directory for the same build. CI caches `target/`, so that
+# is upload and download on every job as well as rustc and linker time -- the
+# Windows lanes routinely spend longer saving this cache than running the tests
+# in it.
+#
+# `build-override` covers build scripts, proc macros, and their dependencies.
+# Nothing a developer or a failing test can see loses information: this is not
+# `package."*"`, so dependency libraries keep the debug info that makes a real
+# backtrace readable.
+[profile.dev.build-override]
+debug = false
+
+# The same reasoning for release. #803 already stopped emitting debug info for
+# release dependencies; build scripts were not covered by that, and inherited
+# the profile's `line-tables-only` instead.
+[profile.release.build-override]
+debug = false
