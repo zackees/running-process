@@ -263,9 +263,6 @@ crates/running-process/src/broker/capabilities.rs	cfg_macro	unix	0
 crates/running-process/src/broker/capabilities.rs	cfg_macro	windows	0
 crates/running-process/src/broker/client.rs	cfg_macro	windows	0
 crates/running-process/src/broker/client_v2.rs	cfg_macro	windows	0
-crates/running-process/src/broker/doctor.rs	attr_cfg	unix	0
-crates/running-process/src/broker/doctor.rs	attr_cfg	unix	1
-crates/running-process/src/broker/doctor.rs	attr_cfg	windows	0
 crates/running-process/src/broker/doctor.rs	cfg_macro	target_os	0
 crates/running-process/src/broker/doctor.rs	cfg_macro	windows	0
 crates/running-process/src/broker/server/backend_launcher.rs	attr_cfg	unix	0
@@ -343,9 +340,6 @@ crates/running-process/src/daemon/session_endpoint/tests.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/shadow.rs	attr_cfg	target_os	0
 crates/running-process/src/daemon/shadow.rs	attr_cfg	target_os	1
 crates/running-process/src/daemon/shadow.rs	attr_cfg	target_os	2
-crates/running-process/src/daemon/shadow.rs	attr_cfg	unix	0
-crates/running-process/src/daemon/shadow.rs	attr_cfg	windows	0
-crates/running-process/src/daemon/shadow.rs	native_import	std::os::unix	0
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	1
 crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	2

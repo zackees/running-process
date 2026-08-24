@@ -712,3 +712,21 @@ mod endpoint_naming_tests {
     }
 
 }
+
+/// Replace this process's image with `command`.
+///
+/// Windows has no `execve`, so this always fails. It exists so the facade has
+/// one shape on every host; callers check
+/// [`can_replace_current_image`](crate::platform::process::can_replace_current_image)
+/// first and start a successor instead.
+pub fn process_replace_current_image(_command: &mut std::process::Command) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this host cannot replace a running process image",
+    )
+}
+
+/// This host has no `execve`; a caller must start a successor and exit.
+pub const fn process_can_replace_current_image() -> bool {
+    false
+}
