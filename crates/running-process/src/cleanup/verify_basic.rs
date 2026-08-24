@@ -91,36 +91,21 @@ pub fn render_json(report: &VerifyReport) -> String {
     )
 }
 
-#[cfg(unix)]
-fn process_is_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    let result = unsafe { libc::kill(pid as i32, 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-}
-
 #[cfg(test)]
 #[path = "../tests/verify_basic_coverage.rs"]
 mod coverage_tests;
 
-#[cfg(windows)]
+/// Whether a PID still names a running process.
+///
+/// This used to be two hand-rolled implementations, one per host. The Unix
+/// one signalled zero and read `errno`; the Windows one opened a handle and
+/// called success "alive" -- which it is not, because a process that has
+/// exited can still be opened while any handle to it remains, and would have
+/// been reported as running.
+///
+/// `verify_pid` already asks `platform::process`, which holds a reference
+/// the kernel will not recycle and checks the exit status rather than the
+/// handle. `cleanup/verify_artifacts.rs` next door already calls it.
 fn process_is_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    let handle = unsafe {
-        winapi::um::processthreadsapi::OpenProcess(
-            winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION,
-            0,
-            pid,
-        )
-    };
-    if handle.is_null() {
-        return false;
-    }
-    unsafe {
-        winapi::um::handleapi::CloseHandle(handle);
-    }
-    true
+    crate::broker::backend_lifecycle::verify_pid::process_is_alive(pid)
 }

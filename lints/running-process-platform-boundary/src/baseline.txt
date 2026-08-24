@@ -288,15 +288,7 @@ crates/running-process/src/broker/session_pump.rs	native_import	std::os::unix	0
 crates/running-process/src/broker/session_pump.rs	native_import	std::os::unix	1
 crates/running-process/src/broker/session_relay/tests.rs	attr_cfg	unix	0
 crates/running-process/src/broker/session_relay/tests.rs	attr_cfg	unix	1
-crates/running-process/src/cleanup/instances.rs	attr_cfg	unix	0
-crates/running-process/src/cleanup/instances.rs	attr_cfg	unix	1
-crates/running-process/src/cleanup/instances.rs	attr_cfg	unix	2
-crates/running-process/src/cleanup/instances.rs	attr_cfg	windows	0
 crates/running-process/src/cleanup/verify_artifacts.rs	cfg_macro	windows	0
-crates/running-process/src/cleanup/verify_basic.rs	attr_cfg	unix	0
-crates/running-process/src/cleanup/verify_basic.rs	attr_cfg	windows	0
-crates/running-process/src/cleanup/verify_basic.rs	native_import	libc	0
-crates/running-process/src/cleanup/verify_basic.rs	native_import	libc	1
 crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	1
 crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	2

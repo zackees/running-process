@@ -1,4 +1,3 @@
-#[cfg(unix)]
 use std::path::PathBuf;
 
 /// One broker instance discovered from the local pipe namespace.
@@ -10,9 +9,17 @@ pub struct BrokerInstance {
 
 /// Enumerate broker v1 instances visible to the current user.
 pub fn list() -> Vec<BrokerInstance> {
-    #[cfg(unix)]
+    // Enumeration here means reading a directory, so it only means anything
+    // where an endpoint has a name in the filesystem. Asking the transport
+    // rather than the host also keeps this honest about *why* the Windows
+    // answer is empty: not because it is Windows, but because there is no
+    // directory to read. Enumerating the named-pipe namespace directly lands
+    // with the broker binary in Phase 4.
+    if !crate::platform::ipc::endpoint_is_filesystem_backed() {
+        return Vec::new();
+    }
     {
-        unix_instance_dirs()
+        instance_dirs()
             .into_iter()
             .flat_map(|dir| {
                 std::fs::read_dir(dir)
@@ -33,13 +40,6 @@ pub fn list() -> Vec<BrokerInstance> {
             })
             .collect()
     }
-    #[cfg(windows)]
-    {
-        // Windows named-pipe namespace enumeration lands with the
-        // broker binary in Phase 4. Phase 2 keeps the command stable
-        // and returns an empty list when no broker is required.
-        Vec::new()
-    }
 }
 
 /// Render `running-process-cleanup instances --json`.
@@ -57,8 +57,8 @@ pub fn render_json(instances: &[BrokerInstance]) -> String {
     format!("{{\"schema_version\":1,\"instances\":[{body}]}}")
 }
 
-#[cfg(unix)]
-fn unix_instance_dirs() -> Vec<PathBuf> {
+/// Directories a filesystem-backed broker endpoint may live in.
+fn instance_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(runtime) = crate::env_vars::XDG_RUNTIME_DIR.path() {
         dirs.push(runtime.join("running-process").join("broker"));
