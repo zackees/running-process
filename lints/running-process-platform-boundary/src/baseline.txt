@@ -248,11 +248,6 @@ crates/running-process-py/src/tests/control_churn.rs	attr_cfg	windows	3
 crates/running-process-py/src/tests/control_churn.rs	attr_cfg	windows	4
 crates/running-process-py/src/tests/control_churn.rs	attr_cfg	windows	5
 crates/running-process-py/src/tests/control_churn.rs	attr_cfg	windows	6
-crates/running-process/src/bin/daemon.rs	attr_cfg	target_os	0
-crates/running-process/src/bin/daemon.rs	attr_cfg	target_os	1
-crates/running-process/src/bin/daemon.rs	native_import	libc	0
-crates/running-process/src/bin/daemon.rs	native_import	libc	1
-crates/running-process/src/bin/daemon.rs	native_import	libc	2
 crates/running-process/src/bin/running-process-broker-v2.rs	attr_cfg	unix	0
 crates/running-process/src/bin/running-process-broker-v2.rs	native_import	libc	0
 crates/running-process/src/bin/running-process-broker-v2/tests.rs	attr_cfg	windows	0
@@ -371,10 +366,7 @@ crates/running-process/src/helpers.rs	attr_cfg	unix	5
 crates/running-process/src/helpers.rs	attr_cfg	unix	6
 crates/running-process/src/helpers.rs	attr_cfg	unix	7
 crates/running-process/src/helpers.rs	attr_cfg	unix	8
-crates/running-process/src/helpers.rs	attr_cfg	unix	9
-crates/running-process/src/helpers.rs	attr_cfg	unix	10
 crates/running-process/src/helpers.rs	native_import	std::os::unix	0
-crates/running-process/src/helpers.rs	native_import	std::os::unix	1
 crates/running-process/src/lib.rs	attr_cfg	target_os	0
 crates/running-process/src/lib.rs	attr_cfg	target_os	1
 crates/running-process/src/lib.rs	attr_cfg	target_os	2
