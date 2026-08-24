@@ -61,6 +61,7 @@ pub use fs::{
     create_private_file as fs_create_private_file,
     decode_path_bytes as fs_decode_path_bytes,
     replace_file as fs_replace_file, sync_directory as fs_sync_directory,
+    user_config_dir as fs_user_config_dir,
     user_data_dir as fs_user_data_dir, encode_path_bytes as fs_encode_path_bytes,
     file_identity as fs_file_identity, is_lock_conflict as fs_is_lock_conflict,
     open_lock_file as fs_open_lock_file, path_identity as fs_path_identity,
