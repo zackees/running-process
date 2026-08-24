@@ -38,32 +38,17 @@ pub fn runtime_root() -> PathBuf {
     app_root().join("runtime")
 }
 
+/// Root this product keeps its per-user data under.
+///
+/// `broker/manifest.rs` derives the same root through
+/// `platform::fs::user_data_dir`, and this used to derive it again by hand.
+/// The two agreed in the ordinary case and disagreed at the edges: this one
+/// read the environment through the declared table (#1101), where an empty
+/// value means unset, while the facade reads it directly, where an empty
+/// value is a value. A garbage collector scanning one root while manifests
+/// are written under another is not a failure that announces itself.
 fn app_root() -> PathBuf {
-    #[cfg(windows)]
-    {
-        let base = crate::env_vars::LOCALAPPDATA
-            .path()
-            .or_else(|| dirs::home_dir().map(|home| home.join("AppData").join("Local")))
-            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-        base.join("running-process")
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let base = dirs::home_dir()
-            .map(|home| home.join("Library").join("Application Support"))
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        base.join("running-process")
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let base = crate::env_vars::XDG_DATA_HOME
-            .path()
-            .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        base.join("running-process")
-    }
+    crate::platform::fs::user_data_dir("running-process")
 }
 
 fn now_unix_ms() -> u64 {

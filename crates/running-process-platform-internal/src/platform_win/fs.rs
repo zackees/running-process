@@ -208,6 +208,17 @@ pub fn user_data_dir(product: &str) -> PathBuf {
         .join(product)
 }
 
+/// The directory this host keeps a product's *configuration* in.
+///
+/// Distinct from [`user_data_dir`] on this host: Windows separates roaming
+/// configuration from local application data, and a setting a user expects to
+/// follow them between machines belongs in the former.
+pub fn user_config_dir(product: &str) -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join(product)
+}
+
 /// Move `tmp` onto `target`, replacing it, without a window where neither is
 /// readable.
 ///

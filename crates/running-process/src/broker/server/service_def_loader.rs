@@ -76,34 +76,11 @@ pub fn service_definition_dir() -> PathBuf {
         return path;
     }
 
-    #[cfg(windows)]
-    {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-            .join("running-process")
-            .join("services")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        dirs::home_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Library")
-            .join("Application Support")
-            .join("running-process")
-            .join("services")
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Some(config_home) = crate::env_vars::XDG_CONFIG_HOME.path() {
-            config_home.join("running-process").join("services")
-        } else {
-            dirs::home_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join(".config")
-                .join("running-process")
-                .join("services")
-        }
-    }
+    // Where a host keeps a product's configuration is a role `platform::fs`
+    // names; this used to spell out all three answers. Config is deliberately
+    // not the data root: Windows separates roaming settings from local data,
+    // and XDG gives configuration its own base directory.
+    crate::platform::fs::user_config_dir("running-process").join("services")
 }
 
 /// Ensure a service-definition directory exists with private permissions.

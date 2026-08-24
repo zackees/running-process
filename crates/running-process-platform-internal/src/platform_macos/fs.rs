@@ -163,6 +163,15 @@ pub fn user_data_dir(product: &str) -> PathBuf {
         .join(product)
 }
 
+/// The directory this host keeps a product's *configuration* in.
+///
+/// The same location as [`user_data_dir`] here. macOS does not separate the
+/// two, and inventing a split would put files where no macOS user or tool
+/// looks for them.
+pub fn user_config_dir(product: &str) -> PathBuf {
+    user_data_dir(product)
+}
+
 /// Move `tmp` onto `target`, replacing it, without a window where neither is
 /// readable.
 pub fn replace_file(tmp: &Path, target: &Path) -> io::Result<()> {

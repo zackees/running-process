@@ -164,6 +164,21 @@ pub fn user_data_dir(product: &str) -> PathBuf {
         .join(product)
 }
 
+/// The directory this host keeps a product's *configuration* in.
+///
+/// Distinct from [`user_data_dir`] here: the XDG base-directory spec gives
+/// configuration its own root, and a user who sets `XDG_CONFIG_HOME` expects
+/// it honoured rather than folded into the data root.
+pub fn user_config_dir(product: &str) -> PathBuf {
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(config_home).join(product);
+    }
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".config")
+        .join(product)
+}
+
 /// Move `tmp` onto `target`, replacing it, without a window where neither is
 /// readable.
 pub fn replace_file(tmp: &Path, target: &Path) -> io::Result<()> {

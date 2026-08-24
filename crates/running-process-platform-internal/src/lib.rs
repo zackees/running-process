@@ -91,8 +91,8 @@ pub use platform_imp::{
 pub use platform_imp::{
     fs_create_private_file, fs_decode_path_bytes, fs_encode_path_bytes, fs_file_identity,
     fs_is_lock_conflict, fs_open_lock_file, fs_path_identity, fs_replace_file, fs_sync_directory,
-    fs_try_lock_exclusive, fs_unlock, fs_user_data_dir, fs_user_run_data_root, fs_user_runtime_dir,
-    fs_user_state_dir, FsFileIdentity,
+    fs_try_lock_exclusive, fs_unlock, fs_user_config_dir, fs_user_data_dir, fs_user_run_data_root,
+    fs_user_runtime_dir, fs_user_state_dir, FsFileIdentity,
 };
 
 pub use platform_imp::{
