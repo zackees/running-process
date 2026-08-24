@@ -128,18 +128,15 @@ pub(crate) fn feed_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
     lines
 }
 
+/// Report a finished child's exit code the way this host reports it.
+///
+/// A process killed by a signal has no exit code at all on Unix, and the
+/// convention this crate reports is the negated signal number. Windows has
+/// no signals and always has a code. Both spellings already live in
+/// `platform::process`, which is where the difference belongs -- this used
+/// to be a second copy of them.
 pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        status
-            .code()
-            .unwrap_or_else(|| -status.signal().unwrap_or(1))
-    }
-    #[cfg(not(unix))]
-    {
-        status.code().unwrap_or(1)
-    }
+    crate::platform::process::exit_code(status)
 }
 
 #[cfg(test)]

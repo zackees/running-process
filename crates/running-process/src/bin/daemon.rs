@@ -156,26 +156,19 @@ fn parse_duration_secs(value: &str) -> Result<u64, String> {
 ///
 /// The daemon binary is still `running-process-daemon` (renaming it is out
 /// of Phase 2 scope), but the *visible long-running identity* must be
-/// `runpm-daemon`. On Linux `prctl(PR_SET_NAME)` renames the main thread,
-/// which is what `ps`, `top`, and `/proc/<pid>/comm` report. On other
-/// platforms this is currently a no-op; full argv0 rewriting there is
-/// tracked as follow-up work.
+/// `runpm-daemon`.
+///
+/// Which call achieves that differs per host and belongs to
+/// `platform::process`: Linux renames the main thread with
+/// `prctl(PR_SET_NAME)`, which is what `ps`, `top` and `/proc/<pid>/comm`
+/// report; macOS uses `pthread_setname_np`; Windows has no equivalent and
+/// does nothing. This file used to spell out the Linux branch and no-op
+/// everywhere else, which meant macOS went unnamed for no reason other than
+/// the branch not being written here.
+///
+/// Full argv0 rewriting remains follow-up work on every host.
 fn set_daemon_process_name(name: &str) {
-    #[cfg(target_os = "linux")]
-    {
-        // PR_SET_NAME truncates to 15 bytes + NUL; "runpm-daemon" fits.
-        if let Ok(cstr) = std::ffi::CString::new(name) {
-            // SAFETY: prctl with PR_SET_NAME and a valid NUL-terminated
-            // pointer only writes the calling thread's name.
-            unsafe {
-                libc::prctl(libc::PR_SET_NAME, cstr.as_ptr() as libc::c_ulong, 0, 0, 0);
-            }
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = name;
-    }
+    running_process_platform_internal::platform::process::set_process_name(name);
 }
 
 /// Initialize structured logging via `tracing-subscriber`.
