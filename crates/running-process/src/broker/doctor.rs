@@ -631,14 +631,17 @@ pub fn service_definition_checks(dir: &Path) -> Vec<DoctorCheck> {
 /// never deletes anything.
 pub fn socket_hygiene_check() -> DoctorCheck {
     const NAME: &str = "sockets:runtime-dir";
-    #[cfg(windows)]
-    {
-        DoctorCheck::pass(
+    // Whether there is anything to be stale, asked of the transport rather
+    // than of the host: a named pipe has no directory entry and disappears
+    // with its last handle, so there is no residue to count. Branching on
+    // `cfg(windows)` said the same thing in terms that stop being true if a
+    // host ever changes transport.
+    if !crate::platform::ipc::endpoint_is_filesystem_backed() {
+        return DoctorCheck::pass(
             NAME,
-            "not applicable on Windows (named pipes leave no filesystem residue)",
-        )
+            "not applicable: this host's endpoints leave no filesystem residue",
+        );
     }
-    #[cfg(unix)]
     {
         let Some(dir) = broker_runtime_dir() else {
             return DoctorCheck::fail(NAME, "cannot derive broker runtime directory");
@@ -684,8 +687,11 @@ pub fn socket_hygiene_check() -> DoctorCheck {
 }
 
 /// Parent directory of the per-user broker sockets, derived from the
-/// shared-broker pipe path (Unix only).
-#[cfg(unix)]
+/// shared-broker pipe path.
+///
+/// Returns `None` where the endpoint has no filesystem path at all, which is
+/// the same condition `socket_hygiene_check` tests before calling this -- the
+/// `pipe.unix` field is simply absent there.
 fn broker_runtime_dir() -> Option<PathBuf> {
     let sid_hash = user_sid_hash().ok()?;
     let pipe = shared_broker_pipe(&sid_hash).ok()?;

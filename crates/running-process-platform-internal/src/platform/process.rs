@@ -567,3 +567,19 @@ impl std::fmt::Debug for ShutdownRequest {
 }
 
 pub use crate::process_install_shutdown_request_handler as install_shutdown_request_handler;
+
+/// Whether this host can replace the running image with another program.
+///
+/// Unix can: `execve` keeps the process -- its PID, its open descriptors,
+/// its place in the process tree -- and swaps the program underneath.
+/// Windows has no equivalent; the nearest thing is starting a successor and
+/// exiting, which is a *different* process with a different PID and does not
+/// keep anything a parent or supervisor was holding onto.
+///
+/// Callers that can accept a successor should ask this and fall back. Callers
+/// that genuinely need the same process to continue have no fallback, and
+/// should treat `false` as unsupported rather than approximating it.
+pub use crate::{
+    process_can_replace_current_image as can_replace_current_image,
+    process_replace_current_image as replace_current_image,
+};

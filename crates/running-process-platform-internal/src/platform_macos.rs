@@ -955,3 +955,20 @@ mod endpoint_naming_tests {
     }
 
 }
+
+/// Replace this process's image with `command`.
+///
+/// Returns only on failure: on success `execve` has already replaced the
+/// program and there is nothing left to return to. That is why the signature
+/// yields `io::Error` rather than `io::Result<()>` -- an `Ok` would name a
+/// state that cannot be observed.
+pub fn process_replace_current_image(command: &mut std::process::Command) -> std::io::Error {
+    use std::os::unix::process::CommandExt as _;
+    command.exec()
+}
+
+/// This host replaces a running image in place; see the facade for what that
+/// means for a caller that cannot accept a successor instead.
+pub const fn process_can_replace_current_image() -> bool {
+    true
+}

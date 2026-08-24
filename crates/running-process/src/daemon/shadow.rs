@@ -98,23 +98,32 @@ pub fn maybe_self_relocate() -> Result<bool, Box<dyn std::error::Error>> {
     Ok(true) // unreachable on Unix (exec replaces process)
 }
 
-#[cfg(unix)]
-fn reexec_from_shadow(exe: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::process::CommandExt;
-
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
-    let err = std::process::Command::new(exe)
-        .args(&args)
-        .env(SHADOW_MARKER_ENV, "1")
-        .exec(); // replaces process; only returns on error
-    Err(Box::new(err))
-}
-
-#[cfg(windows)]
+/// Continue from the shadow copy instead of the original executable.
+///
+/// # Two different things, deliberately not blurred
+///
+/// Where the host can replace a running image, this *is* the same process
+/// afterwards: same PID, same descriptors, same place in the process tree,
+/// running a different program. `exec` does not return on success, so the
+/// only way out of that branch is an error.
+///
+/// Where it cannot, the closest available is a successor: a new process with
+/// a new PID, after which this one exits. Anything holding onto this PID --
+/// a supervisor, a job object, a parent waiting on it -- sees the original
+/// exit. That is a real difference, which is why the facade reports which
+/// one the host offers rather than pretending they are interchangeable.
 fn reexec_from_shadow(exe: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let mut command = std::process::Command::new(exe);
     command.args(&args).env(SHADOW_MARKER_ENV, "1");
+
+    if crate::platform::process::can_replace_current_image() {
+        // Only returns on failure; on success the image is already gone.
+        return Err(Box::new(crate::platform::process::replace_current_image(
+            &mut command,
+        )));
+    }
+
     crate::spawn_daemon(&mut command)?;
     std::process::exit(0);
 }
