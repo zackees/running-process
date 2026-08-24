@@ -875,14 +875,38 @@ mod tests {
     /// explicit `remove_file` left a stale socket. The next test run
     /// either got `EADDRINUSE` on bind or `ECONNREFUSED` on connect to
     /// the dead socket — both masking the real failure.
-    #[cfg(unix)]
-    struct SocketCleanup(std::path::PathBuf);
+    struct SocketCleanup(Option<std::path::PathBuf>);
 
-    #[cfg(unix)]
     impl Drop for SocketCleanup {
         fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
+            if let Some(path) = &self.0 {
+                let _ = std::fs::remove_file(path);
+            }
         }
+    }
+
+    /// Make an endpoint path bindable, and take it away again afterwards.
+    ///
+    /// Where endpoints are files, a stale one from a previous run is what
+    /// #519 recorded masking real failures -- `EADDRINUSE` on bind or
+    /// `ECONNREFUSED` on connect to a dead socket. So the path is cleared
+    /// before binding and removed after, whatever the test did in between.
+    ///
+    /// Where endpoints are not files -- a Windows named pipe has no
+    /// directory entry and disappears with its last handle -- there is
+    /// nothing to prepare and nothing to remove, and the guard is inert.
+    /// That is asked of `platform::ipc` rather than of the host, so the
+    /// answer cannot drift from the transport actually in use.
+    fn reserve_endpoint_path(socket_path: &str) -> SocketCleanup {
+        if !crate::platform::ipc::endpoint_is_filesystem_backed() {
+            return SocketCleanup(None);
+        }
+        let path = std::path::Path::new(socket_path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::remove_file(path);
+        SocketCleanup(Some(path.to_path_buf()))
     }
 
     /// In-process stub broker: listens on the given path, accepts ONE
@@ -893,13 +917,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let endpoint = test_endpoint(&socket_path);
-            #[cfg(unix)]
-            let _cleanup = {
-                let _ =
-                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
-                let _ = std::fs::remove_file(&socket_path);
-                SocketCleanup(std::path::PathBuf::from(&socket_path))
-            };
+            let _cleanup = reserve_endpoint_path(&socket_path);
             let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
@@ -971,13 +989,7 @@ mod tests {
         let (hello_tx, hello_rx) = mpsc::channel();
         thread::spawn(move || {
             let endpoint = test_endpoint(&socket_path);
-            #[cfg(unix)]
-            let _cleanup = {
-                let _ =
-                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
-                let _ = std::fs::remove_file(&socket_path);
-                SocketCleanup(std::path::PathBuf::from(&socket_path))
-            };
+            let _cleanup = reserve_endpoint_path(&socket_path);
             let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             ready_tx.send(()).expect("ready");
             let mut stream = listener.accept().expect("accept");
@@ -1026,13 +1038,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let endpoint = test_endpoint(&socket_path);
-            #[cfg(unix)]
-            let _cleanup = {
-                let _ =
-                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
-                let _ = std::fs::remove_file(&socket_path);
-                SocketCleanup(std::path::PathBuf::from(&socket_path))
-            };
+            let _cleanup = reserve_endpoint_path(&socket_path);
             let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let _stream = listener.accept().expect("accept");
@@ -1077,13 +1083,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let endpoint = test_endpoint(&socket_path);
-            #[cfg(unix)]
-            let _cleanup = {
-                let _ =
-                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
-                let _ = std::fs::remove_file(&socket_path);
-                SocketCleanup(std::path::PathBuf::from(&socket_path))
-            };
+            let _cleanup = reserve_endpoint_path(&socket_path);
             let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
@@ -1109,13 +1109,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let endpoint = test_endpoint(&socket_path);
-            #[cfg(unix)]
-            let _cleanup = {
-                let _ =
-                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
-                let _ = std::fs::remove_file(&socket_path);
-                SocketCleanup(std::path::PathBuf::from(&socket_path))
-            };
+            let _cleanup = reserve_endpoint_path(&socket_path);
             let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             for _ in 0..count {
@@ -1192,13 +1186,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let endpoint = test_endpoint(&socket_path);
-            #[cfg(unix)]
-            let _cleanup = {
-                let _ =
-                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
-                let _ = std::fs::remove_file(&socket_path);
-                SocketCleanup(std::path::PathBuf::from(&socket_path))
-            };
+            let _cleanup = reserve_endpoint_path(&socket_path);
             let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let mut stream = listener.accept().expect("accept");
@@ -1244,13 +1232,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let endpoint = test_endpoint(&socket_path);
-            #[cfg(unix)]
-            let _cleanup = {
-                let _ =
-                    std::fs::create_dir_all(std::path::Path::new(&socket_path).parent().unwrap());
-                let _ = std::fs::remove_file(&socket_path);
-                SocketCleanup(std::path::PathBuf::from(&socket_path))
-            };
+            let _cleanup = reserve_endpoint_path(&socket_path);
             let listener = ipc::Listener::bind(&endpoint).expect("bind test listener");
             tx.send(()).expect("send listener-ready signal");
             let stream = listener.accept().expect("accept");
