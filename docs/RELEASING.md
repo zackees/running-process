@@ -160,6 +160,11 @@ verification recipe, and the Linux CI spot-check are documented in
 
 ## Failure modes & recovery
 
+**Protocol ownership note.** The recovery-table language below that assigns
+protobuf types to `running-process` is historical and superseded by #1144.
+Current broker and daemon protobuf schemas and code generation live in
+`running-process-protocol` at `crates/running-process-protocol/proto/`.
+
 | Symptom | What it means | Fix |
 | --- | --- | --- |
 | `Trusted publishing exchange failure ... invalid-publisher` | PyPI doesn't have a trusted publisher row matching `repo:zackees/running-process:environment:pypi` + `workflow:auto-release.yml`. | Add/correct the row in PyPI project settings. Re-run the workflow. |
