@@ -29,19 +29,23 @@ These need to exist on the repo *before* the first real release runs:
   workflow's `publish-pypi` job opts into it via
   `environment: pypi`.
 - **Repo secret `CARGO_REGISTRY_TOKEN`** containing a crates.io API
-  token with publish scope on the
-  `running-process-{proto,core,client,py}` crates. Without it the
+  token authorized to publish all six Rust packages, in their release order:
+  `running-process-probe`, `running-process-platform-internal`,
+  `running-process-protocol`, `running-process`,
+  `running-process-probe-daemon`, and `running-process-py`. Without it the
   `publish-crates` job hard-fails before doing anything destructive.
 
 ## Cutting a release
 
-1. Bump the version in **every** manifest. `ci/version_check.py`
+1. Bump the version in **every** manifest. The root package manifest must pin
+   `running-process-probe`, `running-process-platform-internal`, and
+   `running-process-protocol` at the release version. `ci/version_check.py`
    enforces these stay in lockstep — running it locally is the fastest
    sanity check:
    ```
    uv run --module ci.version_check
    ```
-   The current list (keep this in sync with `MANIFESTS` in that file):
+   The current list (keep this in sync with `SOURCES` in that file):
    - `pyproject.toml` — `project.version`
    - `Cargo.toml` — `workspace.package.version`
    - `src/running_process/__init__.py` — `__version__` literal
@@ -140,9 +144,11 @@ Keep its version aligned with the workspace and do not document it as a
 consumer-facing API surface.
 
 `running-process-protocol` is also a published implementation-detail crate.
-Release automation publishes it before `running-process`, because the optional
-`client` feature resolves it from the registry. Consumers use the client-gated
-`running-process` re-exports instead of depending on it directly.
+It owns the broker protobuf source and code generation at
+`crates/running-process-protocol/proto/`. Release automation publishes it
+before `running-process`, because the optional `client` feature resolves it
+from the registry. Consumers use the client-gated `running-process` re-exports
+instead of depending on it directly.
 
 ## Reproducible builds
 
@@ -157,7 +163,7 @@ verification recipe, and the Linux CI spot-check are documented in
 | Symptom | What it means | Fix |
 | --- | --- | --- |
 | `Trusted publishing exchange failure ... invalid-publisher` | PyPI doesn't have a trusted publisher row matching `repo:zackees/running-process:environment:pypi` + `workflow:auto-release.yml`. | Add/correct the row in PyPI project settings. Re-run the workflow. |
-| `ERROR: CARGO_REGISTRY_TOKEN secret is not set` | Repo secret missing. | Add the secret with publish scope on the four publishable crates and re-run. |
+| `ERROR: CARGO_REGISTRY_TOKEN secret is not set` | Repo secret missing. | Add the secret with publish scope on all six Rust packages in the documented dependency order, then re-run. |
 | `ci.version_check` ERROR | One manifest didn't get bumped. | Run `uv run --module ci.version_check` locally; fix the file it names; ensure `Cargo.lock` + `uv.lock` regenerated. |
 | Partial crates.io publish (some crates uploaded, later ones not) | Almost always a transient cargo / network issue; the workflow is idempotent. | Re-run the same workflow run. `preflight` skips crates already on crates.io and `publish-crates` skips them in its inner loop. |
 | `running-process` was published with a wire-format regression | The 3.2.x→3.3.0 wire change taught us this can happen (proto types now live inside `running-process` itself post-#165). | `cargo yank --version X.Y.Z -p running-process` to block new resolutions. Yank doesn't delete; existing lockfiles keep working. Then bump and publish a corrected version. |
