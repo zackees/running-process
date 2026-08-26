@@ -54,7 +54,10 @@ class TestProductDependencyFeatures(unittest.TestCase):
         self.assertEqual(trampoline["required-features"], ["daemon-trampoline"])
         self.assertIn('#[cfg(feature = "terminal-graphics")]', LIB.read_text(encoding="utf-8"))
         self.assertIn("serde::Deserialize", TRAMPOLINE.read_text(encoding="utf-8"))
-        self.assertIn("serde::Serialize", TERMINAL_GRAPHICS.read_text(encoding="utf-8"))
+        self.assertIn(
+            "use serde::{Deserialize, Serialize};",
+            TERMINAL_GRAPHICS.read_text(encoding="utf-8"),
+        )
         self.assertIn("sysinfo::", ORIGINATOR.read_text(encoding="utf-8"))
         self.assertIn("sysinfo::", PROBE_WORKER.read_text(encoding="utf-8"))
         self.assertIn("serde::Deserialize", RUNPM_CONFIG.read_text(encoding="utf-8"))
