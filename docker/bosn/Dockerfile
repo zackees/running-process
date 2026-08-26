@@ -33,7 +33,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 # The official pinned image provides the selected compiler. Bosn mounts the
 # toolchain directories as persistent volumes, which Docker seeds from this
 # image on first use. Ensure the managed lint components are seeded too.
-RUN RUSTUP_BIN=/usr/local/rustup/bin/rust; "${RUSTUP_BIN}up" component add clippy rustfmt
+RUN rustup component add clippy rustfmt
 
 ENV CARGO_TARGET_DIR=/work/target
 ENV UV_PROJECT_ENVIRONMENT=/uv/venv
