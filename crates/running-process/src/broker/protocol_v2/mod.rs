@@ -10,33 +10,15 @@
 
 pub use running_process_protocol::broker::v2::*;
 
-impl SessionStart {
-    /// Build a contained SESSION request from the caller's current process
-    /// context. Only Unicode environment entries can be represented by this
-    /// protobuf string vocabulary; `std::env::vars()` retains that existing
-    /// limitation explicitly.
-    pub fn from_current_process(
-        program: impl Into<String>,
-        args: impl IntoIterator<Item = impl Into<String>>,
-        cwd: impl Into<String>,
-    ) -> Self {
-        Self {
-            program: program.into(),
-            args: args.into_iter().map(Into::into).collect(),
-            cwd: cwd.into(),
-            env: std::env::vars()
-                .map(|(key, value)| SessionEnvVar { key, value })
-                .collect(),
-            clear_inherited_env: true,
-            environment_policy: crate::EnvironmentPolicy::Clear
-                .wire_value()
-                .expect("Clear is serializable"),
-        }
-    }
-
+/// Root policy adapter for the generated protocol type.
+pub trait SessionStartExt {
     /// Select the base environment. `Auto` resolves to the contained-child
     /// default (`Inherit`) before serialization.
-    pub fn with_environment_policy(mut self, policy: crate::EnvironmentPolicy) -> Self {
+    fn with_environment_policy(self, policy: crate::EnvironmentPolicy) -> Self;
+}
+
+impl SessionStartExt for SessionStart {
+    fn with_environment_policy(mut self, policy: crate::EnvironmentPolicy) -> Self {
         let policy = match policy {
             crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::Inherit,
             explicit => explicit,
