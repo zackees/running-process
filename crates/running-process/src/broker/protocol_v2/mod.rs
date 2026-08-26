@@ -10,22 +10,16 @@
 
 pub use running_process_protocol::broker::v2::*;
 
-/// Root policy adapter for the generated protocol type.
-pub trait SessionStartExt {
-    /// Select the base environment. `Auto` resolves to the contained-child
-    /// default (`Inherit`) before serialization.
-    fn with_environment_policy(self, policy: crate::EnvironmentPolicy) -> Self;
-}
-
-impl SessionStartExt for SessionStart {
-    fn with_environment_policy(mut self, policy: crate::EnvironmentPolicy) -> Self {
-        let policy = match policy {
+impl running_process_protocol::SessionStartEnvironmentPolicy for crate::EnvironmentPolicy {
+    fn session_start_wire_fields(self) -> (i32, bool) {
+        let policy = match self {
             crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::Inherit,
             explicit => explicit,
         };
-        self.environment_policy = policy.wire_value().expect("resolved policy");
-        self.clear_inherited_env = policy.legacy_clear_fallback().expect("resolved policy");
-        self
+        (
+            policy.wire_value().expect("resolved policy"),
+            policy.legacy_clear_fallback().expect("resolved policy"),
+        )
     }
 }
 

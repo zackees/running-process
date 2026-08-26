@@ -2225,6 +2225,7 @@ dependencies = [
  "prost",
  "prost-build",
  "protox",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

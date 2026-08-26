@@ -44,6 +44,18 @@ pub enum EndpointNameError {
     },
 }
 
+/// Converts a caller's environment policy into the two frozen fields carried
+/// by a v2 [`broker::v2::SessionStart`].
+///
+/// The root crate implements this for its public `EnvironmentPolicy`, keeping
+/// [`broker::v2::SessionStart::with_environment_policy`] an inherent method
+/// for downstream callers.  Keeping the conversion boundary here avoids a
+/// dependency from this optional protocol crate back to the core facade.
+pub trait SessionStartEnvironmentPolicy {
+    /// Return `(environment_policy, clear_inherited_env)` for the wire frame.
+    fn session_start_wire_fields(self) -> (i32, bool);
+}
+
 impl broker::v1::Frame {
     /// Build a v1 request frame with the frozen envelope defaults.
     pub fn request(payload_protocol: u32, payload: Vec<u8>) -> Self {
@@ -138,6 +150,17 @@ impl broker::v2::SessionStart {
             clear_inherited_env: true,
             environment_policy: 3,
         }
+    }
+
+    /// Select the base environment for this contained session.
+    ///
+    /// This stays inherent on the generated protocol type so existing
+    /// downstream calls do not need to import an extension trait after the
+    /// generated definitions moved into this crate.
+    #[must_use]
+    pub fn with_environment_policy(mut self, policy: impl SessionStartEnvironmentPolicy) -> Self {
+        (self.environment_policy, self.clear_inherited_env) = policy.session_start_wire_fields();
+        self
     }
 }
 
