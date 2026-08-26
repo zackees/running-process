@@ -269,6 +269,7 @@ jobs:
           rust_crates = (
               "running-process-probe",
               "running-process-platform-internal",
+              "running-process-protocol",
               "running-process",
               "running-process-probe-daemon",
               "running-process-py",
@@ -737,6 +738,7 @@ jobs:
           PUBLISH_ORDER=(
             running-process-probe
             running-process-platform-internal
+            running-process-protocol
             running-process
             running-process-probe-daemon
             running-process-py

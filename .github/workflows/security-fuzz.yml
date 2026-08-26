@@ -5,7 +5,7 @@ on:
     paths:
       - ".github/workflows/security-fuzz.yml"
       - "crates/running-process/fuzz/**"
-      - "crates/running-process/proto/broker_v1/**"
+      - "crates/running-process-protocol/proto/broker_v1/**"
       - "crates/running-process/src/broker/**"
   schedule:
     - cron: "17 9 * * *"

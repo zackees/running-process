@@ -109,10 +109,13 @@ build validation, not a simulated upload.
      all-thread snapshot. `running-process`'s `probe` feature depends on
      it, so it has to exist on the index first or `running-process`
      cannot resolve at all.
-  2. `running-process` (depends on the previous one)
-  3. `running-process-probe-daemon` — `rpprobed` and `rpprobe`. Depends
+  2. `running-process-platform-internal` — the published native implementation detail.
+  3. `running-process-protocol` — generated broker and daemon protobuf types;
+     it must exist before the optional client feature of `running-process` can resolve.
+  4. `running-process` (depends on the previous packages)
+  5. `running-process-probe-daemon` — `rpprobed` and `rpprobe`. Depends
      on both of the above.
-  4. `running-process-py` (depends on `running-process`)
+  6. `running-process-py` (depends on `running-process`)
 
   This order is a dependency constraint, not a preference: publishing out
   of it fails to resolve rather than merely being untidy. Keep it in sync
@@ -135,6 +138,11 @@ crate. Release automation publishes it immediately before `running-process`,
 because the optional `async-process` feature resolves it from the registry.
 Keep its version aligned with the workspace and do not document it as a
 consumer-facing API surface.
+
+`running-process-protocol` is also a published implementation-detail crate.
+Release automation publishes it before `running-process`, because the optional
+`client` feature resolves it from the registry. Consumers use the client-gated
+`running-process` re-exports instead of depending on it directly.
 
 ## Reproducible builds
 

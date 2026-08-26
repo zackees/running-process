@@ -19,7 +19,7 @@ FROM rust:1.94.1-bookworm
 
 # Build deps:
 #   build-essential / pkg-config / libssl-dev — for any cc-rs / -sys crates
-#   protobuf-compiler — proto/daemon.proto is compiled by build.rs
+#   protobuf-compiler — protocol schemas are compiled by the protocol package
 #   python3 / python3-pip / python3-venv — uv runs the repo's Python flows
 #   git / curl / ca-certificates — uv install, cargo registry
 RUN apt-get update \

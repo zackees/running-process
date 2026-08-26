@@ -12,12 +12,12 @@ name: Proto breaking-change check
 on:
   pull_request:
     paths:
-      - "crates/running-process/proto/broker_v1/**"
+      - "crates/running-process-protocol/proto/broker_v1/**"
       - ".github/workflows/proto-breaking.yml"
   push:
     branches: [main]
     paths:
-      - "crates/running-process/proto/broker_v1/**"
+      - "crates/running-process-protocol/proto/broker_v1/**"
       - ".github/workflows/proto-breaking.yml"
   workflow_dispatch:
 
@@ -46,7 +46,7 @@ jobs:
 
       - name: Build broker_v1 image (smoke check that protos parse)
         run: buf build
-        working-directory: crates/running-process/proto/broker_v1
+        working-directory: crates/running-process-protocol/proto/broker_v1
 
       - name: Does broker_v1 exist on main yet?
         # First PR (this one) introduces the broker_v1 subdir; main has
@@ -57,7 +57,7 @@ jobs:
         # afterwards.
         id: have_baseline
         run: |
-          if git ls-tree -r --name-only origin/main -- crates/running-process/proto/broker_v1 \
+          if git ls-tree -r --name-only origin/main -- crates/running-process-protocol/proto/broker_v1 \
                | grep -q '\.proto$'; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
@@ -75,5 +75,5 @@ jobs:
         if: github.ref != 'refs/heads/main' && steps.have_baseline.outputs.present == 'true'
         run: |
           buf breaking \
-            --against "https://github.com/${GITHUB_REPOSITORY}.git#branch=main,subdir=crates/running-process/proto/broker_v1"
-        working-directory: crates/running-process/proto/broker_v1
+            --against "https://github.com/${GITHUB_REPOSITORY}.git#branch=main,subdir=crates/running-process-protocol/proto/broker_v1"
+        working-directory: crates/running-process-protocol/proto/broker_v1

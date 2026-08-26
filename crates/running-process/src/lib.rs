@@ -41,18 +41,14 @@ pub mod observer;
 #[cfg(feature = "originator-scan")]
 pub mod originator;
 pub mod output_log;
-// Wave 3+4 of #165: proto module + IPC client absorbed from the
-// former `running-process-proto` and `running-process-client` crates.
-// Both gated behind `feature = "client"`. The protobuf package
-// `running_process.daemon.v1` compiles to the file referenced below.
+// The IPC client owns the generated protocol dependency.  Keeping code
+// generation in that optional package means process-only consumers do not
+// compile broker schemas or their build dependencies (#1144).
 #[cfg(feature = "client")]
 /// Prost-generated daemon protocol types used by the client transport.
 pub mod proto {
     /// Generated Rust bindings for the `running_process.daemon.v1` protobuf package.
-    #[allow(missing_docs)]
-    pub mod daemon {
-        include!(concat!(env!("OUT_DIR"), "/running_process.daemon.v1.rs"));
-    }
+    pub use running_process_protocol::daemon;
 }
 
 #[cfg(feature = "client")]

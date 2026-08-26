@@ -44,9 +44,9 @@ package running_process.broker.v1;
 
 The authoritative proto files are:
 
-- `crates/running-process/proto/broker_v1/broker_v1_envelope.proto`
-- `crates/running-process/proto/broker_v1/broker_v1_manifest.proto`
-- `crates/running-process/proto/broker_v1/broker_v1_service_def.proto`
+- `crates/running-process-protocol/proto/broker_v1/broker_v1_envelope.proto`
+- `crates/running-process-protocol/proto/broker_v1/broker_v1_manifest.proto`
+- `crates/running-process-protocol/proto/broker_v1/broker_v1_service_def.proto`
 
 Field numbers and reserved ranges are part of the v1 contract. New fields use
 unclaimed field numbers or documented reserved expansion ranges. Removed field

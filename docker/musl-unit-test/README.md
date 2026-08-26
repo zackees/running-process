@@ -26,7 +26,7 @@ rebuilds the workspace from scratch):
 - `rp-musl-soldr-home` → `/root/.soldr` (soldr state, persistent).
 
 Source tree at `/work` is bind-mounted from the host (read-write —
-the build scripts in `crates/running-process/build.rs` write generated
+the build scripts in `crates/running-process-protocol/build.rs` write generated
 prost output back there). All three volumes can be wiped with:
 
     docker volume rm rp-musl-target rp-musl-cargo-home rp-musl-soldr-home
