@@ -17,9 +17,10 @@ A Rust-backed Python library (v4.6.4) for subprocess and PTY process management 
 - **`probe`** (`probe.py`): enrolls a Python process with the probe daemon (`install()` → `ProbeGuard`, reported as `runtime=python`) and captures **mixed-mode** stacks — `snapshot()` pairs native frames from the Rust capture with `sys._current_frames()` interpreter frames, aligned by OS thread id. `write_dump()` writes both halves as one artifact. Enrollment never blocks; a build without the `probe` feature degrades to a no-op.
 - **`dump_paths`**: the diagnostic-artifact location and naming convention, shared by the CLI supervisor and the probe so evidence lands in one place
 
-**Rust workspace** (`crates/`). Five crates publish — `running-process`,
-`running-process-protocol`, `running-process-probe`, `running-process-probe-daemon`, and
-`running-process-py` — and a release bumps all of them in lockstep
+**Rust workspace** (`crates/`). Six crates publish — `running-process-probe`,
+`running-process-platform-internal`, `running-process-protocol`,
+`running-process`, `running-process-probe-daemon`, and `running-process-py` —
+and a release bumps all of them in lockstep
 (`ci/version_check.py` enforces it). The rest are `publish = false` and exist
 only inside this repo:
 - **`running-process-protocol`** (`crates/running-process-protocol/`, published implementation detail): owns broker and daemon protobuf schemas plus their `prost-build`/`protox` build script. `running-process` re-exports the generated types only behind `client`, so process-only consumers do not compile protocol code generation (#1144).

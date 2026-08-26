@@ -41,7 +41,7 @@ neutral facade.
 
 The affected pins are the root toolchain file, workspace manifest, both development Dockerfiles, preflight Dylint tool install line, and user-facing references in `README.md`, `CLAUDE.md`, and reproducibility documentation. `install` and `ci/env.py` already read the root toolchain file. Phase 2 must classify fixture-only pins before changing them.
 
-All four published packages (`running-process`, `running-process-py`, `running-process-probe`, and `running-process-probe-daemon`) inherit the lockstep workspace version checked by `ci/version_check.py`. Evolving the existing internal package preserves its identity and the `async-process` optional dependency surface of `running-process`; it avoids an extra published dependency and keeps synchronous consumers free of Tokio. Maturin continues to build the ABI3 Python extension from `running-process-py`; no Python API or wheel target change is implied.
+All six published packages (`running-process-probe`, `running-process-platform-internal`, `running-process-protocol`, `running-process`, `running-process-probe-daemon`, and `running-process-py`) inherit the lockstep workspace version checked by `ci/version_check.py`. Evolving the existing internal package preserves its identity and the `async-process` optional dependency surface of `running-process`; it avoids an extra published dependency and keeps synchronous consumers free of Tokio. Maturin continues to build the ABI3 Python extension from `running-process-py`; no Python API or wheel target change is implied.
 
 ## Inventory and migration order
 
