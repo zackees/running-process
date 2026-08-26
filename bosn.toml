@@ -9,6 +9,16 @@ workdir = "/work"
 [stack.linux.mounts]
 repo = { source = ".", destination = "/work", readonly = true }
 
+[stack.linux.env]
+# `uv sync` performs the PEP 517 native build before the managed lint/test
+# command starts. Docker Desktop's CPU count is not a safe proxy for the
+# memory available to that build, so bound both the build scheduler and the
+# compiler/cache wrapper here. Stack environment participates in Bosn's
+# generation digest, ensuring changed limits replace a stale container.
+CARGO_BUILD_JOBS = "2"
+SOLDR_JOBS = "2"
+UV_CONCURRENT_BUILDS = "1"
+
 [stack.linux.volumes]
 target = { scope = "stack", destination = "/work/target" }
 cargo-home = { scope = "machine", destination = "/usr/local/cargo" }
