@@ -46,6 +46,10 @@ These need to exist on the repo *before* the first real release runs:
    uv run --module ci.version_check
    ```
    The current list (keep this in sync with `SOURCES` in that file):
+   - Root `running-process` package manifest pin on
+     `running-process-platform-internal`
+   - Root `running-process` package manifest pin on
+     `running-process-protocol`
    - `pyproject.toml` — `project.version`
    - `Cargo.toml` — `workspace.package.version`
    - `src/running_process/__init__.py` — `__version__` literal
