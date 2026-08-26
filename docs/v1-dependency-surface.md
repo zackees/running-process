@@ -14,7 +14,7 @@ here in the same change.
 | Dependency | Manifest section | Activation | Review note |
 |---|---|---|---|
 | `libc` | `[dependencies]` | Always compiled | Unix process, file, and credential APIs. Platform boundary is security-sensitive. |
-| `sysinfo` | `[dependencies]` | Always compiled | Process inspection for local runtime behavior. No network transport purpose. |
+| `sysinfo` | `[dependencies]` | `process-inspection` feature, composed by `daemon`, `originator-scan`, and `probe` | Process inspection for local runtime behavior. No network transport purpose. |
 | `thiserror` | `[dependencies]` | Always compiled | Error types only. Workspace version source. |
 | `winapi` | `[dependencies]` | Always compiled; used by Windows paths | Windows process, pipe, handle, and security APIs. Platform boundary is security-sensitive. |
 | `prost` | `[dependencies]` | `client` feature | Protobuf decode/encode for v1 broker/control types. Untrusted-input parser. |
@@ -36,9 +36,9 @@ here in the same change.
 | `tracing` | `[dependencies]` | `daemon` feature | Local observability. Must not log secrets or trusted handle material. |
 | `tracing-subscriber` | `[dependencies]` | `daemon` feature | Local logging subscriber. No network exporter enabled. |
 | `rusqlite` | `[dependencies]` | `daemon` feature | Local SQLite state. Workspace version source with bundled SQLite. |
-| `toml` | `[dependencies]` | `daemon` feature | Service-definition parsing. Untrusted-input parser. |
-| `serde` | `[dependencies]` | Always compiled | Data model derives and local JSON sidecar support. Not broker wire authority. |
-| `serde_json` | `[dependencies]` | Always compiled | Local JSON sidecar/admin-output support. The broker wire format remains prost-only. |
+| `toml` | `[dependencies]` | `client` feature | Runpm configuration parsing. Untrusted-input parser. |
+| `serde` | `[dependencies]` | `client`, `terminal-graphics`, or `daemon-trampoline` | Data model derives for local product capabilities. Not broker wire authority. |
+| `serde_json` | `[dependencies]` | `client` or `daemon-trampoline` | Local JSON sidecar/admin-output support. The broker wire format remains prost-only. |
 | `windows-sys` | `[target.'cfg(windows)'.dependencies]` | Windows only | ConPTY and Windows platform APIs. Platform boundary is security-sensitive. |
 
 ## Current Review Summary
@@ -57,9 +57,8 @@ here in the same change.
   those APIs are absent from Tokio.
 - The broker wire format remains prost-only; bincode is not present as a direct
   runtime dependency.
-- `serde` and `serde_json` are present for local sidecar/admin-output paths.
-  They are not authority for the broker wire format. Any plan to remove or
-  replace them belongs in a follow-up dependency-minimization issue.
+- `serde` and `serde_json` are opt-in for local sidecar, terminal, client, and
+  admin-output paths. They are not authority for the broker wire format.
 - Windows platform APIs are split between `winapi` and `windows-sys`. That is a
   migration state, not a request to add more platform API crates.
 

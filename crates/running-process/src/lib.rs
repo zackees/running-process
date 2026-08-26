@@ -143,6 +143,7 @@ mod public_symbols;
 mod rust_debug;
 pub mod spawn;
 pub mod systemd_killmode;
+#[cfg(feature = "terminal-graphics")]
 pub mod terminal_graphics;
 mod types;
 #[cfg(unix)]
@@ -188,6 +189,7 @@ pub use spawn::{
 };
 #[cfg(feature = "client-async")]
 pub use spawn::{spawn_tokio, TokioSpawnOptions};
+#[cfg(feature = "terminal-graphics")]
 pub use terminal_graphics::{
     current_terminal_capabilities, current_terminal_capabilities_with_timeout,
     detect_terminal_capabilities, CapabilityStatus, EvidenceStrength, GraphicsCapability,
