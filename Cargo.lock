@@ -2096,6 +2096,7 @@ dependencies = [
  "x11rb",
 ]
 
+[[package]]
 name = "running-process-platform-internal"
 version = "4.10.6"
 dependencies = [
