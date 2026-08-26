@@ -3,7 +3,7 @@
 The authoritative schema is part of:
 
 ```text
-crates/running-process/proto/broker_v1/broker_v1_manifest.proto
+crates/running-process-protocol/proto/broker_v1/broker_v1_manifest.proto
 ```
 
 `LifecycleEvent` records broker and backend lifecycle activity in a compact,

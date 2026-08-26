@@ -2073,11 +2073,10 @@ dependencies = [
  "libc",
  "png",
  "prost",
- "prost-build",
  "prost-types",
- "protox",
  "running-process-platform-internal",
  "running-process-probe",
+ "running-process-protocol",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2217,6 +2216,15 @@ dependencies = [
  "thiserror 2.0.18",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "running-process-protocol"
+version = "4.10.6"
+dependencies = [
+ "prost",
+ "prost-build",
+ "protox",
 ]
 
 [[package]]

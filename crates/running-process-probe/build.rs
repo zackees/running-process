@@ -1,5 +1,5 @@
 //! Compiles the `running_process.probe_diag.v1` schema with protox +
-//! prost-build, mirroring `crates/running-process/build.rs`.
+//! prost-build, mirroring `crates/running-process-protocol/build.rs`.
 //!
 //! Every `.proto` must appear in BOTH lists below. A file listed only in
 //! `compile` still builds, but edits to it won't retrigger the build; a file

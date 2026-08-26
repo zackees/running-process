@@ -8,12 +8,7 @@
 //! v2 rollout; v1's types are FROZEN FOREVER (#228) so all new
 //! capability fields land here instead.
 
-#[allow(missing_docs)]
-mod prost_generated {
-    include!(concat!(env!("OUT_DIR"), "/running_process.broker.v2.rs"));
-}
-
-pub use prost_generated::*;
+pub use running_process_protocol::broker::v2::*;
 
 impl SessionStart {
     /// Build a contained SESSION request from the caller's current process

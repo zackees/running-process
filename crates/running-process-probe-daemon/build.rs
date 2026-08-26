@@ -1,6 +1,6 @@
 //! Compiles the vendored pprof schema (#644).
 //!
-//! Mirrors `crates/running-process/build.rs`: protox parses without needing a
+//! Mirrors `crates/running-process-protocol/build.rs`: protox parses without needing a
 //! `protoc` on PATH, and prost-build generates the Rust types. The schema is
 //! vendored rather than pulled from the `pprof` crate, which carries an open
 //! RUSTSEC unsoundness advisory — all that is wanted from it is a wire format.

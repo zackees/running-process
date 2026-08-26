@@ -3,7 +3,7 @@
 The authoritative schema is:
 
 ```text
-crates/running-process/proto/broker_v1/broker_v1_envelope.proto
+crates/running-process-protocol/proto/broker_v1/broker_v1_envelope.proto
 ```
 
 Every broker control-plane connection uses v1 framing followed by a prost

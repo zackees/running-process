@@ -1,7 +1,8 @@
 # running-process crate
 
 This crate contains the Rust implementation for `running-process`, including
-the v1 broker protocol schemas and lifecycle helpers.
+the broker lifecycle helpers. Generated broker protocol types are supplied by
+the optional `running-process-protocol` implementation-detail package.
 
 ## v1 Broker Specification
 
@@ -51,4 +52,5 @@ Contrib service templates:
 - [macOS LaunchAgent](../../contrib/launchd/com.zackees.running-process-broker-v1.plist)
 - [Windows service installer](../../contrib/windows-service/install.ps1)
 
-The authoritative v1 proto files live under `proto/broker_v1/`.
+The authoritative v1 proto files live under
+`../running-process-protocol/proto/broker_v1/`.

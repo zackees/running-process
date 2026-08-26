@@ -1,0 +1,20 @@
+[package]
+name = "running-process-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Generated broker protocol types for running-process (implementation detail)"
+publish = true
+
+[lints]
+workspace = true
+
+[dependencies]
+prost = "0.14"
+
+[build-dependencies]
+prost-build = "0.14"
+protox = "0.9"

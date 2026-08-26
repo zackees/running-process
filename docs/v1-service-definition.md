@@ -3,7 +3,7 @@
 The authoritative schema is:
 
 ```text
-crates/running-process/proto/broker_v1/broker_v1_service_def.proto
+crates/running-process-protocol/proto/broker_v1/broker_v1_service_def.proto
 ```
 
 `ServiceDefinition` tells the broker which backend binary serves a service,

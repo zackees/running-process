@@ -83,6 +83,7 @@ telemetry = []
 pty = ["running-process-platform-internal/pty"]
 client = [
     "dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs",
+    "dep:running-process-protocol",
     "running-process-platform-internal/ipc",
     "running-process-platform-internal/fs",
     "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2", "dep:getrandom",
@@ -194,6 +195,7 @@ getrandom = { version = "0.4", optional = true }
 # #633: schema-only dependency for the probe client facade. default-features
 # off keeps the interposer/injection machinery out — see the `probe` feature.
 running-process-probe = { path = "../running-process-probe", version = "4.10.6", default-features = false, optional = true }
+running-process-protocol = { path = "../running-process-protocol", version = "4.10.6", optional = true }
 running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.6" }
 # Wave 5 of #165: daemon-feature deps. All optional.
 # tokio: `client-async` (#414) only needs the `rt` (spawn_blocking)
@@ -217,12 +219,6 @@ toml = { version = "0.8", optional = true }
 # present.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-[build-dependencies]
-# Wave 3 of #165: build.rs absorbed from `running-process-proto`.
-# Compiles proto/daemon.proto into OUT_DIR.
-prost-build = "0.14"
-protox = "0.9"
 
 [dev-dependencies]
 # Platform-default service-definition dir tests (#386) assert against

@@ -1,0 +1,25 @@
+[stack.linux]
+# Keep the managed stack independent of the shared developer image: this
+# branch-specific definition tracks the workspace Rust 1.95.0 toolchain.
+dockerfile = "docker/bosn/Dockerfile"
+family = "running-process-linux"
+default = true
+workdir = "/work"
+
+[stack.linux.mounts]
+repo = { source = ".", destination = "/work", readonly = true }
+
+[stack.linux.volumes]
+target = { scope = "stack", destination = "/work/target" }
+cargo-home = { scope = "machine", destination = "/usr/local/cargo" }
+rustup-home = { scope = "machine", destination = "/usr/local/rustup" }
+uv-cache = { scope = "machine", destination = "/uv/cache" }
+uv-venv = { scope = "stack", destination = "/uv/venv" }
+
+[task.lint]
+stack = "linux"
+cmd = "bash ./lint"
+
+[task.test]
+stack = "linux"
+cmd = "bash ./test"

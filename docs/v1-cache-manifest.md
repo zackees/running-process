@@ -3,7 +3,7 @@
 The authoritative schema is:
 
 ```text
-crates/running-process/proto/broker_v1/broker_v1_manifest.proto
+crates/running-process-protocol/proto/broker_v1/broker_v1_manifest.proto
 ```
 
 `CacheManifest` records service-owned cache roots, runtime roots, daemon
