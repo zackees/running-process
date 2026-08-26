@@ -12,10 +12,15 @@ from pathlib import Path
 
 import tomllib
 
-
 ROOT = Path(__file__).resolve().parent.parent
 ROOT_MANIFEST = ROOT / "crates" / "running-process" / "Cargo.toml"
 ROOT_LIB = ROOT / "crates" / "running-process" / "src" / "lib.rs"
+ROOT_BROKER_V1 = (
+    ROOT / "crates" / "running-process" / "src" / "broker" / "protocol" / "mod.rs"
+)
+ROOT_BROKER_V2 = (
+    ROOT / "crates" / "running-process" / "src" / "broker" / "protocol_v2" / "mod.rs"
+)
 ROOT_BUILD = ROOT / "crates" / "running-process" / "build.rs"
 PROTOCOL = ROOT / "crates" / "running-process-protocol"
 PROTOCOL_MANIFEST = PROTOCOL / "Cargo.toml"
@@ -43,7 +48,17 @@ class TestProtocolCodegenIsolation(unittest.TestCase):
         self.assertTrue(PROTOCOL_BUILD.is_file())
         self.assertIn("prost-build", protocol_manifest["build-dependencies"])
         self.assertIn("protox", protocol_manifest["build-dependencies"])
-        self.assertIn("running_process_protocol::daemon", ROOT_LIB.read_text(encoding="utf-8"))
+        self.assertIn(
+            "running_process_protocol::daemon", ROOT_LIB.read_text(encoding="utf-8")
+        )
+        self.assertIn(
+            "running_process_protocol::broker::v1::*",
+            ROOT_BROKER_V1.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "running_process_protocol::broker::v2::*",
+            ROOT_BROKER_V2.read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":
