@@ -60,13 +60,12 @@ pub use platform_imp::{
     canonical_environment_pairs, capture_reader_done, compat_shell_command, configure_exact_trace,
     configure_process_command, configure_sync_contained_command, configure_sync_daemon_command,
     configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
-    monitor_console_windows, parent_has_console, prepare_capture_reader,
-    set_process_name, set_window_icon_impl,
-    shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
-    start_descendant_monitor, start_exact_trace, sync_child_native_handle, trampoline_exit_code,
-    unix_mark_extra_fds_close_on_exec, unix_set_priority, unix_signal_process,
-    unix_signal_process_group, unix_signal_raw, window_icon_support_impl, CaptureCancellation,
-    TracedChild, WindowsJobHandle,
+    monitor_console_windows, parent_has_console, prepare_capture_reader, set_process_name,
+    set_window_icon_impl, shell_command, soft_terminate_process_group, spawn_sync,
+    spawn_sync_daemon, start_descendant_monitor, start_exact_trace, sync_child_native_handle,
+    trampoline_exit_code, unix_mark_extra_fds_close_on_exec, unix_set_priority,
+    unix_signal_process, unix_signal_process_group, unix_signal_raw, window_icon_support_impl,
+    CaptureCancellation, TracedChild, WindowsJobHandle,
 };
 
 #[cfg(feature = "process-inspection")]
