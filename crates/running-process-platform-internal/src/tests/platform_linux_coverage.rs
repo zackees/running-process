@@ -3,6 +3,7 @@ use crate::platform::process::{
     CaptureStream, NonInvasiveObservationGrade, ObserverCategory, ObserverScope, ObserverSupport,
     ProcessCommandConfig, UnixSignalKind,
 };
+use std::ffi::OsStr;
 use std::io::Write as _;
 #[cfg(feature = "async-process")]
 use std::process::Stdio;
