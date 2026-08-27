@@ -258,6 +258,7 @@ pub fn monitor_console_windows(
     Vec::new()
 }
 
+#[cfg(feature = "async-process")]
 use std::ffi::OsStr;
 use std::io;
 use std::io::Read;
@@ -265,8 +266,10 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 
+#[cfg(feature = "async-process")]
 use tokio::process::{Child, Command};
 
+#[cfg(feature = "async-process")]
 use crate::SpawnSpec;
 
 #[path = "platform_linux_descendants.rs"]
@@ -398,9 +401,11 @@ pub use file_handles::read_process_file_handles;
 mod cmdline;
 pub use cmdline::read_process_cmdline;
 
+#[cfg(feature = "process-inspection")]
 #[path = "platform/process_tree.rs"]
 mod process_tree;
 
+#[cfg(feature = "process-inspection")]
 pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
     process_tree::kill_tree(pid, timeout, |_pid, process| Ok(process.start_time()))
 }
@@ -684,6 +689,7 @@ pub fn unix_signal_raw(signal: crate::platform::process::UnixSignalKind) -> i32 
     match signal { crate::platform::process::UnixSignalKind::Interrupt => libc::SIGINT, crate::platform::process::UnixSignalKind::Terminate => libc::SIGTERM, crate::platform::process::UnixSignalKind::Kill => libc::SIGKILL }
 }
 
+#[cfg(feature = "async-process")]
 pub fn configure_compat_tokio_command(
     command: &mut Command,
     _show_console: bool,
@@ -694,6 +700,7 @@ pub fn configure_compat_tokio_command(
 
 /// Nothing to do on this host: the parent-death signal is installed in `pre_exec`, before the
 /// child ever runs, so nothing remains to do once it has.
+#[cfg(feature = "async-process")]
 pub fn after_compat_tokio_spawn(
     _child: &Child,
     _kill_when_owner_dies: bool,
@@ -701,6 +708,7 @@ pub fn after_compat_tokio_spawn(
     Ok(())
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn configure_command(
     command: &mut Command,
     create_process_group: bool,
@@ -734,6 +742,7 @@ pub(crate) fn configure_command(
     Ok(())
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) -> io::Result<()> {
     Ok(())
 }
@@ -759,6 +768,7 @@ fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
     }
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("/bin/sh").arg("-c").arg(command)
 }

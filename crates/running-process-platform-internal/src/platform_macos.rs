@@ -267,6 +267,7 @@ pub fn monitor_console_windows(
     Vec::new()
 }
 
+#[cfg(feature = "async-process")]
 use std::ffi::OsStr;
 use std::io;
 use std::io::Read;
@@ -274,8 +275,10 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 
+#[cfg(feature = "async-process")]
 use tokio::process::{Child, Command};
 
+#[cfg(feature = "async-process")]
 use crate::SpawnSpec;
 
 #[path = "platform_macos_descendants.rs"]
@@ -423,9 +426,11 @@ pub use file_handles::read_process_file_handles;
 mod cmdline;
 pub use cmdline::read_process_cmdline;
 
+#[cfg(feature = "process-inspection")]
 #[path = "platform/process_tree.rs"]
 mod process_tree;
 
+#[cfg(feature = "process-inspection")]
 pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
     process_tree::kill_tree(pid, timeout, |_pid, process| Ok(process.start_time()))
 }
@@ -625,6 +630,7 @@ pub fn unix_signal_raw(signal: crate::platform::process::UnixSignalKind) -> i32 
     match signal { crate::platform::process::UnixSignalKind::Interrupt => libc::SIGINT, crate::platform::process::UnixSignalKind::Terminate => libc::SIGTERM, crate::platform::process::UnixSignalKind::Kill => libc::SIGKILL }
 }
 
+#[cfg(feature = "async-process")]
 pub fn configure_compat_tokio_command(
     command: &mut Command,
     _show_console: bool,
@@ -635,6 +641,7 @@ pub fn configure_compat_tokio_command(
 
 /// Nothing to do on this host: the kqueue supervisor is installed in `pre_exec`, before the child
 /// ever runs, so nothing remains to do once it has.
+#[cfg(feature = "async-process")]
 pub fn after_compat_tokio_spawn(
     _child: &Child,
     _kill_when_owner_dies: bool,
@@ -642,6 +649,7 @@ pub fn after_compat_tokio_spawn(
     Ok(())
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn configure_command(
     command: &mut Command,
     create_process_group: bool,
@@ -656,6 +664,7 @@ pub(crate) fn configure_command(
     )
 }
 
+#[cfg(feature = "async-process")]
 fn configure_command_for_owner(
     command: &mut Command,
     create_process_group: bool,
@@ -675,6 +684,7 @@ fn configure_command_for_owner(
     Ok(())
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) -> io::Result<()> {
     Ok(())
 }
@@ -694,10 +704,12 @@ fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
     if error.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(error) }
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("/bin/sh").arg("-c").arg(command)
 }
 
+#[cfg(feature = "async-process")]
 fn install_owner_death_supervisor(owner_pid: libc::pid_t) -> io::Result<()> {
     let mut handshake = [-1; 2];
     if unsafe { libc::pipe(handshake.as_mut_ptr()) } < 0 {
@@ -724,6 +736,7 @@ fn install_owner_death_supervisor(owner_pid: libc::pid_t) -> io::Result<()> {
     result
 }
 
+#[cfg(feature = "async-process")]
 fn read_supervisor_status(fd: libc::c_int) -> io::Result<()> {
     let mut status = 0_i32;
     let bytes = unsafe {
@@ -761,6 +774,7 @@ fn read_supervisor_status(fd: libc::c_int) -> io::Result<()> {
     }
 }
 
+#[cfg(feature = "async-process")]
 fn owner_death_supervisor(
     owner_pid: libc::pid_t,
     handshake_fd: libc::c_int,
@@ -811,6 +825,7 @@ fn owner_death_supervisor(
     unsafe { libc::close(queue); libc::_exit(0); }
 }
 
+#[cfg(feature = "async-process")]
 fn close_supervisor_fds(handshake_fd: libc::c_int) -> Result<(), libc::c_int> {
     const BATCH_SIZE: usize = 64;
     // XNU's bsd/kern/syscalls.master assigns `proc_info` syscall 336, and
@@ -869,6 +884,7 @@ fn close_supervisor_fds(handshake_fd: libc::c_int) -> Result<(), libc::c_int> {
     }
 }
 
+#[cfg(feature = "async-process")]
 fn report_supervisor_status(fd: libc::c_int, status: libc::c_int) {
     let bytes = status.to_ne_bytes();
     let mut offset = 0;
@@ -890,11 +906,12 @@ fn report_supervisor_status(fd: libc::c_int, status: libc::c_int) {
     }
 }
 
+#[cfg(feature = "async-process")]
 fn last_errno() -> libc::c_int {
     unsafe { *libc::__error() }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "async-process"))]
 #[path = "platform_macos_tests.rs"]
 mod tests;
 

@@ -43,6 +43,7 @@ STAGES: dict[str, str] = {
     "guard-jemalloc": "ci.jemalloc_guard",
     "guard-spawn-path": "ci.spawn_path_guard",
     "guard-platform-boundary": "ci.platform_boundary",
+    "guard-minimal-async-platform": "ci.minimal_async_platform_graph",
     "guard-docker-manifest": "ci.docker_manifest_guard",
 }
 

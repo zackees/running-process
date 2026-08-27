@@ -135,6 +135,10 @@ const _: fn(crate::telemetry::TeeHandle) -> daemon::telemetry::TeeHandle = |hand
 #[cfg(feature = "daemon")]
 /// Daemon runtime APIs and helpers enabled by the `daemon` feature.
 pub mod daemon;
+// `kill_tree` is established 4.x containment surface and remains available to
+// `default-features = false` callers. Its sysinfo-backed platform primitive is
+// the explicit Phase 0.5 compatibility exception; public inspection APIs stay
+// behind `process-inspection`.
 pub mod process_tree;
 #[cfg(feature = "pty")]
 /// PTY-backed process APIs.

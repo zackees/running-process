@@ -322,6 +322,7 @@ pub fn start_descendant_monitor(
     Ok(())
 }
 
+#[cfg(feature = "async-process")]
 use std::ffi::OsStr;
 use std::io;
 use std::io::Read;
@@ -329,6 +330,7 @@ use std::os::windows::io::AsRawHandle;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
+#[cfg(feature = "async-process")]
 use tokio::process::{Child, Command};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER};
 use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
@@ -338,6 +340,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
+#[cfg(feature = "async-process")]
 use crate::SpawnSpec;
 
 #[derive(Default)]
@@ -371,9 +374,11 @@ pub use file_handles::read_process_file_handles;
 mod cmdline;
 pub use cmdline::read_process_cmdline;
 
+#[cfg(feature = "process-inspection")]
 #[path = "platform/process_tree.rs"]
 mod process_tree;
 
+#[cfg(feature = "process-inspection")]
 pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
     process_tree::kill_tree(pid, timeout, process_start_key)
 }
@@ -478,6 +483,7 @@ pub fn unix_signal_process(_pid: u32, _signal: crate::platform::process::UnixSig
 pub fn unix_signal_process_group(_pid: i32, _signal: crate::platform::process::UnixSignalKind) -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "Unix signals are unavailable on Windows")) }
 pub fn unix_signal_raw(_signal: crate::platform::process::UnixSignalKind) -> i32 { 0 }
 
+#[cfg(feature = "async-process")]
 pub fn configure_compat_tokio_command(
     command: &mut Command,
     show_console: bool,
@@ -490,6 +496,7 @@ pub fn configure_compat_tokio_command(
     Ok(())
 }
 
+#[cfg(feature = "async-process")]
 fn compat_tokio_creation_flags(show_console: bool) -> u32 {
     if show_console {
         0
@@ -498,6 +505,7 @@ fn compat_tokio_creation_flags(show_console: bool) -> u32 {
     }
 }
 
+#[cfg(feature = "async-process")]
 pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Result<()> {
     if kill_when_owner_dies {
         assign(child.raw_handle())
@@ -506,6 +514,7 @@ pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) -> io
     }
 }
 
+#[cfg(feature = "process-inspection")]
 fn process_start_key(pid: sysinfo::Pid, _process: &sysinfo::Process) -> io::Result<u64> {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
     use windows_sys::Win32::System::Threading::{
@@ -531,6 +540,7 @@ fn process_start_key(pid: sysinfo::Pid, _process: &sysinfo::Process) -> io::Resu
 
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
+#[cfg(feature = "async-process")]
 pub(crate) fn configure_command(
     command: &mut Command,
     create_process_group: bool,
@@ -542,6 +552,7 @@ pub(crate) fn configure_command(
     Ok(())
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn after_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Result<()> {
     if kill_when_owner_dies {
         assign(child.raw_handle())
@@ -570,6 +581,7 @@ pub(crate) fn signal_process_group(pid: u32) -> io::Result<()> {
     if error.raw_os_error() == Some(ERROR_INVALID_HANDLE as i32) { Ok(()) } else { Err(error) }
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("cmd.exe").arg("/C").arg(command)
 }

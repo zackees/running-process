@@ -6,12 +6,18 @@
 //! `tokio::process::Command` directly.
 
 use std::cfg_select;
+#[cfg(feature = "async-process")]
 use std::ffi::{OsStr, OsString};
+#[cfg(any(feature = "async-process", feature = "ipc"))]
 use std::io;
+#[cfg(feature = "async-process")]
 use std::path::PathBuf;
+#[cfg(feature = "async-process")]
 use std::process::{ExitStatus, Output, Stdio};
 
+#[cfg(feature = "async-process")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+#[cfg(feature = "async-process")]
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 /// Neutral capability indexes for the eventual workspace-wide host boundary.
@@ -54,14 +60,17 @@ pub use platform_imp::{
     canonical_environment_pairs, capture_reader_done, compat_shell_command, configure_exact_trace,
     configure_process_command, configure_sync_contained_command, configure_sync_daemon_command,
     configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
-    kill_tree, monitor_console_windows, parent_has_console, prepare_capture_reader,
-    process_snapshot, process_snapshot_for_pid, set_process_name, set_window_icon_impl,
+    monitor_console_windows, parent_has_console, prepare_capture_reader,
+    set_process_name, set_window_icon_impl,
     shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
     start_descendant_monitor, start_exact_trace, sync_child_native_handle, trampoline_exit_code,
     unix_mark_extra_fds_close_on_exec, unix_set_priority, unix_signal_process,
     unix_signal_process_group, unix_signal_raw, window_icon_support_impl, CaptureCancellation,
     TracedChild, WindowsJobHandle,
 };
+
+#[cfg(feature = "process-inspection")]
+pub use platform_imp::{kill_tree, process_snapshot, process_snapshot_for_pid};
 
 pub use platform_imp::{autostart_register, autostart_render_registration, autostart_unregister};
 
@@ -285,6 +294,7 @@ pub use platform_imp::relay_local_socket_session;
 ///
 /// The public wrapper retains its policy type, while console suppression and
 /// owner-death primitives stay inside the selected platform root.
+#[cfg(feature = "async-process")]
 pub fn configure_compat_tokio_command(
     command: &mut Command,
     show_console: bool,
@@ -294,11 +304,13 @@ pub fn configure_compat_tokio_command(
 }
 
 /// Complete host-owned setup after a legacy Tokio child has been spawned.
+#[cfg(feature = "async-process")]
 pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Result<()> {
     platform_imp::after_compat_tokio_spawn(child, kill_when_owner_dies)
 }
 
 /// Stdio policy for one child stream.
+#[cfg(feature = "async-process")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamMode {
     /// Leave the stream connected to the parent process.
@@ -309,6 +321,7 @@ pub enum StreamMode {
     Null,
 }
 
+#[cfg(feature = "async-process")]
 impl StreamMode {
     fn apply(self) -> Stdio {
         match self {
@@ -320,6 +333,7 @@ impl StreamMode {
 }
 
 /// Typed spawn description accepted by the blessed process boundary.
+#[cfg(feature = "async-process")]
 #[derive(Debug, Clone)]
 pub struct SpawnSpec {
     program: OsString,
@@ -334,6 +348,7 @@ pub struct SpawnSpec {
     kill_when_owner_dies: bool,
 }
 
+#[cfg(feature = "async-process")]
 impl SpawnSpec {
     /// Create a direct (non-shell) command description.
     pub fn new(program: impl Into<OsString>) -> Self {
@@ -447,6 +462,7 @@ impl SpawnSpec {
 }
 
 /// Owned child handle returned by [`SpawnSpec::spawn`].
+#[cfg(feature = "async-process")]
 pub struct PlatformChild {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -455,6 +471,7 @@ pub struct PlatformChild {
     signal: PlatformEmergencySignal,
 }
 
+#[cfg(feature = "async-process")]
 impl PlatformChild {
     fn new(mut child: Child, own_process_group: bool) -> Self {
         let signal = PlatformEmergencySignal {
@@ -565,10 +582,12 @@ impl PlatformChild {
 }
 
 /// Opaque exit-wait capability owned by a process actor.
+#[cfg(feature = "async-process")]
 pub struct PlatformLifecycle {
     child: Child,
 }
 
+#[cfg(feature = "async-process")]
 impl PlatformLifecycle {
     /// Wait asynchronously for the child to exit.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
@@ -580,11 +599,13 @@ impl PlatformLifecycle {
 ///
 /// It can be used while the actor has a pending wait on
 /// [`PlatformLifecycle`], but it cannot observe or consume the exit result.
+#[cfg(feature = "async-process")]
 pub struct PlatformEmergencySignal {
     pid: Option<u32>,
     own_process_group: bool,
 }
 
+#[cfg(feature = "async-process")]
 impl PlatformEmergencySignal {
     /// Request immediate termination without waiting for process reaping.
     pub fn kill(&self) -> io::Result<()> {
@@ -617,10 +638,12 @@ impl PlatformEmergencySignal {
 }
 
 /// Opaque piped stdin capability owned by a process actor.
+#[cfg(feature = "async-process")]
 pub struct PlatformStdin {
     stdin: ChildStdin,
 }
 
+#[cfg(feature = "async-process")]
 impl PlatformStdin {
     /// Write and flush bytes to the child stdin pipe.
     pub async fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -630,15 +653,18 @@ impl PlatformStdin {
 }
 
 /// Opaque stdout or stderr reader owned by a process actor.
+#[cfg(feature = "async-process")]
 pub struct PlatformOutput {
     reader: OutputReader,
 }
 
+#[cfg(feature = "async-process")]
 enum OutputReader {
     Stdout(ChildStdout),
     Stderr(ChildStderr),
 }
 
+#[cfg(feature = "async-process")]
 impl PlatformOutput {
     fn stdout(stdout: ChildStdout) -> Self {
         Self {
@@ -672,18 +698,22 @@ impl PlatformOutput {
     }
 }
 
+#[cfg(feature = "async-process")]
 fn stdin_not_piped() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "child stdin is not piped")
 }
 
+#[cfg(feature = "async-process")]
 fn stdout_not_piped() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "child stdout is not piped")
 }
 
+#[cfg(feature = "async-process")]
 fn stderr_not_piped() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "child stderr is not piped")
 }
 
+#[cfg(feature = "async-process")]
 async fn read_owned_to_end<R>(reader: Option<R>) -> io::Result<Vec<u8>>
 where
     R: AsyncRead + Unpin,
@@ -697,11 +727,12 @@ where
 }
 
 /// Build a shell command using the host platform's supported shell.
+#[cfg(feature = "async-process")]
 pub fn shell_spec(command: impl AsRef<OsStr>) -> SpawnSpec {
     platform_imp::shell_spec(command.as_ref())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "async-process"))]
 mod tests {
     use super::{shell_spec, SpawnSpec, StreamMode};
 

@@ -13,12 +13,18 @@ publish = true
 workspace = true
 
 [features]
-default = []
+# This is a published implementation-detail crate. These two capabilities
+# were historically unconditional public surface, so its default remains
+# source-compatible. Consumers that need a trimmed graph, including the root
+# facade below, must opt out explicitly with `default-features = false`.
+default = ["async-process"]
 fs = ["dep:dirs"]
-ipc = ["dep:interprocess", "dep:dirs"]
-ipc-async = ["ipc", "interprocess/tokio", "tokio/net"]
+ipc = ["dep:interprocess", "dep:dirs", "dep:blake3"]
+async-process = ["dep:tokio", "process-inspection"]
+ipc-async = ["ipc", "async-process", "interprocess/tokio", "tokio/net"]
 session-relay = ["ipc-async"]
-pty = ["dep:portable-pty"]
+process-inspection = ["dep:sysinfo"]
+pty = ["dep:portable-pty", "process-inspection"]
 conpty-sidecar = [
     "pty",
     "dep:dirs",
@@ -29,18 +35,15 @@ conpty-sidecar = [
 ]
 
 [dependencies]
-tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt"] }
-sysinfo = "0.30"
+tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt"], optional = true }
+sysinfo = { version = "0.30", optional = true }
 interprocess = { version = "2", optional = true }
 thiserror = "2"
 portable-pty = { version = "0.9", optional = true }
-blake3 = "1"
+blake3 = { version = "1.8.7", optional = true }
 # Needed by the `ipc` feature on every host for the per-user runtime
 # fallback root, and by `conpty-sidecar` on Windows.
 dirs = { version = "6", optional = true }
-
-[build-dependencies]
-toml = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }
