@@ -81,6 +81,24 @@ async fn semantic_stdio_null_discards_each_captured_stream() {
 }
 
 #[tokio::test]
+async fn semantic_stdio_inherit_does_not_claim_to_capture_each_stream() {
+    let output = AsyncProcessBuilder::new(testbin("testbin-stdio-scripted"))
+        .arg("out:inherited-stdout")
+        .arg("err:inherited-stderr")
+        .stdout(AsyncStdio::Inherit)
+        .stderr(AsyncStdio::Inherit)
+        .capture()
+        .await
+        .expect("inherited stdio child runs");
+
+    assert!(output.status.success());
+    // Do not assert where inherited output appears: the test harness may
+    // capture its own stdout/stderr. The facade must only promise emptiness.
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}
+
+#[tokio::test]
 async fn semantic_shell_uses_the_platform_owned_convention() {
     #[cfg(windows)]
     let command = "echo semantic-shell";

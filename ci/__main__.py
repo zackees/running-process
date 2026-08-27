@@ -45,13 +45,16 @@ STAGES: dict[str, str] = {
     "guard-platform-boundary": "ci.platform_boundary",
     "guard-minimal-async-platform": "ci.minimal_async_platform_graph",
     "guard-kernel-substrate": "ci.kernel_substrate_contract",
+    "test-async-semantic-capture": "ci.kernel_substrate_async_capture",
     "guard-docker-manifest": "ci.docker_manifest_guard",
 }
 
 
 def _usage() -> str:
     width = max(len(name) for name in STAGES)
-    lines = [f"  {name.ljust(width)}  {module}" for name, module in sorted(STAGES.items())]
+    lines = [
+        f"  {name.ljust(width)}  {module}" for name, module in sorted(STAGES.items())
+    ]
     return "usage: python -m ci <stage> [args...]\n\nstages:\n" + "\n".join(lines)
 
 
