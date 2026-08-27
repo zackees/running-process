@@ -74,6 +74,11 @@ def main() -> int:
         != 0
     ):
         return 1
+    if (
+        run(supervised_command(python, str(python), "-m", "ci.kernel_substrate_contract"))
+        != 0
+    ):
+        return 1
     if run(supervised_command(python, str(python), "-m", "ci.parity_manifest")) != 0:
         print(
             "lint: sync/async parity manifest is out of date. See "

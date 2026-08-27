@@ -542,6 +542,12 @@ PTY mode is intentionally more conservative:
 ./test
 ```
 
+### kernal-api substrate
+
+`kernal-api` consumers use the narrow semantic `kernel-substrate` feature with
+default features disabled. See [the kernel substrate contract](docs/kernel-substrate.md)
+for the supported manifest spelling, dependency allowlist, and timing evidence.
+
 `./install` bootstraps `rustup` into the shared user locations (`~/.cargo` and `~/.rustup`, or `CARGO_HOME` / `RUSTUP_HOME` if you override them), then installs the exact toolchain pinned in `rust-toolchain.toml`. Toolchain installs are serialized with a lock so concurrent repo bootstraps do not race the same shared version. Rust build commands run through `uvx soldr`, so there is no separate `soldr` install step to maintain.
 
 `./lint` applies `cargo fmt` and Ruff autofixes before running the remaining lint checks, so fixable issues are rewritten in place.

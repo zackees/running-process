@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "running-process kernel substrate timing evidence",
+  "type": "object",
+  "required": [
+    "schema_version", "command", "package", "feature", "target_dir",
+    "clean_ns", "incremental_ns", "clean_exit_code", "incremental_exit_code",
+    "lock_sha256", "toolchain", "resolved_packages"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "command": { "type": "array", "items": { "type": "string" } },
+    "package": { "const": "running-process" },
+    "feature": { "const": "kernel-substrate" },
+    "target_dir": { "const": "temporary" },
+    "clean_ns": { "type": "integer", "minimum": 0 },
+    "incremental_ns": { "type": "integer", "minimum": 0 },
+    "clean_exit_code": { "type": "integer" },
+    "incremental_exit_code": { "type": "integer" },
+    "lock_sha256": { "type": "string" },
+    "toolchain": { "type": "string" },
+    "resolved_packages": { "type": "array", "items": { "type": "string" } }
+  }
+}

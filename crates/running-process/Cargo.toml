@@ -76,6 +76,9 @@ required-features = ["daemon"]
 # the `runpm` binary out of the box (per Q1 resolution in #165:
 # `required-features` are not auto-activated by cargo install).
 default = ["client", "pty", "conpty-sidecar", "daemon-trampoline"]
+# Stable consumer spelling for kernal-api.  This is deliberately semantic:
+# consumers select the native async substrate without naming its private seams.
+kernel-substrate = ["async-process"]
 # The actor-backed substrate needs semantic tree termination today.  It uses
 # the same platform implementation as the synchronous facade; it does not
 # expose Tokio types or create a second engine.
