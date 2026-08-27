@@ -69,6 +69,11 @@ def main() -> int:
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.async_compliance_guard")) != 0:
         return 1
+    if (
+        run(supervised_command(python, str(python), "-m", "ci.minimal_async_platform_graph"))
+        != 0
+    ):
+        return 1
     if run(supervised_command(python, str(python), "-m", "ci.parity_manifest")) != 0:
         print(
             "lint: sync/async parity manifest is out of date. See "

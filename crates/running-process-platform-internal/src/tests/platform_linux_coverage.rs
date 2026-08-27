@@ -3,7 +3,9 @@ use crate::platform::process::{
     CaptureStream, NonInvasiveObservationGrade, ObserverCategory, ObserverScope, ObserverSupport,
     ProcessCommandConfig, UnixSignalKind,
 };
+use std::ffi::OsStr;
 use std::io::Write as _;
+#[cfg(feature = "async-process")]
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -102,6 +104,7 @@ fn gnu_note_parser_accepts_build_ids_and_rejects_malformed_notes() {
     assert_eq!(gnu_build_id_from_notes(&[]), None);
 }
 
+#[cfg(feature = "async-process")]
 #[test]
 fn exit_status_and_shell_spec_preserve_linux_conventions() {
     let terminate = unix_signal_raw(UnixSignalKind::Terminate);
@@ -175,6 +178,7 @@ fn capture_readers_deliver_data_and_wake_on_cancellation() {
     assert!(set_nonblocking(-1).is_err());
 }
 
+#[cfg(feature = "async-process")]
 #[test]
 fn reviewed_command_configuration_executes_on_short_lived_children() {
     set_process_name("running-process-platform-name-is-truncated");
@@ -212,6 +216,7 @@ fn reviewed_command_configuration_executes_on_short_lived_children() {
     configure_command(&mut tokio_command, true, true).unwrap();
 }
 
+#[cfg(feature = "async-process")]
 #[test]
 fn tokio_configuration_and_live_signal_helpers_reach_the_os() {
     let runtime = tokio::runtime::Builder::new_current_thread()
