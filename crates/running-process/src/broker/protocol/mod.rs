@@ -20,9 +20,7 @@ pub mod framing;
 pub mod registry;
 pub mod validate;
 
-pub use frame_ext::{
-    encode_framed, try_decode_framed, DecodedFramed, EndpointNameError, FRAME_HEADER_BYTES,
-};
+pub use frame_ext::{encode_framed, try_decode_framed, DecodedFramed, FRAME_HEADER_BYTES};
 pub use framing::{
     read_frame, read_frame_with_cap, write_frame, FramingError, ENVELOPE_VERSION, MAX_FRAME_BYTES,
     MAX_HELLO_BYTES,
@@ -32,4 +30,5 @@ pub use registry::{
     FBUILD_PAYLOAD_PROTOCOL, HANDOFF_PAYLOAD_PROTOCOL, PROTOCOL_VERSION, SESSION_PAYLOAD_PROTOCOL,
     ZCCACHE_PAYLOAD_PROTOCOL,
 };
+pub use running_process_protocol::EndpointNameError;
 pub use validate::{validate_frame_envelope, FrameValidationError};

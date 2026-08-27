@@ -10,40 +10,16 @@
 
 pub use running_process_protocol::broker::v2::*;
 
-impl SessionStart {
-    /// Build a contained SESSION request from the caller's current process
-    /// context. Only Unicode environment entries can be represented by this
-    /// protobuf string vocabulary; `std::env::vars()` retains that existing
-    /// limitation explicitly.
-    pub fn from_current_process(
-        program: impl Into<String>,
-        args: impl IntoIterator<Item = impl Into<String>>,
-        cwd: impl Into<String>,
-    ) -> Self {
-        Self {
-            program: program.into(),
-            args: args.into_iter().map(Into::into).collect(),
-            cwd: cwd.into(),
-            env: std::env::vars()
-                .map(|(key, value)| SessionEnvVar { key, value })
-                .collect(),
-            clear_inherited_env: true,
-            environment_policy: crate::EnvironmentPolicy::Clear
-                .wire_value()
-                .expect("Clear is serializable"),
-        }
-    }
-
-    /// Select the base environment. `Auto` resolves to the contained-child
-    /// default (`Inherit`) before serialization.
-    pub fn with_environment_policy(mut self, policy: crate::EnvironmentPolicy) -> Self {
-        let policy = match policy {
+impl running_process_protocol::SessionStartEnvironmentPolicy for crate::EnvironmentPolicy {
+    fn session_start_wire_fields(self) -> (i32, bool) {
+        let policy = match self {
             crate::EnvironmentPolicy::Auto => crate::EnvironmentPolicy::Inherit,
             explicit => explicit,
         };
-        self.environment_policy = policy.wire_value().expect("resolved policy");
-        self.clear_inherited_env = policy.legacy_clear_fallback().expect("resolved policy");
-        self
+        (
+            policy.wire_value().expect("resolved policy"),
+            policy.legacy_clear_fallback().expect("resolved policy"),
+        )
     }
 }
 
