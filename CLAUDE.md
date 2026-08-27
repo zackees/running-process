@@ -90,6 +90,7 @@ can be reproduced locally instead of reassembled from workflow YAML):
 ```bash
 uv run --no-sync python -m ci --help          # list the stages
 uv run --no-sync python -m ci guard-jemalloc  # run one guard
+uv run --no-sync python -m ci guard-kernel-substrate  # resolver dependency contract (#1147)
 uv run --no-sync python -m ci lint            # what `./lint` wraps
 ```
 

@@ -1,0 +1,60 @@
+# #1147: every package reachable from the resolver-derived normal/build graph
+# of `running-process --no-default-features --features kernel-substrate` needs
+# a reviewed reason. Target-specific members are intentionally listed here so
+# each host can validate the same contract without weakening it to an open set.
+
+forbidden = [
+  "prost", "prost-build", "prost-types", "protox", "rusqlite", "portable-pty",
+  "ureq", "zstd", "zstd-sys", "tar", "sha2", "clap", "toml",
+  "running-process-protocol", "kernal-api",
+]
+
+[packages]
+running-process = "The selected public crate."
+running-process-platform-internal = "Private native implementation selected by async-process."
+libc = "Unix process, signal, and runtime primitives."
+thiserror = "Public native error representation."
+thiserror-impl = "Proc-macro support for thiserror."
+proc-macro2 = "Proc-macro token support."
+quote = "Proc-macro token generation."
+syn = "Proc-macro parsing."
+unicode-ident = "Rust identifier support for proc macros."
+tokio = "The single actor runtime; private to running-process."
+tokio-macros = "Tokio macro support selected by Tokio's resolved features."
+bytes = "Tokio buffer dependency."
+mio = "Tokio OS event backend."
+socket2 = "Tokio socket configuration dependency."
+pin-project-lite = "Tokio pin projection helper."
+signal-hook-registry = "Unix Tokio signal registration dependency."
+errno = "Unix error constants for Tokio."
+sysinfo = "Existing semantic containment implementation."
+cfg-if = "Target conditional dependency implementation."
+once_cell = "sysinfo runtime cache."
+rayon = "sysinfo process enumeration implementation."
+rayon-core = "Rayon worker implementation."
+either = "Rayon utility dependency."
+crossbeam-deque = "Rayon worker queue."
+crossbeam-epoch = "Rayon queue reclamation."
+crossbeam-utils = "Rayon concurrency primitives."
+ntapi = "Windows sysinfo process support."
+winapi = "Existing Windows process ABI dependency."
+windows = "sysinfo Windows API projection."
+windows-core = "Windows projection support."
+windows-targets = "Windows target selection metadata."
+windows_x86_64_msvc = "Windows MSVC target import metadata."
+windows-sys = "Native Windows process ABI surface."
+windows-link = "Windows API linker glue."
+widestring = "Windows process argument conversion."
+png = "Existing platform-internal icon parser selected on Linux."
+bitflags = "png/rustix flags representation."
+crc32fast = "png checksum implementation."
+fdeflate = "png DEFLATE support."
+simd-adler32 = "png checksum support."
+flate2 = "png DEFLATE decoder."
+miniz_oxide = "png DEFLATE implementation."
+adler2 = "DEFLATE checksum support."
+x11rb = "Existing Linux platform icon transport."
+x11rb-protocol = "X11 protocol definitions."
+gethostname = "X11 host lookup."
+rustix = "X11 Unix ABI helper."
+linux-raw-sys = "rustix Linux ABI constants."

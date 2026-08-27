@@ -127,6 +127,18 @@ jobs:
           RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS: "300"
         run: uv run --no-sync --module ci.run_logged logs/lint.log -- uv run --no-sync --module ci.lint
 
+      - name: Record kernel substrate timing
+        if: ${{ inputs.label == 'linux-x86' }}
+        run: uv run --no-sync --module ci.kernel_substrate_timing --output logs/kernel-substrate-timing.json
+
+      - name: Upload kernel substrate timing
+        if: ${{ always() && inputs.label == 'linux-x86' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-substrate-timing-${{ inputs.label }}
+          path: logs/kernel-substrate-timing.json
+          if-no-files-found: warn
+
       # Dylint is intentionally a single Linux-x86 step. Its nightly artifacts
       # use a dedicated persistent cache so they cannot mix with the stable
       # workspace build or impose a cold rebuild on every platform lane.

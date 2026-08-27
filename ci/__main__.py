@@ -44,6 +44,7 @@ STAGES: dict[str, str] = {
     "guard-spawn-path": "ci.spawn_path_guard",
     "guard-platform-boundary": "ci.platform_boundary",
     "guard-minimal-async-platform": "ci.minimal_async_platform_graph",
+    "guard-kernel-substrate": "ci.kernel_substrate_contract",
     "guard-docker-manifest": "ci.docker_manifest_guard",
 }
 
