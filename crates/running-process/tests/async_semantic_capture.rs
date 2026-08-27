@@ -4,6 +4,19 @@ use std::ffi::OsString;
 
 use running_process::{AsyncProcessBuilder, AsyncStdio};
 
+fn fixture_program() -> OsString {
+    let exe = std::env::current_exe().expect("test executable path");
+    let dir = exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("test binary should live in <profile>/deps/");
+    dir.join(format!(
+        "testbin-stdio-scripted{}",
+        std::env::consts::EXE_SUFFIX
+    ))
+    .into_os_string()
+}
+
 #[test]
 fn semantic_builder_is_public_and_backend_free() {
     let _ = AsyncProcessBuilder::new("program")
@@ -22,9 +35,8 @@ fn semantic_builder_is_public_and_backend_free() {
 
 #[tokio::test]
 async fn capture_preserves_a_nonzero_exit_status() {
-    let args = vec![OsString::from("-c"), OsString::from("exit 7")];
-    let output = AsyncProcessBuilder::new("python")
-        .args(args)
+    let output = AsyncProcessBuilder::new(fixture_program())
+        .arg("exit:7")
         .capture()
         .await
         .expect("capture succeeds even when the child exits nonzero");
