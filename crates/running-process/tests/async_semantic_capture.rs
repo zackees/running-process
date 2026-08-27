@@ -4,17 +4,14 @@ use std::ffi::OsString;
 
 use running_process::{AsyncProcessBuilder, AsyncStdio};
 
-fn fixture_program() -> OsString {
+fn testbin(name: &str) -> OsString {
     let exe = std::env::current_exe().expect("test executable path");
     let dir = exe
         .parent()
         .and_then(std::path::Path::parent)
         .expect("test binary should live in <profile>/deps/");
-    dir.join(format!(
-        "testbin-stdio-scripted{}",
-        std::env::consts::EXE_SUFFIX
-    ))
-    .into_os_string()
+    dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+        .into_os_string()
 }
 
 #[test]
@@ -35,12 +32,67 @@ fn semantic_builder_is_public_and_backend_free() {
 
 #[tokio::test]
 async fn capture_preserves_a_nonzero_exit_status() {
-    let output = AsyncProcessBuilder::new(fixture_program())
+    let output = AsyncProcessBuilder::new(testbin("testbin-stdio-scripted"))
         .arg("exit:7")
         .capture()
         .await
         .expect("capture succeeds even when the child exits nonzero");
     assert_eq!(output.status.code(), Some(7));
+}
+
+#[tokio::test]
+async fn semantic_builder_clears_environment_before_explicit_overrides() {
+    const INHERITED: &str = "ASYNC_SEMANTIC_CAPTURE_INHERITED";
+    const EXPLICIT: &str = "ASYNC_SEMANTIC_CAPTURE_EXPLICIT";
+    std::env::set_var(INHERITED, "must-not-reach-child");
+
+    let temp = tempfile::tempdir().expect("temporary output directory");
+    let output_path = temp.path().join("environment.txt");
+    let output = AsyncProcessBuilder::new(testbin("testbin-env-dump"))
+        .arg(output_path.as_os_str())
+        .clear_env(true)
+        .env(EXPLICIT, "present")
+        .capture()
+        .await
+        .expect("clear-environment child runs");
+    std::env::remove_var(INHERITED);
+
+    assert!(output.status.success());
+    let environment = std::fs::read_to_string(output_path).expect("read child environment");
+    assert!(environment.contains("ASYNC_SEMANTIC_CAPTURE_EXPLICIT=present\n"));
+    assert!(!environment.contains("ASYNC_SEMANTIC_CAPTURE_INHERITED="));
+}
+
+#[tokio::test]
+async fn semantic_stdio_null_discards_each_captured_stream() {
+    let output = AsyncProcessBuilder::new(testbin("testbin-stdio-scripted"))
+        .arg("out:discarded-stdout")
+        .arg("err:discarded-stderr")
+        .stdin(AsyncStdio::Null)
+        .stdout(AsyncStdio::Null)
+        .stderr(AsyncStdio::Null)
+        .capture()
+        .await
+        .expect("null stdio child runs");
+
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}
+
+#[tokio::test]
+async fn semantic_shell_uses_the_platform_owned_convention() {
+    #[cfg(windows)]
+    let command = "echo semantic-shell";
+    #[cfg(not(windows))]
+    let command = "printf semantic-shell";
+
+    let output = AsyncProcessBuilder::shell(command)
+        .capture()
+        .await
+        .expect("platform shell runs");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("semantic-shell"));
 }
 
 #[cfg(unix)]
