@@ -166,10 +166,7 @@ impl AsyncProcessBuilder {
     }
 
     /// Start and capture both streams within one aggregate byte ceiling.
-    pub async fn capture_bounded(
-        self,
-        limit: usize,
-    ) -> Result<AsyncCapturedOutput, ProcessError> {
+    pub async fn capture_bounded(self, limit: usize) -> Result<AsyncCapturedOutput, ProcessError> {
         let mut process = self.build();
         process.start().await?;
         process.capture_bounded(limit).await
@@ -466,10 +463,7 @@ impl AsyncProcess {
     }
 
     /// Capture both streams within one aggregate byte limit and preserve status.
-    pub async fn capture_bounded(
-        &self,
-        limit: usize,
-    ) -> Result<AsyncCapturedOutput, ProcessError> {
+    pub async fn capture_bounded(&self, limit: usize) -> Result<AsyncCapturedOutput, ProcessError> {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
         Ok(child.output_bounded(limit).await?.into())
     }
