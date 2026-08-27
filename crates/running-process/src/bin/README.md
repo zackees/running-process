@@ -12,7 +12,13 @@ runtime role.
 | `running-process-broker-v1` | v1 broker — FROZEN per #228; admin RPCs, serve modes, doctor checks (514 LOC) | `client` |
 | `running-process-broker-v2` | v2 broker — accept loop + ServiceDefinitionLoader integration (running-process#532 slice 1) | `client` |
 | `running-process-cleanup` | Standalone manifest-registry GC tool | `client` |
-| `daemon-trampoline` | Detach-on-spawn helper (no required features) | — |
+| `daemon-trampoline` | Detach-on-spawn helper | `daemon-trampoline` |
+
+Build the trampoline explicitly with its opt-in feature:
+
+```bash
+soldr cargo build -p running-process --bin daemon-trampoline --features daemon-trampoline
+```
 
 ## v1 ↔ v2 broker coexistence
 
