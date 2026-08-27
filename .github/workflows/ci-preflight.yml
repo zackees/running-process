@@ -131,6 +131,14 @@ jobs:
         if: ${{ inputs.label == 'linux-x86' }}
         run: uv run --no-sync --module ci.kernel_substrate_timing --output logs/kernel-substrate-timing.json
 
+      # This is deliberately a separate minimal-feature public API contract:
+      # the workspace test pass uses its normal feature selection and would
+      # otherwise not exercise the kernal-api substrate facade.  The stage
+      # builds testbins first because the external test launches them.
+      - name: Async semantic capture contract (kernel substrate)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: uv run --no-sync --module ci.run_logged logs/async-semantic-capture.log -- uv run --no-sync --module ci test-async-semantic-capture
+
       - name: Upload kernel substrate timing
         if: ${{ always() && inputs.label == 'linux-x86' }}
         uses: actions/upload-artifact@v4
