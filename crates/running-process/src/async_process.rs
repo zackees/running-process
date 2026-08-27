@@ -14,6 +14,168 @@ use crate::blocking_island::dispatch;
 use crate::process_runtime::{block_on, ActorProcess};
 use crate::{ProcessError, RunOutput, SharedOutputCursor};
 
+/// Semantic stdio policy for one asynchronous child stream.
+///
+/// This intentionally names no runtime, descriptor, handle, or platform type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsyncStdio {
+    /// Leave the stream connected to the parent process.
+    Inherit,
+    /// Connect the stream to the canonical actor's capture pipe.
+    Piped,
+    /// Connect the stream to the host null device.
+    Null,
+}
+
+impl AsyncStdio {
+    fn into_internal(self) -> StreamMode {
+        match self {
+            Self::Inherit => StreamMode::Inherit,
+            Self::Piped => StreamMode::Piped,
+            Self::Null => StreamMode::Null,
+        }
+    }
+}
+
+/// Status-preserving one-shot asynchronous capture result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsyncCapturedOutput {
+    /// The operating system's unmodified child status.
+    pub status: ExitStatus,
+    /// Bytes captured from stdout.
+    pub stdout: Vec<u8>,
+    /// Bytes captured from stderr.
+    pub stderr: Vec<u8>,
+}
+
+impl From<Output> for AsyncCapturedOutput {
+    fn from(output: Output) -> Self {
+        Self {
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        }
+    }
+}
+
+/// Semantic description of an asynchronous child process.
+///
+/// The concrete spawn machinery remains private. The builder feeds the same
+/// canonical actor as [`AsyncProcess::new`], not a second execution engine.
+pub struct AsyncProcessBuilder {
+    spec: SpawnSpec,
+}
+
+impl AsyncProcessBuilder {
+    /// Describe a direct program invocation.
+    pub fn new(program: impl Into<OsString>) -> Self {
+        Self {
+            spec: SpawnSpec::new(program)
+                .stdin(StreamMode::Piped)
+                .stdout(StreamMode::Piped)
+                .stderr(StreamMode::Piped),
+        }
+    }
+
+    /// Describe a command using the platform-owned shell convention.
+    pub fn shell(command: impl Into<OsString>) -> Self {
+        Self {
+            spec: running_process_platform_internal::shell_spec(command.into())
+                .stdin(StreamMode::Piped)
+                .stdout(StreamMode::Piped)
+                .stderr(StreamMode::Piped),
+        }
+    }
+
+    /// Append one argument without requiring UTF-8.
+    pub fn arg(mut self, arg: impl Into<OsString>) -> Self {
+        self.spec = self.spec.arg(arg);
+        self
+    }
+
+    /// Append several arguments without requiring UTF-8.
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        for arg in args {
+            self.spec = self.spec.arg(arg);
+        }
+        self
+    }
+
+    /// Set the child working directory.
+    pub fn current_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.spec = self.spec.current_dir(path);
+        self
+    }
+
+    /// Add one environment override.
+    pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.spec = self.spec.env(key, value);
+        self
+    }
+
+    /// Clear inherited environment entries before applying [`Self::env`].
+    pub fn clear_env(mut self, clear: bool) -> Self {
+        self.spec = self.spec.clear_env(clear);
+        self
+    }
+
+    /// Configure child stdin.
+    pub fn stdin(mut self, mode: AsyncStdio) -> Self {
+        self.spec = self.spec.stdin(mode.into_internal());
+        self
+    }
+
+    /// Configure child stdout.
+    pub fn stdout(mut self, mode: AsyncStdio) -> Self {
+        self.spec = self.spec.stdout(mode.into_internal());
+        self
+    }
+
+    /// Configure child stderr.
+    pub fn stderr(mut self, mode: AsyncStdio) -> Self {
+        self.spec = self.spec.stderr(mode.into_internal());
+        self
+    }
+
+    /// Spawn the child in its own process group.
+    pub fn create_process_group(mut self, create: bool) -> Self {
+        self.spec = self.spec.create_process_group(create);
+        self
+    }
+
+    /// Kill the child if its spawning owner dies.
+    pub fn kill_when_owner_dies(mut self, kill: bool) -> Self {
+        self.spec = self.spec.kill_when_owner_dies(kill);
+        self
+    }
+
+    /// Build an [`AsyncProcess`] backed by the canonical actor.
+    pub fn build(self) -> AsyncProcess {
+        AsyncProcess::from_spec(self.spec)
+    }
+
+    /// Start and capture both output streams while preserving [`ExitStatus`].
+    pub async fn capture(self) -> Result<AsyncCapturedOutput, ProcessError> {
+        let mut process = self.build();
+        process.start().await?;
+        process.capture().await
+    }
+
+    /// Start and capture both streams within one aggregate byte ceiling.
+    pub async fn capture_bounded(
+        self,
+        limit: usize,
+    ) -> Result<AsyncCapturedOutput, ProcessError> {
+        let mut process = self.build();
+        process.start().await?;
+        process.capture_bounded(limit).await
+    }
+}
+
 /// Run a blocking OS call on the shared bounded island and flatten the result.
 async fn bounded_blocking<T, F>(operation: F) -> std::io::Result<T>
 where
@@ -30,15 +192,13 @@ pub struct AsyncProcess {
 }
 
 impl AsyncProcess {
+    fn from_spec(spec: SpawnSpec) -> Self {
+        Self { spec, child: None }
+    }
+
     /// Create a direct (non-shell) async process.
     pub fn new(program: impl Into<OsString>) -> Self {
-        Self {
-            spec: SpawnSpec::new(program)
-                .stdin(StreamMode::Piped)
-                .stdout(StreamMode::Piped)
-                .stderr(StreamMode::Piped),
-            child: None,
-        }
+        AsyncProcessBuilder::new(program).build()
     }
 
     /// Append an argument without requiring UTF-8.
@@ -280,6 +440,12 @@ impl AsyncProcess {
         Ok(run_output(output))
     }
 
+    /// Capture both streams while preserving the operating system exit status.
+    pub async fn capture(&self) -> Result<AsyncCapturedOutput, ProcessError> {
+        let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
+        Ok(child.output().await?.into())
+    }
+
     /// Capture output through the blocking compatibility adapter.
     pub fn output_blocking(&mut self) -> Result<RunOutput, ProcessError> {
         block_on(self.output())?
@@ -297,6 +463,15 @@ impl AsyncProcess {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
         let output = child.output_bounded(limit).await?;
         Ok(run_output(output))
+    }
+
+    /// Capture both streams within one aggregate byte limit and preserve status.
+    pub async fn capture_bounded(
+        &self,
+        limit: usize,
+    ) -> Result<AsyncCapturedOutput, ProcessError> {
+        let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
+        Ok(child.output_bounded(limit).await?.into())
     }
 
     /// Capture bounded output through the blocking compatibility adapter.
@@ -373,7 +548,7 @@ mod tests {
     use std::ffi::OsString;
     use std::time::Duration;
 
-    use super::AsyncProcess;
+    use super::{AsyncProcess, AsyncProcessBuilder, AsyncStdio};
 
     fn fixture_program() -> OsString {
         let exe = std::env::current_exe().expect("test executable path");
@@ -426,6 +601,35 @@ mod tests {
         process.start().await.expect("async process starts");
         assert!(matches!(
             process.output_bounded(4).await,
+            Err(crate::ProcessError::OutputLimitExceeded { limit: 4 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn semantic_capture_preserves_status_and_both_streams() {
+        let output = AsyncProcessBuilder::new(fixture_program())
+            .arg("out:out")
+            .arg("err:err")
+            .arg("exit:7")
+            .stdin(AsyncStdio::Null)
+            .stdout(AsyncStdio::Piped)
+            .stderr(AsyncStdio::Piped)
+            .capture()
+            .await
+            .expect("nonzero exit is a capture result");
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"out");
+        assert_eq!(output.stderr, b"err");
+    }
+
+    #[tokio::test]
+    async fn semantic_bounded_capture_uses_the_existing_aggregate_limit() {
+        let result = AsyncProcessBuilder::new(fixture_program())
+            .arg("out:123456789")
+            .capture_bounded(4)
+            .await;
+        assert!(matches!(
+            result,
             Err(crate::ProcessError::OutputLimitExceeded { limit: 4 })
         ));
     }

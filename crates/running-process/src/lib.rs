@@ -156,7 +156,7 @@ mod unix;
 mod windows;
 
 #[cfg(feature = "async-process")]
-pub use async_process::AsyncProcess;
+pub use async_process::{AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncStdio};
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
 // #891: content-hash primitive for dev daemon-identity isolation.
