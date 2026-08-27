@@ -20,6 +20,7 @@ TERMINAL_GRAPHICS = ROOT / "crates" / "running-process" / "src" / "terminal_grap
 ORIGINATOR = ROOT / "crates" / "running-process" / "src" / "originator.rs"
 PROBE_WORKER = ROOT / "crates" / "running-process" / "src" / "probe" / "worker.rs"
 RUNPM_CONFIG = ROOT / "crates" / "running-process" / "src" / "runpm_config.rs"
+SPAWN = ROOT / "crates" / "running-process" / "src" / "spawn.rs"
 
 
 class TestProductDependencyFeatures(unittest.TestCase):
@@ -61,6 +62,28 @@ class TestProductDependencyFeatures(unittest.TestCase):
         self.assertIn("sysinfo::", ORIGINATOR.read_text(encoding="utf-8"))
         self.assertIn("sysinfo::", PROBE_WORKER.read_text(encoding="utf-8"))
         self.assertIn("serde::Deserialize", RUNPM_CONFIG.read_text(encoding="utf-8"))
+
+    def test_client_only_spawn_wire_tests_are_gated(self) -> None:
+        spawn = SPAWN.read_text(encoding="utf-8")
+        self.assertIn(
+            '#[cfg(feature = "client")]\n    use prost::Message;',
+            spawn,
+        )
+        for fixture in ("LegacyClearAtTag4", "LegacyClearAtTag5"):
+            self.assertIn(
+                f'#[cfg(feature = "client")]\n    #[derive(Clone, PartialEq, Message)]\n    struct {fixture}',
+                spawn,
+                fixture,
+            )
+        for test in (
+            "old_clients_and_new_servers_interoperate_on_all_spawn_messages",
+            "new_clients_dual_write_fallback_for_old_servers_on_all_spawn_messages",
+        ):
+            self.assertIn(
+                f'#[cfg(feature = "client")]\n    #[test]\n    fn {test}()',
+                spawn,
+                test,
+            )
 
 
 if __name__ == "__main__":

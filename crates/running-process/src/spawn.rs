@@ -413,6 +413,7 @@ pub fn spawn_tokio(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "client")]
     use prost::Message;
     use std::time::Duration;
 
@@ -428,12 +429,14 @@ mod tests {
         assert_child_auto_traits::<SpawnedChild>();
     }
 
+    #[cfg(feature = "client")]
     #[derive(Clone, PartialEq, Message)]
     struct LegacyClearAtTag4 {
         #[prost(bool, tag = "4")]
         clear_inherited_env: bool,
     }
 
+    #[cfg(feature = "client")]
     #[derive(Clone, PartialEq, Message)]
     struct LegacyClearAtTag5 {
         #[prost(bool, tag = "5")]
@@ -519,6 +522,7 @@ mod tests {
         assert!(EnvironmentPolicy::Auto.wire_value().is_err());
     }
 
+    #[cfg(feature = "client")]
     #[test]
     fn old_clients_and_new_servers_interoperate_on_all_spawn_messages() {
         use crate::broker::protocol_v2::SessionStart;
@@ -567,6 +571,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "client")]
     #[test]
     fn new_clients_dual_write_fallback_for_old_servers_on_all_spawn_messages() {
         use crate::broker::protocol_v2::SessionStart;
