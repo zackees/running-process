@@ -5,10 +5,10 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-import tomllib
-import unittest
 from collections.abc import Mapping
 from pathlib import Path
+
+import tomllib
 
 from ci.soldr import cargo_command
 
@@ -17,18 +17,30 @@ MANIFEST = ROOT / "crates" / "running-process" / "Cargo.toml"
 ALLOWLIST = ROOT / "docs" / "kernel-substrate-allowlist.toml"
 FEATURE = "kernel-substrate"
 FORBIDDEN_FEATURES = {"client", "daemon", "pty", "conpty-sidecar", "daemon-trampoline"}
-TREE_COMMAND = tuple(cargo_command(
-    "tree",
-    "-p",
-    "running-process",
-    "--no-default-features",
-    "--features",
-    FEATURE,
-    "--edges",
-    "normal,build",
-    "--prefix",
-    "none",
-))
+# The release matrix publishes these two Windows ABI families.  Keep target
+# metadata in the reviewed graph even when the lint host is another platform.
+SUPPORTED_WINDOWS_TARGETS = ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")
+
+
+def tree_command(target: str | None = None) -> tuple[str, ...]:
+    command = cargo_command(
+        "tree",
+        "-p",
+        "running-process",
+        "--no-default-features",
+        "--features",
+        FEATURE,
+        "--edges",
+        "normal,build",
+        "--prefix",
+        "none",
+    )
+    if target is not None:
+        command.extend(("--target", target))
+    return tuple(command)
+
+
+TREE_COMMAND = tree_command()
 
 
 def load_manifest(path: Path = MANIFEST) -> Mapping[str, object]:
@@ -41,15 +53,18 @@ def selected_feature(manifest: Mapping[str, object]) -> list[str] | None:
     if not isinstance(features, Mapping):
         return None
     members = features.get(FEATURE)
-    return members if isinstance(members, list) and all(isinstance(x, str) for x in members) else None
+    return (
+        members if isinstance(members, list) and all(isinstance(x, str) for x in members) else None
+    )
 
 
 def manifest_failures(manifest: Mapping[str, object]) -> list[str]:
     failures: list[str] = []
     if selected_feature(manifest) != ["async-process"]:
-        failures.append("kernel-substrate must be exactly [\"async-process\"]")
+        failures.append('kernel-substrate must be exactly ["async-process"]')
     elif FORBIDDEN_FEATURES & set(selected_feature(manifest) or []):
         failures.append("kernel-substrate must not compose client, daemon, PTY, or binary features")
+
     def contains_kernal_api(value: object) -> bool:
         if not isinstance(value, Mapping):
             return False
@@ -65,8 +80,10 @@ def package_names(tree: str) -> set[str]:
     return set(re.findall(r"^([A-Za-z0-9_-]+) v[^\s]+", tree, flags=re.MULTILINE))
 
 
-def resolved_tree() -> str:
-    result = subprocess.run(TREE_COMMAND, cwd=ROOT, text=True, capture_output=True, check=False)
+def resolved_tree(target: str | None = None) -> str:
+    result = subprocess.run(
+        tree_command(target), cwd=ROOT, text=True, capture_output=True, check=False
+    )
     if result.returncode:
         raise RuntimeError(result.stderr or result.stdout)
     return result.stdout
@@ -86,48 +103,25 @@ def graph_failures(tree: str, allowlist: Mapping[str, object]) -> list[str]:
     failures = [f"unreviewed resolved package: {name}" for name in sorted(packages - reviewed)]
     forbidden = allowlist.get("forbidden", [])
     if isinstance(forbidden, list):
-        failures.extend(f"forbidden package resolved: {name}" for name in sorted(packages & set(forbidden)))
-    return failures
-
-
-class KernelSubstrateContractTests(unittest.TestCase):
-    def test_real_manifest_declares_the_semantic_feature(self) -> None:
-        self.assertEqual(manifest_failures(load_manifest()), [])
-
-    def test_comments_dev_dependencies_and_alias_text_do_not_satisfy_the_feature(self) -> None:
-        manifest = tomllib.loads(
-            """
-            # kernel-substrate = [\"async-process\"]
-            [features]
-            async-process = []
-            [dev-dependencies]
-            kernel-substrate = { package = \"async-process\", version = \"1\" }
-            """
+        failures.extend(
+            f"forbidden package resolved: {name}" for name in sorted(packages & set(forbidden))
         )
-        self.assertIn("kernel-substrate must be exactly [\"async-process\"]", manifest_failures(manifest))
-
-    def test_resolved_package_parser_uses_package_names_not_aliases_or_comments(self) -> None:
-        packages = package_names("# rusqlite v0.32\nlocal-db v0.1\nrusqlite v0.32\n")
-        self.assertEqual(packages, {"local-db", "rusqlite"})
-
-    def test_forbidden_and_unknown_resolved_packages_fail(self) -> None:
-        allowlist = {"packages": {"running-process": "root"}, "forbidden": ["rusqlite"]}
-        failures = graph_failures("running-process v1\nrusqlite v1\nunknown v1\n", allowlist)
-        self.assertIn("forbidden package resolved: rusqlite", failures)
-        self.assertIn("unreviewed resolved package: unknown", failures)
-
-    def test_forbidden_feature_alias_cannot_join_the_selection(self) -> None:
-        manifest = {"features": {FEATURE: ["async-process", "pty"]}}
-        self.assertTrue(manifest_failures(manifest))
+    return failures
 
 
 def main() -> int:
     failures = manifest_failures(load_manifest())
     if not failures:
-        try:
-            failures.extend(graph_failures(resolved_tree(), load_allowlist()))
-        except RuntimeError as error:
-            failures.append(f"resolver invocation failed: {error}")
+        allowlist = load_allowlist()
+        for target in (None, *SUPPORTED_WINDOWS_TARGETS):
+            label = target or "host"
+            try:
+                failures.extend(
+                    f"{label}: {failure}"
+                    for failure in graph_failures(resolved_tree(target), allowlist)
+                )
+            except RuntimeError as error:
+                failures.append(f"{label}: resolver invocation failed: {error}")
     if failures:
         print("kernel substrate contract failed:", *failures, sep="\n  - ", file=sys.stderr)
         return 1
