@@ -38,3 +38,6 @@ is `docs/kernel-substrate-timing.schema.json`. CI uploads Linux evidence but del
 no absolute wall-clock threshold: runner load is not a dependency contract.
 The record is compared by reviewers against future baselines rather than used
 as a brittle pass/fail timer.
+
+The current reviewed Linux measurement is retained in
+[the timing baseline](kernel-substrate-timing-baseline.md).
