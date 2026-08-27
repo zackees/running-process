@@ -635,9 +635,11 @@ pub use sync_spawn::{spawn_sync, spawn_sync_daemon};
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "async-process")]
     use super::compat_tokio_creation_flags;
     use std::ffi::OsStr;
 
+    #[cfg(feature = "async-process")]
     #[test]
     fn tokio_spawn_owns_console_creation_flags() {
         assert_eq!(compat_tokio_creation_flags(false), 0x0800_0000);
