@@ -63,23 +63,29 @@ status-level = "pass"
 # unaffected. POSIX runners would tolerate parallel execution but
 # the cost of serializing 28 quick tests is small (~5-10 s wall
 # time), so the override applies uniformly.
+#
+# #1158: both files are now modules of the `pty` category target, so the
+# filter selects them by module prefix instead of by binary name. A stale
+# `binary(...)` filter would match nothing *silently* and the group would
+# quietly stop serializing; `ci/nextest_filter_guard.py` asserts this
+# selection stays non-empty.
 [test-groups]
 pty-mitm-substrate = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'binary(pty_mitm_stdin_test) or binary(pty_mitm_paste_test)'
+filter = 'binary(pty) and (test(/^pty_mitm_stdin_test::/) or test(/^pty_mitm_paste_test::/))'
 test-group = 'pty-mitm-substrate'
 
 [[profile.default.overrides]]
-filter = 'binary(daemon_cross_process_pty_attach_test)'
+filter = 'binary(pty) and test(/^daemon_cross_process_pty_attach_test::/)'
 slow-timeout = { period = "10s", terminate-after = 1, grace-period = "1s" }
 retries = 0
 
 [[profile.ci.overrides]]
-filter = 'binary(pty_mitm_stdin_test) or binary(pty_mitm_paste_test)'
+filter = 'binary(pty) and (test(/^pty_mitm_stdin_test::/) or test(/^pty_mitm_paste_test::/))'
 test-group = 'pty-mitm-substrate'
 
 [[profile.ci.overrides]]
-filter = 'binary(daemon_cross_process_pty_attach_test)'
+filter = 'binary(pty) and test(/^daemon_cross_process_pty_attach_test::/)'
 slow-timeout = { period = "10s", terminate-after = 1, grace-period = "1s" }
 retries = 0

@@ -65,6 +65,10 @@ def main() -> int:
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.spawn_path_guard")) != 0:
         return 1
+    if run(
+        supervised_command(python, str(python), "-m", "ci.nextest_filter_guard")
+    ) != 0:
+        return 1
     if run(supervised_command(python, str(python), "-m", "ci.platform_boundary")) != 0:
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.async_compliance_guard")) != 0:

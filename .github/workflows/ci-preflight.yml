@@ -209,7 +209,7 @@ jobs:
         env:
           RUNNING_PROCESS_TERMINAL_CAPABILITY_EXPORT_DIR: ${{ github.workspace }}/logs/terminal-capabilities/${{ inputs.label }}
         run: |
-          cargo test -p running-process --test terminal_graphics_capabilities_test --features client -- --nocapture
+          cargo test -p running-process --test pty --features client terminal_graphics_capabilities_test:: -- --nocapture
 
       - name: Report terminal graphics capability matrix
         if: ${{ always() }}

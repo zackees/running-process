@@ -134,7 +134,7 @@ expires_phase = 4
 [[exception]]
 id = "RP-RAW-STDIO-013"
 symbol = "std::process::Stdio"
-path = "crates/running-process/tests/broker_v2_acceptance_test.rs"
+path = "crates/running-process/tests/broker/broker_v2_acceptance_test.rs"
 max_occurrences = 3
 owner = "running-process"
 justification = "Legacy broker fixture; Phase 4 migrates it to internal test support."
@@ -143,7 +143,7 @@ expires_phase = 4
 [[exception]]
 id = "RP-RAW-STDIO-014"
 symbol = "std::process::Stdio"
-path = "crates/running-process/tests/broker_v2_scaffold_accepts_connection.rs"
+path = "crates/running-process/tests/broker/broker_v2_scaffold_accepts_connection.rs"
 max_occurrences = 11
 owner = "running-process"
 justification = "Legacy broker fixture; Phase 4 migrates it to internal test support. Bumped by 2 for the soldr#2363 concurrent-starters singleton race test (running-process#899)."
@@ -152,7 +152,7 @@ expires_phase = 4
 [[exception]]
 id = "RP-RAW-STDIO-015"
 symbol = "std::process::Stdio"
-path = "crates/running-process/tests/containment_test.rs"
+path = "crates/running-process/tests/core/containment_test.rs"
 max_occurrences = 1
 owner = "running-process"
 justification = "Legacy containment fixture; Phase 4 migrates it to internal test support."
@@ -161,7 +161,7 @@ expires_phase = 4
 [[exception]]
 id = "RP-RAW-STDIO-016"
 symbol = "std::process::Stdio"
-path = "crates/running-process/tests/daemon_cross_process_pty_attach_test.rs"
+path = "crates/running-process/tests/pty/daemon_cross_process_pty_attach_test.rs"
 max_occurrences = 5
 owner = "running-process"
 justification = "Legacy daemon PTY fixture; Phase 5 migrates it to internal test support."
@@ -179,7 +179,7 @@ expires_phase = 4
 [[exception]]
 id = "RP-RAW-STDIO-018"
 symbol = "std::process::Stdio"
-path = "crates/running-process/tests/process_core_test.rs"
+path = "crates/running-process/tests/core/process_core_test.rs"
 max_occurrences = 11
 owner = "running-process"
 justification = "Legacy synchronous process test suite; Phase 4 migrates it to actor-backed public contracts."
@@ -224,7 +224,7 @@ expires_phase = 4
 [[exception]]
 id = "RP-RAW-TOKIO-004"
 symbol = "tokio::process::Command"
-path = "crates/running-process/tests/async_owner_death_test.rs"
+path = "crates/running-process/tests/async_api/async_owner_death_test.rs"
 max_occurrences = 1
 owner = "running-process"
 justification = "Regression test for #887 owner-death containment. `spawn_tokio` takes `&mut tokio::process::Command` by signature, so a test that the containment result is reported rather than discarded has to build one. Deleted together with the compatibility function this exercises, in the same phase as RP-RAW-TOKIO-001."

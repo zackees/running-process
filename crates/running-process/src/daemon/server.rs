@@ -692,7 +692,7 @@ mod tests {
     /// must reach the handler (not return UNKNOWN_REQUEST from dispatch)
     /// and report INVALID_ARGUMENT — the dispatch table is correctly
     /// routing the new request types. The full handler behaviour is
-    /// exercised by `tests/pty_session_attach_test.rs`.
+    /// exercised by `tests/pty/daemon_pty_session_attach_test.rs`.
     #[tokio::test]
     async fn pty_session_handlers_route_via_dispatcher() {
         let (state, _tmp) = test_state();

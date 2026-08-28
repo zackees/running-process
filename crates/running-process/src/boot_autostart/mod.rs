@@ -128,7 +128,7 @@ pub fn uninstall() -> Result<(), BootAutostartError> {
 }
 
 /// Render the unit/plist/task text for the current OS without touching
-/// the filesystem. Test seam used by `tests/runpm_boot_autostart_fixtures.rs`.
+/// the filesystem. Test seam used by `tests/runpm/runpm_boot_autostart_fixtures.rs`.
 pub fn render_unit(daemon_binary: &Path) -> String {
     crate::platform::autostart::render_registration(&runpm_daemon(daemon_binary))
 }

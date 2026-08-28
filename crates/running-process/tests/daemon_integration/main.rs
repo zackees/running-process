@@ -616,7 +616,23 @@ async fn test_list_by_originator_filters_correctly() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
 }
 
+// #1158: the former top-level `tests/daemon_*.rs` files are modules of this
+// target rather than one linked test executable each. Test IDs are
+// `daemon_integration::<module>::<test_name>`.
 mod compiler_wrap_seam_test;
+mod daemon_autostart_test;
+mod daemon_backlog_accumulation_test;
+mod daemon_environment_policy_test;
+mod daemon_fast_ctrl_c_handoff_test;
+mod daemon_resize_rpc_test;
+mod daemon_runpm_save_resurrect;
+mod daemon_runpm_service_stubs;
+mod daemon_sessions_bulk_ops_test;
+mod daemon_sessions_log_test;
+mod daemon_tee_ring_test;
+mod daemon_termination_outcome_test;
+mod daemon_tree_kill_test;
+mod daemon_tui_repaint_test;
 mod env_replace_test;
 mod more_tests;
 mod stdout_seam_test;
