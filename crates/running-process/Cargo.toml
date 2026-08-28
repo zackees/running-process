@@ -8,6 +8,9 @@ repository = "https://github.com/zackees/running-process"
 homepage = "https://github.com/zackees/running-process"
 description = "Subprocess and PTY runtime for the running-process project"
 
+[lints]
+workspace = true
+
 [[bin]]
 # Wave 4 of #165: PM2-style supervisor CLI absorbed from
 # `running-process-client`. Requires the `client` feature for IPC deps.
