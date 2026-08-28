@@ -9,6 +9,9 @@ use std::path::PathBuf;
 
 fn proto_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("running-process crate has a workspace crates parent")
+        .join("running-process-protocol")
         .join("proto")
         .join("broker_v1")
 }
@@ -16,6 +19,16 @@ fn proto_root() -> PathBuf {
 fn proto(name: &str) -> String {
     let path = proto_root().join(name);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+#[test]
+fn protocol_owned_proto_root_exists() {
+    let root = proto_root();
+    assert!(
+        root.is_dir(),
+        "canonical broker proto root is missing: {}",
+        root.display()
+    );
 }
 
 #[test]
