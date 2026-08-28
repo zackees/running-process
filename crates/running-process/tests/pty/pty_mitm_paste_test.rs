@@ -10,12 +10,10 @@
 //! Runtime-skipped on hosts where `PSEUDOCONSOLE_PASSTHROUGH_MODE`
 //! is not honored, matching #448 / `daemon_tui_repaint_test`.
 
-mod common;
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::mitm_stdin::{skip_unless_mitm_supported, EchoerSession};
+use crate::common::mitm_stdin::{skip_unless_mitm_supported, EchoerSession};
 use running_process::pty::backend::PtySize;
 
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -227,7 +225,7 @@ fn four_megabyte_paste_survives_slow_consumer() {
     skip_if_unsupported!();
     // 4 MB / 4 KB buffer / 20 ms sleep = ~20 s minimum. Use a tighter
     // 2 ms sleep so the test stays under nextest's 2-minute kill.
-    let bin = common::mitm_stdin::testbin_path("testbin-slow-stdin-reader");
+    let bin = crate::common::mitm_stdin::testbin_path("testbin-slow-stdin-reader");
     let argv = vec![
         bin.to_string_lossy().into_owned(),
         "--sleep-ms".into(),
@@ -249,7 +247,7 @@ fn four_megabyte_paste_survives_slow_consumer() {
     let mut saw_handshake = false;
     while !saw_handshake && Instant::now() < handshake_deadline {
         if let Ok(Some(chunk)) = process.read_chunk_impl(Some(0.1)) {
-            if chunk.contains(&common::mitm_stdin::STARTUP_HANDSHAKE_BYTE) {
+            if chunk.contains(&crate::common::mitm_stdin::STARTUP_HANDSHAKE_BYTE) {
                 saw_handshake = true;
             }
         }

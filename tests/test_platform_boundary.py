@@ -227,7 +227,7 @@ def test_the_sidecar_zone_does_not_replace_the_sidecar_rule() -> None:
     test, and this asserts that test still exists rather than assuming it.
     """
     guard = (
-        platform_boundary.ROOT / "crates/running-process/tests/probe_facade_surface.rs"
+        platform_boundary.ROOT / "crates/running-process/tests/core/probe_facade_surface.rs"
     )
     assert guard.is_file(), (
         "the sidecar zone's reasoning cites this test; without it the zone "

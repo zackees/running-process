@@ -91,7 +91,7 @@ pub mod boot_autostart;
 
 // Phase 5 of #222 (#428): `runpm.toml` parser used by the `runpm` CLI
 // to batch-start `[[app]]` entries. Lives in the library (not under
-// `src/bin/`) so the integration test in `tests/runpm_toml_config.rs`
+// `src/bin/`) so the integration test in `tests/runpm/runpm_toml_config.rs`
 // can drive the same code path the binary uses.
 #[cfg(feature = "client")]
 pub mod runpm_config;

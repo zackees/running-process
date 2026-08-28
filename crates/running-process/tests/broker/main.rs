@@ -38,11 +38,18 @@ mod backend_handle_common;
 mod backend_handle_dead;
 mod backend_handle_probe;
 mod backend_handle_recycled;
+mod backend_launch_budget_test;
 mod backend_registry;
 mod backend_sdk;
 #[cfg(feature = "client-async")]
 mod backend_sdk_async;
 mod broadcast_release_handles;
+mod broker_http_aggregator_test;
+mod broker_owned_bind_failed_launch_test;
+mod broker_owned_bind_handover_test;
+mod broker_v2_acceptance_test;
+mod broker_v2_scaffold_accepts_connection;
+mod brokered_backend_ui;
 mod builders;
 mod client;
 #[cfg(feature = "test-support")]
@@ -102,6 +109,7 @@ mod perf_guard;
 mod process_tree_lifecycle;
 mod proto_field_numbers;
 mod proto_roundtrip;
+mod protocol_extension_source_compat_test;
 mod recovery_one_retry;
 mod serve;
 mod service_def_loader;

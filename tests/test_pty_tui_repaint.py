@@ -1,6 +1,6 @@
 """End-to-end PTY passthrough test for #150 (Python mirror).
 
-Companion to `crates/running-process/tests/daemon_tui_repaint_test.rs`
+Companion to `crates/running-process/tests/daemon_integration/daemon_tui_repaint_test.rs`
 which exercises the daemon code path. This file exercises the in-
 process PTY path through `RunningProcess.pseudo_terminal(...)`.
 

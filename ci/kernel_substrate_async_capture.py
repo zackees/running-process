@@ -26,7 +26,10 @@ def contract_command() -> tuple[str, ...]:
             "--features",
             "kernel-substrate",
             "--test",
-            "async_semantic_capture",
+            # soldr#1158: the file is a module of the `async_api` category
+            # target now, so the target name and the filter are separate.
+            "async_api",
+            "async_semantic_capture::",
         )
     )
 

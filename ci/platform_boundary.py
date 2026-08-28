@@ -246,7 +246,7 @@ ARTIFACT_ZONES: tuple[ArtifactZone, ...] = (
             "the answer differs per host and callers ask it precisely to find "
             "out. The injection vehicles it dispatches to are gated on "
             "`embed-helper` and never compiled for ordinary consumers; "
-            "`crates/running-process/tests/probe_facade_surface.rs` asserts "
+            "`crates/running-process/tests/core/probe_facade_surface.rs` asserts "
             "that separately, which is what keeps this zone a statement about "
             "where the machinery lives rather than a licence to spread it."
         ),

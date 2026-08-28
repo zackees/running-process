@@ -63,7 +63,7 @@ def _rust_coverage_test_command() -> list[str]:
         "--workspace",
         "--all-features",
         "-E",
-        "not binary(brokered_backend_ui)",
+        "not test(/^brokered_backend_ui::/)",
     )
 
 
@@ -84,7 +84,7 @@ def _rust_all_features_test_args() -> list[str]:
     snapshots were written -- the preflight `client` build on every OS, and
     the Linux coverage lane.
     """
-    return ["--all-features", "-E", "not binary(brokered_backend_ui)"]
+    return ["--all-features", "-E", "not test(/^brokered_backend_ui::/)"]
 
 
 def _brokered_backend_ui_test_command() -> list[str]:
@@ -97,7 +97,9 @@ def _brokered_backend_ui_test_command() -> list[str]:
         "--features",
         "client",
         "--test",
-        "brokered_backend_ui",
+        "broker",
+        "-E",
+        "test(/^brokered_backend_ui::/)",
         "--no-capture",
     )
 
@@ -906,7 +908,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--features",
                 "daemon",
                 "-E",
-                "test(compile_session) | binary(daemon_environment_policy_test)",
+                "test(compile_session) | test(/^daemon_environment_policy_test::/)",
             )
             if sys.platform == "win32":
                 daemon_spawn_args += ["--test-threads", "1"]

@@ -136,7 +136,7 @@ documented:
   (`crates/test-watchdog`) can capture all-thread backtraces when a Rust
   integration test hangs. Without gdb, watchdog kills the test with no
   diagnostics.
-- **`containment_test::test_contained_group_kills_grandchildren`** is
+- **`core::containment_test::test_contained_group_kills_grandchildren`** is
   observed to hang intermittently under nextest's default concurrency
   inside the container ("Blocking waiting for file lock on artifact
   directory" — cargo artifact-lock contention between test workers).

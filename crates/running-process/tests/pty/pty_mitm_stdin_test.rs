@@ -11,11 +11,9 @@
 //! in input" from "submit" (`\r`). Substrate failure here breaks
 //! that feature on Windows.
 
-mod common;
-
 use std::time::{Duration, Instant};
 
-use common::mitm_stdin::{skip_unless_mitm_supported, EchoerSession};
+use crate::common::mitm_stdin::{skip_unless_mitm_supported, EchoerSession};
 
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
