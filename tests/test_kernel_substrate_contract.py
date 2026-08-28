@@ -10,6 +10,7 @@ from ci.kernel_substrate_contract import (
     FEATURE,
     SUPPORTED_WINDOWS_TARGETS,
     graph_failures,
+    load_allowlist,
     load_manifest,
     manifest_failures,
     package_names,
@@ -71,3 +72,9 @@ class KernelSubstrateContractTests(unittest.TestCase):
             },
         )
         self.assertEqual(failures, [])
+
+    def test_macos_sysinfo_process_enumeration_abi_is_reviewed(self) -> None:
+        packages = load_allowlist().get("packages", {})
+        self.assertIsInstance(packages, dict)
+        self.assertIn("core-foundation-sys", packages)
+        self.assertIn("sysinfo", str(packages["core-foundation-sys"]))

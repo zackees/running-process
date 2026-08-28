@@ -39,6 +39,12 @@ thiserror = "2"
 [workspace.lints.clippy]
 disallowed_methods = "deny"
 
+[workspace.lints.rust]
+# Coverage builds select these repository-owned branches in binaries and
+# integration tests. Register the cfg once so all-targets Clippy validates
+# the same intentional surface rather than rejecting it as a typo.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+
 [profile.release]
 # Line tables for OUR crates, so a release-mode stack can be resolved to
 # file:line all the way into the Rust frames (#803). Full `debug = true` is
