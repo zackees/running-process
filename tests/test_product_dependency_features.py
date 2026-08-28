@@ -46,7 +46,10 @@ class TestProductDependencyFeatures(unittest.TestCase):
         self.assertIn("process-inspection", self.features["daemon"])
         self.assertIn("process-inspection", self.features["originator-scan"])
         self.assertIn("process-inspection", self.features["probe"])
-        self.assertEqual(self.features["process-inspection"], ["dep:sysinfo"])
+        self.assertEqual(
+            self.features["process-inspection"],
+            ["dep:sysinfo", "running-process-platform-internal/process-inspection"],
+        )
 
     def test_binaries_and_source_are_gated_by_their_owners(self) -> None:
         trampoline = next(
