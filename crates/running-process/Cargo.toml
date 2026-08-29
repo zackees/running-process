@@ -67,20 +67,6 @@ required-features = ["client"]
 name = "session_relay_evidence"
 required-features = ["daemon"]
 
-# `cfg(coverage)` is set by cargo-llvm-cov, not by cargo, so rustc's check-cfg
-# pass has no way to know it is a real configuration. Without this it fires
-# `unexpected_cfgs` on `src/bin/running-process-broker-v2.rs` (the
-# `__llvm_profile_write_file` flush) and on
-# `tests/broker/broker_v2_scaffold_accepts_connection.rs`, which under
-# `clippy -- -D warnings` fails every lint and preflight lane.
-#
-# `crates/running-process-protocol/build.rs` already emits
-# `cargo:rustc-check-cfg=cfg(coverage)`, but a build script only declares the
-# cfg for its own package. This crate has no build script, so it declares the
-# same thing through the manifest.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
-
 [features]
 # Final feature scheme per #165:
 # * `core`   — always-available API (spawn / containment).
