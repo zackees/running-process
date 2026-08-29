@@ -102,6 +102,80 @@ mod tests {
         assert_eq!(decoded.consumed, wire.len());
     }
 
+    /// soldr#1178: restores the partial-frame half of the coverage
+    /// `try_decode_framed_waits_for_complete_frames` gave before #1151 moved
+    /// this module's neighbours into `running-process-protocol`. A streaming
+    /// decoder that answers anything but `Ok(None)` for a prefix will either
+    /// drop bytes or decode a truncated frame, and nothing else in the tree
+    /// exercises the incomplete-buffer path.
+    #[test]
+    fn try_decode_framed_waits_for_complete_frames() {
+        let wire = encode_framed(&Frame::request(0x7001, b"abc".to_vec())).expect("encode");
+
+        assert!(
+            try_decode_framed(&[])
+                .expect("empty buffer is not an error")
+                .is_none(),
+            "an empty buffer must ask for more bytes, not decode"
+        );
+        for cut in 1..wire.len() {
+            assert!(
+                try_decode_framed(&wire[..cut])
+                    .expect("a prefix is not an error")
+                    .is_none(),
+                "partial frame of {cut} of {} bytes must not decode",
+                wire.len()
+            );
+        }
+
+        // A second frame's bytes must be left in the buffer for the next call:
+        // `consumed` reports only the first frame, or the caller loses the
+        // remainder of the stream.
+        let mut two = wire.clone();
+        two.extend_from_slice(&wire);
+        let first = try_decode_framed(&two)
+            .expect("decode")
+            .expect("first frame is complete");
+        assert_eq!(
+            first.consumed,
+            wire.len(),
+            "trailing bytes after a complete frame belong to the next decode"
+        );
+    }
+
+    /// soldr#1178: restores the hostile-input half of the coverage
+    /// `try_decode_framed_rejects_foreign_version_and_oversize` gave. Both
+    /// branches are wire-level commitments from #228 — the broker answers a
+    /// foreign framing byte with `Refused{ERROR_VERSION_UNSUPPORTED}` and
+    /// disconnects on an oversized length — so silently accepting either
+    /// would be a protocol break, not just a missing test.
+    #[test]
+    fn try_decode_framed_rejects_foreign_version_and_oversize() {
+        let foreign = ENVELOPE_VERSION.wrapping_add(1);
+        assert!(
+            matches!(
+                try_decode_framed(&[foreign, 0, 0, 0, 0]),
+                Err(FramingError::UnsupportedFramingVersion { got, expected })
+                    if got == foreign && expected == ENVELOPE_VERSION
+            ),
+            "a foreign framing byte must be rejected before the length is read"
+        );
+
+        // The cap is checked against the *claimed* length, so the buffer need
+        // not actually carry the bytes.
+        let mut oversize = vec![ENVELOPE_VERSION];
+        let claimed = u32::try_from(MAX_FRAME_BYTES).expect("cap fits u32") + 1;
+        oversize.extend_from_slice(&claimed.to_le_bytes());
+        assert!(
+            matches!(
+                try_decode_framed(&oversize),
+                Err(FramingError::FrameTooLarge { body_length, cap })
+                    if body_length == claimed as usize && cap == MAX_FRAME_BYTES
+            ),
+            "a claimed body over the cap must be rejected without buffering it"
+        );
+    }
+
     #[test]
     fn root_client_reexports_keep_endpoint_extensions_and_errors() {
         assert!(Endpoint::unix_socket("svc", "/tmp/svc.sock").is_ok());
