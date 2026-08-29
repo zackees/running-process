@@ -198,6 +198,25 @@ mod compatibility_tests {
                 got: r"\\.\pipe\svc-pipe".to_owned(),
             })
         );
+        // soldr#1178: `windows_pipe` lowercases and folds `/` to `\\` before
+        // testing the prefix, so a caller who spells the prefix in either
+        // style or in mixed case must still be rejected. The backslash form
+        // above is the only one the surviving assertions covered; these two
+        // branches had no test after #1151.
+        assert_eq!(
+            Endpoint::windows_pipe("svc", "//./pipe/svc-pipe"),
+            Err(EndpointNameError::PrefixedPipeName {
+                got: "//./pipe/svc-pipe".to_owned(),
+            }),
+            "forward-slash spelling of the prefix must be rejected too"
+        );
+        assert_eq!(
+            Endpoint::windows_pipe("svc", r"\\.\PIPE\svc-pipe"),
+            Err(EndpointNameError::PrefixedPipeName {
+                got: r"\\.\PIPE\svc-pipe".to_owned(),
+            }),
+            "the prefix check is case-insensitive"
+        );
         assert_eq!(
             Endpoint::windows_pipe("svc", ""),
             Err(EndpointNameError::Empty)
