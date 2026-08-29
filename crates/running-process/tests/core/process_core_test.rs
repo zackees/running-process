@@ -1238,6 +1238,38 @@ fn create_process_group_sets_new_pgid() {
     assert_eq!(process.captured_stdout(), vec![b"True".to_vec()]);
 }
 
+/// The name libtest will match for a helper `#[test]` in this module.
+///
+/// The Windows reaping tests re-execute the test binary with
+/// `--exact <name>` to run a helper in a child process. Before soldr#1158
+/// this file was its own integration-test binary, so a helper's libtest name
+/// was the bare function name. It is a module of the `core` category target
+/// now, so the name carries a `process_core_test::` prefix and a bare
+/// `--exact` argument matches *nothing* -- the helper never runs and the
+/// parent fails on `helper exited before reporting child pid`.
+///
+/// Derived from `module_path!()` rather than hardcoded so the next move
+/// carries it automatically. `module_path!()` is `<crate>::<module path>`
+/// and libtest names omit the crate root, so the first segment is dropped.
+fn helper_test_name(name: &str) -> String {
+    match module_path!().split_once("::") {
+        Some((_crate_root, module)) => format!("{module}::{name}"),
+        None => name.to_owned(),
+    }
+}
+
+#[test]
+fn helper_test_name_is_module_qualified_for_the_category_target() {
+    // Deliberately not `cfg(windows)`: the mechanism it protects is
+    // Windows-only, but a rename or another move would break it everywhere,
+    // and this is the assertion that notices on every lane.
+    assert_eq!(
+        helper_test_name("helper_x"),
+        "process_core_test::helper_x",
+        "libtest matches `--exact` against the module-qualified name"
+    );
+}
+
 // ── Windows tests ──
 
 #[test]
@@ -1271,7 +1303,9 @@ fn force_killed_parent_reaps_native_child_on_windows() {
     let current_exe = env::current_exe().unwrap();
     let mut owner = Command::new(current_exe)
         .arg("--exact")
-        .arg("helper_force_killed_parent_reaps_native_child")
+        .arg(helper_test_name(
+            "helper_force_killed_parent_reaps_native_child",
+        ))
         .arg("--nocapture")
         .env("RUNNING_PROCESS_CORE_HELPER", "1")
         .stdout(Stdio::piped())
@@ -1357,7 +1391,9 @@ fn repeated_force_killed_parents_leave_no_logged_native_children_on_windows() {
     for _ in 0..owner_count {
         let mut owner = Command::new(&current_exe)
             .arg("--exact")
-            .arg("helper_force_killed_parent_logs_native_child")
+            .arg(helper_test_name(
+                "helper_force_killed_parent_logs_native_child",
+            ))
             .arg("--nocapture")
             .env("RUNNING_PROCESS_CORE_HELPER_LOGGED", "1")
             .env("RUNNING_PROCESS_CHILD_PID_LOG_PATH", &log_path)
