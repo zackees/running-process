@@ -7,10 +7,10 @@ serialization, host inspection, terminal graphics, or the trampoline binary.
 
 from __future__ import annotations
 
-import tomllib
 import unittest
 from pathlib import Path
 
+import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "crates" / "running-process" / "Cargo.toml"
