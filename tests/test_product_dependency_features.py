@@ -74,7 +74,9 @@ class TestProductDependencyFeatures(unittest.TestCase):
         )
         for fixture in ("LegacyClearAtTag4", "LegacyClearAtTag5"):
             self.assertIn(
-                f'#[cfg(feature = "client")]\n    #[derive(Clone, PartialEq, Message)]\n    struct {fixture}',
+                f'#[cfg(feature = "client")]\n'
+                f"    #[derive(Clone, PartialEq, Message)]\n"
+                f"    struct {fixture}",
                 spawn,
                 fixture,
             )

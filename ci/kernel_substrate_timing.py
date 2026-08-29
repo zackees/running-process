@@ -17,13 +17,34 @@ from ci.kernel_substrate_contract import package_names
 from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
-COMMAND = cargo_command("check", "-p", "running-process", "--lib", "--no-default-features", "--features", "kernel-substrate")
-TREE_COMMAND = cargo_command("tree", "-p", "running-process", "--no-default-features", "--features", "kernel-substrate", "--edges", "normal,build", "--prefix", "none")
+COMMAND = cargo_command(
+    "check",
+    "-p",
+    "running-process",
+    "--lib",
+    "--no-default-features",
+    "--features",
+    "kernel-substrate",
+)
+TREE_COMMAND = cargo_command(
+    "tree",
+    "-p",
+    "running-process",
+    "--no-default-features",
+    "--features",
+    "kernel-substrate",
+    "--edges",
+    "normal,build",
+    "--prefix",
+    "none",
+)
 
 
 def run_once(target: Path) -> tuple[int, int]:
     started = time.perf_counter_ns()
-    result = subprocess.run(COMMAND, cwd=ROOT, env={**os.environ, "CARGO_TARGET_DIR": str(target)}, check=False)
+    result = subprocess.run(
+        COMMAND, cwd=ROOT, env={**os.environ, "CARGO_TARGET_DIR": str(target)}, check=False
+    )
     return result.returncode, time.perf_counter_ns() - started
 
 
