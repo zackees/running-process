@@ -20,7 +20,7 @@ class KernelSubstrateAsyncCaptureTests(unittest.TestCase):
     def test_contract_builds_testbins_then_exact_minimal_feature_test(self) -> None:
         self.assertEqual(fixture_command()[-3:], ("build", "-p", "testbins"))
         self.assertEqual(
-            contract_command()[-8:],
+            contract_command()[-9:],
             (
                 "test",
                 "-p",
@@ -29,7 +29,11 @@ class KernelSubstrateAsyncCaptureTests(unittest.TestCase):
                 "--features",
                 "kernel-substrate",
                 "--test",
-                "async_semantic_capture",
+                # soldr#1158: the file is a module of the `async_api` category
+                # target now, so the target name and the filter are separate
+                # argv entries -- hence -9 rather than -8.
+                "async_api",
+                "async_semantic_capture::",
             ),
         )
 

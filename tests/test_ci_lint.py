@@ -46,6 +46,21 @@ def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> Non
             "-m",
             "ci.spawn_path_guard",
         ],
+        # soldr#1176 added this guard between the spawn-path guard and the
+        # platform boundary: it resolves every name `.config/nextest.toml`
+        # mentions against the test targets that exist, so a filter orphaned
+        # by a rename fails lint instead of silently matching nothing.
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            python,
+            "-m",
+            "ci.nextest_filter_guard",
+        ],
         [
             python,
             "-m",
