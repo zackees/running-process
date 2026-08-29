@@ -12,6 +12,27 @@ that actually exist on disk, so a rename that orphans a filter fails lint
 instead of passing CI. It is deliberately static: running
 `cargo nextest list -E '<filter>'` would prove the same thing but needs a
 full test-profile build, which lint cannot afford.
+
+It covers three places a test target or test name can be referenced, because
+#1158 broke one of each and the first version of this guard -- which read
+only `.config/nextest.toml` -- could not see two of them:
+
+* `.config/nextest.toml` -- `binary(...)` and `test(/^module::/)` in override
+  filtersets. A stale one is *silently ignored* by nextest and the test drops
+  back to the default budget.
+* `ci/*.py` -- `"--test", "<target>"` argv pairs, and `binary(...)` inside
+  `-E` filter strings. `ci/test.py` excluded a host-sensitive trybuild suite
+  with `not binary(brokered_backend_ui)`; once that binary was gone the
+  exclusion excluded *nothing* and the suite would have started running on
+  hosts its snapshots were never written for.
+* `.github/workflows/*.yml` -- `--test <target>` on a cargo invocation. This
+  one fails loudly rather than silently, but it fails a whole lane.
+
+Not covered, and deliberately so: `--exact <test>` self-re-execution, where a
+test spawns its own binary to run a helper by name. #1158 broke two of those
+too. Resolving them statically would mean knowing every `#[test]` name in the
+tree, which needs a build; `tests/core/process_core_test.rs` instead derives
+the name from `module_path!()` so it cannot drift, and pins that with a test.
 """
 
 from __future__ import annotations
@@ -28,6 +49,12 @@ BINARY_REF = re.compile(r"binary\(([A-Za-z0-9_]+)\)")
 # `test(/^module::/)` and `test(/module::/)` — the module-qualified form a
 # consolidated target requires.
 TEST_MODULE_REF = re.compile(r"test\(/\^?([A-Za-z0-9_]+)::")
+
+# `"--test",` then the target name as the next argv string -- the form
+# `ci/*.py` uses when it builds a command as a list.
+PY_TEST_TARGET = re.compile(r'"--test"\s*,\s*\n?\s*(?:#[^\n]*\n\s*)*"([A-Za-z0-9_]+)"')
+# `--test <target>` on a shell command line, as the workflows spell it.
+SH_TEST_TARGET = re.compile(r"--test\s+([A-Za-z0-9_]+)")
 
 
 def test_targets() -> dict[str, Path]:
@@ -86,13 +113,47 @@ def main() -> int:
                     f"{owners} declares as a `mod`. The filter selects nothing."
                 )
 
+    # Same resolution, applied to the two places outside the nextest config
+    # that name a test target. `ci/*.py` is where #1158's silent exclusion
+    # lived; the workflows are where a `--test` argument fails a whole lane.
+    extra_sources: list[tuple[Path, str]] = []
+    for path in sorted(ROOT.glob("ci/*.py")):
+        if path.name == Path(__file__).name:
+            continue
+        extra_sources.append((path, path.read_text(encoding="utf-8")))
+    for path in sorted(ROOT.glob(".github/workflows/*.yml")):
+        extra_sources.append((path, path.read_text(encoding="utf-8")))
+
+    for path, text in extra_sources:
+        rel = path.relative_to(ROOT)
+        names = set(PY_TEST_TARGET.findall(text)) if path.suffix == ".py" else set()
+        if path.suffix == ".yml":
+            names = set(SH_TEST_TARGET.findall(text))
+        for name in sorted(names):
+            if name not in targets:
+                errors.append(
+                    f"{rel} selects `--test {name}`, which is not a test target. "
+                    f"Known targets: {', '.join(sorted(targets))}"
+                )
+        for name in sorted(set(BINARY_REF.findall(text))):
+            if name not in targets:
+                errors.append(
+                    f"{rel} names binary({name}) in a filter, which is not a test "
+                    "target. A stale `binary(...)` matches nothing -- and inside a "
+                    "`not binary(...)` exclusion it excludes nothing, which is worse."
+                )
+
     if errors:
-        print("nextest-filter-guard: stale filters in .config/nextest.toml")
+        print("nextest-filter-guard: stale test-target references")
         for error in errors:
             print(f"  - {error}")
         return 1
 
-    print(f"nextest-filter-guard: {len(filters)} filter(s) resolve to live targets")
+    print(
+        f"nextest-filter-guard: {len(filters)} filterset(s) and every "
+        f"--test/binary(...) reference in ci/ and .github/workflows/ resolve "
+        "to live targets"
+    )
     return 0
 
 
