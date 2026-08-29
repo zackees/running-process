@@ -66,7 +66,7 @@ def _expected_daemon_spawn_cmd() -> list[str]:
         "--features",
         "daemon",
         "-E",
-        "test(compile_session) | binary(daemon_environment_policy_test)",
+        "test(compile_session) | test(/^daemon_environment_policy_test::/)",
     ]
     if ci_test.sys.platform == "win32":
         cmd += ["--test-threads", "1"]
@@ -118,7 +118,7 @@ def test_rust_coverage_runs_all_features_and_excludes_test_fixtures(
         "--workspace",
         "--all-features",
         "-E",
-        "not binary(brokered_backend_ui)",
+        "not test(/^brokered_backend_ui::/)",
     ]
     assert ci_test._brokered_backend_ui_test_command() == [
         "cargo",
@@ -129,7 +129,9 @@ def test_rust_coverage_runs_all_features_and_excludes_test_fixtures(
         "--features",
         "client",
         "--test",
-        "brokered_backend_ui",
+        "broker",
+        "-E",
+        "test(/^brokered_backend_ui::/)",
         "--no-capture",
     ]
     assert ci_test._rust_coverage_example_commands() == [
@@ -909,7 +911,7 @@ def test_all_features_args_exclude_only_the_host_sensitive_ui_binary() -> None:
     assert ci_test._rust_all_features_test_args() == [
         "--all-features",
         "-E",
-        "not binary(brokered_backend_ui)",
+        "not test(/^brokered_backend_ui::/)",
     ]
 
 
