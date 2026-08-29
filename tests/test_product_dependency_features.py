@@ -7,10 +7,10 @@ serialization, host inspection, terminal graphics, or the trampoline binary.
 
 from __future__ import annotations
 
-import tomllib
 import unittest
 from pathlib import Path
 
+import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "crates" / "running-process" / "Cargo.toml"
@@ -71,7 +71,9 @@ class TestProductDependencyFeatures(unittest.TestCase):
         )
         for fixture in ("LegacyClearAtTag4", "LegacyClearAtTag5"):
             self.assertIn(
-                f'#[cfg(feature = "client")]\n    #[derive(Clone, PartialEq, Message)]\n    struct {fixture}',
+                f'#[cfg(feature = "client")]\n'
+                f"    #[derive(Clone, PartialEq, Message)]\n"
+                f"    struct {fixture}",
                 spawn,
                 fixture,
             )

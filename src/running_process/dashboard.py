@@ -546,7 +546,7 @@ setInterval(refresh, REFRESH_MS);
 class _DashboardHandler(BaseHTTPRequestHandler):
     """Serve the dashboard HTML and JSON API."""
 
-    def do_GET(self) -> None:
+    def do_GET(self) -> None:  # noqa: N802 -- http.server dispatches on the exact `do_<METHOD>` name
         if self.path in {"/", "/index.html"}:
             self._send_html()
         elif self.path == "/api/processes":

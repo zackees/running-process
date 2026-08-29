@@ -65,7 +65,7 @@ class TryExceptVisitor(ast.NodeVisitor):
     def __init__(self) -> None:
         self.violations: list[Violation] = []
 
-    def visit_Try(self, node: ast.Try) -> None:
+    def visit_Try(self, node: ast.Try) -> None:  # noqa: N802 -- ast.NodeVisitor dispatches on the exact `visit_<NodeType>` name
         catches_broad_exception = False
         has_keyboard_interrupt_handler = False
         keyboard_interrupt_handlers: list[ast.ExceptHandler] = []
