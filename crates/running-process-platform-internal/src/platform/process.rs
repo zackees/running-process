@@ -39,19 +39,19 @@ pub struct ProcessCommandConfig {
 /// default close-on-exec sweep.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DaemonExecInheritance {
-    #[cfg(unix)]
     descriptor: i32,
-    #[cfg(windows)]
-    _unsupported: (),
 }
 
 impl DaemonExecInheritance {
-    #[cfg(all(unix, feature = "ipc"))]
+    // The token is constructed and consumed only by Unix IPC backends. Keep
+    // its representation host-neutral here so platform selection stays in
+    // those backend modules rather than leaking into the shared facade.
+    #[allow(dead_code)]
     pub(crate) fn preserving_descriptor(descriptor: i32) -> Self {
         Self { descriptor }
     }
 
-    #[cfg(unix)]
+    #[allow(dead_code)]
     pub(crate) fn descriptor(self) -> i32 {
         self.descriptor
     }

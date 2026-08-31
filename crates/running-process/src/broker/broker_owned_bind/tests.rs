@@ -1,12 +1,8 @@
 use super::*;
 
-#[cfg(unix)]
 const INHERITED_LISTENER_CHILD_ENV: &str = "RUNNING_PROCESS_TEST_INHERITED_LISTENER_CHILD";
-#[cfg(unix)]
 const CHILD_EXPECTS_CLOSED: &str = "closed";
-#[cfg(unix)]
 const CHILD_EXPECTS_INHERITED: &str = "inherited";
-#[cfg(unix)]
 const CHILD_TEST_NAME: &str = "broker::broker_owned_bind::tests::inherited_listener_daemon_child";
 
 /// The launcher binds by default, and a falsy value opts out.
@@ -73,7 +69,6 @@ fn support_query_matches_the_platform_capability() {
 /// A command-local marker keeps ordinary unit-test execution inert. The
 /// parent spawns this exact test in a fresh process so recovery happens only
 /// after a real fork+exec boundary.
-#[cfg(unix)]
 #[test]
 fn inherited_listener_daemon_child() {
     let Some(expectation) = std::env::var_os(INHERITED_LISTENER_CHILD_ENV) else {
@@ -104,9 +99,12 @@ fn inherited_listener_daemon_child() {
     stream.flush().expect("flush child response");
 }
 
-#[cfg(unix)]
 #[test]
 fn prepared_listener_survives_sanitized_daemon_exec() {
+    if !InheritableListener::supported() {
+        return;
+    }
+
     use std::io::{Read as _, Write as _};
     use std::process::Command;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
