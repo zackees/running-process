@@ -471,6 +471,17 @@ impl InheritedListener {
         ))
     }
 
+    pub fn prepare_for_daemon(
+        &self,
+        _command: &mut std::process::Command,
+        _env_key: &str,
+    ) -> io::Result<crate::platform::process::DaemonExecInheritance> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a Windows named-pipe listener cannot be inherited by a child",
+        ))
+    }
+
     pub fn disown_endpoint(&mut self) {}
 
     pub fn recover_from_env(_env_key: &str) -> io::Result<Option<Listener>> {

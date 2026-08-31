@@ -180,13 +180,40 @@ pub fn spawn_sync_daemon(
     environment: crate::platform::process::SyncEnvironment,
     _breakaway: bool,
 ) -> io::Result<crate::platform::process::DaemonChild> {
+    spawn_sync_daemon_inner(command, stdio, environment, None)
+}
+
+pub fn spawn_sync_daemon_with_inheritance(
+    command: &mut Command,
+    stdio: crate::platform::process::DaemonStdio<'_>,
+    environment: crate::platform::process::SyncEnvironment,
+    _breakaway: bool,
+    inheritance: crate::platform::process::DaemonExecInheritance,
+) -> io::Result<crate::platform::process::DaemonChild> {
+    spawn_sync_daemon_inner(command, stdio, environment, Some(inheritance))
+}
+
+fn spawn_sync_daemon_inner(
+    command: &mut Command,
+    stdio: crate::platform::process::DaemonStdio<'_>,
+    environment: crate::platform::process::SyncEnvironment,
+    inheritance: Option<crate::platform::process::DaemonExecInheritance>,
+) -> io::Result<crate::platform::process::DaemonChild> {
     apply_environment(command, environment);
     command
         .stdin(Stdio::null())
         .stdout(daemon_slot_to_stdio(&stdio.stdout)?)
         .stderr(daemon_slot_to_stdio(&stdio.stderr)?);
 
-    crate::platform::process::configure_sync_daemon_command(command)?;
+    match inheritance {
+        Some(inheritance) => {
+            crate::platform::process::configure_sync_daemon_command_with_inheritance(
+                command,
+                inheritance,
+            )?;
+        }
+        None => crate::platform::process::configure_sync_daemon_command(command)?,
+    }
 
     let child = command.spawn()?;
     let pid = child.id();

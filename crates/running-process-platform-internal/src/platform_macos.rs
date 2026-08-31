@@ -575,13 +575,41 @@ pub unsafe fn unix_mark_extra_fds_close_on_exec() {
 }
 
 pub fn configure_sync_daemon_command(command: &mut std::process::Command) -> io::Result<()> {
+    configure_sync_daemon_command_inner(command, None)
+}
+
+pub fn configure_sync_daemon_command_with_inheritance(
+    command: &mut std::process::Command,
+    inheritance: crate::platform::process::DaemonExecInheritance,
+) -> io::Result<()> {
+    configure_sync_daemon_command_inner(command, Some(inheritance))
+}
+
+fn configure_sync_daemon_command_inner(
+    command: &mut std::process::Command,
+    inheritance: Option<crate::platform::process::DaemonExecInheritance>,
+) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             let _ = libc::setsid();
             unix_mark_extra_fds_close_on_exec();
+            if let Some(inheritance) = inheritance {
+                clear_cloexec_after_sweep(inheritance.descriptor())?;
+            }
             Ok(())
         });
+    }
+    Ok(())
+}
+
+unsafe fn clear_cloexec_after_sweep(fd: libc::c_int) -> io::Result<()> {
+    let flags = libc::fcntl(fd, libc::F_GETFD);
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -917,7 +945,7 @@ mod tests;
 
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;
-pub use sync_spawn::{spawn_sync, spawn_sync_daemon};
+pub use sync_spawn::{spawn_sync, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
 
 #[cfg(all(test, feature = "ipc"))]
 mod endpoint_naming_tests {

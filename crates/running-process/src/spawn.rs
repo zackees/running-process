@@ -200,6 +200,7 @@ pub fn spawn_daemon(command: &mut Command) -> std::io::Result<DaemonChild> {
         DaemonStdio::default(),
         EnvironmentPolicy::Auto,
         false,
+        None,
     )
 }
 
@@ -221,7 +222,7 @@ pub fn spawn_daemon_with_stdio_and_env_policy(
     stdio: DaemonStdio<'_>,
     policy: EnvironmentPolicy,
 ) -> std::io::Result<DaemonChild> {
-    spawn_daemon_inner(command, stdio, policy, false)
+    spawn_daemon_inner(command, stdio, policy, false, None)
 }
 
 /// Like [`spawn_daemon`] but with explicit control over whether the
@@ -244,7 +245,7 @@ pub fn spawn_daemon_with_clear_env(
     } else {
         EnvironmentPolicy::Auto
     };
-    spawn_daemon_inner(command, DaemonStdio::default(), policy, false)
+    spawn_daemon_inner(command, DaemonStdio::default(), policy, false, None)
 }
 
 /// Spawn a detached daemon using an explicit environment policy.
@@ -259,7 +260,7 @@ pub fn spawn_daemon_with_env_policy(
     command: &mut Command,
     policy: EnvironmentPolicy,
 ) -> std::io::Result<DaemonChild> {
-    spawn_daemon_inner(command, DaemonStdio::default(), policy, false)
+    spawn_daemon_inner(command, DaemonStdio::default(), policy, false, None)
 }
 
 /// Like [`spawn_daemon`], but the child also **breaks away from any Job
@@ -298,6 +299,7 @@ pub fn spawn_daemon_breaking_away_from_job(command: &mut Command) -> std::io::Re
         DaemonStdio::default(),
         EnvironmentPolicy::Auto,
         true,
+        None,
     )
 }
 
@@ -306,7 +308,26 @@ pub fn spawn_daemon_breaking_away_with_env_policy(
     command: &mut Command,
     policy: EnvironmentPolicy,
 ) -> std::io::Result<DaemonChild> {
-    spawn_daemon_inner(command, DaemonStdio::default(), policy, true)
+    spawn_daemon_inner(command, DaemonStdio::default(), policy, true, None)
+}
+
+/// Spawn a daemon while preserving one explicitly prepared IPC listener.
+///
+/// This stays crate-private: ordinary callers must retain the sanitized
+/// close-extra-descriptors contract, while the broker launcher receives the
+/// opaque inheritance token only from `InheritableListener::prepare_for_daemon`.
+#[cfg(feature = "client")]
+pub(crate) fn spawn_daemon_with_inheritance(
+    command: &mut Command,
+    inheritance: running_process_platform_internal::platform::process::DaemonExecInheritance,
+) -> std::io::Result<DaemonChild> {
+    spawn_daemon_inner(
+        command,
+        DaemonStdio::default(),
+        EnvironmentPolicy::Auto,
+        false,
+        Some(inheritance),
+    )
 }
 
 /// Apply the daemon self-declaration to `command`. Split out from
@@ -344,6 +365,9 @@ fn spawn_daemon_inner(
     stdio: DaemonStdio<'_>,
     policy: EnvironmentPolicy,
     breakaway: bool,
+    inheritance: Option<
+        running_process_platform_internal::platform::process::DaemonExecInheritance,
+    >,
 ) -> std::io::Result<DaemonChild> {
     // Every daemon-spawn variant funnels through here, so this is the one
     // place that can mark them all — including the free functions consumers
@@ -351,12 +375,23 @@ fn spawn_daemon_inner(
     mark_as_daemon(command);
     let policy = policy.resolve(SpawnLifetime::Daemon);
     let environment = prepare_sync_environment(policy)?;
-    running_process_platform_internal::platform::process::spawn_sync_daemon(
-        command,
-        stdio,
-        environment,
-        breakaway,
-    )
+    match inheritance {
+        Some(inheritance) => {
+            running_process_platform_internal::platform::process::spawn_sync_daemon_with_inheritance(
+                command,
+                stdio,
+                environment,
+                breakaway,
+                inheritance,
+            )
+        }
+        None => running_process_platform_internal::platform::process::spawn_sync_daemon(
+            command,
+            stdio,
+            environment,
+            breakaway,
+        ),
+    }
 }
 
 /// Spawn `command` as a contained child with caller-controlled stdio.

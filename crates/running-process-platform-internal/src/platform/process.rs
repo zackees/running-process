@@ -3,12 +3,14 @@
 pub use crate::{
     assign_child_to_windows_job, cancel_capture_reader, canonical_environment_pairs,
     capture_reader_done, compat_shell_command, configure_exact_trace, configure_process_command,
-    configure_sync_contained_command, configure_sync_daemon_command, configure_trampoline_command,
+    configure_sync_contained_command, configure_sync_daemon_command,
+    configure_sync_daemon_command_with_inheritance, configure_trampoline_command,
     current_executable_build_id, exact_trace_capability, exit_code, monitor_console_windows,
     parent_has_console, prepare_capture_reader, set_process_name, shell_command,
-    soft_terminate_process_group, spawn_sync, spawn_sync_daemon, start_descendant_monitor,
-    start_exact_trace, sync_child_native_handle, trampoline_exit_code,
-    unix_mark_extra_fds_close_on_exec, CaptureCancellation, TracedChild, WindowsJobHandle,
+    soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
+    spawn_sync_daemon_with_inheritance, start_descendant_monitor, start_exact_trace,
+    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
+    CaptureCancellation, TracedChild, WindowsJobHandle,
 };
 
 #[cfg(feature = "async-process")]
@@ -27,6 +29,32 @@ pub struct ProcessCommandConfig {
     pub create_process_group: bool,
     pub nice: Option<i32>,
     pub address_space_limit_bytes: Option<u64>,
+}
+
+/// Opaque descriptor that a daemon spawn deliberately preserves through exec.
+///
+/// Normal daemon spawns retain the close-extra-descriptors default. The IPC
+/// listener handoff creates this value only after preparing its listener, and
+/// the Unix spawn boundary reopens exactly this descriptor after applying the
+/// default close-on-exec sweep.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DaemonExecInheritance {
+    descriptor: i32,
+}
+
+impl DaemonExecInheritance {
+    // The token is constructed and consumed only by Unix IPC backends. Keep
+    // its representation host-neutral here so platform selection stays in
+    // those backend modules rather than leaking into the shared facade.
+    #[allow(dead_code)]
+    pub(crate) fn preserving_descriptor(descriptor: i32) -> Self {
+        Self { descriptor }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn descriptor(self) -> i32 {
+        self.descriptor
+    }
 }
 
 /// Availability of an invasive, lossless launched-tree trace backend.

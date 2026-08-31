@@ -505,6 +505,24 @@ impl InheritedListener {
         Ok(())
     }
 
+    pub fn prepare_for_daemon(
+        &self,
+        command: &mut std::process::Command,
+        env_key: &str,
+    ) -> io::Result<crate::platform::process::DaemonExecInheritance> {
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+
+        let fd = self.listener.as_fd();
+        set_cloexec(&fd)?;
+        let raw_fd = fd.as_raw_fd();
+        // Keep the listener closed across every other exec. The opaque token
+        // makes the sanitized spawn clear CLOEXEC only in the post-fork child,
+        // after the close-extra-fds sweep, so concurrent spawns cannot inherit
+        // it.
+        command.env(env_key, raw_fd.to_string());
+        Ok(crate::platform::process::DaemonExecInheritance::preserving_descriptor(raw_fd))
+    }
+
     pub fn disown_endpoint(&mut self) {
         use interprocess::local_socket::traits::Listener as _;
 
@@ -559,6 +577,22 @@ fn clear_cloexec(fd: &std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
     }
     // SAFETY: as above; only FD_CLOEXEC is cleared from the returned flags.
     if unsafe { libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn set_cloexec(fd: &std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+
+    let raw = fd.as_raw_fd();
+    // SAFETY: `raw` is borrowed from a live listener for both operations.
+    let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above; only FD_CLOEXEC is added to the returned flags.
+    if unsafe { libc::fcntl(raw, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

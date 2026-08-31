@@ -98,6 +98,8 @@ mod instance;
 mod instance_isolation;
 mod into_backend_io;
 mod lifecycle_event_size;
+#[cfg(feature = "test-seams")]
+mod lifecycle_process_conformance;
 mod manifest_atomic;
 mod manifest_boot_id;
 mod manifest_corruption;

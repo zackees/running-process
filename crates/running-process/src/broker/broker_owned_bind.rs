@@ -62,6 +62,17 @@ impl InheritableListener {
         self.inner.prepare(command, INHERITED_LISTENER_FD_ENV)
     }
 
+    /// Prepare the listener and return the opaque exec-preservation token used
+    /// by the broker's sanitized daemon-spawn path.
+    pub(crate) fn prepare_for_daemon(
+        &self,
+        command: &mut std::process::Command,
+    ) -> std::io::Result<running_process_platform_internal::platform::process::DaemonExecInheritance>
+    {
+        self.inner
+            .prepare_for_daemon(command, INHERITED_LISTENER_FD_ENV)
+    }
+
     /// Release endpoint-name cleanup once the child owns the listener.
     pub fn disown_endpoint(&mut self) {
         self.inner.disown_endpoint();

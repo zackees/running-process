@@ -17,7 +17,7 @@ use crate::broker::backend_lifecycle::identity::{
 use crate::broker::host_identity;
 use crate::broker::lifecycle::sid::{user_sid_hash, SidError};
 use crate::broker::protocol::{Endpoint, ServiceDefinition};
-use crate::spawn_daemon;
+use crate::spawn::{spawn_daemon, spawn_daemon_with_inheritance};
 
 use super::backend_endpoint_allocator::{BackendEndpointAllocator, BackendEndpointAllocatorError};
 use super::backend_registry::BackendKey;
@@ -146,17 +146,23 @@ impl BackendLauncher for CommandBackendLauncher {
         // behaviour this launcher has always had, and the probe below still
         // gates success either way.
         let mut inherited = broker_owned_listener(&endpoint);
+        let mut inheritance = None;
         if let Some(listener) = inherited.as_ref() {
             // Publishing the descriptor must happen before the spawn. Failing
             // here would leave the child inheriting nothing while the broker
             // holds a listener nobody serves, so drop ours and let the daemon
             // bind for itself.
-            if listener.prepare(&mut command).is_err() {
-                inherited = None;
+            match listener.prepare_for_daemon(&mut command) {
+                Ok(prepared) => inheritance = Some(prepared),
+                Err(_) => inherited = None,
             }
         }
 
-        let mut child = spawn_daemon(&mut command).map_err(BackendLaunchError::Spawn)?;
+        let mut child = match inheritance {
+            Some(inheritance) => spawn_daemon_with_inheritance(&mut command, inheritance),
+            None => spawn_daemon(&mut command),
+        }
+        .map_err(BackendLaunchError::Spawn)?;
 
         let daemon = daemon_identity_for_spawned_process(
             child.id(),

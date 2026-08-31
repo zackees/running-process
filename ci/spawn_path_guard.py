@@ -57,12 +57,10 @@ ALLOWED_RUST_COMMAND_NEW = {
     Path("crates/running-process/src/containment.rs"),
     # Inline tests module for running-process lib root.
     Path("crates/running-process/src/tests.rs"),
-    # #500 slice 32 (broker-owned bind). These `Command`s are never spawned —
-    # they exist only so `InheritableListener::prepare` has something to
-    # configure, and the tests then assert on the env var it published and the
-    # CLOEXEC bit it cleared. `/bin/true` is a placeholder program name that is
-    # never executed. The real spawn, when the launcher wiring lands, goes
-    # through `spawn_daemon` like every other backend launch.
+    # #500 broker-owned bind. The unit regression constructs the current test
+    # binary as a fixed child command and routes it through the sanitized
+    # daemon-spawn boundary, proving a prepared listener survives real exec.
+    # No user-controlled program or raw spawn enters this file.
     Path("crates/running-process/src/broker/broker_owned_bind/tests.rs"),
     # Phase 3 proxy-pump oracle (soldr#2365). These spawn the
     # `testbin-stdio-scripted` fixture directly — once through the pump and

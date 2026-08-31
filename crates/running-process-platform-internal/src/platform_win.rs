@@ -457,6 +457,10 @@ pub fn process_snapshot_for_pid(_pid: u32) -> Option<crate::platform::process::P
 pub unsafe fn unix_mark_extra_fds_close_on_exec() {}
 
 pub fn configure_sync_daemon_command(_command: &mut std::process::Command) -> io::Result<()> { Ok(()) }
+pub fn configure_sync_daemon_command_with_inheritance(
+    _command: &mut std::process::Command,
+    _inheritance: crate::platform::process::DaemonExecInheritance,
+) -> io::Result<()> { Ok(()) }
 
 pub fn configure_sync_contained_command(_command: &mut std::process::Command) -> io::Result<()> { Ok(()) }
 
@@ -631,7 +635,7 @@ fn assign(child: Option<HANDLE>) -> io::Result<()> {
 }
 #[path = "platform_win/sync_spawn.rs"]
 mod sync_spawn;
-pub use sync_spawn::{spawn_sync, spawn_sync_daemon};
+pub use sync_spawn::{spawn_sync, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
 
 #[cfg(test)]
 mod tests {
