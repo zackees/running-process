@@ -296,17 +296,26 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn stale_endpoint_n_way_recovery_has_exactly_one_winner() {
         use std::sync::{mpsc, Arc, Barrier};
 
         const CONTENDERS: usize = 16;
 
+        if !crate::platform::ipc::endpoint_is_filesystem_backed() {
+            return;
+        }
+
         let temp = tempfile::tempdir().expect("tempdir");
         let socket_path = temp.path().join("stale.sock");
-        drop(std::os::unix::net::UnixListener::bind(&socket_path).expect("seed stale endpoint"));
         let socket_path = socket_path.to_string_lossy().into_owned();
+        let endpoint = crate::platform::ipc::Endpoint::new(socket_path.clone())
+            .expect("construct stale endpoint");
+        let mut stale_listener = Listener::bind(&endpoint).expect("seed stale endpoint");
+        stale_listener.do_not_reclaim_name_on_drop();
+        drop(stale_listener);
+        assert!(endpoint.is_stale(), "seeded endpoint must be stale");
+
         let start = Arc::new(Barrier::new(CONTENDERS));
         let release = Arc::new(Barrier::new(CONTENDERS + 1));
         let (send, receive) = mpsc::channel();
