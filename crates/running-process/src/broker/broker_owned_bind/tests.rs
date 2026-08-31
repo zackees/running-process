@@ -3,6 +3,10 @@ use super::*;
 #[cfg(unix)]
 const INHERITED_LISTENER_CHILD_ENV: &str = "RUNNING_PROCESS_TEST_INHERITED_LISTENER_CHILD";
 #[cfg(unix)]
+const CHILD_EXPECTS_CLOSED: &str = "closed";
+#[cfg(unix)]
+const CHILD_EXPECTS_INHERITED: &str = "inherited";
+#[cfg(unix)]
 const CHILD_TEST_NAME: &str = "broker::broker_owned_bind::tests::inherited_listener_daemon_child";
 
 /// The launcher binds by default, and a falsy value opts out.
@@ -72,9 +76,18 @@ fn support_query_matches_the_platform_capability() {
 #[cfg(unix)]
 #[test]
 fn inherited_listener_daemon_child() {
-    if std::env::var_os(INHERITED_LISTENER_CHILD_ENV).is_none() {
+    let Some(expectation) = std::env::var_os(INHERITED_LISTENER_CHILD_ENV) else {
+        return;
+    };
+
+    if expectation == CHILD_EXPECTS_CLOSED {
+        assert!(
+            recover_from_env().is_err(),
+            "ordinary exec must not recover the CLOEXEC listener"
+        );
         return;
     }
+    assert_eq!(expectation, CHILD_EXPECTS_INHERITED);
 
     use std::io::{Read as _, Write as _};
 
@@ -107,35 +120,35 @@ fn prepared_listener_survives_sanitized_daemon_exec() {
     let endpoint = format!("/tmp/rp-inherit-{}-{nonce:x}.sock", std::process::id());
     let listener = InheritableListener::bind(&endpoint).expect("bind broker-owned listener");
 
-    let mut command = Command::new(std::env::current_exe().expect("current unit-test binary"));
-    command
-        .arg("--exact")
-        .arg(CHILD_TEST_NAME)
-        .arg("--nocapture")
-        .env(INHERITED_LISTENER_CHILD_ENV, "1");
+    let child_command = |expectation: &str| {
+        let mut command = Command::new(std::env::current_exe().expect("current unit-test binary"));
+        command
+            .arg("--exact")
+            .arg(CHILD_TEST_NAME)
+            .arg("--nocapture")
+            .env(INHERITED_LISTENER_CHILD_ENV, expectation);
+        command
+    };
+
+    // Preparation must never make the listener inheritable by an unrelated
+    // exec. Prove that behavior at the process boundary rather than inspecting
+    // the native descriptor from broker code.
+    let mut ordinary_command = child_command(CHILD_EXPECTS_CLOSED);
+    let _ordinary_inheritance = listener
+        .prepare_for_daemon(&mut ordinary_command)
+        .expect("prepare listener while retaining CLOEXEC in the parent");
+    let ordinary_status = ordinary_command
+        .status()
+        .expect("spawn ordinary child without the daemon inheritance hook");
+    assert!(
+        ordinary_status.success(),
+        "ordinary child must confirm that the listener stayed closed"
+    );
+
+    let mut command = child_command(CHILD_EXPECTS_INHERITED);
     let inheritance = listener
         .prepare_for_daemon(&mut command)
         .expect("prepare listener inheritance");
-    let prepared_fd: libc::c_int = command
-        .get_envs()
-        .find_map(|(name, value)| {
-            (name == std::ffi::OsStr::new(INHERITED_LISTENER_FD_ENV))
-                .then_some(value)
-                .flatten()
-        })
-        .and_then(std::ffi::OsStr::to_str)
-        .expect("prepared listener descriptor in child-local environment")
-        .parse()
-        .expect("prepared listener descriptor is numeric");
-    // Preparation must never make the listener inheritable in the parent.
-    // Only the targeted child's post-fork hook may clear this bit.
-    let parent_fd_flags = unsafe { libc::fcntl(prepared_fd, libc::F_GETFD) };
-    assert_ne!(parent_fd_flags, -1, "prepared listener remains open");
-    assert_ne!(
-        parent_fd_flags & libc::FD_CLOEXEC,
-        0,
-        "prepared listener remains CLOEXEC in the spawning process"
-    );
     let mut child = crate::spawn::spawn_daemon_with_inheritance(&mut command, inheritance)
         .expect("spawn sanitized daemon with prepared listener");
 
