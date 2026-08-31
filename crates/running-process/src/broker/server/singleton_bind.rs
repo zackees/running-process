@@ -11,9 +11,15 @@
 //! [`bind_singleton`]'s docs and running-process#899 for the concurrency bug
 //! this module's shape specifically avoids.
 
+use std::fs::File;
 use std::io;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::platform::ipc::Listener;
+
+const STALE_RECOVERY_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
+const STALE_RECOVERY_LOCK_POLL: Duration = Duration::from_millis(10);
 
 /// Resolve the bare pipe/socket name into a full, platform-specific bind
 /// path: `\\.\pipe\<bare_name>` on Windows, or a file under a per-user
@@ -98,29 +104,55 @@ pub enum BindSingletonError {
 /// of N racing starters delete the current winner's *live* socket and
 /// rebind over the freed path — so all N starters observed a successful
 /// bind instead of exactly one (running-process#899, soldr#2361/#2363's
-/// singleton testing invariant). This function instead: attempts the bind
-/// first with no cleanup; on an already-bound failure, it connect-probes
-/// filesystem-backed endpoints via `unix_socket_path_is_stale` to tell a
-/// genuinely orphaned socket file apart from a live peer, and only then
-/// removes + retries once. Windows needs no cleanup step at all — the
-/// named pipe namespace is kernel-managed and a prior binding vanishes
-/// when that process exits.
+/// singleton testing invariant). This function instead attempts the bind
+/// first with no cleanup. On an already-bound stale result, it serializes
+/// contenders with a sidecar lock, retries the bind under that lock, and
+/// only lets the holder that still sees a stale endpoint remove and reclaim
+/// it. Windows needs no cleanup step at all — the named pipe namespace is
+/// kernel-managed and a prior binding vanishes when that process exits.
 ///
 /// On Unix, the parent directory of `socket_path` is created if missing
 /// before the first bind attempt.
 pub fn bind_singleton(socket_path: &str) -> Result<Listener, BindSingletonError> {
     let endpoint = crate::platform::ipc::Endpoint::new(socket_path.to_owned())
         .map_err(|error| BindSingletonError::InvalidName(error.to_string()))?;
+    bind_singleton_with_endpoint(&endpoint, || Listener::bind(&endpoint))
+}
+
+/// Bind a caller-owned listener with the same singleton and serialized stale
+/// recovery contract as [`bind_singleton`].
+///
+/// This is for consumers that need listener options the default synchronous
+/// [`Listener`] does not expose (for example an async listener or a custom
+/// accept backlog). `bind` must attempt to claim `socket_path` without
+/// unlinking or reclaiming it first. It may be called up to three times: the
+/// ordinary bind, a serialized recheck after another contender may have
+/// recovered the path, and one final bind after this contender retires a
+/// still-stale endpoint.
+pub fn bind_singleton_with<T, F>(socket_path: &str, bind: F) -> Result<T, BindSingletonError>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    let endpoint = crate::platform::ipc::Endpoint::new(socket_path.to_owned())
+        .map_err(|error| BindSingletonError::InvalidName(error.to_string()))?;
+    bind_singleton_with_endpoint(&endpoint, bind)
+}
+
+fn bind_singleton_with_endpoint<T, F>(
+    endpoint: &crate::platform::ipc::Endpoint,
+    mut bind: F,
+) -> Result<T, BindSingletonError>
+where
+    F: FnMut() -> io::Result<T>,
+{
     endpoint
         .ensure_parent_exists()
         .map_err(BindSingletonError::Other)?;
-    #[allow(unused_mut)]
-    let mut listener_result = Listener::bind(&endpoint);
+    let mut listener_result = bind();
 
     if let Err(err) = &listener_result {
         if is_already_bound_error(err) && endpoint.is_stale() {
-            let _ = endpoint.retire();
-            listener_result = Listener::bind(&endpoint);
+            listener_result = recover_stale_endpoint(endpoint, &mut bind);
         }
     }
 
@@ -131,6 +163,68 @@ pub fn bind_singleton(socket_path: &str) -> Result<Listener, BindSingletonError>
             BindSingletonError::Other(err)
         }
     })
+}
+
+/// Serialize the destructive part of stale-endpoint recovery.
+///
+/// Every contender first failed the ordinary bind and observed an orphaned
+/// filesystem socket. Without a separate lock they can all make that decision,
+/// then take turns unlinking whichever endpoint currently occupies the path --
+/// including a live listener installed by an earlier contender. Once the lock
+/// is held, bind again before retiring anything: a prior recovery winner is now
+/// reported as already bound, while a still-stale endpoint is retired exactly
+/// once and rebound by this holder.
+fn recover_stale_endpoint<T, F>(
+    endpoint: &crate::platform::ipc::Endpoint,
+    bind: &mut F,
+) -> io::Result<T>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    let _guard = StaleRecoveryLock::acquire(endpoint.display())?;
+
+    match bind() {
+        Ok(listener) => Ok(listener),
+        Err(error) if is_already_bound_error(&error) && endpoint.is_stale() => {
+            endpoint.retire()?;
+            bind()
+        }
+        Err(error) => Err(error),
+    }
+}
+
+struct StaleRecoveryLock(File);
+
+impl StaleRecoveryLock {
+    fn acquire(socket_path: &str) -> io::Result<Self> {
+        let lock_path = stale_recovery_lock_path(socket_path);
+        let file = crate::platform::fs::open_lock_file(&lock_path)?;
+        let deadline = Instant::now() + STALE_RECOVERY_LOCK_TIMEOUT;
+        loop {
+            match crate::platform::fs::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(Self(file)),
+                Err(error)
+                    if crate::platform::fs::is_lock_conflict(&error)
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(STALE_RECOVERY_LOCK_POLL);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+impl Drop for StaleRecoveryLock {
+    fn drop(&mut self) {
+        let _ = crate::platform::fs::unlock(&self.0);
+    }
+}
+
+fn stale_recovery_lock_path(socket_path: &str) -> PathBuf {
+    let mut lock_path = std::ffi::OsString::from(socket_path);
+    lock_path.push(".bind.lock");
+    PathBuf::from(lock_path)
 }
 
 #[cfg(test)]
@@ -200,5 +294,61 @@ mod tests {
             matches!(second, Err(BindSingletonError::AlreadyBound(_))),
             "second bind at the same path must be refused as AlreadyBound, got {second:?}"
         );
+    }
+
+    #[test]
+    fn stale_endpoint_n_way_recovery_has_exactly_one_winner() {
+        use std::sync::{mpsc, Arc, Barrier};
+
+        const CONTENDERS: usize = 16;
+
+        if !crate::platform::ipc::endpoint_is_filesystem_backed() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp.path().join("stale.sock");
+        let socket_path = socket_path.to_string_lossy().into_owned();
+        let endpoint = crate::platform::ipc::Endpoint::new(socket_path.clone())
+            .expect("construct stale endpoint");
+        let mut stale_listener = Listener::bind(&endpoint).expect("seed stale endpoint");
+        stale_listener.do_not_reclaim_name_on_drop();
+        drop(stale_listener);
+        assert!(endpoint.is_stale(), "seeded endpoint must be stale");
+
+        let start = Arc::new(Barrier::new(CONTENDERS));
+        let release = Arc::new(Barrier::new(CONTENDERS + 1));
+        let (send, receive) = mpsc::channel();
+        let threads: Vec<_> = (0..CONTENDERS)
+            .map(|_| {
+                let socket_path = socket_path.clone();
+                let start = Arc::clone(&start);
+                let release = Arc::clone(&release);
+                let send = send.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    let listener = bind_singleton_with(&socket_path, || {
+                        let endpoint = crate::platform::ipc::Endpoint::new(socket_path.clone())?;
+                        Listener::bind(&endpoint)
+                    });
+                    send.send(listener.is_ok()).expect("send bind result");
+                    release.wait();
+                    drop(listener);
+                })
+            })
+            .collect();
+        drop(send);
+
+        let results: Vec<_> = receive.iter().take(CONTENDERS).collect();
+        assert_eq!(
+            results.iter().filter(|won| **won).count(),
+            1,
+            "stale recovery must not unlink a newly bound winner: {results:?}"
+        );
+
+        release.wait();
+        for thread in threads {
+            thread.join().expect("bind contender");
+        }
     }
 }
