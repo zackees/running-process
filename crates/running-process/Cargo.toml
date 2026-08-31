@@ -52,6 +52,14 @@ name = "running-process-broker-v2"
 path = "src/bin/running-process-broker-v2.rs"
 required-features = ["client"]
 
+[[bin]]
+# Real-process fixture for broker lifecycle conformance. It is physically
+# absent from normal builds and published binaries; the off-by-default
+# `test-seams` feature is enabled only by the repository's test pass.
+name = "running-process-lifecycle-test-backend"
+path = "src/bin/running-process-lifecycle-test-backend.rs"
+required-features = ["test-seams"]
+
 [[example]]
 # Dev-only evidence harness for #387: deploys the real broker binary plus
 # a separate backend process and measures the opt-in handle-passing

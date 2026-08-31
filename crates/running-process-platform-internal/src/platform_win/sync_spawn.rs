@@ -446,6 +446,16 @@ pub fn spawn_sync_daemon(
     })
 }
 
+pub fn spawn_sync_daemon_with_inheritance(
+    command: &mut Command,
+    stdio: crate::platform::process::DaemonStdio<'_>,
+    environment: crate::platform::process::SyncEnvironment,
+    breakaway: bool,
+    _inheritance: crate::platform::process::DaemonExecInheritance,
+) -> io::Result<crate::platform::process::DaemonChild> {
+    spawn_sync_daemon(command, stdio, environment, breakaway)
+}
+
 pub fn spawn_sync(
     command: &mut Command,
     stdio: crate::platform::process::SpawnStdio<'_>,
