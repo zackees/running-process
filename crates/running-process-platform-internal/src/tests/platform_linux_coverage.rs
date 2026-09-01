@@ -218,6 +218,28 @@ fn reviewed_command_configuration_executes_on_short_lived_children() {
 
 #[cfg(feature = "async-process")]
 #[test]
+fn owner_death_configuration_composes_with_group_priority_and_limits() {
+    // Some Nix-based development hosts intentionally lack `/bin/true`; use
+    // the shell-resolved utility here because this test exercises pre-exec
+    // policy rather than a particular filesystem spelling.
+    let mut configured = std::process::Command::new("true");
+    configure_process_command_for_bounded_owner_death(
+        &mut configured,
+        ProcessCommandConfig {
+            create_process_group: true,
+            // This can only lower (or preserve) inherited priority, so it
+            // remains valid without CAP_SYS_NICE.
+            nice: Some(19),
+            address_space_limit_bytes: Some(512 * 1024 * 1024),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(configured.status().unwrap().success());
+}
+
+#[cfg(feature = "async-process")]
+#[test]
 fn tokio_configuration_and_live_signal_helpers_reach_the_os() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

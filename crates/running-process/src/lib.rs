@@ -421,6 +421,10 @@ pub struct NativeProcess {
     stdin: Mutex<Option<ChildStdin>>,
     shared: Arc<SharedState>,
     process_watch: Option<Arc<ProcessWatchEmitter>>,
+    // This remains a constructor-only policy for the bounded std::Command
+    // entrypoint. General NativeProcess callers keep their established
+    // platform policy surface.
+    kill_when_owner_dies: bool,
     #[cfg(test)]
     stdin_write_active: AtomicBool,
     capture_cancellation:
@@ -507,8 +511,12 @@ impl NativeProcess {
         command: Command,
         config: ProcessConfig,
         capture_limit: usize,
+        kill_when_owner_dies: bool,
     ) -> Self {
-        Self::new_with_options(config, None, Some(capture_limit), Some(command), None)
+        let mut process =
+            Self::new_with_options(config, None, Some(capture_limit), Some(command), None);
+        process.kill_when_owner_dies = kill_when_owner_dies;
+        process
     }
 
     fn new_with_options(
@@ -525,6 +533,7 @@ impl NativeProcess {
             command_override: Mutex::new(command_override),
             child: Arc::new(Mutex::new(None)),
             stdin: Mutex::new(None),
+            kill_when_owner_dies: false,
             #[cfg(test)]
             stdin_write_active: AtomicBool::new(false),
             config,
@@ -1364,16 +1373,23 @@ impl NativeProcess {
                 command
             }
         };
-        running_process_platform_internal::platform::process::configure_process_command(
-            &mut command,
+        let platform_config =
             running_process_platform_internal::platform::process::ProcessCommandConfig {
                 creation_flags: self.config.creationflags,
                 create_process_group: self.config.create_process_group,
                 nice: self.config.nice,
                 address_space_limit_bytes: self.config.address_space_limit_bytes,
-            },
-        )
-        .expect("platform command configuration must be valid");
+            };
+        let configured = if self.kill_when_owner_dies {
+            running_process_platform_internal::platform::process::
+                configure_process_command_for_bounded_owner_death(&mut command, platform_config)
+        } else {
+            running_process_platform_internal::platform::process::configure_process_command(
+                &mut command,
+                platform_config,
+            )
+        };
+        configured.expect("platform command configuration must be valid");
         command
     }
 
@@ -1610,7 +1626,10 @@ fn append_raw(shared: &Arc<SharedState>, stream: StreamKind, chunk: &[u8]) -> bo
 }
 
 mod bounded;
-pub use bounded::{run_command, run_command_bounded, run_std_command_bounded};
+pub use bounded::{
+    run_command, run_command_bounded, run_std_command_bounded,
+    run_std_command_bounded_with_options, BoundedRunOptions,
+};
 
 pub(crate) fn shell_command(command: &str) -> Command {
     running_process_platform_internal::platform::process::compat_shell_command(command)

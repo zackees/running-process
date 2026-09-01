@@ -451,11 +451,39 @@ pub fn configure_process_command(
     command: &mut std::process::Command,
     config: crate::platform::process::ProcessCommandConfig,
 ) -> io::Result<()> {
+    configure_process_command_inner(command, config, false)
+}
+
+/// Root-facade-only launch seam for bounded owner-death containment.
+///
+/// This must be `pub` because `running-process` is a separate package, but
+/// applications should use its semantic bounded-run options instead of this
+/// implementation-detail function.
+#[doc(hidden)]
+pub fn configure_process_command_for_bounded_owner_death(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+) -> io::Result<()> {
+    configure_process_command_inner(command, config, true)
+}
+
+fn configure_process_command_inner(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+    kill_when_owner_dies: bool,
+) -> io::Result<()> {
     let create_process_group = config.create_process_group;
     let nice = config.nice;
-    if !(create_process_group || nice.is_some()) {
+    if !(create_process_group || nice.is_some() || kill_when_owner_dies) {
         return Ok(());
     }
+    let owner_pid = if kill_when_owner_dies {
+        // The supervisor verifies registration and the owner immediately
+        // after fork, closing the corresponding parent-death race.
+        unsafe { libc::getpid() }
+    } else {
+        0
+    };
     use std::os::unix::process::CommandExt;
     unsafe {
         command.pre_exec(move || {
@@ -466,6 +494,9 @@ pub fn configure_process_command(
                 if libc::setpriority(libc::PRIO_PROCESS, 0, nice) == -1 {
                     return Err(io::Error::last_os_error());
                 }
+            }
+            if kill_when_owner_dies {
+                install_owner_death_supervisor(owner_pid)?;
             }
             Ok(())
         });
@@ -717,14 +748,17 @@ pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) -> io::Re
     Ok(())
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn signal_process(pid: u32) -> io::Result<()> {
     unix_kill(pid as i32, libc::SIGKILL)
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn signal_process_group(pid: u32) -> io::Result<()> {
     unix_kill(-(pid as i32), libc::SIGTERM)
 }
 
+#[cfg(feature = "async-process")]
 fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
     let result = unsafe { libc::kill(target, signal) };
     if result == 0 { return Ok(()); }
@@ -737,7 +771,6 @@ pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("/bin/sh").arg("-c").arg(command)
 }
 
-#[cfg(feature = "async-process")]
 fn install_owner_death_supervisor(owner_pid: libc::pid_t) -> io::Result<()> {
     let mut handshake = [-1; 2];
     if unsafe { libc::pipe(handshake.as_mut_ptr()) } < 0 {
@@ -764,7 +797,6 @@ fn install_owner_death_supervisor(owner_pid: libc::pid_t) -> io::Result<()> {
     result
 }
 
-#[cfg(feature = "async-process")]
 fn read_supervisor_status(fd: libc::c_int) -> io::Result<()> {
     let mut status = 0_i32;
     let bytes = unsafe {
@@ -802,7 +834,6 @@ fn read_supervisor_status(fd: libc::c_int) -> io::Result<()> {
     }
 }
 
-#[cfg(feature = "async-process")]
 fn owner_death_supervisor(
     owner_pid: libc::pid_t,
     handshake_fd: libc::c_int,
@@ -853,7 +884,6 @@ fn owner_death_supervisor(
     unsafe { libc::close(queue); libc::_exit(0); }
 }
 
-#[cfg(feature = "async-process")]
 fn close_supervisor_fds(handshake_fd: libc::c_int) -> Result<(), libc::c_int> {
     const BATCH_SIZE: usize = 64;
     // XNU's bsd/kern/syscalls.master assigns `proc_info` syscall 336, and
@@ -912,7 +942,6 @@ fn close_supervisor_fds(handshake_fd: libc::c_int) -> Result<(), libc::c_int> {
     }
 }
 
-#[cfg(feature = "async-process")]
 fn report_supervisor_status(fd: libc::c_int, status: libc::c_int) {
     let bytes = status.to_ne_bytes();
     let mut offset = 0;
@@ -934,7 +963,6 @@ fn report_supervisor_status(fd: libc::c_int, status: libc::c_int) {
     }
 }
 
-#[cfg(feature = "async-process")]
 fn last_errno() -> libc::c_int {
     unsafe { *libc::__error() }
 }
