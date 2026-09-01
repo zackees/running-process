@@ -12,6 +12,23 @@ use running_process_platform_internal::platform::process::{
 
 const DEFAULT_RETAINED_MATCHES: usize = 256;
 
+fn inferred_command_details(
+    argv: Option<Vec<std::ffi::OsString>>,
+) -> (Option<PathBuf>, Option<Vec<String>>) {
+    let executable = argv
+        .as_ref()
+        .and_then(|arguments| arguments.first())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let argv = argv.map(|arguments| {
+        arguments
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    });
+    (executable, argv)
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ObservationPolicy {
     #[default]
@@ -635,12 +652,7 @@ impl ProcessWatchEmitter {
     }
 
     pub(crate) fn emit_inferred(&self, pid: u32, started: bool) {
-        let command_line = super::read_process_cmdline(pid).ok();
-        let executable = command_line
-            .as_deref()
-            .and_then(|line| line.split_ascii_whitespace().next())
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from);
+        let (executable, argv) = inferred_command_details(super::read_process_argv(pid).ok());
         let event = ProcessEvent {
             kind: if started {
                 ProcessEventKind::Spawn
@@ -654,7 +666,7 @@ impl ProcessWatchEmitter {
             parent: None,
             timestamp: SystemTime::now(),
             executable,
-            argv: command_line.map(|line| vec![line]),
+            argv,
             exit_code: None,
             signal: None,
             raw_exit_status: None,
@@ -1166,6 +1178,26 @@ mod tests {
         assert!(exit_code_matches(-1, Some(-1)));
         assert!(!exit_code_matches(-1, Some(254)));
         assert!(!exit_code_matches(-1, None));
+    }
+
+    #[test]
+    fn inferred_details_keep_structured_arguments_and_spaceful_executable() {
+        let (executable, argv) = inferred_command_details(Some(vec![
+            std::ffi::OsString::from("/tmp/tool with spaces"),
+            std::ffi::OsString::from("argument with spaces"),
+            std::ffi::OsString::from(""),
+            std::ffi::OsString::from(r"back\slash"),
+        ]));
+        assert_eq!(executable, Some(PathBuf::from("/tmp/tool with spaces")));
+        assert_eq!(
+            argv,
+            Some(vec![
+                "/tmp/tool with spaces".to_owned(),
+                "argument with spaces".to_owned(),
+                String::new(),
+                r"back\slash".to_owned(),
+            ])
+        );
     }
 
     #[test]

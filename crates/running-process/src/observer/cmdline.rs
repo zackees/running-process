@@ -1,5 +1,23 @@
 //! Portable facade for native command-line inspection.
+//!
+//! [`read_process_argv`] is the canonical API for policy or execution
+//! decisions. [`read_process_cmdline`] is a stable display string retained
+//! for logs and diagnostics; it is not shell syntax and cannot preserve every
+//! argument boundary on every host.
 
+/// Read a process's argument vector without flattening argument boundaries.
+///
+/// The returned values use [`std::ffi::OsString`] so Unix's opaque argv bytes
+/// and Windows' UTF-16 arguments remain representable. This is the only
+/// command-inspection API suitable for matching an executable or argument.
+pub fn read_process_argv(pid: u32) -> std::io::Result<Vec<std::ffi::OsString>> {
+    running_process_platform_internal::platform::process::read_process_argv(pid)
+}
+
+/// Read a stable human-readable process command display string.
+///
+/// This legacy API deliberately does not promise shell quoting or lossless
+/// argument boundaries. Use [`read_process_argv`] for structured inspection.
 pub fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
     running_process_platform_internal::platform::process::read_process_cmdline(pid)
 }
@@ -61,16 +79,61 @@ mod tests {
         let pid = process.pid().expect("pid");
         std::thread::sleep(Duration::from_millis(150));
 
-        let cmdline = read_process_cmdline(pid).expect("read cmdline");
+        let argv = read_process_argv(pid).expect("read argv");
+        let cmdline = read_process_cmdline(pid).expect("read display string");
         process.kill().ok();
         process.close().ok();
         assert!(
+            argv[0].to_string_lossy().contains("testbin-stdio-scripted"),
+            "expected fixture name in argv, got: {argv:?}"
+        );
+        assert!(
+            argv.iter()
+                .any(|argument| argument.to_string_lossy().contains(marker)),
+            "expected marker in argv, got: {argv:?}"
+        );
+        assert!(
             cmdline.contains("testbin-stdio-scripted"),
-            "expected fixture name in cmdline, got: {cmdline:?}"
+            "expected fixture name in display string, got: {cmdline:?}"
         );
         assert!(
             cmdline.contains(marker),
-            "expected marker in cmdline, got: {cmdline:?}"
+            "expected marker in display string, got: {cmdline:?}"
+        );
+    }
+
+    #[test]
+    fn argv_preserves_ambiguous_argument_boundaries() {
+        let args = vec![
+            fixture_program(),
+            "sleep-ms:30000".into(),
+            "has space".into(),
+            "quote\"".into(),
+            String::new(),
+            r"back\slash".into(),
+        ];
+        let (process, _sub) =
+            NativeProcess::with_observer(config(args.clone()), ObserverConfig::lifecycle());
+        process.start().expect("spawn fixture");
+        let pid = process.pid().expect("pid");
+        std::thread::sleep(Duration::from_millis(150));
+
+        let argv = read_process_argv(pid).expect("read argv");
+        let cmdline = read_process_cmdline(pid).expect("read display string");
+        process.kill().ok();
+        process.close().ok();
+        assert_eq!(
+            argv.iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            args
+        );
+        #[cfg(not(windows))]
+        assert_eq!(cmdline, args.join(" "));
+        #[cfg(windows)]
+        assert!(
+            cmdline.contains("has space") && cmdline.contains(r"back\slash"),
+            "native Windows display string unexpectedly changed: {cmdline:?}"
         );
     }
 

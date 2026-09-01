@@ -6,6 +6,12 @@ The Python API and the high-level Rust `NativePtyProcess` API are unchanged.
 Direct Rust PTY-backend escape hatches remain source-compatible but are now
 deprecated; their removal is planned for 5.0.
 
+- `observer::read_process_argv(pid)` is now the canonical structured process
+  inspection API. It preserves argument boundaries on Linux, macOS, and
+  Windows; `read_process_cmdline` remains a display-only string for existing
+  logs and diagnostics. Inferred observer events now use this structured argv
+  when selecting the executable and populating `ProcessEvent.argv` (#1159).
+
 Issue #970 moves PTY/ConPTY mechanics behind the host-neutral internal platform
 facade. Runtime mechanics no longer carry concrete `portable-pty` types or
 native file descriptors/handles through the neutral control path. Deprecated

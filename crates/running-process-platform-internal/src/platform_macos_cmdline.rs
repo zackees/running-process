@@ -18,7 +18,8 @@
     const CTL_KERN: libc::c_int = 1;
     const KERN_PROCARGS2: libc::c_int = 49;
 
-    pub fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
+    /// Return the process argv without flattening its argument boundaries.
+    pub fn read_process_argv(pid: u32) -> std::io::Result<Vec<std::ffi::OsString>> {
         if pid == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -62,16 +63,25 @@
             return Err(std::io::Error::last_os_error());
         }
         buf.truncate(len);
-        parse_procargs2(&buf)
+        parse_procargs2_argv(&buf)
     }
 
-    fn parse_procargs2(buf: &[u8]) -> std::io::Result<String> {
+    /// Return the legacy, human-readable command display string.
+    ///
+    /// This is deliberately not shell syntax and must not be parsed as argv.
+    pub fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
+        Ok(render_display(&read_process_argv(pid)?))
+    }
+
+    fn parse_procargs2_argv(buf: &[u8]) -> std::io::Result<Vec<std::ffi::OsString>> {
+        use std::os::unix::ffi::OsStringExt;
+
         if buf.len() < std::mem::size_of::<i32>() {
-            return Ok(String::new());
+            return Ok(Vec::new());
         }
         let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
         if argc <= 0 {
-            return Ok(String::new());
+            return Ok(Vec::new());
         }
         let mut cursor = std::mem::size_of::<i32>();
         // Skip exec_path: bytes until first NUL.
@@ -83,10 +93,9 @@
         while cursor < buf.len() && buf[cursor] == 0 {
             cursor += 1;
         }
-        // Read exactly argc argv strings, joining with spaces Ã¢â‚¬â€ mirrors
-        // the Windows NtQueryInformationProcess and Linux
-        // /proc/<pid>/cmdline conventions.
-        let mut argv: Vec<String> = Vec::with_capacity(argc as usize);
+        // Read exactly argc argv strings. The platform facade keeps these
+        // boundaries; only the legacy display API renders them as text.
+        let mut argv = Vec::with_capacity(argc as usize);
         for _ in 0..argc {
             if cursor >= buf.len() {
                 break;
@@ -95,16 +104,23 @@
             while cursor < buf.len() && buf[cursor] != 0 {
                 cursor += 1;
             }
-            argv.push(String::from_utf8_lossy(&buf[start..cursor]).into_owned());
+            argv.push(std::ffi::OsString::from_vec(buf[start..cursor].to_vec()));
             // Skip the NUL terminator.
             cursor = cursor.saturating_add(1);
         }
-        Ok(argv.join(" "))
+        Ok(argv)
+    }
+
+    fn render_display(argv: &[std::ffi::OsString]) -> String {
+        argv.iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     #[cfg(test)]
     mod tests {
-        use super::parse_procargs2;
+        use super::{parse_procargs2_argv, render_display};
 
         /// Build a KERN_PROCARGS2 buffer for argv = [exec, args...].
         fn build_procargs2(exec_path: &str, argv: &[&str]) -> Vec<u8> {
@@ -129,22 +145,39 @@
         #[test]
         fn parses_argv_skipping_exec_path_and_padding() {
             let buf = build_procargs2("/usr/bin/myprog", &["myprog", "--flag", "value with space"]);
-            let out = parse_procargs2(&buf).expect("parse");
-            assert_eq!(out, "myprog --flag value with space");
+            let out = parse_procargs2_argv(&buf).expect("parse");
+            assert_eq!(
+                out,
+                ["myprog", "--flag", "value with space"].map(std::ffi::OsString::from)
+            );
         }
 
         #[test]
         fn empty_argv_yields_empty_string() {
             let buf = build_procargs2("/usr/bin/noop", &[]);
-            let out = parse_procargs2(&buf).expect("parse");
-            assert_eq!(out, "");
+            let out = parse_procargs2_argv(&buf).expect("parse");
+            assert!(out.is_empty());
         }
 
         #[test]
         fn argc_zero_short_circuits() {
             let mut buf = 0i32.to_ne_bytes().to_vec();
             buf.extend_from_slice(b"/usr/bin/noop\0");
-            let out = parse_procargs2(&buf).expect("parse");
-            assert_eq!(out, "");
+            let out = parse_procargs2_argv(&buf).expect("parse");
+            assert!(out.is_empty());
+        }
+
+        #[test]
+        fn keeps_spaces_quotes_empty_arguments_and_backslashes() {
+            let buf = build_procargs2(
+                "/usr/bin/tool",
+                &["tool", "has space", "quote\"", "", r"back\slash"],
+            );
+            let argv = parse_procargs2_argv(&buf).expect("parse");
+            assert_eq!(
+                argv,
+                ["tool", "has space", "quote\"", "", r"back\slash"].map(std::ffi::OsString::from)
+            );
+            assert_eq!(render_display(&argv), "tool has space quote\"  back\\slash");
         }
     }

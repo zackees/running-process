@@ -411,6 +411,7 @@ pub struct ObserverBackend {
     pub reason: &'static str,
 }
 pub use crate::platform_imp::observer_backend;
+pub use crate::platform_imp::read_process_argv;
 pub use crate::platform_imp::read_process_cmdline;
 pub use crate::platform_imp::read_process_file_handles;
 

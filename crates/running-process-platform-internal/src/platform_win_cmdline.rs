@@ -35,7 +35,20 @@
         ) -> i32;
     }
 
+    /// Return the legacy native command-line display string.
+    ///
+    /// This is not structured argv; use [`read_process_argv`] to preserve
+    /// argument boundaries.
     pub fn read_process_cmdline(pid: u32) -> std::io::Result<String> {
+        Ok(String::from_utf16_lossy(&read_process_cmdline_wide(pid)?))
+    }
+
+    /// Return the process argv parsed with Windows' native command-line rules.
+    pub fn read_process_argv(pid: u32) -> std::io::Result<Vec<std::ffi::OsString>> {
+        parse_command_line(&read_process_cmdline_wide(pid)?)
+    }
+
+    fn read_process_cmdline_wide(pid: u32) -> std::io::Result<Vec<u16>> {
         use winapi::um::handleapi::CloseHandle;
         use winapi::um::processthreadsapi::OpenProcess;
         use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
@@ -52,12 +65,12 @@
             return Err(std::io::Error::last_os_error());
         }
 
-        let result = query_cmdline(handle as *mut c_void);
+        let result = query_cmdline_wide(handle as *mut c_void);
         unsafe { CloseHandle(handle) };
         result
     }
 
-    fn query_cmdline(handle: *mut c_void) -> std::io::Result<String> {
+    fn query_cmdline_wide(handle: *mut c_void) -> std::io::Result<Vec<u16>> {
         // Size probe: pass a zero-length buffer; expect
         // STATUS_INFO_LENGTH_MISMATCH and the required size in
         // `needed`.
@@ -106,10 +119,17 @@
         // We cannot dereference `us.buffer` directly across the FFI
         // boundary on systems that may relocate it; instead, compute the
         // header size and read inline.
-        let us = unsafe { std::ptr::read(buf.as_ptr() as *const UnicodeString) };
+        // `buf` has byte alignment, so the FFI header must be read
+        // unaligned. Do not cast its payload to `&[u16]` for the same reason.
+        let us = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const UnicodeString) };
         let len_bytes = us.length as usize;
         if len_bytes == 0 {
-            return Ok(String::new());
+            return Ok(Vec::new());
+        }
+        if len_bytes % std::mem::size_of::<u16>() != 0 {
+            return Err(std::io::Error::other(format!(
+                "NtQueryInformationProcess returned odd UTF-16 byte length {len_bytes}",
+            )));
         }
         // The string is wide-char (UTF-16 LE) and located just after the
         // UNICODE_STRING header. The kernel writes `buffer` as a pointer
@@ -123,8 +143,55 @@
                 header_size + len_bytes,
             )));
         }
-        let wide_slice: &[u16] = unsafe {
-            std::slice::from_raw_parts(buf[header_size..].as_ptr() as *const u16, len_bytes / 2)
+        Ok(buf[header_size..header_size + len_bytes]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect())
+    }
+
+    fn parse_command_line(command_line: &[u16]) -> std::io::Result<Vec<std::ffi::OsString>> {
+        use std::os::windows::ffi::OsStringExt;
+        use winapi::shared::minwindef::HLOCAL;
+        use winapi::um::shellapi::CommandLineToArgvW;
+        use winapi::um::winbase::LocalFree;
+
+        let mut nul_terminated = command_line.to_vec();
+        nul_terminated.push(0);
+        let mut argc = 0;
+        let argv = unsafe { CommandLineToArgvW(nul_terminated.as_ptr(), &mut argc) };
+        if argv.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let result = unsafe {
+            std::slice::from_raw_parts(argv, argc as usize)
+                .iter()
+                .map(|argument| {
+                    let length = (0..).take_while(|index| *(*argument).add(*index) != 0).count();
+                    std::ffi::OsString::from_wide(std::slice::from_raw_parts(*argument, length))
+                })
+                .collect()
         };
-        Ok(String::from_utf16_lossy(wide_slice))
+        unsafe { LocalFree(argv as HLOCAL) };
+        Ok(result)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::parse_command_line;
+
+        #[test]
+        fn native_parser_keeps_spaces_quotes_empty_args_and_backslashes() {
+            // This is the same `CommandLineToArgvW` grammar used by
+            // CreateProcessW consumers, including the doubled trailing
+            // backslashes before a closing quote.
+            let command_line: Vec<u16> =
+                r#"tool "has space" "quote\"" "" "back\slash\\""#
+                    .encode_utf16()
+                    .collect();
+            assert_eq!(
+                parse_command_line(&command_line).expect("parse"),
+                ["tool", "has space", "quote\"", "", r"back\slash\"]
+                    .map(std::ffi::OsString::from)
+            );
+        }
     }
