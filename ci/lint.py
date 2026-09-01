@@ -92,6 +92,26 @@ def main() -> int:
         != 0
     ):
         return 1
+    if (
+        run(supervised_command(python, str(python), "-m", "ci.backend_identity_contract"))
+        != 0
+    ):
+        return 1
+    if (
+        run(supervised_command(python, str(python), "-m", "ci.frame_v1_codec_contract"))
+        != 0
+    ):
+        return 1
+    if (
+        run(supervised_command(python, str(python), "-m", "ci.daemon_registration_contract"))
+        != 0
+    ):
+        return 1
+    if (
+        run(supervised_command(python, str(python), "-m", "ci.daemon_registration_v2_contract"))
+        != 0
+    ):
+        return 1
     if run(supervised_command(python, str(python), "-m", "ci.parity_manifest")) != 0:
         print(
             "lint: sync/async parity manifest is out of date. See "

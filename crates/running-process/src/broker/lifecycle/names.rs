@@ -36,35 +36,12 @@
 
 use std::path::PathBuf;
 
-use crate::broker::lifecycle::sid::SidError;
-
-/// Errors that prevent computing a valid pipe path.
-#[derive(Debug, thiserror::Error)]
-pub enum PipePathError {
-    /// A name argument failed regex validation.
-    #[error("invalid name {name:?}: {reason}")]
-    InvalidName {
-        /// The offending input.
-        name: String,
-        /// Why it was rejected.
-        reason: &'static str,
-    },
-
-    /// The derived path exceeds a platform-specific bound.
-    #[error("derived path exceeds {limit_label} ({len} > {max})")]
-    PathTooLong {
-        /// Length we tried to produce.
-        len: usize,
-        /// Platform-specific cap.
-        max: usize,
-        /// "Windows MAX_PATH" / "macOS sun_path" / etc.
-        limit_label: &'static str,
-    },
-
-    /// Failure to compute the per-user SID hash.
-    #[error(transparent)]
-    Sid(#[from] SidError),
-}
+// The v1 manifest/service registry and the legacy broker pipe builders use
+// one validation/error type.  `client` composes `daemon-registration`, so
+// this remains the literal same public type on the established broker path.
+pub use crate::daemon_registration::validation::{
+    validate_service_name, validate_version, PipePathError,
+};
 
 /// A pipe address in platform-neutral form.
 ///
@@ -139,105 +116,6 @@ pub fn backend_pipe(user_sid_hash: &str, random128: &[u8; 16]) -> Result<PipePat
         suffix.push(nibble_to_hex(b & 0x0F));
     }
     build_pipe_path(&format!("{PIPE_PREFIX}-{user_sid_hash}-be-{suffix}"))
-}
-
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-/// Validate a service name against `[a-z0-9-]{1,64}`.
-///
-/// Exposed for callers that want to validate user input before
-/// computing the pipe name (so they can surface a friendlier error).
-pub fn validate_service_name(name: &str) -> Result<(), PipePathError> {
-    if name.is_empty() {
-        return Err(PipePathError::InvalidName {
-            name: name.into(),
-            reason: "service name must be at least 1 character",
-        });
-    }
-    if name.len() > 64 {
-        return Err(PipePathError::InvalidName {
-            name: name.into(),
-            reason: "service name must be 64 characters or fewer",
-        });
-    }
-    for c in name.chars() {
-        match c {
-            'a'..='z' | '0'..='9' | '-' => {}
-            'A'..='Z' => {
-                // Case-only collision guard — see module docs.
-                return Err(PipePathError::InvalidName {
-                    name: name.into(),
-                    reason: "uppercase letters are forbidden (case-only \
-                             collisions with lowercase names would silently \
-                             merge under Windows named-pipe semantics)",
-                });
-            }
-            _ => {
-                return Err(PipePathError::InvalidName {
-                    name: name.into(),
-                    reason: "only lowercase ASCII letters, digits, and '-' allowed",
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Validate a semver-like version string against
-/// `^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$`.
-///
-/// Used by callers that want to render `{service}-{version}` into a
-/// pipe name themselves (the helpers here keep the name format flat,
-/// but the validator is exposed for the broker-side dispatch table).
-pub fn validate_version(version: &str) -> Result<(), PipePathError> {
-    if version.is_empty() {
-        return Err(PipePathError::InvalidName {
-            name: version.into(),
-            reason: "version must not be empty",
-        });
-    }
-    // Split off pre-release tail.
-    let (core, prerelease) = match version.split_once('-') {
-        Some((core, tail)) => (core, Some(tail)),
-        None => (version, None),
-    };
-    let parts: Vec<&str> = core.split('.').collect();
-    if parts.len() != 3 {
-        return Err(PipePathError::InvalidName {
-            name: version.into(),
-            reason: "version core must be MAJOR.MINOR.PATCH",
-        });
-    }
-    for p in &parts {
-        if p.is_empty() || !p.chars().all(|c| c.is_ascii_digit()) {
-            return Err(PipePathError::InvalidName {
-                name: version.into(),
-                reason: "MAJOR/MINOR/PATCH must be non-empty digits",
-            });
-        }
-    }
-    if let Some(tail) = prerelease {
-        if tail.is_empty() {
-            return Err(PipePathError::InvalidName {
-                name: version.into(),
-                reason: "pre-release suffix after '-' must not be empty",
-            });
-        }
-        for c in tail.chars() {
-            match c {
-                'a'..='z' | '0'..='9' | '.' => {}
-                _ => {
-                    return Err(PipePathError::InvalidName {
-                        name: version.into(),
-                        reason: "pre-release tail allows only [a-z0-9.]",
-                    });
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_sid_hash(s: &str) -> Result<(), PipePathError> {

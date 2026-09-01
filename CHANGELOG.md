@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — PTY platform-boundary migration
+## 4.10.10 — kernel substrate and PTY platform-boundary migration
 
 The Python API and the high-level Rust `NativePtyProcess` API are unchanged.
 Direct Rust PTY-backend escape hatches remain source-compatible but are now
@@ -11,6 +11,12 @@ deprecated; their removal is planned for 5.0.
   Windows; `read_process_cmdline` remains a display-only string for existing
   logs and diagnostics. Inferred observer events now use this structured argv
   when selecting the executable and populating `ProcessEvent.argv` (#1159).
+
+- Adds opt-in `kernel-substrate` process sessions, plus independent opt-in
+  backend-identity, frozen Frame v1 codec, and daemon-registration v1/v2
+  substrates. They preserve the existing wire formats and owner-private
+  storage while keeping the broker runtime and concrete backend types private.
+- Adds the bounded owner-death option for contained command execution.
 
 Issue #970 moves PTY/ConPTY mechanics behind the host-neutral internal platform
 facade. Runtime mechanics no longer carry concrete `portable-pty` types or

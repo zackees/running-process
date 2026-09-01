@@ -180,9 +180,9 @@ expires_phase = 4
 id = "RP-RAW-STDIO-018"
 symbol = "std::process::Stdio"
 path = "crates/running-process/tests/core/process_core_test.rs"
-max_occurrences = 11
+max_occurrences = 13
 owner = "running-process"
-justification = "Legacy synchronous process test suite; Phase 4 migrates it to actor-backed public contracts."
+justification = "Legacy synchronous process test suite, including the two bounded owner-death self-execution helpers; Phase 4 migrates it to actor-backed public contracts."
 expires_phase = 4
 
 [[exception]]

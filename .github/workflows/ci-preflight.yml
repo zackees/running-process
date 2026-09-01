@@ -144,6 +144,35 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: uv run --no-sync --module ci.run_logged logs/async-semantic-capture.log -- uv run --no-sync --module ci test-async-semantic-capture
 
+      # Direct daemon identity keeps the caller's endpoint and payload wire;
+      # run its no-default facade/mux goldens and real accepted-IPC probe on
+      # every host rather than letting the broad client build mask a feature
+      # or platform regression.
+      - name: Direct backend identity contract
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: uv run --no-sync --module ci.run_logged logs/backend-identity.log -- uv run --no-sync --module ci test-backend-identity
+
+      # The raw v1 Frame codec is independently useful to an existing daemon
+      # that retains its own endpoint and payload. Exercise its no-default
+      # feature graph and frozen byte tests on every target.
+      - name: Frame v1 codec contract
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: uv run --no-sync --module ci.run_logged logs/frame-v1-codec.log -- uv run --no-sync --module ci test-frame-v1-codec
+
+      # Persisted v1 registration uses only protobuf, SHA-256, host facts, and
+      # owner-private files. Exercise its no-default bytes and filesystem
+      # contract separately from the broker/client build on every target.
+      - name: Daemon registration contract
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: uv run --no-sync --module ci.run_logged logs/daemon-registration.log -- uv run --no-sync --module ci test-daemon-registration
+
+      # v2 service-definition persistence is a writer-only compatibility
+      # substrate. Exercise it without client IPC/runtime features and also
+      # verify the established v1/v2 extension coexistence on every host.
+      - name: Daemon registration v2 writer contract
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: uv run --no-sync --module ci.run_logged logs/daemon-registration-v2.log -- uv run --no-sync --module ci test-daemon-registration-v2
+
       - name: Upload kernel substrate timing
         if: ${{ always() && inputs.label == 'linux-x86' }}
         uses: actions/upload-artifact@v4

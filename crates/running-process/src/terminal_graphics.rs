@@ -527,7 +527,9 @@ pub fn xtsmgraphics_reports_sixel(reply: &str) -> bool {
 
 fn active_probe(timeout: Duration) -> TerminalProbeEvidence {
     let reply =
-        running_process_platform_internal::platform::terminal::active_graphics_probe(timeout);
+        running_process_platform_internal::platform::terminal_graphics::active_graphics_probe(
+            timeout,
+        );
     TerminalProbeEvidence {
         sixel_xtsmgraphics: reply.sixel_xtsmgraphics,
         sixel_da1: reply.sixel_da1,

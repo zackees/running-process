@@ -37,6 +37,41 @@ pub mod window_icon;
 // lifecycle baseline. Core-feature-clean (std-only: mpsc + SystemTime),
 // so the started/exited baseline is available to the base library
 // without pulling in the daemon runtime.
+/// Frozen v1 daemon manifest and service-definition registration substrate.
+///
+/// This direct persistence surface owns only the v1 registration records,
+/// SHA-256 seal/verify rules, host stamp, validated paths, and private-file
+/// behavior. It deliberately does not select an IPC endpoint, broker client,
+/// daemon runtime, identity probe, or async runtime.
+#[cfg(feature = "daemon-registration")]
+pub mod daemon_registration;
+/// Frozen v2 service-definition registration writer substrate.
+///
+/// This direct persistence surface owns the established `.servicedef.v2`
+/// layout, generated service definition, validation, and owner-private file
+/// behavior. It deliberately does not select v2 manifests, a loader, broker
+/// negotiation, endpoint transport, identity, or an async runtime.
+#[cfg(feature = "daemon-registration-v2")]
+pub mod daemon_registration_v2;
+// The two registration writer features share only the small path, name, error,
+// and owner-private-directory substrate. Keeping it separate from either
+// public module prevents v2 persistence from selecting v1's SHA-256 manifest
+// support, while retaining exact v1 type identity through re-exports.
+#[cfg(any(feature = "daemon-registration", feature = "daemon-registration-v2"))]
+pub(crate) mod daemon_registration_common;
+/// Frozen v1 `Frame` envelope codec and consumer-protocol registry.
+///
+/// This direct, transport-free surface is available without broker IPC,
+/// daemon identity, hashing, or an async runtime. Broad broker paths
+/// re-export these exact items for compatibility.
+#[cfg(feature = "frame-v1-codec")]
+pub mod frame_v1;
+// Host facts are shared by the direct identity probe and persisted v1
+// registration. The implementation is deliberately private; registration
+// exposes its stable public host-identity path from `daemon_registration`.
+#[cfg(any(feature = "backend-identity", feature = "daemon-registration"))]
+#[path = "broker/host_identity.rs"]
+pub(crate) mod daemon_host_identity;
 pub mod observer;
 #[cfg(feature = "originator-scan")]
 pub mod originator;
@@ -55,17 +90,35 @@ pub mod proto {
 pub mod client;
 
 // Phase 0 of #228: v1 broker module — prost-generated wire types from
-// `proto/broker_v1_*.proto`. Gated behind `feature = "client"` because
-// prost itself is optional under that feature. Schemas are
-// FROZEN FOREVER once v1.0 ships.
+// `proto/broker_v1_*.proto`. The broad broker remains a `client` API. The
+// narrow identity substrate compiles this module privately so its direct
+// facade can preserve the frozen v1 probe/frame bytes without exposing broker
+// ownership, configuration, or client APIs.
 #[cfg(feature = "client")]
 pub mod broker;
+// The direct facade imports a deliberately small subset of the legacy
+// namespace while its compatibility re-exports remain available for type
+// identity.  The remaining client-only paths are intentionally dormant here.
+#[cfg(all(feature = "backend-identity", not(feature = "client")))]
+#[allow(dead_code, unused_imports)]
+mod broker;
+
+/// Direct daemon-identity substrate for an existing endpoint.
+///
+/// This is intentionally a small facade over the frozen v1 identity probe,
+/// sidecar, and sans-I/O endpoint mux. It does not adopt the broker client or
+/// daemon runtime, and it leaves endpoint naming and application payloads to
+/// the caller.
+#[cfg(feature = "backend-identity")]
+pub mod backend_identity;
 
 // #891: content-hash primitive (`blake3_file`) for dev daemon-identity
-// isolation. Gated on `client` because it uses `blake3`, which is optional
-// under that feature (soldr/zccache/fbuild all consume `client`).
+// isolation. The direct identity facade needs it internally, but it remains a
+// public client-only utility rather than widening the direct facade.
 #[cfg(feature = "client")]
 pub mod content_hash;
+#[cfg(all(feature = "backend-identity", not(feature = "client")))]
+mod content_hash;
 
 /// Probe client facade (#633). Gated on the `probe` feature so a build
 /// without it contains none of this code.
@@ -156,7 +209,11 @@ mod unix;
 mod windows;
 
 #[cfg(feature = "async-process")]
-pub use async_process::{AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncStdio};
+pub use async_process::{
+    AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncProcessSession,
+    AsyncProcessSessionChunk, AsyncProcessSessionControl, AsyncProcessSessionEvent,
+    AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio,
+};
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
 // #891: content-hash primitive for dev daemon-identity isolation.

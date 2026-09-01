@@ -23,8 +23,7 @@ impl running_process_protocol::SessionStartEnvironmentPolicy for crate::Environm
     }
 }
 
-mod io;
-pub use io::{
+pub use crate::daemon_registration_v2::{
     service_definition_dir_v2, service_definition_path_v2, write_service_definition_v2,
     ServiceDefinitionBuilder, SERVICE_DEF_V2_EXTENSION,
 };

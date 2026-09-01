@@ -81,7 +81,7 @@ pub use executable::{
 #[cfg(feature = "ipc")]
 #[path = "platform_win/ipc.rs"]
 pub(crate) mod ipc;
-#[cfg(feature = "ipc")]
+#[cfg(feature = "private-dir")]
 #[path = "platform_win/ipc_private_dir.rs"]
 mod ipc_private_dir;
 #[cfg(feature = "ipc")]
@@ -122,10 +122,10 @@ pub fn legacy_send_fd_over(
         None,
     ))
 }
-#[cfg(feature = "ipc")]
+#[cfg(feature = "private-dir")]
 pub use ipc_private_dir::{
-    ensure_owner_private_directory as ipc_ensure_owner_private_directory,
-    owner_private_directory as ipc_owner_private_directory,
+    ensure_owner_private_directory as private_dir_ensure_owner_private_directory,
+    owner_private_directory as private_dir_owner_private_directory,
 };
 #[cfg(feature = "ipc")]
 pub fn ipc_broker_endpoint_name(bare_name: &str, _path_scoped: bool) -> std::io::Result<String> {
@@ -134,6 +134,7 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, _path_scoped: bool) -> std::io:
 
 /// Windows named-pipe names are capped by `MAX_PATH` while the long-path
 /// prefix is not in use.
+#[cfg(feature = "ipc")]
 const WINDOWS_MAX_PATH: usize = 260;
 
 #[cfg(feature = "ipc")]
@@ -209,9 +210,14 @@ pub use session_relay::relay_local_socket_session;
 mod console;
 pub use console::monitor_console_windows;
 
+#[cfg(feature = "pty")]
 #[path = "platform_win/terminal.rs"]
 pub mod terminal;
-pub use terminal::active_graphics_probe;
+#[cfg(feature = "terminal-graphics")]
+#[path = "platform_win/terminal_graphics.rs"]
+mod terminal_graphics;
+#[cfg(feature = "terminal-graphics")]
+pub use terminal_graphics::active_graphics_probe;
 
 #[path = "platform_win/terminal_input.rs"]
 pub mod terminal_input;
@@ -332,13 +338,18 @@ use std::sync::OnceLock;
 
 #[cfg(feature = "async-process")]
 use tokio::process::{Child, Command};
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, DuplicateHandle, FILETIME, HANDLE, DUPLICATE_SAME_ACCESS, ERROR_INVALID_HANDLE,
+    ERROR_INVALID_PARAMETER,
+};
 use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, TerminateProcess,
+};
 
 #[cfg(feature = "async-process")]
 use crate::SpawnSpec;
@@ -572,9 +583,24 @@ pub(crate) fn configure_command(
     command: &mut Command,
     create_process_group: bool,
     _kill_when_owner_dies: bool,
+    nice: Option<i32>,
 ) -> io::Result<()> {
-    if create_process_group {
-        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    let group = if create_process_group {
+        CREATE_NEW_PROCESS_GROUP
+    } else {
+        0
+    };
+    // Preserve the existing ProcessCommandConfig mapping: Windows receives a
+    // priority *class*, not a Unix nice value with equivalent arithmetic.
+    let priority = match nice {
+        Some(value) if value >= 15 => 0x0000_0040,
+        Some(value) if value >= 1 => 0x0000_4000,
+        Some(value) if value <= -15 => 0x0000_0080,
+        Some(value) if value <= -1 => 0x0000_8000,
+        _ => 0,
+    };
+    if (group | priority) != 0 {
+        command.creation_flags(group | priority);
     }
     Ok(())
 }
@@ -589,25 +615,134 @@ pub(crate) fn after_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Resu
 }
 
 #[cfg(feature = "async-process")]
-pub(crate) fn signal_process(pid: u32) -> io::Result<()> {
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-    if handle.is_null() {
-        let error = io::Error::last_os_error();
-        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) { Ok(()) } else { Err(error) };
-    }
-    let terminated = unsafe { TerminateProcess(handle, 1) };
-    let termination_error = if terminated == 0 { Some(io::Error::last_os_error()) } else { None };
-    unsafe { CloseHandle(handle) };
-    termination_error.map_or(Ok(()), Err)
+pub(crate) struct AsyncChildIdentity {
+    pid: u32,
+    process: HANDLE,
+    creation_time: u64,
 }
 
 #[cfg(feature = "async-process")]
-pub(crate) fn signal_process_group(pid: u32) -> io::Result<()> {
-    if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) } != 0 {
+unsafe impl Send for AsyncChildIdentity {}
+
+#[cfg(feature = "async-process")]
+unsafe impl Sync for AsyncChildIdentity {}
+
+#[cfg(feature = "async-process")]
+impl Drop for AsyncChildIdentity {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.process) };
+    }
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn async_child_identity(child: &Child) -> Option<AsyncChildIdentity> {
+    let pid = child.id()?;
+    let raw = child.raw_handle()? as HANDLE;
+    let mut process = std::ptr::null_mut();
+    if unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            raw,
+            GetCurrentProcess(),
+            &mut process,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    } == 0
+    {
+        return None;
+    }
+    let Ok((creation_time, _, _)) = async_process_times(process) else {
+        unsafe { CloseHandle(process) };
+        return None;
+    };
+    Some(AsyncChildIdentity {
+        pid,
+        process,
+        creation_time,
+    })
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn signal_async_child(identity: &AsyncChildIdentity) -> io::Result<()> {
+    if !identity_matches(identity) {
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "child process launch identity no longer matches",
+        ));
+    }
+    if unsafe { TerminateProcess(identity.process, 1) } != 0 {
         return Ok(());
     }
     let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(ERROR_INVALID_HANDLE as i32) { Ok(()) } else { Err(error) }
+    if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn signal_async_child_group(identity: &AsyncChildIdentity) -> io::Result<()> {
+    if !identity_matches(identity) {
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "child process launch identity no longer matches",
+        ));
+    }
+    if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, identity.pid) } != 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_INVALID_HANDLE as i32) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn async_child_cpu_time(
+    identity: &AsyncChildIdentity,
+) -> io::Result<Option<std::time::Duration>> {
+    let Ok((creation_time, user, kernel)) = async_process_times(identity.process) else {
+        return Ok(None);
+    };
+    if creation_time != identity.creation_time {
+        return Ok(None);
+    }
+    Ok(Some(std::time::Duration::from_nanos(
+        user.saturating_add(kernel).saturating_mul(100),
+    )))
+}
+
+#[cfg(feature = "async-process")]
+fn identity_matches(identity: &AsyncChildIdentity) -> bool {
+    const STILL_ACTIVE: u32 = 259;
+    let mut exit_code = 0_u32;
+    if unsafe { GetExitCodeProcess(identity.process, &mut exit_code) } == 0
+        || exit_code != STILL_ACTIVE
+    {
+        return false;
+    }
+    matches!(
+        async_process_times(identity.process),
+        Ok((creation_time, _, _)) if creation_time == identity.creation_time
+    )
+}
+
+#[cfg(feature = "async-process")]
+fn async_process_times(process: HANDLE) -> io::Result<(u64, u64, u64)> {
+    let mut creation: FILETIME = unsafe { std::mem::zeroed() };
+    let mut exit: FILETIME = unsafe { std::mem::zeroed() };
+    let mut kernel: FILETIME = unsafe { std::mem::zeroed() };
+    let mut user: FILETIME = unsafe { std::mem::zeroed() };
+    if unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let ticks = |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+    Ok((ticks(creation), ticks(user), ticks(kernel)))
 }
 
 #[cfg(feature = "async-process")]

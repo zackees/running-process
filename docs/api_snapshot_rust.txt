@@ -5,7 +5,7 @@
 
 ## running_process re-exports
 
-    pub use async_process::{AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncStdio};
+    pub use async_process::{ AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncProcessSession, AsyncProcessSessionChunk, AsyncProcessSessionControl, AsyncProcessSessionEvent, AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio, };
     pub use blocking_island::dispatch_blocking as blocking_island_dispatch;
     pub use bounded::{ run_command, run_command_bounded, run_std_command_bounded, run_std_command_bounded_with_options, BoundedRunOptions, };
     pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};

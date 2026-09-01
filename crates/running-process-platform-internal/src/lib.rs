@@ -56,18 +56,27 @@ cfg_select! {
 // root. Neutral capability facades re-export only crate-root names and never
 // name the private `platform_imp` alias themselves.
 pub use platform_imp::{
-    active_graphics_probe, assign_child_to_windows_job, cancel_capture_reader,
-    canonical_environment_pairs, capture_reader_done, compat_shell_command, configure_exact_trace,
-    configure_process_command, configure_process_command_for_bounded_owner_death,
-    configure_sync_contained_command, configure_sync_daemon_command,
-    configure_sync_daemon_command_with_inheritance, configure_trampoline_command,
-    current_executable_build_id, exact_trace_capability, exit_code, monitor_console_windows,
-    parent_has_console, prepare_capture_reader, set_process_name, set_window_icon_impl,
-    shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
-    spawn_sync_daemon_with_inheritance, start_descendant_monitor, start_exact_trace,
-    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
-    unix_set_priority, unix_signal_process, unix_signal_process_group, unix_signal_raw,
-    window_icon_support_impl, CaptureCancellation, TracedChild, WindowsJobHandle,
+    assign_child_to_windows_job, cancel_capture_reader, canonical_environment_pairs,
+    capture_reader_done, compat_shell_command, configure_exact_trace, configure_process_command,
+    configure_process_command_for_bounded_owner_death, configure_sync_contained_command,
+    configure_sync_daemon_command, configure_sync_daemon_command_with_inheritance,
+    configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
+    monitor_console_windows, parent_has_console, prepare_capture_reader, set_process_name,
+    set_window_icon_impl, shell_command, soft_terminate_process_group, spawn_sync,
+    spawn_sync_daemon, spawn_sync_daemon_with_inheritance, start_descendant_monitor,
+    start_exact_trace, sync_child_native_handle, trampoline_exit_code,
+    unix_mark_extra_fds_close_on_exec, unix_set_priority, unix_signal_process,
+    unix_signal_process_group, unix_signal_raw, window_icon_support_impl, CaptureCancellation,
+    TracedChild, WindowsJobHandle,
+};
+
+#[cfg(feature = "terminal-graphics")]
+pub use platform_imp::active_graphics_probe;
+
+#[cfg(feature = "async-process")]
+pub(crate) use platform_imp::{
+    async_child_cpu_time, async_child_identity, signal_async_child, signal_async_child_group,
+    AsyncChildIdentity,
 };
 
 #[cfg(feature = "process-inspection")]
@@ -119,10 +128,22 @@ pub use platform_imp::terminal_input;
 pub use platform_imp::{
     ipc_broker_endpoint_name as IpcBrokerEndpointName, ipc_broker_v1_endpoint_path,
     ipc_broker_v2_runtime_dir, ipc_current_user_id, ipc_endpoint_is_filesystem_backed,
-    ipc_endpoint_name_limit, ipc_endpoint_scope_bytes, ipc_ensure_owner_private_directory,
-    ipc_nonblocking_zero_read_is_pending, ipc_owner_private_directory, ipc_select_endpoint_address,
-    IpcEndpoint, IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
-    IpcPeerIdentitySource, IpcStream,
+    ipc_endpoint_name_limit, ipc_endpoint_scope_bytes, ipc_nonblocking_zero_read_is_pending,
+    ipc_select_endpoint_address, IpcEndpoint, IpcInheritedListener, IpcListener,
+    IpcListenerNonblockingMode, IpcPeerIdentity, IpcPeerIdentitySource, IpcStream,
+};
+
+#[cfg(feature = "private-dir")]
+pub use platform_imp::{
+    private_dir_ensure_owner_private_directory, private_dir_owner_private_directory,
+};
+
+// Retain the implementation-detail root aliases selected by the historical
+// `ipc` capability.  New callers use `platform::private_dir` instead.
+#[cfg(feature = "ipc")]
+pub use platform_imp::{
+    private_dir_ensure_owner_private_directory as ipc_ensure_owner_private_directory,
+    private_dir_owner_private_directory as ipc_owner_private_directory,
 };
 
 /// Failure details for the deprecated 4.x raw descriptor/handle handoff API.
@@ -347,6 +368,7 @@ pub struct SpawnSpec {
     stderr: StreamMode,
     create_process_group: bool,
     kill_when_owner_dies: bool,
+    nice: Option<i32>,
 }
 
 #[cfg(feature = "async-process")]
@@ -364,6 +386,7 @@ impl SpawnSpec {
             stderr: StreamMode::Inherit,
             create_process_group: false,
             kill_when_owner_dies: false,
+            nice: None,
         }
     }
 
@@ -424,12 +447,25 @@ impl SpawnSpec {
 
     /// Kill this child when the spawning process exits unexpectedly.
     ///
-    /// Linux uses `PR_SET_PDEATHSIG(SIGTERM)`. Windows assigns the child to a
+    /// Linux uses `PR_SET_PDEATHSIG(SIGTERM)` plus a pre-exec hard-exit race
+    /// guard when the parent changed before that signal could be armed.
+    /// Windows assigns the child to a
     /// process-wide kill-on-close Job Object. macOS forks a kqueue supervisor
     /// before exec and reports spawn success only after its owner and child
     /// watches are registered.
     pub fn kill_when_owner_dies(mut self, kill: bool) -> Self {
         self.kill_when_owner_dies = kill;
+        self
+    }
+
+    /// Apply the host's existing niceness policy at child creation.
+    ///
+    /// On Unix this is the requested `setpriority(PRIO_PROCESS)` niceness.
+    /// Windows maps the established niceness bands to process creation
+    /// priority classes; it is deliberately a coarse host mapping rather
+    /// than a claim that numeric nice values are portable.
+    pub fn nice(mut self, nice: Option<i32>) -> Self {
+        self.nice = nice;
         self
     }
 
@@ -454,6 +490,7 @@ impl SpawnSpec {
             &mut command,
             self.create_process_group,
             self.kill_when_owner_dies,
+            self.nice,
         )?;
 
         let child = command.spawn()?;
@@ -476,8 +513,13 @@ pub struct PlatformChild {
 impl PlatformChild {
     fn new(mut child: Child, own_process_group: bool) -> Self {
         let signal = PlatformEmergencySignal {
-            pid: child.id(),
+            identity: async_child_identity(&child),
             own_process_group,
+            // The legacy AsyncProcess actor historically retained only this
+            // numeric child-group leader on macOS. Keep it launch-bound for
+            // that API's compatibility path; sessions deliberately never use
+            // it because their control capability promises identity safety.
+            legacy_group_pid: child.id(),
         };
         Self {
             stdin: child.stdin.take(),
@@ -594,6 +636,17 @@ impl PlatformLifecycle {
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         self.child.wait().await
     }
+
+    /// Request direct-child termination through the still-owned child handle
+    /// without waiting for its reaping result.
+    ///
+    /// This is the identity-safe fallback when a host cannot provide a
+    /// separately usable launch-bound signal capability (for example a Linux
+    /// kernel without pidfds). The actor continues to own this lifecycle
+    /// handle and performs the eventual reap itself.
+    pub fn start_kill(&mut self) -> io::Result<()> {
+        self.child.start_kill()
+    }
 }
 
 /// Opaque, non-reap-capable emergency termination capability.
@@ -602,15 +655,19 @@ impl PlatformLifecycle {
 /// [`PlatformLifecycle`], but it cannot observe or consume the exit result.
 #[cfg(feature = "async-process")]
 pub struct PlatformEmergencySignal {
-    pid: Option<u32>,
+    identity: Option<AsyncChildIdentity>,
     own_process_group: bool,
+    legacy_group_pid: Option<u32>,
 }
 
 #[cfg(feature = "async-process")]
 impl PlatformEmergencySignal {
     /// Request immediate termination without waiting for process reaping.
     pub fn kill(&self) -> io::Result<()> {
-        platform_imp::signal_process(self.target()?)
+        let Some(identity) = self.identity.as_ref() else {
+            return Err(signal_target_unavailable());
+        };
+        signal_async_child(identity)
     }
 
     /// Ask the child's whole process group to shut down gracefully.
@@ -618,24 +675,56 @@ impl PlatformEmergencySignal {
     /// Returns `Ok(false)` when the child was not spawned with
     /// [`SpawnSpec::create_process_group`]: there is no group to address, and
     /// signalling anyway would hit the caller's own group on POSIX or the
-    /// caller's console on Windows. A child that has already exited is also
-    /// `Ok` -- the soft step's only job is to give a live child a chance to
-    /// clean up before a hard kill, so a dead target is a success.
+    /// caller's console on Windows. A missing or mismatched launch identity
+    /// instead reports an unavailable target; it never falls back to a
+    /// numeric group identifier that might have been reused.
     pub fn terminate_group_soft(&self) -> io::Result<bool> {
         if !self.own_process_group {
             return Ok(false);
         }
-        platform_imp::signal_process_group(self.target()?).map(|()| true)
+        let Some(identity) = self.identity.as_ref() else {
+            return Err(signal_target_unavailable());
+        };
+        signal_async_child_group(identity).map(|()| true)
     }
 
-    fn target(&self) -> io::Result<u32> {
-        self.pid.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "child process no longer has an emergency signal target",
-            )
-        })
+    /// Legacy AsyncProcess-only graceful group termination.
+    ///
+    /// Most hosts retain an identity-safe asynchronous signal capability. On
+    /// macOS there is no pidfd-equivalent for the Tokio child path, while the
+    /// pre-session AsyncProcess contract historically sent SIGTERM to the
+    /// launch child's numeric process group. Preserve that established
+    /// best-effort behavior only for the legacy actor; sessions keep using
+    /// [`Self::terminate_group_soft`] and therefore remain identity-safe.
+    pub fn terminate_group_soft_legacy(&self) -> io::Result<bool> {
+        if !self.own_process_group {
+            return Ok(false);
+        }
+        if let Some(identity) = self.identity.as_ref() {
+            return signal_async_child_group(identity).map(|()| true);
+        }
+        let pid = self
+            .legacy_group_pid
+            .ok_or_else(signal_target_unavailable)?;
+        crate::platform::process::soft_terminate_process_group(pid).map(|()| true)
     }
+
+    /// Return direct-child CPU time when this host can still verify the
+    /// launch identity. Unsupported hosts and already-reused identities are
+    /// reported as `None`, never as a PID-only best effort.
+    pub fn cpu_time(&self) -> io::Result<Option<std::time::Duration>> {
+        self.identity
+            .as_ref()
+            .map_or(Ok(None), async_child_cpu_time)
+    }
+}
+
+#[cfg(feature = "async-process")]
+fn signal_target_unavailable() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "child process launch identity is no longer available",
+    )
 }
 
 /// Opaque piped stdin capability owned by a process actor.

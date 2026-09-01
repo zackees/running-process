@@ -3,7 +3,7 @@ use std::io;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
-use crate::platform::ipc::OwnerPrivateDirectoryOutcome;
+use crate::platform::private_dir::OwnerPrivateDirectoryOutcome;
 
 pub fn ensure_owner_private_directory(path: &Path) -> io::Result<OwnerPrivateDirectoryOutcome> {
     fs::create_dir_all(path)?;

@@ -10,8 +10,8 @@
 //! `build`, and optionally persist via the existing central-registry helpers.
 //!
 //! ```no_run
-//! use running_process::broker::builders::{CacheManifestBuilder, ServiceDefinitionBuilder};
-//! use running_process::broker::protocol::CacheRootKind;
+//! use running_process::daemon_registration::builders::{CacheManifestBuilder, ServiceDefinitionBuilder};
+//! use running_process::daemon_registration::protocol::CacheRootKind;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Register the service the broker spawns/negotiates.
@@ -31,15 +31,15 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::broker::host_identity;
-use crate::broker::manifest::{
+use crate::daemon_registration::host_identity;
+use crate::daemon_registration::manifest::{
     manifest_with_self_sha256, write_to_central, write_to_central_in_dir, ManifestError,
     CACHE_MANIFEST_MEDIA_TYPE, SUPPORTED_MANIFEST_SCHEMA_VERSION,
 };
-use crate::broker::protocol::{
+use crate::daemon_registration::protocol::{
     BrokerIsolation, CacheManifest, CacheRoot, CacheRootKind, ServiceDefinition,
 };
-use crate::broker::server::service_def_loader::{
+use crate::daemon_registration::service_def_loader::{
     service_definition_dir, validate_service_definition_for_service, write_service_definition,
     ServiceDefinitionError,
 };

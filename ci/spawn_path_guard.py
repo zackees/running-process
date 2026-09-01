@@ -147,6 +147,10 @@ ALLOWED_RUST_COMMAND_NEW = {
     # would break the test's killpg-based containment on macOS).
     Path("testbins/src/bin/spawner.rs"),
     Path("testbins/src/bin/dies_after_spawn.rs"),
+    # Streaming-session fixture: starts only another checked-in testbin so
+    # the test can model an inherited stdout/stderr writer after its direct
+    # parent exits. It is not a production spawn path.
+    Path("testbins/src/bin/session_pipe_holder.rs"),
     # #551 slice 6e: inject_via_env takes a `&mut Command` from the
     # caller and sets the LD_PRELOAD/DYLD_INSERT_LIBRARIES env var
     # on it before they spawn. The file itself never constructs a
@@ -373,6 +377,8 @@ ALLOWED_RUST_SPAWN = {
     # because of the setpgid-vs-killpg interaction the containment test
     # relies on).
     Path("testbins/src/bin/spawner.rs"),
+    # See the matching streaming-session fixture entry above.
+    Path("testbins/src/bin/session_pipe_holder.rs"),
     # See the matching fixed-fixture entry in ALLOWED_RUST_COMMAND_NEW.
     Path("crates/running-process-py/src/tests/process_tree.rs"),
     # #551 slice 6e: see comment in ALLOWED_RUST_COMMAND_NEW. The

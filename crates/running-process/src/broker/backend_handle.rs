@@ -42,17 +42,27 @@
 //! # }
 //! ```
 
+#[cfg(feature = "client")]
 use std::io;
+#[cfg(feature = "client")]
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "client")]
 use crate::broker::backend_lifecycle::identity::IdentityError;
-use crate::broker::backend_lifecycle::probe::{self, ProbeError};
-use crate::broker::backend_lifecycle::verify_pid::{self, ProcessHandle, VerifyPidError};
-use crate::broker::protocol::{CacheManifest, Endpoint};
+use crate::broker::backend_lifecycle::probe;
+#[cfg(feature = "client")]
+use crate::broker::backend_lifecycle::probe::ProbeError;
+use crate::broker::backend_lifecycle::verify_pid::ProcessHandle;
+#[cfg(feature = "client")]
+use crate::broker::backend_lifecycle::verify_pid::{self, VerifyPidError};
+#[cfg(feature = "client")]
+use crate::broker::protocol::CacheManifest;
+use crate::broker::protocol::Endpoint;
 
 pub use crate::broker::backend_lifecycle::DaemonProcess;
 
 /// Result type returned by backend-handle operations.
+#[cfg(feature = "client")]
 pub type Result<T> = std::result::Result<T, BackendHandleError>;
 
 /// A verified handle to a running backend daemon.
@@ -111,7 +121,13 @@ impl BackendHandle {
     /// # }
     /// ```
     pub fn probe(endpoint: &Endpoint, expected: &DaemonProcess) -> Option<Self> {
-        Self::probe_with_service("", "", endpoint, expected).ok()
+        let process_handle = probe::probe_endpoint(endpoint, expected).ok()?;
+        Some(Self::from_verified(
+            String::new(),
+            String::new(),
+            expected.clone(),
+            process_handle,
+        ))
     }
 
     /// Async counterpart of [`Self::probe`] (#414).
@@ -151,6 +167,7 @@ impl BackendHandle {
     /// BackendHandle::probe_with_service("zccache", "0.8.0", &endpoint, &expected)
     /// # }
     /// ```
+    #[cfg(feature = "client")]
     pub fn probe_with_service(
         service_name: impl Into<String>,
         service_version: impl Into<String>,
@@ -174,6 +191,7 @@ impl BackendHandle {
     /// default being raised for every consumer.
     ///
     /// **BLOCKING.** Performs synchronous IPC up to `timeout`.
+    #[cfg(feature = "client")]
     pub fn probe_with_service_and_timeout(
         service_name: impl Into<String>,
         service_version: impl Into<String>,
@@ -253,6 +271,7 @@ impl BackendHandle {
     /// }
     /// # }
     /// ```
+    #[cfg(feature = "client")]
     pub fn probe_manifest(manifest: &CacheManifest) -> Option<Self> {
         Self::try_from_manifest(manifest).ok().flatten()
     }
@@ -261,6 +280,7 @@ impl BackendHandle {
     ///
     /// Use this in maintenance tools and diagnostics where malformed manifest
     /// identities should be reported separately from a normal cache miss.
+    #[cfg(feature = "client")]
     pub fn try_from_manifest(manifest: &CacheManifest) -> Result<Option<Self>> {
         let Some(daemon_process) = DaemonProcess::from_manifest_current_daemon(manifest)? else {
             return Ok(None);
@@ -279,6 +299,7 @@ impl BackendHandle {
     /// On platforms with an owned process-handle primitive, this checks the
     /// handle captured during probing. Otherwise it falls back to opening the
     /// process ID again.
+    #[cfg(feature = "client")]
     pub fn is_alive(&self) -> bool {
         self.platform_handle()
             .map(|handle| handle.is_alive())
@@ -302,6 +323,7 @@ impl BackendHandle {
     ///     Ok(())
     /// }
     /// ```
+    #[cfg(feature = "client")]
     pub async fn connect(&self) -> Result<Connection> {
         Connection::connect(&self.daemon_process.ipc_endpoint).map_err(BackendHandleError::Connect)
     }
@@ -312,6 +334,7 @@ impl BackendHandle {
     /// and the optional Phase 6 `DuplicateHandle` transport. The caller still
     /// owns delivery of the paired handoff token to the backend and must wait
     /// for backend acknowledgement before reporting handoff success.
+    #[cfg(feature = "client")]
     pub fn try_duplicate_windows_handoff_handle(
         &self,
         pipe_handle: crate::broker::server::handoff::WindowsHandleValue,
@@ -332,6 +355,7 @@ impl BackendHandle {
     ///
     /// Dropping the handle without calling this method leaves the backend
     /// running.
+    #[cfg(feature = "client")]
     pub async fn shutdown(self, timeout: Duration) -> Result<()> {
         verify_pid::signal_terminate(self.daemon_process.pid)?;
         let deadline = Instant::now() + timeout;
@@ -360,6 +384,7 @@ impl BackendHandle {
     ///
     /// This is the last-resort teardown path for a daemon that ignored graceful
     /// shutdown or whose IPC protocol is unavailable.
+    #[cfg(feature = "client")]
     pub fn force_kill(self) -> Result<()> {
         verify_pid::force_kill_pid(self.daemon_process.pid)?;
         Ok(())
@@ -379,6 +404,7 @@ impl BackendHandle {
         }
     }
 
+    #[cfg(feature = "client")]
     fn platform_handle(&self) -> Option<&ProcessHandle> {
         self.process_handle.as_ref()
     }
@@ -389,10 +415,12 @@ impl BackendHandle {
 /// `Connection` is intentionally thin: `BackendHandle` owns identity and
 /// liveness, while this type owns a single local-socket stream opened from the
 /// verified endpoint.
+#[cfg(feature = "client")]
 pub struct Connection {
     stream: crate::platform::ipc::Stream,
 }
 
+#[cfg(feature = "client")]
 impl Connection {
     /// Connect to a backend endpoint using the platform local-socket name type.
     pub fn connect(endpoint: &Endpoint) -> io::Result<Self> {
@@ -414,6 +442,7 @@ impl Connection {
 }
 
 /// Errors returned by `BackendHandle`.
+#[cfg(feature = "client")]
 #[derive(Debug, thiserror::Error)]
 pub enum BackendHandleError {
     /// Daemon identity normalization failed.
@@ -454,13 +483,14 @@ pub enum BackendHandleError {
 /// disappears with its last handle -- so there is nothing to unlink, and
 /// `platform::ipc` already answers that for whichever transport the host
 /// uses. Branching on the host restates that answer and can disagree with it.
+#[cfg(feature = "client")]
 fn remove_endpoint_socket(endpoint: &Endpoint) {
     if crate::platform::ipc::endpoint_is_filesystem_backed() {
         let _ = std::fs::remove_file(&endpoint.path);
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "client"))]
 mod endpoint_socket_tests {
     use super::*;
 

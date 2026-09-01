@@ -679,6 +679,7 @@ impl ObserverSubscriber {
     /// Wrap an existing channel receiver. Used by the daemon client helpers
     /// in `client::observer` to hand the caller a subscriber whose channel
     /// is later fed by an IPC streaming pump.
+    #[cfg(feature = "client")]
     pub(crate) fn from_receiver(rx: Receiver<ObserverEvent>) -> Self {
         Self {
             rx,

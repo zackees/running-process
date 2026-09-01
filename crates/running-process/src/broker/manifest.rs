@@ -16,10 +16,12 @@ const PRODUCT: &str = "running-process";
 use prost::Message;
 use sha2::{Digest, Sha256};
 
-use crate::broker::host_identity;
-use crate::broker::lifecycle::names::{validate_service_name, validate_version, PipePathError};
-use crate::broker::protocol::{CacheManifest, HostIdentity};
-use crate::broker::secure_dir;
+use crate::daemon_registration::host_identity;
+use crate::daemon_registration::protocol::{CacheManifest, HostIdentity};
+use crate::daemon_registration::secure_dir;
+use crate::daemon_registration::validation::{
+    validate_service_name, validate_version, PipePathError,
+};
 
 /// Filename written inside each daemon cache root.
 pub const ROOT_MANIFEST_FILE: &str = ".running-process-manifest.pb";
@@ -271,10 +273,11 @@ fn manifest_matches_host(manifest: &CacheManifest, current_host: &HostIdentity) 
 
 /// Atomically replace the contents of `path` with `bytes`.
 ///
-/// `pub(super)` so [`super::protocol_v2::manifest_io`] can reuse the
+/// `pub(crate)` so the legacy `broker::protocol_v2::manifest_io` path can reuse the
 /// exact same write semantics (tempfile + sync + rename + parent
 /// fsync) for v2 manifest files.
-pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ManifestError> {
+#[cfg(feature = "client")]
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ManifestError> {
     atomic_write(path, bytes)
 }
 
@@ -316,7 +319,7 @@ fn temp_path_for(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::broker::protocol::Operation;
+    use crate::daemon_registration::protocol::Operation;
 
     fn sample_manifest() -> CacheManifest {
         let host = host_identity::current();

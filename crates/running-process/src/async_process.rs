@@ -11,7 +11,7 @@ use std::time::Duration;
 use running_process_platform_internal::{SpawnSpec, StreamMode};
 
 use crate::blocking_island::dispatch;
-use crate::process_runtime::{block_on, ActorProcess};
+use crate::process_runtime::{block_on, ActorProcess, SessionProcess};
 use crate::{ProcessError, RunOutput, SharedOutputCursor};
 
 /// Semantic stdio policy for one asynchronous child stream.
@@ -46,6 +46,86 @@ pub struct AsyncCapturedOutput {
     pub stdout: Vec<u8>,
     /// Bytes captured from stderr.
     pub stderr: Vec<u8>,
+}
+
+/// Bounds and terminal-owner policy for an [`AsyncProcessSession`].
+///
+/// The session has one bounded, lossless output queue. When it fills, output
+/// pumps apply backpressure to their matching child pipe rather than evicting
+/// chunks. Each output chunk is no larger than `max_chunk_bytes`; the queue
+/// holds at most `max_queued_chunks` chunks. At most one extra chunk per
+/// stream can be waiting to enter that queue, so the maximum retained payload
+/// is `(max_queued_chunks + 4) * max_chunk_bytes`: two reader buffers and up
+/// to two chunks awaiting queue capacity are included. The direct-child exit
+/// wait is independent of that queue and of pipe EOF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AsyncProcessSessionOptions {
+    /// Maximum number of output events retained before pumps backpressure.
+    pub max_queued_chunks: usize,
+    /// Maximum bytes in any one output chunk.
+    pub max_chunk_bytes: usize,
+    /// Post-exit pipe-read policy after the direct child is reaped.
+    ///
+    /// `None` waits for normal EOF without a watchdog. `Some(duration)` is a
+    /// cumulative pipe-read budget after direct-child exit, after which a
+    /// still-open stream is abandoned. Time spent delivering a bounded queued
+    /// chunk does not consume that budget. `Some(Duration::ZERO)` abandons a
+    /// genuinely pending read immediately, but still delivers pipe bytes that
+    /// are already readable at that boundary.
+    pub post_exit_grace: Option<Duration>,
+    /// Whether dropping the terminal session owner terminates and reaps the direct child.
+    pub kill_on_drop: bool,
+}
+
+impl Default for AsyncProcessSessionOptions {
+    fn default() -> Self {
+        Self {
+            max_queued_chunks: 256,
+            max_chunk_bytes: 8 * 1024,
+            post_exit_grace: Some(Duration::from_millis(250)),
+            kill_on_drop: true,
+        }
+    }
+}
+
+/// One bounded, stream-tagged output chunk from an [`AsyncProcessSession`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsyncProcessSessionChunk {
+    /// Stream that produced these bytes.
+    pub stream: crate::StreamKind,
+    /// Raw output bytes, bounded by the configured chunk limit.
+    pub bytes: Vec<u8>,
+}
+
+/// Output lifecycle event from an [`AsyncProcessSession`].
+///
+/// The two stream end variants are deliberately independent from
+/// [`AsyncProcessSession::wait`]: a direct child may exit while a descendant
+/// still holds one inherited pipe open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsyncProcessSessionEvent {
+    /// A stream-tagged output chunk.
+    Chunk(AsyncProcessSessionChunk),
+    /// One output pipe reached EOF normally.
+    StreamEof(crate::StreamKind),
+    /// The post-exit pipe-read grace elapsed while this pipe remained open, so
+    /// the session explicitly abandoned and closed its reader.
+    StreamAbandoned(crate::StreamKind),
+    /// A stream reader failed before normal EOF. No unreported replacement
+    /// data is synthesized; callers retain the direct-child lifecycle lane.
+    StreamError {
+        /// Reader that failed.
+        stream: crate::StreamKind,
+        /// Portable category of the underlying I/O failure.
+        kind: std::io::ErrorKind,
+        /// Human-readable message from the underlying I/O failure.
+        ///
+        /// This is kept alongside the portable kind so facade clients can
+        /// retain their durable diagnostics without exposing an I/O handle.
+        message: String,
+        /// Native operating-system error, when the reader exposed one.
+        raw_os_error: Option<i32>,
+    },
 }
 
 impl From<Output> for AsyncCapturedOutput {
@@ -153,9 +233,24 @@ impl AsyncProcessBuilder {
         self
     }
 
+    /// Apply the host's existing niceness policy at child creation.
+    ///
+    /// Unix receives the requested nice value. Windows applies its existing
+    /// coarse priority-class mapping rather than treating the number as a
+    /// portable Unix-nice equivalent.
+    pub fn nice(mut self, nice: Option<i32>) -> Self {
+        self.spec = self.spec.nice(nice);
+        self
+    }
+
     /// Build an [`AsyncProcess`] backed by the canonical actor.
     pub fn build(self) -> AsyncProcess {
         AsyncProcess::from_spec(self.spec)
+    }
+
+    /// Build a long-lived, concurrently pumped process session.
+    pub fn session(self, options: AsyncProcessSessionOptions) -> AsyncProcessSession {
+        AsyncProcessSession::from_spec(self.spec, options)
     }
 
     /// Start and capture both output streams while preserving [`ExitStatus`].
@@ -229,6 +324,12 @@ impl AsyncProcess {
     /// Kill this child if the spawning process dies unexpectedly.
     pub fn kill_when_owner_dies(mut self, kill: bool) -> Self {
         self.spec = self.spec.kill_when_owner_dies(kill);
+        self
+    }
+
+    /// Apply the host's existing niceness policy at child creation.
+    pub fn nice(mut self, nice: Option<i32>) -> Self {
+        self.spec = self.spec.nice(nice);
         self
     }
 
@@ -526,6 +627,231 @@ impl AsyncProcess {
     async fn output_after_start(mut self) -> Result<RunOutput, ProcessError> {
         self.start().await?;
         self.output().await
+    }
+}
+
+/// A long-lived process session with independent lifecycle and output lanes.
+///
+/// The session is intentionally a terminal owner: it is not cloneable. Its
+/// drop policy is explicit in [`AsyncProcessSessionOptions::kill_on_drop`],
+/// and the actor always reaps the direct child before completing cleanup.
+pub struct AsyncProcessSession {
+    spec: SpawnSpec,
+    options: AsyncProcessSessionOptions,
+    control: Option<AsyncProcessSessionControl>,
+    output: Option<AsyncProcessSessionOutput>,
+}
+
+/// Terminal lifecycle and control lane split from an [`AsyncProcessSession`].
+///
+/// This is the sole terminal owner after [`AsyncProcessSession::into_parts`].
+/// Dropping it activates the configured [`AsyncProcessSessionOptions::kill_on_drop`]
+/// cleanup policy even if an [`AsyncProcessSessionOutput`] is still receiving
+/// already-pumped events. It is intentionally not cloneable.
+pub struct AsyncProcessSessionControl {
+    process: SessionProcess,
+}
+
+/// Single-consumer output lane split from an [`AsyncProcessSession`].
+///
+/// Dropping this receiver detaches output delivery only: pumps continue to
+/// drain/discard their pipes and the paired [`AsyncProcessSessionControl`]
+/// remains the terminal owner. It is intentionally not cloneable.
+pub struct AsyncProcessSessionOutput {
+    output: tokio::sync::mpsc::Receiver<AsyncProcessSessionEvent>,
+}
+
+impl AsyncProcessSession {
+    fn from_spec(spec: SpawnSpec, options: AsyncProcessSessionOptions) -> Self {
+        Self {
+            spec,
+            options,
+            control: None,
+            output: None,
+        }
+    }
+
+    /// Start direct-child lifecycle observation and both output pumps.
+    pub async fn start(&mut self) -> Result<(), ProcessError> {
+        if self.control.is_some() {
+            return Err(ProcessError::AlreadyStarted);
+        }
+        let (process, output) = SessionProcess::start(self.spec.clone(), self.options).await?;
+        self.control = Some(AsyncProcessSessionControl { process });
+        self.output = Some(AsyncProcessSessionOutput { output });
+        Ok(())
+    }
+
+    /// Split a started session into independently awaitable control and output
+    /// lanes.
+    ///
+    /// The control lane remains the sole terminal owner, so dropping either
+    /// returned handle cannot orphan the direct child: dropping control
+    /// activates its configured cleanup policy, while dropping output leaves
+    /// pumps draining/discarding until lifecycle cleanup completes.
+    pub fn into_parts(
+        mut self,
+    ) -> Result<(AsyncProcessSessionControl, AsyncProcessSessionOutput), ProcessError> {
+        match (self.control.take(), self.output.take()) {
+            (Some(control), Some(output)) => Ok((control, output)),
+            _ => Err(ProcessError::NotRunning),
+        }
+    }
+
+    /// Return the direct child's launch-time numeric identifier.
+    ///
+    /// It is diagnostic only. Session controls remain bound to the actor's
+    /// owned child identity and never target this cached number.
+    pub fn pid(&self) -> Result<u32, ProcessError> {
+        self.control
+            .as_ref()
+            .map(AsyncProcessSessionControl::pid)
+            .ok_or(ProcessError::NotRunning)
+    }
+
+    /// Receive the next lossless output event.
+    ///
+    /// `None` follows normal EOF, an explicit post-exit abandonment, or an
+    /// explicitly reported reader error. A slow receiver causes bounded
+    /// producer backpressure; it never silently evicts compiler output.
+    pub async fn next_output(&mut self) -> Option<AsyncProcessSessionEvent> {
+        self.output.as_mut()?.next_output().await
+    }
+
+    /// Wait only for the direct child to exit and be reaped.
+    pub async fn wait(&self) -> Result<ExitStatus, ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .wait()
+            .await
+    }
+
+    /// Observe whether the direct child exit has already been reaped.
+    pub async fn poll(&self) -> Result<Option<ExitStatus>, ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .poll()
+            .await
+    }
+
+    /// Directly terminate and reap the child. Output delivery remains open
+    /// until its normal EOF or configured post-exit grace.
+    pub async fn kill(&self) -> Result<(), ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .kill()
+            .await
+    }
+
+    /// Request graceful termination for an explicitly child-owned group.
+    ///
+    /// Returns `false` when no child-owned group was configured. Hosts that
+    /// cannot safely prove the launch identity report an I/O error rather
+    /// than targeting a numeric group that might have been reused.
+    pub async fn terminate_group_soft(&self) -> Result<bool, ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .terminate_group_soft()
+            .await
+    }
+
+    /// Write and flush one bounded chunk to piped stdin.
+    ///
+    /// A write longer than [`AsyncProcessSessionOptions::max_chunk_bytes`]
+    /// returns `InvalidInput`. Writes use a separately bounded input worker,
+    /// holding at most `max_queued_chunks` pending chunks plus one active
+    /// write, so a slow child read never blocks lifecycle controls.
+    pub async fn write_stdin(&self, bytes: impl AsRef<[u8]>) -> Result<(), ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .write_stdin(bytes.as_ref().to_vec())
+            .await
+    }
+
+    /// Close piped stdin, delivering EOF to the direct child.
+    pub async fn close_stdin(&self) -> Result<(), ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .close_stdin()
+            .await
+    }
+
+    /// Sample direct-child CPU time when the selected host can prove the
+    /// launch identity is still the same process. Unsupported hosts and
+    /// unavailable identities return `None`.
+    pub async fn cpu_time(&self) -> Result<Option<Duration>, ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .cpu_time()
+            .await
+    }
+}
+
+impl AsyncProcessSessionControl {
+    /// Return the direct child's launch-time numeric identifier.
+    ///
+    /// It is diagnostic only. Controls remain bound to the actor's owned
+    /// child identity and never target this cached number.
+    pub fn pid(&self) -> u32 {
+        self.process.pid()
+    }
+
+    /// Wait only for the direct child to exit and be reaped.
+    pub async fn wait(&self) -> Result<ExitStatus, ProcessError> {
+        self.process.wait().await
+    }
+
+    /// Observe whether the direct child exit has already been reaped.
+    pub async fn poll(&self) -> Result<Option<ExitStatus>, ProcessError> {
+        self.process.poll().await
+    }
+
+    /// Directly terminate and reap the child.
+    ///
+    /// Output delivery remains open until normal EOF or the configured
+    /// post-exit grace, independently of this control request.
+    pub async fn kill(&self) -> Result<(), ProcessError> {
+        self.process.kill().await
+    }
+
+    /// Request graceful termination for an explicitly child-owned group.
+    pub async fn terminate_group_soft(&self) -> Result<bool, ProcessError> {
+        self.process.terminate_group_soft().await
+    }
+
+    /// Write and flush one bounded chunk to piped stdin.
+    pub async fn write_stdin(&self, bytes: impl AsRef<[u8]>) -> Result<(), ProcessError> {
+        self.process.write_stdin(bytes.as_ref().to_vec()).await
+    }
+
+    /// Close piped stdin, delivering EOF to the direct child.
+    pub async fn close_stdin(&self) -> Result<(), ProcessError> {
+        self.process.close_stdin().await
+    }
+
+    /// Sample direct-child CPU time when the host supports identity-safe
+    /// accounting. Unsupported hosts and unavailable identities return `None`.
+    pub async fn cpu_time(&self) -> Result<Option<Duration>, ProcessError> {
+        self.process.cpu_time().await
+    }
+}
+
+impl AsyncProcessSessionOutput {
+    /// Receive the next lossless output event from this session's only output
+    /// consumer lane.
+    ///
+    /// `None` follows normal EOF, explicit post-exit abandonment, or a
+    /// reported reader error. A slow receiver causes bounded producer
+    /// backpressure; it never silently evicts compiler output.
+    pub async fn next_output(&mut self) -> Option<AsyncProcessSessionEvent> {
+        self.output.recv().await
     }
 }
 

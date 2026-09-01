@@ -31,12 +31,14 @@
 //!
 //! [`BackendHandle::probe_with_service`]: crate::broker::backend_handle::BackendHandle::probe_with_service
 
+#[cfg(feature = "client")]
 mod frame_client;
 #[cfg(feature = "client-async")]
 mod frame_client_async;
 mod identity_file;
 mod mux;
 
+#[cfg(feature = "client")]
 pub use frame_client::{FrameClient, FrameClientError};
 #[cfg(feature = "client-async")]
 pub use frame_client_async::AsyncFrameClient;

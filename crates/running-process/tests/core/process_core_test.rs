@@ -284,9 +284,9 @@ fn bounded_std_command_owner_death_composes_with_user_pre_exec_and_group_policy(
         command,
         Some(CHILD_EXIT_WAIT),
         4096,
-        BoundedRunOptions {
-            kill_when_owner_dies: true,
-        },
+        BoundedRunOptions::default()
+            .kill_when_owner_dies(true)
+            .nice(None),
     )
     .unwrap();
     assert_eq!(output.exit_code, 0);
@@ -316,9 +316,9 @@ fn helper_force_killed_bounded_owner_reaps_child() {
         command,
         Some(Duration::from_secs(120)),
         4096,
-        BoundedRunOptions {
-            kill_when_owner_dies: true,
-        },
+        BoundedRunOptions::default()
+            .kill_when_owner_dies(true)
+            .nice(None),
     );
     assert!(
         matches!(result, Err(ProcessError::Timeout)),
@@ -593,6 +593,31 @@ fn applies_positive_nice_before_exec() {
     assert_eq!(code, 0);
     let observed = String::from_utf8(process.captured_stdout()[0].clone())
         .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    assert!(observed >= 5);
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_std_command_applies_positive_nice_before_exec() {
+    let mut command = Command::new("python");
+    command.args(["-c", "import os; print(os.nice(0))"]);
+
+    let output = run_std_command_bounded_with_options(
+        command,
+        Some(CHILD_EXIT_WAIT),
+        4096,
+        BoundedRunOptions::default()
+            .kill_when_owner_dies(false)
+            .nice(Some(5)),
+    )
+    .unwrap();
+
+    assert_eq!(output.exit_code, 0);
+    let observed = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
         .parse::<i32>()
         .unwrap();
     assert!(observed >= 5);

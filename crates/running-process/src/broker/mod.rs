@@ -7,45 +7,81 @@
 //! See `proto/broker_v1_*.proto` and the parent issue for the rationale
 //! behind every field number and `reserved` range.
 
+#[cfg(feature = "client")]
 pub mod adopt;
-pub mod backend_handle;
+#[cfg(any(feature = "client", feature = "backend-identity"))]
+pub mod backend_handle {
+    pub use crate::backend_identity::handle::*;
+}
+#[cfg(feature = "client")]
 pub mod backend_lib;
+#[cfg(any(feature = "client", feature = "backend-identity"))]
 pub mod backend_lifecycle;
+#[cfg(any(feature = "client", feature = "backend-identity"))]
 pub mod backend_sdk;
+#[cfg(feature = "client")]
 pub mod broker_http_discovery;
+#[cfg(feature = "client")]
 pub mod broker_http_port;
+#[cfg(feature = "client")]
 pub mod broker_http_server;
+#[cfg(feature = "client")]
 pub mod broker_owned_bind;
+#[cfg(feature = "client")]
 pub mod brokered_backend;
+#[cfg(feature = "client")]
+#[path = "builders_compat.rs"]
 pub mod builders;
+#[cfg(feature = "client")]
 pub mod capabilities;
+#[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "client")]
 pub mod client_v2;
+#[cfg(feature = "client")]
 pub mod connect_watchdog;
+#[cfg(feature = "client")]
 pub mod doctor;
+#[cfg(feature = "client")]
 pub mod fs_health;
+#[cfg(feature = "client")]
 pub mod get_http_endpoint_dispatch;
+#[cfg(feature = "client")]
 pub mod get_session_token_dispatch;
+#[cfg(any(feature = "client", feature = "backend-identity"))]
+#[path = "host_identity_compat.rs"]
 pub mod host_identity;
+#[cfg(feature = "client")]
 pub mod http_endpoint_registry;
+#[cfg(feature = "client")]
 pub mod lifecycle;
+#[cfg(feature = "client")]
+#[path = "manifest_compat.rs"]
 pub mod manifest;
+#[cfg(any(feature = "client", feature = "backend-identity"))]
 pub mod protocol;
+#[cfg(feature = "client")]
 pub mod protocol_v2;
+#[cfg(feature = "client")]
+#[path = "secure_dir_compat.rs"]
 pub mod secure_dir;
+#[cfg(feature = "client")]
 pub mod server;
+#[cfg(feature = "client")]
 pub mod session_codec;
 // The dumb-terminal client rides the async `SessionFrameCodec` (defined behind
 // the `daemon` feature today); keep it there until that codec is hoisted to a
 // client-async home.
 #[cfg(feature = "daemon")]
 pub mod session_client;
+#[cfg(feature = "client")]
 pub mod session_pump;
 // The SESSION relay is a transparent byte proxy (no `SessionFrameCodec`). It
 // uses Linux splice or portable buffered I/O under `client-async`, so the
 // standalone async v2 broker can use it without the daemon runtime.
 #[cfg(feature = "client-async")]
 pub mod session_relay;
+#[cfg(feature = "client")]
 pub mod session_server;
 // The async SESSION-lane takeover handler. On `client-async` (not `daemon`) so
 // any async consumer daemon — including soldr-daemon, which enables
@@ -54,23 +90,16 @@ pub mod session_server;
 #[cfg(feature = "client-async")]
 pub mod session_takeover;
 
-/// Framing byte for every v1 broker connection. Wire layout:
-/// `[u8 framing_version=1][u32 LE body_length][prost body]`.
-///
-/// THIS BYTE is the truly-frozen-forever invariant — see #228
-/// "Frozen-forever commitments" section. A v2 client connecting to a
-/// v1 broker writes `[1][len][v2-shaped Hello]`; the v1 broker reads
-/// the framing byte and decides whether to decode or `Refused` with
-/// `ERROR_VERSION_UNSUPPORTED`.
-pub const FRAMING_VERSION_V1: u8 = 1;
+/// Re-exported frozen v1 outer framing byte. The canonical definition lives
+/// in [`crate::frame_v1`] so a frame-only consumer need not compile broker
+/// ownership or IPC modules.
+pub use crate::frame_v1::FRAMING_VERSION_V1;
 
-/// Hard ceiling on any single broker frame. Broker disconnects on
-/// overflow. See #228 "Wire-level commitments".
-pub const MAX_FRAME_SIZE_BYTES: usize = 16 * 1024 * 1024;
+/// Re-exported frozen v1 per-frame cap.
+pub use crate::frame_v1::MAX_FRAME_SIZE_BYTES;
 
-/// Hard ceiling on the Hello envelope specifically. Broker returns
-/// `Refused` on overflow. See #228 "Wire-level commitments".
-pub const MAX_HELLO_SIZE_BYTES: usize = 64 * 1024;
+/// Re-exported frozen v1 Hello cap.
+pub use crate::frame_v1::MAX_HELLO_SIZE_BYTES;
 
 /// Upper bound on a LifecycleEvent's prost-encoded size, set to the
 /// minimum POSIX `PIPE_BUF` so atomic-append into the event log is

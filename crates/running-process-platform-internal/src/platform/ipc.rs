@@ -83,28 +83,22 @@ impl HandoffAttachment {
     }
 }
 
-/// Result of enforcing owner-private permissions on a local IPC directory.
+/// Compatibility path for the owner-private directory result.
 #[cfg(feature = "ipc")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnerPrivateDirectoryOutcome {
-    /// The existing directory already had the complete host policy.
-    AlreadyPrivate,
-    /// Permissions were applied or repaired.
-    Hardened,
-}
+pub use crate::platform::private_dir::OwnerPrivateDirectoryOutcome;
 
 /// Create a directory and enforce the selected host's owner-private policy.
 #[cfg(feature = "ipc")]
 pub fn ensure_owner_private_directory(
     path: &std::path::Path,
 ) -> std::io::Result<OwnerPrivateDirectoryOutcome> {
-    crate::ipc_ensure_owner_private_directory(path)
+    crate::platform::private_dir::ensure_owner_private_directory(path)
 }
 
 /// Return whether a directory has the selected host's owner-private policy.
 #[cfg(feature = "ipc")]
 pub fn owner_private_directory(path: &std::path::Path) -> std::io::Result<bool> {
-    crate::ipc_owner_private_directory(path)
+    crate::platform::private_dir::owner_private_directory(path)
 }
 
 /// Whether an empty nonblocking read means "not ready yet" for this host's

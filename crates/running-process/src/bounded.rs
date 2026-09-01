@@ -20,13 +20,38 @@ use super::*;
 /// their direct parent. Windows Job Object containment covers the whole job.
 /// Callers that need Unix tree cleanup must use an application-level
 /// supervisor or an explicit tree-containment mechanism.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BoundedRunOptions {
     /// Terminate the launched command if its bounded-run owner exits.
     ///
     /// Linux and macOS guarantee direct-child termination only; Windows
     /// terminates the Job Object tree.
-    pub kill_when_owner_dies: bool,
+    kill_when_owner_dies: bool,
+
+    /// Semantic launch priority passed to the platform command configuration.
+    ///
+    /// On Unix this is the child nice value. On Windows it selects the
+    /// existing creation priority-class mapping; numeric nice values are not
+    /// portable priority levels across those platforms.
+    nice: Option<i32>,
+}
+
+impl BoundedRunOptions {
+    /// Set whether the bounded runner asks the host to terminate the direct
+    /// child if its owner exits unexpectedly.
+    #[must_use]
+    pub fn kill_when_owner_dies(mut self, enabled: bool) -> Self {
+        self.kill_when_owner_dies = enabled;
+        self
+    }
+
+    /// Set the semantic launch priority for the bounded child.
+    #[must_use]
+    pub fn nice(mut self, nice: Option<i32>) -> Self {
+        self.nice = nice;
+        self
+    }
 }
 
 /// Run a command to completion while concurrently draining stdout and stderr.
@@ -206,7 +231,7 @@ pub fn run_std_command_bounded_with_options(
         creationflags: None,
         create_process_group: true,
         stdin_mode: StdinMode::Null,
-        nice: None,
+        nice: options.nice,
         address_space_limit_bytes: None,
     };
     let process = NativeProcess::new_with_command_capture_limit(

@@ -45,11 +45,9 @@
 //! reversed but the bytes on the wire / the JSON on disk are
 //! unchanged.
 
-pub use super::super::backend_handle::{BackendHandle, BackendHandleError, Connection};
-
-pub use super::super::backend_lifecycle::identity::{DaemonProcess, IdentityError};
-
-pub use super::super::protocol::Endpoint;
+pub use crate::backend_identity::{
+    BackendHandle, BackendHandleError, Connection, DaemonProcess, Endpoint, IdentityError,
+};
 
 /// Magic frame payload-protocol marker the `try_serve_backend_handle_probe`
 /// reader uses to detect a broker probe vs a zccache message. Identical
