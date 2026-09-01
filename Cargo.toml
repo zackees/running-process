@@ -29,7 +29,7 @@ repository = "https://github.com/zackees/running-process"
 homepage = "https://github.com/zackees/running-process"
 
 [workspace.dependencies]
-pyo3 = { version = "0.29", features = ["abi3-py310"] }
+pyo3 = "0.29"
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
 

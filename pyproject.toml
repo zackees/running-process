@@ -41,7 +41,7 @@ dev = [
 manifest-path = "crates/running-process-py/Cargo.toml"
 module-name = "running_process._native"
 python-source = "src"
-features = ["pyo3/extension-module", "pyo3/abi3-py310"]
+features = ["pyo3/extension-module"]
 include = [{ path = "running_process/assets/daemon-trampoline*", format = "wheel" }]
 
 [tool.uv]

@@ -45,6 +45,7 @@ STAGES: dict[str, str] = {
     "guard-platform-boundary": "ci.platform_boundary",
     "guard-minimal-async-platform": "ci.minimal_async_platform_graph",
     "guard-kernel-substrate": "ci.kernel_substrate_contract",
+    "guard-windows-extension-abi": "ci.windows_extension_abi_guard",
     "test-async-semantic-capture": "ci.kernel_substrate_async_capture",
     "guard-docker-manifest": "ci.docker_manifest_guard",
 }

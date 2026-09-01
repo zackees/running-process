@@ -284,7 +284,9 @@ uv run --no-sync python -m ci.lint_python.keyboard_interrupt_checker src --exclu
 ## Workspace Config
 
 - Rust edition 2021, version 1.95+, shared workspace dependencies: `pyo3 0.29`, `rusqlite 0.32` (bundled), `thiserror 2`
-- Python requires >= 3.10, uses ABI3 stable API (`abi3-py310`)
+- Python requires >= 3.10. Native wheels use the building interpreter's
+  extension ABI, so Windows free-threaded CPython cannot load a generic ABI3
+  extension built for the regular runtime.
 - Release profile: line-tables-only debug info for workspace members, no debug
   info for dependencies (`[profile.release.package."*"] debug = false`), no
   stripping. The line tables are what let a release-mode stack resolve to
