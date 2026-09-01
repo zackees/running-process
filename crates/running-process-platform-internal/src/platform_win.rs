@@ -398,6 +398,29 @@ pub fn configure_process_command(
     command: &mut std::process::Command,
     config: crate::platform::process::ProcessCommandConfig,
 ) -> io::Result<()> {
+    configure_process_command_inner(command, config, false)
+}
+
+/// Root-facade-only launch seam for bounded owner-death containment.
+///
+/// This must be `pub` because `running-process` is a separate package, but
+/// applications should use its semantic bounded-run options instead of this
+/// implementation-detail function.
+#[doc(hidden)]
+pub fn configure_process_command_for_bounded_owner_death(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+) -> io::Result<()> {
+    // NativeProcess already owns one per-spawn KILL_ON_JOB_CLOSE job. Do not
+    // allocate or assign a second job for the bounded option.
+    configure_process_command_inner(command, config, true)
+}
+
+fn configure_process_command_inner(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+    _kill_when_owner_dies: bool,
+) -> io::Result<()> {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -565,6 +588,7 @@ pub(crate) fn after_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Resu
     }
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn signal_process(pid: u32) -> io::Result<()> {
     let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
     if handle.is_null() {
@@ -577,6 +601,7 @@ pub(crate) fn signal_process(pid: u32) -> io::Result<()> {
     termination_error.map_or(Ok(()), Err)
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn signal_process_group(pid: u32) -> io::Result<()> {
     if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) } != 0 {
         return Ok(());

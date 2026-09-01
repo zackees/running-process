@@ -2,6 +2,33 @@
 
 use super::*;
 
+/// Optional containment policy for [`run_std_command_bounded_with_options`].
+///
+/// The default keeps the established bounded-run behavior. Setting
+/// [`Self::kill_when_owner_dies`] asks the host to terminate the launched
+/// command when the process that called the bounded runner dies:
+///
+/// - Linux installs `PR_SET_PDEATHSIG` in the child before `exec`, including
+///   a parent-race guard.
+/// - macOS installs the existing kqueue supervisor before `exec`.
+/// - Windows reuses the [`NativeProcess`] per-spawn kill-on-close job; it does
+///   not create a second job object.
+///
+/// On Linux and macOS this policy guarantees only direct-child termination.
+/// Those operating systems do not provide a parent-death primitive that can
+/// atomically terminate a process group, so ordinary descendants may outlive
+/// their direct parent. Windows Job Object containment covers the whole job.
+/// Callers that need Unix tree cleanup must use an application-level
+/// supervisor or an explicit tree-containment mechanism.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BoundedRunOptions {
+    /// Terminate the launched command if its bounded-run owner exits.
+    ///
+    /// Linux and macOS guarantee direct-child termination only; Windows
+    /// terminates the Job Object tree.
+    pub kill_when_owner_dies: bool,
+}
+
 /// Run a command to completion while concurrently draining stdout and stderr.
 ///
 /// The helper forces capture on regardless of `config.capture`, returns raw
@@ -146,6 +173,27 @@ pub fn run_std_command_bounded(
     timeout: Option<Duration>,
     output_limit: usize,
 ) -> Result<RunOutput, ProcessError> {
+    run_std_command_bounded_with_options(
+        command,
+        timeout,
+        output_limit,
+        BoundedRunOptions::default(),
+    )
+}
+
+/// Run an existing [`std::process::Command`] with bounded capture and
+/// explicit containment options.
+///
+/// Like [`run_std_command_bounded`], this preserves the supplied command
+/// losslessly, forces null stdin plus separately captured stdout/stderr, and
+/// keeps bounded-run's process group and cleanup behavior. The options only
+/// add host-native containment; they do not add a second launch path.
+pub fn run_std_command_bounded_with_options(
+    command: Command,
+    timeout: Option<Duration>,
+    output_limit: usize,
+    options: BoundedRunOptions,
+) -> Result<RunOutput, ProcessError> {
     let config = ProcessConfig {
         // The command override is consumed before this placeholder can be
         // inspected. Keeping ProcessConfig internal policy in one shape avoids
@@ -161,6 +209,11 @@ pub fn run_std_command_bounded(
         nice: None,
         address_space_limit_bytes: None,
     };
-    let process = NativeProcess::new_with_command_capture_limit(command, config, output_limit);
+    let process = NativeProcess::new_with_command_capture_limit(
+        command,
+        config,
+        output_limit,
+        options.kill_when_owner_dies,
+    );
     run_native_process_bounded(process, timeout, output_limit)
 }

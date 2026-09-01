@@ -427,12 +427,44 @@ pub fn configure_process_command(
     command: &mut std::process::Command,
     config: crate::platform::process::ProcessCommandConfig,
 ) -> io::Result<()> {
+    configure_process_command_inner(command, config, false)
+}
+
+/// Root-facade-only launch seam for bounded owner-death containment.
+///
+/// This must be `pub` because `running-process` is a separate package, but
+/// applications should use its semantic bounded-run options instead of this
+/// implementation-detail function.
+#[doc(hidden)]
+pub fn configure_process_command_for_bounded_owner_death(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+) -> io::Result<()> {
+    configure_process_command_inner(command, config, true)
+}
+
+fn configure_process_command_inner(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+    kill_when_owner_dies: bool,
+) -> io::Result<()> {
     let create_process_group = config.create_process_group;
     let nice = config.nice;
     let address_space_limit_bytes = config.address_space_limit_bytes;
-    if !(create_process_group || nice.is_some() || address_space_limit_bytes.is_some()) {
+    if !(create_process_group
+        || nice.is_some()
+        || address_space_limit_bytes.is_some()
+        || kill_when_owner_dies)
+    {
         return Ok(());
     }
+    let owner_pid = if kill_when_owner_dies {
+        // Read before `Command` forks so the child can detect the narrow race
+        // where this process exits between fork and PR_SET_PDEATHSIG.
+        unsafe { libc::getpid() }
+    } else {
+        0
+    };
     use std::os::unix::process::CommandExt;
     unsafe {
         command.pre_exec(move || {
@@ -450,8 +482,38 @@ pub fn configure_process_command(
                     return Err(io::Error::last_os_error());
                 }
             }
+            if kill_when_owner_dies {
+                install_parent_death_signal_with_race_guard(owner_pid)?;
+            }
             Ok(())
         });
+    }
+    Ok(())
+}
+
+/// Install PDEATHSIG and close the fork-to-prctl owner-death race.
+///
+/// This runs only in `Command::pre_exec`, after fork and before exec.
+fn install_parent_death_signal_with_race_guard(owner_pid: libc::pid_t) -> io::Result<()> {
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_PDEATHSIG,
+            libc::SIGTERM as libc::c_ulong,
+            0,
+            0,
+            0,
+        )
+    } == -1
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::getppid() } != owner_pid {
+        // The owner died after fork but before PDEATHSIG was armed. A
+        // caller-provided pre_exec hook may have ignored SIGTERM, so sending
+        // that signal then returning would let this orphan exec. SAFETY:
+        // `_exit` is async-signal-safe and bypasses Rust destructors and
+        // allocation in this post-fork child.
+        unsafe { libc::_exit(128 + libc::SIGTERM) };
     }
     Ok(())
 }
@@ -775,14 +837,17 @@ pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) -> io::Re
     Ok(())
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn signal_process(pid: u32) -> io::Result<()> {
     unix_kill(pid as i32, libc::SIGKILL)
 }
 
+#[cfg(feature = "async-process")]
 pub(crate) fn signal_process_group(pid: u32) -> io::Result<()> {
     unix_kill(-(pid as i32), libc::SIGTERM)
 }
 
+#[cfg(feature = "async-process")]
 fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
     let result = unsafe { libc::kill(target, signal) };
     if result == 0 {
@@ -803,6 +868,36 @@ pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owner_death_race_guard_exits_when_sigterm_is_ignored() {
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork owner-death race fixture");
+        if child == 0 {
+            // Model a caller-supplied pre_exec hook which ignored SIGTERM
+            // before the bounded runner's hook is appended.
+            if unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) } == libc::SIG_ERR {
+                unsafe { libc::_exit(98) };
+            }
+            let owner_pid = unsafe { libc::getppid() }.saturating_add(1);
+            // A deliberately mismatched owner PID models the post-prctl
+            // parent-death race. The helper must not return even though the
+            // SIGTERM disposition above would ignore a signal-based guard.
+            if super::install_parent_death_signal_with_race_guard(owner_pid).is_err() {
+                unsafe { libc::_exit(99) };
+            }
+            unsafe { libc::_exit(100) };
+        }
+
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(libc::WIFEXITED(status), "race fixture must _exit");
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            128 + libc::SIGTERM,
+            "ignored SIGTERM must not permit the owner-dead child to continue"
+        );
+    }
+
     #[test]
     fn shell_command_preserves_login_shell_contract_and_ignores_child_path() {
         use std::ffi::OsStr;

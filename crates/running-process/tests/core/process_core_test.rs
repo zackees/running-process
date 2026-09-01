@@ -10,11 +10,14 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 #[cfg(any(windows, unix))]
 use std::process::Command;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use std::process::Stdio;
 use std::thread;
 #[cfg(target_os = "linux")]
-use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+use std::{
+    ffi::{CString, OsString},
+    os::unix::ffi::{OsStrExt, OsStringExt},
+};
 
 /// How long to wait for a child to exit.
 ///
@@ -34,8 +37,9 @@ use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 const CHILD_EXIT_WAIT: Duration = Duration::from_secs(30);
 
 use running_process::{
-    run_command, run_command_bounded, CommandSpec, NativeProcess, ProcessConfig, ProcessError,
-    ReadStatus, StderrMode, StdinMode, StreamKind,
+    run_command, run_command_bounded, run_std_command_bounded_with_options, BoundedRunOptions,
+    CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode,
+    StreamKind,
 };
 
 fn config(
@@ -203,6 +207,195 @@ fn bounded_std_command_preserves_non_utf8_process_inputs() {
     let output =
         running_process::run_std_command_bounded(command, Some(CHILD_EXIT_WAIT), 4096).unwrap();
     assert_eq!(output.stdout, b"environment-\xffarg-\xfe");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bounded_std_command_options_preserve_nonzero_timeout_and_output_limit_results() {
+    let mut nonzero = Command::new("sh");
+    nonzero.args(["-c", "printf stdout; printf stderr >&2; exit 7"]);
+    let output = run_std_command_bounded_with_options(
+        nonzero,
+        Some(CHILD_EXIT_WAIT),
+        4096,
+        BoundedRunOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(output.exit_code, 7);
+    assert_eq!(output.stdout, b"stdout");
+    assert_eq!(output.stderr, b"stderr");
+
+    let started = Instant::now();
+    let mut slow = Command::new("sh");
+    slow.args(["-c", "sleep 30"]);
+    assert!(matches!(
+        run_std_command_bounded_with_options(
+            slow,
+            Some(Duration::from_millis(100)),
+            4096,
+            BoundedRunOptions::default(),
+        ),
+        Err(ProcessError::Timeout)
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "bounded timeout did not request cleanup promptly"
+    );
+
+    let mut overflowing = Command::new("sh");
+    overflowing.args(["-c", "yes bounded-output"]);
+    assert!(matches!(
+        run_std_command_bounded_with_options(
+            overflowing,
+            Some(CHILD_EXIT_WAIT),
+            64,
+            BoundedRunOptions::default(),
+        ),
+        Err(ProcessError::OutputLimitExceeded { limit: 64 })
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bounded_std_command_owner_death_composes_with_user_pre_exec_and_group_policy() {
+    use std::os::unix::process::CommandExt;
+
+    let working_directory = tempfile::tempdir().unwrap();
+    let working_directory_bytes = CString::new(working_directory.path().as_os_str().as_bytes())
+        .expect("temporary paths do not contain NUL");
+    let expected_directory = working_directory.path().display().to_string();
+    let mut command = Command::new("sh");
+    command.args([
+        "-c",
+        "pgid=$(ps -o pgid= -p $$ | tr -d '[:space:]'); test \"$pgid\" = \"$$\" && pwd",
+    ]);
+    // SAFETY: the closure performs one async-signal-safe libc call and keeps
+    // its C string alive until the command is spawned.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::chdir(working_directory_bytes.as_ptr()) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let output = run_std_command_bounded_with_options(
+        command,
+        Some(CHILD_EXIT_WAIT),
+        4096,
+        BoundedRunOptions {
+            kill_when_owner_dies: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(output.exit_code, 0);
+    assert_eq!(
+        std::str::from_utf8(&output.stdout).unwrap().trim_end(),
+        expected_directory
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn helper_force_killed_bounded_owner_reaps_child() {
+    if std::env::var("RUNNING_PROCESS_BOUNDED_OWNER_DEATH_HELPER")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+
+    let mut command = Command::new("sh");
+    command.args([
+        "-c",
+        "echo $$ > \"$RUNNING_PROCESS_BOUNDED_OWNER_DEATH_PID_FILE\"; exec sleep 30",
+    ]);
+    let result = run_std_command_bounded_with_options(
+        command,
+        Some(Duration::from_secs(120)),
+        4096,
+        BoundedRunOptions {
+            kill_when_owner_dies: true,
+        },
+    );
+    assert!(
+        matches!(result, Err(ProcessError::Timeout)),
+        "helper must run until its bounded timeout unless its owner dies: {result:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bounded_std_command_owner_death_kills_child_after_owner_is_forced_down() {
+    let temporary = tempfile::tempdir().unwrap();
+    let pid_file = temporary.path().join("bounded-owner-death.pid");
+    let mut owner = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg(helper_test_name(
+            "helper_force_killed_bounded_owner_reaps_child",
+        ))
+        .arg("--nocapture")
+        .env("RUNNING_PROCESS_BOUNDED_OWNER_DEATH_HELPER", "1")
+        .env("RUNNING_PROCESS_BOUNDED_OWNER_DEATH_PID_FILE", &pid_file)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let startup_deadline = Instant::now() + Duration::from_secs(5);
+    let child_pid = loop {
+        if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+            break pid
+                .trim()
+                .parse::<u32>()
+                .expect("helper wrote a numeric child pid");
+        }
+        if let Some(status) = owner.try_wait().unwrap() {
+            panic!("bounded owner exited before reporting child pid: {status}");
+        }
+        assert!(
+            Instant::now() < startup_deadline,
+            "bounded owner did not report a child pid"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+
+    let death_deadline = Instant::now() + Duration::from_secs(5);
+    while linux_pid_exists(child_pid) {
+        assert!(
+            Instant::now() < death_deadline,
+            "bounded child {child_pid} survived owner death"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_pid_exists(pid: u32) -> bool {
+    // `kill(pid, 0)` reports zombies as existing. Once the owner-death child
+    // is a zombie it cannot execute further work, so accept that terminal
+    // state even if PID 1 has not reaped it yet.
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => {
+            let state = stat
+                .rsplit_once(") ")
+                .and_then(|(_, tail)| tail.as_bytes().first().copied());
+            state != Some(b'Z')
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        // `EPERM` means a process with this PID exists but is not signalable.
+        // The helper owns its child, yet retaining the distinction makes the
+        // probe correct when tests run under a constrained supervisor.
+        Err(_) => {
+            (unsafe { libc::kill(pid as libc::pid_t, 0) == 0 })
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

@@ -8,7 +8,7 @@
 use std::cfg_select;
 #[cfg(feature = "async-process")]
 use std::ffi::{OsStr, OsString};
-#[cfg(any(feature = "async-process", feature = "ipc"))]
+#[cfg(feature = "async-process")]
 use std::io;
 #[cfg(feature = "async-process")]
 use std::path::PathBuf;
@@ -58,7 +58,8 @@ cfg_select! {
 pub use platform_imp::{
     active_graphics_probe, assign_child_to_windows_job, cancel_capture_reader,
     canonical_environment_pairs, capture_reader_done, compat_shell_command, configure_exact_trace,
-    configure_process_command, configure_sync_contained_command, configure_sync_daemon_command,
+    configure_process_command, configure_process_command_for_bounded_owner_death,
+    configure_sync_contained_command, configure_sync_daemon_command,
     configure_sync_daemon_command_with_inheritance, configure_trampoline_command,
     current_executable_build_id, exact_trace_capability, exit_code, monitor_console_windows,
     parent_has_console, prepare_capture_reader, set_process_name, set_window_icon_impl,
