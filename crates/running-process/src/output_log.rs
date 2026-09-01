@@ -230,14 +230,40 @@ impl SharedOutputCursor {
     /// Await the next record, gap, or terminal EOF without polling.
     #[cfg(feature = "async-process")]
     pub async fn read_next_async(&mut self) -> CursorRead {
+        self.read_next_async_inner(|| {}).await
+    }
+
+    /// Test seam for the close-vs-wait interleaving.  The production path
+    /// above is intentionally the same implementation with a no-op hook.
+    #[cfg(all(test, feature = "async-process"))]
+    async fn read_next_async_after_empty<F>(&mut self, after_empty: F) -> CursorRead
+    where
+        F: FnMut(),
+    {
+        self.read_next_async_inner(after_empty).await
+    }
+
+    #[cfg(feature = "async-process")]
+    async fn read_next_async_inner<F>(&mut self, mut after_empty: F) -> CursorRead
+    where
+        F: FnMut(),
+    {
         loop {
             let state = Arc::clone(&self.inner);
+            // `Notify` is not a broadcast condition variable.  Register the
+            // waiter before checking the log/closed state so a producer (or
+            // the final close) cannot notify in the check-then-wait window.
             let notified = state.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             match self.read_next() {
                 CursorRead::Eof if self.inner.closed.load(Ordering::Acquire) => {
                     return CursorRead::Eof;
                 }
-                CursorRead::Eof => notified.await,
+                CursorRead::Eof => {
+                    after_empty();
+                    notified.as_mut().await;
+                }
                 result => return result,
             }
         }
@@ -348,6 +374,27 @@ mod tests {
         let mut cursor = log.cursor();
         log.close();
         assert_eq!(cursor.read_next_async().await, CursorRead::Eof);
+        assert!(cursor.is_closed());
+    }
+
+    /// Closing after the cursor found no record must still wake it.  This
+    /// deliberately hits the historical check-then-register window instead
+    /// of relying on a scheduler race to reproduce it.
+    #[cfg(feature = "async-process")]
+    #[tokio::test]
+    async fn async_cursor_close_between_empty_check_and_wait_is_not_lost() {
+        let log = SharedOutputLog::new(8);
+        let close_log = log.clone();
+        let mut cursor = log.cursor();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            cursor.read_next_async_after_empty(move || close_log.close()),
+        )
+        .await
+        .expect("close wakes a cursor that has no record");
+
+        assert_eq!(result, CursorRead::Eof);
         assert!(cursor.is_closed());
     }
 }

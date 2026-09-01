@@ -81,7 +81,7 @@ pub use executable::{
 #[cfg(feature = "ipc")]
 #[path = "platform_linux/ipc.rs"]
 pub(crate) mod ipc;
-#[cfg(feature = "ipc")]
+#[cfg(feature = "private-dir")]
 #[path = "platform_linux/ipc_private_dir.rs"]
 mod ipc_private_dir;
 #[cfg(feature = "ipc")]
@@ -110,10 +110,10 @@ pub fn legacy_duplicate_handle(
         None,
     ))
 }
-#[cfg(feature = "ipc")]
+#[cfg(feature = "private-dir")]
 pub use ipc_private_dir::{
-    ensure_owner_private_directory as ipc_ensure_owner_private_directory,
-    owner_private_directory as ipc_owner_private_directory,
+    ensure_owner_private_directory as private_dir_ensure_owner_private_directory,
+    owner_private_directory as private_dir_owner_private_directory,
 };
 #[cfg(feature = "ipc")]
 pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::Result<String> {
@@ -136,6 +136,7 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::
 }
 
 /// Linux `sun_path` is 108 bytes including the NUL terminator.
+#[cfg(feature = "ipc")]
 const LINUX_SUN_PATH_MAX: usize = 108;
 
 #[cfg(feature = "ipc")]
@@ -227,9 +228,14 @@ mod session_relay;
 #[cfg(feature = "session-relay")]
 pub use session_relay::relay_local_socket_session;
 
+#[cfg(feature = "pty")]
 #[path = "platform_linux/terminal.rs"]
 pub mod terminal;
-pub use terminal::active_graphics_probe;
+#[cfg(feature = "terminal-graphics")]
+#[path = "platform_linux/terminal_graphics.rs"]
+mod terminal_graphics;
+#[cfg(feature = "terminal-graphics")]
+pub use terminal_graphics::active_graphics_probe;
 pub use crate::platform::terminal_input;
 
 #[path = "platform_linux/window_icon.rs"]
@@ -785,7 +791,7 @@ pub fn configure_compat_tokio_command(
     _show_console: bool,
     kill_when_owner_dies: bool,
 ) -> io::Result<()> {
-    configure_command(command, false, kill_when_owner_dies)
+    configure_command(command, false, kill_when_owner_dies, None)
 }
 
 /// Nothing to do on this host: the parent-death signal is installed in `pre_exec`, before the
@@ -803,27 +809,23 @@ pub(crate) fn configure_command(
     command: &mut Command,
     create_process_group: bool,
     kill_when_owner_dies: bool,
+    nice: Option<i32>,
 ) -> io::Result<()> {
     if create_process_group {
         command.process_group(0);
     }
-    if kill_when_owner_dies {
+    if kill_when_owner_dies || nice.is_some() {
         let owner_pid = unsafe { libc::getpid() };
         // SAFETY: the closure invokes only async-signal-safe libc calls.
         unsafe {
             command.pre_exec(move || {
-                if libc::prctl(
-                    libc::PR_SET_PDEATHSIG,
-                    libc::SIGTERM as libc::c_ulong,
-                    0,
-                    0,
-                    0,
-                ) == -1
-                {
-                    return Err(io::Error::last_os_error());
+                if let Some(nice) = nice {
+                    if libc::setpriority(libc::PRIO_PROCESS, 0, nice) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
                 }
-                if libc::getppid() != owner_pid {
-                    libc::kill(libc::getpid(), libc::SIGTERM);
+                if kill_when_owner_dies {
+                    install_parent_death_signal_with_race_guard(owner_pid)?;
                 }
                 Ok(())
             });
@@ -837,19 +839,139 @@ pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) -> io::Re
     Ok(())
 }
 
+/// Launch-bound identity for private async controls.
+///
+/// `pidfd_open` supplies the race-free direct-control capability where the
+/// kernel permits it. `/proc/<pid>/stat` start ticks remain available for CPU
+/// accounting on older or restricted hosts, but are never a raw-PID control
+/// fallback.
 #[cfg(feature = "async-process")]
-pub(crate) fn signal_process(pid: u32) -> io::Result<()> {
-    unix_kill(pid as i32, libc::SIGKILL)
+pub(crate) struct AsyncChildIdentity {
+    pid: u32,
+    start_ticks: u64,
+    pidfd: Option<std::os::fd::OwnedFd>,
 }
 
 #[cfg(feature = "async-process")]
-pub(crate) fn signal_process_group(pid: u32) -> io::Result<()> {
-    unix_kill(-(pid as i32), libc::SIGTERM)
+pub(crate) fn async_child_identity(child: &Child) -> Option<AsyncChildIdentity> {
+    let pid = child.id()?;
+    let (start_ticks, _, _) = proc_stat(pid).ok()?;
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0) } as libc::c_int;
+    let pidfd = (fd >= 0).then(|| {
+        // SAFETY: pidfd_open returned a newly owned descriptor above.
+        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) }
+    });
+    Some(AsyncChildIdentity {
+        pid,
+        start_ticks,
+        pidfd,
+    })
 }
 
 #[cfg(feature = "async-process")]
-fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
-    let result = unsafe { libc::kill(target, signal) };
+pub(crate) fn signal_async_child(identity: &AsyncChildIdentity) -> io::Result<()> {
+    if identity_matches(identity) {
+        pidfd_send_signal(identity, libc::SIGKILL)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "child process launch identity no longer matches",
+        ))
+    }
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn signal_async_child_group(identity: &AsyncChildIdentity) -> io::Result<()> {
+    if !identity_matches(identity) || !pidfd_is_live(identity)? {
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "child process launch identity no longer matches",
+        ));
+    }
+    if unsafe { libc::kill(-(identity.pid as i32), libc::SIGTERM) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn async_child_cpu_time(
+    identity: &AsyncChildIdentity,
+) -> io::Result<Option<std::time::Duration>> {
+    let Ok((start_ticks, user_ticks, system_ticks)) = proc_stat(identity.pid) else {
+        return Ok(None);
+    };
+    if start_ticks != identity.start_ticks {
+        return Ok(None);
+    }
+    let ticks_per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks_per_second <= 0 {
+        return Ok(None);
+    }
+    let ticks = user_ticks.saturating_add(system_ticks);
+    let hz = ticks_per_second as u64;
+    Ok(Some(
+        std::time::Duration::from_secs(ticks / hz)
+            + std::time::Duration::from_nanos(
+                ticks
+                    % hz
+                    .saturating_mul(1_000_000_000)
+                    / hz,
+            ),
+    ))
+}
+
+#[cfg(feature = "async-process")]
+fn identity_matches(identity: &AsyncChildIdentity) -> bool {
+    matches!(proc_stat(identity.pid), Ok((start_ticks, _, _)) if start_ticks == identity.start_ticks)
+}
+
+#[cfg(feature = "async-process")]
+fn pidfd_is_live(identity: &AsyncChildIdentity) -> io::Result<bool> {
+    let Some(pidfd) = identity.pidfd.as_ref() else {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "pidfd control is unavailable for this child",
+        ));
+    };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            std::os::fd::AsRawFd::as_raw_fd(pidfd),
+            0,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(feature = "async-process")]
+fn pidfd_send_signal(identity: &AsyncChildIdentity, signal: libc::c_int) -> io::Result<()> {
+    let Some(pidfd) = identity.pidfd.as_ref() else {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "pidfd control is unavailable for this child",
+        ));
+    };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            std::os::fd::AsRawFd::as_raw_fd(pidfd),
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
     if result == 0 {
         return Ok(());
     }
@@ -862,12 +984,63 @@ fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
 }
 
 #[cfg(feature = "async-process")]
+fn proc_stat(pid: u32) -> io::Result<(u64, u64, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let fields = stat
+        .rsplit_once(')')
+        .map(|(_, fields)| fields.split_ascii_whitespace().collect::<Vec<_>>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed /proc stat"))?;
+    let parse = |index: usize| -> io::Result<u64> {
+        fields
+            .get(index)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "short /proc stat"))?
+            .parse::<u64>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid /proc stat"))
+    };
+    // Fields after the closing command name begin at stat field 3: utime=11,
+    // stime=12, starttime=19 in this zero-based tail.
+    Ok((parse(19)?, parse(11)?, parse(12)?))
+}
+
+#[cfg(feature = "async-process")]
 pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("/bin/sh").arg("-c").arg(command)
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "async-process")]
+    #[test]
+    fn async_identity_mismatch_fails_closed_without_pid_signal() {
+        let pid = unsafe { libc::getpid() as u32 };
+        let (start_ticks, _, _) = super::proc_stat(pid).expect("read this process start key");
+        let identity = super::AsyncChildIdentity {
+            pid,
+            start_ticks: start_ticks.saturating_add(1),
+            pidfd: None,
+        };
+        assert!(!super::identity_matches(&identity));
+        let error = super::signal_async_child(&identity)
+            .expect_err("mismatched launch identity must not signal a reused PID");
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(super::async_child_cpu_time(&identity).unwrap(), None);
+    }
+
+    #[cfg(feature = "async-process")]
+    #[test]
+    fn async_identity_without_pidfd_keeps_cpu_but_refuses_pid_control() {
+        let pid = unsafe { libc::getpid() as u32 };
+        let (start_ticks, _, _) = super::proc_stat(pid).expect("read this process start key");
+        let identity = super::AsyncChildIdentity {
+            pid,
+            start_ticks,
+            pidfd: None,
+        };
+        assert!(super::async_child_cpu_time(&identity).unwrap().is_some());
+        let error = super::signal_async_child(&identity).expect_err("no raw-PID kill fallback");
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    }
+
     #[test]
     fn owner_death_race_guard_exits_when_sigterm_is_ignored() {
         let child = unsafe { libc::fork() };

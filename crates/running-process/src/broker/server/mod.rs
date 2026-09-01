@@ -26,6 +26,7 @@ pub mod metrics;
 pub mod perf_guard;
 pub mod recovery;
 pub mod serve;
+#[path = "service_def_loader_compat.rs"]
 pub mod service_def_loader;
 /// Async v2 broker SESSION serve path (soldr#2365) — the strangler-fig async
 /// twin of the sync control-socket loop. Gated on `client-async`: it needs a

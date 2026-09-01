@@ -80,8 +80,6 @@ fn capability_environment_signals_and_observer_matrix_are_complete() {
 
     let absent = i32::MAX as u32;
     assert!(soft_terminate_process_group(absent).is_ok());
-    assert!(signal_process(absent).is_ok());
-    assert!(signal_process_group(absent).is_ok());
     assert!(unix_signal_process(absent, UnixSignalKind::Kill).is_err());
     assert!(unix_signal_process_group(i32::MAX, UnixSignalKind::Terminate).is_err());
     assert!(unix_set_priority(absent, 0).is_err());
@@ -213,7 +211,7 @@ fn reviewed_command_configuration_executes_on_short_lived_children() {
 
     let mut tokio_command = Command::new("/bin/true");
     configure_compat_tokio_command(&mut tokio_command, false, false).unwrap();
-    configure_command(&mut tokio_command, true, true).unwrap();
+    configure_command(&mut tokio_command, true, true, None).unwrap();
 }
 
 #[cfg(feature = "async-process")]
@@ -264,7 +262,7 @@ fn tokio_configuration_and_live_signal_helpers_reach_the_os() {
 
         let mut grouped = Command::new("/bin/sleep");
         grouped.arg("30").kill_on_drop(true);
-        configure_command(&mut grouped, true, false).unwrap();
+        configure_command(&mut grouped, true, false, None).unwrap();
         let mut child = grouped.spawn().unwrap();
         after_spawn(&child, false).expect("a no-op must still succeed");
         let pid = child.id().unwrap();

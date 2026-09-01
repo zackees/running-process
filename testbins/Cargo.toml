@@ -72,6 +72,18 @@ name = "testbin-slow-stdin-reader"
 path = "src/bin/slow_stdin_reader.rs"
 
 [[bin]]
+name = "testbin-session-pipe-holder"
+path = "src/bin/session_pipe_holder.rs"
+
+[[bin]]
+name = "testbin-session-cpu-spinner"
+path = "src/bin/session_cpu_spinner.rs"
+
+[[bin]]
+name = "testbin-session-drip-writer"
+path = "src/bin/session_drip_writer.rs"
+
+[[bin]]
 # #551 slice 7c: deterministic CreateFileW caller used by the
 # Windows interposer integration test. Sleeps, then opens a
 # caller-supplied path via kernel32!CreateFileW — guaranteed to

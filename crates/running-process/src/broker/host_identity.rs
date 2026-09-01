@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use crate::broker::protocol::HostIdentity;
+use running_process_protocol::broker::v1::HostIdentity;
 
 /// Return the current host identity using the current directory as the
 /// filesystem-device probe.

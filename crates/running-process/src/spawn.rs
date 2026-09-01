@@ -97,6 +97,7 @@ impl EnvironmentPolicy {
     }
 
     /// Encode a resolved policy for either daemon or broker-v2 protobufs.
+    #[cfg(any(feature = "client", test))]
     pub(crate) fn wire_value(self) -> Result<i32, &'static str> {
         match self {
             Self::Inherit => Ok(1),
@@ -108,6 +109,7 @@ impl EnvironmentPolicy {
 
     /// Compatibility bit written for servers that predate the wire enum.
     /// `UserBaseline` deliberately degrades to `Clear`, never ambient inherit.
+    #[cfg(any(feature = "client", test))]
     pub(crate) fn legacy_clear_fallback(self) -> Result<bool, &'static str> {
         match self {
             Self::Inherit => Ok(false),

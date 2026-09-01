@@ -1,0 +1,10 @@
+[package]
+name = "running-process-frame-v1-codec-fail-reserved"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+running-process = { path = "../../..", default-features = false, features = ["frame-v1-codec"] }

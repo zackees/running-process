@@ -1,6 +1,6 @@
 //! v2 service-definition loader (slice 23-C of zccache#782).
 //!
-//! Read-side complement to the write helpers in [`super::io`]. A v2
+//! Read-side complement to the canonical v2 writer re-exports in [`super`]. A v2
 //! broker (the `running-process-broker-v2` binary, currently a
 //! scaffold per PRs #486-#489) calls this to discover registered
 //! backends from `.servicedef.v2` files written by consumers via
@@ -31,8 +31,8 @@ use prost::Message as _;
 use crate::broker::lifecycle::names::validate_service_name;
 use crate::broker::server::service_def_loader::ServiceDefinitionError;
 
-use super::io::{service_definition_dir_v2, service_definition_path_v2, SERVICE_DEF_V2_EXTENSION};
 use super::ServiceDefinition;
+use super::{service_definition_dir_v2, service_definition_path_v2, SERVICE_DEF_V2_EXTENSION};
 
 /// Loader rooted at one v2 service-definition directory.
 ///

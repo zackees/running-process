@@ -12,5 +12,6 @@
 
 mod async_owner_death_test;
 mod async_parity_test;
+mod async_process_session_test;
 mod async_process_test;
 mod async_semantic_capture;

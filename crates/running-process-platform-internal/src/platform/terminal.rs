@@ -142,18 +142,19 @@ pub trait PtyBackend {
     fn openpty(size: PtySize) -> io::Result<(Self::Master, Self::Slave)>;
 }
 
-/// Raw replies returned by a bounded active terminal-graphics probe.
+// Keep the historical PTY-facade type path source compatible. When both
+// capabilities are active it is the same type as the lightweight graphics
+// facade; a standalone published `pty` build retains its former contract.
+#[cfg(feature = "terminal-graphics")]
+pub use crate::platform::terminal_graphics::TerminalGraphicsProbe;
+
+#[cfg(not(feature = "terminal-graphics"))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TerminalGraphicsProbe {
     pub sixel_xtsmgraphics: Option<String>,
     pub sixel_da1: Option<String>,
     pub kitty_graphics: Option<String>,
     pub iterm2_capabilities: Option<String>,
-}
-
-/// Probe the controlling terminal without exposing terminal descriptors.
-pub fn active_graphics_probe(timeout: std::time::Duration) -> TerminalGraphicsProbe {
-    crate::active_graphics_probe(timeout)
 }
 
 pub mod input {

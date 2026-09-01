@@ -65,6 +65,21 @@ pub struct DaemonProcess {
     pub idle_timeout_secs: Option<u32>,
 }
 
+/// Hash material recorded when constructing a current daemon identity.
+///
+/// [`Self::LegacyCompatible`] preserves the historical default for consumers
+/// that must authenticate to brokers released before the BLAKE3 migration.
+/// [`Self::Blake3Only`] avoids a second full executable read when the
+/// application has established that the legacy slot must remain all zeroes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DaemonIdentityHashPolicy {
+    /// Compute BLAKE3 and the legacy SHA-256 compatibility digest.
+    #[default]
+    LegacyCompatible,
+    /// Compute BLAKE3 only and encode the fixed-width legacy slot as zeroes.
+    Blake3Only,
+}
+
 impl DaemonProcess {
     /// Build a daemon identity for the current process.
     ///
@@ -78,9 +93,30 @@ impl DaemonProcess {
         ipc_endpoint: Endpoint,
         idle_timeout_secs: Option<u32>,
     ) -> Result<Self, IdentityError> {
+        Self::current_process_with_hash_policy(
+            ipc_endpoint,
+            idle_timeout_secs,
+            DaemonIdentityHashPolicy::LegacyCompatible,
+        )
+    }
+
+    /// Build a current-process identity with an explicit legacy-digest policy.
+    ///
+    /// The default [`Self::current_process`] remains legacy compatible. This
+    /// variant exists for a direct daemon whose stable contract fixes the
+    /// historical SHA-256 probe field to zero and must avoid the extra file
+    /// read that computing that digest would require.
+    pub fn current_process_with_hash_policy(
+        ipc_endpoint: Endpoint,
+        idle_timeout_secs: Option<u32>,
+        hash_policy: DaemonIdentityHashPolicy,
+    ) -> Result<Self, IdentityError> {
         let exe_path = std::env::current_exe().map_err(IdentityError::CurrentExe)?;
         let exe_hash = executable_hash_file(&exe_path)?;
-        let legacy_exe_sha256 = sha256_file(&exe_path)?;
+        let legacy_exe_sha256 = match hash_policy {
+            DaemonIdentityHashPolicy::LegacyCompatible => sha256_file(&exe_path)?,
+            DaemonIdentityHashPolicy::Blake3Only => [0; 32],
+        };
         Ok(Self {
             pid: std::process::id(),
             exe_path,
@@ -371,6 +407,54 @@ mod broker_dance_identity_tests {
                 .to_vec(),
             "the legacy wire field remains verifiable by a stable broker"
         );
+    }
+
+    #[test]
+    fn blake3_only_identity_skips_the_legacy_sha256_pass_and_keeps_tag_three_zeroed() {
+        let identity = DaemonProcess::current_process_with_hash_policy(
+            endpoint("blake3-only.sock"),
+            None,
+            DaemonIdentityHashPolicy::Blake3Only,
+        )
+        .expect("current daemon identity");
+        let mut encoded = Vec::new();
+        identity
+            .encode_probe_identity(&mut encoded)
+            .expect("encode compatibility identity");
+        let legacy = LegacyDaemonProcess::decode(encoded.as_slice())
+            .expect("pre-blake3 broker decodes current identity");
+
+        assert_eq!(identity.legacy_exe_sha256, [0; 32]);
+        assert_eq!(legacy.exe_sha256, [0; 32]);
+        assert_eq!(
+            identity.exe_hash,
+            executable_hash_file(&identity.exe_path).expect("blake3 executable")
+        );
+    }
+
+    #[test]
+    fn blake3_only_identity_sidecar_records_a_zero_legacy_digest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("identity.json");
+        let identity = DaemonProcess::current_process_with_hash_policy(
+            endpoint("blake3-only-sidecar.sock"),
+            None,
+            DaemonIdentityHashPolicy::Blake3Only,
+        )
+        .expect("current daemon identity");
+
+        crate::broker::backend_sdk::write_daemon_identity_file(&path, &identity)
+            .expect("write sidecar");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read sidecar"))
+                .expect("parse sidecar");
+
+        let legacy = json
+            .get("legacy_exe_sha256")
+            .and_then(serde_json::Value::as_array)
+            .expect("legacy digest array");
+        assert_eq!(legacy.len(), 32);
+        assert!(legacy.iter().all(|byte| byte == &serde_json::json!(0)));
     }
 
     fn endpoint(path: &str) -> Endpoint {

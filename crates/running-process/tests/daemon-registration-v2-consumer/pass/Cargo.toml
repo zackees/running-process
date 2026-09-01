@@ -1,0 +1,10 @@
+[package]
+name = "running-process-daemon-registration-v2-pass"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+running-process = { path = "../../..", default-features = false, features = ["daemon-registration-v2"] }

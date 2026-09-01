@@ -90,6 +90,45 @@ default = ["client", "pty", "conpty-sidecar", "daemon-trampoline"]
 # Stable consumer spelling for kernal-api.  This is deliberately semantic:
 # consumers select the native async substrate without naming its private seams.
 kernel-substrate = ["async-process"]
+# Frozen v1 Frame envelope codec and payload-protocol registration primitives.
+# This is intentionally transport- and identity-free: consumers retain their
+# own endpoint, payload schema, and runtime while preserving the broker's
+# exact `[1][u32 LE][prost Frame]` bytes.
+frame-v1-codec = ["dep:prost", "dep:running-process-protocol"]
+# Frozen v1 manifest and service-definition registration substrate.  This
+# persists the existing protobuf schema and owner-private files without
+# selecting an endpoint, broker client, daemon runtime, or identity probe.
+daemon-registration = [
+    "dep:prost",
+    "dep:running-process-protocol",
+    "dep:sha2",
+    "running-process-platform-internal/fs",
+    "running-process-platform-internal/private-dir",
+]
+# Frozen v2 service-definition writer substrate. This intentionally remains
+# separate from v1 registration: v2 service definitions neither seal a
+# manifest nor need SHA-256. It preserves the existing service-definition
+# layout and owner-private directory policy without selecting broker IPC,
+# negotiation, identity, frames, or a runtime.
+daemon-registration-v2 = [
+    "dep:prost",
+    "dep:running-process-protocol",
+    "running-process-platform-internal/fs",
+    "running-process-platform-internal/private-dir",
+]
+# Direct backend identity/probe substrate for a daemon that keeps its existing
+# endpoint and payload protocol.  This deliberately owns only the frozen v1
+# probe/frame/sidecar mechanics: no broker client, daemon runtime, CLI, PTY,
+# SQLite, or async runtime is pulled in.
+backend-identity = [
+    "frame-v1-codec",
+    "running-process-platform-internal/ipc",
+    "dep:blake3",
+    "dep:sha2",
+    "dep:getrandom",
+    "dep:serde",
+    "dep:serde_json",
+]
 # The actor-backed substrate needs semantic tree termination today.  It uses
 # the same platform implementation as the synchronous facade; it does not
 # expose Tokio types or create a second engine.
@@ -97,16 +136,16 @@ async-process = ["dep:tokio", "process-inspection", "running-process-platform-in
 core = []
 telemetry = []
 pty = ["terminal-graphics", "process-inspection", "running-process-platform-internal/pty"]
-terminal-graphics = ["dep:serde"]
+terminal-graphics = ["dep:serde", "running-process-platform-internal/terminal-graphics"]
 daemon-trampoline = ["dep:serde", "dep:serde_json"]
 process-inspection = ["dep:sysinfo", "running-process-platform-internal/process-inspection"]
 client = [
-    "dep:prost", "dep:prost-types", "dep:interprocess", "dep:dirs",
-    "dep:running-process-protocol",
-    "running-process-platform-internal/ipc",
+    "backend-identity",
+    "daemon-registration",
+    "daemon-registration-v2",
+    "dep:prost-types", "dep:interprocess", "dep:dirs",
     "running-process-platform-internal/fs",
-    "dep:anyhow", "dep:clap", "dep:blake3", "dep:sha2", "dep:getrandom",
-    "dep:serde", "dep:serde_json", "terminal-graphics", "process-inspection",
+    "dep:anyhow", "dep:clap", "terminal-graphics", "process-inspection",
     # Phase 5 of #222 (#428): the `runpm` CLI parses `runpm.toml` batch
     # config files (`[[app]]` entries). The TOML parsing helpers live
     # in `src/runpm_config.rs` and are exercised by both the binary
@@ -253,7 +292,7 @@ test-watchdog = { path = "../test-watchdog" }
 # `BrokeredBackend` trait (#497) — every documented misuse pattern
 # gets its own compile-fail case under `tests/ui/`.
 trybuild = "1"
-tokio = { version = "1", default-features = false, features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
+tokio = { version = "1", default-features = false, features = ["macros", "process", "rt", "rt-multi-thread", "test-util", "time"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The public X11 round-trip test creates its own window and PNG fixture.

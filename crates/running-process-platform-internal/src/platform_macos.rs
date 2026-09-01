@@ -81,7 +81,7 @@ pub use executable::{
 #[cfg(feature = "ipc")]
 #[path = "platform_macos/ipc.rs"]
 pub(crate) mod ipc;
-#[cfg(feature = "ipc")]
+#[cfg(feature = "private-dir")]
 #[path = "platform_macos/ipc_private_dir.rs"]
 mod ipc_private_dir;
 #[cfg(feature = "ipc")]
@@ -110,10 +110,10 @@ pub fn legacy_duplicate_handle(
         None,
     ))
 }
-#[cfg(feature = "ipc")]
+#[cfg(feature = "private-dir")]
 pub use ipc_private_dir::{
-    ensure_owner_private_directory as ipc_ensure_owner_private_directory,
-    owner_private_directory as ipc_owner_private_directory,
+    ensure_owner_private_directory as private_dir_ensure_owner_private_directory,
+    owner_private_directory as private_dir_owner_private_directory,
 };
 #[cfg(feature = "ipc")]
 pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::Result<String> {
@@ -136,6 +136,7 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::
 }
 
 /// macOS `sun_path` is 104 bytes including the NUL terminator.
+#[cfg(feature = "ipc")]
 const MACOS_SUN_PATH_MAX: usize = 104;
 
 #[cfg(feature = "ipc")]
@@ -236,9 +237,14 @@ mod session_relay;
 #[cfg(feature = "session-relay")]
 pub use session_relay::relay_local_socket_session;
 
+#[cfg(feature = "pty")]
 #[path = "platform_macos/terminal.rs"]
 pub mod terminal;
-pub use terminal::active_graphics_probe;
+#[cfg(feature = "terminal-graphics")]
+#[path = "platform_macos/terminal_graphics.rs"]
+mod terminal_graphics;
+#[cfg(feature = "terminal-graphics")]
+pub use terminal_graphics::active_graphics_probe;
 pub use crate::platform::terminal_input;
 
 #[path = "platform_macos/window_icon.rs"]
@@ -695,7 +701,7 @@ pub fn configure_compat_tokio_command(
     _show_console: bool,
     kill_when_owner_dies: bool,
 ) -> io::Result<()> {
-    configure_command(command, false, kill_when_owner_dies)
+    configure_command(command, false, kill_when_owner_dies, None)
 }
 
 /// Nothing to do on this host: the kqueue supervisor is installed in `pre_exec`, before the child
@@ -713,12 +719,14 @@ pub(crate) fn configure_command(
     command: &mut Command,
     create_process_group: bool,
     kill_when_owner_dies: bool,
+    nice: Option<i32>,
 ) -> io::Result<()> {
     let owner_pid = unsafe { libc::getpid() };
     configure_command_for_owner(
         command,
         create_process_group,
         kill_when_owner_dies,
+        nice,
         owner_pid,
     )
 }
@@ -728,16 +736,27 @@ fn configure_command_for_owner(
     command: &mut Command,
     create_process_group: bool,
     kill_when_owner_dies: bool,
+    nice: Option<i32>,
     owner_pid: libc::pid_t,
 ) -> io::Result<()> {
     if create_process_group {
         command.process_group(0);
     }
-    if kill_when_owner_dies {
+    if kill_when_owner_dies || nice.is_some() {
         // SAFETY: the closure and supervisor use only libc operations that do
         // not acquire process-global Rust state after Tokio forks the child.
         unsafe {
-            command.pre_exec(move || install_owner_death_supervisor(owner_pid));
+            command.pre_exec(move || {
+                if let Some(nice) = nice {
+                    if libc::setpriority(libc::PRIO_PROCESS, 0, nice) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+                if kill_when_owner_dies {
+                    install_owner_death_supervisor(owner_pid)?;
+                }
+                Ok(())
+            });
         }
     }
     Ok(())
@@ -749,21 +768,41 @@ pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) -> io::Re
 }
 
 #[cfg(feature = "async-process")]
-pub(crate) fn signal_process(pid: u32) -> io::Result<()> {
-    unix_kill(pid as i32, libc::SIGKILL)
+pub(crate) struct AsyncChildIdentity;
+
+#[cfg(feature = "async-process")]
+pub(crate) fn async_child_identity(_child: &Child) -> Option<AsyncChildIdentity> {
+    // `proc_pidinfo` can verify a start key but cannot make a following
+    // numeric `kill(pid, ...)` race-free. There is no macOS pidfd analogue in
+    // this Tokio path, so retain the actor-owned lifecycle handle for direct
+    // control and report this out-of-band capability unavailable.
+    None
 }
 
 #[cfg(feature = "async-process")]
-pub(crate) fn signal_process_group(pid: u32) -> io::Result<()> {
-    unix_kill(-(pid as i32), libc::SIGTERM)
+pub(crate) fn signal_async_child(_identity: &AsyncChildIdentity) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "macOS has no race-free out-of-band async child signal handle",
+    ))
 }
 
 #[cfg(feature = "async-process")]
-fn unix_kill(target: i32, signal: i32) -> io::Result<()> {
-    let result = unsafe { libc::kill(target, signal) };
-    if result == 0 { return Ok(()); }
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(error) }
+pub(crate) fn signal_async_child_group(_identity: &AsyncChildIdentity) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "macOS has no race-free async process-group signal handle",
+    ))
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn async_child_cpu_time(
+    _identity: &AsyncChildIdentity,
+) -> io::Result<Option<std::time::Duration>> {
+    // `proc_pid_rusage` is not uniformly available to sandboxed macOS
+    // processes. Preserve the semantic contract without falling back to a
+    // PID-only sample.
+    Ok(None)
 }
 
 #[cfg(feature = "async-process")]

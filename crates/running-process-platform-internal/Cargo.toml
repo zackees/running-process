@@ -19,12 +19,19 @@ workspace = true
 # facade below, must opt out explicitly with `default-features = false`.
 default = ["async-process"]
 fs = ["dep:dirs"]
-ipc = ["dep:interprocess", "dep:dirs", "dep:blake3"]
+# Owner-private directory creation and inspection are shared by persisted
+# registration records and local IPC roots, but require neither a transport
+# nor endpoint-name hashing.
+private-dir = []
+ipc = ["private-dir", "dep:interprocess", "dep:dirs", "dep:blake3"]
 async-process = ["dep:tokio", "process-inspection"]
 ipc-async = ["ipc", "async-process", "interprocess/tokio", "tokio/net"]
 session-relay = ["ipc-async"]
 process-inspection = ["dep:sysinfo"]
 pty = ["dep:portable-pty", "process-inspection"]
+# Terminal capability probing is independent of pseudo-terminal allocation and
+# remains available to the root terminal-graphics feature without `pty`.
+terminal-graphics = []
 conpty-sidecar = [
     "pty",
     "dep:dirs",

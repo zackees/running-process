@@ -8,7 +8,7 @@ use tokio::io::AsyncReadExt;
 #[tokio::test]
 async fn owner_death_registration_failure_aborts_spawn() {
     let mut command = tokio::process::Command::new("/usr/bin/true");
-    super::configure_command_for_owner(&mut command, false, true, libc::pid_t::MAX)
+    super::configure_command_for_owner(&mut command, false, true, None, libc::pid_t::MAX)
         .expect("configure owner-death containment");
 
     match command.spawn() {
@@ -34,6 +34,7 @@ async fn owner_death_supervisor_does_not_retain_child_stdout() {
         &mut command,
         false,
         true,
+        None,
         unsafe { libc::getpid() },
     )
     .expect("configure owner-death containment");
@@ -89,6 +90,7 @@ async fn owner_death_supervisor_closes_multiple_fd_batches() {
         &mut command,
         false,
         true,
+        None,
         unsafe { libc::getpid() },
     )
     .expect("configure owner-death containment");

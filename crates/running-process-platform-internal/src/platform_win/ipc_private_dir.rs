@@ -3,7 +3,7 @@ use std::io;
 use std::os::windows::ffi::OsStrExt as _;
 use std::path::Path;
 
-use crate::platform::ipc::OwnerPrivateDirectoryOutcome;
+use crate::platform::private_dir::OwnerPrivateDirectoryOutcome;
 
 /// Protected, inheritable owner-and-SYSTEM DACL for private IPC directories.
 ///

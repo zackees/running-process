@@ -223,6 +223,25 @@ async fn terminate_group_soft_signals_a_group_the_child_owns() {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn legacy_async_process_preserves_its_raw_child_group_termination_contract() {
+    let mut process = long_running().create_process_group(true);
+    process.start().await.expect("start legacy async process");
+    assert!(
+        process
+            .terminate_group_soft()
+            .await
+            .expect("legacy macOS group termination"),
+        "the legacy AsyncProcess API keeps its historical raw child-group request"
+    );
+    let status = tokio::time::timeout(Duration::from_secs(10), process.wait())
+        .await
+        .expect("legacy group termination completes")
+        .expect("wait");
+    assert!(status.success() || status.code().is_none());
+}
+
 #[tokio::test]
 async fn terminate_group_soft_after_exit_reports_no_group_signalled() {
     let mut process = exit_with(0).create_process_group(true);
