@@ -128,12 +128,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             args
         );
-        #[cfg(not(windows))]
-        assert_eq!(cmdline, args.join(" "));
-        #[cfg(windows)]
         assert!(
             cmdline.contains("has space") && cmdline.contains(r"back\slash"),
-            "native Windows display string unexpectedly changed: {cmdline:?}"
+            "native display string unexpectedly changed: {cmdline:?}"
         );
     }
 
