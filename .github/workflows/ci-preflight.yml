@@ -100,6 +100,11 @@ jobs:
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
         with:
+          # Keep cache path discovery scoped to this checkout's workspace
+          # target root.  rust-cache's automatic discovery can otherwise
+          # register a nested `target/tests/target` path and fail its post-job
+          # cleanup when that optional directory was never created (#1173).
+          workspaces: ". -> target"
           # Key kept from the fan-out era so existing warm caches carry
           # over. OS + Cargo.lock hash are included via Swatinem defaults.
           key: ${{ inputs.label }}-shared
