@@ -424,7 +424,7 @@ mod file_handles;
 pub use file_handles::read_process_file_handles;
 #[path = "platform_macos_cmdline.rs"]
 mod cmdline;
-pub use cmdline::read_process_cmdline;
+pub use cmdline::{read_process_argv, read_process_cmdline};
 
 #[cfg(feature = "process-inspection")]
 #[path = "platform/process_tree.rs"]

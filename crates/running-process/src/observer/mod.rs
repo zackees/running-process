@@ -47,7 +47,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod cmdline;
-pub use cmdline::read_process_cmdline;
+pub use cmdline::{read_process_argv, read_process_cmdline};
 
 mod file_handles;
 pub use file_handles::read_process_file_handles;
