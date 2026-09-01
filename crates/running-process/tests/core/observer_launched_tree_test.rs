@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use running_process::observer::TraceScope;
 use running_process::{
     CommandSpec, EventCategory, NativeProcess, ObserverCapabilities, ObserverConfig,
-    ObserverEventKind, ProcessConfig, StderrMode, StdinMode,
+    ObserverEventKind, ProcessConfig, ReadStatus, StderrMode, StdinMode,
 };
 
 /// Descendant discovery is gated on the Process category, not Lifecycle.
@@ -52,6 +52,242 @@ fn tree_observer() -> ObserverConfig {
 /// the three backends poll; the test asserts what happens inside the window,
 /// not how quickly.
 const OBSERVE_WINDOW: Duration = Duration::from_secs(15);
+const FIXTURE_STARTUP_WINDOW: Duration = Duration::from_secs(10);
+const FIXTURE_TEARDOWN_WINDOW: Duration = Duration::from_secs(10);
+
+/// Owns one `spawner` fixture and every PID it reports.
+///
+/// The fixture's children sleep forever, so this is deliberately created
+/// immediately after constructing a `NativeProcess`.  That makes `Drop` a
+/// cleanup backstop for every assertion/panic path, including a malformed or
+/// incomplete fixture startup transcript.
+struct OwnedTree {
+    // `None` after explicit teardown releases Windows' kill-on-close Job
+    // Object before verifying descendant PIDs.
+    process: Option<NativeProcess>,
+    known_pids: Vec<FixturePid>,
+    expected_children: usize,
+    cleanup_verified: bool,
+}
+
+impl OwnedTree {
+    fn start(process: NativeProcess, expected_children: usize) -> Self {
+        let mut tree = Self {
+            process: Some(process),
+            known_pids: Vec::with_capacity(expected_children + 1),
+            expected_children,
+            cleanup_verified: false,
+        };
+
+        // From here onward `tree` owns the process even if startup output is
+        // missing or an assertion below panics.
+        tree.process().start().expect("spawn the tree");
+        let root_pid = tree.process().pid().expect("tree root has a pid");
+        tree.remember_pid(root_pid);
+        tree.read_fixture_startup(root_pid);
+        tree
+    }
+
+    fn root_pid(&self) -> u32 {
+        self.known_pids[0].pid
+    }
+
+    fn process(&self) -> &NativeProcess {
+        self.process
+            .as_ref()
+            .expect("fixture process unexpectedly released")
+    }
+
+    fn remember_pid(&mut self, pid: u32) {
+        assert!(
+            !self.known_pids.iter().any(|known| known.pid == pid),
+            "fixture reported duplicate PID {pid}"
+        );
+        self.known_pids.push(FixturePid::capture(pid));
+    }
+
+    fn read_fixture_startup(&mut self, root_pid: u32) {
+        let deadline = Instant::now() + FIXTURE_STARTUP_WINDOW;
+        let mut saw_spawner_pid = false;
+        let mut saw_ready = false;
+
+        while !saw_ready {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let event = match self.process().read_combined(Some(remaining)) {
+                ReadStatus::Line(event) => event,
+                ReadStatus::Timeout => panic!(
+                    "timed out reading fixture startup (no READY within {FIXTURE_STARTUP_WINDOW:?})"
+                ),
+                ReadStatus::Eof => panic!("fixture output closed before READY"),
+            };
+            let line = String::from_utf8_lossy(&event.line);
+            let line = line.trim();
+            if let Some(pid) = parse_pid_line(line, "SPAWNER_PID=") {
+                assert!(!saw_spawner_pid, "fixture reported SPAWNER_PID twice");
+                assert_eq!(
+                    pid, root_pid,
+                    "fixture root PID disagrees with NativeProcess"
+                );
+                saw_spawner_pid = true;
+            } else if let Some(pid) = parse_pid_line(line, "CHILD_PID=") {
+                self.remember_pid(pid);
+            } else if line == "READY" {
+                saw_ready = true;
+            }
+        }
+
+        assert!(saw_spawner_pid, "fixture did not report SPAWNER_PID");
+        assert_eq!(
+            self.known_pids.len() - 1,
+            self.expected_children,
+            "fixture reported unexpected CHILD_PID count"
+        );
+    }
+
+    /// Terminate the contained tree, reap the direct child, then prove every
+    /// PID emitted by the fixture is no longer running.
+    fn shutdown_and_verify(&mut self) {
+        let mut errors = Vec::new();
+        if let Err(error) = self.process().kill() {
+            errors.push(format!("kill fixture tree: {error}"));
+        }
+        if let Err(error) = self.process().wait(Some(FIXTURE_TEARDOWN_WINDOW)) {
+            errors.push(format!("wait for fixture root: {error}"));
+        }
+        if let Err(error) = self.process().close() {
+            errors.push(format!("close fixture owner: {error}"));
+        }
+        // `close()` stops capture and observer state but deliberately retains
+        // the Windows Job Object. Releasing the owner here triggers that
+        // Job Object's kill-on-close containment before PID verification.
+        drop(self.process.take());
+        assert!(errors.is_empty(), "fixture teardown errors: {errors:?}");
+
+        let deadline = Instant::now() + FIXTURE_TEARDOWN_WINDOW;
+        loop {
+            let survivors: Vec<u32> = self
+                .known_pids
+                .iter()
+                .filter(|known| known.is_running())
+                .map(|known| known.pid)
+                .collect();
+            if survivors.is_empty() {
+                self.cleanup_verified = true;
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fixture PIDs still running after {FIXTURE_TEARDOWN_WINDOW:?}: {survivors:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn best_effort_cleanup(&mut self) {
+        if let Some(process) = self.process.take() {
+            let _ = process.kill();
+            let _ = process.wait(Some(FIXTURE_TEARDOWN_WINDOW));
+            let _ = process.close();
+            drop(process);
+        }
+        let deadline = Instant::now() + FIXTURE_TEARDOWN_WINDOW;
+        while Instant::now() < deadline && self.known_pids.iter().any(|known| known.is_running()) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for OwnedTree {
+    fn drop(&mut self) {
+        if !self.cleanup_verified {
+            self.best_effort_cleanup();
+        }
+    }
+}
+
+fn parse_pid_line(line: &str, prefix: &str) -> Option<u32> {
+    line.strip_prefix(prefix)
+        .and_then(|pid| pid.trim().parse::<u32>().ok())
+}
+
+#[derive(Clone, Copy)]
+struct FixturePid {
+    pid: u32,
+    #[cfg(target_os = "linux")]
+    start_time: Option<u64>,
+}
+
+impl FixturePid {
+    fn capture(pid: u32) -> Self {
+        Self {
+            pid,
+            #[cfg(target_os = "linux")]
+            start_time: linux_process_start_time(pid),
+        }
+    }
+
+    fn is_running(self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            // A zombie has terminated even if its reaper has not collected the
+            // exit status yet. The start-time match also avoids mistaking a
+            // reused PID for one of this fixture's descendants.
+            match linux_process_state_and_start_time(self.pid) {
+                Some((state, start_time)) => state != 'Z' && Some(start_time) == self.start_time,
+                None => false,
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            // Windows has no inexpensive creation-time identity helper in
+            // this local fixture. A PID reuse can only make this bounded wait
+            // fail conservatively; it cannot report a surviving fixture PID
+            // as clean.
+            windows_pid_is_running(self.pid)
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        unsafe {
+            // As above, a reused PID is a conservative false failure. Linux
+            // has /proc start-time identity; macOS relies on its short,
+            // bounded teardown window and CI coverage.
+            libc::kill(self.pid as i32, 0) == 0
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_pid_is_running(pid: u32) -> bool {
+    unsafe {
+        let handle = winapi::um::processthreadsapi::OpenProcess(
+            winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        );
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0;
+        let queried = winapi::um::processthreadsapi::GetExitCodeProcess(handle, &mut exit_code);
+        winapi::um::handleapi::CloseHandle(handle);
+        queried != 0 && exit_code == winapi::um::minwinbase::STILL_ACTIVE
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_start_time(pid: u32) -> Option<u64> {
+    linux_process_state_and_start_time(pid).map(|(_, start_time)| start_time)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_state_and_start_time(pid: u32) -> Option<(char, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let mut fields = stat.split_whitespace();
+    let state = fields.nth(2)?.chars().next()?;
+    let start_time = fields.nth(18)?.parse().ok()?;
+    Some((state, start_time))
+}
 
 fn testbin_path(name: &str) -> PathBuf {
     let exe = std::env::current_exe().expect("current exe");
@@ -85,7 +321,10 @@ fn spawn_tree_config(count: usize) -> ProcessConfig {
         capture: true,
         stderr_mode: StderrMode::Stdout,
         creationflags: None,
-        create_process_group: false,
+        // On Unix `NativeProcess::kill` reaches the whole fixture only when
+        // the root owns an isolated process group. Windows keeps its existing
+        // per-spawn kill-on-close Job Object containment path.
+        create_process_group: cfg!(unix),
         stdin_mode: StdinMode::Inherit,
         nice: None,
         address_space_limit_bytes: None,
@@ -95,14 +334,12 @@ fn spawn_tree_config(count: usize) -> ProcessConfig {
 #[test]
 fn a_spawned_tree_reports_its_direct_child_starting_and_exiting() {
     let (process, subscriber) = NativeProcess::with_observer(spawn_tree_config(2), tree_observer());
-    process.start().expect("spawn the tree");
-    let pid = process.pid().expect("tree root has a pid");
+    let mut tree = OwnedTree::start(process, 2);
+    let pid = tree.root_pid();
 
     // Give the grandchildren a moment to exist, then tear the tree down.
     std::thread::sleep(Duration::from_millis(500));
-    process.kill().expect("kill the tree");
-    let _ = process.wait(Some(OBSERVE_WINDOW));
-    process.close().ok();
+    tree.shutdown_and_verify();
 
     let events = subscriber.drain();
     let started = events
@@ -133,7 +370,7 @@ fn a_spawned_tree_reports_its_direct_child_starting_and_exiting() {
 #[test]
 fn a_tree_with_live_grandchildren_does_not_report_zero_descendants() {
     let (process, subscriber) = NativeProcess::with_observer(spawn_tree_config(3), tree_observer());
-    process.start().expect("spawn the tree");
+    let mut tree = OwnedTree::start(process, 3);
 
     // Poll for a descendant while the grandchildren are alive, rather than
     // sleeping a fixed time and hoping the scan already ran.
@@ -151,9 +388,7 @@ fn a_tree_with_live_grandchildren_does_not_report_zero_descendants() {
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    process.kill().expect("kill the tree");
-    let _ = process.wait(Some(OBSERVE_WINDOW));
-    process.close().ok();
+    tree.shutdown_and_verify();
 
     // Deliberately "at least one" rather than "exactly three": the polling
     // backends may not have caught every grandchild inside the window, and
@@ -206,13 +441,11 @@ fn an_observed_configured_command_spawns_verbatim_and_reports_lifecycle() {
 
     let (process, subscriber) =
         NativeProcess::with_observer_and_command(command, config, tree_observer());
-    process.start().expect("spawn the configured command");
-    let pid = process.pid().expect("configured command has a pid");
+    let mut tree = OwnedTree::start(process, 1);
+    let pid = tree.root_pid();
 
     std::thread::sleep(Duration::from_millis(500));
-    process.kill().expect("kill the tree");
-    let _ = process.wait(Some(OBSERVE_WINDOW));
-    process.close().ok();
+    tree.shutdown_and_verify();
 
     let events = subscriber.drain();
     let started = events
@@ -247,9 +480,8 @@ fn an_adopted_pid_reports_descendants_with_parents() {
     }
     // Spawn WITHOUT an observer: the tree owner here manages its own
     // child, which is exactly the caller observe_launched_tree exists for.
-    let process = NativeProcess::new(spawn_tree_config(3));
-    process.start().expect("spawn the tree");
-    let root_pid = process.pid().expect("tree root has a pid");
+    let mut tree = OwnedTree::start(NativeProcess::new(spawn_tree_config(3)), 3);
+    let root_pid = tree.root_pid();
 
     let subscriber = running_process::observer::observe_launched_tree(
         root_pid,
@@ -270,9 +502,7 @@ fn an_adopted_pid_reports_descendants_with_parents() {
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    process.kill().expect("kill the tree");
-    let _ = process.wait(Some(OBSERVE_WINDOW));
-    process.close().ok();
+    tree.shutdown_and_verify();
 
     let event = descendant_with_parent
         .expect("no DescendantStarted observed on an adopted pid with three grandchildren alive");
