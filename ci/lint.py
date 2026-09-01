@@ -63,6 +63,15 @@ def main() -> int:
     python = repo_python()
     if run(supervised_command(python, str(python), "-m", "ci.version_check")) != 0:
         return 1
+    if (
+        run(
+            supervised_command(
+                python, str(python), "-m", "ci.windows_extension_abi_guard"
+            )
+        )
+        != 0
+    ):
+        return 1
     if run(supervised_command(python, str(python), "-m", "ci.spawn_path_guard")) != 0:
         return 1
     if run(
