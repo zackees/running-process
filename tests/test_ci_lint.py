@@ -35,6 +35,20 @@ def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> Non
             "-m",
             "ci.version_check",
         ],
+        # #1189 added an ABI guard here and did not extend this list, so this
+        # test has been red since. Restored as `ci.wheel_abi_guard`: it keeps
+        # every published wheel ABI3 so one wheel per platform covers 3.10+.
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            python,
+            "-m",
+            "ci.wheel_abi_guard",
+        ],
         [
             python,
             "-m",
