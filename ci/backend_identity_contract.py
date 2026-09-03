@@ -119,7 +119,9 @@ def graph_failures(tree: str) -> list[str]:
 def main() -> int:
     failures = manifest_failures(load_manifest())
     if not failures:
-        result = subprocess.run(tree_command(), cwd=ROOT, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            tree_command(), cwd=ROOT, text=True, capture_output=True, check=False
+        )
         if result.returncode:
             failures.append(result.stderr or result.stdout)
         else:

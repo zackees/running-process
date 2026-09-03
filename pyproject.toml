@@ -4,7 +4,7 @@ build-backend = "soldr"
 
 [project]
 name = "running_process"
-version = "4.10.10"
+version = "4.10.11"
 description = "A Rust-backed subprocess wrapper with split stdout/stderr streaming"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -41,7 +41,7 @@ dev = [
 manifest-path = "crates/running-process-py/Cargo.toml"
 module-name = "running_process._native"
 python-source = "src"
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "pyo3/abi3-py310"]
 include = [{ path = "running_process/assets/daemon-trampoline*", format = "wheel" }]
 
 [tool.uv]

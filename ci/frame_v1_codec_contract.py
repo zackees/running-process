@@ -47,9 +47,7 @@ FORBIDDEN_PACKAGES = {
     "tracing",
     "tracing-subscriber",
 }
-CONSUMER_ROOT = (
-    ROOT / "crates" / "running-process" / "tests" / "frame-v1-codec-consumer"
-)
+CONSUMER_ROOT = ROOT / "crates" / "running-process" / "tests" / "frame-v1-codec-consumer"
 CONSUMER_TARGET_DIR = ROOT / "target" / "frame-v1-codec-consumer-contract"
 
 
@@ -112,7 +110,9 @@ def manifest_failures(manifest: Mapping[str, object]) -> list[str]:
     if set(selected) != EXPECTED_FEATURE:
         failures.append(f"{FEATURE} must select exactly prost and generated protocol types")
     if FORBIDDEN_FEATURES & set(selected):
-        failures.append(f"{FEATURE} must not compose identity, client, daemon, PTY, or runtime features")
+        failures.append(
+            f"{FEATURE} must not compose identity, client, daemon, PTY, or runtime features"
+        )
 
     backend_identity = features.get("backend-identity")
     if not isinstance(backend_identity, list) or FEATURE not in backend_identity:
@@ -134,7 +134,9 @@ def graph_failures(tree: str) -> list[str]:
     ]
 
 
-def run_external_consumer(name: str, *, should_succeed: bool, expected: str | None = None) -> str | None:
+def run_external_consumer(
+    name: str, *, should_succeed: bool, expected: str | None = None
+) -> str | None:
     environment = os.environ.copy()
     # Keep the three sequential consumer checks in one stable ignored target.
     # Soldr's compile cache can race a short-lived temporary target while its
@@ -160,7 +162,9 @@ def run_external_consumer(name: str, *, should_succeed: bool, expected: str | No
 def main() -> int:
     failures = manifest_failures(load_manifest())
     if not failures:
-        result = subprocess.run(tree_command(), cwd=ROOT, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            tree_command(), cwd=ROOT, text=True, capture_output=True, check=False
+        )
         if result.returncode:
             failures.append(result.stderr or result.stdout)
         else:
@@ -177,7 +181,9 @@ def main() -> int:
             ("fail-first-party", False, "collides with a first-party"),
             ("fail-reserved", False, "must lie in the registered-consumer range"),
         ):
-            if failure := run_external_consumer(name, should_succeed=should_succeed, expected=expected):
+            if failure := run_external_consumer(
+                name, should_succeed=should_succeed, expected=expected
+            ):
                 failures.append(failure)
     if failures:
         print("frame-v1 codec contract failed:", *failures, sep="\n  - ", file=sys.stderr)

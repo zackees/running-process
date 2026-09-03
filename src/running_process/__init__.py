@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-__version__ = "4.10.10"
+__version__ = "4.10.11"
 
+# Imported first: turns a free-threaded interpreter loading the GIL-runtime
+# extension into an ImportError instead of a segfault (#1142).
+import running_process._abi_guard  # noqa: F401
 from running_process._native import (
     ContainedProcessGroup,
     NativeTerminalInput,

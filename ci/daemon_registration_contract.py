@@ -134,7 +134,9 @@ def manifest_failures(manifest: Mapping[str, object]) -> list[str]:
     if set(selected) != EXPECTED_FEATURE:
         failures.append(f"{FEATURE} must select only v1 protobuf, SHA-256, fs, and private-dir")
     if FORBIDDEN_FEATURES & set(selected):
-        failures.append(f"{FEATURE} must not compose IPC, identity, client, daemon, PTY, or runtime features")
+        failures.append(
+            f"{FEATURE} must not compose IPC, identity, client, daemon, PTY, or runtime features"
+        )
 
     client = features.get("client")
     if not isinstance(client, list) or FEATURE not in client:
@@ -151,7 +153,9 @@ def platform_manifest_failures(manifest: Mapping[str, object]) -> list[str]:
         return ["platform private-dir must not select transport or hashing dependencies"]
     ipc = features.get("ipc")
     if not isinstance(ipc, list) or "private-dir" not in ipc:
-        return ["platform ipc must compose private-dir to retain its established permission behavior"]
+        return [
+            "platform ipc must compose private-dir to retain its established permission behavior"
+        ]
     return []
 
 
@@ -175,23 +179,15 @@ def public_source_failures() -> list[str]:
         if forbidden in source:
             failures.append(f"daemon-registration public source leaks {forbidden!r}")
     service_definition = (
-        ROOT
-        / "crates"
-        / "running-process"
-        / "src"
-        / "broker"
-        / "server"
-        / "service_def_loader.rs"
+        ROOT / "crates" / "running-process" / "src" / "broker" / "server" / "service_def_loader.rs"
     ).read_text(encoding="utf-8")
     if "fs::write(&path, definition.encode_to_vec())?;" not in service_definition:
-        failures.append("v1 service-definition write must retain its established non-atomic fs::write")
+        failures.append(
+            "v1 service-definition write must retain its established non-atomic fs::write"
+        )
 
     platform_index = (
-        ROOT
-        / "crates"
-        / "running-process-platform-internal"
-        / "src"
-        / "platform.rs"
+        ROOT / "crates" / "running-process-platform-internal" / "src" / "platform.rs"
     ).read_text(encoding="utf-8")
     for required in (
         '#[cfg(feature = "ipc")]\npub mod ipc;',
@@ -224,17 +220,23 @@ def main() -> int:
     failures.extend(platform_manifest_failures(load_manifest(PLATFORM_MANIFEST)))
     failures.extend(public_source_failures())
     if not failures:
-        result = subprocess.run(tree_command(), cwd=ROOT, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            tree_command(), cwd=ROOT, text=True, capture_output=True, check=False
+        )
         if result.returncode:
             failures.append(result.stderr or result.stdout)
         else:
             failures.extend(graph_failures(result.stdout))
     if not failures:
-        result = subprocess.run(compile_command(), cwd=ROOT, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            compile_command(), cwd=ROOT, text=True, capture_output=True, check=False
+        )
         if result.returncode:
             failures.append(result.stderr or result.stdout)
     if not failures:
-        result = subprocess.run(clippy_command(), cwd=ROOT, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            clippy_command(), cwd=ROOT, text=True, capture_output=True, check=False
+        )
         if result.returncode:
             failures.append(result.stderr or result.stdout)
     if not failures:

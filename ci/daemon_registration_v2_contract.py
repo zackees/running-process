@@ -108,7 +108,9 @@ def tree_command() -> tuple[str, ...]:
 
 
 def external_consumer_command(name: str) -> tuple[str, ...]:
-    return tuple(cargo_command("check", "--manifest-path", str(CONSUMER_ROOT / name / "Cargo.toml")))
+    return tuple(
+        cargo_command("check", "--manifest-path", str(CONSUMER_ROOT / name / "Cargo.toml"))
+    )
 
 
 def load_manifest() -> Mapping[str, object]:
@@ -126,13 +128,20 @@ def manifest_failures(manifest: Mapping[str, object]) -> list[str]:
 
     failures: list[str] = []
     if set(selected) != EXPECTED_FEATURE:
-        failures.append(f"{FEATURE} must select only prost, generated protocol, fs, and private-dir")
+        failures.append(
+            f"{FEATURE} must select only prost, generated protocol, fs, and private-dir"
+        )
     if FORBIDDEN_FEATURES & set(selected):
-        failures.append(f"{FEATURE} must not compose v1, IPC, identity, client, daemon, PTY, or runtime features")
+        failures.append(
+            f"{FEATURE} must not compose v1, IPC, identity, client, daemon, "
+            "PTY, or runtime features"
+        )
 
     client = features.get("client")
     if not isinstance(client, list) or FEATURE not in client:
-        failures.append("client must compose daemon-registration-v2 for legacy source compatibility")
+        failures.append(
+            "client must compose daemon-registration-v2 for legacy source compatibility"
+        )
     return failures
 
 
@@ -156,13 +165,17 @@ def source_failures() -> list[str]:
         if forbidden in source:
             failures.append(f"daemon-registration-v2 public source leaks {forbidden!r}")
     if "std::fs::write(&path, definition.encode_to_vec())?;" not in source:
-        failures.append("v2 service-definition write must retain its established non-atomic fs::write")
+        failures.append(
+            "v2 service-definition write must retain its established non-atomic fs::write"
+        )
 
-    compat = (ROOT / "crates" / "running-process" / "src" / "broker" / "protocol_v2" / "mod.rs").read_text(
-        encoding="utf-8"
-    )
+    compat = (
+        ROOT / "crates" / "running-process" / "src" / "broker" / "protocol_v2" / "mod.rs"
+    ).read_text(encoding="utf-8")
     if "pub use crate::daemon_registration_v2::{" not in compat:
-        failures.append("legacy protocol_v2 writer path must re-export the canonical v2 implementation")
+        failures.append(
+            "legacy protocol_v2 writer path must re-export the canonical v2 implementation"
+        )
     if (ROOT / "crates" / "running-process" / "src" / "broker" / "protocol_v2" / "io.rs").exists():
         failures.append("legacy protocol_v2 must not retain a duplicate v2 writer implementation")
     return failures
@@ -180,7 +193,10 @@ def run_external_consumer(name: str, *, should_succeed: bool) -> str | None:
         env=environment,
     )
     if (result.returncode == 0) != should_succeed:
-        return result.stdout + result.stderr or f"external consumer {name!r} returned {result.returncode}"
+        return (
+            result.stdout + result.stderr
+            or f"external consumer {name!r} returned {result.returncode}"
+        )
     return None
 
 
@@ -188,17 +204,23 @@ def main() -> int:
     failures = manifest_failures(load_manifest())
     failures.extend(source_failures())
     if not failures:
-        result = subprocess.run(tree_command(), cwd=ROOT, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            tree_command(), cwd=ROOT, text=True, capture_output=True, check=False
+        )
         if result.returncode:
             failures.append(result.stderr or result.stdout)
         else:
             failures.extend(graph_failures(result.stdout))
     if not failures:
-        result = subprocess.run(compile_command(), cwd=ROOT, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            compile_command(), cwd=ROOT, text=True, capture_output=True, check=False
+        )
         if result.returncode:
             failures.append(result.stderr or result.stdout)
     if not failures:
-        result = subprocess.run(clippy_command(), cwd=ROOT, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            clippy_command(), cwd=ROOT, text=True, capture_output=True, check=False
+        )
         if result.returncode:
             failures.append(result.stderr or result.stdout)
     if not failures:
