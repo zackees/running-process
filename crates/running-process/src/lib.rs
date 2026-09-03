@@ -291,8 +291,13 @@ struct QueueState {
     stdout_history: VecDeque<Vec<u8>>,
     stderr_history: VecDeque<Vec<u8>>,
     combined_history: VecDeque<StreamEvent>,
-    stdout_raw: Vec<u8>,
-    stderr_raw: Vec<u8>,
+    /// Byte-exact stream chunks. Unlike the logical line queues these retain
+    /// delimiters, unterminated tails, and non-UTF-8 bytes; callers consume
+    /// them with `drain_stream_raw`.
+    stdout_raw: VecDeque<Vec<u8>>,
+    stderr_raw: VecDeque<Vec<u8>>,
+    stdout_raw_bytes: usize,
+    stderr_raw_bytes: usize,
     stdout_history_bytes: usize,
     stderr_history_bytes: usize,
     combined_history_bytes: usize,
@@ -1166,6 +1171,39 @@ impl NativeProcess {
         queue.drain(..).collect()
     }
 
+    /// Consume and return all byte-exact output currently captured for one
+    /// stream.
+    ///
+    /// This is independent of the logical-line queues used by
+    /// [`Self::read_stream`] and [`Self::drain_stream`]. It preserves CRLF/LF
+    /// delimiters, unterminated tails, and non-UTF-8 bytes exactly as accepted
+    /// from the pipe reader. Calling it after EOF returns an empty vector once
+    /// the stream has been drained.
+    pub fn drain_stream_raw(&self, stream: StreamKind) -> Vec<u8> {
+        if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
+            return Vec::new();
+        }
+        let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
+        match stream {
+            StreamKind::Stdout => {
+                let mut output = Vec::with_capacity(guard.stdout_raw_bytes);
+                for chunk in guard.stdout_raw.drain(..) {
+                    output.extend_from_slice(&chunk);
+                }
+                guard.stdout_raw_bytes = 0;
+                output
+            }
+            StreamKind::Stderr => {
+                let mut output = Vec::with_capacity(guard.stderr_raw_bytes);
+                for chunk in guard.stderr_raw.drain(..) {
+                    output.extend_from_slice(&chunk);
+                }
+                guard.stderr_raw_bytes = 0;
+                output
+            }
+        }
+    }
+
     /// Drain and return all queued combined output events.
     pub fn drain_combined(&self) -> Vec<StreamEvent> {
         let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
@@ -1300,12 +1338,8 @@ impl NativeProcess {
     }
 
     fn captured_stdout_raw(&self) -> Vec<u8> {
-        self.shared
-            .queues
-            .lock()
-            .expect("queue mutex poisoned")
-            .stdout_raw
-            .clone()
+        let guard = self.shared.queues.lock().expect("queue mutex poisoned");
+        guard.stdout_raw.iter().flatten().copied().collect()
     }
 
     /// Return the retained stderr history.
@@ -1327,12 +1361,8 @@ impl NativeProcess {
         if self.config.stderr_mode == StderrMode::Stdout {
             return Vec::new();
         }
-        self.shared
-            .queues
-            .lock()
-            .expect("queue mutex poisoned")
-            .stderr_raw
-            .clone()
+        let guard = self.shared.queues.lock().expect("queue mutex poisoned");
+        guard.stderr_raw.iter().flatten().copied().collect()
     }
 
     /// Return the retained combined stdout/stderr event history.
@@ -1369,6 +1399,13 @@ impl NativeProcess {
     }
 
     /// Clear retained output history for one stream and return freed bytes.
+    ///
+    /// This releases both the logical-line history and the byte-exact queue
+    /// behind [`Self::drain_stream_raw`], so it stays the single memory-release
+    /// valve for a captured stream. The returned count is the logical-line
+    /// history only, unchanged. A caller consuming byte-exact output should
+    /// drain it with [`Self::drain_stream_raw`] — which frees it too — rather
+    /// than interleaving this call.
     pub fn clear_captured_stream(&self, stream: StreamKind) -> usize {
         if stream == StreamKind::Stderr && self.config.stderr_mode == StderrMode::Stdout {
             return 0;
@@ -1379,6 +1416,7 @@ impl NativeProcess {
                 let released = guard.stdout_history_bytes;
                 guard.stdout_history.clear();
                 guard.stdout_raw.clear();
+                guard.stdout_raw_bytes = 0;
                 guard.stdout_history_bytes = 0;
                 released
             }
@@ -1386,6 +1424,7 @@ impl NativeProcess {
                 let released = guard.stderr_history_bytes;
                 guard.stderr_history.clear();
                 guard.stderr_raw.clear();
+                guard.stderr_raw_bytes = 0;
                 guard.stderr_history_bytes = 0;
                 released
             }
@@ -1663,21 +1702,30 @@ fn append_raw(shared: &Arc<SharedState>, stream: StreamKind, chunk: &[u8]) -> bo
     let accepted = match shared.capture_limit {
         Some(limit) => {
             let retained = guard
-                .stdout_raw
-                .len()
-                .saturating_add(guard.stderr_raw.len());
+                .stdout_raw_bytes
+                .saturating_add(guard.stderr_raw_bytes);
             chunk.len().min(limit.saturating_sub(retained))
         }
         None => chunk.len(),
     };
-    match stream {
-        StreamKind::Stdout => guard.stdout_raw.extend_from_slice(&chunk[..accepted]),
-        StreamKind::Stderr => guard.stderr_raw.extend_from_slice(&chunk[..accepted]),
+    if accepted != 0 {
+        let accepted_chunk = chunk[..accepted].to_vec();
+        match stream {
+            StreamKind::Stdout => {
+                guard.stdout_raw_bytes += accepted;
+                guard.stdout_raw.push_back(accepted_chunk);
+            }
+            StreamKind::Stderr => {
+                guard.stderr_raw_bytes += accepted;
+                guard.stderr_raw.push_back(accepted_chunk);
+            }
+        }
     }
     if accepted != chunk.len() {
         shared.capture_overflowed.store(true, Ordering::Release);
         false
     } else {
+        shared.condvar.notify_all();
         true
     }
 }

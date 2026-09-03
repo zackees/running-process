@@ -1,5 +1,20 @@
 use super::*;
 
+fn capture_test_config() -> ProcessConfig {
+    ProcessConfig {
+        command: CommandSpec::Argv(vec!["unused-test-command".into()]),
+        cwd: None,
+        env: None,
+        capture: true,
+        stderr_mode: StderrMode::Pipe,
+        creationflags: None,
+        create_process_group: false,
+        stdin_mode: StdinMode::Inherit,
+        nice: None,
+        address_space_limit_bytes: None,
+    }
+}
+
 // ── StreamKind tests ──
 
 #[test]
@@ -16,6 +31,47 @@ fn stream_kind_as_str_stderr() {
 fn stream_kind_equality() {
     assert_eq!(StreamKind::Stdout, StreamKind::Stdout);
     assert_ne!(StreamKind::Stdout, StreamKind::Stderr);
+}
+
+#[test]
+fn raw_capture_limit_never_queues_empty_chunks() {
+    let zero = NativeProcess::new_with_capture_limit(capture_test_config(), 0);
+    assert!(!append_raw(&zero.shared, StreamKind::Stdout, b"bytes"));
+    assert!(zero.drain_stream_raw(StreamKind::Stdout).is_empty());
+    assert!(zero.shared.capture_overflowed.load(Ordering::Acquire));
+
+    let partial = NativeProcess::new_with_capture_limit(capture_test_config(), 3);
+    assert!(!append_raw(&partial.shared, StreamKind::Stdout, b"abcdef"));
+    assert!(!append_raw(&partial.shared, StreamKind::Stdout, b"again"));
+    assert_eq!(partial.drain_stream_raw(StreamKind::Stdout), b"abc");
+    assert!(partial.drain_stream_raw(StreamKind::Stdout).is_empty());
+    assert!(partial.shared.capture_overflowed.load(Ordering::Acquire));
+}
+
+#[test]
+fn clearing_captured_stream_releases_raw_bytes_and_capture_budget() {
+    let process = NativeProcess::new_with_capture_limit(capture_test_config(), 8);
+    assert!(append_raw(
+        &process.shared,
+        StreamKind::Stdout,
+        b"line\r\n\xff"
+    ));
+    emit_lines(&process.shared, StreamKind::Stdout, vec![b"line".to_vec()]);
+
+    // The returned count is the logical-line history only, as before.
+    assert_eq!(process.clear_captured_stream(StreamKind::Stdout), 4);
+    assert!(process.captured_stdout().is_empty());
+    assert!(process.drain_stream_raw(StreamKind::Stdout).is_empty());
+
+    // Clearing also returns the raw bytes to the capture-limit budget, so a
+    // bounded capture does not latch overflow after the caller frees memory.
+    assert!(append_raw(
+        &process.shared,
+        StreamKind::Stdout,
+        b"again\r\n"
+    ));
+    assert!(!process.shared.capture_overflowed.load(Ordering::Acquire));
+    assert_eq!(process.drain_stream_raw(StreamKind::Stdout), b"again\r\n");
 }
 
 // ── StreamEvent tests ──

@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.10.11 — byte-exact stream capture
+
+- Adds `NativeProcess::drain_stream_raw(stream)`, a consuming byte-exact
+  output queue that runs alongside the logical-line queues without changing
+  their contract. `drain_stream` strips line terminators, so a caller
+  reconstructing a byte stream from it cannot distinguish CRLF from LF and
+  loses an unterminated final record; `drain_stream_raw` preserves
+  delimiters, unterminated tails, and non-UTF-8 bytes exactly as read from
+  the pipe. Deliberately Rust-only — a lossy Python binding would defeat the
+  purpose (#1160).
+
+  `clear_captured_stream` still releases the raw buffers along with the
+  logical-line history, and still returns the logical-line byte count, so its
+  behavior is unchanged. Callers consuming byte-exact output should free it
+  by draining rather than by interleaving `clear_captured_stream`.
+
 ## 4.10.10 — kernel substrate and PTY platform-boundary migration
 
 The Python API and the high-level Rust `NativePtyProcess` API are unchanged.
