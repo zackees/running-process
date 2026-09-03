@@ -38,6 +38,7 @@
     pub fn close_stdin(&self) -> Result<(), ProcessError>
     pub fn drain_combined(&self) -> Vec<StreamEvent>
     pub fn drain_stream(&self, stream: StreamKind) -> Vec<Vec<u8>>
+    pub fn drain_stream_raw(&self, stream: StreamKind) -> Vec<u8>
     pub fn has_pending_combined(&self) -> bool
     pub fn has_pending_stream(&self, stream: StreamKind) -> bool
     pub fn kill(&self) -> Result<(), ProcessError>

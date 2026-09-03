@@ -38,6 +38,16 @@ fn decode_hex(hex: &str) -> Vec<u8> {
     out
 }
 
+fn repeated_hex(directive: &str) -> (usize, Vec<u8>) {
+    let (count, hex) = directive
+        .split_once(':')
+        .expect("repeat directive is count:hex");
+    (
+        count.parse().expect("repeat count is an integer"),
+        decode_hex(hex),
+    )
+}
+
 fn main() {
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
@@ -66,6 +76,18 @@ fn main() {
             stderr
                 .write_all(&decode_hex(hex))
                 .expect("write stderr hex");
+            stderr.flush().expect("flush stderr");
+        } else if let Some(repeat) = arg.strip_prefix("repeat-outhex:") {
+            let (count, bytes) = repeated_hex(repeat);
+            for _ in 0..count {
+                stdout.write_all(&bytes).expect("write repeated stdout hex");
+            }
+            stdout.flush().expect("flush stdout");
+        } else if let Some(repeat) = arg.strip_prefix("repeat-errhex:") {
+            let (count, bytes) = repeated_hex(repeat);
+            for _ in 0..count {
+                stderr.write_all(&bytes).expect("write repeated stderr hex");
+            }
             stderr.flush().expect("flush stderr");
         } else if arg == "flush" {
             stdout.flush().expect("flush stdout");

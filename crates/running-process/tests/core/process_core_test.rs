@@ -46,6 +46,21 @@ use running_process::{
 #[cfg(unix)]
 use running_process::{run_std_command_bounded_with_options, BoundedRunOptions};
 
+fn stdio_scripted() -> String {
+    let exe = std::env::current_exe().expect("current test executable");
+    let profile = exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("test executable should live in <profile>/deps");
+    profile
+        .join(format!(
+            "testbin-stdio-scripted{}",
+            std::env::consts::EXE_SUFFIX
+        ))
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn config(
     command: CommandSpec,
     capture: bool,
@@ -518,6 +533,90 @@ fn normalizes_crlf_and_preserves_invalid_bytes() {
         process.captured_stdout(),
         vec![b"bad:\xff".to_vec(), b"next\rthird".to_vec()]
     );
+}
+
+#[test]
+fn raw_stream_drain_preserves_delimiters_non_utf8_and_eof() {
+    let process = NativeProcess::new(ProcessConfig {
+        ..config(
+            CommandSpec::Argv(vec![
+                stdio_scripted(),
+                "outhex:63726c660d0a6c660a7461696cff".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    assert_eq!(process.wait(Some(CHILD_EXIT_WAIT)).unwrap(), 0);
+    assert_eq!(
+        process.drain_stream_raw(StreamKind::Stdout),
+        b"crlf\r\nlf\ntail\xff"
+    );
+    assert!(process.drain_stream_raw(StreamKind::Stdout).is_empty());
+    assert_eq!(
+        process.captured_stdout(),
+        vec![b"crlf".to_vec(), b"lf".to_vec(), b"tail\xff".to_vec()]
+    );
+}
+
+#[test]
+fn raw_stream_drain_is_incremental_before_and_after_eof() {
+    let process = NativeProcess::new(ProcessConfig {
+        ..config(
+            CommandSpec::Argv(vec![
+                stdio_scripted(),
+                "outhex:66697273740d0a".into(),
+                "sleep-ms:250".into(),
+                "outhex:7365636f6e64ff".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !process.has_pending_stream(StreamKind::Stdout) {
+        assert!(
+            Instant::now() < deadline,
+            "first raw chunk was not observed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(process.drain_stream_raw(StreamKind::Stdout), b"first\r\n");
+    assert_eq!(process.wait(Some(CHILD_EXIT_WAIT)).unwrap(), 0);
+    assert_eq!(process.drain_stream_raw(StreamKind::Stdout), b"second\xff");
+    assert!(process.drain_stream_raw(StreamKind::Stdout).is_empty());
+}
+
+#[test]
+fn raw_stream_drain_keeps_pipes_independent_under_high_volume() {
+    let process = NativeProcess::new(ProcessConfig {
+        stderr_mode: StderrMode::Pipe,
+        ..config(
+            CommandSpec::Argv(vec![
+                stdio_scripted(),
+                "repeat-outhex:262144:6f".into(),
+                "repeat-errhex:262144:65".into(),
+            ]),
+            true,
+            StdinMode::Inherit,
+            None,
+        )
+    });
+
+    process.start().unwrap();
+    assert_eq!(process.wait(Some(CHILD_EXIT_WAIT)).unwrap(), 0);
+    let stdout = process.drain_stream_raw(StreamKind::Stdout);
+    let stderr = process.drain_stream_raw(StreamKind::Stderr);
+    assert_eq!(stdout.len(), 262144);
+    assert!(stdout.iter().all(|byte| *byte == b'o'));
+    assert_eq!(stderr.len(), 262144);
+    assert!(stderr.iter().all(|byte| *byte == b'e'));
 }
 
 #[test]

@@ -207,6 +207,16 @@ python_sync = "test_streaming_reads_and_availability_agree"
 python_async = "n/a: the async answer to the consuming drain/read family is the output cursor, which gives each reader its own position instead of a shared buffer one caller empties; covered by test_two_cursors_read_the_same_records_independently"
 
 [[row]]
+id = "rust-process.drain_stream_raw"
+surface = "rust-process"
+member = "drain_stream_raw"
+status = "implemented"
+rust_sync = "raw_stream_drain_preserves_delimiters_non_utf8_and_eof"
+rust_async = "n/a: the async answer is the output cursor; this synchronous byte-exact queue is intentionally consuming"
+python_sync = "n/a: no lossy Python binding is exposed for this byte-exact Rust API"
+python_async = "n/a: no lossy Python binding is exposed for this byte-exact Rust API"
+
+[[row]]
 id = "rust-process.has_pending_combined"
 surface = "rust-process"
 member = "has_pending_combined"
