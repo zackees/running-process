@@ -339,17 +339,17 @@ use std::sync::OnceLock;
 
 #[cfg(feature = "async-process")]
 use tokio::process::{Child, Command};
-// Each import carries the gate its users carry, so a build with neither
-// `async-process` nor `process-inspection` does not import symbols nothing
-// references. `async-process` implies `process-inspection`, so the latter is
-// the wider gate of the two. `ERROR_INVALID_HANDLE` stays ungated:
-// `soft_terminate_process_group` uses it unconditionally.
+// Each import carries the gate its users carry, so a build without
+// `async-process` does not import symbols nothing references. Only
+// `ERROR_INVALID_HANDLE` and the console pair have ungated users
+// (`soft_terminate_process_group`); everything else here is reached solely
+// from the async spawn/identity paths. `process_start_key` looks like a
+// second consumer of `CloseHandle` / `FILETIME` / `GetProcessTimes` but
+// imports all three itself, function-locally.
 use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
-#[cfg(feature = "process-inspection")]
-use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
 #[cfg(feature = "async-process")]
 use windows_sys::Win32::Foundation::{
-    DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_INVALID_PARAMETER, HANDLE,
+    CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
 };
 use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
 #[cfg(feature = "async-process")]
@@ -357,11 +357,9 @@ use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
-#[cfg(feature = "process-inspection")]
-use windows_sys::Win32::System::Threading::GetProcessTimes;
 #[cfg(feature = "async-process")]
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetExitCodeProcess, TerminateProcess,
+    GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, TerminateProcess,
 };
 
 #[cfg(feature = "async-process")]
