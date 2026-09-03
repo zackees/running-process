@@ -1,5 +1,6 @@
 //! Ergonomic builders for the two registration messages a consumer must
-//! produce to join the broker: [`ServiceDefinition`] and [`CacheManifest`]
+//! produce to join the broker: [`ServiceDefinition`](crate::daemon_registration::protocol::ServiceDefinition)
+//! and [`CacheManifest`](crate::daemon_registration::protocol::CacheManifest)
 //! (#433 R2).
 //!
 //! The wire types are prost-generated structs with ~10-16 fields each, most of

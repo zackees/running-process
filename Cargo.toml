@@ -21,7 +21,7 @@ members = [
 exclude = ["testbins-tokio"]
 
 [workspace.package]
-version = "4.10.10"
+version = "4.10.11"
 edition = "2021"
 rust-version = "1.95"
 license = "BSD-3-Clause"
@@ -29,7 +29,7 @@ repository = "https://github.com/zackees/running-process"
 homepage = "https://github.com/zackees/running-process"
 
 [workspace.dependencies]
-pyo3 = "0.29"
+pyo3 = { version = "0.29", features = ["abi3-py310"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
 

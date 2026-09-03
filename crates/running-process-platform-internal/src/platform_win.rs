@@ -334,19 +334,30 @@ use std::io;
 use std::io::Read;
 use std::os::windows::io::AsRawHandle;
 use std::sync::Mutex;
+#[cfg(feature = "async-process")]
 use std::sync::OnceLock;
 
 #[cfg(feature = "async-process")]
 use tokio::process::{Child, Command};
+// Each import carries the gate its users carry, so a build without
+// `async-process` does not import symbols nothing references. Only
+// `ERROR_INVALID_HANDLE` and the console pair have ungated users
+// (`soft_terminate_process_group`); everything else here is reached solely
+// from the async spawn/identity paths. `process_start_key` looks like a
+// second consumer of `CloseHandle` / `FILETIME` / `GetProcessTimes` but
+// imports all three itself, function-locally.
+use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+#[cfg(feature = "async-process")]
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DuplicateHandle, FILETIME, HANDLE, DUPLICATE_SAME_ACCESS, ERROR_INVALID_HANDLE,
-    ERROR_INVALID_PARAMETER,
+    CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
 };
 use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+#[cfg(feature = "async-process")]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+#[cfg(feature = "async-process")]
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, TerminateProcess,
 };
@@ -576,6 +587,7 @@ fn process_start_key(pid: sysinfo::Pid, _process: &sysinfo::Process) -> io::Resu
     Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 
+#[cfg(feature = "async-process")]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 #[cfg(feature = "async-process")]
@@ -750,12 +762,19 @@ pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("cmd.exe").arg("/C").arg(command)
 }
 
+// Only the async-process spawn paths place a child in the owner-death job;
+// without that feature these items have no caller and fail `-D dead-code`.
+#[cfg(feature = "async-process")]
 struct Job(HANDLE);
+#[cfg(feature = "async-process")]
 unsafe impl Send for Job {}
+#[cfg(feature = "async-process")]
 unsafe impl Sync for Job {}
 
+#[cfg(feature = "async-process")]
 static JOB: OnceLock<Option<Job>> = OnceLock::new();
 
+#[cfg(feature = "async-process")]
 fn create() -> Option<Job> {
     unsafe {
         let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -774,6 +793,7 @@ fn create() -> Option<Job> {
 /// it does not want the child to outlive it, and a caller that is told
 /// nothing cannot tell containment from its absence. All three failures are
 /// now reported.
+#[cfg(feature = "async-process")]
 fn assign(child: Option<HANDLE>) -> io::Result<()> {
     let Some(child) = child else {
         return Err(io::Error::new(
@@ -796,6 +816,24 @@ fn assign(child: Option<HANDLE>) -> io::Result<()> {
 #[path = "platform_win/sync_spawn.rs"]
 mod sync_spawn;
 pub use sync_spawn::{spawn_sync, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
+
+/// Replace this process's image with `command`.
+///
+/// Windows has no `execve`, so this always fails. It exists so the facade has
+/// one shape on every host; callers check
+/// [`can_replace_current_image`](crate::platform::process::can_replace_current_image)
+/// first and start a successor instead.
+pub fn process_replace_current_image(_command: &mut std::process::Command) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this host cannot replace a running process image",
+    )
+}
+
+/// This host has no `execve`; a caller must start a successor and exit.
+pub const fn process_can_replace_current_image() -> bool {
+    false
+}
 
 #[cfg(test)]
 mod tests {
@@ -890,22 +928,4 @@ mod endpoint_naming_tests {
         assert_eq!(mixed, other);
     }
 
-}
-
-/// Replace this process's image with `command`.
-///
-/// Windows has no `execve`, so this always fails. It exists so the facade has
-/// one shape on every host; callers check
-/// [`can_replace_current_image`](crate::platform::process::can_replace_current_image)
-/// first and start a successor instead.
-pub fn process_replace_current_image(_command: &mut std::process::Command) -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "this host cannot replace a running process image",
-    )
-}
-
-/// This host has no `execve`; a caller must start a successor and exit.
-pub const fn process_can_replace_current_image() -> bool {
-    false
 }

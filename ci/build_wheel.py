@@ -234,13 +234,13 @@ def run_build(mode: BuildMode) -> int:
     output_wheels = [path for path in built_wheels() if path.name not in before]
     if not output_wheels:
         output_wheels = [latest_wheel()]
-    if platform.system() == "Windows":
-        from ci.windows_extension_abi_guard import validate_windows_wheel
+    if mode == "release":
+        from ci.wheel_abi_guard import validate_wheel
 
         for wheel in output_wheels:
-            validate_windows_wheel(wheel)
+            validate_wheel(wheel)
             print(
-                f"Windows extension ABI verified in {wheel.name}",
+                f"ABI3 wheel verified: {wheel.name}",
                 file=sys.stderr,
                 flush=True,
             )

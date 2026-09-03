@@ -45,7 +45,7 @@ STAGES: dict[str, str] = {
     "guard-platform-boundary": "ci.platform_boundary",
     "guard-minimal-async-platform": "ci.minimal_async_platform_graph",
     "guard-kernel-substrate": "ci.kernel_substrate_contract",
-    "guard-windows-extension-abi": "ci.windows_extension_abi_guard",
+    "guard-wheel-abi": "ci.wheel_abi_guard",
     "guard-backend-identity": "ci.backend_identity_contract",
     "test-backend-identity": "ci.backend_identity_e2e",
     "guard-frame-v1-codec": "ci.frame_v1_codec_contract",

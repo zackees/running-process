@@ -29,17 +29,45 @@ class TestProductDependencyFeatures(unittest.TestCase):
         self.features = self.manifest["features"]
         self.dependencies = self.manifest["dependencies"]
 
+    def selected_by(self, feature: str) -> set[str]:
+        """Everything enabling ``feature`` pulls in, sub-features included.
+
+        The contract is "a capability owns its product dependencies", not
+        "it names them directly". #1193 refactored `client` to compose
+        `daemon-registration` / `terminal-graphics` rather than list
+        `dep:serde` itself, which left the direct-membership assertions here
+        red on main. Resolving the closure keeps the same teeth -- dropping
+        serde from every reachable feature still fails -- without pinning the
+        composition.
+        """
+        seen: set[str] = set()
+        pending = [feature]
+        while pending:
+            current = pending.pop()
+            for entry in self.features.get(current, []):
+                if entry in seen:
+                    continue
+                seen.add(entry)
+                if entry in self.features:
+                    pending.append(entry)
+        return seen
+
     def test_process_only_dependencies_are_optional(self) -> None:
         """RED before #1145: serde, JSON, and sysinfo were baseline deps."""
         for name in ("serde", "serde_json", "sysinfo"):
             self.assertTrue(self.dependencies[name]["optional"], name)
 
     def test_capabilities_own_product_dependencies(self) -> None:
-        self.assertIn("dep:serde", self.features["client"])
-        self.assertIn("dep:serde_json", self.features["client"])
+        self.assertIn("dep:serde", self.selected_by("client"))
+        self.assertIn("dep:serde_json", self.selected_by("client"))
         self.assertIn("terminal-graphics", self.features["client"])
         self.assertIn("terminal-graphics", self.features["pty"])
-        self.assertEqual(self.features["terminal-graphics"], ["dep:serde"])
+        # #1193 gave the platform crate its own terminal-graphics feature and
+        # composed it here; serde stays the root-crate half of the pair.
+        self.assertEqual(
+            self.features["terminal-graphics"],
+            ["dep:serde", "running-process-platform-internal/terminal-graphics"],
+        )
         self.assertEqual(
             self.features["daemon-trampoline"], ["dep:serde", "dep:serde_json"]
         )

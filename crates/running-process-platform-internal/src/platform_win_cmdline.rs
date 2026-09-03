@@ -126,7 +126,7 @@
         if len_bytes == 0 {
             return Ok(Vec::new());
         }
-        if len_bytes % std::mem::size_of::<u16>() != 0 {
+        if !len_bytes.is_multiple_of(std::mem::size_of::<u16>()) {
             return Err(std::io::Error::other(format!(
                 "NtQueryInformationProcess returned odd UTF-16 byte length {len_bytes}",
             )));

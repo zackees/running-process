@@ -358,12 +358,6 @@ impl Drop for TerminalInputSession {
     fn drop(&mut self) { let _ = self.0.stop_impl(); }
 }
 
-pub fn active_graphics_probe(
-    _timeout: std::time::Duration,
-) -> crate::platform::terminal::TerminalGraphicsProbe {
-    crate::platform::terminal::TerminalGraphicsProbe::default()
-}
-
 #[cfg(all(test, feature = "pty"))]
 mod tests {
     use super::*;

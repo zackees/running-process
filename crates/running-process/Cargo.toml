@@ -1,6 +1,6 @@
 [package]
 name = "running-process"
-version = "4.10.10"
+version = "4.10.11"
 edition = "2021"
 rust-version = "1.95"
 license = "BSD-3-Clause"
@@ -253,14 +253,14 @@ sha2 = { version = "0.10", optional = true }
 getrandom = { version = "0.4", optional = true }
 # #633: schema-only dependency for the probe client facade. default-features
 # off keeps the interposer/injection machinery out — see the `probe` feature.
-running-process-probe = { path = "../running-process-probe", version = "4.10.10", default-features = false, optional = true }
-running-process-protocol = { path = "../running-process-protocol", version = "4.10.10", optional = true }
+running-process-probe = { path = "../running-process-probe", version = "4.10.11", default-features = false, optional = true }
+running-process-protocol = { path = "../running-process-protocol", version = "4.10.11", optional = true }
 # Preserve the long-standing `process_tree::kill_tree` path for 4.x
 # `default-features = false` consumers. The current Phase 0.5 containment
 # primitive is sysinfo-backed, so the root selects this narrow private
 # platform capability unconditionally while keeping public inspection APIs
 # behind `process-inspection`. Other platform capabilities stay opt-in.
-running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.10", default-features = false, features = ["process-inspection"] }
+running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.11", default-features = false, features = ["process-inspection"] }
 # Wave 5 of #165: daemon-feature deps. All optional.
 # tokio: `client-async` (#414) only needs the `rt` (spawn_blocking)
 # and `time` (`tokio::time::timeout`) features; the `daemon` feature

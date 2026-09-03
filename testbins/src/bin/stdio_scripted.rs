@@ -7,6 +7,10 @@
 //! - `out:<utf8>`      — write the UTF-8 text to stdout (no trailing newline)
 //! - `err:<utf8>`      — write the UTF-8 text to stderr
 //! - `outhex:<hex>`    — write the hex-decoded raw bytes to stdout
+//! - `outrep:<hex>:<n>` — write the hex-decoded bytes `n` times to stdout.
+//!   Same output as a long `outhex:`, without putting the payload on the
+//!   command line: Windows caps a command line at 32,767 characters, and a
+//!   hex-encoded argument is twice the size of the bytes it carries.
 //! - `errhex:<hex>`    — write the hex-decoded raw bytes to stderr
 //! - `flush`           — flush stdout then stderr (control interleaving)
 //! - `echo`           — copy all of stdin to stdout verbatim, then flush
@@ -45,6 +49,14 @@ fn main() {
         } else if let Some(text) = arg.strip_prefix("err:") {
             stderr.write_all(text.as_bytes()).expect("write stderr");
             stderr.flush().expect("flush stderr");
+        } else if let Some(spec) = arg.strip_prefix("outrep:") {
+            let (hex, count) = spec.rsplit_once(':').expect("outrep:<hex>:<count>");
+            let unit = decode_hex(hex);
+            let count: usize = count.parse().expect("outrep count");
+            for _ in 0..count {
+                stdout.write_all(&unit).expect("write stdout repeat");
+            }
+            stdout.flush().expect("flush stdout");
         } else if let Some(hex) = arg.strip_prefix("outhex:") {
             stdout
                 .write_all(&decode_hex(hex))

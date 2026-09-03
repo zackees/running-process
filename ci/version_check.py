@@ -12,6 +12,11 @@ SOURCES: list[tuple[str, str]] = [
     ("src/running_process/__init__.py", r'^__version__\s*=\s*"([^"]+)"'),
     ("pyproject.toml", r'^version\s*=\s*"([^"]+)"'),
     ("Cargo.toml", r'^version\s*=\s*"([^"]+)"'),
+    # `crates/running-process` is the one published crate that spells its own
+    # version out instead of inheriting `version.workspace = true`. Nothing
+    # checked it, so a root bump left it behind at 4.10.10 — a published crate
+    # one version off from every sibling.
+    ("crates/running-process/Cargo.toml", r'^version\s*=\s*"([^"]+)"'),
     # The Python extension crate pins its sibling by exact version. Left
     # behind, it does not merely drift -- `cargo publish` cannot resolve
     # it, so the release fails after the tag is already cut.
@@ -25,6 +30,14 @@ SOURCES: list[tuple[str, str]] = [
     # the package, which is after the tag is cut.
     (
         "crates/running-process/Cargo.toml",
+        r'^running-process-probe\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"',
+    ),
+    # Same pin, from the extension crate. It was left out of this list and
+    # sat at 4.10.10 through the 4.10.11 bump: nothing here caught it, and
+    # `cargo publish -p running-process-py` is where it would have surfaced —
+    # after the tag is cut.
+    (
+        "crates/running-process-py/Cargo.toml",
         r'^running-process-probe\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"',
     ),
     (
@@ -69,21 +82,26 @@ def _extract_version(path: Path, pattern: str) -> str | None:
 
 
 def main() -> int:
-    versions: dict[str, str | None] = {}
+    # Keyed by (file, pattern), not by file. Several manifests contribute more
+    # than one version string -- `crates/running-process/Cargo.toml` alone
+    # carries its own `[package] version` plus three sibling pins -- and a
+    # file-keyed dict silently kept only the last pattern per file. Four of
+    # the checks in SOURCES were never running.
+    versions: dict[tuple[str, str], str | None] = {}
     for relpath, pattern in SOURCES:
-        versions[relpath] = _extract_version(ROOT / relpath, pattern)
+        versions[(relpath, pattern)] = _extract_version(ROOT / relpath, pattern)
 
-    missing = [k for k, v in versions.items() if v is None]
+    missing = [key for key, value in versions.items() if value is None]
     if missing:
-        for name in missing:
-            print(f"ERROR: could not extract version from {name}")
+        for relpath, pattern in missing:
+            print(f"ERROR: could not extract version from {relpath} ({pattern})")
         return 1
 
     unique = set(versions.values())
     if len(unique) != 1:
         print("ERROR: version mismatch across manifests:")
-        for name, ver in versions.items():
-            print(f"  {name}: {ver}")
+        for (relpath, pattern), ver in versions.items():
+            print(f"  {relpath} ({pattern}): {ver}")
         return 1
 
     print(f"OK: all versions consistent ({unique.pop()})")

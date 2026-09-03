@@ -657,6 +657,10 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
       - uses: actions/download-artifact@v4
         with:
           pattern: wheels-*
@@ -666,6 +670,16 @@ jobs:
       - name: List wheel artifacts
         shell: bash
         run: ls -la dist
+
+      # 4.10.10 shipped a cp311-only wheel per platform, so every macOS,
+      # Linux and Windows user on any other interpreter fell back to a source
+      # build. Refuse to publish unless each wheel is ABI3 and every platform
+      # the matrix builds is present.
+      - name: Verify the wheel set is ABI3 and covers every platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m ci.wheel_abi_guard --release-dir dist
 
       - name: Publish wheel distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

@@ -34,8 +34,21 @@ class TestProtocolCodegenIsolation(unittest.TestCase):
 
     def test_client_owns_the_optional_protocol_package(self) -> None:
         manifest = tomllib.loads(ROOT_MANIFEST.read_text(encoding="utf-8"))
+        features = manifest["features"]
 
-        self.assertIn("dep:running-process-protocol", manifest["features"]["client"])
+        # Resolved through the feature graph, not by direct membership: #1193
+        # moved the package behind `client`'s `daemon-registration*` and
+        # `frame-v1-codec` sub-features, which left this assertion red on
+        # main. A process-only build still must not reach the codegen crate.
+        seen: set[str] = set()
+        pending = ["client"]
+        while pending:
+            for entry in features.get(pending.pop(), []):
+                if entry not in seen:
+                    seen.add(entry)
+                    if entry in features:
+                        pending.append(entry)
+        self.assertIn("dep:running-process-protocol", seen)
         protocol = manifest["dependencies"]["running-process-protocol"]
         self.assertTrue(protocol["optional"])
         self.assertEqual(protocol["path"], "../running-process-protocol")
