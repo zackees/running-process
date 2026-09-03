@@ -334,21 +334,34 @@ use std::io;
 use std::io::Read;
 use std::os::windows::io::AsRawHandle;
 use std::sync::Mutex;
+#[cfg(feature = "async-process")]
 use std::sync::OnceLock;
 
 #[cfg(feature = "async-process")]
 use tokio::process::{Child, Command};
+// Each import carries the gate its users carry, so a build with neither
+// `async-process` nor `process-inspection` does not import symbols nothing
+// references. `async-process` implies `process-inspection`, so the latter is
+// the wider gate of the two. `ERROR_INVALID_HANDLE` stays ungated:
+// `soft_terminate_process_group` uses it unconditionally.
+use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+#[cfg(feature = "process-inspection")]
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+#[cfg(feature = "async-process")]
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DuplicateHandle, FILETIME, HANDLE, DUPLICATE_SAME_ACCESS, ERROR_INVALID_HANDLE,
-    ERROR_INVALID_PARAMETER,
+    DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_INVALID_PARAMETER, HANDLE,
 };
 use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+#[cfg(feature = "async-process")]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+#[cfg(feature = "process-inspection")]
+use windows_sys::Win32::System::Threading::GetProcessTimes;
+#[cfg(feature = "async-process")]
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, TerminateProcess,
+    GetCurrentProcess, GetExitCodeProcess, TerminateProcess,
 };
 
 #[cfg(feature = "async-process")]
