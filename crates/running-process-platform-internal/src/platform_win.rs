@@ -576,6 +576,7 @@ fn process_start_key(pid: sysinfo::Pid, _process: &sysinfo::Process) -> io::Resu
     Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 
+#[cfg(feature = "async-process")]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 #[cfg(feature = "async-process")]
@@ -750,12 +751,19 @@ pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("cmd.exe").arg("/C").arg(command)
 }
 
+// Only the async-process spawn paths place a child in the owner-death job;
+// without that feature these items have no caller and fail `-D dead-code`.
+#[cfg(feature = "async-process")]
 struct Job(HANDLE);
+#[cfg(feature = "async-process")]
 unsafe impl Send for Job {}
+#[cfg(feature = "async-process")]
 unsafe impl Sync for Job {}
 
+#[cfg(feature = "async-process")]
 static JOB: OnceLock<Option<Job>> = OnceLock::new();
 
+#[cfg(feature = "async-process")]
 fn create() -> Option<Job> {
     unsafe {
         let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -774,6 +782,7 @@ fn create() -> Option<Job> {
 /// it does not want the child to outlive it, and a caller that is told
 /// nothing cannot tell containment from its absence. All three failures are
 /// now reported.
+#[cfg(feature = "async-process")]
 fn assign(child: Option<HANDLE>) -> io::Result<()> {
     let Some(child) = child else {
         return Err(io::Error::new(
