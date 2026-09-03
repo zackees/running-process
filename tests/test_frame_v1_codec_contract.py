@@ -62,7 +62,10 @@ def test_external_consumer_fixture_is_an_independent_no_default_manifest() -> No
     # the isolated manifest and feature selection, not the local launcher.
     assert "check" in command
     assert "--manifest-path" in command
-    assert "frame-v1-codec-consumer/pass/Cargo.toml" in command[-1]
+    # `replace` normalizes the separator: the manifest path is absolute and
+    # uses backslashes on Windows, where this asserted a POSIX substring and
+    # failed. Nothing caught it because the Windows lane died at Lint first.
+    assert "frame-v1-codec-consumer/pass/Cargo.toml" in command[-1].replace("\\", "/")
 
 
 def test_dispatcher_exposes_frame_v1_guard_and_runtime_contract() -> None:

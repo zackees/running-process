@@ -95,7 +95,12 @@ def test_external_consumer_fixture_is_an_independent_no_default_manifest() -> No
     command = external_consumer_command()
     assert "check" in command
     assert "--manifest-path" in command
-    assert "daemon-registration-consumer/pass/Cargo.toml" in command[-1]
+    # `replace` normalizes the separator: the manifest path is absolute and
+    # uses backslashes on Windows, where this asserted a POSIX substring and
+    # failed. Nothing caught it because the Windows lane died at Lint first.
+    assert "daemon-registration-consumer/pass/Cargo.toml" in command[-1].replace(
+        "\\", "/"
+    )
 
 
 def test_dispatcher_exposes_registration_guard_and_runtime_contract() -> None:

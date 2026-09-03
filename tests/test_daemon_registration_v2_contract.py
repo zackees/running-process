@@ -76,10 +76,15 @@ def test_external_consumers_prove_direct_surface_and_client_absence() -> None:
     command = external_consumer_command("pass")
     assert "check" in command
     assert "--manifest-path" in command
-    assert "daemon-registration-v2-consumer/pass/Cargo.toml" in command[-1]
-    assert "daemon-registration-v2-consumer/fail-client/Cargo.toml" in external_consumer_command(
-        "fail-client"
-    )[-1]
+    # `replace` normalizes the separator: the manifest path is absolute and
+    # uses backslashes on Windows, where this asserted a POSIX substring and
+    # failed. Nothing caught it because the Windows lane died at Lint first.
+    assert "daemon-registration-v2-consumer/pass/Cargo.toml" in command[-1].replace(
+        "\\", "/"
+    )
+    assert "daemon-registration-v2-consumer/fail-client/Cargo.toml" in (
+        external_consumer_command("fail-client")[-1].replace("\\", "/")
+    )
 
 
 def test_dispatcher_exposes_v2_registration_guard_and_runtime_contract() -> None:
