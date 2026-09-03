@@ -37,10 +37,14 @@ use std::{
 const CHILD_EXIT_WAIT: Duration = Duration::from_secs(30);
 
 use running_process::{
-    run_command, run_command_bounded, run_std_command_bounded_with_options, BoundedRunOptions,
-    CommandSpec, NativeProcess, ProcessConfig, ProcessError, ReadStatus, StderrMode, StdinMode,
-    StreamKind,
+    run_command, run_command_bounded, CommandSpec, NativeProcess, ProcessConfig, ProcessError,
+    ReadStatus, StderrMode, StdinMode, StreamKind,
 };
+// Every test that reaches the bounded std-command entry point is `cfg(unix)`
+// or `cfg(target_os = "linux")`, so on Windows the pair is an unused import
+// and `-D warnings` refuses to build this test target.
+#[cfg(unix)]
+use running_process::{run_std_command_bounded_with_options, BoundedRunOptions};
 
 fn config(
     command: CommandSpec,
