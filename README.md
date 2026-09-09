@@ -316,10 +316,11 @@ restores daemon state. Manifests from a prior runner boot are reported as stale:
 ## Pipe-backed API
 
 ```python
-from running_process import RunningProcess
+from running_process import PIPE, RunningProcess
 
 process = RunningProcess(
-    ["python", "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
+    ["python", "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+    stderr=PIPE,
 )
 
 process.wait()
@@ -328,6 +329,9 @@ print(process.stdout)          # stdout only
 print(process.stderr)          # stderr only
 print(process.combined_output) # combined compatibility view
 ```
+
+By default, `RunningProcess(...)` merges `stderr` into `stdout`.
+Pass `stderr=PIPE` when independent `stdout` and `stderr` capture is required.
 
 Captured data values stay plain `str | bytes`. Live stream handles are exposed separately:
 
@@ -731,8 +735,8 @@ python scripts/terminate_tracked_processes.py
 
 ## Notes
 
-- `stdout` and `stderr` are no longer merged by default.
-- `combined_output` exists for compatibility when you need the merged view.
+- `RunningProcess(...)` merges `stderr` into `stdout` by default; pass `stderr=PIPE` to capture them separately.
+- `combined_output` provides the merged view in either capture mode.
 - `RunningProcess(..., use_pty=True)` is no longer the preferred path; use `RunningProcess.pseudo_terminal(...)` for PTY sessions.
 - On supported Windows builds, PTY support is provided by the native Rust extension rather than a Python `winpty` fallback.
 - The test suite checks that `running_process.__version__`, package metadata, and manifest versions stay in sync.
