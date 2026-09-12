@@ -5,7 +5,7 @@
 //! back byte-for-byte. It needs a display, so it skips without one — under
 //! Xvfb in CI and in a container it runs for real.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", feature = "window-icon"))]
 
 use running_process::{set_icon, IconScope, IconSource};
 use x11rb::connection::Connection as _;

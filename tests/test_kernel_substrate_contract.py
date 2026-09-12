@@ -46,6 +46,14 @@ class KernelSubstrateContractTests(unittest.TestCase):
         self.assertIn("forbidden package resolved: rusqlite", failures)
         self.assertIn("unreviewed resolved package: unknown", failures)
 
+    def test_image_and_window_dependencies_are_forbidden_in_substrate(self) -> None:
+        allowlist = load_allowlist()
+        for package in ("png", "x11rb", "x11rb-protocol"):
+            self.assertIn(
+                f"forbidden package resolved: {package}",
+                graph_failures(f"{package} v1.0\n", allowlist),
+            )
+
     def test_forbidden_feature_alias_cannot_join_the_selection(self) -> None:
         manifest = {"features": {FEATURE: ["async-process", "pty"]}}
         self.assertTrue(manifest_failures(manifest))

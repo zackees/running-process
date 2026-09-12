@@ -17,7 +17,8 @@ workspace = true
 # were historically unconditional public surface, so its default remains
 # source-compatible. Consumers that need a trimmed graph, including the root
 # facade below, must opt out explicitly with `default-features = false`.
-default = ["async-process"]
+default = ["async-process", "window-icon"]
+window-icon = ["dep:png", "dep:x11rb"]
 fs = ["dep:dirs"]
 # Owner-private directory creation and inspection are shared by persisted
 # registration records and local IPC roots, but require neither a transport
@@ -60,8 +61,8 @@ tempfile = "3"
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = "0.13"
-png = "0.17"
+x11rb = { version = "0.13", optional = true }
+png = { version = "0.17", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 sha2 = { version = "0.10", optional = true }

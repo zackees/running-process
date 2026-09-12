@@ -222,8 +222,10 @@ pub use terminal_graphics::active_graphics_probe;
 #[path = "platform_win/terminal_input.rs"]
 pub mod terminal_input;
 
+#[cfg(feature = "window-icon")]
 #[path = "platform_win/window_icon.rs"]
 mod window_icon;
+#[cfg(feature = "window-icon")]
 pub use window_icon::{icon_support as window_icon_support_impl, set_icon as set_window_icon_impl};
 
 #[path = "platform_win_descendants.rs"]

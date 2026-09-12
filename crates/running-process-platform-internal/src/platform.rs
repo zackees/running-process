@@ -17,4 +17,5 @@ pub mod terminal;
 #[cfg(feature = "terminal-graphics")]
 pub mod terminal_graphics;
 pub mod terminal_input;
+#[cfg(feature = "window-icon")]
 pub mod window_icon;

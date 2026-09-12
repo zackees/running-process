@@ -247,8 +247,10 @@ mod terminal_graphics;
 pub use terminal_graphics::active_graphics_probe;
 pub use crate::platform::terminal_input;
 
+#[cfg(feature = "window-icon")]
 #[path = "platform_macos/window_icon.rs"]
 mod window_icon;
+#[cfg(feature = "window-icon")]
 pub use window_icon::{icon_support as window_icon_support_impl, set_icon as set_window_icon_impl};
 
 pub fn shell_command(command: &str) -> std::process::Command {
