@@ -32,6 +32,7 @@ pub mod environment;
 mod helpers;
 #[cfg(feature = "async-process")]
 mod process_runtime;
+#[cfg(feature = "window-icon")]
 pub mod window_icon;
 // Phase 1 of #221: process-observation capability model + portable
 // lifecycle baseline. Core-feature-clean (std-only: mpsc + SystemTime),
@@ -261,6 +262,7 @@ pub use types::{
     CommandSpec, ProcessConfig, ProcessError, ReadStatus, RunOutput, StderrMode, StdinMode,
     StreamEvent, StreamKind,
 };
+#[cfg(feature = "window-icon")]
 pub use window_icon::{
     host_icon_support, icon_support, set_host_icon, set_icon, IconError, IconScope, IconSource,
     IconSupport, StockIcon,

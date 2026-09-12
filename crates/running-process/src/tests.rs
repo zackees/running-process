@@ -1197,7 +1197,7 @@ fn spawning_a_nonexistent_program_is_an_error() {
 ///
 /// `CREATE_NEW_CONSOLE` gives the child a console of its own rather than
 /// inheriting ours, which is exactly the case the scope exists for.
-#[cfg(windows)]
+#[cfg(all(windows, feature = "window-icon"))]
 #[test]
 fn a_child_with_its_own_console_is_targetable_by_pid() {
     use crate::window_icon::{icon_support, set_icon, IconScope, IconSource, StockIcon};

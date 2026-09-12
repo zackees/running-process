@@ -28,6 +28,26 @@ protobuf/protocol generation, SQLite, PTY, downloader/archive/hash tooling,
 CLI/config parsing, and a `kernal-api` edge. Adding any package needs a reviewed
 allowlist rationale.
 
+Window-icon support is a separate `window-icon` feature, enabled by default
+for source compatibility in both published crates. Consumers using
+`default-features = false` must enable it explicitly if they need the icon
+API. It forwards to the platform implementation on every host; only Linux
+adds PNG decoding and X11 transport dependencies. The substrate graph now
+forbids `png`, `x11rb`, and `x11rb-protocol` rather than allowing them as an
+incidental platform cost. This change is coordinated with kernal-api issue
+[17](https://github.com/zackees/kernal-api/issues/17); kernal-api must adopt a
+registry release containing it, not ship a local path patch.
+
+Focused validation:
+
+```sh
+uv run --no-project --module ci.kernel_substrate_contract
+uv run --no-project --module unittest tests.test_kernel_substrate_contract
+soldr cargo check -p running-process --no-default-features --features kernel-substrate
+soldr cargo check -p running-process --no-default-features --features kernel-substrate,window-icon
+soldr cargo nextest run -p running-process-platform-internal --lib -E 'test(window_icon)'
+```
+
 ## Timing evidence
 
 `ci.kernel_substrate_timing` runs an isolated clean `soldr cargo check` then
