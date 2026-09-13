@@ -76,8 +76,10 @@ impl ScheduledTask {
     pub(super) fn start(&mut self, deadline: Instant, cancelled: &AtomicBool) -> io::Result<()> {
         // Arm before registration: a timeout may follow partial manager success.
         self.registered = true;
-        self.command("create", deadline, cancelled)?;
+        self.command("create", deadline, cancelled)
+            .map_err(|error| io::Error::new(error.kind(), format!("Task Scheduler create: {error}")))?;
         self.command("run", deadline, cancelled)
+            .map_err(|error| io::Error::new(error.kind(), format!("Task Scheduler run: {error}")))
     }
 
     pub(super) fn remove_definition(

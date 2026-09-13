@@ -94,7 +94,8 @@ pub fn spawn(
     listener.set_nonblocking(ListenerNonblockingMode::Both)?;
     task.start(deadline, cancelled)?;
     let stream = loop {
-        check(deadline, cancelled)?;
+        check(deadline, cancelled)
+            .map_err(|error| io::Error::new(error.kind(), "waiting for scheduler helper connection"))?;
         match listener.accept() {
             Ok(stream) => break stream,
             Err(error)
@@ -159,7 +160,8 @@ pub fn spawn(
         ));
     }
     while !is_ready(&spec.readiness)? {
-        check(deadline, cancelled)?;
+        check(deadline, cancelled)
+            .map_err(|error| io::Error::new(error.kind(), "waiting for target readiness"))?;
         if !process.get().is_alive() {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
