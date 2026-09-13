@@ -25,7 +25,8 @@ try {
       $document.Task.Triggers.TimeTrigger.StartBoundary = $now.ToString('yyyy-MM-ddTHH:mm:ssZ')
       $document.Task.Triggers.TimeTrigger.EndBoundary = $now.AddSeconds(45).ToString('yyyy-MM-ddTHH:mm:ssZ')
       $sid = [string]$document.Task.Principals.Principal.UserId
-      $folder.RegisterTask($TaskName,$document.OuterXml,2,$sid,$null,3,$null) | Out-Null
+      # COM transports a Unicode BSTR, not an encoded XML byte stream.
+      $folder.RegisterTask($TaskName,$document.DocumentElement.OuterXml,2,$sid,$null,3,$null) | Out-Null
     }
     'run' { $folder.GetTask($TaskName).Run($null) | Out-Null }
     'end' { $folder.GetTask($TaskName).Stop(0) }
@@ -181,8 +182,7 @@ fn task_xml(helper: &Path, endpoint: &str, sid: &str) -> io::Result<String> {
     // before Run or Drop. CONTROL stamps the boundaries immediately before
     // registration; normal successful launches remove the definition sooner.
     Ok(format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+        r#"<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
 <RegistrationInfo><Description>running-process independent launcher</Description></RegistrationInfo>
 <Triggers><TimeTrigger><StartBoundary>2000-01-01T00:00:00Z</StartBoundary><EndBoundary>2000-01-01T00:00:45Z</EndBoundary><Enabled>false</Enabled></TimeTrigger></Triggers>
 <Principals><Principal id="Caller"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
