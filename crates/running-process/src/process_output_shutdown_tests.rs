@@ -68,6 +68,7 @@ async fn fixture(mode: &str) -> AsyncProcessSession {
             max_chunk_bytes: 4096,
             post_exit_grace: None,
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         });
     session.start().await.expect("start fixture");
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -225,6 +226,7 @@ async fn descendant_held_pipe_shutdown_finishes_after_direct_child_reaping() {
             max_chunk_bytes: 4096,
             post_exit_grace: None,
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         });
     session.start().await.expect("start pipe holder");
     assert!(tokio::time::timeout(Duration::from_secs(2), session.wait())
