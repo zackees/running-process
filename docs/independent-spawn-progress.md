@@ -292,3 +292,24 @@ independent-spawn by default. The root still opts out of platform defaults.
 
 Completion requires both issues resolved by PRs and the release cascade
 verified. These remaining items must not be replaced by the baseline repro.
+
+## Docker fixture feasibility (2026-09-13)
+
+On this Docker host, the default cgroup mount does not permit creation of a
+worker subtree: an actual `mkdir` failed with EROFS even though root's `test -w`
+reported writable. Do not use that permission predicate as delegation proof.
+
+An ephemeral Alpine 3.20 container with `--network none --memory 128m
+--memory-swap 128m --privileged --cgroupns private` permits the fixture setup.
+PID 1 is `sh`, not systemd. Moving the entrypoint into `/rp-broker-fixture`
+before enabling `+memory` at the namespace root permits creation of a sibling
+`/rp-worker-fixture` with `memory.max = 33554432`; the namespace root retains
+`memory.max = 134217728`. Both probes used `--rm` and have exited. No host
+cgroup directory was bind-mounted into the container.
+
+This establishes only a test-harness prerequisite. The privileged flag is
+for arranging delegated test cgroups, not a proposed production launch
+requirement. The broker is still unimplemented. Acceptance still requires
+real broker/worker/target identity and placement checks, measured accounting,
+worker teardown survival, absent-broker failure, and a test proving the outer
+container memory limit is enforced rather than merely reading its setting.
