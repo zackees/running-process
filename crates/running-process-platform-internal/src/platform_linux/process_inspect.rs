@@ -32,6 +32,19 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    /// Acquire a kernel-pinned handle suitable for identity-safe control.
+    pub fn open_for_control(pid: u32) -> Result<Self, ProcessInspectError> {
+        Self::open_pinned(pid).map_err(|source| ProcessInspectError {
+            kind: ProcessInspectErrorKind::Host,
+            source,
+        })
+    }
+
+    /// Force termination through the held pidfd, never by reopening the PID.
+    pub fn force_kill(&self) -> io::Result<()> {
+        self.signal_pinned(libc::SIGKILL)
+    }
+
     /// Independent launches require a kernel-pinned identity. Unlike the
     /// compatibility observer, this path never falls back to a bare PID.
     #[cfg(any(feature = "independent-spawn", test))]

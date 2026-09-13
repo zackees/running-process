@@ -50,6 +50,19 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    /// Acquire query, wait, and termination rights for identity-safe control.
+    pub fn open_for_control(pid: u32) -> Result<Self, ProcessInspectError> {
+        Self::open_pinned(pid).map_err(|source| ProcessInspectError {
+            kind: ProcessInspectErrorKind::Host,
+            source,
+        })
+    }
+
+    /// Force termination through the held process handle, never by PID lookup.
+    pub fn force_kill(&self) -> io::Result<()> {
+        self.terminate_pinned()
+    }
+
     #[cfg(all(test, feature = "independent-spawn"))]
     pub(crate) fn test_creation_time(&self) -> io::Result<u64> {
         use windows_sys::Win32::{Foundation::FILETIME, System::Threading::GetProcessTimes};
