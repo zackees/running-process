@@ -137,9 +137,11 @@ pub fn spawn(
         &Message::Launch(spec.clone()),
         deadline,
         cancelled,
-    ).map_err(|error| io::Error::new(error.kind(), "target payload transfer failed"))?;
+    )
+    .map_err(|error| io::Error::new(error.kind(), "target payload transfer failed"))?;
     let pid = match receive(&mut stream, deadline, cancelled)
-        .map_err(|error| io::Error::new(error.kind(), "target identity response failed"))? {
+        .map_err(|error| io::Error::new(error.kind(), "target identity response failed"))?
+    {
         Message::Started { pid } => pid,
         Message::Failed { kind } => return Err(kind.into_io()),
         _ => {
@@ -190,4 +192,154 @@ pub fn spawn(
         process: process.commit(),
         helper: helper.commit(),
     })
+}
+
+#[cfg(test)]
+mod job_tests {
+    use super::*;
+    use crate::platform::independent_spawn::Readiness;
+    use std::{
+        fs,
+        os::windows::io::{FromRawHandle, OwnedHandle},
+    };
+    use windows_sys::Win32::System::{
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        },
+        Threading::GetCurrentProcess,
+    };
+
+    struct Cleanup(IndependentChild);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = self.0.stop(Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    #[ignore = "target fixture invoked only by restrictive_job_scheduler_separation"]
+    fn target_fixture() {
+        let directory = std::env::var_os("RP_JOB_TARGET_DIRECTORY").expect("fixture directory");
+        fs::write(Path::new(&directory).join("ready"), b"ready").unwrap();
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[test]
+    #[ignore = "must run alone in a dedicated test process with Task Scheduler access"]
+    fn restrictive_job_scheduler_separation() {
+        let helper = std::env::var_os("RP_INDEPENDENT_LAUNCHER").expect("launcher path");
+        assert!(Path::new(&helper).is_file());
+        // SAFETY: null name/security selects a private unnamed Job Object.
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        assert!(!raw.is_null(), "{}", io::Error::last_os_error());
+        // SAFETY: CreateJobObjectW returned a new, exclusively owned handle.
+        let job = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+        // SAFETY: zero is the documented empty limit structure.
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_JOB_MEMORY;
+        limits.JobMemoryLimit = 256 * 1024 * 1024;
+        // No BREAKAWAY_OK or SILENT_BREAKAWAY_OK flag is permitted.
+        // SAFETY: raw remains owned and the structure/size match the information class.
+        assert_ne!(
+            unsafe {
+                SetInformationJobObject(
+                    raw,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of_val(&limits) as u32,
+                )
+            },
+            0,
+            "{}",
+            io::Error::last_os_error()
+        );
+        // SAFETY: both handles are valid; only this dedicated test process is assigned.
+        assert_ne!(
+            unsafe { AssignProcessToJobObject(raw, GetCurrentProcess()) },
+            0,
+            "{}",
+            io::Error::last_os_error()
+        );
+        // Closing the last handle would kill this test harness before it reports
+        // its result. The kernel closes it at process exit; never run this fixture
+        // alongside unrelated tests in the same process.
+        std::mem::forget(job);
+
+        let directory = tempfile::tempdir().unwrap();
+        let spec = LaunchSpec {
+            program: std::env::current_exe().unwrap().into_os_string(),
+            args: vec![
+                "--exact".into(),
+                "platform_win::independent_spawn::job_tests::target_fixture".into(),
+                "--ignored".into(),
+            ],
+            cwd: directory.path().as_os_str().to_owned(),
+            environment: vec![
+                ("SystemRoot".into(), std::env::var_os("SystemRoot").unwrap()),
+                (
+                    "RP_JOB_TARGET_DIRECTORY".into(),
+                    directory.path().as_os_str().to_owned(),
+                ),
+            ],
+            stdout: None,
+            stderr: None,
+            readiness: Readiness::File {
+                path: directory.path().join("ready").into_os_string(),
+                value: b"ready".to_vec(),
+            },
+        };
+        let mut child = Cleanup(
+            spawn(
+                &spec,
+                Path::new(&helper),
+                Duration::from_secs(25),
+                &AtomicBool::new(false),
+            )
+            .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let outside = child.0.process.outside_current_job(deadline);
+        // Use the exact job, independently of the production subtree verifier.
+        // SAFETY: this only opens a query handle; the original pinned identity
+        // is checked alive after the query, so PID reuse cannot pass the test.
+        let queried = unsafe {
+            windows_sys::Win32::System::Threading::OpenProcess(
+                windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                child.0.id(),
+            )
+        };
+        assert!(!queried.is_null(), "{}", io::Error::last_os_error());
+        // SAFETY: OpenProcess returned a fresh, exclusively owned handle.
+        let _queried_owner = unsafe { OwnedHandle::from_raw_handle(queried.cast()) };
+        let mut in_restrictive_job = 0;
+        // SAFETY: both handles are live and the BOOL output is writable.
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::System::JobObjects::IsProcessInJob(
+                    queried,
+                    raw,
+                    &mut in_restrictive_job,
+                )
+            },
+            0,
+            "{}",
+            io::Error::last_os_error()
+        );
+        let alive = child.0.is_alive();
+        child.0.stop(Duration::from_secs(5)).unwrap();
+        assert!(
+            outside.unwrap(),
+            "scheduled target remained in the restrictive job"
+        );
+        assert!(alive);
+        assert_eq!(
+            in_restrictive_job, 0,
+            "target is a member of the exact restrictive job"
+        );
+        assert!(!child.0.is_alive());
+    }
 }

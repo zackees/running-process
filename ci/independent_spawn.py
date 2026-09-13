@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 from ci.soldr import cargo_command
 
@@ -29,6 +31,15 @@ def main() -> int:
                 "--nocapture",
             ],
         ),
+        (
+            ["-p", "running-process-platform-internal", "--lib"],
+            [
+                "--exact",
+                "platform_win::independent_spawn::job_tests::restrictive_job_scheduler_separation",
+                "--ignored",
+                "--nocapture",
+            ],
+        ),
     ]
     for package, test_filter in suites:
         command = cargo_command(
@@ -37,7 +48,13 @@ def main() -> int:
         build = subprocess.run([*command, "--no-run"], check=False, timeout=900)
         if build.returncode:
             return build.returncode
-        test = subprocess.run([*command, "--", *test_filter], check=False, timeout=120)
+        environment = dict(os.environ)
+        environment["RP_INDEPENDENT_LAUNCHER"] = str(
+            Path("target/debug/running-process-launcher.exe").resolve()
+        )
+        test = subprocess.run(
+            [*command, "--", *test_filter], check=False, timeout=120, env=environment
+        )
         if test.returncode:
             return test.returncode
     return 0
