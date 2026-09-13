@@ -107,10 +107,52 @@ on readiness timeout, and symlink-log rejection without modifying its target.
 
 Remaining before any release: allocation accounting, requester-scope teardown,
 late-registration failure injection, simultaneous launch coverage,
-Windows native Task Scheduler/Job Object implementation, external broker,
+Windows native Task Scheduler/Job Object runtime validation, external broker,
 SpawnMode contracts, facade, reviews, merged PRs and the release cascade.
-Windows currently selects explicit Unsupported as an intermediate build seam;
-that is not completion of the requested Windows backend and must be replaced.
+Windows now selects a native Task Scheduler implementation. It registers an
+on-demand, same-user InteractiveToken task with LeastPrivilege, transports
+only the helper path and private endpoint in scheduler metadata, and uses the
+shared bounded IPC payload/readiness handshake. The existing Windows liveness
+handle supports strict pinned termination and bounded caller Job Object
+membership checks. Registration is removed before returning a detached handle;
+that handle owns pinned helper and target processes for explicit stop.
+
+The Windows helper binary and focused integration-test executable both
+cross-compiled successfully for x86_64-pc-windows-msvc; the focused executable
+also cross-compiled for aarch64-pc-windows-msvc. This is compilation
+evidence only, not evidence that Task Scheduler works or preserves the running
+instance after registration removal. A dedicated Windows CI lane exercises
+the actual scheduler and target lifecycle; it has not run yet. Restrictive Job
+Object teardown, memory accounting, and late-registration failure injection
+still need execution evidence. The eight Linux integration tests passed again
+after this implementation was added.
+
+The local `clud-review` pass (one read-only reviewer) found two high-priority
+cleanup gaps before pushing. A Linux regression confirmed that a deliberately
+unresponsive helper ignoring SIGTERM survived the two-second rollback client
+budget (RED, exit 101). The scheduler now explicitly selects control-group
+killing, one-second manager stop escalation, and SendSIGKILL. The first probe
+using only a SIGTERM-ignoring target already passed because helper ownership
+killed that target; the failing helper probe exercises the missing manager
+policy instead. After the fix, all nine Linux integration tests passed.
+
+The Windows review finding exposed a caller-death window between registration
+and definition removal, which bypasses Rust Drop. The implementation now
+registers a disabled TimeTrigger with a 45-second end boundary and a one-second
+DeleteExpiredTaskAfter policy. This trigger cannot initiate a launch: its only
+purpose is scheduler-owned expiry if the requester dies. Normal success still
+deletes the definition immediately. XML is now constructed in memory, with a
+128-bit OS-random task name, so no definition file or directory can be
+abandoned. Microsoft
+documents [task expiration cleanup](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-deleteexpiredtaskafter)
+as depending on trigger EndBoundary, and
+[task deletion](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-delete)
+as not interrupting the running program. The same reviewer accepted this
+design for a draft PR; runtime verification remains required before merge.
+The dedicated Windows stage now tests abandoned registration without Run or
+Drop as well as a full launch/definition-removal/target-stop cycle. Each test
+invocation has a two-minute hard timeout after a separate build step. Do not
+call this finding resolved by cross-compilation or by normal-path Drop tests.
 
 Windows implementation research: Microsoft documents that
 [JOBOBJECT_BASIC_PROCESS_ID_LIST](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_process_id_list)

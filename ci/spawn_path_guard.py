@@ -17,6 +17,8 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # #1202: bounded same-user Task Scheduler COM host, using sanitized spawn_sync.
+    Path("crates/running-process-platform-internal/src/platform_win/scheduler_launch.rs"),
     # #1202: the private scheduler helper receives an explicit launch payload
     # and routes target creation through the existing sanitized spawn_sync.
     Path("crates/running-process-platform-internal/src/platform/independent_spawn.rs"),

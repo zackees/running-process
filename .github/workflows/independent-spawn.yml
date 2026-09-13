@@ -1,0 +1,37 @@
+name: Independent spawn (Windows)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/running-process/Cargo.toml'
+      - 'crates/running-process-platform-internal/**'
+      - 'crates/running-process/src/independent_spawn.rs'
+      - 'crates/running-process/src/bin/running-process-launcher.rs'
+      - 'crates/running-process/tests/independent_spawn_windows.rs'
+      - 'ci/independent_spawn.py'
+      - '.github/workflows/independent-spawn.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  scheduler:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: Swatinem/rust-cache@v2
+      # The repository cargo_command wrapper uses Soldr when installed and
+      # the established CI bootstrap otherwise, avoiding a circular toolchain.
+      - name: Exercise Task Scheduler and native target control
+        run: uv run --no-project --module ci.independent_spawn
