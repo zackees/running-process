@@ -38,7 +38,11 @@ impl Read for Channel {
 }
 impl Write for Channel {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let count = self.0.write(bytes)?;
+        // Keep each nonblocking request within the named-pipe transport's
+        // default buffer hint. The frame codec already handles partial writes;
+        // an oversized request must not repeatedly make zero-byte progress.
+        let chunk = &bytes[..bytes.len().min(512)];
+        let count = self.0.write(chunk)?;
         // PIPE_NOWAIT byte pipes can succeed with zero bytes when their
         // buffer is full. Retry under the codec deadline, not as WriteZero.
         if count == 0 && !bytes.is_empty() && crate::INDEPENDENT_ZERO_WRITE_PENDING {
