@@ -9,6 +9,13 @@ from ci import independent_broker_docker as stage
 
 
 class DockerBrokerStageTests(unittest.TestCase):
+    def test_native_target_matches_supported_runner_architecture(self):
+        self.assertEqual(stage.native_target("x86_64"), "x86_64-unknown-linux-musl")
+        self.assertEqual(stage.native_target("aarch64"), "aarch64-unknown-linux-musl")
+        self.assertEqual(stage.native_target("arm64"), "aarch64-unknown-linux-musl")
+        with self.assertRaises(ValueError):
+            stage.native_target("riscv64")
+
     def test_artifacts_come_from_this_build_not_directory_globs(self):
         records = [
             {

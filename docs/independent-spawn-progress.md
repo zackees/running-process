@@ -440,3 +440,13 @@ gate tracks the platform's exact protocol pin. Two focused tests failed before
 these changes and pass afterward; `ci.version_check` confirms current 4.10.11
 consistency. This corrects release infrastructure without bumping or publishing
 a version before implementation and cross-platform validation are complete.
+
+The dedicated independent-spawn workflow now includes native ARM64 runners:
+Linux Docker uses ubuntu-24.04-arm and Windows scheduler uses windows-11-arm,
+matching runner families already used by this repository. The Docker stage
+selects the native musl target from the host architecture rather than always
+building x86-64. Its architecture-selection test failed before implementation
+and all four orchestration tests now pass on Python 3.10. The updated runner
+also passed locally on x86-64. ARM64 runtime acceptance is pending the new
+GitHub matrix; choosing a target or compiling it is not equivalent to that
+runtime evidence.

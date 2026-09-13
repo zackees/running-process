@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import platform
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,14 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def native_target(machine: str) -> str:
+    if machine.lower() in {"x86_64", "amd64"}:
+        return "x86_64-unknown-linux-musl"
+    if machine.lower() in {"aarch64", "arm64"}:
+        return "aarch64-unknown-linux-musl"
+    raise ValueError(f"unsupported Docker fixture architecture: {machine}")
 
 
 def artifacts(output: str) -> tuple[Path, Path]:
@@ -104,7 +113,7 @@ def main() -> int:
             "--bin",
             "running-process-launcher",
             "--target",
-            "x86_64-unknown-linux-musl",
+            native_target(platform.machine()),
             "--message-format=json",
         ],
         cwd=ROOT,
