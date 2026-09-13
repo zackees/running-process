@@ -900,6 +900,14 @@ def test_all_features_pass_is_opt_in_and_names_what_it_skips() -> None:
     assert rust_only is True
 
 
+def test_all_features_build_args_do_not_include_execution_only_flags() -> None:
+    assert ci_test._rust_all_features_test_args(build_only=True) == [
+        "--all-features",
+        "-E",
+        "not test(/^brokered_backend_ui::/)",
+    ]
+
+
 def test_all_features_args_exclude_only_the_host_sensitive_ui_binary() -> None:
     """The one exclusion is deliberate and stays visible.
 

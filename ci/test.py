@@ -72,7 +72,7 @@ def _rust_coverage_doctest_command() -> list[str]:
     return cargo_command("test", "--workspace", "--all-features", "--doc")
 
 
-def _rust_all_features_test_args() -> list[str]:
+def _rust_all_features_test_args(*, build_only: bool = False) -> list[str]:
     """Extra nextest arguments for the every-feature pass (#1083).
 
     `brokered_backend_ui` is excluded for the same reason the coverage pass
@@ -88,7 +88,7 @@ def _rust_all_features_test_args() -> list[str]:
     # failure occurs early. Failures still produce a nonzero nextest exit.
     return [
         "--all-features",
-        "--no-fail-fast",
+        *([] if build_only else ["--no-fail-fast"]),
         "-E",
         "not test(/^brokered_backend_ui::/)",
     ]
@@ -859,7 +859,7 @@ def main(argv: list[str] | None = None) -> int:
             # Step 1: compile all test binaries (no supervisor, no timeout)
             build_args = cargo_command("nextest", "run", "--workspace", "--no-run")
             if all_features:
-                build_args += _rust_all_features_test_args()
+                build_args += _rust_all_features_test_args(build_only=True)
             if run(build_args) != 0:
                 return 1
 
