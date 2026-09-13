@@ -50,6 +50,31 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    /// Acquire query, wait, and termination rights for identity-safe control.
+    pub fn open_for_control(pid: u32) -> Result<Self, ProcessInspectError> {
+        Self::open_pinned(pid).map_err(|source| ProcessInspectError {
+            kind: ProcessInspectErrorKind::Host,
+            source,
+        })
+    }
+
+    /// Force termination through the held process handle, never by PID lookup.
+    pub fn force_kill(&self) -> io::Result<()> {
+        self.terminate_pinned()
+    }
+
+    /// Observe whether the held process handle has become signalled.
+    pub fn has_exited(&self) -> io::Result<bool> {
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+        match unsafe { WaitForSingleObject(self.handle, 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+
     #[cfg(all(test, feature = "independent-spawn"))]
     pub(crate) fn test_creation_time(&self) -> io::Result<u64> {
         use windows_sys::Win32::{Foundation::FILETIME, System::Threading::GetProcessTimes};
@@ -69,7 +94,6 @@ impl ProcessLiveness {
         Ok((u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime))
     }
 
-    #[cfg(feature = "independent-spawn")]
     pub(crate) fn open_pinned(pid: u32) -> io::Result<Self> {
         use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
         if pid == 0 {
@@ -94,7 +118,6 @@ impl ProcessLiveness {
         })
     }
 
-    #[cfg(feature = "independent-spawn")]
     pub(crate) fn terminate_pinned(&self) -> io::Result<()> {
         if !self.pinned_control {
             return Err(io::Error::from(io::ErrorKind::Unsupported));

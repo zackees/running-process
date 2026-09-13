@@ -48,6 +48,41 @@ pub fn service_definition_path_v2(
     Ok(root.join(format!("{service_name}.{SERVICE_DEF_V2_EXTENSION}")))
 }
 
+/// A decoded v2 definition together with its exact original wire bytes.
+///
+/// Keeping the original bytes preserves unknown protobuf fields when callers
+/// inspect or forward a record without editing it.
+#[derive(Clone, Debug)]
+pub struct LoadedServiceDefinitionV2 {
+    /// Validated record for the requested service.
+    pub definition: ServiceDefinition,
+    /// Exact bytes read from disk, without re-encoding.
+    pub bytes: Vec<u8>,
+}
+
+/// Read an existing v2 definition without creating or changing its directory.
+pub fn read_service_definition_v2(
+    root: &Path,
+    service_name: &str,
+) -> Result<LoadedServiceDefinitionV2, ServiceDefinitionError> {
+    let path = service_definition_path_v2(root, service_name)?;
+    if !crate::daemon_registration_common::secure_dir::private_dir_permissions_are_private(root)? {
+        return Err(ServiceDefinitionError::InsecureDirectory(
+            root.to_path_buf(),
+        ));
+    }
+    let bytes = std::fs::read(path)?;
+    let definition = ServiceDefinition::decode(bytes.as_slice())?;
+    validate_service_name(&definition.service_name)?;
+    if definition.service_name != service_name {
+        return Err(ServiceDefinitionError::ServiceNameMismatch {
+            requested: service_name.to_owned(),
+            actual: definition.service_name,
+        });
+    }
+    Ok(LoadedServiceDefinitionV2 { definition, bytes })
+}
+
 /// Validate the service name and write one `.servicedef.v2` file into `root`.
 ///
 /// The established writer intentionally uses one direct `std::fs::write`.

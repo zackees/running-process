@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.10.13 — canonical independent-spawn compatibility
+
+- Publishes the canonical independent-spawn option/result types and retained
+  process-control compatibility methods consumed by `kernal-api`.
+- Keeps `kernel-substrate` lightweight; consumers opt into
+  `independent-spawn` separately when they need scheduler-owned placement.
+
 ## 4.10.12 — independent native spawning
 
 - Adds the opt-in `independent-spawn` Rust contract. `SpawnMode::Inherited`

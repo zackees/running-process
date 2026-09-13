@@ -6,6 +6,14 @@
 //! `tokio::process::Command` directly.
 
 use std::cfg_select;
+/// Explicit caller-owned foreground command execution.
+pub mod foreground;
+mod semantic_priority;
+pub use semantic_priority::ProcessPriority;
+#[cfg(feature = "async-process")]
+mod spawn_admission;
+#[cfg(feature = "async-process")]
+pub use spawn_admission::SpawnAdmission;
 #[cfg(feature = "async-process")]
 use std::ffi::{OsStr, OsString};
 #[cfg(feature = "async-process")]
@@ -383,6 +391,7 @@ pub struct SpawnSpec {
     create_process_group: bool,
     kill_when_owner_dies: bool,
     nice: Option<i32>,
+    admission: Option<SpawnAdmission>,
 }
 
 #[cfg(feature = "async-process")]
@@ -401,6 +410,7 @@ impl SpawnSpec {
             create_process_group: false,
             kill_when_owner_dies: false,
             nice: None,
+            admission: None,
         }
     }
 
@@ -483,6 +493,25 @@ impl SpawnSpec {
         self
     }
 
+    /// Select portable scheduling intent at native process creation.
+    pub fn priority(self, priority: ProcessPriority) -> Self {
+        self.nice(priority.nice_value())
+    }
+
+    /// Request portable scheduling intent where host policy permits it.
+    ///
+    /// The current host launch boundary applies this at creation; platforms
+    /// that reject the requested class retain their native error behavior.
+    pub fn priority_best_effort(self, priority: ProcessPriority) -> Self {
+        self.priority(priority)
+    }
+
+    /// Acquire a caller-owned permit around the native spawn attempt.
+    pub fn spawn_admission(mut self, admission: SpawnAdmission) -> Self {
+        self.admission = Some(admission);
+        self
+    }
+
     /// Spawn using the canonical asynchronous platform operation.
     pub async fn spawn(self) -> io::Result<PlatformChild> {
         let mut command = Command::new(&self.program);
@@ -507,7 +536,11 @@ impl SpawnSpec {
             self.nice,
         )?;
 
-        let child = command.spawn()?;
+        let mut spawn = || command.spawn();
+        let child = match self.admission.as_ref() {
+            Some(admission) => admission.run(spawn)?,
+            None => spawn()?,
+        };
         platform_imp::after_spawn(&child, self.kill_when_owner_dies)?;
         Ok(PlatformChild::new(child, self.create_process_group))
     }

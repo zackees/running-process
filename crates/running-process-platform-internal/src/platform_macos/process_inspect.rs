@@ -39,6 +39,30 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    /// macOS kqueue observations cannot safely control an identity-bound process.
+    pub fn open_for_control(_pid: u32) -> Result<Self, ProcessInspectError> {
+        Err(ProcessInspectError::stated(
+            ProcessInspectErrorKind::Unsupported,
+            "identity-bound process control is unavailable",
+        ))
+    }
+
+    /// Never substitute a numeric PID signal for a retained observation handle.
+    pub fn force_kill(&self) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "kqueue process references cannot deliver identity-bound signals",
+        ))
+    }
+
+    /// Observe whether the kqueue subscription has reported process exit.
+    pub fn has_exited(&self) -> io::Result<bool> {
+        if self.exited.load(Ordering::Acquire) {
+            return Ok(true);
+        }
+        Ok(!kqueue_process_is_alive(&self.exit_kqueue, &self.exited))
+    }
+
     /// Take a reference to `pid`, failing if no such process is running.
     pub fn open(pid: u32) -> Result<Self, ProcessInspectError> {
         Ok(Self {

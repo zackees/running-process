@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use crate::observer::{ObserverEmitter, ProcessWatchEmitter};
 
+/// Explicit foreground commands preserving caller-controlled native launch state.
+pub use running_process_platform_internal::foreground;
 pub(crate) use running_process_platform_internal::platform;
 
 #[cfg(feature = "async-process")]
@@ -46,6 +48,9 @@ pub mod window_icon;
 /// daemon runtime, identity probe, or async runtime.
 #[cfg(feature = "daemon-registration")]
 pub mod daemon_registration;
+/// Frozen v1 semantic registration compatibility contract.
+#[cfg(feature = "daemon-registration")]
+pub mod daemon_registration_compat;
 /// Frozen v2 service-definition registration writer substrate.
 ///
 /// This direct persistence surface owns the established `.servicedef.v2`
@@ -54,10 +59,16 @@ pub mod daemon_registration;
 /// negotiation, endpoint transport, identity, or an async runtime.
 #[cfg(feature = "daemon-registration-v2")]
 pub mod daemon_registration_v2;
+/// Limited shared-broker v2 registration compatibility contract.
+#[cfg(feature = "daemon-registration-v2")]
+pub mod daemon_registration_v2_compat;
 // The two registration writer features share only the small path, name, error,
 // and owner-private-directory substrate. Keeping it separate from either
 // public module prevents v2 persistence from selecting v1's SHA-256 manifest
 // support, while retaining exact v1 type identity through re-exports.
+/// Canonical semantic v1 frame compatibility contract, retaining raw values.
+#[cfg(feature = "frame-v1-codec")]
+pub mod daemon_frame_v1;
 #[cfg(any(feature = "daemon-registration", feature = "daemon-registration-v2"))]
 pub(crate) mod daemon_registration_common;
 /// Frozen v1 `Frame` envelope codec and consumer-protocol registry.
@@ -221,7 +232,7 @@ mod windows;
 pub use async_process::{
     AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncProcessSession,
     AsyncProcessSessionChunk, AsyncProcessSessionControl, AsyncProcessSessionEvent,
-    AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio,
+    AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio, ProcessTreeKill,
 };
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
@@ -249,13 +260,26 @@ pub use output_log::{
 pub use running_process_platform_internal::platform::executable as platform_executable;
 #[cfg(target_os = "linux")]
 pub use running_process_platform_internal::platform::process::current_executable_build_id;
+/// Canonical native process-inspection errors, preserving their host detail.
+pub use running_process_platform_internal::platform::process::{
+    ProcessInspectError, ProcessInspectErrorKind,
+};
+/// Resolve the current executable image for a live PID.
+pub use running_process_platform_internal::process_executable_path;
+/// Compare executable path spellings using the host-native policy.
+pub use running_process_platform_internal::process_same_executable_path;
+/// Retained native process-liveness observation.
+pub use running_process_platform_internal::ProcessLiveness;
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
     spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env,
-    spawn_daemon_with_env_policy, spawn_daemon_with_stdio, spawn_daemon_with_stdio_and_env_policy,
-    spawn_with_env_policy, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy,
-    SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR,
+    spawn_daemon_with_env_policy, spawn_daemon_with_environment,
+    spawn_daemon_with_explicit_environment, spawn_daemon_with_stdio,
+    spawn_daemon_with_stdio_and_env_policy, spawn_with_env_policy, spawn_with_environment,
+    spawn_with_explicit_environment, DaemonChild, DaemonStdio, DaemonStdioSource,
+    EnvironmentPolicy, SpawnStdio, SpawnedChild, SpawnedChildControl, StdioSource, SyncEnvironment,
+    DAEMON_MARKER_ENV_VAR,
 };
 #[cfg(feature = "client-async")]
 pub use spawn::{spawn_tokio, TokioSpawnOptions};
@@ -279,6 +303,11 @@ pub use window_icon::{
 #[cfg(unix)]
 pub(crate) use helpers::{child_try_wait_error_is_retryable, poll_mutex_until};
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
+/// Convert a native process exit status to the portable integer convention.
+pub use running_process_platform_internal::exit_code as native_exit_code;
+pub use running_process_platform_internal::ProcessPriority;
+#[cfg(feature = "async-process")]
+pub use running_process_platform_internal::SpawnAdmission;
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
 #[cfg(windows)]

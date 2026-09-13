@@ -9,6 +9,25 @@ use crate::platform::process::{self, ProcessInspectError, ProcessInspectErrorKin
 
 /// Verify a daemon process identity and return an OS liveness handle.
 pub fn verify_daemon_process(expected: &DaemonProcess) -> Result<ProcessHandle, VerifyPidError> {
+    verify_daemon_with_opener(expected, open_handle)
+}
+
+/// Verify identity while retaining rights to terminate that same process object.
+pub fn verify_daemon_process_for_control(
+    expected: &DaemonProcess,
+) -> Result<ProcessHandle, VerifyPidError> {
+    verify_daemon_with_opener(expected, |pid| {
+        ProcessHandle::open_for_control(pid).map_err(|error| VerifyPidError::Handle {
+            pid,
+            source: error.source,
+        })
+    })
+}
+
+fn verify_daemon_with_opener(
+    expected: &DaemonProcess,
+    open: impl FnOnce(u32) -> Result<ProcessHandle, VerifyPidError>,
+) -> Result<ProcessHandle, VerifyPidError> {
     if expected.pid == 0 {
         return Err(VerifyPidError::InvalidPid(expected.pid));
     }
@@ -24,7 +43,7 @@ pub fn verify_daemon_process(expected: &DaemonProcess) -> Result<ProcessHandle, 
         });
     }
 
-    let handle = open_handle(expected.pid)?;
+    let handle = open(expected.pid)?;
     let exe_path =
         process::executable_path(expected.pid).map_err(|source| VerifyPidError::ExePath {
             pid: expected.pid,
@@ -48,6 +67,9 @@ pub fn verify_daemon_process(expected: &DaemonProcess) -> Result<ProcessHandle, 
         return Err(VerifyPidError::ExecutableHashMismatch { pid: expected.pid });
     }
 
+    if !handle.is_alive() {
+        return Err(VerifyPidError::NotFound { pid: expected.pid });
+    }
     Ok(handle)
 }
 
@@ -64,6 +86,16 @@ pub fn signal_terminate(pid: u32) -> Result<(), VerifyPidError> {
 /// Force-kill a process ID.
 pub fn force_kill_pid(pid: u32) -> Result<(), VerifyPidError> {
     process::force_kill(pid).map_err(|error| translate(pid, error))
+}
+
+/// Force termination through a retained process object, never a reopened PID.
+pub fn force_kill_handle(handle: &ProcessHandle) -> Result<(), VerifyPidError> {
+    handle
+        .force_kill()
+        .map_err(|source| VerifyPidError::Handle {
+            pid: handle.pid(),
+            source,
+        })
 }
 
 /// Errors returned while verifying a daemon process.
