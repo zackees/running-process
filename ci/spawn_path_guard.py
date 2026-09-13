@@ -17,6 +17,10 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # Caller-owned foreground execution intentionally preserves an unmodified
+    # std::process::Command. Its fixtures construct fixed commands only to
+    # prove that this explicit escape hatch adds no containment policy.
+    Path("crates/running-process-platform-internal/src/foreground.rs"),
     # #1202: bounded same-user Task Scheduler COM host, using sanitized spawn_sync.
     Path("crates/running-process-platform-internal/src/platform_win/scheduler_launch.rs"),
     # #1202: the private scheduler helper receives an explicit launch payload
@@ -187,6 +191,10 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
+    # Caller-owned foreground execution is the explicit native-command escape
+    # hatch. The only raw spawn transfers the caller's existing Command as-is;
+    # it does not introduce a second command-construction or containment path.
+    Path("crates/running-process-platform-internal/src/foreground.rs"),
     # Output-shutdown regressions spawn only their own libtest executable
     # through the blessed SpawnSpec operation. These call sites are cfg(test):
     # one deliberately inherits a descendant-held pipe, the other occupies the
