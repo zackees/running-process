@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.10.12 — independent native spawning
+
+- Adds the opt-in `independent-spawn` Rust contract. `SpawnMode::Inherited`
+  remains the default; `Independent` explicitly requests placement outside the
+  requesting worker's resource subtree while remaining subject to enclosing
+  user, container, and system limits.
+- Adds verified Linux transient-service and pre-existing external-broker paths,
+  plus same-user Windows Task Scheduler placement with Job Object verification.
+  Unsupported or unavailable backends report an error and never silently fall
+  back to inherited placement.
+- Documents bounded readiness, cancellation, cleanup, and the distinction
+  between independent resource placement and detached process lifetime.
+
 ## 4.10.11 — byte-exact stream capture
 
 - Adds `NativeProcess::drain_stream_raw(stream)`, a consuming byte-exact
