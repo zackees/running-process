@@ -82,7 +82,7 @@ impl ProcessLiveness {
         Ok((u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime))
     }
 
-    fn open_pinned(pid: u32) -> io::Result<Self> {
+    pub(crate) fn open_pinned(pid: u32) -> io::Result<Self> {
         use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
         if pid == 0 {
             return Err(io::Error::from(io::ErrorKind::InvalidInput));
@@ -106,7 +106,7 @@ impl ProcessLiveness {
         })
     }
 
-    fn terminate_pinned(&self) -> io::Result<()> {
+    pub(crate) fn terminate_pinned(&self) -> io::Result<()> {
         if !self.pinned_control {
             return Err(io::Error::from(io::ErrorKind::Unsupported));
         }
