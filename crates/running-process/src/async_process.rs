@@ -79,6 +79,12 @@ pub struct AsyncProcessSessionOptions {
     pub post_exit_grace: Option<Duration>,
     /// Whether dropping the terminal session owner terminates and reaps the direct child.
     pub kill_on_drop: bool,
+    /// Request descendant-tree cleanup when the terminal owner drops.
+    ///
+    /// This remains opt-in and defaults to `false`. The current actor retains
+    /// direct-child cleanup as its reliable baseline; callers must not infer
+    /// cleanup of descendants created after a snapshot.
+    pub kill_tree_on_drop: bool,
 }
 
 impl Default for AsyncProcessSessionOptions {
@@ -88,6 +94,7 @@ impl Default for AsyncProcessSessionOptions {
             max_chunk_bytes: 8 * 1024,
             post_exit_grace: Some(Duration::from_millis(250)),
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         }
     }
 }

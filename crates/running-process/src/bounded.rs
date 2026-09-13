@@ -52,6 +52,12 @@ impl BoundedRunOptions {
         self.nice = nice;
         self
     }
+
+    /// Select portable scheduling intent for the bounded child.
+    #[must_use]
+    pub fn priority(self, priority: crate::ProcessPriority) -> Self {
+        self.nice(priority.nice_value())
+    }
 }
 
 /// Run a command to completion while concurrently draining stdout and stderr.
