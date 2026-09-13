@@ -171,6 +171,18 @@ Drop as well as a full launch/definition-removal/target-stop cycle. Each test
 invocation has a two-minute hard timeout after a separate build step. Do not
 call this finding resolved by cross-compilation or by normal-path Drop tests.
 
+Windows runtime evidence is now available from
+[run 34754214770](https://github.com/zackees/running-process/actions/runs/34754214770):
+the expiry-only policy test and abandoned-registration test passed, with actual
+service deletion observed in 48.08 seconds. Earlier registration failed with
+HRESULT 0x8004131a because the XML byte-encoding declaration was inappropriate
+for the Unicode COM string; passing the document element without that
+declaration made registration succeed. The same run's full launch test then
+failed with WriteZero. Windows nonblocking byte-pipe backpressure can return
+zero bytes without failure, so the private channel now normalizes that result
+to WouldBlock and retries under the existing deadline. Full launch/lifetime
+validation is still pending; registration expiry alone does not prove it.
+
 Windows implementation research: Microsoft documents that
 [JOBOBJECT_BASIC_PROCESS_ID_LIST](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_process_id_list)
 includes processes in nested child jobs. A bounded
