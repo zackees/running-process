@@ -7,7 +7,10 @@
 /// Explicit pre-existing broker launch and lifetime-control protocol.
 #[allow(missing_docs)]
 pub mod independent_spawn {
-    include!(concat!(env!("OUT_DIR"), "/running_process.independent_spawn.v1.rs"));
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/running_process.independent_spawn.v1.rs"
+    ));
 }
 
 /// Generated daemon control protocol types.

@@ -734,13 +734,16 @@ unsafe fn clear_cloexec_after_sweep(fd: libc::c_int) -> io::Result<()> {
 
 pub fn configure_sync_contained_command(command: &mut std::process::Command) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
+    let owner_pid = std::process::id() as libc::pid_t;
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if libc::setpgid(0, 0) == -1 { return Err(io::Error::last_os_error()); }
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::getppid() == 1 { libc::_exit(1); }
+            // PID 1 may be the legitimate owner in a container. Compare the
+            // captured parent identity, not the orphan-reparenting convention.
+            if libc::getppid() != owner_pid { libc::_exit(1); }
             unix_mark_extra_fds_close_on_exec();
             Ok(())
         });

@@ -343,3 +343,47 @@ Windows requester teardown reached GREEN in
 The control host uses the existing token-derived login environment, separately
 from the target's explicit environment. All five workflow stages passed,
 including restrictive Job separation and requester-teardown survival/stop.
+
+## Non-systemd Docker runtime GREEN (2026-09-13)
+
+`independent_broker_docker::docker_broker_accounting` now exercises the real
+broker in a disposable Alpine 3.20 container. The test requires itself to be
+PID 1 in a private cgroup namespace with a 128 MiB outer limit before creating
+worker/broker cgroups. The worker has a 64 MiB limit; the broker has no extra
+leaf limit. No host cgroup bind mount is used. The ignored helper tests are
+subprocess fixtures, not standalone acceptance tests.
+
+The first runtime attempt found a real contained-spawn bug: treating parent
+PID 1 as proof of parent death rejected legitimate container-entrypoint
+children before exec. Capturing the actual owner PID and comparing it after
+installing the parent-death signal preserves the race guard and permits this
+case. The corrected test passed with these measured byte counts:
+
+- Worker baseline: 262144.
+- Worker after inherited 24 MiB allocation: 26169344.
+- Worker after the independent allocation: 26431488.
+- Broker before/after independent allocation: 974848 / 26902528.
+
+The worker also verifies that an absent broker returns `Unsupported` without
+creating its endpoint. Killing the worker cgroup terminates the inherited
+target while the pidfd-pinned independent target remains alive. A subsequent
+256 MiB pressure allocation increments both the outer cgroup's local OOM
+counter and its OOM-kill counter. The independent target survived that OOM
+in this run, but survival of outer-container OOM is deliberately observational,
+not a guarantee: the outer limit applies to independent targets too.
+
+Build the fixture and launcher using:
+
+```sh
+soldr --no-cache build -p running-process --no-default-features --features independent-spawn --test independent_broker_docker --bin running-process-launcher --target x86_64-unknown-linux-musl
+```
+
+Run the resulting static test executable as `/fixture/test` (container PID 1),
+with the static launcher mounted read-only at `/fixture/launcher`, using
+`docker run --rm --network none --memory 128m --memory-swap 128m --privileged
+--cgroupns private --entrypoint /fixture/test alpine:3.20 --exact
+docker_broker_accounting --ignored --nocapture`. Both binary mounts must be
+read-only and the build must finish before starting the container. Privilege
+is for this disposable test's cgroup setup, not a production broker requirement.
+The container exited successfully and was automatically removed. CI automation
+and the remaining failure-matrix/release work are still outstanding.

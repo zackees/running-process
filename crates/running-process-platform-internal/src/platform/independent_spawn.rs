@@ -13,9 +13,9 @@ use super::process::{SpawnStdio, StdioSource, SyncEnvironment};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const MAX_FRAME: usize = 1024 * 1024;
-pub use crate::{independent_spawn as spawn, IndependentChild};
 pub use crate::independent_broker_run as run_broker;
 pub use crate::independent_broker_spawn as spawn_broker;
+pub use crate::{independent_spawn as spawn, IndependentChild};
 pub(crate) const LEASE: Duration = Duration::from_secs(30);
 
 /// Normalize the selected transport's empty nonblocking read convention.
