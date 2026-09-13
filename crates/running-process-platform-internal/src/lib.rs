@@ -536,7 +536,7 @@ impl SpawnSpec {
             self.nice,
         )?;
 
-        let spawn = || command.spawn();
+        let mut spawn = || command.spawn();
         let child = match self.admission.as_ref() {
             Some(admission) => admission.run(spawn)?,
             None => spawn()?,
