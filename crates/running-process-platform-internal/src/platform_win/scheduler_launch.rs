@@ -41,7 +41,7 @@ try {
   if ($code -eq 2147942405L) { exit 3 }
   if ($code -eq 2147942402L) { exit 5 }
   if ($code -eq 2147944122L -or $code -eq 2147746132L -or $code -eq 2147750677L) { exit 4 }
-  exit 6
+  exit $errorObject.HResult
 }
 "#;
 
@@ -138,7 +138,7 @@ impl ScheduledTask {
                     5 => Err(io::Error::from(io::ErrorKind::NotFound)),
                     _ => Err(io::Error::new(
                         io::ErrorKind::Other,
-                        "Task Scheduler operation failed",
+                        format!("Task Scheduler {operation} failed (HRESULT 0x{:08x})", code as u32),
                     )),
                 };
             }
