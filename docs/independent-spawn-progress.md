@@ -244,5 +244,40 @@ of scheduler command/description metadata.
   Publish the backend first, then update the facade's exact released pin,
   merge its PR and publish its release. Do not release local path patches.
 
+## Canonical dispatch and ownership validation
+
+The backend now defines dependency-light `SpawnMode`, `SpawnLifetime`,
+`IndependentBackend`, and `SpawnOptions`, with feature-gated dispatch and
+`SpawnHandle`. External-broker dispatch remains explicitly unimplemented;
+this is not a releasable completion of #1202. The issues' requested canonical
+facade re-export conflicts with the supplied facade ownership rule; that
+exception still awaits user confirmation before facade edits.
+
+The seven spawn-contract tests pass on Linux, including real systemd dispatch.
+The detached-readiness rollback regression initially left a descendant alive;
+group/Job ownership now remains armed until readiness commits detachment.
+Windows assigns the owned Job before resuming the target. Review then found
+that Unix exit observation reaped the leader before later group control,
+allowing numeric process-group reuse. The new identity regression failed before
+the fix and passed afterward: `waitid(WNOWAIT)` retains the owned leader until
+control ends, then handle cleanup reaps it. Callers must not use competing
+reapers or automatic SIGCHLD reaping for managed children. Detected ownership
+loss refuses group signaling; external-reaper races cannot be made safe by
+an ownership check alone. The same reviewer found no remaining high-severity
+finding in this scoped change, not a completion verdict for the whole issue.
+
+Windows x86-64 and macOS ARM cross-compilation passed during this iteration;
+macOS reports an unused failure-conversion method that needs cleanup. Windows
+full-launch runtime still times out after the earlier WriteZero fix. The next
+Windows stage includes a large-frame nonblocking IPC test and sanitized
+phase-specific errors to isolate payload transfer from target acknowledgement.
+
+The macOS CI failure also exposed a stale minimal-platform graph assertion:
+origin/main already defaults platform-internal to async-process plus
+window-icon, but its guard expected only async-process. The real-manifest test
+failed before updating that expectation. All five guard tests now pass,
+including negative tests rejecting lost legacy features and enabling
+independent-spawn by default. The root still opts out of platform defaults.
+
 Completion requires both issues resolved by PRs and the release cascade
 verified. These remaining items must not be replaced by the baseline repro.

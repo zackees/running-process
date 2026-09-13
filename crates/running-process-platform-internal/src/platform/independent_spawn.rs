@@ -399,7 +399,13 @@ pub fn run_launcher(endpoint: &str) -> io::Result<i32> {
     child.wait()
 }
 
-fn spawn_target(spec: &LaunchSpec) -> io::Result<super::process::SpawnedChild> {
+type PreparedTarget = (
+    std::process::Command,
+    Option<std::fs::File>,
+    Option<std::fs::File>,
+);
+
+fn prepare_target(spec: &LaunchSpec) -> io::Result<PreparedTarget> {
     spec.validate()?;
     let open_log = |path: &Option<OsString>| -> io::Result<Option<std::fs::File>> {
         path.as_ref()
@@ -414,6 +420,18 @@ fn spawn_target(spec: &LaunchSpec) -> io::Result<super::process::SpawnedChild> {
         .current_dir(&spec.cwd)
         .env_clear()
         .envs(spec.environment.iter().cloned());
+    Ok((command, stdout, stderr))
+}
+
+fn spawn_target(spec: &LaunchSpec) -> io::Result<super::process::SpawnedChild> {
+    spawn_owned_target(spec, false)
+}
+
+fn spawn_owned_target(
+    spec: &LaunchSpec,
+    detached: bool,
+) -> io::Result<super::process::SpawnedChild> {
+    let (mut command, stdout, stderr) = prepare_target(spec)?;
     let stdio = SpawnStdio {
         stdin: StdioSource::Null,
         stdout: stdout
@@ -427,12 +445,133 @@ fn spawn_target(spec: &LaunchSpec) -> io::Result<super::process::SpawnedChild> {
         drain_timeout: None,
         show_console: false,
     };
-    crate::spawn_sync(&mut command, stdio, SyncEnvironment::Explicit(Vec::new()))
+    if detached {
+        crate::spawn_sync_owned_daemon(&mut command, stdio, SyncEnvironment::Explicit(Vec::new()))
+    } else {
+        crate::spawn_sync(&mut command, stdio, SyncEnvironment::Explicit(Vec::new()))
+    }
+}
+
+/// Private-substrate direct child, using the existing sanitized spawn engines.
+pub struct InheritedChild {
+    child: super::process::SpawnedChild,
+    committed: bool,
+}
+impl InheritedChild {
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+    pub fn try_wait(&mut self) -> io::Result<Option<i32>> {
+        self.child.try_wait()
+    }
+    pub fn stop(&mut self, timeout: Duration) -> io::Result<()> {
+        self.child.kill_tree()?;
+        self.wait(timeout, &AtomicBool::new(false)).map(|_| ())
+    }
+    pub fn wait(&mut self, timeout: Duration, cancelled: &AtomicBool) -> io::Result<i32> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        loop {
+            if let Some(code) = self.try_wait()? {
+                return Ok(code);
+            }
+            retry(deadline, cancelled)?;
+        }
+    }
+}
+impl Drop for InheritedChild {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = self.stop(Duration::from_secs(2));
+        }
+    }
+}
+
+/// Direct placement with explicit payload and the same readiness budget.
+pub fn spawn_inherited(
+    spec: &LaunchSpec,
+    detached: bool,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> io::Result<InheritedChild> {
+    if timeout.is_zero() || timeout > LEASE {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    let deadline = Instant::now() + timeout;
+    check(deadline, cancelled)?;
+    let mut child = spawn_owned_target(spec, detached)?;
+    child.retain_exit_identity();
+    let mut child = InheritedChild {
+        child,
+        committed: false,
+    };
+    while !is_ready(&spec.readiness)? {
+        check(deadline, cancelled)?;
+        if child.try_wait()?.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "target exited before readiness",
+            ));
+        }
+        retry(deadline, cancelled)?;
+    }
+    check(deadline, cancelled)?;
+    if detached {
+        child.child.commit_detached()?;
+    }
+    child.committed = true;
+    Ok(child)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonblocking_large_frame_round_trip() {
+        let endpoint = Endpoint::test("independent-frame").unwrap();
+        let listener = super::super::ipc::Listener::bind(&endpoint).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let server = std::thread::spawn(move || {
+            let mut channel = Channel::new(listener.accept().unwrap()).unwrap();
+            let message = receive(&mut channel, deadline, &AtomicBool::new(false)).unwrap();
+            let Message::Launch(spec) = message else {
+                panic!("expected launch");
+            };
+            assert_eq!(spec.args, vec![OsString::from("x".repeat(8192))]);
+            send(
+                &mut channel,
+                &Message::Committed,
+                deadline,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        });
+        let mut channel = Channel::new(Stream::connect(&endpoint).unwrap()).unwrap();
+        let spec = LaunchSpec {
+            program: "fixture".into(),
+            args: vec!["x".repeat(8192).into()],
+            cwd: ".".into(),
+            environment: vec![],
+            stdout: None,
+            stderr: None,
+            readiness: Readiness::ProcessStarted,
+        };
+        send(
+            &mut channel,
+            &Message::Launch(spec),
+            deadline,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(matches!(
+            receive(&mut channel, deadline, &AtomicBool::new(false)).unwrap(),
+            Message::Committed
+        ));
+        server.join().unwrap();
+        endpoint.retire().unwrap();
+    }
 
     #[test]
     fn oversized_frame_is_rejected_before_body_allocation() {

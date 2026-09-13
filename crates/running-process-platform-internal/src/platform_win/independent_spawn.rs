@@ -137,8 +137,9 @@ pub fn spawn(
         &Message::Launch(spec.clone()),
         deadline,
         cancelled,
-    )?;
-    let pid = match receive(&mut stream, deadline, cancelled)? {
+    ).map_err(|error| io::Error::new(error.kind(), "target payload transfer failed"))?;
+    let pid = match receive(&mut stream, deadline, cancelled)
+        .map_err(|error| io::Error::new(error.kind(), "target identity response failed"))? {
         Message::Started { pid } => pid,
         Message::Failed { kind } => return Err(kind.into_io()),
         _ => {

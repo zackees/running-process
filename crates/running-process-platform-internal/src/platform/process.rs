@@ -340,6 +340,7 @@ impl DaemonChild {
 ///
 /// Dropping this value shuts down the contained process group.
 pub struct SpawnedChild {
+    pub(crate) kill_on_drop: bool,
     /// Writable parent end when standard input was configured as a pipe.
     pub stdin: Option<std::process::ChildStdin>,
     /// Readable parent end when standard output was configured as a pipe.
@@ -357,9 +358,33 @@ pub(crate) trait SpawnedChildControl:
     fn wait(&mut self) -> std::io::Result<i32>;
     fn try_wait(&mut self) -> std::io::Result<Option<i32>>;
     fn shutdown(&mut self);
+    #[cfg(feature = "independent-spawn")]
+    fn retain_exit_identity(&mut self) {}
+    #[cfg(feature = "independent-spawn")]
+    fn detach(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    #[cfg(feature = "independent-spawn")]
+    fn kill_tree(&mut self) -> std::io::Result<()> {
+        self.kill()
+    }
 }
 
 impl SpawnedChild {
+    #[cfg(feature = "independent-spawn")]
+    pub(crate) fn retain_exit_identity(&mut self) {
+        self.inner.retain_exit_identity();
+    }
+    #[cfg(feature = "independent-spawn")]
+    pub(crate) fn commit_detached(&mut self) -> std::io::Result<()> {
+        self.inner.detach()?;
+        self.kill_on_drop = false;
+        Ok(())
+    }
+    #[cfg(feature = "independent-spawn")]
+    pub(crate) fn kill_tree(&mut self) -> std::io::Result<()> {
+        self.inner.kill_tree()
+    }
     /// Return the operating-system process identifier.
     pub fn id(&self) -> u32 {
         self.pid
@@ -383,7 +408,9 @@ impl SpawnedChild {
 
 impl Drop for SpawnedChild {
     fn drop(&mut self) {
-        self.inner.shutdown();
+        if self.kill_on_drop {
+            self.inner.shutdown();
+        }
     }
 }
 

@@ -830,6 +830,8 @@ fn assign(child: Option<HANDLE>) -> io::Result<()> {
 #[path = "platform_win/sync_spawn.rs"]
 mod sync_spawn;
 pub use sync_spawn::{spawn_sync, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
+#[cfg(feature = "independent-spawn")]
+pub(crate) use sync_spawn::spawn_sync_owned_daemon;
 
 /// Replace this process's image with `command`.
 ///
