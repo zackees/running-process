@@ -95,13 +95,32 @@ dependency tree contains no serde, serde_json, tempfile or IPC dependency from
 this feature. No `rp-independent-*` services or `/tmp/rpil-*` handshake
 directories remained after the tests.
 
-Remaining before any release: application-level readiness policy beyond exec,
-allocation accounting, requester-scope teardown, late-registration failure
-injection, simultaneous launch coverage, log-file type/permission hardening,
+Readiness now explicitly selects `ProcessStarted` or an application file
+marker with exact expected bytes. Markers must be absent before launch; the
+caller owns their paths and removal. A bounded readiness wait runs before
+commit, followed by repeated pinned-identity/placement verification. Target
+file I/O now opens regular files only, rejects symlinks/reparse points and
+uses nonblocking Unix opens so a FIFO cannot stall the helper. Newly created
+Unix log files use mode 0600. Eight integration tests passed, including stale
+marker rejection, successful application readiness, a started target removed
+on readiness timeout, and symlink-log rejection without modifying its target.
+
+Remaining before any release: allocation accounting, requester-scope teardown,
+late-registration failure injection, simultaneous launch coverage,
 Windows native Task Scheduler/Job Object implementation, external broker,
 SpawnMode contracts, facade, reviews, merged PRs and the release cascade.
 Windows currently selects explicit Unsupported as an intermediate build seam;
 that is not completion of the requested Windows backend and must be replaced.
+
+Windows implementation research: Microsoft documents that
+[JOBOBJECT_BASIC_PROCESS_ID_LIST](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_process_id_list)
+includes processes in nested child jobs. A bounded
+`QueryInformationJobObject(NULL, JobObjectBasicProcessIdList, ...)` query can
+test whether a pinned helper/target remains in the caller's immediate job
+subtree. Do not infer separation from Task Scheduler engine parentage or
+reject a target merely because it belongs to a different scheduler-owned job.
+Task registration must be on-demand, same-user and non-elevated; the existing
+boot-autostart helper uses ONLOGON/HIGHEST and is not the appropriate API.
 
 The Linux native tree now contains the private `resource_placement` verifier.
 Its focused tests first produced five assertion failures with an inert

@@ -27,6 +27,8 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 pub mod platform;
 #[cfg(feature = "independent-spawn")]
 pub use platform_imp::{independent_spawn, IndependentChild};
+#[cfg(feature = "independent-spawn")]
+pub(crate) use platform_imp::independent_open_regular;
 
 /// Temporary source-compatibility re-export for the pre-boundary PTY API.
 ///

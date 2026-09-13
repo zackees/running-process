@@ -4,6 +4,10 @@
 mod independent_spawn;
 #[cfg(feature = "independent-spawn")]
 pub use independent_spawn::{spawn as independent_spawn, IndependentChild};
+#[cfg(feature = "independent-spawn")]
+mod independent_io;
+#[cfg(feature = "independent-spawn")]
+pub(crate) use independent_io::open_regular as independent_open_regular;
 
 #[path = "platform_macos/autostart.rs"]
 pub(crate) mod autostart;

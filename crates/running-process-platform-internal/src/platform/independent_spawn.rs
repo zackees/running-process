@@ -57,10 +57,48 @@ pub struct LaunchSpec {
     pub environment: Vec<(OsString, OsString)>,
     pub stdout: Option<OsString>,
     pub stderr: Option<OsString>,
+    #[serde(default)]
+    pub readiness: Readiness,
+}
+
+/// Application readiness is distinct from successful exec. A file marker must
+/// be absent before launch and contain exactly the caller-selected bytes.
+/// The caller owns the marker's path and eventual removal.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub enum Readiness {
+    #[default]
+    ProcessStarted,
+    File {
+        path: OsString,
+        value: Vec<u8>,
+    },
 }
 
 impl LaunchSpec {
     pub(crate) fn validate(&self) -> io::Result<()> {
+        if let Readiness::File { path, value } = &self.readiness {
+            if !PathBuf::from(path).is_absolute()
+                || path.as_encoded_bytes().contains(&0)
+                || path.len() > 4096
+                || value.is_empty()
+                || value.len() > 4096
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid readiness marker",
+                ));
+            }
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "readiness marker already exists",
+                    ))
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
         if self.args.len() > 4096 || self.environment.len() > 4096 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -112,6 +150,22 @@ impl LaunchSpec {
             ));
         }
         Ok(())
+    }
+}
+
+pub(crate) fn is_ready(readiness: &Readiness) -> io::Result<bool> {
+    match readiness {
+        Readiness::ProcessStarted => Ok(true),
+        Readiness::File { path, value } => {
+            let file = match crate::independent_open_regular(std::path::Path::new(path), false) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            let mut bytes = Vec::new();
+            file.take(value.len() as u64 + 1).read_to_end(&mut bytes)?;
+            Ok(bytes == *value)
+        }
     }
 }
 
@@ -342,12 +396,7 @@ fn spawn_target(spec: &LaunchSpec) -> io::Result<super::process::SpawnedChild> {
     spec.validate()?;
     let open_log = |path: &Option<OsString>| -> io::Result<Option<std::fs::File>> {
         path.as_ref()
-            .map(|path| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-            })
+            .map(|path| crate::independent_open_regular(std::path::Path::new(path), true))
             .transpose()
     };
     let stdout = open_log(&spec.stdout)?;
@@ -414,6 +463,7 @@ mod tests {
             environment: vec![("KEY".into(), "literal value".into())],
             stdout: None,
             stderr: None,
+            readiness: Readiness::ProcessStarted,
         };
         let mut bytes = Vec::new();
         send(

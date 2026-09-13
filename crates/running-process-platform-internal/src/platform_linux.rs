@@ -29,6 +29,10 @@ mod scheduler_launch;
 mod independent_spawn;
 #[cfg(feature = "independent-spawn")]
 pub use independent_spawn::{spawn as independent_spawn, IndependentChild};
+#[cfg(feature = "independent-spawn")]
+mod independent_io;
+#[cfg(feature = "independent-spawn")]
+pub(crate) use independent_io::open_regular as independent_open_regular;
 pub use process_inspect::{
     process_executable_path, process_force_kill, process_same_executable_path,
     process_signal_terminate, ProcessLiveness,

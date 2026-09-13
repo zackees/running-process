@@ -5,7 +5,7 @@ use super::{
     scheduler_launch::ScheduledUnit,
 };
 use crate::platform::independent_spawn::{
-    check, receive, send, Channel, LaunchSpec, Message, LEASE,
+    check, is_ready, receive, send, Channel, LaunchSpec, Message, LEASE,
 };
 use crate::platform::ipc::{current_user_id, Endpoint, Listener, ListenerNonblockingMode};
 use std::{
@@ -133,6 +133,25 @@ pub fn spawn(
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "target retained caller containment",
+        ));
+    }
+    while !is_ready(&spec.readiness)? {
+        check(deadline, cancelled)?;
+        if !process.is_alive() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "target exited before readiness",
+            ));
+        }
+        std::thread::sleep(
+            Duration::from_millis(2).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+    // Revalidate identity and placement after application startup code ran.
+    if !Placement::capture_pinned(&process)?.outside_worker(&worker)? {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "target changed containment during startup",
         ));
     }
     send(&mut stream, &Message::Commit, deadline, cancelled)?;

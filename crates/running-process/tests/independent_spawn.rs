@@ -1,7 +1,7 @@
 //! Real Linux scheduler/helper contract; explicitly opt in on systemd hosts.
 #![cfg(all(target_os = "linux", feature = "independent-spawn"))]
 
-use running_process::independent_spawn::{spawn, IndependentChild, LaunchSpec};
+use running_process::independent_spawn::{spawn, IndependentChild, LaunchSpec, Readiness};
 use std::{
     ffi::OsString,
     fs,
@@ -16,6 +16,123 @@ impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = self.0.stop(Duration::from_secs(2));
     }
+}
+
+fn sleep_spec(directory: &Path) -> LaunchSpec {
+    LaunchSpec {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "exec sleep 60".into()],
+        cwd: directory.as_os_str().to_owned(),
+        environment: vec![("PATH".into(), std::env::var_os("PATH").unwrap())],
+        stdout: None,
+        stderr: None,
+        readiness: Readiness::ProcessStarted,
+    }
+}
+
+#[test]
+fn preexisting_readiness_is_not_accepted_as_a_new_daemon() {
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("ready");
+    fs::write(&marker, b"ready").unwrap();
+    let mut spec = sleep_spec(directory.path());
+    spec.readiness = Readiness::File {
+        path: marker.into_os_string(),
+        value: b"ready".to_vec(),
+    };
+    let result = spawn(
+        &spec,
+        Path::new("/absent/helper"),
+        Duration::from_secs(1),
+        &AtomicBool::new(false),
+    );
+    assert_eq!(
+        result.err().unwrap().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+}
+
+#[test]
+#[ignore = "requires accessible systemd user manager, cgroup v2 and pidfds"]
+fn application_readiness_precedes_commit() {
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("ready");
+    let mut spec = sleep_spec(directory.path());
+    spec.args = vec![
+        "-c".into(),
+        "sleep 0.05; printf ready > \"$1\"; exec sleep 60".into(),
+        "fixture".into(),
+        marker.as_os_str().to_owned(),
+    ];
+    spec.readiness = Readiness::File {
+        path: marker.as_os_str().to_owned(),
+        value: b"ready".to_vec(),
+    };
+    let mut child = Cleanup(
+        spawn(
+            &spec,
+            Path::new(env!("CARGO_BIN_EXE_running-process-launcher")),
+            Duration::from_secs(5),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    assert_eq!(fs::read(marker).unwrap(), b"ready");
+    assert!(child.0.is_alive());
+    child.0.stop(Duration::from_secs(2)).unwrap();
+}
+
+#[test]
+#[ignore = "requires accessible systemd user manager, cgroup v2 and pidfds"]
+fn readiness_timeout_rolls_back_started_target() {
+    let directory = tempfile::tempdir().unwrap();
+    let pidfile = directory.path().join("pid");
+    let mut spec = sleep_spec(directory.path());
+    spec.args = vec![
+        "-c".into(),
+        "printf '%s' $$ > \"$1\"; exec sleep 60".into(),
+        "fixture".into(),
+        pidfile.as_os_str().to_owned(),
+    ];
+    spec.readiness = Readiness::File {
+        path: directory.path().join("never-ready").into_os_string(),
+        value: b"ready".to_vec(),
+    };
+    let result = spawn(
+        &spec,
+        Path::new(env!("CARGO_BIN_EXE_running-process-launcher")),
+        Duration::from_millis(500),
+        &AtomicBool::new(false),
+    );
+    assert_eq!(result.err().unwrap().kind(), std::io::ErrorKind::TimedOut);
+    let pid: u32 = fs::read_to_string(pidfile).unwrap().parse().unwrap();
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "timed-out target survived rollback"
+    );
+}
+
+#[test]
+#[ignore = "requires accessible systemd user manager, cgroup v2 and pidfds"]
+fn symlinked_log_is_rejected_without_writing_through_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("existing");
+    fs::write(&destination, b"untouched").unwrap();
+    let link = directory.path().join("log");
+    std::os::unix::fs::symlink(&destination, &link).unwrap();
+    let mut spec = sleep_spec(directory.path());
+    spec.stdout = Some(link.into_os_string());
+    let result = spawn(
+        &spec,
+        Path::new(env!("CARGO_BIN_EXE_running-process-launcher")),
+        Duration::from_secs(5),
+        &AtomicBool::new(false),
+    );
+    assert_eq!(
+        result.err().unwrap().kind(),
+        std::io::ErrorKind::Unsupported
+    );
+    assert_eq!(fs::read(destination).unwrap(), b"untouched");
 }
 
 #[test]
@@ -40,6 +157,7 @@ fn scheduler_helper_preserves_native_payload_and_controls_actual_target() {
         ],
         stdout: Some(log.as_os_str().to_owned()),
         stderr: None,
+        readiness: Readiness::ProcessStarted,
     };
     let mut child = Cleanup(
         spawn(
@@ -93,6 +211,7 @@ fn cancellation_prevents_scheduler_side_effects() {
         environment: vec![],
         stdout: None,
         stderr: None,
+        readiness: Readiness::ProcessStarted,
     };
     let result = spawn(
         &spec,
@@ -117,6 +236,7 @@ fn target_exec_failure_is_reported_without_a_daemon() {
         environment: vec![],
         stdout: None,
         stderr: None,
+        readiness: Readiness::ProcessStarted,
     };
     let result = spawn(
         &spec,
@@ -143,6 +263,7 @@ fn cancellation_during_helper_handshake_is_bounded() {
         environment: vec![],
         stdout: None,
         stderr: None,
+        readiness: Readiness::ProcessStarted,
     };
     let cancelled = Arc::new(AtomicBool::new(false));
     let flag = cancelled.clone();
