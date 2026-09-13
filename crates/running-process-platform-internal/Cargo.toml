@@ -25,7 +25,7 @@ fs = ["dep:dirs"]
 # nor endpoint-name hashing.
 private-dir = []
 ipc = ["private-dir", "dep:interprocess", "dep:dirs", "dep:blake3"]
-async-process = ["dep:tokio", "process-inspection"]
+async-process = ["dep:tokio", "tokio/time", "process-inspection"]
 ipc-async = ["ipc", "async-process", "interprocess/tokio", "tokio/net"]
 session-relay = ["ipc-async"]
 process-inspection = ["dep:sysinfo"]
