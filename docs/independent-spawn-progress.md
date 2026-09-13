@@ -432,3 +432,11 @@ branch. Regeneration adds exactly two root re-export rows: the four canonical
 policy types and the dispatcher/handle/exit types. No existing export or
 signature is removed or changed. The snapshot, parity-manifest, and synchronous
 test audit gates pass after this intentional additive refresh.
+
+Release preparation found that the new optional platform -> protocol edge
+requires protocol publication before platform publication. The workflow's
+preflight list and publish loop are now ordered accordingly, and the version
+gate tracks the platform's exact protocol pin. Two focused tests failed before
+these changes and pass afterward; `ci.version_check` confirms current 4.10.11
+consistency. This corrects release infrastructure without bumping or publishing
+a version before implementation and cross-platform validation are complete.
