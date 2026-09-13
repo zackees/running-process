@@ -464,3 +464,17 @@ error while compiling blake3's NEON C source. This is toolchain execution
 evidence, not a broker runtime failure or pass. The next harness change should
 cross-build static fixtures on x86 through Soldr, then execute the ARM binary
 on the native ARM runner; native ARM runtime acceptance remains required.
+
+The Docker stage now separates `--build-only NEW_DIRECTORY --target TRIPLE`
+from `--run-only FIXTURE_DIRECTORY`. Both fixtures are cross-built on x86
+through Soldr, transferred as permission-preserving tar artifacts from the same
+workflow run, and run on the corresponding native x86/ARM runner. Run-only
+does not invoke Soldr and rejects non-ELF or wrong-architecture binaries before
+Docker starts. The new split-mode tests failed before implementation; all
+seven orchestration tests pass on Python 3.10, including negative architecture
+checks. The complete staged x86 build/run passed locally and removed its
+temporary staging directory. Remote ARM runtime verification is still pending.
+The x86-to-ARM fixture/launcher cross-build also passed locally in 12.93
+seconds. Windows scheduler acceptance passed on both windows-latest and
+windows-11-arm in run 34760552112; its overall failure is the earlier Linux
+ARM compiler-execution error, not a Windows scheduler failure.

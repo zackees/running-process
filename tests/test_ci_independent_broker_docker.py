@@ -3,12 +3,64 @@
 import json
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 from ci import independent_broker_docker as stage
 
 
+@patch.object(stage.sys, "platform", "linux")
 class DockerBrokerStageTests(unittest.TestCase):
+    def test_native_fixture_rejects_wrong_architecture_and_non_elf(self):
+        def header(machine):
+            return b"\x7fELF\x02\x01" + bytes(12) + machine.to_bytes(2, "little")
+
+        with patch.object(stage.platform, "machine", return_value="aarch64"):
+            with patch.object(Path, "open", mock_open(read_data=header(183))):
+                stage.verify_native_fixture(Path("/test"), Path("/launcher"))
+            for invalid in [header(62), b"not an ELF"]:
+                with patch.object(Path, "open", mock_open(read_data=invalid)):
+                    with self.assertRaises(ValueError):
+                        stage.verify_native_fixture(Path("/test"), Path("/launcher"))
+
+    @patch.object(stage, "build_fixture", create=True)
+    @patch.object(stage, "stage_fixture", create=True)
+    @patch.object(stage.shutil, "which", return_value="soldr")
+    def test_build_only_does_not_run_docker(self, which, stage_fixture, build):
+        build.return_value = (Path("/built/test"), Path("/built/launcher"))
+        with patch.object(stage, "run_container") as run:
+            self.assertEqual(
+                stage.main(
+                    [
+                        "--build-only",
+                        "/output",
+                        "--target",
+                        "aarch64-unknown-linux-musl",
+                    ]
+                ),
+                0,
+            )
+        run.assert_not_called()
+        build.assert_called_once_with("aarch64-unknown-linux-musl")
+        stage_fixture.assert_called_once_with(
+            Path("/output"), Path("/built/test"), Path("/built/launcher")
+        )
+
+    @patch.object(stage, "verify_native_fixture", create=True)
+    @patch.object(stage.shutil, "which", return_value="docker")
+    def test_run_only_never_builds(self, which, verify):
+        with (
+            patch.object(stage, "build_fixture", create=True) as build,
+            patch.object(stage, "run_container", return_value=0) as run,
+        ):
+            self.assertEqual(stage.main(["--run-only", "/fixture"]), 0)
+        build.assert_not_called()
+        expected = (
+            Path("/fixture/test").resolve(),
+            Path("/fixture/launcher").resolve(),
+        )
+        verify.assert_called_once_with(*expected)
+        self.assertEqual(run.call_args.args[1:], expected)
+
     def test_native_target_matches_supported_runner_architecture(self):
         self.assertEqual(stage.native_target("x86_64"), "x86_64-unknown-linux-musl")
         self.assertEqual(stage.native_target("aarch64"), "aarch64-unknown-linux-musl")
@@ -31,7 +83,10 @@ class DockerBrokerStageTests(unittest.TestCase):
         output = "build preamble\n" + "\n".join(map(json.dumps, records))
         self.assertEqual(
             stage.artifacts(output),
-            (Path("/build/current-test"), Path("/build/current-launcher")),
+            (
+                Path("/build/current-test").resolve(),
+                Path("/build/current-launcher").resolve(),
+            ),
         )
         with self.assertRaises(ValueError):
             stage.artifacts("no compiler artifacts")
