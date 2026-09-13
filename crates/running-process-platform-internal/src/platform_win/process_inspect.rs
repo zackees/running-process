@@ -63,6 +63,18 @@ impl ProcessLiveness {
         self.terminate_pinned()
     }
 
+    /// Observe whether the held process handle has become signalled.
+    pub fn has_exited(&self) -> io::Result<bool> {
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+        match unsafe { WaitForSingleObject(self.handle, 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+
     #[cfg(all(test, feature = "independent-spawn"))]
     pub(crate) fn test_creation_time(&self) -> io::Result<u64> {
         use windows_sys::Win32::{Foundation::FILETIME, System::Threading::GetProcessTimes};

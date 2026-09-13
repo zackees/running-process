@@ -376,6 +376,30 @@ pub trait SpawnedChildControl:
 }
 
 impl SpawnedChild {
+    /// Transfer caller-owned pipes and lifecycle control into this handle.
+    ///
+    /// This constructor does not launch a process or establish containment.
+    /// The caller must supply the matching PID, pipes, and control for an
+    /// already-contained child. Dropping the returned handle invokes
+    /// [`SpawnedChildControl::shutdown`]; the supplied control owns the actual
+    /// termination and reaping policy.
+    pub fn from_parts(
+        pid: u32,
+        stdin: Option<std::process::ChildStdin>,
+        stdout: Option<std::process::ChildStdout>,
+        stderr: Option<std::process::ChildStderr>,
+        inner: Box<dyn SpawnedChildControl>,
+    ) -> Self {
+        Self {
+            kill_on_drop: true,
+            stdin,
+            stdout,
+            stderr,
+            pid,
+            inner,
+        }
+    }
+
     #[cfg(feature = "independent-spawn")]
     pub(crate) fn retain_exit_identity(&mut self) {
         self.inner.retain_exit_identity();

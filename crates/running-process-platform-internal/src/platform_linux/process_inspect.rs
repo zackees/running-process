@@ -45,6 +45,29 @@ impl ProcessLiveness {
         self.signal_pinned(libc::SIGKILL)
     }
 
+    /// Confirm terminal state through the held pidfd without reopening the PID.
+    pub fn has_exited(&self) -> io::Result<bool> {
+        let fd = self.pid_fd.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "exit confirmation requires a held pidfd",
+            )
+        })?;
+        let mut poll_fd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one initialized descriptor; no blocking wait.
+        if unsafe { libc::poll(&mut poll_fd, 1, 0) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if poll_fd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+            return Err(io::Error::other("held pidfd poll failed"));
+        }
+        Ok(poll_fd.revents & libc::POLLIN != 0)
+    }
+
     /// Independent launches require a kernel-pinned identity. Unlike the
     /// compatibility observer, this path never falls back to a bare PID.
     pub(crate) fn open_pinned(pid: u32) -> io::Result<Self> {

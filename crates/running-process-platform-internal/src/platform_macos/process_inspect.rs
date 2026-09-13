@@ -55,6 +55,14 @@ impl ProcessLiveness {
         ))
     }
 
+    /// Observe whether the kqueue subscription has reported process exit.
+    pub fn has_exited(&self) -> io::Result<bool> {
+        if self.exited.load(Ordering::Acquire) {
+            return Ok(true);
+        }
+        Ok(!kqueue_process_is_alive(&self.exit_kqueue, &self.exited))
+    }
+
     /// Take a reference to `pid`, failing if no such process is running.
     pub fn open(pid: u32) -> Result<Self, ProcessInspectError> {
         Ok(Self {
