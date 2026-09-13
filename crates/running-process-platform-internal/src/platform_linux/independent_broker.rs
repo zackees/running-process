@@ -226,6 +226,101 @@ mod tests {
     }
 
     #[test]
+    fn broker_concurrent_commits_have_unique_targets_and_shutdown_cleans_them() {
+        let directory = tempfile::tempdir().unwrap();
+        crate::platform::private_dir::ensure_owner_private_directory(directory.path()).unwrap();
+        let path = directory.path().join("broker.sock");
+        let address = path.to_str().unwrap().to_owned();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        struct Shutdown {
+            cancelled: std::sync::Arc<AtomicBool>,
+            broker: Option<std::thread::JoinHandle<io::Result<()>>>,
+        }
+        impl Drop for Shutdown {
+            fn drop(&mut self) {
+                self.cancelled.store(true, Ordering::Release);
+                if let Some(broker) = self.broker.take() {
+                    let _ = broker.join();
+                }
+            }
+        }
+        let server_cancelled = std::sync::Arc::clone(&cancelled);
+        let server_address = address.clone();
+        let broker = std::thread::spawn(move || run(&server_address, &server_cancelled));
+        // Failed assertions also join the broker after releasing its children.
+        let mut shutdown = Shutdown {
+            cancelled,
+            broker: Some(broker),
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !path.exists()
+            && !shutdown.broker.as_ref().unwrap().is_finished()
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(path.exists());
+        let start = AtomicBool::new(false);
+        let targets = std::thread::scope(|scope| {
+            let clients: Vec<_> = (0..8)
+                .map(|index| {
+                    let address = &address;
+                    let start = &start;
+                    let directory = directory.path();
+                    scope.spawn(move || {
+                        while !start.load(Ordering::Acquire) && Instant::now() < deadline {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        assert!(start.load(Ordering::Acquire), "client start timed out");
+                        let cancelled = AtomicBool::new(false);
+                        let endpoint = Endpoint::new(address).unwrap();
+                        let mut channel = Channel::new(
+                            Stream::connect_bounded(&endpoint, deadline, &cancelled).unwrap(),
+                        ).unwrap();
+                        let ready = directory.join(format!("ready-{index}"));
+                        let spec = LaunchSpec {
+                            program: std::env::current_exe().unwrap().into_os_string(),
+                            args: vec![
+                                "--exact".into(),
+                                "platform_linux::independent_broker::tests::broker_target_fixture".into(),
+                                "--ignored".into(),
+                            ],
+                            cwd: directory.as_os_str().to_owned(),
+                            environment: vec![("RP_BROKER_READY".into(), ready.as_os_str().to_owned())],
+                            stdout: None,
+                            stderr: None,
+                            readiness: Readiness::File {
+                                path: ready.clone().into_os_string(),
+                                value: b"ready".to_vec(),
+                            },
+                        };
+                        send(&mut channel, Body::Launch(encode_spec(&spec)), deadline, &cancelled).unwrap();
+                        let Body::Started(pid) = receive(&mut channel, deadline, &cancelled).unwrap() else {
+                            panic!("expected a ready target")
+                        };
+                        let pinned = super::super::process_inspect::ProcessLiveness::open_pinned(pid).unwrap();
+                        assert_eq!(std::fs::read(ready).unwrap(), b"ready");
+                        send(&mut channel, Body::Commit(wire::Empty {}), deadline, &cancelled).unwrap();
+                        assert!(matches!(receive(&mut channel, deadline, &cancelled).unwrap(), Body::Committed(_)));
+                        // Disconnect is intentional: broker must retain each
+                        // committed target until its own explicit shutdown.
+                        (pid, pinned)
+                    })
+                })
+                .collect();
+            start.store(true, Ordering::Release);
+            clients.into_iter().map(|client| client.join().unwrap()).collect::<Vec<_>>()
+        });
+        let unique: std::collections::HashSet<_> = targets.iter().map(|(pid, _)| *pid).collect();
+        assert_eq!(unique.len(), 8, "concurrent requests must not alias a daemon");
+        assert!(targets.iter().all(|(_, pinned)| pinned.is_alive()));
+        shutdown.cancelled.store(true, Ordering::Release);
+        shutdown.broker.take().unwrap().join().unwrap().unwrap();
+        assert!(targets.iter().all(|(_, pinned)| !pinned.is_alive()));
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn broker_invalid_timeout_is_reported_before_launch() {
         for timeout_millis in [0, 30001] {
             let directory = tempfile::tempdir().unwrap();

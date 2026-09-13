@@ -409,3 +409,20 @@ internally but closed the connection, exposing UnexpectedEof to the caller.
 It now attempts a typed InvalidInput reply under a 100 ms bound before returning
 the same error, without attempting to spawn. All six broker/wire unit tests
 passed (one subprocess fixture remains deliberately ignored).
+
+Concurrent broker coverage now drives eight client connections through the
+real listener. Each obtains a distinct pidfd-pinned ready target, commits, and
+disconnects; all eight remain alive until explicit broker cancellation. Joining
+the broker then proves all eight targets are dead and the endpoint has retired.
+This passed locally in 0.04 seconds and strengthens the earlier idle-client
+shutdown test, which alone did not prove an accepted session was active.
+
+GitHub run [34759949361](https://github.com/zackees/running-process/actions/runs/34759949361)
+passed both Docker broker and Windows scheduler jobs on commit c0d948b. Docker
+reported worker 27762688 -> 27758592 bytes and broker 2818048 -> 32665600 bytes,
+with worker-teardown survival and enforced outer OOM. The explicit pinned musl
+target installation fixed the earlier CI compilation failure. The Linux
+platform library suite also passed locally: 120 passed, four intentionally
+ignored, with `RUSTFLAGS='-C link-arg=-Wl,--build-id=sha1'` for the existing
+GNU build-id test. These are backend validation results, not a completed
+facade migration, complete failure matrix, or release cascade.
