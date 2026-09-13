@@ -267,7 +267,7 @@ mod tests {
                     let address = &address;
                     let start = &start;
                     let directory = directory.path();
-                    scope.spawn(move || {
+                    std::thread::Builder::new().name(format!("rp-broker-test-{index}")).spawn_scoped(scope, move || {
                         while !start.load(Ordering::Acquire) && Instant::now() < deadline {
                             std::thread::sleep(Duration::from_millis(1));
                         }
@@ -305,7 +305,7 @@ mod tests {
                         // Disconnect is intentional: broker must retain each
                         // committed target until its own explicit shutdown.
                         (pid, pinned)
-                    })
+                    }).unwrap()
                 })
                 .collect();
             start.store(true, Ordering::Release);
