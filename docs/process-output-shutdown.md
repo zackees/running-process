@@ -108,8 +108,32 @@ Run the resulting native test harness directly after this command.
 
 ## Remaining acceptance
 
-Native Windows execution (including the queued-before-syscall cancellation
-regression) and the full six-target acceptance remain outstanding. The kernal-api
-facade still needs to consume this acknowledgement before recycling native
-buffer reservations. Neither direct-child `wait` nor ordinary output Drop is
-a replacement for explicit acknowledged shutdown.
+The broad native run [34757433276](https://github.com/zackees/running-process/actions/runs/34757433276)
+at `1943831` passed all six session shutdown tests/helper cases on Windows
+x86-64. Its Windows suite then stopped after 1,439 passes at the existing PTY
+test `raw_ansi_bytes_flow_through_pty_to_ring_buffer`: the expected clear-screen
+escape was absent and its backlog contained only a cursor-position query.
+The lower-level platform tests had not run, so that run does not prove the
+queued-before-syscall cancellation regression. The macOS ARM job passed.
+
+`.github/workflows/ci-output-shutdown.yml` adds focused native jobs for all six
+Linux/macOS/Windows x86-64/ARM64 combinations, independent of the PTY suite.
+Reproduce its test step with:
+
+```sh
+uv run --no-project --module ci.output_shutdown_native
+```
+
+It uses the repository Cargo router and existing nextest per-test deadlines,
+disables retries, and requires named PASS evidence for six session cases plus
+two platform cases (three on Windows, including the queued-read race). The
+fixtures are self-executing unit tests, so this narrow lane needs neither the
+testbins package nor a Python extension wheel. The evidence parser has five
+unit tests, including a RED/GREEN regression for Soldr's timestamped output.
+The complete focused runner passes locally on Linux x86-64.
+
+Focused six-target native acceptance remains outstanding. The coordinated
+kernal-api branch now uses this acknowledgement in its native-output ledger
+(`0796010`), but its guest compiler/cache workflow remains incomplete. Neither
+direct-child `wait` nor ordinary output Drop is a replacement for acknowledged
+shutdown; these prerequisite changes do not complete kernal-api #13.
