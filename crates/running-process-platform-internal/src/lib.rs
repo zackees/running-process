@@ -6,6 +6,8 @@
 //! `tokio::process::Command` directly.
 
 use std::cfg_select;
+/// Explicit caller-owned foreground command execution.
+pub mod foreground;
 mod semantic_priority;
 pub use semantic_priority::ProcessPriority;
 #[cfg(feature = "async-process")]

@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 use crate::observer::{ObserverEmitter, ProcessWatchEmitter};
 
 pub(crate) use running_process_platform_internal::platform;
+/// Explicit foreground commands preserving caller-controlled native launch state.
+pub use running_process_platform_internal::foreground;
 
 #[cfg(feature = "async-process")]
 mod async_process;
