@@ -5,19 +5,112 @@ use std::path::PathBuf;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+    OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 
 use crate::platform::process::{ProcessInspectError, ProcessInspectErrorKind};
 
-/// `GetExitCodeProcess` reports this while a process is still running.
-///
-/// It is also a perfectly legal exit code, so a process that exits with 259
-/// is indistinguishable from a running one by this call alone. Holding the
-/// handle open is what makes that harmless: the PID cannot be reused while a
-/// handle to it exists, so the wrong process is never described.
-const STILL_ACTIVE: u32 = 259;
+/// A held target identity plus the caller-job separation verdict.
+/// Keeping `liveness` alive prevents PID reuse between verification and the
+/// scheduler acknowledgement consumer.
+pub struct JobSeparation {
+    pub liveness: ProcessLiveness,
+    pub creation_time: u64,
+}
+
+/// Validate the flexible-array header before any process-ID slice is formed.
+/// An incomplete snapshot is retried, never treated as evidence of separation.
+fn complete_job_list_count(assigned: usize, count: usize, capacity: usize) -> io::Result<Option<usize>> {
+    if count > capacity || count > assigned {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid Job Object process-list count"));
+    }
+    Ok((assigned == count).then_some(count))
+}
+
+/// Verify that `target_pid` is not a member of the current process's Job
+/// Object. `JobObjectBasicProcessIdList` includes processes in descendant
+/// jobs, so membership is a conservative containment proof.
+pub fn verify_outside_current_job(target_pid: u32, expected_creation_time: u64) -> Result<JobSeparation, ProcessInspectError> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
+    use windows_sys::Win32::System::JobObjects::{
+        IsProcessInJob, QueryInformationJobObject, JobObjectBasicProcessIdList,
+        JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let liveness = ProcessLiveness::open_for_control(target_pid)?;
+    let mut in_job = 0;
+    // SAFETY: current-process pseudo-handle and valid out pointer.
+    if unsafe { IsProcessInJob(GetCurrentProcess(), null_mut(), &mut in_job) } == 0 {
+        return Err(ProcessInspectError { kind: ProcessInspectErrorKind::Host, source: io::Error::last_os_error() });
+    }
+    let creation_time = liveness.creation_time().map_err(|source|
+        ProcessInspectError { kind: ProcessInspectErrorKind::Host, source })?;
+    let identity = JobSeparation { creation_time, liveness };
+    if identity.creation_time != expected_creation_time {
+        return Err(ProcessInspectError::stated(ProcessInspectErrorKind::NotFound, "target creation identity changed"));
+    }
+    if in_job == 0 { return Ok(identity); }
+    let mut bytes = std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() as u32;
+    const MAX_JOB_LIST_BYTES: u32 = 16 * 1024 * 1024;
+    for _ in 0..8 {
+        if bytes > MAX_JOB_LIST_BYTES {
+            return Err(ProcessInspectError::stated(ProcessInspectErrorKind::Host, "Job Object process list exceeds bounded capacity"));
+        }
+        let mut storage = vec![0usize; (bytes as usize + std::mem::size_of::<usize>() - 1) / std::mem::size_of::<usize>()];
+        let mut returned = 0;
+        // SAFETY: aligned writable buffer, current job selected by null handle.
+        let ok = unsafe { QueryInformationJobObject(null_mut(), JobObjectBasicProcessIdList, storage.as_mut_ptr().cast(), bytes, &mut returned) };
+        if ok != 0 {
+            let list = storage.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+            let count = unsafe { (*list).NumberOfProcessIdsInList as usize };
+            let assigned = unsafe { (*list).NumberOfAssignedProcesses as usize };
+            let offset = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList);
+            let capacity = (bytes as usize).saturating_sub(offset) / std::mem::size_of::<usize>();
+            let count = complete_job_list_count(assigned, count, capacity)
+                .map_err(|source| ProcessInspectError { kind: ProcessInspectErrorKind::Host, source })?;
+            let Some(count) = count else {
+                bytes = bytes.saturating_mul(2);
+                continue;
+            };
+            // SAFETY: the reported trailing-array count was checked against
+            // the byte capacity supplied to Windows; storage is usize aligned.
+            let ids = unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>().add(offset).cast::<usize>(), count) };
+            if ids.iter().any(|pid| *pid as u32 == target_pid) { return Err(ProcessInspectError::stated(ProcessInspectErrorKind::Unsupported, "target remains in caller Job Object")); }
+            return Ok(identity);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_MORE_DATA as i32) { return Err(ProcessInspectError { kind: ProcessInspectErrorKind::Host, source: error }); }
+        bytes = returned.max(bytes.saturating_mul(2));
+    }
+    Err(ProcessInspectError::stated(ProcessInspectErrorKind::Host, "Job Object process list changed repeatedly"))
+}
+
+#[cfg(test)]
+mod job_list_tests {
+    use super::complete_job_list_count;
+
+    #[test]
+    fn complete_and_empty_snapshots_are_accepted() {
+        assert_eq!(complete_job_list_count(2, 2, 2).unwrap(), Some(2));
+        assert_eq!(complete_job_list_count(0, 0, 1).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn incomplete_snapshots_require_retry() {
+        assert_eq!(complete_job_list_count(3, 2, 2).unwrap(), None);
+        assert_eq!(complete_job_list_count(1, 0, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn invalid_counts_never_reach_slice_construction() {
+        assert!(complete_job_list_count(3, 3, 2).is_err());
+        assert!(complete_job_list_count(1, 2, 2).is_err());
+        assert!(complete_job_list_count(usize::MAX, usize::MAX, 0).is_err());
+    }
+}
 
 /// A live reference to another process, good for as long as it is held.
 ///
@@ -49,11 +142,58 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    /// Force termination through the held process object, without PID lookup.
+    /// Requires termination rights acquired by `open_for_control`.
+    pub fn force_kill(&self) -> io::Result<()> { self.kill() }
+
+    /// Hold query, wait, and termination rights for an independent daemon.
+    pub fn open_for_control(pid: u32) -> Result<Self, ProcessInspectError> {
+        use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+        if handle.is_null() { return Err(ProcessInspectError::last_os_error(ProcessInspectErrorKind::Host)); }
+        Ok(Self { pid, handle })
+    }
+
+    /// Requires a handle opened with `open_for_control`.
+    pub fn has_exited(&self) -> io::Result<bool> {
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        match unsafe { WaitForSingleObject(self.handle, 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+
+    /// Terminate only the held process object, never a recycled numeric PID.
+    pub fn kill(&self) -> io::Result<()> {
+        if self.has_exited()? { return Ok(()); }
+        if unsafe { TerminateProcess(self.handle, 1) } != 0 { return Ok(()); }
+        let error = io::Error::last_os_error();
+        if self.has_exited()? { Ok(()) } else { Err(error) }
+    }
+
+    /// Creation FILETIME from the held process object, for helper handshakes.
+    pub fn creation_time(&self) -> io::Result<u64> {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::GetProcessTimes;
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: held process handle and initialized output structures.
+        if unsafe { GetProcessTimes(self.handle, &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+    }
+
     /// Take a reference to `pid`, failing if no such process is running.
     pub fn open(pid: u32) -> Result<Self, ProcessInspectError> {
+        use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
         // SAFETY: the call takes access flags, an inherit flag, and a PID by
         // value; the returned handle is checked before use.
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
         if handle.is_null() {
             return Err(ProcessInspectError::stated(
                 ProcessInspectErrorKind::NotFound,
@@ -70,11 +210,9 @@ impl ProcessLiveness {
 
     /// Whether that process is still running.
     pub fn is_alive(&self) -> bool {
-        let mut exit_code = 0_u32;
-        // SAFETY: `self.handle` is live for this handle's lifetime and the
-        // out-parameter is a valid initialised u32.
-        let ok = unsafe { GetExitCodeProcess(self.handle, &mut exit_code) };
-        ok != 0 && exit_code == STILL_ACTIVE
+        // A terminated process can have exit code 259. Only the held object's
+        // wait state distinguishes that case from a genuinely running child.
+        matches!(self.has_exited(), Ok(false))
     }
 }
 
@@ -180,13 +318,26 @@ mod tests {
     /// dead once it exits rather than failing to find it.
     #[test]
     fn a_dead_process_reports_dead() {
-        let mut child = std::process::Command::new("cmd.exe")
-            .args(["/C", "exit 0"])
-            .spawn()
-            .expect("spawn");
-        let handle = ProcessLiveness::open(child.id()).expect("open child");
-        child.wait().expect("wait");
-        assert!(!handle.is_alive(), "an exited child must report dead");
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        struct TestChild(std::process::Child);
+        impl Drop for TestChild {
+            fn drop(&mut self) { let _ = self.0.kill(); }
+        }
+        for code in [0, 259] {
+            let mut child = TestChild(std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", &format!("exit {code}")])
+                .spawn().expect("spawn"));
+            // Child retains a native handle, so this PID still identifies the
+            // same object even if cmd exits before the observation is opened.
+            let handle = ProcessLiveness::open(child.0.id()).expect("open child");
+            assert_eq!(unsafe { WaitForSingleObject(handle.handle, 5_000) }, WAIT_OBJECT_0,
+                "fixture failed to exit within its deadline");
+            let status = child.0.try_wait().expect("poll").expect("confirmed exit");
+            assert_eq!(status.code(), Some(code));
+            assert!(!handle.is_alive(), "an exited child must report dead, including exit 259");
+            assert!(handle.has_exited().expect("held wait state"));
+        }
     }
 
     /// Asking politely is not silently upgraded to terminating.

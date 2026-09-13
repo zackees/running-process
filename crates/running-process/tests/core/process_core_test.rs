@@ -44,7 +44,7 @@ use running_process::{
 // or `cfg(target_os = "linux")`, so on Windows the pair is an unused import
 // and `-D warnings` refuses to build this test target.
 #[cfg(unix)]
-use running_process::{run_std_command_bounded_with_options, BoundedRunOptions};
+use running_process::{run_std_command_bounded_with_options, BoundedRunOptions, ProcessPriority};
 
 fn stdio_scripted() -> String {
     let exe = std::env::current_exe().expect("current test executable");
@@ -724,6 +724,29 @@ fn bounded_std_command_applies_positive_nice_before_exec() {
         .parse::<i32>()
         .unwrap();
     assert!(observed >= 5);
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_std_command_applies_semantic_priority_before_exec() {
+    let mut command = Command::new("python");
+    command.args(["-c", "import os; print(os.nice(0))"]);
+
+    let output = run_std_command_bounded_with_options(
+        command,
+        Some(CHILD_EXIT_WAIT),
+        4096,
+        BoundedRunOptions::default().priority(ProcessPriority::Low),
+    )
+    .unwrap();
+
+    assert_eq!(output.exit_code, 0);
+    let observed = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    assert!(observed >= 10);
 }
 
 // ── Error path tests ──

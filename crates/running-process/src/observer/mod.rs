@@ -600,7 +600,8 @@ impl ObserverEvent {
 ///
 /// Constructing a config does not by itself observe anything; it is attached
 /// to a process via
-/// [`NativeProcess::with_observer`](crate::NativeProcess::with_observer).
+/// [`NativeProcess::with_observer`](crate::NativeProcess::with_observer) or
+/// [`AsyncProcessBuilder::session_with_observer`](crate::AsyncProcessBuilder::session_with_observer).
 /// With no config attached, the process emits no events (off by default).
 #[derive(Debug, Clone)]
 pub struct ObserverConfig {
@@ -667,7 +668,8 @@ pub fn observe_launched_tree(root_pid: u32, config: ObserverConfig) -> ObserverS
 /// Receiver handle for observation events.
 ///
 /// Returned by
-/// [`NativeProcess::with_observer`](crate::NativeProcess::with_observer).
+/// [`NativeProcess::with_observer`](crate::NativeProcess::with_observer) and
+/// [`AsyncProcessBuilder::session_with_observer`](crate::AsyncProcessBuilder::session_with_observer).
 /// Dropping the subscriber detaches it; the emitter tolerates a closed
 /// channel and never blocks on a slow or absent consumer.
 pub struct ObserverSubscriber {

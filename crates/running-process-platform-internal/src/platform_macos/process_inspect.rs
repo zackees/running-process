@@ -39,6 +39,25 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    /// kqueue supplies exit observation, not an identity-bound signal target.
+    pub fn open_for_control(_pid: u32) -> Result<Self, ProcessInspectError> {
+        Err(ProcessInspectError::stated(ProcessInspectErrorKind::Unsupported,
+            "identity-bound process control is unavailable"))
+    }
+
+    /// Never substitute a numeric PID signal for held-object termination.
+    pub fn force_kill(&self) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported,
+            "kqueue process references cannot deliver identity-bound signals"))
+    }
+
+    /// Observe terminal state through the retained kqueue subscription.
+    /// Observation errors are returned, never latched as a process exit.
+    pub fn has_exited(&self) -> io::Result<bool> {
+        if self.exited.load(Ordering::Acquire) { return Ok(true); }
+        kqueue_process_has_exited(&self.exit_kqueue, &self.exited)
+    }
+
     /// Take a reference to `pid`, failing if no such process is running.
     pub fn open(pid: u32) -> Result<Self, ProcessInspectError> {
         Ok(Self {
@@ -55,8 +74,7 @@ impl ProcessLiveness {
 
     /// Whether that process is still running.
     pub fn is_alive(&self) -> bool {
-        !self.exited.load(Ordering::Relaxed)
-            && kqueue_process_is_alive(&self.exit_kqueue, &self.exited)
+        matches!(self.has_exited(), Ok(false))
     }
 }
 
@@ -170,7 +188,7 @@ fn open_exit_kqueue(pid: u32) -> Result<OwnedFd, ProcessInspectError> {
     }
 }
 
-fn kqueue_process_is_alive(kqueue_fd: &OwnedFd, exited: &AtomicBool) -> bool {
+fn kqueue_process_has_exited(kqueue_fd: &OwnedFd, exited: &AtomicBool) -> io::Result<bool> {
     let mut event = std::mem::MaybeUninit::<libc::kevent>::uninit();
     let timeout = libc::timespec {
         tv_sec: 0,
@@ -189,16 +207,34 @@ fn kqueue_process_is_alive(kqueue_fd: &OwnedFd, exited: &AtomicBool) -> bool {
         )
     };
     if rc == 0 {
-        return true;
+        return Ok(exited.load(Ordering::Acquire));
     }
-
-    exited.store(true, Ordering::Relaxed);
-    false
+    if rc < 0 { return Err(io::Error::last_os_error()); }
+    // SAFETY: a positive result initialized the single supplied event slot.
+    let event = unsafe { event.assume_init() };
+    if event.flags & libc::EV_ERROR != 0 {
+        return Err(io::Error::from_raw_os_error(event.data as i32));
+    }
+    if event.filter != libc::EVFILT_PROC || event.fflags & libc::NOTE_EXIT == 0 {
+        return Err(io::Error::other("unexpected process observation event"));
+    }
+    exited.store(true, Ordering::Release);
+    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observation_failure_does_not_latch_process_exit() {
+        // A valid non-kqueue descriptor deterministically rejects kevent,
+        // without closing or targeting a process-owned descriptor.
+        let not_a_queue: OwnedFd = std::fs::File::open("/dev/null").expect("open null").into();
+        let exited = AtomicBool::new(false);
+        assert!(kqueue_process_has_exited(&not_a_queue, &exited).is_err());
+        assert!(!exited.load(Ordering::Acquire));
+    }
 
     /// PID zero names no process on any host, and is rejected before the
     /// kernel is asked -- signal(0, ...) would mean "the whole process group".

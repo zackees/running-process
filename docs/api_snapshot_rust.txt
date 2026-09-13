@@ -5,20 +5,29 @@
 
 ## running_process re-exports
 
-    pub use async_process::{ AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncProcessSession, AsyncProcessSessionChunk, AsyncProcessSessionControl, AsyncProcessSessionEvent, AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio, };
+    pub use async_process::{ AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncProcessSession, AsyncProcessSessionChunk, AsyncProcessSessionControl, AsyncProcessSessionEvent, AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio, ProcessTreeKill, };
     pub use blocking_island::dispatch_blocking as blocking_island_dispatch;
     pub use bounded::{ run_command, run_command_bounded, run_std_command_bounded, run_std_command_bounded_with_options, BoundedRunOptions, };
     pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
     pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
     pub use content_hash::blake3_file;
     pub use daemon::telemetry;
+    pub use independent_spawn::{ independent_spawn_capability, spawn_daemon_request, spawn_daemon_with_mode, spawn_daemon_with_options, DaemonSpawnRequest, IndependentSpawnBackend, IndependentSpawnCancellation, IndependentSpawnCapability, IndependentSpawnError, IndependentSpawnOptions, SpawnMode, };
     pub use observer::{ CapabilitySupport, CaptureSource, CategoryCapability, DumpResult, EventCategory, ObservationGrade, ObservationPolicy, ObserverCapabilities, ObserverConfig, ObserverEvent, ObserverEventKind, ObserverSubscriber, ProcessEvent, ProcessEventKind, ProcessIdentity, ProcessObservation, ProcessObservationCapabilities, ProcessObservationError, ProcessWatch, ProcessWatchConfigurationError, ProcessWatchCursor, ProcessWatchGap, ProcessWatchLoss, ProcessWatchMatch, ProcessWatchRead, ProcessWatchSubscriber, StackCapture, StackDump, };
     pub use originator::{ find_declared_daemon_pids, find_processes_by_originator, OriginatorProcessInfo, };
     pub use output_log::{ CursorRead, OutputCursor, OutputLog, OutputRecord, SharedOutputCursor, SharedOutputLog, };
+    pub use running_process_platform_internal::ProcessLiveness;
+    pub use running_process_platform_internal::ProcessPriority;
+    pub use running_process_platform_internal::SpawnAdmission;
+    pub use running_process_platform_internal::exit_code as native_exit_code;
+    pub use running_process_platform_internal::foreground;
     pub use running_process_platform_internal::platform::executable as platform_executable;
     pub use running_process_platform_internal::platform::process::current_executable_build_id;
+    pub use running_process_platform_internal::platform::process::{ ProcessInspectError, ProcessInspectErrorKind, };
+    pub use running_process_platform_internal::process_executable_path;
+    pub use running_process_platform_internal::process_same_executable_path;
     pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
-    pub use spawn::{ spawn, spawn_daemon, spawn_daemon_breaking_away_from_job, spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env, spawn_daemon_with_env_policy, spawn_daemon_with_stdio, spawn_daemon_with_stdio_and_env_policy, spawn_with_env_policy, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy, SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR, };
+    pub use spawn::{ spawn, spawn_daemon, spawn_daemon_breaking_away_from_job, spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env, spawn_daemon_with_env_policy, spawn_daemon_with_environment, spawn_daemon_with_explicit_environment, spawn_daemon_with_stdio, spawn_daemon_with_stdio_and_env_policy, spawn_with_env_policy, spawn_with_environment, spawn_with_explicit_environment, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy, SpawnStdio, SpawnedChild, SpawnedChildControl, StdioSource, SyncEnvironment, DAEMON_MARKER_ENV_VAR, };
     pub use spawn::{spawn_tokio, TokioSpawnOptions};
     pub use terminal_graphics::{ current_terminal_capabilities, current_terminal_capabilities_with_timeout, detect_terminal_capabilities, CapabilityStatus, EvidenceStrength, GraphicsCapability, GraphicsProtocol, TerminalCapabilities, TerminalCapabilityInput, TerminalGraphicsCapabilities, TerminalProbeEvidence, };
     pub use types::{ CommandSpec, ProcessConfig, ProcessError, ReadStatus, RunOutput, StderrMode, StdinMode, StreamEvent, StreamKind, };

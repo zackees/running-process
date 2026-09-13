@@ -125,8 +125,13 @@ def install_wheel(wheel: Path, *, env: dict[str, str]) -> int:
 
 def verify_trampoline_in_wheel(wheel: Path) -> str:
     """Return the packaged trampoline entry or reject an incomplete wheel."""
+    return verify_helper_in_wheel(wheel, "daemon-trampoline")
+
+
+def verify_helper_in_wheel(wheel: Path, binary_name: str) -> str:
+    """Require a built helper in the installed package assets."""
     suffix = ".exe" if platform.system() == "Windows" else ""
-    entry = f"running_process/assets/daemon-trampoline{suffix}"
+    entry = f"running_process/assets/{binary_name}{suffix}"
     with zipfile.ZipFile(wheel) as archive:
         if entry not in archive.namelist():
             raise RuntimeError(
@@ -137,6 +142,11 @@ def verify_trampoline_in_wheel(wheel: Path) -> str:
 
 def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> int:
     """Build the daemon-trampoline binary and copy it into package assets."""
+    return build_helper(mode, "daemon-trampoline", env=env)
+
+
+def build_helper(mode: BuildMode, binary_name: str, *, env: dict[str, str] | None = None) -> int:
+    """Build a helper using Cargo's reported artifact path, then stage it."""
     import json as json_mod
 
     profile_args = ["--release"] if mode == "release" else []
@@ -152,7 +162,7 @@ def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> i
         cargo_command(
             "build",
             "--bin",
-            "daemon-trampoline",
+            binary_name,
             "--message-format=json",
             *profile_args,
         ),
@@ -176,7 +186,7 @@ def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> i
             msg = json_mod.loads(line)
             if (
                 msg.get("reason") == "compiler-artifact"
-                and msg.get("target", {}).get("name") == "daemon-trampoline"
+                and msg.get("target", {}).get("name") == binary_name
                 and msg.get("executable")
             ):
                 src = Path(msg["executable"])
@@ -184,7 +194,7 @@ def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> i
 
     if src is None or not src.exists():
         print(
-            f"trampoline binary not found in cargo output (searched {src})",
+            f"{binary_name} binary not found in cargo output (searched {src})",
             file=sys.stderr,
             flush=True,
         )
@@ -194,7 +204,7 @@ def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> i
     dest = TRAMPOLINE_ASSETS / src.name
     TRAMPOLINE_ASSETS.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
-    print(f"trampoline: {src} -> {dest}", file=sys.stderr, flush=True)
+    print(f"{binary_name}: {src} -> {dest}", file=sys.stderr, flush=True)
     return 0
 
 
@@ -217,6 +227,11 @@ def run_build(mode: BuildMode) -> int:
     rc = build_trampoline(mode, env=env)
     if rc != 0:
         print("trampoline build failed", file=sys.stderr, flush=True)
+        return rc
+
+    rc = build_helper(mode, "running-process-independent-helper", env=env)
+    if rc != 0:
+        print("independent helper build failed", file=sys.stderr, flush=True)
         return rc
 
     rustc_args: list[str] = []
@@ -268,6 +283,7 @@ def run_build(mode: BuildMode) -> int:
             print(format_release_artifact_report(report), file=sys.stderr, flush=True)
     for wheel in output_wheels:
         trampoline_entry = verify_trampoline_in_wheel(wheel)
+        verify_helper_in_wheel(wheel, "running-process-independent-helper")
         print(
             f"bundled trampoline verified in {wheel.name}: {trampoline_entry}",
             file=sys.stderr,

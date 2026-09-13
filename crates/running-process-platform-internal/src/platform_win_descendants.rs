@@ -29,6 +29,33 @@ pub fn assign_child_to_windows_job(
     address_space_limit_bytes: Option<u64>,
     emit: Option<Box<dyn Fn(DescendantEvent) + Send>>,
 ) -> Result<WindowsJobHandle, std::io::Error> {
+    assign_native_child_to_windows_job(
+        super::sync_child_native_handle(child), direct_pid, address_space_limit_bytes, emit,
+    )
+}
+
+/// Async actor entry to the same assignment and IOCP implementation. The
+/// borrowed child keeps the native handle live throughout assignment.
+#[cfg(feature = "async-process")]
+pub(crate) fn assign_async_child_to_windows_job(
+    child: &tokio::process::Child,
+    direct_pid: u32,
+    emit: Option<Box<dyn Fn(DescendantEvent) + Send>>,
+) -> Result<WindowsJobHandle, std::io::Error> {
+    let handle = child.raw_handle().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "child process handle is unavailable")
+    })?;
+    assign_native_child_to_windows_job(handle as usize, direct_pid, None, emit)
+}
+
+// Private raw-handle boundary: both callers above retain their owned child
+// while this runs. No raw handle is exposed to consumer APIs.
+fn assign_native_child_to_windows_job(
+    handle: usize,
+    direct_pid: u32,
+    address_space_limit_bytes: Option<u64>,
+    emit: Option<Box<dyn Fn(DescendantEvent) + Send>>,
+) -> Result<WindowsJobHandle, std::io::Error> {
     use std::mem::zeroed;
     use winapi::shared::minwindef::FALSE;
     use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
@@ -41,7 +68,6 @@ pub fn assign_child_to_windows_job(
         JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     };
 
-    let handle = super::sync_child_native_handle(child);
     let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
     if job.is_null() || job == INVALID_HANDLE_VALUE {
         return Err(std::io::Error::last_os_error());

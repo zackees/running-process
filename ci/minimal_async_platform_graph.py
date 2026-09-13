@@ -95,9 +95,9 @@ def check_manifests(
         failures.append("platform-internal must not restore build dependencies")
 
     internal_default = feature_members(internal, "default")
-    if internal_default != {"async-process"}:
+    if internal_default != {"async-process", "window-icon"}:
         failures.append(
-            "platform-internal default must preserve the former async process surface"
+            "platform-internal default must preserve the async-process and window-icon compatibility surface"
         )
     require_feature(
         internal,

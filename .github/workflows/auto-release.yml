@@ -581,7 +581,8 @@ jobs:
           soldr build --release --target ${{ matrix.target }} \
             --features daemon \
             --bin runpm \
-            --bin running-process-daemon
+            --bin running-process-daemon \
+            --bin running-process-independent-helper
 
       - name: Stage release artifacts
         id: stage
@@ -597,6 +598,7 @@ jobs:
           mkdir -p "$STAGE"
           cp "target/${TARGET}/release/runpm${BINARY_EXT}" "$STAGE/"
           cp "target/${TARGET}/release/running-process-daemon${BINARY_EXT}" "$STAGE/"
+          cp "target/${TARGET}/release/running-process-independent-helper${BINARY_EXT}" "$STAGE/"
           cp LICENSE "$STAGE/" 2>/dev/null || true
           cp README.md "$STAGE/" 2>/dev/null || true
 

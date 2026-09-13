@@ -211,7 +211,7 @@ fn reviewed_command_configuration_executes_on_short_lived_children() {
 
     let mut tokio_command = Command::new("/bin/true");
     configure_compat_tokio_command(&mut tokio_command, false, false).unwrap();
-    configure_command(&mut tokio_command, true, true, None).unwrap();
+    configure_command(&mut tokio_command, true, true, None, false).unwrap();
 }
 
 #[cfg(feature = "async-process")]
@@ -262,7 +262,7 @@ fn tokio_configuration_and_live_signal_helpers_reach_the_os() {
 
         let mut grouped = Command::new("/bin/sleep");
         grouped.arg("30").kill_on_drop(true);
-        configure_command(&mut grouped, true, false, None).unwrap();
+        configure_command(&mut grouped, true, false, None, false).unwrap();
         let mut child = grouped.spawn().unwrap();
         after_spawn(&child, false).expect("a no-op must still succeed");
         let pid = child.id().unwrap();

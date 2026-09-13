@@ -52,6 +52,15 @@ impl BoundedRunOptions {
         self.nice = nice;
         self
     }
+
+    /// Set semantic launch priority for the bounded child.
+    ///
+    /// This uses the same canonical [`crate::ProcessPriority`] mapping as the
+    /// asynchronous process API. Last call wins with [`Self::nice`].
+    #[must_use]
+    pub fn priority(self, priority: crate::ProcessPriority) -> Self {
+        self.nice(priority.nice_value())
+    }
 }
 
 /// Run a command to completion while concurrently draining stdout and stderr.

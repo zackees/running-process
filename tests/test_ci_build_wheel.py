@@ -12,6 +12,19 @@ from ci import build_wheel
 
 
 class TrampolineWheelTest(unittest.TestCase):
+    def test_requires_independent_helper_separately_from_trampoline(self) -> None:
+        suffix = ".exe" if build_wheel.platform.system() == "Windows" else ""
+        helper = f"running_process/assets/running-process-independent-helper{suffix}"
+        with tempfile.TemporaryDirectory() as directory:
+            wheel = Path(directory) / "running_process-test.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr(f"running_process/assets/daemon-trampoline{suffix}", b"trampoline")
+            with self.assertRaises(RuntimeError):
+                build_wheel.verify_helper_in_wheel(wheel, "running-process-independent-helper")
+            with zipfile.ZipFile(wheel, "a") as archive:
+                archive.writestr(helper, b"independent helper")
+            self.assertEqual(build_wheel.verify_helper_in_wheel(wheel, "running-process-independent-helper"), helper)
+
     def test_accepts_the_platform_trampoline_entry(self) -> None:
         suffix = ".exe" if build_wheel.platform.system() == "Windows" else ""
         expected = f"running_process/assets/daemon-trampoline{suffix}"

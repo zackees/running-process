@@ -31,7 +31,64 @@ fn options() -> AsyncProcessSessionOptions {
         max_chunk_bytes: 64,
         post_exit_grace: Some(Duration::from_millis(25)),
         kill_on_drop: true,
+        kill_tree_on_drop: false,
     }
+}
+
+#[tokio::test]
+async fn tree_request_rejects_an_already_reaped_session() {
+    let mut session = AsyncProcessBuilder::new(fixture_program())
+        .arg("exit:0")
+        .session(options());
+    tokio::time::timeout(Duration::from_secs(5), session.start())
+        .await
+        .expect("startup deadline")
+        .expect("start fixture");
+    let status = tokio::time::timeout(Duration::from_secs(5), session.wait())
+        .await
+        .expect("exit deadline")
+        .expect("reap fixture");
+    assert!(status.success());
+    let (control, _output) = session.into_parts().expect("split session");
+    let error = control
+        .kill_tree(Duration::from_secs(1))
+        .await
+        .expect_err("reaped root must never be rediscovered by its numeric PID");
+    assert!(matches!(error, ProcessError::Io(error) if error.kind() == ErrorKind::NotConnected));
+    assert_eq!(control.poll().await.unwrap(), Some(status));
+}
+
+#[tokio::test]
+async fn tree_request_success_includes_direct_child_reaping() {
+    use running_process::ProcessTreeKill;
+    let mut session = AsyncProcessBuilder::new(fixture_program())
+        .arg("sleep-ms:30000")
+        .session(options());
+    tokio::time::timeout(Duration::from_secs(5), session.start())
+        .await
+        .expect("startup deadline")
+        .expect("start fixture");
+    let (control, _output) = session.into_parts().expect("split session");
+    let outcome = control
+        .kill_tree(Duration::from_secs(5))
+        .await
+        .expect("owned cleanup");
+    assert!(matches!(
+        outcome,
+        ProcessTreeKill::TreeKilled | ProcessTreeKill::ProcessKilled
+    ));
+    let status = control
+        .poll()
+        .await
+        .expect("terminal state")
+        .expect("successful cleanup cannot precede direct-child reaping");
+    assert!(!status.success());
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        outcome,
+        ProcessTreeKill::ProcessKilled,
+        "unsupported strict sweep must disclose direct-child-only cleanup"
+    );
 }
 
 #[tokio::test]
@@ -110,6 +167,7 @@ async fn session_waits_for_direct_exit_even_when_a_full_output_queue_blocks_eof(
             max_chunk_bytes: 64,
             post_exit_grace: Some(Duration::from_secs(2)),
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         });
     session.start().await.expect("start session");
 
@@ -134,6 +192,7 @@ async fn session_slow_consumer_preserves_saturated_stdout_and_stderr() {
             max_chunk_bytes: 31,
             post_exit_grace: Some(Duration::from_millis(25)),
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         });
     session.start().await.expect("start saturated session");
     tokio::time::sleep(Duration::from_millis(40)).await;
@@ -174,6 +233,7 @@ async fn session_kill_and_wait_remain_responsive_while_stdin_is_blocked() {
             max_chunk_bytes: 128 * 1024,
             post_exit_grace: Some(Duration::from_millis(25)),
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         });
     session.start().await.expect("start slow stdin child");
 
@@ -219,6 +279,92 @@ async fn session_drop_kills_and_reaps_its_direct_child() {
         wait_until_not_running(pid, Duration::from_secs(2)),
         "kill-on-drop direct child {pid} was not reaped"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn tree_on_drop_terminates_captured_descendant_without_direct_drop_policy() {
+    use running_process_platform_internal::StrictProcessHandle;
+    struct Cleanup(Vec<StrictProcessHandle>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for handle in self.0.iter().rev() {
+                let _ = handle.kill();
+            }
+        }
+    }
+    // Require strict observation before creating any long-lived fixture.
+    let _self_reference = StrictProcessHandle::open(std::process::id())
+        .expect("this Linux acceptance case requires pidfds");
+    let mut session = AsyncProcessBuilder::new(testbin("testbin-spawner"))
+        .arg("1")
+        .arg(testbin("testbin-sleeper"))
+        .session(AsyncProcessSessionOptions {
+            kill_on_drop: false,
+            kill_tree_on_drop: true,
+            ..options()
+        });
+    tokio::time::timeout(Duration::from_secs(5), session.start())
+        .await
+        .expect("startup deadline")
+        .expect("start spawner");
+    let root_pid = session.pid().unwrap();
+    let mut cleanup = Cleanup(vec![StrictProcessHandle::open(root_pid).expect("hold root")]);
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match session
+                .next_output()
+                .await
+                .expect("fixture output remains open")
+            {
+                AsyncProcessSessionEvent::Chunk(chunk) if chunk.stream == StreamKind::Stdout => {
+                    bytes.extend_from_slice(&chunk.bytes);
+                    assert!(bytes.len() <= 1024, "unexpected fixture output volume");
+                    if bytes.ends_with(b"READY\n") {
+                        break;
+                    }
+                }
+                AsyncProcessSessionEvent::Chunk(_) => {}
+                event => panic!("unexpected event before fixture ready: {event:?}"),
+            }
+        }
+    })
+    .await
+    .expect("fixture readiness deadline");
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text
+        .lines()
+        .any(|line| line == format!("SPAWNER_PID={root_pid}")));
+    let child_pid = text
+        .lines()
+        .find_map(|line| line.strip_prefix("CHILD_PID="))
+        .expect("one descendant marker")
+        .parse::<u32>()
+        .unwrap();
+    assert_ne!(root_pid, child_pid);
+    cleanup
+        .0
+        .push(StrictProcessHandle::open(child_pid).expect("hold descendant"));
+    for handle in &cleanup.0 {
+        assert!(!handle.has_exited().unwrap());
+    }
+    let (control, _output) = session.into_parts().expect("split terminal owner");
+    drop(control);
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if cleanup
+                .0
+                .iter()
+                .all(|handle| handle.has_exited().expect("held identity status"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("tree-on-drop must terminate root and descendant");
 }
 
 #[cfg(unix)]

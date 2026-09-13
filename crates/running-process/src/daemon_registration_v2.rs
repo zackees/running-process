@@ -68,6 +68,44 @@ pub fn write_service_definition_v2(
     Ok(path)
 }
 
+/// A decoded v2 definition together with its exact original wire bytes.
+///
+/// Keeping the original bytes preserves unknown protobuf fields when callers
+/// inspect or forward a record without editing it.
+#[derive(Clone, Debug)]
+pub struct LoadedServiceDefinitionV2 {
+    /// Validated record for the requested service.
+    pub definition: ServiceDefinition,
+    /// Exact bytes read from disk, without re-encoding.
+    pub bytes: Vec<u8>,
+}
+
+/// Read an existing v2 definition without creating or changing its directory.
+///
+/// Returns the canonical permission, decode, name-validation and
+/// service-name-mismatch errors shared with the registration substrate.
+pub fn read_service_definition_v2(
+    root: &Path,
+    service_name: &str,
+) -> Result<LoadedServiceDefinitionV2, ServiceDefinitionError> {
+    let path = service_definition_path_v2(root, service_name)?;
+    if !crate::daemon_registration_common::secure_dir::private_dir_permissions_are_private(root)? {
+        return Err(ServiceDefinitionError::InsecureDirectory(
+            root.to_path_buf(),
+        ));
+    }
+    let bytes = std::fs::read(path)?;
+    let definition = ServiceDefinition::decode(bytes.as_slice())?;
+    validate_service_name(&definition.service_name)?;
+    if definition.service_name != service_name {
+        return Err(ServiceDefinitionError::ServiceNameMismatch {
+            requested: service_name.to_owned(),
+            actual: definition.service_name,
+        });
+    }
+    Ok(LoadedServiceDefinitionV2 { definition, bytes })
+}
+
 /// Builder for a generated v2 [`ServiceDefinition`].
 ///
 /// The builder preserves the existing version-list order and inserts labels in
@@ -178,6 +216,38 @@ impl ServiceDefinitionBuilder {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn reader_preserves_unknown_wire_fields() {
+        let root = tempdir().expect("temporary directory");
+        let definition = ServiceDefinitionBuilder::shared_broker("svc", "/bin/tool").build();
+        let path = write_service_definition_v2(root.path(), &definition).expect("write definition");
+        let mut bytes = definition.encode_to_vec();
+        // Unknown field 100, varint value 7: reading must not discard it.
+        bytes.extend_from_slice(&[0xa0, 0x06, 0x07]);
+        std::fs::write(path, &bytes).expect("write additive field");
+        let loaded = read_service_definition_v2(root.path(), "svc").expect("read definition");
+        assert_eq!(loaded.bytes, bytes);
+        assert_eq!(loaded.definition.service_name, "svc");
+    }
+
+    #[test]
+    fn reader_distinguishes_malformed_and_mismatched_records() {
+        let root = tempdir().expect("temporary directory");
+        let definition = ServiceDefinitionBuilder::shared_broker("other", "/bin/tool").build();
+        write_service_definition_v2(root.path(), &definition).expect("private directory");
+        let path = service_definition_path_v2(root.path(), "svc").expect("path");
+        std::fs::write(&path, definition.encode_to_vec()).expect("write mismatch");
+        assert!(matches!(
+            read_service_definition_v2(root.path(), "svc"),
+            Err(ServiceDefinitionError::ServiceNameMismatch { .. })
+        ));
+        std::fs::write(path, [0xff]).expect("write malformed");
+        assert!(matches!(
+            read_service_definition_v2(root.path(), "svc"),
+            Err(ServiceDefinitionError::Decode(_))
+        ));
+    }
 
     #[test]
     fn extension_is_servicedef_v2() {

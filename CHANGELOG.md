@@ -1,5 +1,22 @@
 # Changelog
 
+## 4.10.12 — strict independent daemon placement
+
+- Adds `independent_spawn`, a structured daemon request API with an explicit
+  `SpawnMode::{Inherited, Independent}` policy. `Independent` never falls back
+  to the caller's cgroup or Job: it requires a verified external Linux broker
+  or user-systemd transient service, or Windows Task Scheduler, and returns a
+  typed failure when that placement cannot be established.
+- The scheduler boundary accepts only inspectable, null-stdio requests. It
+  preserves literal argv, working-directory, and explicit environment policy
+  without transferring caller-owned descriptors, sockets, or native command
+  hooks. Bounded readiness, cooperative cancellation, and partial-launch
+  cleanup are surfaced explicitly.
+- Adds Linux cgroup-v2 and Windows Task Scheduler acceptance fixtures plus a
+  Docker cgroupfs orchestration harness. The Docker runner requires an
+  operator-provisioned, delegated child cgroup and does not create or mutate
+  container ownership boundaries.
+
 ## 4.10.11 — byte-exact stream capture
 
 - Adds `NativeProcess::drain_stream_raw(stream)`, a consuming byte-exact

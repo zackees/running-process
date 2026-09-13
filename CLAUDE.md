@@ -240,6 +240,15 @@ uv run --no-project --module ci.version_check
 ```
 (`--no-project` skips the maturin auto-sync — `ci.version_check` only reads version strings out of `pyproject.toml`/`Cargo.toml`/`__init__.py` and doesn't need the native module.)
 
+### Temporary nested dependency workflow
+
+When a coordinated consumer needs unreleased changes from a dependency, use a
+temporary checkout at `_vender/<dependency>/` while editing and testing. Release
+the dependency first, wait until that exact release is publicly available, then
+replace every temporary path patch with the exact public version and remove the
+nested checkout before the consumer's final release. Do not leave a published
+crate depending on an unpublished nested path.
+
 ## Agent Backlog
 
 Active pending work lives in [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md). Root-level scratch task files are historical breadcrumbs.

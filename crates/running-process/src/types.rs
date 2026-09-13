@@ -58,10 +58,10 @@ pub enum ProcessError {
     StdinUnavailable,
     /// Child process creation failed.
     #[error("failed to spawn process: {0}")]
-    Spawn(std::io::Error),
+    Spawn(#[source] std::io::Error),
     /// Reading or writing child process streams failed.
     #[error("failed to read process output: {0}")]
-    Io(std::io::Error),
+    Io(#[source] std::io::Error),
     /// The requested wait or read operation timed out.
     #[error("process timed out")]
     Timeout,
@@ -71,6 +71,30 @@ pub enum ProcessError {
         /// Aggregate stdout/stderr capture limit.
         limit: usize,
     },
+}
+
+#[cfg(test)]
+mod process_error_source_tests {
+    use super::ProcessError;
+    use std::error::Error as _;
+
+    #[test]
+    fn native_io_categories_remain_available_through_error_sources() {
+        for error in [
+            ProcessError::Spawn(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            ProcessError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        ] {
+            let source = error
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap();
+            assert!(matches!(
+                source.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ));
+        }
+    }
 }
 
 /// Captured output and exit status returned by one-shot process helpers.

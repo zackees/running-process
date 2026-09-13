@@ -30,7 +30,8 @@
 use std::process::Command;
 
 pub use running_process_platform_internal::platform::process::{
-    DaemonChild, DaemonStdio, DaemonStdioSource, SpawnStdio, SpawnedChild, StdioSource,
+    DaemonChild, DaemonStdio, DaemonStdioSource, SpawnStdio, SpawnedChild, SpawnedChildControl,
+    StdioSource, SyncEnvironment,
 };
 
 /// Selects the base environment used for a newly spawned process.
@@ -265,6 +266,45 @@ pub fn spawn_daemon_with_env_policy(
     spawn_daemon_inner(command, DaemonStdio::default(), policy, false, None)
 }
 
+/// Spawn a detached daemon from a caller-assembled complete environment base.
+/// Explicit `Command::env` additions/removals still apply after this base in
+/// the native daemon boundary. This retains daemon stdio sanitization and the
+/// caller-selected file-or-NUL stdio and Windows breakaway policy. Breakaway
+/// remains subject to the caller's Job policy; this is not independent spawning.
+pub fn spawn_daemon_with_explicit_environment(
+    command: &mut Command,
+    stdio: DaemonStdio<'_>,
+    environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    breakaway: bool,
+) -> std::io::Result<DaemonChild> {
+    spawn_daemon_with_environment(
+        command,
+        stdio,
+        SyncEnvironment::Explicit(environment),
+        breakaway,
+    )
+}
+
+/// Spawn a daemon with a live native environment policy. `Inherit` remains
+/// live; explicit command overrides/removals are applied by the platform.
+/// File-or-NUL output bindings and Windows breakaway selection are preserved.
+/// Breakaway is subject to the caller's Job policy, not an independent-spawn
+/// guarantee. The daemon marker is added to the command before launch.
+pub fn spawn_daemon_with_environment(
+    command: &mut Command,
+    stdio: DaemonStdio<'_>,
+    environment: SyncEnvironment,
+    breakaway: bool,
+) -> std::io::Result<DaemonChild> {
+    mark_as_daemon(command);
+    running_process_platform_internal::platform::process::spawn_sync_daemon(
+        command,
+        stdio,
+        environment,
+        breakaway,
+    )
+}
+
 /// Like [`spawn_daemon`], but the child also **breaks away from any Job
 /// Object the spawner belongs to** (Windows; a no-op elsewhere).
 ///
@@ -413,6 +453,46 @@ pub fn spawn_with_env_policy(
     let policy = policy.resolve(SpawnLifetime::Contained);
     let environment = prepare_sync_environment(policy)?;
     running_process_platform_internal::platform::process::spawn_sync(command, stdio, environment)
+}
+
+/// Spawn a contained child from a caller-assembled complete environment base.
+/// On Unix, `shutdown_timeout` is evaluated at handle drop immediately before
+/// bounded kill/reap; Windows retains its existing Job-close shutdown policy.
+/// The callback must be nonblocking and must not panic; it is not invoked on
+/// Windows. `None` selects the substrate's default Unix shutdown policy.
+/// Explicit command environment additions/removals override the supplied base.
+pub fn spawn_with_explicit_environment(
+    command: &mut Command,
+    stdio: SpawnStdio<'_>,
+    environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    shutdown_timeout: Option<fn() -> std::time::Duration>,
+) -> std::io::Result<SpawnedChild> {
+    spawn_with_environment(
+        command,
+        stdio,
+        SyncEnvironment::Explicit(environment),
+        shutdown_timeout,
+    )
+}
+
+/// Spawn with a live native environment policy and optional Unix drop-time
+/// shutdown budget. [`SyncEnvironment::Inherit`] is not snapshotted.
+/// The callback must be nonblocking and must not panic. Windows does not
+/// evaluate it; shutdown there remains owned by the kill-on-close Job Object.
+/// `None` retains the default Unix shutdown policy. This budget is distinct
+/// from [`SpawnStdio::drain_timeout`], which controls post-exit pipe retention.
+pub fn spawn_with_environment(
+    command: &mut Command,
+    stdio: SpawnStdio<'_>,
+    environment: SyncEnvironment,
+    shutdown_timeout: Option<fn() -> std::time::Duration>,
+) -> std::io::Result<SpawnedChild> {
+    running_process_platform_internal::platform::process::spawn_sync_with_shutdown_policy(
+        command,
+        stdio,
+        environment,
+        shutdown_timeout,
+    )
 }
 
 /// Spawn a Tokio child through the centralized process-creation boundary.

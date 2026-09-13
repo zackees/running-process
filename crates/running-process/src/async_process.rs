@@ -75,6 +75,13 @@ pub struct AsyncProcessSessionOptions {
     pub post_exit_grace: Option<Duration>,
     /// Whether dropping the terminal session owner terminates and reaps the direct child.
     pub kill_on_drop: bool,
+    /// On owner drop, attempt a bounded descendant snapshot sweep before
+    /// direct-child fallback. Implies direct-child cleanup even when
+    /// `kill_on_drop` is false. Defaults to false for compatibility.
+    ///
+    /// Currently applies only while the actor retains an unreaped root;
+    /// it does not recover descendant ownership after the root was reaped.
+    pub kill_tree_on_drop: bool,
 }
 
 impl Default for AsyncProcessSessionOptions {
@@ -84,6 +91,7 @@ impl Default for AsyncProcessSessionOptions {
             max_chunk_bytes: 8 * 1024,
             post_exit_grace: Some(Duration::from_millis(250)),
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         }
     }
 }
@@ -144,12 +152,14 @@ impl From<Output> for AsyncCapturedOutput {
 /// canonical actor as [`AsyncProcess::new`], not a second execution engine.
 pub struct AsyncProcessBuilder {
     spec: SpawnSpec,
+    kill_on_drop: bool,
 }
 
 impl AsyncProcessBuilder {
     /// Describe a direct program invocation.
     pub fn new(program: impl Into<OsString>) -> Self {
         Self {
+            kill_on_drop: false,
             spec: SpawnSpec::new(program)
                 .stdin(StreamMode::Piped)
                 .stdout(StreamMode::Piped)
@@ -160,6 +170,7 @@ impl AsyncProcessBuilder {
     /// Describe a command using the platform-owned shell convention.
     pub fn shell(command: impl Into<OsString>) -> Self {
         Self {
+            kill_on_drop: false,
             spec: running_process_platform_internal::shell_spec(command.into())
                 .stdin(StreamMode::Piped)
                 .stdout(StreamMode::Piped)
@@ -194,6 +205,19 @@ impl AsyncProcessBuilder {
     /// Add one environment override.
     pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.spec = self.spec.env(key, value);
+        self
+    }
+
+    /// Remove an inherited entry or an earlier override. Later overrides win.
+    pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
+        self.spec = self.spec.env_remove(key);
+        self
+    }
+
+    /// Suppress a Windows console window without changing stdio or containment.
+    /// Defaults to false; has no effect on Unix.
+    pub fn hide_console(mut self, hide: bool) -> Self {
+        self.spec = self.spec.hide_console(hide);
         self
     }
 
@@ -243,14 +267,62 @@ impl AsyncProcessBuilder {
         self
     }
 
+    /// Apply canonical scheduling intent. Last call wins with [`Self::nice`].
+    pub fn priority(mut self, priority: crate::ProcessPriority) -> Self {
+        self.spec = self.spec.priority(priority);
+        self
+    }
+
+    /// Attempt scheduling adjustment after spawn; denial leaves the child
+    /// running at its existing priority. The child may run before adjustment.
+    pub fn priority_best_effort(mut self, priority: crate::ProcessPriority) -> Self {
+        self.spec = self.spec.priority_best_effort(priority);
+        self
+    }
+
+    /// Acquire exclusion on the native spawning thread, not on the caller's
+    /// async task. The permit covers native process creation and exec result.
+    pub fn spawn_admission(mut self, admission: crate::SpawnAdmission) -> Self {
+        self.spec = self.spec.spawn_admission(admission);
+        self
+    }
+
     /// Build an [`AsyncProcess`] backed by the canonical actor.
     pub fn build(self) -> AsyncProcess {
-        AsyncProcess::from_spec(self.spec)
+        let mut process = AsyncProcess::from_spec(self.spec);
+        process.kill_on_drop = self.kill_on_drop;
+        process
+    }
+
+    /// Kill and reap a running child when its async handle is dropped.
+    ///
+    /// Defaults to false. Cleanup is performed by the library actor, including
+    /// when an output capture owns the child. This is independent of OS-level
+    /// spawning-owner death policy. Sessions use their explicit options instead.
+    pub fn kill_on_drop(mut self, kill: bool) -> Self {
+        self.kill_on_drop = kill;
+        self
     }
 
     /// Build a long-lived, concurrently pumped process session.
     pub fn session(self, options: AsyncProcessSessionOptions) -> AsyncProcessSession {
         AsyncProcessSession::from_spec(self.spec, options)
+    }
+
+    /// Build a session coupled to an observation subscriber. The process is
+    /// still spawned only when [`AsyncProcessSession::start`] is called; the
+    /// observer is installed at that native spawn boundary, rather than
+    /// attached after the child or its descendants may already exist.
+    pub fn session_with_observer(
+        self,
+        options: AsyncProcessSessionOptions,
+        observer: crate::ObserverConfig,
+    ) -> (AsyncProcessSession, crate::ObserverSubscriber) {
+        let (emitter, subscriber) = crate::observer::ObserverEmitter::new(observer);
+        (
+            AsyncProcessSession::from_spec_with_observer(self.spec, options, Some(emitter)),
+            subscriber,
+        )
     }
 
     /// Start and capture both output streams while preserving [`ExitStatus`].
@@ -281,11 +353,16 @@ where
 pub struct AsyncProcess {
     spec: SpawnSpec,
     child: Option<ActorProcess>,
+    kill_on_drop: bool,
 }
 
 impl AsyncProcess {
     fn from_spec(spec: SpawnSpec) -> Self {
-        Self { spec, child: None }
+        Self {
+            spec,
+            child: None,
+            kill_on_drop: false,
+        }
     }
 
     /// Create a direct (non-shell) async process.
@@ -338,7 +415,8 @@ impl AsyncProcess {
         if self.child.is_some() {
             return Err(ProcessError::AlreadyStarted);
         }
-        self.child = Some(ActorProcess::start(self.spec.clone()).await?);
+        self.child =
+            Some(ActorProcess::start_with_drop_policy(self.spec.clone(), self.kill_on_drop).await?);
         Ok(())
     }
 
@@ -557,6 +635,12 @@ impl AsyncProcess {
     }
 
     /// Wait for completion and capture stdout/stderr within an aggregate byte limit.
+    ///
+    /// This is a retention limit, not an execution deadline or kill-on-overflow
+    /// policy. After overflow the readers discard further bytes until EOF;
+    /// once the child exits and pipes close, this returns
+    /// [`ProcessError::OutputLimitExceeded`]. A producer that never exits still
+    /// needs caller-owned timeout/cancellation and lifecycle cleanup.
     pub async fn output_bounded(&self, limit: usize) -> Result<RunOutput, ProcessError> {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
         let output = child.output_bounded(limit).await?;
@@ -564,6 +648,8 @@ impl AsyncProcess {
     }
 
     /// Capture both streams within one aggregate byte limit and preserve status.
+    /// Uses the same wait-for-completion retention policy as
+    /// [`Self::output_bounded`]; overflow does not terminate the child.
     pub async fn capture_bounded(&self, limit: usize) -> Result<AsyncCapturedOutput, ProcessError> {
         let child = self.child.as_ref().ok_or(ProcessError::NotRunning)?;
         Ok(child.output_bounded(limit).await?.into())
@@ -638,6 +724,7 @@ impl AsyncProcess {
 pub struct AsyncProcessSession {
     spec: SpawnSpec,
     options: AsyncProcessSessionOptions,
+    observer: Option<crate::observer::ObserverEmitter>,
     control: Option<AsyncProcessSessionControl>,
     output: Option<AsyncProcessSessionOutput>,
 }
@@ -652,6 +739,17 @@ pub struct AsyncProcessSessionControl {
     process: SessionProcess,
 }
 
+/// Coverage confirmed by an explicit session tree-termination request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessTreeKill {
+    /// Every member of the captured descendant snapshot reached terminal state.
+    /// This is not containment of descendants created after the snapshot.
+    TreeKilled,
+    /// The tree sweep was unavailable or failed; only the owned direct child
+    /// was confirmed terminated. Descendant cleanup is not confirmed.
+    ProcessKilled,
+}
+
 /// Single-consumer output lane split from an [`AsyncProcessSession`].
 ///
 /// Dropping this receiver detaches output delivery only: pumps continue to
@@ -663,9 +761,18 @@ pub struct AsyncProcessSessionOutput {
 
 impl AsyncProcessSession {
     fn from_spec(spec: SpawnSpec, options: AsyncProcessSessionOptions) -> Self {
+        Self::from_spec_with_observer(spec, options, None)
+    }
+
+    fn from_spec_with_observer(
+        spec: SpawnSpec,
+        options: AsyncProcessSessionOptions,
+        observer: Option<crate::observer::ObserverEmitter>,
+    ) -> Self {
         Self {
             spec,
             options,
+            observer,
             control: None,
             output: None,
         }
@@ -676,7 +783,8 @@ impl AsyncProcessSession {
         if self.control.is_some() {
             return Err(ProcessError::AlreadyStarted);
         }
-        let (process, output) = SessionProcess::start(self.spec.clone(), self.options).await?;
+        let (process, output) =
+            SessionProcess::start(self.spec.clone(), self.options, self.observer.take()).await?;
         self.control = Some(AsyncProcessSessionControl { process });
         self.output = Some(AsyncProcessSessionOutput { output });
         Ok(())
@@ -743,6 +851,20 @@ impl AsyncProcessSession {
             .as_ref()
             .ok_or(ProcessError::NotRunning)?
             .kill()
+            .await
+    }
+
+    /// Terminate a descendant snapshot through the exclusive native owner.
+    ///
+    /// Returns the weaker direct-child outcome when full snapshot cleanup
+    /// cannot be confirmed. An already-reaped session is an error, not a fresh
+    /// lookup of its former PID. Dropping this request does not cancel a native
+    /// sweep already accepted by the actor.
+    pub async fn kill_tree(&self, timeout: Duration) -> Result<ProcessTreeKill, ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .kill_tree(timeout)
             .await
     }
 
@@ -821,6 +943,12 @@ impl AsyncProcessSessionControl {
         self.process.kill().await
     }
 
+    /// Terminate the captured tree through the actor and confirm direct-child
+    /// reaping within the supplied total request deadline.
+    pub async fn kill_tree(&self, timeout: Duration) -> Result<ProcessTreeKill, ProcessError> {
+        self.process.kill_tree(timeout).await
+    }
+
     /// Request graceful termination for an explicitly child-owned group.
     pub async fn terminate_group_soft(&self) -> Result<bool, ProcessError> {
         self.process.terminate_group_soft().await
@@ -868,7 +996,25 @@ mod tests {
     use std::ffi::OsString;
     use std::time::Duration;
 
-    use super::{AsyncProcess, AsyncProcessBuilder, AsyncStdio};
+    use super::{AsyncProcess, AsyncProcessBuilder, AsyncProcessSessionOptions, AsyncStdio};
+
+    #[test]
+    fn drop_policy_is_explicit_and_preserved_by_builder() {
+        assert!(!AsyncProcessBuilder::new("unused").build().kill_on_drop);
+        assert!(
+            AsyncProcessBuilder::new("unused")
+                .kill_on_drop(true)
+                .build()
+                .kill_on_drop
+        );
+        assert!(
+            !AsyncProcessBuilder::new("unused")
+                .kill_on_drop(true)
+                .kill_on_drop(false)
+                .build()
+                .kill_on_drop
+        );
+    }
 
     fn fixture_program() -> OsString {
         let exe = std::env::current_exe().expect("test executable path");
@@ -896,6 +1042,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admission_keeps_non_send_permit_on_native_spawn_thread() {
+        use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+        static EXCLUSION: RwLock<()> = RwLock::new(());
+        struct Permit {
+            _guard: RwLockReadGuard<'static, ()>,
+            acquired_on: std::thread::ThreadId,
+            released: Arc<Mutex<Option<std::thread::ThreadId>>>,
+        }
+        impl Drop for Permit {
+            fn drop(&mut self) {
+                assert_eq!(self.acquired_on, std::thread::current().id());
+                *self.released.lock().unwrap() = Some(self.acquired_on);
+            }
+        }
+        let released = Arc::new(Mutex::new(None));
+        let marker = released.clone();
+        let admission = crate::SpawnAdmission::new(move || {
+            Ok(Permit {
+                _guard: EXCLUSION.read().unwrap(),
+                acquired_on: std::thread::current().id(),
+                released: marker.clone(),
+            })
+        });
+        let mut process = AsyncProcessBuilder::new(fixture_program())
+            .arg("exit:0")
+            .kill_on_drop(true)
+            .spawn_admission(admission)
+            .build();
+        let start = process.start();
+        fn assert_send<T: Send>(_: &T) {}
+        assert_send(&start);
+        tokio::time::timeout(Duration::from_secs(5), start)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            released.lock().unwrap().is_some(),
+            "spawn acknowledgement must follow permit release"
+        );
+        assert!(
+            EXCLUSION.try_write().is_ok(),
+            "admission must not span child lifetime"
+        );
+        assert!(tokio::time::timeout(Duration::from_secs(5), process.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success());
+    }
+
+    #[tokio::test]
+    async fn admission_denial_precedes_native_exec_and_retains_io_kind() {
+        let admission = crate::SpawnAdmission::new(|| {
+            Err::<(), _>(std::io::ErrorKind::PermissionDenied.into())
+        });
+        let mut process = AsyncProcessBuilder::new("rp-nonexistent-denied-spawn-fixture")
+            .kill_on_drop(true)
+            .spawn_admission(admission)
+            .build();
+        let result = tokio::time::timeout(Duration::from_secs(5), process.start())
+            .await
+            .unwrap();
+        assert!(matches!(result, Err(crate::ProcessError::Spawn(error))
+            if error.kind() == std::io::ErrorKind::PermissionDenied));
+    }
+
+    #[tokio::test]
     async fn async_process_captures_stdout_and_stderr() {
         let process = fixture(&["out:out", "err:err"]);
         let output = process.output_after_start().await.expect("async output");
@@ -916,6 +1129,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn observed_session_emits_lifecycle_from_its_single_actor_spawn() {
+        let (mut session, subscriber) = AsyncProcessBuilder::new(fixture_program())
+            .arg("exit:0")
+            .session_with_observer(
+                AsyncProcessSessionOptions::default(),
+                crate::ObserverConfig::lifecycle(),
+            );
+        session.start().await.expect("session starts");
+        let pid = session.pid().expect("started pid");
+        let started = subscriber
+            .recv_timeout(Duration::from_secs(5))
+            .expect("started event");
+        assert_eq!(started.category, crate::EventCategory::Lifecycle);
+        assert_eq!(started.kind, crate::ObserverEventKind::Started);
+        assert_eq!(started.pid, pid);
+        assert!(session.wait().await.expect("session exits").success());
+        let exited = subscriber
+            .recv_timeout(Duration::from_secs(5))
+            .expect("exited event");
+        assert_eq!(exited.category, crate::EventCategory::Lifecycle);
+        assert_eq!(
+            exited.kind,
+            crate::ObserverEventKind::Exited { exit_code: 0 }
+        );
+        assert_eq!(exited.pid, pid);
+    }
+
+    #[tokio::test]
     async fn async_process_bounded_output_drains_and_reports_overflow() {
         let mut process = fixture(&["out:123456789"]);
         process.start().await.expect("async process starts");
@@ -923,6 +1164,37 @@ mod tests {
             process.output_bounded(4).await,
             Err(crate::ProcessError::OutputLimitExceeded { limit: 4 })
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn bounded_capture_retention_overflow_does_not_terminate_the_producer() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut process = AsyncProcessBuilder::new("/bin/sh")
+                .args([
+                    "-c",
+                    "head -c 1048576 /dev/zero; printf complete > completed",
+                ])
+                .current_dir(directory.path())
+                .stdin(AsyncStdio::Null)
+                .stdout(AsyncStdio::Piped)
+                .stderr(AsyncStdio::Piped)
+                .kill_on_drop(true)
+                .build();
+            process.start().await.expect("start overflowing producer");
+            process.capture_bounded(4).await
+        })
+        .await
+        .expect("finite producer must finish despite overflow");
+        assert!(matches!(
+            result,
+            Err(crate::ProcessError::OutputLimitExceeded { limit: 4 })
+        ));
+        assert_eq!(
+            std::fs::read(directory.path().join("completed")).unwrap(),
+            b"complete"
+        );
     }
 
     #[tokio::test]

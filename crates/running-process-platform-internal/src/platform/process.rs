@@ -8,9 +8,9 @@ pub use crate::{
     configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
     monitor_console_windows, parent_has_console, prepare_capture_reader, set_process_name,
     shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
-    spawn_sync_daemon_with_inheritance, start_descendant_monitor, start_exact_trace,
-    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
-    CaptureCancellation, TracedChild, WindowsJobHandle,
+    spawn_sync_daemon_with_inheritance, spawn_sync_with_shutdown_policy, start_descendant_monitor,
+    start_exact_trace, sync_child_native_handle, trampoline_exit_code,
+    unix_mark_extra_fds_close_on_exec, CaptureCancellation, TracedChild, WindowsJobHandle,
 };
 
 #[cfg(feature = "async-process")]
@@ -306,7 +306,12 @@ pub struct DaemonChild {
     pub(crate) inner: Box<dyn DaemonChildControl>,
 }
 
-pub(crate) trait DaemonChildControl:
+/// Platform control implementation for a detached daemon handle.
+///
+/// This is public so a verified external launcher (such as a transient service
+/// manager) can provide the same lifecycle handle without pretending it is a
+/// direct parent of the launched process.
+pub trait DaemonChildControl:
     Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe
 {
     fn kill(&mut self) -> std::io::Result<()>;
@@ -315,6 +320,10 @@ pub(crate) trait DaemonChildControl:
 }
 
 impl DaemonChild {
+    /// Build a handle for a daemon created by a verified external launcher.
+    pub fn from_external(pid: u32, inner: Box<dyn DaemonChildControl>) -> Self {
+        Self { pid, inner }
+    }
     /// Return the operating-system process identifier.
     pub fn id(&self) -> u32 {
         self.pid
@@ -350,7 +359,12 @@ pub struct SpawnedChild {
     pub(crate) inner: Box<dyn SpawnedChildControl>,
 }
 
-pub(crate) trait SpawnedChildControl:
+/// Lifecycle implementation for a [`SpawnedChild`].
+///
+/// External launchers may implement this to retain the canonical pipe handle
+/// and drop-shutdown contract. `shutdown` is invoked exactly once by
+/// `SpawnedChild::drop`; it must be bounded/best-effort and must not panic.
+pub trait SpawnedChildControl:
     Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe
 {
     fn kill(&mut self) -> std::io::Result<()>;
@@ -360,6 +374,29 @@ pub(crate) trait SpawnedChildControl:
 }
 
 impl SpawnedChild {
+    /// Transfer caller-owned pipes and lifecycle control into this handle.
+    ///
+    /// This constructor does not launch a process or establish containment.
+    /// The caller must supply the matching PID, pipes, and control for an
+    /// already-contained child. Dropping the returned handle always calls
+    /// [`SpawnedChildControl::shutdown`]; the supplied control owns the actual
+    /// termination and reaping policy, including any bounded drain deadline.
+    pub fn from_parts(
+        pid: u32,
+        stdin: Option<std::process::ChildStdin>,
+        stdout: Option<std::process::ChildStdout>,
+        stderr: Option<std::process::ChildStderr>,
+        inner: Box<dyn SpawnedChildControl>,
+    ) -> Self {
+        Self {
+            stdin,
+            stdout,
+            stderr,
+            pid,
+            inner,
+        }
+    }
+
     /// Return the operating-system process identifier.
     pub fn id(&self) -> u32 {
         self.pid
@@ -384,6 +421,54 @@ impl SpawnedChild {
 impl Drop for SpawnedChild {
     fn drop(&mut self) {
         self.inner.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod external_child_tests {
+    use super::{SpawnedChild, SpawnedChildControl};
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    struct Control(Arc<Mutex<Vec<&'static str>>>);
+
+    impl SpawnedChildControl for Control {
+        fn kill(&mut self) -> io::Result<()> {
+            self.0.lock().unwrap().push("kill");
+            Err(io::Error::from_raw_os_error(5))
+        }
+
+        fn wait(&mut self) -> io::Result<i32> {
+            self.0.lock().unwrap().push("wait");
+            Ok(-15)
+        }
+
+        fn try_wait(&mut self) -> io::Result<Option<i32>> {
+            self.0.lock().unwrap().push("try_wait");
+            Ok(None)
+        }
+
+        fn shutdown(&mut self) {
+            self.0.lock().unwrap().push("shutdown");
+        }
+    }
+
+    #[test]
+    fn external_control_preserves_results_and_receives_one_drop_shutdown() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut child =
+            SpawnedChild::from_parts(123, None, None, None, Box::new(Control(Arc::clone(&calls))));
+        assert_eq!(child.id(), 123);
+        assert!(child.stdin.is_none() && child.stdout.is_none() && child.stderr.is_none());
+        assert_eq!(child.try_wait().unwrap(), None);
+        assert_eq!(child.kill().unwrap_err().raw_os_error(), Some(5));
+        assert_eq!(child.wait().unwrap(), -15);
+        assert_eq!(*calls.lock().unwrap(), ["try_wait", "kill", "wait"]);
+        drop(child);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            ["try_wait", "kill", "wait", "shutdown"]
+        );
     }
 }
 

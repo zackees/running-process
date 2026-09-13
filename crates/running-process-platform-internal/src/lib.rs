@@ -6,6 +6,12 @@
 //! `tokio::process::Command` directly.
 
 use std::cfg_select;
+mod semantic_priority;
+pub use semantic_priority::ProcessPriority;
+#[cfg(feature = "async-process")]
+mod spawn_admission;
+#[cfg(feature = "async-process")]
+pub use spawn_admission::SpawnAdmission;
 #[cfg(feature = "async-process")]
 use std::ffi::{OsStr, OsString};
 #[cfg(feature = "async-process")]
@@ -20,6 +26,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "async-process")]
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
+/// Explicit caller-owned foreground command execution.
+pub mod foreground;
 /// Neutral capability indexes for the eventual workspace-wide host boundary.
 ///
 /// The indexes intentionally expose no operations yet: phase 2 establishes
@@ -63,10 +71,10 @@ pub use platform_imp::{
     configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
     monitor_console_windows, parent_has_console, prepare_capture_reader, set_process_name,
     shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
-    spawn_sync_daemon_with_inheritance, start_descendant_monitor, start_exact_trace,
-    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
-    unix_set_priority, unix_signal_process, unix_signal_process_group, unix_signal_raw,
-    CaptureCancellation, TracedChild, WindowsJobHandle,
+    spawn_sync_daemon_with_inheritance, spawn_sync_with_shutdown_policy, start_descendant_monitor,
+    start_exact_trace, sync_child_native_handle, trampoline_exit_code,
+    unix_mark_extra_fds_close_on_exec, unix_set_priority, unix_signal_process,
+    unix_signal_process_group, unix_signal_raw, CaptureCancellation, TracedChild, WindowsJobHandle,
 };
 
 #[cfg(feature = "terminal-graphics")]
@@ -89,6 +97,33 @@ pub use platform_imp::{autostart_register, autostart_render_registration, autost
 pub use platform_imp::{process_install_owner_death_cleanup, process_owner_death_cleanup_target};
 
 pub use platform_imp::process_install_shutdown_request_handler;
+
+/// Windows scheduler launch verification against the caller's Job Object.
+#[cfg(target_os = "windows")]
+pub use platform_imp::process_inspect::{verify_outside_current_job, JobSeparation};
+
+#[cfg(target_os = "windows")]
+pub use platform_imp::independent_scheduler::{
+    require_interactive_scheduler_token, spawn_independent_helper_child, IndependentSchedulerTask,
+};
+
+#[cfg(target_os = "windows")]
+pub use platform_imp::independent_files::{
+    create_private_launch_directory, create_private_launch_file, open_private_launch_directory,
+    open_private_launch_file,
+};
+
+/// Linux process control that refuses a numeric-PID fallback.
+#[cfg(target_os = "linux")]
+pub use platform_imp::process_inspect::{process_start_key, StrictProcessHandle};
+
+#[cfg(target_os = "linux")]
+pub use platform_imp::cgroup_placement::verify_process_cgroup_separation;
+
+#[cfg(target_os = "linux")]
+pub use platform_imp::independent_helper::{
+    spawn_independent_helper_child, terminate_independent_scheduler_command,
+};
 
 pub use platform_imp::fs_write_all_to_descriptor;
 
@@ -363,14 +398,17 @@ pub struct SpawnSpec {
     program: OsString,
     args: Vec<OsString>,
     current_dir: Option<PathBuf>,
-    env: Vec<(OsString, OsString)>,
+    env: Vec<(OsString, Option<OsString>)>,
     clear_env: bool,
     stdin: StreamMode,
     stdout: StreamMode,
     stderr: StreamMode,
     create_process_group: bool,
     kill_when_owner_dies: bool,
+    hide_console: bool,
     nice: Option<i32>,
+    admission: Option<SpawnAdmission>,
+    best_effort_nice: Option<i32>,
 }
 
 #[cfg(feature = "async-process")]
@@ -388,7 +426,10 @@ impl SpawnSpec {
             stderr: StreamMode::Inherit,
             create_process_group: false,
             kill_when_owner_dies: false,
+            hide_console: false,
             nice: None,
+            admission: None,
+            best_effort_nice: None,
         }
     }
 
@@ -406,7 +447,20 @@ impl SpawnSpec {
 
     /// Add an environment override.
     pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
-        self.env.push((key.into(), value.into()));
+        self.env.push((key.into(), Some(value.into())));
+        self
+    }
+
+    /// Remove an inherited entry or an earlier override. Later overrides win.
+    pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
+        self.env.push((key.into(), None));
+        self
+    }
+
+    /// Suppress creation of a Windows console window; no-op on Unix.
+    /// Defaults to false and does not change stdio or containment.
+    pub fn hide_console(mut self, hide: bool) -> Self {
+        self.hide_console = hide;
         self
     }
 
@@ -468,11 +522,56 @@ impl SpawnSpec {
     /// than a claim that numeric nice values are portable.
     pub fn nice(mut self, nice: Option<i32>) -> Self {
         self.nice = nice;
+        self.best_effort_nice = None;
+        self
+    }
+
+    /// Select scheduling intent using the native platform's canonical mapping.
+    /// Last call wins when combined with [`Self::nice`].
+    pub fn priority(self, priority: ProcessPriority) -> Self {
+        self.nice(priority.nice_value())
+    }
+
+    /// Attempt priority adjustment after creation, without failing the spawn
+    /// if the OS denies it. The child may run before adjustment. Last call wins
+    /// with strict priority/niceness selection.
+    pub fn priority_best_effort(mut self, priority: ProcessPriority) -> Self {
+        self.nice = None;
+        self.best_effort_nice = priority.nice_value();
+        self
+    }
+
+    /// Acquire caller-owned exclusion at the native process creation boundary.
+    pub fn spawn_admission(mut self, admission: SpawnAdmission) -> Self {
+        self.admission = Some(admission);
         self
     }
 
     /// Spawn using the canonical asynchronous platform operation.
+    ///
+    /// Console visibility is configured separately from containment.
     pub async fn spawn(self) -> io::Result<PlatformChild> {
+        self.spawn_inner(None).await
+    }
+
+    /// Spawn with Windows Job descendant notifications installed before the
+    /// child is handed to its actor. The Job is retained by the child's
+    /// lifecycle capability. Assignment occurs after native creation; this
+    /// does not claim suspended-launch coverage of pre-assignment descendants.
+    #[cfg(windows)]
+    pub async fn spawn_with_descendant_observer(
+        self,
+        emit: Box<dyn Fn(platform::process::DescendantEvent) + Send>,
+    ) -> io::Result<PlatformChild> {
+        self.spawn_inner(Some(emit)).await
+    }
+
+    async fn spawn_inner(
+        self,
+        observer: Option<Box<dyn Fn(platform::process::DescendantEvent) + Send>>,
+    ) -> io::Result<PlatformChild> {
+        #[cfg(not(windows))]
+        let _ = observer;
         let mut command = Command::new(&self.program);
         command.args(&self.args);
         if let Some(current_dir) = self.current_dir.as_deref() {
@@ -482,7 +581,14 @@ impl SpawnSpec {
             command.env_clear();
         }
         for (key, value) in &self.env {
-            command.env(key, value);
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
         }
         command
             .stdin(self.stdin.apply())
@@ -493,18 +599,87 @@ impl SpawnSpec {
             self.create_process_group,
             self.kill_when_owner_dies,
             self.nice,
+            self.hide_console,
         )?;
 
-        let child = command.spawn()?;
-        platform_imp::after_spawn(&child, self.kill_when_owner_dies)?;
-        Ok(PlatformChild::new(child, self.create_process_group))
+        let mut child = match self.admission {
+            Some(admission) => admission.run(|| command.spawn())?,
+            None => command.spawn()?,
+        };
+        #[cfg(not(windows))]
+        let attachment = platform_imp::after_spawn(&child, self.kill_when_owner_dies);
+        // The observer-aware Job below is itself kill-on-close, so attaching
+        // the historical owner-death Job first would attempt to assign the
+        // same process to two Jobs. The observer path is the single holder.
+        #[cfg(windows)]
+        let attachment = if observer.is_some() {
+            Ok(())
+        } else {
+            platform_imp::after_spawn(&child, self.kill_when_owner_dies)
+        };
+        if let Err(error) = attachment {
+            // No handle has been accepted by the caller. A failed owner-death
+            // attachment must not leave the newly created process running.
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err(error);
+        }
+        if let Some(nice) = self.best_effort_nice {
+            let _ = platform_imp::apply_spawned_priority(&child, nice);
+        }
+        #[cfg(windows)]
+        let observer_job = if let Some(emit) = observer {
+            let pid = match child.id() {
+                Some(pid) => pid,
+                None => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return Err(io::Error::other("spawned child has no PID"));
+                }
+            };
+            match platform_imp::assign_async_child_to_windows_job(&child, pid, Some(emit)) {
+                Ok(job) => Some(job),
+                Err(error) => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        let result = PlatformChild::new(child, self.create_process_group);
+        #[cfg(windows)]
+        let result = PlatformChild {
+            observer_job,
+            ..result
+        };
+        Ok(result)
     }
+}
+
+#[cfg(all(test, feature = "async-process"))]
+#[test]
+fn priority_policy_setters_are_mutually_exclusive() {
+    let spec = SpawnSpec::new("unused")
+        .priority(ProcessPriority::High)
+        .priority_best_effort(ProcessPriority::Low);
+    assert_eq!(spec.nice, None);
+    assert_eq!(spec.best_effort_nice, ProcessPriority::Low.nice_value());
+    let spec = spec.nice(Some(7));
+    assert_eq!(spec.nice, Some(7));
+    assert_eq!(spec.best_effort_nice, None);
+    let spec = spec.priority_best_effort(ProcessPriority::Normal);
+    assert_eq!(spec.nice, None);
+    assert_eq!(spec.best_effort_nice, None);
 }
 
 /// Owned child handle returned by [`SpawnSpec::spawn`].
 #[cfg(feature = "async-process")]
 pub struct PlatformChild {
     child: Child,
+    #[cfg(windows)]
+    observer_job: Option<platform_imp::WindowsJobHandle>,
     stdin: Option<ChildStdin>,
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
@@ -525,6 +700,8 @@ impl PlatformChild {
         };
         Self {
             stdin: child.stdin.take(),
+            #[cfg(windows)]
+            observer_job: None,
             stdout: child.stdout.take(),
             stderr: child.stderr.take(),
             child,
@@ -551,6 +728,8 @@ impl PlatformChild {
     pub async fn wait_with_output(self) -> io::Result<Output> {
         let Self {
             mut child,
+            #[cfg(windows)]
+                observer_job: _observer_job,
             stdin,
             stdout,
             stderr,
@@ -617,7 +796,11 @@ impl PlatformChild {
         Option<PlatformOutput>,
     ) {
         (
-            PlatformLifecycle { child: self.child },
+            PlatformLifecycle {
+                child: self.child,
+                #[cfg(windows)]
+                _observer_job: self.observer_job,
+            },
             self.signal,
             self.stdin.map(|stdin| PlatformStdin { stdin }),
             self.stdout.map(PlatformOutput::stdout),
@@ -630,10 +813,69 @@ impl PlatformChild {
 #[cfg(feature = "async-process")]
 pub struct PlatformLifecycle {
     child: Child,
+    #[cfg(windows)]
+    _observer_job: Option<platform_imp::WindowsJobHandle>,
+}
+
+/// Keeps cleanup armed while an owned sweep is queued, running, or waiting
+/// for its result to be accepted. It does not claim synchronous reaping.
+#[cfg(all(feature = "async-process", feature = "process-inspection"))]
+struct PendingTreeLifecycle(Option<PlatformLifecycle>);
+
+#[cfg(all(feature = "async-process", feature = "process-inspection"))]
+impl Drop for PendingTreeLifecycle {
+    fn drop(&mut self) {
+        if let Some(lifecycle) = self.0.as_mut() {
+            // Child::start_kill targets the owned native child. Dropping Child
+            // then hands any unreaped process to Tokio's existing reap path.
+            let _ = lifecycle.start_kill();
+        }
+    }
 }
 
 #[cfg(feature = "async-process")]
 impl PlatformLifecycle {
+    /// Transfer exclusive, unreaped child ownership to a blocking tree sweep.
+    ///
+    /// The session actor must not poll `wait` concurrently with this operation:
+    /// ownership is consumed here and returned with the sweep result. Retaining
+    /// the unreaped native child keeps the root identity from being recycled
+    /// while the platform performs its best-effort descendant sweep. This does
+    /// not upgrade the sweep's descendant identity checks or prove that every
+    /// descendant was terminated. A child
+    /// already reaped by this lifecycle is a no-op, never a fresh PID lookup.
+    ///
+    /// The outer error denotes failure of the blocking worker itself; the inner
+    /// result is the native tree operation and allows the actor to perform a
+    /// direct-child fallback with the returned lifecycle on ordinary failures.
+    /// Dropping the request before acceptance requests direct-child termination,
+    /// including if the returned future has never been polled. A running tree
+    /// sweep continues until its deadline; cancellation is not a reap guarantee.
+    #[cfg(feature = "process-inspection")]
+    pub fn terminate_tree_owned(
+        self,
+        timeout: std::time::Duration,
+    ) -> impl std::future::Future<Output = io::Result<(Self, io::Result<u32>)>> {
+        // Arm before constructing the future, not on its first poll.
+        let pending = PendingTreeLifecycle(Some(self));
+        async move {
+            let (mut pending, result) = tokio::task::spawn_blocking(move || {
+                let result = match pending.0.as_ref().expect("owned lifecycle").child.id() {
+                    Some(pid) => platform_imp::kill_tree_owned_root(pid, timeout),
+                    None => Ok(0),
+                };
+                (pending, result)
+            })
+            .await
+            .map_err(|error| {
+                io::Error::other(format!("owned tree termination worker failed: {error}"))
+            })?;
+            // No suspension after disarming: ownership returns to the actor.
+            let lifecycle = pending.0.take().expect("accepted lifecycle");
+            Ok((lifecycle, result))
+        }
+    }
+
     /// Wait asynchronously for the child to exit.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         self.child.wait().await
@@ -827,6 +1069,56 @@ pub fn shell_spec(command: impl AsRef<OsStr>) -> SpawnSpec {
 #[cfg(all(test, feature = "async-process"))]
 mod tests {
     use super::{shell_spec, SpawnSpec, StreamMode};
+
+    #[test]
+    fn environment_operations_preserve_call_order() {
+        let spec = SpawnSpec::new("unused")
+            .env("KEY", "first")
+            .env_remove("KEY")
+            .env("KEY", "last");
+        assert_eq!(
+            spec.env,
+            vec![
+                ("KEY".into(), Some("first".into())),
+                ("KEY".into(), None),
+                ("KEY".into(), Some("last".into())),
+            ]
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "process-inspection"))]
+    #[tokio::test]
+    async fn dropping_unpolled_tree_transfer_requests_owned_child_cleanup() {
+        use super::platform_imp::process_inspect::StrictProcessHandle;
+        use std::time::Duration;
+        struct Cleanup(StrictProcessHandle);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+            }
+        }
+        let child = tokio::time::timeout(
+            Duration::from_secs(5),
+            SpawnSpec::new("/bin/sleep").arg("30").spawn(),
+        )
+        .await
+        .expect("spawn deadline")
+        .expect("sleep fixture");
+        let handle = Cleanup(
+            StrictProcessHandle::open(child.id().unwrap()).expect("strict fixture identity"),
+        );
+        let (lifecycle, _signal, _stdin, _stdout, _stderr) = child.into_actor_parts();
+        assert!(!handle.0.has_exited().unwrap());
+        let unpolled = lifecycle.terminate_tree_owned(Duration::from_secs(1));
+        drop(unpolled);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !handle.0.has_exited().expect("held fixture status") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("unpolled cancellation must request cleanup");
+    }
 
     fn fixture_command() -> SpawnSpec {
         #[cfg(windows)]

@@ -443,6 +443,11 @@ pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
     process_tree::kill_tree(pid, timeout, |_pid, process| Ok(process.start_time()))
 }
 
+#[cfg(all(feature = "async-process", feature = "process-inspection"))]
+pub(crate) fn kill_tree_owned_root(_pid: u32, _timeout: std::time::Duration) -> io::Result<u32> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "strict owned tree sweep is not yet implemented on macOS"))
+}
+
 pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     status.code().unwrap_or_else(|| -status.signal().unwrap_or(1))
@@ -703,7 +708,7 @@ pub fn configure_compat_tokio_command(
     _show_console: bool,
     kill_when_owner_dies: bool,
 ) -> io::Result<()> {
-    configure_command(command, false, kill_when_owner_dies, None)
+    configure_command(command, false, kill_when_owner_dies, None, false)
 }
 
 /// Nothing to do on this host: the kqueue supervisor is installed in `pre_exec`, before the child
@@ -722,6 +727,7 @@ pub(crate) fn configure_command(
     create_process_group: bool,
     kill_when_owner_dies: bool,
     nice: Option<i32>,
+    _hide_console: bool,
 ) -> io::Result<()> {
     let owner_pid = unsafe { libc::getpid() };
     configure_command_for_owner(
@@ -762,6 +768,14 @@ fn configure_command_for_owner(
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn apply_spawned_priority(child: &Child, nice: i32) -> io::Result<()> {
+    match child.id() {
+        Some(pid) => unix_set_priority(pid, nice),
+        None => Ok(()),
+    }
 }
 
 #[cfg(feature = "async-process")]
@@ -1014,7 +1028,7 @@ mod tests;
 
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;
-pub use sync_spawn::{spawn_sync, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
+pub use sync_spawn::{spawn_sync, spawn_sync_with_shutdown_policy, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
 
 #[cfg(all(test, feature = "ipc"))]
 mod endpoint_naming_tests {

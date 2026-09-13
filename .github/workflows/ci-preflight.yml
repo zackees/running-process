@@ -265,6 +265,11 @@ jobs:
         env:
           RUNNING_PROCESS_LIVE_TESTS: "1"
           RUNNING_PROCESS_GH_PTY_TESTS: "1"
+          # The independent Windows path is real Task Scheduler placement,
+          # not an inherited-spawn fallback. Linux requires an explicitly
+          # delegated cgroup/Docker topology and is covered by its separate
+          # operator-provisioned acceptance harness.
+          RUNNING_PROCESS_INDEPENDENT_WINDOWS_TESTS: ${{ runner.os == 'Windows' && '1' || '0' }}
         run: uv run --no-sync --module ci.run_logged logs/integration-test.log -- uv run --no-sync --module ci.test --live-only -ra --strict-markers
 
       # Every binary, not just the one the next step needs.

@@ -36,6 +36,30 @@ pub fn current_process_privilege() -> io::Result<Option<PrivilegedIdentity>> {
     Ok(is_local_system_sid(&sid).then_some(PrivilegedIdentity::WindowsLocalSystem))
 }
 
+/// Text SID read from the current process token, not caller-controlled account
+/// naming or environment. Used by same-user scheduler registration.
+pub(crate) fn current_user_sid_text() -> io::Result<String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    let sid = current_user_sid_bytes()?;
+    let mut text = std::ptr::null_mut();
+    // SAFETY: the token reader returns a validated complete SID, alive for
+    // the call; success returns a LocalFree-owned NUL-terminated string.
+    if unsafe { ConvertSidToStringSidW(sid.as_ptr().cast_mut().cast(), &mut text) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful conversion guarantees a terminated UTF-16 string.
+    // Always release it, including UTF-16 decoding errors.
+    unsafe {
+        let mut length = 0;
+        while *text.add(length) != 0 { length += 1; }
+        let result = String::from_utf16(std::slice::from_raw_parts(text, length))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+        LocalFree(text.cast());
+        result
+    }
+}
+
 fn current_user_sid_bytes() -> io::Result<Vec<u8>> {
     use std::ptr;
     use winapi::shared::winerror::ERROR_INSUFFICIENT_BUFFER;
@@ -66,13 +90,15 @@ fn current_user_sid_bytes() -> io::Result<Vec<u8>> {
                 "GetTokenInformation size query failed (ok={ok}, GetLastError={last})"
             )));
         }
-        if required_size == 0 {
+        if required_size < std::mem::size_of::<TOKEN_USER>() as u32 || required_size > 65_536 {
             return Err(io::Error::other(
-                "GetTokenInformation reported 0 required bytes",
+                "GetTokenInformation reported an invalid TOKEN_USER size",
             ));
         }
 
-        let mut buf = vec![0_u8; required_size as usize];
+        // TOKEN_USER contains a pointer; byte-vector alignment is not a
+        // sufficient Rust guarantee for dereferencing that structure.
+        let mut buf = vec![0_usize; (required_size as usize).div_ceil(std::mem::size_of::<usize>())];
         if GetTokenInformation(
             token.0,
             TokenUser,

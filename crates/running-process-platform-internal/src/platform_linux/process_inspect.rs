@@ -6,6 +6,92 @@ use std::path::PathBuf;
 
 use crate::platform::process::{ProcessInspectError, ProcessInspectErrorKind};
 
+/// Linux process creation identity in clock ticks since boot. Callers needing
+/// reuse-safe control must retain a pidfd as well; this is not a signal handle.
+pub fn process_start_key(pid: u32) -> io::Result<u64> {
+    use std::io::Read as _;
+    validate_pid(pid).map_err(|error| error.source)?;
+    const LIMIT: u64 = 64 * 1024;
+    let mut stat = String::new();
+    std::fs::File::open(format!("/proc/{pid}/stat"))?
+        .take(LIMIT + 1).read_to_string(&mut stat)?;
+    if stat.len() as u64 > LIMIT {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "oversized process identity record"));
+    }
+    parse_start_key(&stat)
+}
+
+fn parse_start_key(stat: &str) -> io::Result<u64> {
+    // comm may contain spaces and closing parentheses. The final delimiter
+    // precedes field3; starttime is field22, hence index19 in this suffix.
+    stat.rsplit_once(") ").and_then(|(_, fields)| fields.split_whitespace().nth(19))
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing or invalid process start identity"))
+}
+
+#[cfg(test)]
+mod start_key_tests {
+    use super::*;
+
+    #[test]
+    fn parses_starttime_after_a_complex_process_name() {
+        let fields = [vec!["S"], vec!["0"; 18], vec!["123456"]].concat().join(" ");
+        assert_eq!(parse_start_key(&format!("42 (worker ) with spaces) {fields} 99\n")).unwrap(), 123456);
+    }
+
+    #[test]
+    fn malformed_or_truncated_identity_is_not_zero() {
+        for stat in ["", "42 worker S 0", "42 (worker) S 0 0"] {
+            assert_eq!(parse_start_key(stat).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }
+        assert!(process_start_key(0).is_err());
+        assert!(process_start_key(u32::MAX).is_err());
+    }
+}
+
+/// A strict, reuse-safe process reference. Unlike `ProcessLiveness`, this
+/// never falls back to numeric PID operations when pidfds are unavailable.
+#[derive(Debug)]
+pub struct StrictProcessHandle(OwnedFd);
+
+impl StrictProcessHandle {
+    pub fn open(pid: u32) -> io::Result<Self> {
+        validate_pid(pid).map_err(|error| error.source)?;
+        // SAFETY: validated PID and zero flags; success returns an owned fd.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0_u32) };
+        if raw < 0 { return Err(io::Error::last_os_error()); }
+        Ok(Self(unsafe { OwnedFd::from_raw_fd(raw as i32) }))
+    }
+
+    /// Check signal permission without delivering a signal.
+    pub fn check_signal_permission(&self) -> io::Result<()> { self.signal(0) }
+
+    pub fn kill(&self) -> io::Result<()> {
+        match self.signal(libc::SIGKILL) {
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+            result => result,
+        }
+    }
+
+    fn signal(&self, signal: libc::c_int) -> io::Result<()> {
+        // SAFETY: owned pidfd, signal value, no siginfo, zero flags.
+        let result = unsafe { libc::syscall(libc::SYS_pidfd_send_signal,
+            self.0.as_raw_fd(), signal, std::ptr::null::<libc::siginfo_t>(), 0_u32) };
+        if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    }
+
+    pub fn has_exited(&self) -> io::Result<bool> {
+        let mut descriptor = libc::pollfd { fd: self.0.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one valid writable pollfd, zero timeout.
+        let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+        if result < 0 { return Err(io::Error::last_os_error()); }
+        if descriptor.revents & (libc::POLLNVAL | libc::POLLERR) != 0 {
+            return Err(io::Error::other("invalid process handle readiness"));
+        }
+        Ok(descriptor.revents & (libc::POLLIN | libc::POLLHUP) != 0)
+    }
+}
+
 /// A live reference to another process, good for as long as it is held.
 ///
 /// Where the kernel offers one, this holds a pidfd: a PID can be recycled
@@ -32,6 +118,50 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    /// Acquire reuse-safe control without falling back to numeric PID signals.
+    pub fn open_for_control(pid: u32) -> Result<Self, ProcessInspectError> {
+        validate_pid(pid)?;
+        let handle = StrictProcessHandle::open(pid).map_err(|source| ProcessInspectError {
+            kind: ProcessInspectErrorKind::Host,
+            source,
+        })?;
+        handle.check_signal_permission().map_err(|source| ProcessInspectError {
+            kind: ProcessInspectErrorKind::Host,
+            source,
+        })?;
+        Ok(Self { pid, pid_fd: Some(handle.0) })
+    }
+
+    /// Force termination through the held pidfd only; never reopen the PID.
+    pub fn force_kill(&self) -> io::Result<()> {
+        let fd = self.pid_fd.as_ref().ok_or_else(|| io::Error::new(
+            io::ErrorKind::Unsupported, "process control requires a held pidfd",
+        ))?;
+        // SAFETY: held descriptor, fixed signal, no siginfo and zero flags.
+        let result = unsafe { libc::syscall(libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(), libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0_u32) };
+        if result == 0 { return Ok(()); }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(error) }
+    }
+
+    /// Confirm terminal state through the held pidfd, preserving poll errors.
+    /// Numeric-PID observation is not a substitute for cleanup confirmation.
+    pub fn has_exited(&self) -> io::Result<bool> {
+        let fd = self.pid_fd.as_ref().ok_or_else(|| io::Error::new(
+            io::ErrorKind::Unsupported, "exit confirmation requires a held pidfd",
+        ))?;
+        let mut poll_fd = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one initialized descriptor; no blocking wait.
+        if unsafe { libc::poll(&mut poll_fd, 1, 0) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if poll_fd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+            return Err(io::Error::other("held pidfd poll failed"));
+        }
+        Ok(poll_fd.revents & libc::POLLIN != 0)
+    }
+
     /// Take a reference to `pid`, failing if no such process is running.
     pub fn open(pid: u32) -> Result<Self, ProcessInspectError> {
         validate_pid(pid)?;
@@ -55,6 +185,22 @@ impl ProcessLiveness {
             Some(pid_fd) => pidfd_is_alive(pid_fd),
             None => process_exists(self.pid),
         }
+    }
+}
+
+#[cfg(test)]
+mod held_control_tests {
+    use super::*;
+
+    #[test]
+    fn force_kill_never_falls_back_to_a_live_numeric_pid() {
+        // A regression would signal this test process. The intentionally absent
+        // pidfd must instead reject control before attempting any syscall.
+        let handle = ProcessLiveness { pid: std::process::id(), pid_fd: None };
+        let error = handle.force_kill().expect_err("numeric fallback is forbidden");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        let error = handle.has_exited().expect_err("no held object can confirm exit");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 }
 
@@ -154,6 +300,27 @@ fn not_found() -> ProcessInspectError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strict_handles_reject_non_process_identifiers() {
+        assert!(StrictProcessHandle::open(0).is_err());
+        assert!(StrictProcessHandle::open(u32::MAX).is_err());
+    }
+
+    #[test]
+    fn strict_self_handle_is_live_and_supports_signal_zero_when_available() {
+        let handle = match StrictProcessHandle::open(std::process::id()) {
+            Ok(handle) => handle,
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOSYS | libc::EPERM | libc::EACCES)) => return,
+            Err(error) => panic!("unexpected pidfd open error: {error}"),
+        };
+        assert!(!handle.has_exited().expect("query self pidfd"));
+        match handle.check_signal_permission() {
+            Ok(()) => (),
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOSYS | libc::EPERM | libc::EACCES)) => (),
+            Err(error) => panic!("unexpected pidfd signal-zero error: {error}"),
+        }
+    }
 
     /// PID zero names no process on any host, and is rejected before the
     /// kernel is asked -- signal(0, ...) would mean "the whole process group".

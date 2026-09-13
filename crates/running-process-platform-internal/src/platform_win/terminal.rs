@@ -232,14 +232,7 @@ pub fn before_pty_spawn() -> PtySpawnContext {
 #[cfg(feature = "pty")]
 fn apply_priority(handle: *mut std::ffi::c_void, nice: Option<i32>) -> std::io::Result<()> {
     use winapi::um::processthreadsapi::SetPriorityClass;
-    use winapi::um::winbase::{ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS};
-    let flags = match nice {
-        Some(value) if value >= 15 => IDLE_PRIORITY_CLASS,
-        Some(value) if value >= 1 => BELOW_NORMAL_PRIORITY_CLASS,
-        Some(value) if value <= -15 => HIGH_PRIORITY_CLASS,
-        Some(value) if value <= -1 => ABOVE_NORMAL_PRIORITY_CLASS,
-        _ => 0,
-    };
+    let flags = super::priority_class_for_nice(nice);
     if flags != 0 && unsafe { SetPriorityClass(handle.cast(), flags) } == 0 {
         return Err(std::io::Error::last_os_error());
     }

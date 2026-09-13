@@ -21,6 +21,10 @@ pub use autostart::{
 
 #[path = "platform_win/process_inspect.rs"]
 pub(crate) mod process_inspect;
+#[path = "platform_win/independent_scheduler.rs"]
+pub(crate) mod independent_scheduler;
+#[path = "platform_win/independent_files.rs"]
+pub(crate) mod independent_files;
 pub use process_inspect::{
     process_executable_path, process_force_kill, process_same_executable_path,
     process_signal_terminate, ProcessLiveness,
@@ -231,6 +235,8 @@ pub use window_icon::{icon_support as window_icon_support_impl, set_icon as set_
 #[path = "platform_win_descendants.rs"]
 mod descendants;
 pub use descendants::{assign_child_to_windows_job, WindowsJobHandle};
+#[cfg(feature = "async-process")]
+pub(crate) use descendants::assign_async_child_to_windows_job;
 
 pub fn exact_trace_capability() -> crate::platform::process::ExactTraceCapability {
     crate::platform::process::ExactTraceCapability {
@@ -407,6 +413,12 @@ pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
     process_tree::kill_tree(pid, timeout, process_start_key)
 }
 
+#[cfg(all(feature = "async-process", feature = "process-inspection"))]
+#[path = "platform_win/owned_tree.rs"]
+mod owned_tree;
+#[cfg(all(feature = "async-process", feature = "process-inspection"))]
+pub(crate) use owned_tree::kill_tree_owned_root;
+
 pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
@@ -455,18 +467,46 @@ fn configure_process_command_inner(
     let caller_has_console_opinion =
         caller & (CREATE_NO_WINDOW | CREATE_NEW_CONSOLE | DETACHED_PROCESS) != 0;
     let no_window = if caller_has_console_opinion || parent_has_console() { 0 } else { CREATE_NO_WINDOW };
-    let priority = match config.nice {
-        Some(value) if value >= 15 => 0x0000_0040,
-        Some(value) if value >= 1 => 0x0000_4000,
-        Some(value) if value <= -15 => 0x0000_0080,
-        Some(value) if value <= -1 => 0x0000_8000,
-        _ => 0,
-    };
+    let priority = priority_class_for_nice(config.nice);
     let flags = caller | group | no_window | priority;
     if flags != 0 {
         command.creation_flags(flags);
     }
     Ok(())
+}
+
+/// Shared nice-to-class mapping for synchronous, asynchronous, and PTY spawn.
+pub(crate) fn priority_class_for_nice(nice: Option<i32>) -> u32 {
+    match nice {
+        Some(value) if value >= 15 => 0x0000_0040,
+        Some(value) if value >= 1 => 0x0000_4000,
+        Some(value) if value <= -15 => 0x0000_0080,
+        Some(value) if value <= -1 => 0x0000_8000,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn priority_class_mapping_preserves_all_thresholds() {
+    use winapi::um::winbase::{
+        ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS,
+        HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
+    };
+    for (nice, expected) in [
+        (None, 0),
+        (Some(0), 0),
+        (Some(1), BELOW_NORMAL_PRIORITY_CLASS),
+        (Some(14), BELOW_NORMAL_PRIORITY_CLASS),
+        (Some(15), IDLE_PRIORITY_CLASS),
+        (Some(i32::MAX), IDLE_PRIORITY_CLASS),
+        (Some(-1), ABOVE_NORMAL_PRIORITY_CLASS),
+        (Some(-14), ABOVE_NORMAL_PRIORITY_CLASS),
+        (Some(-15), HIGH_PRIORITY_CLASS),
+        (Some(i32::MIN), HIGH_PRIORITY_CLASS),
+    ] {
+        assert_eq!(priority_class_for_nice(nice), expected, "nice={nice:?}");
+    }
 }
 
 pub fn trampoline_exit_code(status: std::process::ExitStatus) -> i32 {
@@ -598,6 +638,7 @@ pub(crate) fn configure_command(
     create_process_group: bool,
     _kill_when_owner_dies: bool,
     nice: Option<i32>,
+    hide_console: bool,
 ) -> io::Result<()> {
     let group = if create_process_group {
         CREATE_NEW_PROCESS_GROUP
@@ -606,17 +647,26 @@ pub(crate) fn configure_command(
     };
     // Preserve the existing ProcessCommandConfig mapping: Windows receives a
     // priority *class*, not a Unix nice value with equivalent arithmetic.
-    let priority = match nice {
-        Some(value) if value >= 15 => 0x0000_0040,
-        Some(value) if value >= 1 => 0x0000_4000,
-        Some(value) if value <= -15 => 0x0000_0080,
-        Some(value) if value <= -1 => 0x0000_8000,
-        _ => 0,
-    };
-    if (group | priority) != 0 {
-        command.creation_flags(group | priority);
+    let priority = priority_class_for_nice(nice);
+    let console = if hide_console { 0x0800_0000 } else { 0 };
+    if (group | priority | console) != 0 {
+        command.creation_flags(group | priority | console);
     }
     Ok(())
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn apply_spawned_priority(child: &Child, nice: i32) -> io::Result<()> {
+    let Some(handle) = child.raw_handle() else { return Ok(()); };
+    let flags = priority_class_for_nice(Some(nice));
+    // SAFETY: the handle is borrowed from the live owned child.
+    if flags != 0 && unsafe {
+        winapi::um::processthreadsapi::SetPriorityClass(handle.cast(), flags)
+    } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(feature = "async-process")]
@@ -817,7 +867,7 @@ fn assign(child: Option<HANDLE>) -> io::Result<()> {
 }
 #[path = "platform_win/sync_spawn.rs"]
 mod sync_spawn;
-pub use sync_spawn::{spawn_sync, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
+pub use sync_spawn::{spawn_sync, spawn_sync_with_shutdown_policy, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
 
 /// Replace this process's image with `command`.
 ///

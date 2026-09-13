@@ -423,6 +423,30 @@ impl crate::platform::process::SpawnedChildControl for SpawnedInner {
     }
 }
 
+impl Drop for SpawnedInner {
+    fn drop(&mut self) {
+        // Includes errors before ownership is transferred to SpawnedChild.
+        self.shutdown();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static SYNC_SPAWN_FAILURE: std::cell::RefCell<(&'static str, Option<OwnedHandle>)> =
+        const { std::cell::RefCell::new(("", None)) };
+}
+
+#[cfg(test)]
+fn sync_spawn_checkpoint(stage: &str, process: HANDLE) -> io::Result<()> {
+    SYNC_SPAWN_FAILURE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.0 != stage { return Ok(()); }
+        slot.0 = "";
+        slot.1 = Some(dup_inheritable(process)?);
+        Err(io::Error::other(format!("injected sync spawn {stage} failure")))
+    })
+}
+
 pub fn spawn_sync_daemon(
     command: &mut Command,
     stdio: crate::platform::process::DaemonStdio<'_>,
@@ -456,6 +480,17 @@ pub fn spawn_sync_daemon_with_inheritance(
     spawn_sync_daemon(command, stdio, environment, breakaway)
 }
 
+/// Windows shutdown is owned by the kill-on-close Job Object; there is no
+/// Unix-style reap loop. Do not evaluate the Unix shutdown-budget callback.
+pub fn spawn_sync_with_shutdown_policy(
+    command: &mut Command,
+    stdio: crate::platform::process::SpawnStdio<'_>,
+    environment: crate::platform::process::SyncEnvironment,
+    _shutdown_timeout: Option<fn() -> std::time::Duration>,
+) -> io::Result<crate::platform::process::SpawnedChild> {
+    spawn_sync(command, stdio, environment)
+}
+
 pub fn spawn_sync(
     command: &mut Command,
     stdio: crate::platform::process::SpawnStdio<'_>,
@@ -464,6 +499,9 @@ pub fn spawn_sync(
     let stdin_slot = resolve_slot(&stdio.stdin, SlotDir::Stdin)?;
     let stdout_slot = resolve_slot(&stdio.stdout, SlotDir::Stdout)?;
     let stderr_slot = resolve_slot(&stdio.stderr, SlotDir::Stderr)?;
+
+    // A failed Job allocation must not leave a suspended child behind.
+    let job = create_job_object()?;
 
     let (process, thread, pid) = create_process_inner(
         command,
@@ -478,23 +516,37 @@ pub fn spawn_sync(
 
     // Build the per-spawn Job Object and assign BEFORE ResumeThread so
     // the child cannot spawn grandchildren outside the job.
-    let job = create_job_object()?;
-    let ok = unsafe { AssignProcessToJobObject(job.as_raw(), process) };
-    if ok == FALSE {
-        let err = io::Error::last_os_error();
+    let process = OwnedHandle(process);
+    let thread = OwnedHandle(thread);
+    let assignment = (|| -> io::Result<()> {
+        #[cfg(test)]
+        sync_spawn_checkpoint("assign", process.as_raw())?;
+        if unsafe { AssignProcessToJobObject(job.as_raw(), process.as_raw()) } == FALSE {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    })();
+    if let Err(err) = assignment {
         unsafe {
-            TerminateProcess(process, 1);
-            CloseHandle(thread);
-            CloseHandle(process);
+            TerminateProcess(process.as_raw(), 1);
         }
         return Err(err);
     }
 
-    // Now safe to start the child.
-    unsafe {
-        ResumeThread(thread);
-        CloseHandle(thread);
+    // Own containment before every subsequent fallible setup operation.
+    let process_handle = process.as_raw();
+    let mut inner = SpawnedInner {
+        process: Some(process),
+        job: Some(job),
+        _drain_keepalive: None,
+    };
+    // Now safe to start the child. An error drops the Job and process guard.
+    #[cfg(test)]
+    sync_spawn_checkpoint("resume", process_handle)?;
+    if unsafe { ResumeThread(thread.as_raw()) } == u32::MAX {
+        return Err(io::Error::last_os_error());
     }
+    drop(thread);
 
     // Convert the parent-side pipe ends, if any, into Rust ChildStdin
     // etc.  The kernel keeps duplicates of the child-side handles via
@@ -518,30 +570,29 @@ pub fn spawn_sync(
     // pipes see EOF in bounded time after child exit; the watcher's
     // job here is purely the bounded sleep + signaling on drop.
     let drain_keepalive = if let Some(timeout) = stdio.drain_timeout {
-        let process_handle = dup_inheritable(process)?;
+        #[cfg(test)]
+        sync_spawn_checkpoint("duplicate", process_handle)?;
+        let process_handle = dup_inheritable(process_handle)?;
         let keep = Arc::new(());
         let keep_watcher = Arc::clone(&keep);
         // SAFETY: process_handle is moved into the thread.  We dup it
         // so closing the outer one from shutdown() doesn't break the
         // watcher's wait.
-        thread::spawn(move || {
+        thread::Builder::new().spawn(move || {
             drain_watcher(process_handle, timeout, keep_watcher);
-        });
+        })?;
         Some(keep)
     } else {
         None
     };
 
+    inner._drain_keepalive = drain_keepalive;
     Ok(crate::platform::process::SpawnedChild {
         stdin: stdin_pipe,
         stdout: stdout_pipe,
         stderr: stderr_pipe,
         pid,
-        inner: Box::new(SpawnedInner {
-            process: Some(OwnedHandle(process)),
-            job: Some(job),
-            _drain_keepalive: drain_keepalive,
-        }),
+        inner: Box::new(inner),
     })
 }
 
@@ -1104,6 +1155,41 @@ fn build_env_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contained_spawn_failures_terminate_the_child() {
+        // Hold the observed kernel object throughout verification and panic
+        // cleanup; never reopen the child by its potentially recycled PID.
+        struct ObservedChild(OwnedHandle);
+        impl Drop for ObservedChild {
+            fn drop(&mut self) {
+                unsafe { TerminateProcess(self.0.as_raw(), 1); }
+            }
+        }
+        for stage in ["assign", "resume", "duplicate"] {
+            SYNC_SPAWN_FAILURE.with(|slot| *slot.borrow_mut() = (stage, None));
+            let mut command = Command::new("ping.exe");
+            command.args(["-n", "30", "127.0.0.1"]);
+            let mut stdio = crate::platform::process::SpawnStdio::default();
+            stdio.drain_timeout = Some(Duration::from_millis(10));
+            let result = spawn_sync(
+                &mut command, stdio,
+                crate::platform::process::SyncEnvironment::Inherit,
+            );
+            let observed = ObservedChild(SYNC_SPAWN_FAILURE.with(|slot| slot.borrow_mut().1.take())
+                .expect("fault checkpoint must observe a created child"));
+            let error = match result {
+                Ok(_) => panic!("injected {stage} failure must reject startup"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains(stage), "{error}");
+            assert_eq!(
+                unsafe { WaitForSingleObject(observed.0.as_raw(), 5_000) },
+                WAIT_OBJECT_0,
+                "child survived {stage} startup failure"
+            );
+        }
+    }
 
     struct EnvRestore {
         key: String,

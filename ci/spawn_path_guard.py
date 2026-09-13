@@ -17,6 +17,12 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # Foreground contract tests construct fixed shell fixtures to prove the
+    # deliberately raw caller-owned path preserves Command semantics.
+    Path("crates/running-process-platform-internal/src/foreground.rs"),
+    # #1202 native Linux helper launch boundary; its fixed shell regression
+    # verifies that the shared post-fork descriptor sanitizer is applied.
+    Path("crates/running-process-platform-internal/src/platform_linux/independent_helper.rs"),
     # #969 liveness handles: the only way to observe a *dead* process is to
     # start one and let it exit, so these three files spawn a fixed shell
     # command (`/bin/sh -c "exit 0"`, `cmd.exe /C "exit 0"`) inside
@@ -112,6 +118,24 @@ ALLOWED_RUST_COMMAND_NEW = {
     # startup, before any child is spawned, with no user input. See
     # `crates/running-process/src/systemd_killmode.rs` module docs.
     Path("crates/running-process/src/systemd_killmode.rs"),
+    # #1202 owns reviewed systemd transient-service manager calls. It verifies
+    # cgroup placement and exposes no generic raw child-spawn surface.
+    Path("crates/running-process/src/independent_spawn.rs"),
+    # #1202 external-broker submission starts only the checked helper from a
+    # verified private request artifact. The broker is already proven outside
+    # the caller cgroup; this supervisor must not route through the caller's
+    # regular daemon spawn path.
+    Path("crates/running-process/src/independent_broker_transport.rs"),
+    # #1202 request-codec tests construct inert Commands to prove literal
+    # argv/environment serialization. They never launch those Commands.
+    Path("crates/running-process/src/independent_transport.rs"),
+    # #1202 Windows scheduler control invokes only the system `schtasks`
+    # client with typed, bounded arguments to create/query/end/delete an
+    # owned task. The process being managed is scheduler-owned, not this CLI.
+    Path("crates/running-process-platform-internal/src/platform_win/independent_scheduler.rs"),
+    # The Unix sync-spawn test builds an inert command only to verify explicit
+    # environment merge behavior; no process is launched from that test.
+    Path("crates/running-process-platform-internal/src/sync_spawn_group.rs"),
     # Login autostart (#427, moved behind the platform facade by #973):
     # fixed-argument init-system installers reached only through
     # `runpm startup`/`unstartup`. The argv is crate-controlled constants
@@ -179,6 +203,10 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
+    Path("crates/running-process-platform-internal/src/foreground.rs"),
+    # #1202 native target/scheduler launcher: null stdio and the existing
+    # post-fork CLOEXEC sanitizer. Only the manager/broker establishes placement.
+    Path("crates/running-process-platform-internal/src/platform_linux/independent_helper.rs"),
     # #969 liveness handles: the only way to observe a *dead* process is to
     # start one and let it exit, so these three files spawn a fixed shell
     # command (`/bin/sh -c "exit 0"`, `cmd.exe /C "exit 0"`) inside
@@ -264,6 +292,19 @@ ALLOWED_RUST_SPAWN = {
     # `Command::spawn()` after applying setpgid/setsid + fd hygiene
     # via `pre_exec`. Windows uses CreateProcessW directly.
     Path("crates/running-process-platform-internal/src/sync_spawn_group.rs"),
+    # Windows uses CreateProcessW for its regular sync boundary. The only
+    # `.spawn` spelling here is an owned drain-watcher thread, not a child
+    # process; keep it explicit so the broad syntax guard cannot mask a new
+    # raw launcher in the platform file.
+    Path("crates/running-process-platform-internal/src/platform_win/sync_spawn.rs"),
+    # #1202 broker placement launches the fixed helper after private-request
+    # validation. It is the reviewed external-scheduler boundary described
+    # above, with null stdio and bounded cleanup.
+    Path("crates/running-process/src/independent_broker_transport.rs"),
+    # #1202 invokes only the Task Scheduler CLI for an owned task. This is
+    # intentionally separate from ordinary process creation and is bounded by
+    # readiness/cancellation cleanup in the scheduler implementation.
+    Path("crates/running-process-platform-internal/src/platform_win/independent_scheduler.rs"),
     # Native PTY process calls the backend trait's `spawn` method. The
     # backend implementations are reviewed separately below; this is not a
     # raw std::process::Command spawn site.

@@ -1,5 +1,11 @@
 //! Linux implementation root for the process capability.
 
+#[path = "platform_linux/cgroup_placement.rs"]
+pub(crate) mod cgroup_placement;
+
+#[path = "platform_linux/independent_helper.rs"]
+pub(crate) mod independent_helper;
+
 #[path = "platform_linux/autostart.rs"]
 pub(crate) mod autostart;
 
@@ -418,6 +424,12 @@ pub fn kill_tree(pid: u32, timeout: std::time::Duration) -> io::Result<u32> {
     process_tree::kill_tree(pid, timeout, |_pid, process| Ok(process.start_time()))
 }
 
+#[cfg(all(feature = "async-process", feature = "process-inspection"))]
+#[path = "platform_linux/owned_tree.rs"]
+mod owned_tree;
+#[cfg(all(feature = "async-process", feature = "process-inspection"))]
+pub(crate) use owned_tree::kill_tree_owned_root;
+
 pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     status.code().unwrap_or_else(|| -status.signal().unwrap_or(1))
@@ -793,7 +805,7 @@ pub fn configure_compat_tokio_command(
     _show_console: bool,
     kill_when_owner_dies: bool,
 ) -> io::Result<()> {
-    configure_command(command, false, kill_when_owner_dies, None)
+    configure_command(command, false, kill_when_owner_dies, None, false)
 }
 
 /// Nothing to do on this host: the parent-death signal is installed in `pre_exec`, before the
@@ -812,6 +824,7 @@ pub(crate) fn configure_command(
     create_process_group: bool,
     kill_when_owner_dies: bool,
     nice: Option<i32>,
+    _hide_console: bool,
 ) -> io::Result<()> {
     if create_process_group {
         command.process_group(0);
@@ -834,6 +847,14 @@ pub(crate) fn configure_command(
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn apply_spawned_priority(child: &Child, nice: i32) -> io::Result<()> {
+    match child.id() {
+        Some(pid) => unix_set_priority(pid, nice),
+        None => Ok(()),
+    }
 }
 
 #[cfg(feature = "async-process")]
@@ -1107,7 +1128,7 @@ mod tests {
 mod coverage_tests;
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;
-pub use sync_spawn::{spawn_sync, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
+pub use sync_spawn::{spawn_sync, spawn_sync_with_shutdown_policy, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
 
 #[cfg(all(test, feature = "ipc"))]
 mod endpoint_naming_tests {

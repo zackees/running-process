@@ -80,6 +80,14 @@ name = "testbin-session-cpu-spinner"
 path = "src/bin/session_cpu_spinner.rs"
 
 [[bin]]
+name = "testbin-independent-memory-holder"
+path = "src/bin/independent_memory_holder.rs"
+
+[[bin]]
+name = "testbin-independent-launcher"
+path = "src/bin/independent_launcher.rs"
+
+[[bin]]
 name = "testbin-session-drip-writer"
 path = "src/bin/session_drip_writer.rs"
 

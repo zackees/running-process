@@ -4,6 +4,7 @@ running-process	native_dependency	libc
 running-process	native_dependency	winapi
 running-process	native_dependency	winapi
 running-process	native_dependency	windows-sys
+running-process	native_dependency	windows-sys
 running-process	target_dependency_table	target
 running-process-probe	native_dependency	libc
 running-process-probe	native_dependency	libc

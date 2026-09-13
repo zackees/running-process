@@ -347,6 +347,12 @@ declare! {
     FAKE_BACKEND => "RUNNING_PROCESS_FAKE_BACKEND",
         EnvKind::Path, Owner::Foreign, "backends are reached through the broker",
         "TEST-ONLY: dial this endpoint directly, skipping broker negotiation.";
+    INDEPENDENT_BROKER => "RUNNING_PROCESS_INDEPENDENT_BROKER",
+        EnvKind::Path, Owner::Foreign, "the native scheduler backend is used",
+        "Owner-private external broker endpoint for independent daemon placement.";
+    INDEPENDENT_HELPER => "RUNNING_PROCESS_INDEPENDENT_HELPER",
+        EnvKind::Path, Owner::Crate, "the sibling independent helper executable is used",
+        "Override for the independently placed daemon helper executable.";
     IS_DAEMON => "RUNNING_PROCESS_IS_DAEMON",
         EnvKind::ForeignFlag, Owner::Crate, "the process is not a daemon",
         "Marks a process spawned as a daemon, for originator reaping.";

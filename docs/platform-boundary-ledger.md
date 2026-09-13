@@ -8,7 +8,7 @@ capability moves. The authoritative rows live in
 repo_relative_path<TAB>kind<TAB>normalized_construct<TAB>ordinal
 ```
 
-The 2,314-row bootstrap union is produced from the pre-expansion Windows
+The 2,449-row reviewed union is produced from the pre-expansion Windows
 Dylint dump plus the independent all-source scan. Linux and macOS Dylint dump
 jobs must be merged into the same four-field sort before a ledger update lands.
 The checker refuses duplicate or non-contiguous ordinals, stale paths, and
@@ -19,14 +19,15 @@ native dependency declarations until their owning capability migrates.
 
 | Kind | Rows |
 | --- | ---: |
-| `attr_cfg` | 1,378 |
-| `cfg_macro` | 50 |
-| `native_import` | 886 |
-| **Total** | **2,314** |
+| `attr_cfg` | 1,402 |
+| `cfg_macro` | 54 |
+| `native_import` | 919 |
+| **Total** | **2,449** |
 
 | Crate | Rows |
 | --- | ---: |
-| `running-process` | 1,586 |
+| `running-process` | 1,705 |
+| `running-process-platform-internal` | 16 |
 | `running-process-probe` | 346 |
 | `running-process-py` | 145 |
 | `running-process-probe-daemon` | 73 |

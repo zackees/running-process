@@ -70,6 +70,7 @@ impl crate::platform::process::DaemonChildControl for std::process::Child {
 pub struct SpawnedInner {
     child: Arc<Mutex<Option<Box<dyn UnixChild>>>>,
     pgid: i32,
+    shutdown_timeout: Option<fn() -> Duration>,
 }
 
 impl SpawnedInner {
@@ -105,7 +106,14 @@ impl SpawnedInner {
     }
 
     pub fn shutdown(&mut self) {
-        self.shutdown_with_deadline(kill_drain_deadline());
+        let deadline = match self.shutdown_timeout {
+            Some(timeout) => {
+                let now = Instant::now();
+                now.checked_add(timeout()).unwrap_or(now)
+            }
+            None => kill_drain_deadline(),
+        };
+        self.shutdown_with_deadline(deadline);
     }
 
     fn shutdown_with_deadline(&mut self, deadline: Instant) {
@@ -228,6 +236,18 @@ pub fn spawn_sync(
     stdio: crate::platform::process::SpawnStdio<'_>,
     environment: crate::platform::process::SyncEnvironment,
 ) -> io::Result<crate::platform::process::SpawnedChild> {
+    spawn_sync_with_shutdown_policy(command, stdio, environment, None)
+}
+
+/// Spawn with a caller-selected shutdown budget, evaluated at child drop.
+/// The callback must be nonblocking and must not panic. `None` preserves the
+/// substrate's ambient shutdown policy. This is separate from pipe draining.
+pub fn spawn_sync_with_shutdown_policy(
+    command: &mut Command,
+    stdio: crate::platform::process::SpawnStdio<'_>,
+    environment: crate::platform::process::SyncEnvironment,
+    shutdown_timeout: Option<fn() -> Duration>,
+) -> io::Result<crate::platform::process::SpawnedChild> {
     apply_environment(command, environment);
     command.stdin(slot_to_stdio(&stdio.stdin)?);
     command.stdout(slot_to_stdio(&stdio.stdout)?);
@@ -286,7 +306,7 @@ pub fn spawn_sync(
         stdout,
         stderr,
         pid,
-        inner: Box::new(SpawnedInner { child, pgid }),
+        inner: Box::new(SpawnedInner { child, pgid, shutdown_timeout }),
     })
 }
 
@@ -321,6 +341,23 @@ fn apply_environment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_environment_preserves_command_overrides_and_removals() {
+        use std::ffi::OsString;
+        let mut command = Command::new("unused-no-process-is-launched");
+        command.env("OVERRIDE", "command").env_remove("REMOVE").env("ADDED", "new");
+        apply_environment(&mut command, crate::platform::process::SyncEnvironment::Explicit(
+            [("BASE", "base"), ("OVERRIDE", "old"), ("REMOVE", "old")]
+                .into_iter().map(|(k, v)| (OsString::from(k), OsString::from(v))).collect(),
+        ));
+        let actual: std::collections::BTreeMap<_, _> = command.get_envs()
+            .filter_map(|(k, v)| v.map(|v| (k.to_os_string(), v.to_os_string())))
+            .collect();
+        let expected = [("BASE", "base"), ("OVERRIDE", "command"), ("ADDED", "new")]
+            .into_iter().map(|(k, v)| (OsString::from(k), OsString::from(v))).collect();
+        assert_eq!(actual, expected);
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Condvar};
 
@@ -375,6 +412,7 @@ mod tests {
             inner: SpawnedInner {
                 child: Arc::clone(&child),
                 pgid: i32::MAX,
+                shutdown_timeout: None,
             },
             child,
             wait_gate,
@@ -387,6 +425,22 @@ mod tests {
         let (lock, condvar) = &**wait_gate;
         *lock.lock().expect("wait gate mutex poisoned") = true;
         condvar.notify_all();
+    }
+
+    #[test]
+    fn caller_shutdown_policy_is_evaluated_at_shutdown() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn timeout() -> Duration {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Duration::ZERO
+        }
+        let BlockedFixture { mut inner, wait_gate, .. } = blocked_inner();
+        inner.shutdown_timeout = Some(timeout);
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+        release_wait(&wait_gate);
+        inner.shutdown();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        assert!(inner.child.lock().unwrap().is_none());
     }
 
     struct ShutdownOnDrop {
@@ -502,6 +556,7 @@ mod tests {
         let mut inner = SpawnedInner {
             child,
             pgid: i32::MAX,
+            shutdown_timeout: None,
         };
 
         inner.shutdown_with_deadline(Instant::now() + Duration::from_secs(1));

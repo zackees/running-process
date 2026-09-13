@@ -26,6 +26,111 @@ mod blocking_island;
 pub use blocking_island::dispatch_blocking as blocking_island_dispatch;
 pub mod console_detect;
 pub mod containment;
+/// Caller-owned foreground command execution without containment mutation.
+pub use running_process_platform_internal::foreground;
+/// Canonical native inspection errors, preserving classification and OS detail.
+pub use running_process_platform_internal::platform::process::{
+    ProcessInspectError, ProcessInspectErrorKind,
+};
+/// Resolve the image path for a live numeric PID. This is a snapshot query,
+/// not a retained identity or a promise that the PID cannot be recycled after
+/// the call returns.
+pub use running_process_platform_internal::process_executable_path;
+/// Compare executable path spellings using the native host's existing policy.
+/// This compares paths only; it does not verify a process generation or image hash.
+pub use running_process_platform_internal::process_same_executable_path;
+/// Native retained-process observation without enabling broker protocols.
+///
+/// A successful termination request is not proof of exit. Callers requiring
+/// confirmed termination must use the handle's fallible `has_exited` method.
+pub use running_process_platform_internal::ProcessLiveness;
+
+#[cfg(test)]
+mod inspection_export_tests {
+    #[test]
+    fn retained_process_and_errors_are_exact_native_types() {
+        fn native_to_public(
+            value: running_process_platform_internal::ProcessLiveness,
+        ) -> super::ProcessLiveness {
+            value
+        }
+        fn public_to_native(
+            value: super::ProcessLiveness,
+        ) -> running_process_platform_internal::ProcessLiveness {
+            value
+        }
+        let _ = (native_to_public, public_to_native);
+        let error: super::ProcessInspectError =
+            running_process_platform_internal::platform::process::ProcessInspectError::stated(
+                super::ProcessInspectErrorKind::InvalidPid,
+                "invalid test pid",
+            );
+        let _: running_process_platform_internal::platform::process::ProcessInspectError = error;
+        let _: fn(&super::ProcessLiveness) -> std::io::Result<bool> =
+            super::ProcessLiveness::has_exited;
+        let _: fn(&std::path::Path, &std::path::Path) -> bool = super::process_same_executable_path;
+    }
+}
+#[cfg(target_os = "linux")]
+mod independent_broker_transport;
+/// Strict external-launch support for daemons that must escape caller containment.
+pub mod independent_spawn;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod independent_transport;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub mod independent_windows_helper;
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub mod independent_transport_for_helper {
+    use std::ffi::OsStr;
+    pub fn current_start_key() -> std::io::Result<u64> {
+        running_process_platform_internal::process_start_key(std::process::id())
+    }
+    pub fn serve_broker(socket: &std::path::Path) -> std::io::Result<()> {
+        crate::independent_broker_transport::serve(socket, &std::env::current_exe()?)
+    }
+    pub struct SupervisedChild {
+        pub pid: u32,
+        pub start_key: u64,
+        child: std::process::Child,
+    }
+    impl SupervisedChild {
+        pub fn wait(mut self) -> std::io::Result<i32> {
+            Ok(self.child.wait()?.code().unwrap_or(1))
+        }
+        pub fn cleanup(self) {
+            let _ = self.cleanup_confirmed();
+        }
+        pub fn cleanup_confirmed(mut self) -> std::io::Result<()> {
+            if self.child.try_wait()?.is_none() {
+                self.child.kill()?;
+                self.child.wait()?;
+            }
+            Ok(())
+        }
+    }
+    pub fn read_and_spawn(path: &OsStr) -> std::io::Result<SupervisedChild> {
+        let request =
+            crate::independent_transport::read_private_request(std::path::Path::new(path))?;
+        let mut child = crate::independent_transport::spawn_request(request)?;
+        let pid = child.id();
+        let identity = running_process_platform_internal::process_start_key(pid);
+        let start_key = match identity {
+            Ok(key) => key,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        Ok(SupervisedChild {
+            pid,
+            start_key,
+            child,
+        })
+    }
+}
 mod descendant_monitor;
 pub mod env_vars;
 pub mod environment;
@@ -46,6 +151,9 @@ pub mod window_icon;
 /// daemon runtime, identity probe, or async runtime.
 #[cfg(feature = "daemon-registration")]
 pub mod daemon_registration;
+/// Frozen v1 semantic registration compatibility contract.
+#[cfg(feature = "daemon-registration")]
+pub mod daemon_registration_compat;
 /// Frozen v2 service-definition registration writer substrate.
 ///
 /// This direct persistence surface owns the established `.servicedef.v2`
@@ -54,10 +162,16 @@ pub mod daemon_registration;
 /// negotiation, endpoint transport, identity, or an async runtime.
 #[cfg(feature = "daemon-registration-v2")]
 pub mod daemon_registration_v2;
+/// Limited shared-broker v2 registration compatibility contract.
+#[cfg(feature = "daemon-registration-v2")]
+pub mod daemon_registration_v2_compat;
 // The two registration writer features share only the small path, name, error,
 // and owner-private-directory substrate. Keeping it separate from either
 // public module prevents v2 persistence from selecting v1's SHA-256 manifest
 // support, while retaining exact v1 type identity through re-exports.
+/// Canonical semantic v1 frame compatibility contract, retaining raw enum and trace values.
+#[cfg(feature = "frame-v1-codec")]
+pub mod daemon_frame_v1;
 #[cfg(any(feature = "daemon-registration", feature = "daemon-registration-v2"))]
 pub(crate) mod daemon_registration_common;
 /// Frozen v1 `Frame` envelope codec and consumer-protocol registry.
@@ -213,13 +327,19 @@ mod windows;
 pub use async_process::{
     AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncProcessSession,
     AsyncProcessSessionChunk, AsyncProcessSessionControl, AsyncProcessSessionEvent,
-    AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio,
+    AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio, ProcessTreeKill,
 };
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
 // #891: content-hash primitive for dev daemon-identity isolation.
 #[cfg(feature = "client")]
 pub use content_hash::blake3_file;
+pub use independent_spawn::{
+    independent_spawn_capability, spawn_daemon_request, spawn_daemon_with_mode,
+    spawn_daemon_with_options, DaemonSpawnRequest, IndependentSpawnBackend,
+    IndependentSpawnCancellation, IndependentSpawnCapability, IndependentSpawnError,
+    IndependentSpawnOptions, SpawnMode,
+};
 pub use observer::{
     CapabilitySupport, CaptureSource, CategoryCapability, DumpResult, EventCategory,
     ObservationGrade, ObservationPolicy, ObserverCapabilities, ObserverConfig, ObserverEvent,
@@ -245,9 +365,12 @@ pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
     spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env,
-    spawn_daemon_with_env_policy, spawn_daemon_with_stdio, spawn_daemon_with_stdio_and_env_policy,
-    spawn_with_env_policy, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy,
-    SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR,
+    spawn_daemon_with_env_policy, spawn_daemon_with_environment,
+    spawn_daemon_with_explicit_environment, spawn_daemon_with_stdio,
+    spawn_daemon_with_stdio_and_env_policy, spawn_with_env_policy, spawn_with_environment,
+    spawn_with_explicit_environment, DaemonChild, DaemonStdio, DaemonStdioSource,
+    EnvironmentPolicy, SpawnStdio, SpawnedChild, SpawnedChildControl, StdioSource, SyncEnvironment,
+    DAEMON_MARKER_ENV_VAR,
 };
 #[cfg(feature = "client-async")]
 pub use spawn::{spawn_tokio, TokioSpawnOptions};
@@ -271,6 +394,12 @@ pub use window_icon::{
 #[cfg(unix)]
 pub(crate) use helpers::{child_try_wait_error_is_retryable, poll_mutex_until};
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
+
+/// Canonical native exit-status conversion used by semantic facade adapters.
+pub use running_process_platform_internal::exit_code as native_exit_code;
+pub use running_process_platform_internal::ProcessPriority;
+#[cfg(feature = "async-process")]
+pub use running_process_platform_internal::SpawnAdmission;
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
 #[cfg(windows)]

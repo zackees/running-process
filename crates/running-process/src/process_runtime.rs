@@ -16,6 +16,7 @@ use running_process_platform_internal::{
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::observer::ObserverEmitter;
 use crate::{
     AsyncProcessSessionChunk, AsyncProcessSessionEvent, AsyncProcessSessionOptions, ProcessError,
     SharedOutputCursor, SharedOutputLog, StreamKind,
@@ -70,16 +71,33 @@ pub(crate) struct ActorProcess {
 
 impl ActorProcess {
     /// Spawn a process actor and wait until the actor has attempted creation.
+    #[cfg(test)]
     pub(crate) async fn start(spec: SpawnSpec) -> Result<Self, ProcessError> {
+        Self::start_with_drop_policy(spec, false).await
+    }
+
+    pub(crate) async fn start_with_drop_policy(
+        spec: SpawnSpec,
+        kill_on_drop: bool,
+    ) -> Result<Self, ProcessError> {
         let (commands, receiver) = mpsc::channel(16);
         let (started_tx, started_rx) = oneshot::channel();
         let output_log = SharedOutputLog::new(DEFAULT_OUTPUT_LOG_CAPACITY);
-        runtime().spawn(run_actor(spec, receiver, started_tx, output_log.clone()));
+        runtime().spawn(run_actor(
+            spec,
+            receiver,
+            started_tx,
+            output_log.clone(),
+            kill_on_drop,
+        ));
 
-        started_rx
+        let accept = started_rx
             .await
             .map_err(|_| ProcessError::NotRunning)?
             .map_err(ProcessError::Spawn)?;
+        // Receiving the offer, not merely queuing it, transfers ownership.
+        // There is no suspension point between acceptance and returning Self.
+        accept.send(()).map_err(|_| ProcessError::NotRunning)?;
         Ok(Self {
             commands,
             output_log,
@@ -205,6 +223,7 @@ impl SessionProcess {
     pub(crate) async fn start(
         spec: SpawnSpec,
         options: AsyncProcessSessionOptions,
+        observer: Option<ObserverEmitter>,
     ) -> Result<(Self, mpsc::Receiver<AsyncProcessSessionEvent>), ProcessError> {
         validate_session_options(options)?;
 
@@ -221,12 +240,17 @@ impl SessionProcess {
             exit_tx,
             started_tx,
             output_tx,
+            observer,
         ));
 
         let started = started_rx
             .await
             .map_err(|_| ProcessError::NotRunning)?
             .map_err(ProcessError::Spawn)?;
+        started
+            .accept
+            .send(())
+            .map_err(|_| ProcessError::NotRunning)?;
         Ok((
             Self {
                 commands,
@@ -277,6 +301,30 @@ impl SessionProcess {
             .map_err(|_| ProcessError::NotRunning)?
             .map_err(ProcessError::Io)?;
         self.wait().await.map(|_| ())
+    }
+
+    pub(crate) async fn kill_tree(
+        &self,
+        timeout: Duration,
+    ) -> Result<crate::ProcessTreeKill, ProcessError> {
+        tokio::time::timeout(timeout, async {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.send(SessionCommand::KillTree(timeout, reply_tx))
+                .await?;
+            let outcome = reply_rx
+                .await
+                .map_err(|_| ProcessError::NotRunning)?
+                .map_err(ProcessError::Io)?;
+            self.wait().await?;
+            Ok(outcome)
+        })
+        .await
+        .map_err(|_| {
+            ProcessError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "session tree cleanup deadline elapsed; cleanup unconfirmed",
+            ))
+        })?
     }
 
     pub(crate) async fn terminate_group_soft(&self) -> Result<bool, ProcessError> {
@@ -349,6 +397,10 @@ impl Drop for SessionProcess {
 
 enum SessionCommand {
     Kill(oneshot::Sender<io::Result<()>>),
+    KillTree(
+        Duration,
+        oneshot::Sender<io::Result<crate::ProcessTreeKill>>,
+    ),
     TerminateGroupSoft(oneshot::Sender<io::Result<bool>>),
     CloseStdin(oneshot::Sender<io::Result<()>>),
     CpuTime(oneshot::Sender<io::Result<Option<Duration>>>),
@@ -366,6 +418,7 @@ struct SessionStdinWorker {
 struct SessionStarted {
     pid: u32,
     stdin: Option<mpsc::Sender<SessionStdinRequest>>,
+    accept: oneshot::Sender<()>,
 }
 
 #[derive(Clone)]
@@ -416,6 +469,7 @@ enum PostExitPipeReadPolicy {
 }
 
 struct SessionActor<'a> {
+    pid: u32,
     lifecycle: PlatformLifecycle,
     signal: running_process_platform_internal::PlatformEmergencySignal,
     stdin_worker: Option<SessionStdinWorker>,
@@ -426,6 +480,7 @@ struct SessionActor<'a> {
     owner_drop: &'a mut oneshot::Receiver<()>,
     exit_tx: watch::Sender<SessionExitState>,
     output_tx: mpsc::Sender<AsyncProcessSessionEvent>,
+    observer: Option<ObserverEmitter>,
 }
 
 fn validate_session_options(options: AsyncProcessSessionOptions) -> Result<(), ProcessError> {
@@ -469,7 +524,20 @@ async fn run_session_actor(
     exit_tx: watch::Sender<SessionExitState>,
     started: oneshot::Sender<io::Result<SessionStarted>>,
     output_tx: mpsc::Sender<AsyncProcessSessionEvent>,
+    observer: Option<ObserverEmitter>,
 ) {
+    if started.is_closed() {
+        return;
+    }
+    #[cfg(windows)]
+    let child = match spawn_session_child(spec, observer.as_ref()).await {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = started.send(Err(error));
+            return;
+        }
+    };
+    #[cfg(not(windows))]
     let child = match spec.spawn().await {
         Ok(child) => child,
         Err(error) => {
@@ -481,12 +549,51 @@ async fn run_session_actor(
         let _ = started.send(Err(io::Error::other(
             "spawned child has no numeric identifier",
         )));
+        cleanup_unaccepted_child(child).await;
         return;
     };
-    let (lifecycle, signal, stdin, stdout, stderr) = child.into_actor_parts();
-    let (stdin, stdin_worker) = start_session_stdin(stdin, options.max_queued_chunks);
-    let _ = started.send(Ok(SessionStarted { pid, stdin }));
+    if let Some(emitter) = observer.as_ref() {
+        emitter.emit_started(pid);
+        #[cfg(not(windows))]
+        crate::descendant_monitor::start(pid, Some(emitter), None);
+    }
+    if started.is_closed() {
+        let (mut lifecycle, signal, stdin, stdout, stderr) = child.into_actor_parts();
+        drop((stdin, stdout, stderr));
+        let cleanup_status = reap_unaccepted_lifecycle(&signal, &mut lifecycle).await;
+        if let (Some(emitter), Some(status)) = (observer.as_ref(), cleanup_status) {
+            emitter.emit_exited(pid, crate::exit_code(status));
+        }
+        return;
+    }
+    let (mut lifecycle, signal, stdin, stdout, stderr) = child.into_actor_parts();
+    let (stdin, mut stdin_worker) = start_session_stdin(stdin, options.max_queued_chunks);
+    let (accept, accepted) = oneshot::channel();
+    if started
+        .send(Ok(SessionStarted { pid, stdin, accept }))
+        .is_err()
+        || accepted.await.is_err()
+    {
+        // Queuing the offer does not establish ownership. Cancellation may
+        // discard it before the caller ever receives the session handle.
+        let stopped_stdin = stdin_worker.take().map(|worker| {
+            worker.task.abort();
+            worker.task
+        });
+        drop((stdout, stderr));
+        let cleanup_status = reap_unaccepted_lifecycle(&signal, &mut lifecycle).await;
+        if let (Some(emitter), Some(status)) = (observer.as_ref(), cleanup_status) {
+            emitter.emit_exited(pid, crate::exit_code(status));
+        }
+        // Abort requests cancellation; joining confirms that the task has
+        // actually dropped the native pipe before startup cleanup completes.
+        if let Some(task) = stopped_stdin {
+            let _ = task.await;
+        }
+        return;
+    }
     serve_session_child(SessionActor {
+        pid,
         lifecycle,
         signal,
         stdin_worker,
@@ -497,12 +604,50 @@ async fn run_session_actor(
         owner_drop: &mut owner_drop,
         exit_tx,
         output_tx,
+        observer,
     })
     .await;
 }
 
+/// The Windows Job/IOCP association must be made by the same spawn operation
+/// that returns the actor-owned child. A later attach misses early descendants
+/// and cannot recover Job containment. Other hosts use the existing monitor
+/// immediately after their native spawn below.
+#[cfg(windows)]
+async fn spawn_session_child(
+    spec: SpawnSpec,
+    observer: Option<&ObserverEmitter>,
+) -> io::Result<running_process_platform_internal::PlatformChild> {
+    use crate::observer::{EventCategory, ObserverEvent, ObserverEventKind};
+    use running_process_platform_internal::platform::process::DescendantEvent;
+
+    let Some((sink, stop)) = observer.and_then(ObserverEmitter::descendant_pump) else {
+        return spec.spawn().await;
+    };
+    spec.spawn_with_descendant_observer(Box::new(move |event| {
+        if stop.is_stopped() {
+            return;
+        }
+        let (kind, pid, ppid) = match event {
+            DescendantEvent::Started { pid, parent_pid } => {
+                (ObserverEventKind::DescendantStarted, pid, parent_pid)
+            }
+            DescendantEvent::Exited(pid) => (ObserverEventKind::DescendantExited, pid, None),
+            DescendantEvent::Completed => return,
+        };
+        let _ = sink.send(ObserverEvent::new_now_with_parent(
+            EventCategory::Process,
+            kind,
+            pid,
+            ppid,
+        ));
+    }))
+    .await
+}
+
 async fn serve_session_child(actor: SessionActor<'_>) {
     let SessionActor {
+        pid,
         mut lifecycle,
         signal,
         mut stdin_worker,
@@ -513,6 +658,7 @@ async fn serve_session_child(actor: SessionActor<'_>) {
         owner_drop,
         exit_tx,
         output_tx,
+        observer,
     } = actor;
     let (pump_done_tx, mut pump_done_rx) = mpsc::unbounded_channel();
     let (post_exit_grace, post_exit_grace_rx) =
@@ -559,6 +705,9 @@ async fn serve_session_child(actor: SessionActor<'_>) {
                 match result {
                     Ok(status) => {
                         exit_status = Some(status);
+                        if let Some(emitter) = observer.as_ref() {
+                            emitter.emit_exited(pid, crate::exit_code(status));
+                        }
                         let _ = exit_tx.send(SessionExitState::Exited(status));
                         post_exit_grace.send_replace(match options.post_exit_grace {
                             Some(grace) => PostExitPipeReadPolicy::AbandonAfter(grace),
@@ -581,7 +730,15 @@ async fn serve_session_child(actor: SessionActor<'_>) {
                         owner_drop_open = false;
                         owner_dropped = true;
                         close_session_stdin(&mut stdin_worker);
-                        if options.kill_on_drop && exit_status.is_none() {
+                        if options.kill_tree_on_drop && exit_status.is_none() {
+                            match cleanup_session_tree_on_drop(lifecycle).await {
+                                Ok(returned) => lifecycle = returned,
+                                Err(error) => {
+                                    let _ = exit_tx.send(SessionExitState::Failed(SessionExitError::from_io(&error)));
+                                    return;
+                                }
+                            }
+                        } else if options.kill_on_drop && exit_status.is_none() {
                             let _ = start_session_kill(&signal, &mut lifecycle);
                         }
                     }
@@ -592,6 +749,28 @@ async fn serve_session_child(actor: SessionActor<'_>) {
                             match start_session_kill(&signal, &mut lifecycle) {
                                 Ok(()) => { let _ = reply.send(Ok(())); }
                                 Err(error) => { let _ = reply.send(Err(error)); }
+                            }
+                        }
+                    }
+                    Some(SessionCommand::KillTree(timeout, reply)) => {
+                        if exit_status.is_some() {
+                            let _ = reply.send(Err(io::Error::new(io::ErrorKind::NotConnected,
+                                "session child has already been reaped")));
+                        } else {
+                            match lifecycle.terminate_tree_owned(timeout).await {
+                                Ok((returned, tree_result)) => {
+                                    lifecycle = returned;
+                                    let result = match tree_result {
+                                        Ok(_) => Ok(crate::ProcessTreeKill::TreeKilled),
+                                        Err(_) => lifecycle.start_kill().map(|()| crate::ProcessTreeKill::ProcessKilled),
+                                    };
+                                    let _ = reply.send(result);
+                                }
+                                Err(error) => {
+                                    let _ = exit_tx.send(SessionExitState::Failed(SessionExitError::from_io(&error)));
+                                    let _ = reply.send(Err(error));
+                                    return;
+                                }
                             }
                         }
                     }
@@ -616,7 +795,15 @@ async fn serve_session_child(actor: SessionActor<'_>) {
                 commands_open = false;
                 owner_dropped = true;
                 close_session_stdin(&mut stdin_worker);
-                if options.kill_on_drop && exit_status.is_none() {
+                if options.kill_tree_on_drop && exit_status.is_none() {
+                    match cleanup_session_tree_on_drop(lifecycle).await {
+                        Ok(returned) => lifecycle = returned,
+                        Err(error) => {
+                            let _ = exit_tx.send(SessionExitState::Failed(SessionExitError::from_io(&error)));
+                            return;
+                        }
+                    }
+                } else if options.kill_on_drop && exit_status.is_none() {
                     let _ = start_session_kill(&signal, &mut lifecycle);
                 }
             }
@@ -803,10 +990,25 @@ fn start_session_stdin(
 
 fn close_session_stdin(worker: &mut Option<SessionStdinWorker>) {
     if let Some(worker) = worker.take() {
-        // Dropping the task owns and closes the pipe immediately. It does not
-        // wait behind a blocked child read, so lifecycle commands stay live.
+        // Request cancellation without blocking lifecycle commands behind a
+        // child read. The runtime drops the owned pipe when it cancels the task;
+        // abort alone does not synchronously confirm that pipe closure.
         worker.task.abort();
     }
+}
+
+async fn cleanup_session_tree_on_drop(
+    lifecycle: PlatformLifecycle,
+) -> io::Result<PlatformLifecycle> {
+    let (mut lifecycle, tree_result) = lifecycle
+        .terminate_tree_owned(Duration::from_secs(5))
+        .await?;
+    if tree_result.is_err() {
+        // Preserve exact direct-child ownership for the weaker fallback.
+        // The actor still performs and publishes the eventual reap.
+        lifecycle.start_kill()?;
+    }
+    Ok(lifecycle)
 }
 
 fn start_session_kill(
@@ -850,12 +1052,20 @@ enum Command {
 async fn run_actor(
     spec: SpawnSpec,
     mut commands: mpsc::Receiver<Command>,
-    started: oneshot::Sender<io::Result<()>>,
+    started: oneshot::Sender<io::Result<oneshot::Sender<()>>>,
     output_log: SharedOutputLog,
+    kill_on_drop: bool,
 ) {
+    if started.is_closed() {
+        return;
+    }
     let child = match spec.spawn().await {
         Ok(child) => {
-            let _ = started.send(Ok(()));
+            let (accept, accepted) = oneshot::channel();
+            if started.send(Ok(accept)).is_err() || accepted.await.is_err() {
+                cleanup_unaccepted_child(child).await;
+                return;
+            }
             child
         }
         Err(error) => {
@@ -864,7 +1074,27 @@ async fn run_actor(
         }
     };
     let pid = child.id();
-    serve_child(child, pid, &mut commands, output_log).await;
+    serve_child(child, pid, &mut commands, output_log, kill_on_drop).await;
+}
+
+async fn cleanup_unaccepted_child(child: PlatformChild) {
+    let (mut lifecycle, signal, stdin, stdout, stderr) = child.into_actor_parts();
+    drop((stdin, stdout, stderr));
+    let _ = reap_unaccepted_lifecycle(&signal, &mut lifecycle).await;
+}
+
+async fn reap_unaccepted_lifecycle(
+    signal: &running_process_platform_internal::PlatformEmergencySignal,
+    lifecycle: &mut PlatformLifecycle,
+) -> Option<std::process::ExitStatus> {
+    // A rejected launch has no owner to retry cleanup. Even when an optional
+    // emergency capability fails (not just Unsupported), try the still-owned
+    // native child handle before relinquishing the lifecycle.
+    if signal.kill().or_else(|_| lifecycle.start_kill()).is_ok() {
+        lifecycle.wait().await.ok()
+    } else {
+        None
+    }
 }
 
 async fn serve_child(
@@ -872,6 +1102,7 @@ async fn serve_child(
     pid: Option<u32>,
     commands: &mut mpsc::Receiver<Command>,
     output_log: SharedOutputLog,
+    kill_on_drop: bool,
 ) {
     let (lifecycle, signal, mut stdin, mut stdout, mut stderr) = child.into_actor_parts();
     let mut lifecycle = Some(lifecycle);
@@ -958,7 +1189,24 @@ async fn serve_child(
                 }
                 return;
             }
-            ActorEvent::Command(None) => return,
+            ActorEvent::Command(None) => {
+                if kill_on_drop && exit_status.is_none() {
+                    drop(stdin.take());
+                    if let Some(capture_kill) = capture_kill.as_ref() {
+                        // Capture retains the owned lifecycle capability;
+                        // request identity-safe kill/reap from that owner.
+                        let (reply, completed) = oneshot::channel();
+                        if capture_kill.send(reply).is_ok() {
+                            let _ = completed.await;
+                        }
+                    } else if let Some(lifecycle) = lifecycle.as_mut() {
+                        if start_session_kill(&signal, lifecycle).is_ok() {
+                            let _ = lifecycle.wait().await;
+                        }
+                    }
+                }
+                return;
+            }
             ActorEvent::Command(Some(Command::Pid(reply))) => {
                 let _ = reply.send(pid.ok_or(ProcessError::NotRunning));
             }
@@ -1049,6 +1297,7 @@ async fn serve_child(
                         limit,
                         capture_log,
                         capture_kill_rx,
+                        kill_on_drop,
                     )
                     .await;
                     completion_log.close();
@@ -1093,6 +1342,20 @@ impl CaptureError {
     }
 }
 
+/// Own the pipe tasks even when capture exits before joining both readers.
+/// Dropping JoinHandle alone detaches a task and can retain a pipe forever.
+struct CaptureReaders {
+    stdout: tokio::task::AbortHandle,
+    stderr: tokio::task::AbortHandle,
+}
+
+impl Drop for CaptureReaders {
+    fn drop(&mut self) {
+        self.stdout.abort();
+        self.stderr.abort();
+    }
+}
+
 async fn capture_output(
     mut lifecycle: PlatformLifecycle,
     stdout: Option<PlatformOutput>,
@@ -1101,6 +1364,7 @@ async fn capture_output(
     limit: Option<usize>,
     output_log: SharedOutputLog,
     mut kill_requests: mpsc::UnboundedReceiver<oneshot::Sender<io::Result<()>>>,
+    abandon_on_owner_drop: bool,
 ) -> Result<Output, CaptureError> {
     let budget = limit.map(|limit| Arc::new(CaptureBudget::new(limit)));
     let stdout = runtime().spawn(read_output(
@@ -1110,6 +1374,10 @@ async fn capture_output(
         StreamKind::Stdout,
     ));
     let stderr = runtime().spawn(read_output(stderr, budget, output_log, StreamKind::Stderr));
+    let _readers = CaptureReaders {
+        stdout: stdout.abort_handle(),
+        stderr: stderr.abort_handle(),
+    };
     let mut kill_replies = Vec::new();
     let mut kill_requests_open = true;
     let status = match exit_status {
@@ -1131,12 +1399,47 @@ async fn capture_output(
     for reply in kill_replies {
         let _ = reply.send(Ok(()));
     }
-    let stdout = stdout
-        .await
-        .map_err(|error| CaptureError::Io(io::Error::other(error.to_string())))??;
-    let stderr = stderr
-        .await
-        .map_err(|error| CaptureError::Io(io::Error::other(error.to_string())))??;
+    // Reaping the direct child and draining inherited pipes are separate
+    // events. Continue acknowledging kill requests after reap: a descendant
+    // may keep a pipe open indefinitely, but the lifecycle request is done.
+    if abandon_on_owner_drop && !kill_requests_open {
+        return Err(CaptureError::Io(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "capture abandoned after owner drop",
+        )));
+    }
+    let drain = async {
+        let stdout = stdout
+            .await
+            .map_err(|error| CaptureError::Io(io::Error::other(error.to_string())))??;
+        let stderr = stderr
+            .await
+            .map_err(|error| CaptureError::Io(io::Error::other(error.to_string())))??;
+        Ok::<_, CaptureError>((stdout, stderr))
+    };
+    tokio::pin!(drain);
+    let (stdout, stderr) = loop {
+        tokio::select! {
+            result = &mut drain => break result?,
+            request = kill_requests.recv(), if kill_requests_open => {
+                match request {
+                    Some(reply) => { let _ = reply.send(Ok(())); }
+                    None if !abandon_on_owner_drop => kill_requests_open = false,
+                    None => {
+                        // The actor has dropped its last control sender after
+                        // identity-safe kill/reap. A descendant may retain an
+                        // inherited pipe forever; abandon these reader tasks
+                        // instead of keeping runtime work alive after owner
+                        // drop. Normal capture keeps the sender and drains EOF.
+                        return Err(CaptureError::Io(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "capture abandoned after owner drop",
+                        )));
+                    }
+                }
+            }
+        }
+    };
     Ok(Output {
         status,
         stdout,
@@ -1207,10 +1510,11 @@ fn not_running_error() -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::time::Duration;
 
     use super::{
-        capture_output, runtime, runtime_worker_threads, ActorProcess, Command,
+        capture_output, runtime, runtime_worker_threads, ActorProcess, CaptureError, Command,
         DEFAULT_OUTPUT_LOG_CAPACITY,
     };
     use crate::SharedOutputLog;
@@ -1220,6 +1524,199 @@ mod tests {
     #[test]
     fn process_runtime_worker_count_is_bounded() {
         assert!((2..=4).contains(&runtime_worker_threads()));
+    }
+
+    #[tokio::test]
+    async fn cancelled_start_skips_admission_for_both_actor_paths() {
+        let spec = SpawnSpec::new("must-not-be-spawned").spawn_admission(
+            crate::SpawnAdmission::new(|| -> io::Result<()> {
+                panic!("cancelled startup must not acquire admission");
+            }),
+        );
+        let (_commands, commands) = mpsc::channel(1);
+        let (started, receiver) = oneshot::channel();
+        drop(receiver);
+        super::run_actor(
+            spec.clone(),
+            commands,
+            started,
+            SharedOutputLog::new(DEFAULT_OUTPUT_LOG_CAPACITY),
+            false,
+        )
+        .await;
+
+        let (_commands, commands) = mpsc::channel(1);
+        let (_owner, owner) = oneshot::channel();
+        let (exit, _exit_rx) = tokio::sync::watch::channel(super::SessionExitState::Running);
+        let (started, receiver) = oneshot::channel();
+        let (output, mut output_rx) = mpsc::channel(1);
+        drop(receiver);
+        super::run_session_actor(
+            spec,
+            crate::AsyncProcessSessionOptions {
+                kill_on_drop: false,
+                ..Default::default()
+            },
+            commands,
+            owner,
+            exit,
+            started,
+            output,
+            None,
+        )
+        .await;
+        assert!(
+            output_rx.recv().await.is_none(),
+            "abandoned session must close its output lane"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_admission_finishes_both_non_killing_actors() {
+        for session in [false, true] {
+            let (entered, entered_rx) = oneshot::channel();
+            let entered = std::sync::Mutex::new(Some(entered));
+            let (release, release_rx) = std::sync::mpsc::channel();
+            let release_rx = std::sync::Mutex::new(release_rx);
+            let spec = long_lived_piped_child()
+                .stdin(StreamMode::Null)
+                .spawn_admission(crate::SpawnAdmission::new(move || {
+                    entered.lock().unwrap().take().unwrap().send(()).unwrap();
+                    // A timeout or dropped release sender must unblock the runtime
+                    // thread even when the test itself fails before cancellation.
+                    release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(NOT_BLOCKED)
+                        .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?;
+                    Ok(())
+                }));
+            let (cancel, actor, close_owners): (
+                Box<dyn FnOnce()>,
+                tokio::task::JoinHandle<()>,
+                Box<dyn FnOnce()>,
+            ) = if session {
+                let (commands_tx, commands) = mpsc::channel(1);
+                let (owner_tx, owner) = oneshot::channel();
+                let (exit, _exit_rx) =
+                    tokio::sync::watch::channel(super::SessionExitState::Running);
+                let (output, _output_rx) = mpsc::channel(1);
+                let (started, receiver) = oneshot::channel();
+                let actor = runtime().spawn(super::run_session_actor(
+                    spec,
+                    crate::AsyncProcessSessionOptions {
+                        kill_on_drop: false,
+                        ..Default::default()
+                    },
+                    commands,
+                    owner,
+                    exit,
+                    started,
+                    output,
+                    None,
+                ));
+                (
+                    Box::new(move || drop(receiver)),
+                    actor,
+                    Box::new(move || drop((commands_tx, owner_tx))),
+                )
+            } else {
+                let (commands_tx, commands) = mpsc::channel(1);
+                let (started, receiver) = oneshot::channel();
+                let actor = runtime().spawn(super::run_actor(
+                    spec,
+                    commands,
+                    started,
+                    SharedOutputLog::new(DEFAULT_OUTPUT_LOG_CAPACITY),
+                    false,
+                ));
+                (
+                    Box::new(move || drop(receiver)),
+                    actor,
+                    Box::new(move || drop(commands_tx)),
+                )
+            };
+            tokio::time::timeout(NOT_BLOCKED, entered_rx)
+                .await
+                .expect("admission must begin")
+                .expect("admission signal");
+            cancel();
+            release.send(()).expect("release native admission");
+            // Keep both ownership lanes open: their closure must not be what
+            // causes cleanup after the startup receiver was cancelled.
+            tokio::time::timeout(NOT_BLOCKED, actor)
+                .await
+                .expect("cancelled startup must finish without an owner")
+                .expect("startup actor must not panic");
+            close_owners();
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_queued_start_offer_cleans_up_unaccepted_child() {
+        let (commands_tx, commands) = mpsc::channel(1);
+        let (started, receiver) = oneshot::channel();
+        let actor = runtime().spawn(super::run_actor(
+            long_lived_piped_child().stdin(StreamMode::Null),
+            commands,
+            started,
+            SharedOutputLog::new(DEFAULT_OUTPUT_LOG_CAPACITY),
+            false,
+        ));
+        let offer = tokio::time::timeout(NOT_BLOCKED, receiver)
+            .await
+            .expect("startup offer deadline")
+            .expect("actor offers ownership")
+            .expect("native child actually spawned");
+        // Model cancellation after the actor successfully queued its reply,
+        // but before the start future accepted ownership of that child.
+        drop(offer);
+        tokio::time::timeout(NOT_BLOCKED, actor)
+            .await
+            .expect("unaccepted child must be cleaned up")
+            .expect("actor must not panic");
+        drop(commands_tx);
+    }
+
+    #[tokio::test]
+    async fn dropping_session_start_offer_cleans_up_without_owner_drop() {
+        let (commands_tx, commands) = mpsc::channel(1);
+        let (owner_tx, owner) = oneshot::channel();
+        let (exit, _exit_rx) = tokio::sync::watch::channel(super::SessionExitState::Running);
+        let (output, mut output_rx) = mpsc::channel(1);
+        let (started, receiver) = oneshot::channel();
+        let actor = runtime().spawn(super::run_session_actor(
+            long_lived_piped_child().stdin(StreamMode::Piped),
+            crate::AsyncProcessSessionOptions {
+                kill_on_drop: false,
+                ..Default::default()
+            },
+            commands,
+            owner,
+            exit,
+            started,
+            output,
+            None,
+        ));
+        let offer = tokio::time::timeout(NOT_BLOCKED, receiver)
+            .await
+            .expect("session startup deadline")
+            .expect("session ownership offer")
+            .expect("native session child spawned");
+        // Retain a stdin sender too: cleanup cannot rely on all input owners
+        // disappearing to stop the worker and close its pipe.
+        let stdin = offer.stdin.clone().expect("piped stdin");
+        drop(offer);
+        tokio::time::timeout(NOT_BLOCKED, actor)
+            .await
+            .expect("unaccepted session cleanup deadline")
+            .expect("session actor must not panic");
+        assert!(
+            stdin.is_closed(),
+            "cleanup must join the aborted stdin worker"
+        );
+        assert!(output_rx.recv().await.is_none());
+        drop((commands_tx, owner_tx));
     }
 
     #[tokio::test]
@@ -1273,6 +1770,39 @@ mod tests {
     /// margin while keeping "the child exited by itself" far out of reach. A
     /// failure here is now a real hang, not a slow runner.
     const NOT_BLOCKED: Duration = Duration::from_secs(30);
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn drop_policy_reaps_child_with_and_without_capture() {
+        for capture in [false, true] {
+            let process = ActorProcess::start_with_drop_policy(
+                long_lived_piped_child().stdin(StreamMode::Null),
+                true,
+            )
+            .await
+            .expect("actor starts");
+            let pid = process.pid().await.expect("child pid");
+            if capture {
+                let (reply, _output) = oneshot::channel();
+                process
+                    .commands
+                    .send(Command::Output { limit: None, reply })
+                    .await
+                    .unwrap();
+                // FIFO round-trip proves the actor transferred ownership to
+                // capture before its public owner is dropped.
+                assert_eq!(process.pid().await.unwrap(), pid);
+            }
+            drop(process);
+            tokio::time::timeout(NOT_BLOCKED, async {
+                while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("dropped child is killed and reaped");
+        }
+    }
 
     #[tokio::test]
     async fn kill_is_delivered_while_an_actor_wait_is_pending() {
@@ -1364,6 +1894,7 @@ mod tests {
                 None,
                 SharedOutputLog::new(DEFAULT_OUTPUT_LOG_CAPACITY),
                 kill_rx,
+                false,
             ),
         )
         .await
@@ -1373,6 +1904,109 @@ mod tests {
             Err(_) => panic!("capture completes"),
         };
         assert!(output.status.success());
+    }
+
+    #[tokio::test]
+    async fn capture_owner_drop_abandons_pipes_held_by_a_live_process() {
+        let exited = shell_spec("exit 0").spawn().await.expect("exit child");
+        let (mut lifecycle, _, _, _, _) = exited.into_actor_parts();
+        let status = lifecycle.wait().await.expect("reap child");
+        let pipe_owner = long_lived_piped_child().spawn().await.expect("pipe owner");
+        let (mut pipe_lifecycle, _, _, stdout, stderr) = pipe_owner.into_actor_parts();
+        let (kill_tx, kill_rx) = mpsc::unbounded_channel();
+        let mut capture = runtime().spawn(capture_output(
+            lifecycle,
+            stdout,
+            stderr,
+            Some(status),
+            None,
+            SharedOutputLog::new(DEFAULT_OUTPUT_LOG_CAPACITY),
+            kill_rx,
+            true,
+        ));
+        drop(kill_tx);
+        let abandoned = tokio::time::timeout(NOT_BLOCKED, &mut capture).await;
+        // Cleanup the independent pipe fixture before asserting, including
+        // when a regression leaves capture waiting for its EOF.
+        pipe_lifecycle.start_kill().expect("stop pipe owner");
+        pipe_lifecycle.wait().await.expect("reap pipe owner");
+        if abandoned.is_err() {
+            capture.abort();
+        }
+        assert!(matches!(abandoned, Ok(Ok(Err(CaptureError::Io(error))))
+            if error.kind() == io::ErrorKind::Interrupted));
+    }
+
+    #[tokio::test]
+    async fn capture_owner_drop_without_kill_preserves_pipe_draining() {
+        let exited = shell_spec("exit 0").spawn().await.expect("exit child");
+        let (mut lifecycle, _, _, _, _) = exited.into_actor_parts();
+        let status = lifecycle.wait().await.expect("reap child");
+        let pipe_owner = long_lived_piped_child().spawn().await.expect("pipe owner");
+        let (mut pipe_lifecycle, _, _, stdout, stderr) = pipe_owner.into_actor_parts();
+        let (kill_tx, kill_rx) = mpsc::unbounded_channel();
+        let mut capture = runtime().spawn(capture_output(
+            lifecycle,
+            stdout,
+            stderr,
+            Some(status),
+            None,
+            SharedOutputLog::new(DEFAULT_OUTPUT_LOG_CAPACITY),
+            kill_rx,
+            false,
+        ));
+        drop(kill_tx);
+        let premature = tokio::time::timeout(Duration::from_millis(100), &mut capture).await;
+        // Release the real pipe owner before any assertion so both the
+        // intended policy and a premature-abandonment regression clean up.
+        pipe_lifecycle.start_kill().expect("stop pipe owner");
+        pipe_lifecycle.wait().await.expect("reap pipe owner");
+        assert!(
+            premature.is_err(),
+            "non-killing owner drop abandoned capture before EOF"
+        );
+        let drained = tokio::time::timeout(NOT_BLOCKED, &mut capture).await;
+        if drained.is_err() {
+            capture.abort();
+        }
+        assert!(matches!(drained, Ok(Ok(Ok(output))) if output.status.success()));
+    }
+
+    #[tokio::test]
+    async fn capture_acknowledges_kill_after_reap_before_pipe_eof() {
+        let exited = shell_spec("exit 0").spawn().await.expect("exit child");
+        let (mut lifecycle, _, _, _, _) = exited.into_actor_parts();
+        let status = lifecycle.wait().await.expect("reap child");
+        // A separate live pipe owner models a descendant retaining stdout,
+        // without leaving an unmanaged background process in the test.
+        let pipe_owner = long_lived_piped_child().spawn().await.expect("pipe owner");
+        let (mut pipe_lifecycle, _, _, stdout, stderr) = pipe_owner.into_actor_parts();
+        let (kill_tx, kill_rx) = mpsc::unbounded_channel();
+        let capture = runtime().spawn(capture_output(
+            lifecycle,
+            stdout,
+            stderr,
+            Some(status),
+            None,
+            SharedOutputLog::new(DEFAULT_OUTPUT_LOG_CAPACITY),
+            kill_rx,
+            false,
+        ));
+        let (reply, acknowledgement) = oneshot::channel();
+        kill_tx.send(reply).expect("request accepted");
+        let acknowledged = tokio::time::timeout(NOT_BLOCKED, acknowledgement).await;
+        // Cleanup even when the assertion would fail against the old code.
+        pipe_lifecycle.start_kill().expect("stop pipe owner");
+        pipe_lifecycle.wait().await.expect("reap pipe owner");
+        assert!(acknowledged
+            .expect("ack does not wait for EOF")
+            .expect("reply")
+            .is_ok());
+        assert!(tokio::time::timeout(NOT_BLOCKED, capture)
+            .await
+            .expect("capture drains")
+            .expect("capture task")
+            .is_ok());
     }
 
     #[tokio::test]

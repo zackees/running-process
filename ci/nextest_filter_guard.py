@@ -45,7 +45,10 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / ".config" / "nextest.toml"
 
 FILTER_LINE = re.compile(r"^\s*filter\s*=\s*'([^']*)'\s*$", re.MULTILINE)
-BINARY_REF = re.compile(r"binary\(([A-Za-z0-9_]+)\)")
+# Match the standalone nextest filter function, not a Python helper whose
+# identifier happens to end in `_binary` (for example
+# `require_acceptance_binary(test)`).
+BINARY_REF = re.compile(r"(?<![A-Za-z0-9_])binary\(([A-Za-z0-9_]+)\)")
 # `test(/^module::/)` and `test(/module::/)` — the module-qualified form a
 # consolidated target requires.
 TEST_MODULE_REF = re.compile(r"test\(/\^?([A-Za-z0-9_]+)::")
