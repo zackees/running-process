@@ -126,6 +126,11 @@ fn launch_command(name: &str, helper: &Path, request: &Path) -> io::Result<Comma
         "--property=StandardInput=null",
         "--property=StandardOutput=null",
         "--property=StandardError=null",
+        // Manager-side escalation must finish inside the rollback client budget.
+        // The entire service includes target descendants, not just MainPID.
+        "--property=KillMode=control-group",
+        "--property=TimeoutStopSec=1s",
+        "--property=SendSIGKILL=yes",
         "--unit",
         name,
         "--",

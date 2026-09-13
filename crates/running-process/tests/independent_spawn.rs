@@ -114,6 +114,41 @@ fn readiness_timeout_rolls_back_started_target() {
 
 #[test]
 #[ignore = "requires accessible systemd user manager, cgroup v2 and pidfds"]
+fn handshake_rollback_kills_sigterm_ignoring_helper() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let pidfile = directory.path().join("pid");
+    let helper = directory.path().join("unresponsive-helper");
+    fs::write(
+        &helper,
+        "#!/bin/sh\ntrap '' TERM\nprintf '%s' $$ > \"${0%/*}/pid\"\nexec sleep 4\n",
+    )
+    .unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+    let spec = sleep_spec(directory.path());
+    let result = spawn(
+        &spec,
+        &helper,
+        Duration::from_millis(500),
+        &AtomicBool::new(false),
+    );
+    assert_eq!(result.err().unwrap().kind(), std::io::ErrorKind::TimedOut);
+    let pid: u32 = fs::read_to_string(pidfile).unwrap().parse().unwrap();
+    let process = std::path::PathBuf::from(format!("/proc/{pid}"));
+    let survived_rollback = process.exists();
+    // Preserve the RED assertion while letting the finite fixture clean up.
+    let cleanup_deadline = Instant::now() + Duration::from_secs(5);
+    while process.exists() && Instant::now() < cleanup_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !survived_rollback,
+        "SIGTERM-ignoring helper survived rollback"
+    );
+}
+
+#[test]
+#[ignore = "requires accessible systemd user manager, cgroup v2 and pidfds"]
 fn symlinked_log_is_rejected_without_writing_through_it() {
     let directory = tempfile::tempdir().unwrap();
     let destination = directory.path().join("existing");
