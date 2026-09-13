@@ -426,3 +426,9 @@ platform library suite also passed locally: 120 passed, four intentionally
 ignored, with `RUSTFLAGS='-C link-arg=-Wl,--build-id=sha1'` for the existing
 GNU build-id test. These are backend validation results, not a completed
 facade migration, complete failure matrix, or release cascade.
+
+The API snapshot gate reproduced the earlier coverage failure on the current
+branch. Regeneration adds exactly two root re-export rows: the four canonical
+policy types and the dispatcher/handle/exit types. No existing export or
+signature is removed or changed. The snapshot, parity-manifest, and synchronous
+test audit gates pass after this intentional additive refresh.
