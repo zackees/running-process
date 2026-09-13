@@ -38,6 +38,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install build orchestrator
         run: uv tool install soldr
+      - name: Install pinned musl standard library
+        run: soldr rustup target add x86_64-unknown-linux-musl --toolchain 1.95.0
       - name: Check fixture orchestration safety
         run: uv run --no-project --module unittest tests.test_ci_independent_broker_docker
       - name: Verify broker accounting without systemd

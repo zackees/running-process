@@ -397,3 +397,15 @@ private limits/read-only mounts, and failure cleanup. The complete runner
 passed locally (worker 25935872 -> 26185728 bytes; broker 1748992 -> 26599424),
 including worker survival and outer OOM enforcement. A successful GitHub run
 is still required; the remaining failure-matrix/release work is also pending.
+
+The first GitHub Docker job in run 34759776995 failed during compilation with
+E0463 (`core` unavailable for `x86_64-unknown-linux-musl`), before executing the
+container. CI now explicitly installs that target for Rust 1.95.0 through
+`soldr rustup`; this correction still requires a successful remote rerun.
+
+Broker validation also gained a focused RED -> GREEN test for zero and
+over-30-second wire deadlines. Previously the server returned InvalidInput
+internally but closed the connection, exposing UnexpectedEof to the caller.
+It now attempts a typed InvalidInput reply under a 100 ms bound before returning
+the same error, without attempting to spawn. All six broker/wire unit tests
+passed (one subprocess fixture remains deliberately ignored).

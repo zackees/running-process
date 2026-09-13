@@ -84,7 +84,14 @@ pub(super) fn serve_connection(stream: Stream, cancelled: &AtomicBool) -> io::Re
         return Err(io::Error::from(io::ErrorKind::InvalidData));
     };
     if spec.timeout_millis == 0 || spec.timeout_millis > 30000 {
-        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        let error = io::Error::from(io::ErrorKind::InvalidInput);
+        let _ = send(
+            &mut stream,
+            Body::Failed(failure(&error) as i32),
+            Instant::now() + Duration::from_millis(100),
+            cancelled,
+        );
+        return Err(error);
     }
     let deadline = deadline.min(Instant::now() + Duration::from_millis(spec.timeout_millis.into()));
     let mut child = match spawn_inherited(
@@ -216,6 +223,47 @@ mod tests {
             "broker did not accept an explicit connection"
         );
         assert!(!path.exists(), "broker endpoint must retire after shutdown");
+    }
+
+    #[test]
+    fn broker_invalid_timeout_is_reported_before_launch() {
+        for timeout_millis in [0, 30001] {
+            let directory = tempfile::tempdir().unwrap();
+            crate::platform::private_dir::ensure_owner_private_directory(directory.path()).unwrap();
+            let endpoint = Endpoint::new(directory.path().join("s").to_str().unwrap()).unwrap();
+            let listener = Listener::bind_owner_only(&endpoint).unwrap();
+            let server = std::thread::spawn(move || {
+                serve_connection(listener.accept().unwrap(), &AtomicBool::new(false))
+            });
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let cancelled = AtomicBool::new(false);
+            let mut channel =
+                Channel::new(Stream::connect_bounded(&endpoint, deadline, &cancelled).unwrap())
+                    .unwrap();
+            send(
+                &mut channel,
+                Body::Launch(wire::Launch {
+                    timeout_millis,
+                    // Deliberately invalid program: timeout validation must
+                    // precede launch and not turn into a NotFound error.
+                    program: b"/nonexistent/rp-invalid-timeout".to_vec(),
+                    cwd: b"/".to_vec(),
+                    ..Default::default()
+                }),
+                deadline,
+                &cancelled,
+            )
+            .unwrap();
+            let response = receive(&mut channel, deadline, &cancelled);
+            assert_eq!(server.join().unwrap().unwrap_err().kind(), io::ErrorKind::InvalidInput);
+            let Body::Failed(code) = response.expect("broker must report invalid timeout") else {
+                panic!("expected typed validation failure")
+            };
+            assert_eq!(
+                super::super::independent_broker_wire::failure_into_io(code).kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
     }
 
     #[test]
