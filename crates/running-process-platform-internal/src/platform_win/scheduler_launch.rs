@@ -152,16 +152,7 @@ impl ScheduledTask {
         loop {
             check(deadline, cancelled)?;
             if let Some(code) = child.try_wait()? {
-                return match code {
-                    0 => Ok(()),
-                    3 => Err(io::Error::from(io::ErrorKind::PermissionDenied)),
-                    4 => Err(io::Error::from(io::ErrorKind::Unsupported)),
-                    5 => Err(io::Error::from(io::ErrorKind::NotFound)),
-                    _ => Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("Task Scheduler {operation} failed (HRESULT 0x{:08x})", code as u32),
-                    )),
-                };
+                return super::scheduler_error::result(code, operation);
             }
             std::thread::sleep(
                 Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),

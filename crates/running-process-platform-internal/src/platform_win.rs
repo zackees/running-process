@@ -7,6 +7,8 @@ pub use independent_broker::{run as independent_broker_run, spawn as independent
 #[cfg(feature = "independent-spawn")]
 mod independent_spawn;
 #[cfg(feature = "independent-spawn")]
+mod scheduler_error;
+#[cfg(feature = "independent-spawn")]
 mod scheduler_launch;
 #[cfg(feature = "independent-spawn")]
 pub use independent_spawn::{spawn as independent_spawn, IndependentChild};

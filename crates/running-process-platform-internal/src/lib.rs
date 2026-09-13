@@ -25,6 +25,10 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 /// The indexes intentionally expose no operations yet: phase 2 establishes
 /// ownership names before later phases move a capability behind them.
 pub mod platform;
+
+#[cfg(all(feature = "independent-spawn", test, not(windows)))]
+#[path = "platform_win/scheduler_error.rs"]
+mod scheduler_error;
 #[cfg(feature = "independent-spawn")]
 pub(crate) use platform_imp::spawn_sync_owned_daemon;
 #[cfg(feature = "independent-spawn")]

@@ -16,6 +16,10 @@ def main() -> int:
     suites = [
         (
             ["-p", "running-process-platform-internal", "--lib"],
+            ["scheduler_error::tests", "--nocapture"],
+        ),
+        (
+            ["-p", "running-process-platform-internal", "--lib"],
             ["nonblocking_large_frame_round_trip", "--nocapture"],
         ),
         (
