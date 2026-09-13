@@ -49,6 +49,30 @@ evidence yet.
 
 ## Implementation constraints and next work
 
+The Linux native tree now contains the private `resource_placement` verifier.
+Its focused tests first produced five assertion failures with an inert
+implementation, then seven passes after implementation, including live self
+capture. It compares cgroup path components and refuses root worker boundaries,
+different cgroup/mount namespaces, malformed paths, and non-unified/hybrid
+membership. This is not yet connected to a launcher; it does not prove process
+identity, readiness, or survival on teardown. The remaining native launch work
+must retain a reuse-safe process handle around this placement observation.
+
+The first broader platform run was 80 passed / 1 failed: the existing
+`current_executable_exposes_a_gnu_build_id` test found no GNU build ID.
+`readelf -n` confirmed that the generated executable contained only the ABI
+note. Revalidation with explicit `-C link-arg=-Wl,--build-id=sha1` passed all
+81 tests. The spawn-path guard also passed. Keep this linker setting for the
+broader suite on this host; do not delete or skip the build-ID assertion.
+
+Scheduler implementation reference: the upstream
+[systemd-run manual](https://github.com/systemd/systemd/blob/main/man/systemd-run.xml)
+distinguishes transient service launch from caller-owned scope launch and
+documents that the default `Type=simple` success precedes exec. Use an exec
+startup handshake and target readiness/identity verification, not registration
+success alone. Preserve literal argument values and keep secret payloads out
+of scheduler command/description metadata.
+
 - Preserve legacy spawning; add explicit Inherited/Independent semantics.
   Independent must never silently use the legacy Windows breakaway fallback.
 - Implement placement verification and native scheduler launch/control in the
