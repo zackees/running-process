@@ -351,7 +351,12 @@ pub struct SpawnedChild {
     pub(crate) inner: Box<dyn SpawnedChildControl>,
 }
 
-pub(crate) trait SpawnedChildControl:
+/// Native control operations for a contained child.
+///
+/// This trait is exposed so facade crates can preserve the contained-child
+/// type identity.  Constructing an implementation remains the responsibility
+/// of the platform substrate.
+pub trait SpawnedChildControl:
     Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe
 {
     fn kill(&mut self) -> std::io::Result<()>;

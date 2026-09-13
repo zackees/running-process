@@ -221,7 +221,7 @@ mod windows;
 pub use async_process::{
     AsyncCapturedOutput, AsyncProcess, AsyncProcessBuilder, AsyncProcessSession,
     AsyncProcessSessionChunk, AsyncProcessSessionControl, AsyncProcessSessionEvent,
-    AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio,
+    AsyncProcessSessionOptions, AsyncProcessSessionOutput, AsyncStdio, ProcessTreeKill,
 };
 pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
@@ -253,10 +253,23 @@ pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
     spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
     spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env,
-    spawn_daemon_with_env_policy, spawn_daemon_with_stdio, spawn_daemon_with_stdio_and_env_policy,
-    spawn_with_env_policy, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy,
-    SpawnStdio, SpawnedChild, StdioSource, DAEMON_MARKER_ENV_VAR,
+    spawn_daemon_with_env_policy, spawn_daemon_with_environment,
+    spawn_daemon_with_explicit_environment, spawn_daemon_with_stdio,
+    spawn_daemon_with_stdio_and_env_policy, spawn_with_env_policy, spawn_with_environment,
+    spawn_with_explicit_environment, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy,
+    SpawnStdio, SpawnedChild, SpawnedChildControl, StdioSource, SyncEnvironment,
+    DAEMON_MARKER_ENV_VAR,
 };
+/// Canonical native process-inspection errors, preserving their host detail.
+pub use running_process_platform_internal::platform::process::{
+    ProcessInspectError, ProcessInspectErrorKind,
+};
+/// Resolve the current executable image for a live PID.
+pub use running_process_platform_internal::process_executable_path;
+/// Compare executable path spellings using the host-native policy.
+pub use running_process_platform_internal::process_same_executable_path;
+/// Retained native process-liveness observation.
+pub use running_process_platform_internal::ProcessLiveness;
 #[cfg(feature = "client-async")]
 pub use spawn::{spawn_tokio, TokioSpawnOptions};
 #[cfg(feature = "terminal-graphics")]
@@ -279,6 +292,11 @@ pub use window_icon::{
 #[cfg(unix)]
 pub(crate) use helpers::{child_try_wait_error_is_retryable, poll_mutex_until};
 pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
+/// Convert a native process exit status to the portable integer convention.
+pub use running_process_platform_internal::exit_code as native_exit_code;
+pub use running_process_platform_internal::ProcessPriority;
+#[cfg(feature = "async-process")]
+pub use running_process_platform_internal::SpawnAdmission;
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
 #[cfg(windows)]

@@ -30,7 +30,8 @@
 use std::process::Command;
 
 pub use running_process_platform_internal::platform::process::{
-    DaemonChild, DaemonStdio, DaemonStdioSource, SpawnStdio, SpawnedChild, StdioSource,
+    DaemonChild, DaemonStdio, DaemonStdioSource, SpawnStdio, SpawnedChild, SpawnedChildControl,
+    StdioSource, SyncEnvironment,
 };
 
 /// Selects the base environment used for a newly spawned process.
@@ -265,6 +266,32 @@ pub fn spawn_daemon_with_env_policy(
     spawn_daemon_inner(command, DaemonStdio::default(), policy, false, None)
 }
 
+/// Spawn a daemon from a caller-assembled complete environment base.
+pub fn spawn_daemon_with_explicit_environment(
+    command: &mut Command,
+    stdio: DaemonStdio<'_>,
+    environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    breakaway: bool,
+) -> std::io::Result<DaemonChild> {
+    spawn_daemon_with_environment(
+        command,
+        stdio,
+        SyncEnvironment::Explicit(environment),
+        breakaway,
+    )
+}
+
+/// Spawn a daemon using an explicit live environment base.
+pub fn spawn_daemon_with_environment(
+    command: &mut Command,
+    stdio: DaemonStdio<'_>,
+    environment: SyncEnvironment,
+    breakaway: bool,
+) -> std::io::Result<DaemonChild> {
+    mark_as_daemon(command);
+    running_process_platform_internal::spawn_sync_daemon(command, stdio, environment, breakaway)
+}
+
 /// Like [`spawn_daemon`], but the child also **breaks away from any Job
 /// Object the spawner belongs to** (Windows; a no-op elsewhere).
 ///
@@ -413,6 +440,36 @@ pub fn spawn_with_env_policy(
     let policy = policy.resolve(SpawnLifetime::Contained);
     let environment = prepare_sync_environment(policy)?;
     running_process_platform_internal::platform::process::spawn_sync(command, stdio, environment)
+}
+
+/// Spawn a contained child from a caller-assembled complete environment base.
+pub fn spawn_with_explicit_environment(
+    command: &mut Command,
+    stdio: SpawnStdio<'_>,
+    environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    shutdown_timeout: Option<fn() -> std::time::Duration>,
+) -> std::io::Result<SpawnedChild> {
+    spawn_with_environment(
+        command,
+        stdio,
+        SyncEnvironment::Explicit(environment),
+        shutdown_timeout,
+    )
+}
+
+/// Spawn a contained child using an explicit live environment base.
+///
+/// The selected synchronous substrate owns the contained-child drop policy;
+/// the optional historical shutdown callback is accepted for source
+/// compatibility but is not evaluated by this boundary.
+pub fn spawn_with_environment(
+    command: &mut Command,
+    stdio: SpawnStdio<'_>,
+    environment: SyncEnvironment,
+    shutdown_timeout: Option<fn() -> std::time::Duration>,
+) -> std::io::Result<SpawnedChild> {
+    let _ = shutdown_timeout;
+    running_process_platform_internal::spawn_sync(command, stdio, environment)
 }
 
 /// Spawn a Tokio child through the centralized process-creation boundary.

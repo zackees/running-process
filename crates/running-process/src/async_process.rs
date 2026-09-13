@@ -148,12 +148,14 @@ impl From<Output> for AsyncCapturedOutput {
 /// canonical actor as [`AsyncProcess::new`], not a second execution engine.
 pub struct AsyncProcessBuilder {
     spec: SpawnSpec,
+    kill_on_drop: bool,
 }
 
 impl AsyncProcessBuilder {
     /// Describe a direct program invocation.
     pub fn new(program: impl Into<OsString>) -> Self {
         Self {
+            kill_on_drop: false,
             spec: SpawnSpec::new(program)
                 .stdin(StreamMode::Piped)
                 .stdout(StreamMode::Piped)
@@ -164,6 +166,7 @@ impl AsyncProcessBuilder {
     /// Describe a command using the platform-owned shell convention.
     pub fn shell(command: impl Into<OsString>) -> Self {
         Self {
+            kill_on_drop: false,
             spec: running_process_platform_internal::shell_spec(command.into())
                 .stdin(StreamMode::Piped)
                 .stdout(StreamMode::Piped)
@@ -247,9 +250,35 @@ impl AsyncProcessBuilder {
         self
     }
 
+    /// Select portable scheduling intent at child creation.
+    pub fn priority(mut self, priority: crate::ProcessPriority) -> Self {
+        self.spec = self.spec.priority(priority);
+        self
+    }
+
+    /// Request portable scheduling intent where the host permits it.
+    pub fn priority_best_effort(mut self, priority: crate::ProcessPriority) -> Self {
+        self.spec = self.spec.priority_best_effort(priority);
+        self
+    }
+
+    /// Acquire caller-owned exclusion around native process creation.
+    pub fn spawn_admission(mut self, admission: crate::SpawnAdmission) -> Self {
+        self.spec = self.spec.spawn_admission(admission);
+        self
+    }
+
     /// Build an [`AsyncProcess`] backed by the canonical actor.
     pub fn build(self) -> AsyncProcess {
-        AsyncProcess::from_spec(self.spec)
+        let mut process = AsyncProcess::from_spec(self.spec);
+        process.kill_on_drop = self.kill_on_drop;
+        process
+    }
+
+    /// Request actor-owned cleanup if the asynchronous process handle drops.
+    pub fn kill_on_drop(mut self, kill: bool) -> Self {
+        self.kill_on_drop = kill;
+        self
     }
 
     /// Build a long-lived, concurrently pumped process session.
@@ -285,11 +314,16 @@ where
 pub struct AsyncProcess {
     spec: SpawnSpec,
     child: Option<ActorProcess>,
+    kill_on_drop: bool,
 }
 
 impl AsyncProcess {
     fn from_spec(spec: SpawnSpec) -> Self {
-        Self { spec, child: None }
+        Self {
+            spec,
+            child: None,
+            kill_on_drop: false,
+        }
     }
 
     /// Create a direct (non-shell) async process.
@@ -656,6 +690,15 @@ pub struct AsyncProcessSessionControl {
     process: SessionProcess,
 }
 
+/// Coverage confirmed by an explicit session termination request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessTreeKill {
+    /// The captured descendant tree was terminated.
+    TreeKilled,
+    /// Only the owned direct process was confirmed terminated.
+    ProcessKilled,
+}
+
 /// Single-consumer output lane split from an [`AsyncProcessSession`].
 ///
 /// Dropping this receiver detaches output delivery only: pumps continue to
@@ -777,6 +820,19 @@ impl AsyncProcessSession {
             .await
     }
 
+    /// Terminate the owned direct process when a tree sweep is unavailable.
+    ///
+    /// The result makes that weaker guarantee explicit. A later substrate
+    /// tree-sweep implementation may return [`ProcessTreeKill::TreeKilled`]
+    /// without changing this signature.
+    pub async fn kill_tree(&self, _timeout: Duration) -> Result<ProcessTreeKill, ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .kill_tree(_timeout)
+            .await
+    }
+
     /// Request graceful termination for an explicitly child-owned group.
     ///
     /// Returns `false` when no child-owned group was configured. Hosts that
@@ -857,6 +913,13 @@ impl AsyncProcessSessionControl {
     /// post-exit grace, independently of this control request.
     pub async fn kill(&self) -> Result<(), ProcessError> {
         self.process.kill().await
+    }
+
+    /// Terminate the exclusive direct-child owner when no tree sweep is
+    /// available in the selected runtime path.
+    pub async fn kill_tree(&self, _timeout: Duration) -> Result<ProcessTreeKill, ProcessError> {
+        self.process.kill().await?;
+        Ok(ProcessTreeKill::ProcessKilled)
     }
 
     /// Request graceful termination for an explicitly child-owned group.
