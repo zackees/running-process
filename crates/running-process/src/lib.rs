@@ -46,6 +46,9 @@ pub mod window_icon;
 /// daemon runtime, identity probe, or async runtime.
 #[cfg(feature = "daemon-registration")]
 pub mod daemon_registration;
+/// Frozen v1 semantic registration compatibility contract.
+#[cfg(feature = "daemon-registration")]
+pub mod daemon_registration_compat;
 /// Frozen v2 service-definition registration writer substrate.
 ///
 /// This direct persistence surface owns the established `.servicedef.v2`
@@ -54,6 +57,9 @@ pub mod daemon_registration;
 /// negotiation, endpoint transport, identity, or an async runtime.
 #[cfg(feature = "daemon-registration-v2")]
 pub mod daemon_registration_v2;
+/// Limited shared-broker v2 registration compatibility contract.
+#[cfg(feature = "daemon-registration-v2")]
+pub mod daemon_registration_v2_compat;
 // The two registration writer features share only the small path, name, error,
 // and owner-private-directory substrate. Keeping it separate from either
 // public module prevents v2 persistence from selecting v1's SHA-256 manifest
@@ -67,6 +73,9 @@ pub(crate) mod daemon_registration_common;
 /// re-export these exact items for compatibility.
 #[cfg(feature = "frame-v1-codec")]
 pub mod frame_v1;
+/// Canonical semantic v1 frame compatibility contract, retaining raw values.
+#[cfg(feature = "frame-v1-codec")]
+pub mod daemon_frame_v1;
 // Host facts are shared by the direct identity probe and persisted v1
 // registration. The implementation is deliberately private; registration
 // exposes its stable public host-identity path from `daemon_registration`.
