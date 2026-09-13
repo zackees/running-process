@@ -51,6 +51,9 @@ jobs:
         run: soldr rustup target add ${{ matrix.target }} --toolchain 1.95.0
       - name: Check fixture orchestration safety
         run: uv run --no-project --module unittest tests.test_ci_independent_broker_docker
+      - name: Verify unavailable Linux user session
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: soldr cargo test -p running-process-platform-internal --no-default-features --features independent-spawn --lib absent_user_session_bus_is_unsupported -- --ignored --nocapture
       - name: Cross-build static acceptance fixture
         run: uv run --no-project --module ci.independent_broker_docker --build-only "${{ runner.temp }}/fixture" --target ${{ matrix.target }}
       - name: Preserve executable permissions for transfer

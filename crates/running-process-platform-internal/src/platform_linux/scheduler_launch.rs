@@ -351,6 +351,36 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires systemctl executable; uses an isolated absent session bus"]
+    fn absent_user_session_bus_is_unsupported() {
+        let directory = tempfile::tempdir().unwrap();
+        let bus = directory.path().join("absent-bus");
+        let manager = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|directory| directory.join("systemctl"))
+            .find(|candidate| candidate.is_file())
+            .expect("this integration test requires systemctl on PATH");
+        let mut command = Command::new(manager);
+        command.args(["--user", "show-environment"]);
+        // Override only this child: never disconnect the test runner's session
+        // or address a real service. An absent socket cannot contact a manager.
+        command.env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", bus.display()),
+        );
+        command.env("XDG_RUNTIME_DIR", directory.path());
+        let start = Instant::now();
+        let error = run(
+            &mut command,
+            start + Duration::from_secs(2),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(!bus.exists());
+    }
+
+    #[test]
     fn oversized_command_output_is_rejected() {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "head -c 16384 /dev/zero"]);
