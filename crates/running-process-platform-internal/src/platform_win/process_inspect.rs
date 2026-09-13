@@ -28,6 +28,7 @@ const STILL_ACTIVE: u32 = 259;
 pub struct ProcessLiveness {
     pid: u32,
     handle: HANDLE,
+    pinned_control: bool,
 }
 
 // SAFETY: a process handle is a kernel object usable from any thread; the
@@ -49,6 +50,146 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    #[cfg(all(test, feature = "independent-spawn"))]
+    pub(crate) fn test_creation_time(&self) -> io::Result<u64> {
+        use windows_sys::Win32::{Foundation::FILETIME, System::Threading::GetProcessTimes};
+        let mut times = [FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        }; 4];
+        // SAFETY: the pinned process handle is live and all four output records
+        // are disjoint writable FILETIMEs for the duration of the call.
+        let result = unsafe {
+            let ptr = times.as_mut_ptr();
+            GetProcessTimes(self.handle, ptr, ptr.add(1), ptr.add(2), ptr.add(3))
+        };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime))
+    }
+
+    #[cfg(feature = "independent-spawn")]
+    pub(crate) fn open_pinned(pid: u32) -> io::Result<Self> {
+        use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
+        if pid == 0 {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+        // SAFETY: requested rights are limited to observation and termination;
+        // the newly returned handle is checked and owned by this value.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            pid,
+            handle,
+            pinned_control: true,
+        })
+    }
+
+    #[cfg(feature = "independent-spawn")]
+    pub(crate) fn terminate_pinned(&self) -> io::Result<()> {
+        if !self.pinned_control {
+            return Err(io::Error::from(io::ErrorKind::Unsupported));
+        }
+        if !self.is_alive() {
+            return Ok(());
+        }
+        // SAFETY: this value owns a live PROCESS_TERMINATE handle, not a PID.
+        if unsafe { TerminateProcess(self.handle, 1) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Query the caller's immediate job and all nested child jobs. A different
+    /// scheduler-owned job is allowed; sharing the caller's worker job is not.
+    #[cfg(feature = "independent-spawn")]
+    pub(crate) fn outside_current_job(&self, deadline: std::time::Instant) -> io::Result<bool> {
+        use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
+        use windows_sys::Win32::System::{
+            JobObjects::{
+                IsProcessInJob, JobObjectBasicProcessIdList, QueryInformationJobObject,
+                JOBOBJECT_BASIC_PROCESS_ID_LIST,
+            },
+            Threading::GetCurrentProcess,
+        };
+        let mut in_job = 0;
+        // SAFETY: current-process pseudo-handle and initialized BOOL output.
+        if unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if !self.is_alive() {
+            return Err(io::Error::from(io::ErrorKind::NotFound));
+        }
+        if in_job == 0 {
+            return Ok(true);
+        }
+        let offset = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList);
+        let mut capacity = 128_usize;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::from(io::ErrorKind::TimedOut));
+            }
+            if !self.is_alive() {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
+            let bytes = offset + capacity * std::mem::size_of::<usize>();
+            let mut storage = vec![0_usize; bytes.div_ceil(std::mem::size_of::<usize>())];
+            // SAFETY: usize storage provides native alignment and bytes of
+            // initialized backing memory for the variable-sized PID list.
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    std::ptr::null_mut(),
+                    JobObjectBasicProcessIdList,
+                    storage.as_mut_ptr().cast(),
+                    bytes as u32,
+                    std::ptr::null_mut(),
+                )
+            };
+            let error = io::Error::last_os_error();
+            if ok == 0 && error.raw_os_error() != Some(ERROR_MORE_DATA as i32) {
+                return Err(error);
+            }
+            // SAFETY: allocation is at least the size of the header plus one PID.
+            let header = unsafe { &*storage.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
+            let count = header.NumberOfProcessIdsInList as usize;
+            if ok != 0 && header.NumberOfAssignedProcesses as usize == count && count <= capacity {
+                // SAFETY: count was bounded against allocated trailing storage.
+                let ids = unsafe {
+                    std::slice::from_raw_parts(
+                        storage.as_ptr().cast::<u8>().add(offset).cast::<usize>(),
+                        count,
+                    )
+                };
+                if !ids.contains(&(std::process::id() as usize)) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "caller job changed during placement verification",
+                    ));
+                }
+                if !self.is_alive() {
+                    return Err(io::Error::from(io::ErrorKind::NotFound));
+                }
+                return Ok(!ids.contains(&(self.pid as usize)));
+            }
+            if capacity >= 65536 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "caller job process list exceeds verification bound",
+                ));
+            }
+            capacity *= 2;
+        }
+    }
+
     /// Take a reference to `pid`, failing if no such process is running.
     pub fn open(pid: u32) -> Result<Self, ProcessInspectError> {
         // SAFETY: the call takes access flags, an inherit flag, and a PID by
@@ -60,7 +201,11 @@ impl ProcessLiveness {
                 "no such process",
             ));
         }
-        Ok(Self { pid, handle })
+        Ok(Self {
+            pid,
+            handle,
+            pinned_control: false,
+        })
     }
 
     /// The process ID this handle was opened for.
@@ -70,6 +215,13 @@ impl ProcessLiveness {
 
     /// Whether that process is still running.
     pub fn is_alive(&self) -> bool {
+        if self.pinned_control {
+            // SAFETY: strict handles include SYNCHRONIZE. Unlike exit-code
+            // polling this correctly recognizes a process that exited with 259.
+            return unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(self.handle, 0)
+            } == windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+        }
         let mut exit_code = 0_u32;
         // SAFETY: `self.handle` is live for this handle's lifetime and the
         // out-parameter is a valid initialised u32.

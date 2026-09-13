@@ -1,0 +1,114 @@
+name: Independent spawn
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/running-process/Cargo.toml'
+      - 'crates/running-process-platform-internal/**'
+      - 'crates/running-process/src/independent_spawn.rs'
+      - 'crates/running-process/src/spawn_dispatch.rs'
+      - 'crates/running-process/src/lib.rs'
+      - 'crates/running-process/src/bin/running-process-launcher.rs'
+      - 'crates/running-process/tests/independent_spawn_windows.rs'
+      - 'crates/running-process/tests/spawn_mode_contract.rs'
+      - 'crates/running-process/tests/independent_broker*.rs'
+      - 'crates/running-process/src/spawn_contract.rs'
+      - 'crates/running-process-protocol/**'
+      - 'ci/independent_spawn.py'
+      - 'ci/independent_broker_docker.py'
+      - 'tests/test_ci_independent_broker_docker.py'
+      - '.github/workflows/independent-spawn.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  docker-fixture-build:
+    name: docker-fixture-build (${{ matrix.target }})
+    # Soldr's musl compiler catalogue currently runs on x86. Cross-build here;
+    # the following job must execute each binary on its native architecture.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: independent-fixture-${{ matrix.target }}
+      - name: Install build orchestrator
+        run: uv tool install soldr
+      - name: Install pinned musl standard library
+        run: soldr rustup target add ${{ matrix.target }} --toolchain 1.95.0
+      - name: Check fixture orchestration safety
+        run: uv run --no-project --module unittest tests.test_ci_independent_broker_docker
+      - name: Verify unavailable Linux user session
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: soldr cargo test -p running-process-platform-internal --no-default-features --features independent-spawn --lib absent_user_session_bus_is_unsupported -- --ignored --nocapture
+      - name: Cross-build static acceptance fixture
+        run: uv run --no-project --module ci.independent_broker_docker --build-only "${{ runner.temp }}/fixture" --target ${{ matrix.target }}
+      - name: Preserve executable permissions for transfer
+        run: tar -czf "${{ runner.temp }}/fixture.tar.gz" -C "${{ runner.temp }}/fixture" test launcher
+      - uses: actions/upload-artifact@v4
+        with:
+          name: independent-fixture-${{ matrix.target }}
+          path: ${{ runner.temp }}/fixture.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+  docker-broker:
+    name: docker-broker (${{ matrix.target }})
+    needs: docker-fixture-build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: independent-fixture-${{ matrix.target }}
+          path: ${{ runner.temp }}/fixture-download
+      - name: Restore fixture executables
+        run: |
+          mkdir "${{ runner.temp }}/fixture"
+          tar -xzf "${{ runner.temp }}/fixture-download/fixture.tar.gz" -C "${{ runner.temp }}/fixture"
+      - name: Verify native broker accounting without systemd
+        run: uv run --no-project --module ci.independent_broker_docker --run-only "${{ runner.temp }}/fixture"
+  scheduler:
+    name: scheduler (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: Swatinem/rust-cache@v2
+      # The repository cargo_command wrapper uses Soldr when installed and
+      # the established CI bootstrap otherwise, avoiding a circular toolchain.
+      - name: Exercise Task Scheduler and native target control
+        run: uv run --no-project --module ci.independent_spawn

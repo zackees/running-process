@@ -95,9 +95,10 @@ def check_manifests(
         failures.append("platform-internal must not restore build dependencies")
 
     internal_default = feature_members(internal, "default")
-    if internal_default != {"async-process"}:
+    if internal_default != {"async-process", "window-icon"}:
         failures.append(
-            "platform-internal default must preserve the former async process surface"
+            "platform-internal default must preserve the former async process "
+            "and window-icon surface"
         )
     require_feature(
         internal,
@@ -206,6 +207,25 @@ def check() -> list[str]:
 class MinimalAsyncPlatformGraphTests(unittest.TestCase):
     def test_real_manifests_satisfy_the_contract(self) -> None:
         assert check() == []
+
+    def test_defaults_preserve_legacy_surface_without_enabling_independent_spawn(
+        self,
+    ) -> None:
+        for defaults in (
+            ["async-process"],
+            ["window-icon"],
+            ["async-process", "window-icon", "independent-spawn"],
+        ):
+            with self.subTest(defaults=defaults):
+                internal = load_manifest(INTERNAL_MANIFEST)
+                internal["features"]["default"] = defaults
+                failures = check_manifests(
+                    internal,
+                    load_manifest(ROOT_MANIFEST),
+                    build_script_exists=False,
+                    table=HASH_TABLE.read_text(encoding="utf-8"),
+                )
+                assert any("default must preserve" in failure for failure in failures)
 
     def test_comments_dev_dependencies_and_unrelated_text_do_not_satisfy_contract(
         self,

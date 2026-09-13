@@ -30,8 +30,8 @@ These need to exist on the repo *before* the first real release runs:
   `environment: pypi`.
 - **Repo secret `CARGO_REGISTRY_TOKEN`** containing a crates.io API
   token authorized to publish all six Rust packages, in their release order:
-  `running-process-probe`, `running-process-platform-internal`,
-  `running-process-protocol`, `running-process`,
+  `running-process-probe`, `running-process-protocol`,
+  `running-process-platform-internal`, `running-process`,
   `running-process-probe-daemon`, and `running-process-py`. Without it the
   `publish-crates` job hard-fails before doing anything destructive.
 
@@ -50,6 +50,8 @@ These need to exist on the repo *before* the first real release runs:
      `running-process-platform-internal`
    - Root `running-process` package manifest pin on
      `running-process-protocol`
+   - `running-process-platform-internal` optional exact pin on
+     `running-process-protocol` (independent broker wire)
    - `pyproject.toml` — `project.version`
    - `Cargo.toml` — `workspace.package.version`
    - `src/running_process/__init__.py` — `__version__` literal
@@ -117,9 +119,10 @@ build validation, not a simulated upload.
      all-thread snapshot. `running-process`'s `probe` feature depends on
      it, so it has to exist on the index first or `running-process`
      cannot resolve at all.
-  2. `running-process-platform-internal` — the published native implementation detail.
-  3. `running-process-protocol` — generated broker and daemon protobuf types;
-     it must exist before the optional client feature of `running-process` can resolve.
+  2. `running-process-protocol` — generated broker and daemon protobuf types;
+     it must exist before the platform's optional independent-spawn dependency
+     and the root's optional client dependency can resolve.
+  3. `running-process-platform-internal` — the published native implementation detail.
   4. `running-process` (depends on the previous packages)
   5. `running-process-probe-daemon` — `rpprobed` and `rpprobe`. Depends
      on both of the above.

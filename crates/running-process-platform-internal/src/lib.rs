@@ -26,6 +26,18 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 /// ownership names before later phases move a capability behind them.
 pub mod platform;
 
+#[cfg(all(feature = "independent-spawn", test, not(windows)))]
+#[path = "platform_win/scheduler_error.rs"]
+mod scheduler_error;
+#[cfg(feature = "independent-spawn")]
+pub(crate) use platform_imp::spawn_sync_owned_daemon;
+#[cfg(feature = "independent-spawn")]
+pub use platform_imp::{
+    independent_broker_run, independent_broker_spawn, independent_spawn, IndependentChild,
+};
+#[cfg(feature = "independent-spawn")]
+pub(crate) use platform_imp::{independent_open_regular, INDEPENDENT_ZERO_WRITE_PENDING};
+
 /// Temporary source-compatibility re-export for the pre-boundary PTY API.
 ///
 /// New code must use [`platform::terminal`] facade-owned types. This root-only

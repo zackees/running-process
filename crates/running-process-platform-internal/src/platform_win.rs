@@ -1,4 +1,23 @@
 //! Windows implementation root for the process capability.
+#[cfg(feature = "independent-spawn")]
+#[path = "independent_broker_unsupported.rs"]
+mod independent_broker;
+#[cfg(feature = "independent-spawn")]
+pub use independent_broker::{run as independent_broker_run, spawn as independent_broker_spawn};
+#[cfg(feature = "independent-spawn")]
+mod independent_spawn;
+#[cfg(feature = "independent-spawn")]
+mod scheduler_error;
+#[cfg(feature = "independent-spawn")]
+mod scheduler_launch;
+#[cfg(feature = "independent-spawn")]
+pub use independent_spawn::{spawn as independent_spawn, IndependentChild};
+#[cfg(feature = "independent-spawn")]
+mod independent_io;
+#[cfg(feature = "independent-spawn")]
+pub(crate) use independent_io::open_regular as independent_open_regular;
+#[cfg(feature = "independent-spawn")]
+pub(crate) const INDEPENDENT_ZERO_WRITE_PENDING: bool = true;
 
 #[path = "platform_win/autostart.rs"]
 pub(crate) mod autostart;
@@ -824,6 +843,8 @@ fn assign(child: Option<HANDLE>) -> io::Result<()> {
 #[path = "platform_win/sync_spawn.rs"]
 mod sync_spawn;
 pub use sync_spawn::{spawn_sync, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
+#[cfg(feature = "independent-spawn")]
+pub(crate) use sync_spawn::spawn_sync_owned_daemon;
 
 /// Replace this process's image with `command`.
 ///

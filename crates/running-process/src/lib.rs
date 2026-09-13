@@ -193,6 +193,8 @@ pub mod daemon;
 // `default-features = false` callers. Its sysinfo-backed platform primitive is
 // the explicit Phase 0.5 compatibility exception; public inspection APIs stay
 // behind `process-inspection`.
+#[cfg(feature = "independent-spawn")]
+pub mod independent_spawn;
 pub mod process_tree;
 #[cfg(feature = "pty")]
 /// PTY-backed process APIs.
@@ -200,6 +202,12 @@ pub mod pty;
 mod public_symbols;
 mod rust_debug;
 pub mod spawn;
+mod spawn_contract;
+pub use spawn_contract::{IndependentBackend, SpawnLifetime, SpawnMode, SpawnOptions};
+#[cfg(feature = "independent-spawn")]
+mod spawn_dispatch;
+#[cfg(feature = "independent-spawn")]
+pub use spawn_dispatch::{spawn_with_options, SpawnExit, SpawnHandle};
 pub mod systemd_killmode;
 #[cfg(feature = "terminal-graphics")]
 pub mod terminal_graphics;

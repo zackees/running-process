@@ -175,6 +175,58 @@ impl std::fmt::Debug for Stream {
 }
 
 impl Stream {
+    #[cfg(feature = "independent-spawn")]
+    pub(crate) fn connect_bounded(
+        endpoint: &Endpoint,
+        deadline: std::time::Instant,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> io::Result<Self> {
+        use crate::platform::independent_spawn::check;
+        use interprocess::{local_socket::ConnectOptions, ConnectWaitMode};
+        use std::time::{Duration, Instant};
+
+        loop {
+            check(deadline, cancelled)?;
+            let attempt = ConnectOptions::new()
+                .name(name(endpoint.display())?)
+                .nonblocking_stream(true)
+                .wait_mode(ConnectWaitMode::Timeout(
+                    Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+                ))
+                .connect_sync()
+                .map(Self);
+            match attempt {
+                Ok(stream) => {
+                    // Linux AF_UNIX backlog exhaustion returns EAGAIN, not
+                    // EINPROGRESS. The transport can report that unconnected
+                    // socket writable; require a real peer before returning.
+                    match stream.peer_identity() {
+                        Ok(peer) if peer.pid != 0 => {
+                            check(deadline, cancelled)?;
+                            return Ok(stream);
+                        }
+                        Ok(_) => {}
+                        // interprocess reports the kernel's zero-PID sentinel
+                        // on an unconnected socket as ConnectionReset.
+                        Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut
+                            | io::ErrorKind::WouldBlock
+                            | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error),
+            }
+            std::thread::sleep(
+                Duration::from_millis(2).min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+    }
+
     pub fn connect(endpoint: &Endpoint) -> io::Result<Self> {
         interprocess::local_socket::Stream::connect(name(endpoint.display())?).map(Self)
     }
@@ -343,6 +395,7 @@ pub fn legacy_send_fd_over(
 
 fn legacy_send_error_kind(error: &io::Error) -> crate::platform::ipc::HandoffTransferErrorKind {
     use crate::platform::ipc::HandoffTransferErrorKind;
+
 
     if error.kind() == io::ErrorKind::PermissionDenied {
         HandoffTransferErrorKind::PermissionDenied
@@ -748,6 +801,85 @@ mod legacy_handoff_tests {
 
     use super::{legacy_send_error_kind, legacy_send_fd_over, legacy_send_fd_to};
     use crate::platform::ipc::HandoffTransferErrorKind;
+
+    #[cfg(feature = "independent-spawn")]
+    #[test]
+    fn broker_connect_checks_cancellation_absence_and_real_peer() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::Instant;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("broker.sock");
+        let endpoint = super::Endpoint::new(path.to_str().unwrap()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            super::Stream::connect_bounded(&endpoint, deadline, &AtomicBool::new(true))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+        assert_eq!(
+            super::Stream::connect_bounded(&endpoint, deadline, &AtomicBool::new(false))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(!path.exists(), "connect must not create a missing broker");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let stream = super::Stream::connect_bounded(&endpoint, deadline, &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(stream.peer_identity().unwrap().pid, std::process::id());
+        drop(listener);
+    }
+
+    #[cfg(feature = "independent-spawn")]
+    #[test]
+    fn broker_connect_deadline_bounds_a_full_accept_queue() {
+        full_broker_queue(false);
+    }
+
+    #[cfg(feature = "independent-spawn")]
+    #[test]
+    fn broker_connect_cancellation_interrupts_a_full_accept_queue() {
+        full_broker_queue(true);
+    }
+
+    #[cfg(feature = "independent-spawn")]
+    fn full_broker_queue(cancel: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("broker.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // SAFETY: the descriptor is a live listening socket owned by this test.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+        let first = std::os::unix::net::UnixStream::connect(&path).unwrap();
+        let second = std::os::unix::net::UnixStream::connect(&path).unwrap();
+        let endpoint = super::Endpoint::new(path.to_str().unwrap()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancellation = std::sync::Arc::clone(&cancelled);
+        let connector = std::thread::spawn(move || {
+            let result = super::Stream::connect_bounded(
+                &endpoint,
+                std::time::Instant::now()
+                    + if cancel { Duration::from_secs(5) } else { Duration::from_millis(100) },
+                &cancelled,
+            );
+            let _ = tx.send(result.map(|_| ()).map_err(|error| error.kind()));
+        });
+        if cancel {
+            std::thread::sleep(Duration::from_millis(50));
+            cancellation.store(true, std::sync::atomic::Ordering::Release);
+        }
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        // Release a blocking baseline connection even when the assertion fails.
+        drop(listener);
+        drop((first, second));
+        connector.join().unwrap();
+        assert_eq!(result.unwrap(), Err(if cancel {
+            std::io::ErrorKind::Interrupted
+        } else {
+            std::io::ErrorKind::TimedOut
+        }));
+    }
 
     #[test]
     fn sendmsg_flags_always_include_per_call_nonblocking() {

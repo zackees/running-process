@@ -1,4 +1,20 @@
 //! macOS implementation root for the process capability.
+#[cfg(feature = "independent-spawn")]
+#[path = "independent_spawn_unsupported.rs"]
+mod independent_spawn;
+#[cfg(feature = "independent-spawn")]
+#[path = "independent_broker_unsupported.rs"]
+mod independent_broker;
+#[cfg(feature = "independent-spawn")]
+pub use independent_broker::{run as independent_broker_run, spawn as independent_broker_spawn};
+#[cfg(feature = "independent-spawn")]
+pub use independent_spawn::{spawn as independent_spawn, IndependentChild};
+#[cfg(feature = "independent-spawn")]
+mod independent_io;
+#[cfg(feature = "independent-spawn")]
+pub(crate) use independent_io::open_regular as independent_open_regular;
+#[cfg(feature = "independent-spawn")]
+pub(crate) const INDEPENDENT_ZERO_WRITE_PENDING: bool = false;
 
 #[path = "platform_macos/autostart.rs"]
 pub(crate) mod autostart;
@@ -690,6 +706,31 @@ pub fn unix_set_priority(pid: u32, nice: i32) -> io::Result<()> {
 pub fn unix_signal_process(pid: u32, signal: crate::platform::process::UnixSignalKind) -> io::Result<()> {
     if unsafe { libc::kill(pid as i32, unix_signal_raw(signal)) } == -1 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
+pub(crate) fn observe_owned_child_exit(pid: i32) -> io::Result<Option<i32>> {
+    // SAFETY: siginfo_t is a C output record; zero initializes the no-event PID.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: info is writable and valid for this call. P_PID selects exactly
+    // the owned child; WNOWAIT does not consume its identity or exit status.
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful waitid with WEXITED initializes the child-status fields.
+    if unsafe { info.si_pid() } == 0 {
+        return Ok(None);
+    }
+    // SAFETY: a nonzero child PID identifies the initialized exit-status union.
+    let status = unsafe { info.si_status() };
+    Ok(Some(if info.si_code == libc::CLD_EXITED { status } else { 128 + status }))
+}
+
 pub fn unix_signal_process_group(pid: i32, signal: crate::platform::process::UnixSignalKind) -> io::Result<()> {
     if unsafe { libc::killpg(pid, unix_signal_raw(signal)) } == -1 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
@@ -1015,6 +1056,8 @@ mod tests;
 #[path = "sync_spawn_group.rs"]
 mod sync_spawn;
 pub use sync_spawn::{spawn_sync, spawn_sync_daemon, spawn_sync_daemon_with_inheritance};
+#[cfg(feature = "independent-spawn")]
+pub(crate) use sync_spawn::spawn_sync_owned_daemon;
 
 #[cfg(all(test, feature = "ipc"))]
 mod endpoint_naming_tests {

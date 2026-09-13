@@ -406,6 +406,26 @@ impl SpawnedInner {
 }
 
 impl crate::platform::process::SpawnedChildControl for SpawnedInner {
+    #[cfg(feature = "independent-spawn")]
+    fn detach(&mut self) -> io::Result<()> {
+        let Some(job) = &self.job else { return Err(io::Error::other("owned job absent")); };
+        // SAFETY: this private job was created with only these two flags.
+        // Clear KILL_ON_JOB_CLOSE while retaining breakaway policy at commit.
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+        // SAFETY: valid owned job and an initialized, correctly sized buffer.
+        if unsafe { SetInformationJobObject(job.as_raw(), JobObjectExtendedLimitInformation, (&mut info as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(), std::mem::size_of_val(&info) as u32) } == FALSE {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(feature = "independent-spawn")]
+    fn kill_tree(&mut self) -> io::Result<()> {
+        let Some(job) = &self.job else { return self.kill(); };
+        // SAFETY: the job handle is owned and remains open through termination.
+        if unsafe { winapi::um::jobapi2::TerminateJobObject(job.as_raw(), 1) } == FALSE { return Err(io::Error::last_os_error()); }
+        Ok(())
+    }
     fn kill(&mut self) -> io::Result<()> {
         SpawnedInner::kill(self)
     }
@@ -437,7 +457,7 @@ pub fn spawn_sync_daemon(
         &stdin,
         &stdout,
         &stderr,
-        CreateMode::Daemon { breakaway },
+        CreateMode::Daemon { breakaway, suspended: false },
         environment,
     )?;
     Ok(crate::platform::process::DaemonChild {
@@ -461,6 +481,16 @@ pub fn spawn_sync(
     stdio: crate::platform::process::SpawnStdio<'_>,
     environment: crate::platform::process::SyncEnvironment,
 ) -> io::Result<crate::platform::process::SpawnedChild> {
+    let mode = CreateMode::Contained { show_console: stdio.show_console };
+    spawn_sync_owned(command, stdio, environment, mode)
+}
+
+#[cfg(feature = "independent-spawn")]
+pub(crate) fn spawn_sync_owned_daemon(command: &mut Command, stdio: crate::platform::process::SpawnStdio<'_>, environment: crate::platform::process::SyncEnvironment) -> io::Result<crate::platform::process::SpawnedChild> {
+    spawn_sync_owned(command, stdio, environment, CreateMode::Daemon { breakaway: false, suspended: true })
+}
+
+fn spawn_sync_owned(command: &mut Command, stdio: crate::platform::process::SpawnStdio<'_>, environment: crate::platform::process::SyncEnvironment, mode: CreateMode) -> io::Result<crate::platform::process::SpawnedChild> {
     let stdin_slot = resolve_slot(&stdio.stdin, SlotDir::Stdin)?;
     let stdout_slot = resolve_slot(&stdio.stdout, SlotDir::Stdout)?;
     let stderr_slot = resolve_slot(&stdio.stderr, SlotDir::Stderr)?;
@@ -470,15 +500,21 @@ pub fn spawn_sync(
         &stdin_slot.child_handle,
         &stdout_slot.child_handle,
         &stderr_slot.child_handle,
-        CreateMode::Contained {
-            show_console: stdio.show_console,
-        },
+        mode,
         environment,
     )?;
 
     // Build the per-spawn Job Object and assign BEFORE ResumeThread so
     // the child cannot spawn grandchildren outside the job.
-    let job = create_job_object()?;
+    let job = match create_job_object() {
+        Ok(job) => job,
+        Err(error) => {
+            // SAFETY: these uniquely owned handles belong to our still-
+            // suspended child; no user code has executed yet.
+            unsafe { TerminateProcess(process, 1); CloseHandle(thread); CloseHandle(process); }
+            return Err(error);
+        }
+    };
     let ok = unsafe { AssignProcessToJobObject(job.as_raw(), process) };
     if ok == FALSE {
         let err = io::Error::last_os_error();
@@ -491,10 +527,16 @@ pub fn spawn_sync(
     }
 
     // Now safe to start the child.
-    unsafe {
-        ResumeThread(thread);
-        CloseHandle(thread);
+    // SAFETY: the initial thread is suspended and owned until this point.
+    let resumed = unsafe { ResumeThread(thread) };
+    if resumed == u32::MAX {
+        let error = io::Error::last_os_error();
+        // SAFETY: on resume failure the child is still ours to terminate.
+        unsafe { TerminateProcess(process, 1); CloseHandle(thread); CloseHandle(process); }
+        return Err(error);
     }
+    // SAFETY: the successfully resumed thread handle is no longer needed.
+    unsafe { CloseHandle(thread); }
 
     // Convert the parent-side pipe ends, if any, into Rust ChildStdin
     // etc.  The kernel keeps duplicates of the child-side handles via
@@ -533,6 +575,7 @@ pub fn spawn_sync(
     };
 
     Ok(crate::platform::process::SpawnedChild {
+        kill_on_drop: true,
         stdin: stdin_pipe,
         stdout: stdout_pipe,
         stderr: stderr_pipe,
@@ -581,6 +624,8 @@ fn drain_watcher(process_handle: OwnedHandle, timeout: Duration, keep: Arc<()>) 
 
 enum CreateMode {
     Daemon {
+        /// Retain the initial thread for pre-execution rollback Job assignment.
+        suspended: bool,
         /// Whether to request `CREATE_BREAKAWAY_FROM_JOB`.
         ///
         /// Opt-in, because "detached daemon" and "escapes my caller's Job
@@ -684,7 +729,7 @@ fn create_process_inner(
 
     let mut flags: DWORD = EXTENDED_STARTUPINFO_PRESENT;
     match mode {
-        CreateMode::Daemon { breakaway } => {
+        CreateMode::Daemon { breakaway, suspended } => {
             // Daemons are detached from every console and placed in a new
             // process group so Ctrl-C / Ctrl-Break delivered to the parent's
             // console group never reaches them. CREATE_NO_WINDOW can still
@@ -702,6 +747,7 @@ fn create_process_inner(
             // job must permit it via JOB_OBJECT_LIMIT_BREAKAWAY_OK, which
             // every job this crate creates now sets.
             flags = daemon_creation_flags(flags, breakaway);
+            if suspended { flags |= CREATE_SUSPENDED; }
         }
         CreateMode::Contained { show_console } => {
             // We need to assign to a Job Object before the child runs.
@@ -773,7 +819,7 @@ fn create_process_inner(
     // thread handle to the caller; the caller assigns to the Job Object
     // then resumes. For Daemon mode (not CREATE_SUSPENDED) the thread is
     // already running and we just close the thread handle here.
-    if matches!(mode, CreateMode::Daemon { .. }) {
+    if matches!(mode, CreateMode::Daemon { suspended: false, .. }) {
         unsafe {
             CloseHandle(pi.hThread);
         }

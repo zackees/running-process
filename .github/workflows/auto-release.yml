@@ -268,8 +268,8 @@ jobs:
           # before `running-process` can even resolve.
           rust_crates = (
               "running-process-probe",
-              "running-process-platform-internal",
               "running-process-protocol",
+              "running-process-platform-internal",
               "running-process",
               "running-process-probe-daemon",
               "running-process-py",
@@ -743,8 +743,8 @@ jobs:
             exit 1
           fi
 
-          # Wave 7 of #165: post-consolidation crate set. `running-process`
-          # is the only Rust crate; `running-process-py` depends on it.
+          # Publish protocol before platform: independent-spawn adds an
+          # optional versioned platform -> protocol dependency (#1202).
           # Keep in sync with the rust_crates tuple in preflight's
           # registry-check step.
           # Dependency order, not preference. `running-process` has a versioned
@@ -753,8 +753,8 @@ jobs:
           # out of this order fails to resolve rather than merely being untidy.
           PUBLISH_ORDER=(
             running-process-probe
-            running-process-platform-internal
             running-process-protocol
+            running-process-platform-internal
             running-process
             running-process-probe-daemon
             running-process-py

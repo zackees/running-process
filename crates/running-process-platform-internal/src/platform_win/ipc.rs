@@ -142,13 +142,7 @@ fn process_user_sid_bytes(pid: u32) -> io::Result<Vec<u8>> {
         }
         let token = OwnedHandle(token);
         let mut required = 0;
-        let _ = GetTokenInformation(
-            token.0,
-            TokenUser,
-            std::ptr::null_mut(),
-            0,
-            &mut required,
-        );
+        let _ = GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut required);
         if required == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -175,9 +169,7 @@ fn process_user_sid_bytes(pid: u32) -> io::Result<Vec<u8>> {
     }
 }
 
-fn owner_only_security_descriptor(
-) -> io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
-    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+pub(super) fn current_user_sid_text() -> io::Result<String> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 
@@ -196,6 +188,13 @@ fn owner_only_security_descriptor(
         LocalFree(sid_string.cast());
         text?
     };
+    Ok(sid_text)
+}
+
+fn owner_only_security_descriptor(
+) -> io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    let sid_text = current_user_sid_text()?;
     let sddl = widestring::U16CString::from_str(format!("D:P(A;;GA;;;{sid_text})"))
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     SecurityDescriptor::deserialize(&sddl)
@@ -269,15 +268,16 @@ impl Stream {
                 stream.as_handle().as_raw_handle() as HANDLE
             }
         };
-        let duplicated = legacy_duplicate_handle(source as usize, backend_pid).map_err(|error| {
-            HandoffTransferError::new(
-                error.kind(),
-                false,
-                error
-                    .detail()
-                    .unwrap_or("connection handle duplication failed"),
-            )
-        })?;
+        let duplicated =
+            legacy_duplicate_handle(source as usize, backend_pid).map_err(|error| {
+                HandoffTransferError::new(
+                    error.kind(),
+                    false,
+                    error
+                        .detail()
+                        .unwrap_or("connection handle duplication failed"),
+                )
+            })?;
         Ok(HandoffAttachment::new(duplicated as u64, false))
     }
 }
@@ -309,9 +309,7 @@ pub fn legacy_duplicate_handle(
         return Err(LegacyHandoffError::with_detail(
             kind,
             error.raw_os_error(),
-            format!(
-                "cannot open backend process {backend_pid} for connection transfer: {error}"
-            ),
+            format!("cannot open backend process {backend_pid} for connection transfer: {error}"),
         ));
     }
 
@@ -341,9 +339,7 @@ pub fn legacy_duplicate_handle(
         return Err(LegacyHandoffError::with_detail(
             kind,
             error.raw_os_error(),
-            format!(
-                "failed to duplicate connection into backend process {backend_pid}: {error}"
-            ),
+            format!("failed to duplicate connection into backend process {backend_pid}: {error}"),
         ));
     }
 

@@ -70,13 +70,27 @@ impl crate::platform::process::DaemonChildControl for std::process::Child {
 pub struct SpawnedInner {
     child: Arc<Mutex<Option<Box<dyn UnixChild>>>>,
     pgid: i32,
+    retain_exit_identity: bool,
 }
 
 impl SpawnedInner {
+    // WNOWAIT observes exit without releasing the leader's PID. New spawn-mode
+    // handles retain that identity until group control is finished. If another
+    // reaper has consumed it, waitid fails and control must fail closed.
+    fn observe_owned_exit(&self) -> io::Result<Option<i32>> {
+        super::observe_owned_child_exit(self.pgid)
+    }
+
     pub fn kill(&self) -> io::Result<()> {
         // Try the child first, then the process group, to make sure
         // any siblings spawned inside go down too.
         let mut guard = self.child.lock().expect("child mutex poisoned");
+        if self.retain_exit_identity {
+            if guard.is_none() {
+                return Ok(());
+            }
+            self.observe_owned_exit()?;
+        }
         if let Some(child) = guard.as_mut() {
             let _ = child.kill();
         }
@@ -89,6 +103,14 @@ impl SpawnedInner {
     }
 
     pub fn wait(&self) -> io::Result<i32> {
+        if self.retain_exit_identity {
+            loop {
+                if let Some(code) = self.try_wait()? {
+                    return Ok(code);
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
         let mut guard = self.child.lock().expect("child mutex poisoned");
         let Some(child) = guard.as_mut() else {
             return Err(io::Error::other("child handle absent"));
@@ -98,6 +120,9 @@ impl SpawnedInner {
 
     pub fn try_wait(&self) -> io::Result<Option<i32>> {
         let mut guard = self.child.lock().expect("child mutex poisoned");
+        if self.retain_exit_identity {
+            return self.observe_owned_exit();
+        }
         let Some(child) = guard.as_mut() else {
             return Ok(None);
         };
@@ -109,7 +134,8 @@ impl SpawnedInner {
     }
 
     fn shutdown_with_deadline(&mut self, deadline: Instant) {
-        let group_signaled = crate::platform::process::unix_signal_process_group(
+        let identity_owned = !self.retain_exit_identity || self.observe_owned_exit().is_ok();
+        let group_signaled = identity_owned && crate::platform::process::unix_signal_process_group(
             self.pgid,
             crate::platform::process::UnixSignalKind::Kill,
         )
@@ -117,7 +143,7 @@ impl SpawnedInner {
         let Some(mut child) = self.child.lock().expect("child mutex poisoned").take() else {
             return;
         };
-        if !group_signaled {
+        if !group_signaled && identity_owned {
             let _ = child.kill();
         }
         match poll_until(deadline, Duration::from_millis(10), || child.try_wait()) {
@@ -128,6 +154,10 @@ impl SpawnedInner {
 }
 
 impl crate::platform::process::SpawnedChildControl for SpawnedInner {
+    #[cfg(feature = "independent-spawn")]
+    fn retain_exit_identity(&mut self) {
+        self.retain_exit_identity = true;
+    }
     fn kill(&mut self) -> io::Result<()> {
         SpawnedInner::kill(self)
     }
@@ -142,6 +172,20 @@ impl crate::platform::process::SpawnedChildControl for SpawnedInner {
 
     fn shutdown(&mut self) {
         SpawnedInner::shutdown(self);
+    }
+}
+
+impl Drop for SpawnedInner {
+    fn drop(&mut self) {
+        // Detached handles do not invoke shutdown. Release their wait ownership
+        // without killing the process, including a retained terminal leader.
+        if self.retain_exit_identity {
+            if let Some(mut child) = self.child.lock().expect("child mutex poisoned").take() {
+                if !matches!(child.try_wait(), Ok(Some(_))) {
+                    spawn_background_reaper(child);
+                }
+            }
+        }
     }
 }
 
@@ -228,12 +272,22 @@ pub fn spawn_sync(
     stdio: crate::platform::process::SpawnStdio<'_>,
     environment: crate::platform::process::SyncEnvironment,
 ) -> io::Result<crate::platform::process::SpawnedChild> {
+    spawn_sync_inner(command, stdio, environment, false)
+}
+
+#[cfg(feature = "independent-spawn")]
+pub(crate) fn spawn_sync_owned_daemon(command: &mut Command, stdio: crate::platform::process::SpawnStdio<'_>, environment: crate::platform::process::SyncEnvironment) -> io::Result<crate::platform::process::SpawnedChild> {
+    spawn_sync_inner(command, stdio, environment, true)
+}
+
+fn spawn_sync_inner(command: &mut Command, stdio: crate::platform::process::SpawnStdio<'_>, environment: crate::platform::process::SyncEnvironment, detached: bool) -> io::Result<crate::platform::process::SpawnedChild> {
     apply_environment(command, environment);
     command.stdin(slot_to_stdio(&stdio.stdin)?);
     command.stdout(slot_to_stdio(&stdio.stdout)?);
     command.stderr(slot_to_stdio(&stdio.stderr)?);
 
-    crate::platform::process::configure_sync_contained_command(command)?;
+    if detached { crate::platform::process::configure_sync_daemon_command(command)?; }
+    else { crate::platform::process::configure_sync_contained_command(command)?; }
 
     let mut child = command.spawn()?;
     let pid = child.id();
@@ -282,11 +336,12 @@ pub fn spawn_sync(
     }
 
     Ok(crate::platform::process::SpawnedChild {
+        kill_on_drop: true,
         stdin,
         stdout,
         stderr,
         pid,
-        inner: Box::new(SpawnedInner { child, pgid }),
+        inner: Box::new(SpawnedInner { child, pgid, retain_exit_identity: false }),
     })
 }
 
@@ -375,6 +430,7 @@ mod tests {
             inner: SpawnedInner {
                 child: Arc::clone(&child),
                 pgid: i32::MAX,
+                retain_exit_identity: false,
             },
             child,
             wait_gate,
@@ -502,6 +558,7 @@ mod tests {
         let mut inner = SpawnedInner {
             child,
             pgid: i32::MAX,
+            retain_exit_identity: false,
         };
 
         inner.shutdown_with_deadline(Instant::now() + Duration::from_secs(1));
