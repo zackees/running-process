@@ -4,10 +4,13 @@
 //! handles communicate only through commands, so later sync compatibility
 //! adapters can block over the same engine without duplicating child state.
 
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::process::{ExitStatus, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::task::Poll;
 use std::time::Duration;
 
 use running_process_platform_internal::{
@@ -20,6 +23,11 @@ use crate::{
     AsyncProcessSessionChunk, AsyncProcessSessionEvent, AsyncProcessSessionOptions, ProcessError,
     SharedOutputCursor, SharedOutputLog, StreamKind,
 };
+
+#[path = "process_output_shutdown.rs"]
+mod output_shutdown;
+use output_shutdown::SessionOutputProducer;
+pub(crate) use output_shutdown::SessionOutputShutdown;
 
 static PROCESS_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 const DEFAULT_OUTPUT_LOG_CAPACITY: usize = 16 * 1024 * 1024;
@@ -199,6 +207,7 @@ pub(crate) struct SessionProcess {
     exit_status: watch::Receiver<SessionExitState>,
     pid: u32,
     max_stdin_write: usize,
+    output_shutdown: SessionOutputShutdown,
 }
 
 impl SessionProcess {
@@ -213,6 +222,7 @@ impl SessionProcess {
         let (exit_tx, exit_status) = watch::channel(SessionExitState::Running);
         let (started_tx, started_rx) = oneshot::channel();
         let (output_tx, output_rx) = mpsc::channel(options.max_queued_chunks);
+        let (output_shutdown, output_producer) = SessionOutputShutdown::new(output_tx);
         runtime().spawn(run_session_actor(
             spec,
             options,
@@ -220,7 +230,7 @@ impl SessionProcess {
             owner_drop_rx,
             exit_tx,
             started_tx,
-            output_tx,
+            output_producer,
         ));
 
         let started = started_rx
@@ -235,6 +245,7 @@ impl SessionProcess {
                 exit_status,
                 pid: started.pid,
                 max_stdin_write: options.max_chunk_bytes,
+                output_shutdown,
             },
             output_rx,
         ))
@@ -242,6 +253,14 @@ impl SessionProcess {
 
     pub(crate) fn pid(&self) -> u32 {
         self.pid
+    }
+
+    pub(crate) fn output_shutdown(&self) -> SessionOutputShutdown {
+        self.output_shutdown.clone()
+    }
+
+    pub(crate) fn request_output_shutdown(&self) {
+        self.output_shutdown.request();
     }
 
     pub(crate) async fn wait(&self) -> Result<ExitStatus, ProcessError> {
@@ -395,11 +414,7 @@ impl SessionExitError {
 }
 
 struct SessionPump {
-    stream: StreamKind,
-}
-
-struct SessionPumpDone {
-    stream: StreamKind,
+    task: tokio::task::JoinHandle<io::Result<()>>,
 }
 
 /// State shared with output pumps after the direct lifecycle observes exit.
@@ -425,7 +440,7 @@ struct SessionActor<'a> {
     commands: &'a mut mpsc::Receiver<SessionCommand>,
     owner_drop: &'a mut oneshot::Receiver<()>,
     exit_tx: watch::Sender<SessionExitState>,
-    output_tx: mpsc::Sender<AsyncProcessSessionEvent>,
+    output_producer: SessionOutputProducer,
 }
 
 fn validate_session_options(options: AsyncProcessSessionOptions) -> Result<(), ProcessError> {
@@ -468,7 +483,7 @@ async fn run_session_actor(
     mut owner_drop: oneshot::Receiver<()>,
     exit_tx: watch::Sender<SessionExitState>,
     started: oneshot::Sender<io::Result<SessionStarted>>,
-    output_tx: mpsc::Sender<AsyncProcessSessionEvent>,
+    output_producer: SessionOutputProducer,
 ) {
     let child = match spec.spawn().await {
         Ok(child) => child,
@@ -496,7 +511,7 @@ async fn run_session_actor(
         commands: &mut commands,
         owner_drop: &mut owner_drop,
         exit_tx,
-        output_tx,
+        output_producer,
     })
     .await;
 }
@@ -512,9 +527,16 @@ async fn serve_session_child(actor: SessionActor<'_>) {
         commands,
         owner_drop,
         exit_tx,
-        output_tx,
+        output_producer,
     } = actor;
-    let (pump_done_tx, mut pump_done_rx) = mpsc::unbounded_channel();
+    let SessionOutputProducer {
+        events: output_tx,
+        shutdown,
+        completion,
+    } = output_producer;
+    // Even actor unwind requests cleanup; it cannot leave detached pumps
+    // parked forever. Sender disappearance remains failure, not an ack.
+    let _shutdown_on_exit = shutdown.guard();
     let (post_exit_grace, post_exit_grace_rx) =
         watch::channel(PostExitPipeReadPolicy::BeforeDirectExit);
     let mut pumps = Vec::with_capacity(2);
@@ -524,7 +546,7 @@ async fn serve_session_child(actor: SessionActor<'_>) {
             StreamKind::Stdout,
             options.max_chunk_bytes,
             output_tx.clone(),
-            pump_done_tx.clone(),
+            shutdown.clone(),
             post_exit_grace_rx.clone(),
         ));
     }
@@ -534,28 +556,30 @@ async fn serve_session_child(actor: SessionActor<'_>) {
             StreamKind::Stderr,
             options.max_chunk_bytes,
             output_tx.clone(),
-            pump_done_tx.clone(),
+            shutdown.clone(),
             post_exit_grace_rx,
         ));
     }
-    drop(pump_done_tx);
-
     let mut output_tx = Some(output_tx);
     if pumps.is_empty() {
         drop(output_tx.take());
+        completion.send_replace(Some(Ok(())));
     }
+    let mut output_error = None;
     let mut exit_status = None;
+    let mut lifecycle_done = false;
     let mut commands_open = true;
     let mut owner_drop_open = true;
     let mut owner_dropped = false;
 
     loop {
-        if owner_dropped && exit_status.is_some() && pumps.is_empty() {
+        if owner_dropped && lifecycle_done && pumps.is_empty() {
             return;
         }
 
         tokio::select! {
-            result = lifecycle.wait(), if exit_status.is_none() => {
+            result = lifecycle.wait(), if !lifecycle_done => {
+                lifecycle_done = true;
                 match result {
                     Ok(status) => {
                         exit_status = Some(status);
@@ -570,7 +594,9 @@ async fn serve_session_child(actor: SessionActor<'_>) {
                     }
                     Err(error) => {
                         let _ = exit_tx.send(SessionExitState::Failed(SessionExitError::from_io(&error)));
-                        return;
+                        // Preserve the lifecycle failure, but keep joining
+                        // output cleanup before the actor can disappear.
+                        shutdown.request();
                     }
                 }
             }
@@ -620,14 +646,15 @@ async fn serve_session_child(actor: SessionActor<'_>) {
                     let _ = start_session_kill(&signal, &mut lifecycle);
                 }
             }
-            done = pump_done_rx.recv(), if !pumps.is_empty() => {
-                if let Some(done) = done {
-                    if let Some(index) = pumps.iter().position(|pump| pump.stream == done.stream) {
-                        pumps.swap_remove(index);
-                    }
-                    if pumps.is_empty() {
-                        drop(output_tx.take());
-                    }
+            (index, result) = next_session_pump(&mut pumps), if !pumps.is_empty() => {
+                pumps.swap_remove(index);
+                if let Err(error) = result {
+                    output_error.get_or_insert_with(|| SessionExitError::from_io(&error));
+                    shutdown.request();
+                }
+                if pumps.is_empty() {
+                    drop(output_tx.take());
+                    completion.send_replace(Some(output_error.take().map_or(Ok(()), Err)));
                 }
             }
         }
@@ -635,22 +662,67 @@ async fn serve_session_child(actor: SessionActor<'_>) {
 }
 
 fn start_session_pump(
-    output: PlatformOutput,
+    mut output: PlatformOutput,
     stream: StreamKind,
     max_chunk_bytes: usize,
     output_tx: mpsc::Sender<AsyncProcessSessionEvent>,
-    done_tx: mpsc::UnboundedSender<SessionPumpDone>,
+    shutdown: SessionOutputShutdown,
     post_exit_grace: watch::Receiver<PostExitPipeReadPolicy>,
 ) -> SessionPump {
-    runtime().spawn(async move {
-        pump_session_output(output, stream, max_chunk_bytes, output_tx, post_exit_grace).await;
-        let _ = done_tx.send(SessionPumpDone { stream });
+    let task = runtime().spawn(async move {
+        let pumping = {
+            let pump = pump_session_output(
+                &mut output,
+                stream,
+                max_chunk_bytes,
+                output_tx,
+                post_exit_grace,
+            );
+            tokio::pin!(pump);
+            let caught = std::future::poll_fn(|cx| {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    #[cfg(test)]
+                    shutdown.maybe_panic();
+                    pump.as_mut().poll(cx)
+                })) {
+                    Ok(Poll::Ready(())) => Poll::Ready(Ok(())),
+                    Ok(Poll::Pending) => Poll::Pending,
+                    Err(_) => Poll::Ready(Err(io::Error::other("session output pump panicked"))),
+                }
+            });
+            tokio::select! {
+                biased;
+                _ = shutdown.requested() => Ok(()),
+                result = caught => result,
+            }
+        };
+        // The borrowing pump/send future and its scratch/event storage are
+        // gone, but the reader remains owned until native I/O completes.
+        #[cfg(test)]
+        shutdown.pause_before_cleanup().await;
+        let cleanup = output.shutdown().await;
+        pumping.and(cleanup)
     });
-    SessionPump { stream }
+    SessionPump { task }
+}
+
+async fn next_session_pump(pumps: &mut [SessionPump]) -> (usize, io::Result<()>) {
+    std::future::poll_fn(|cx| {
+        for (index, pump) in pumps.iter_mut().enumerate() {
+            if let Poll::Ready(result) = Pin::new(&mut pump.task).poll(cx) {
+                return Poll::Ready((
+                    index,
+                    result.map_err(io::Error::other).and_then(|value| value),
+                ));
+            }
+        }
+        Poll::Pending
+    })
+    .await
 }
 
 async fn pump_session_output(
-    mut output: PlatformOutput,
+    output: &mut PlatformOutput,
     stream: StreamKind,
     max_chunk_bytes: usize,
     output_tx: mpsc::Sender<AsyncProcessSessionEvent>,
@@ -664,7 +736,7 @@ async fn pump_session_output(
     let mut post_exit_read_budget = None;
     loop {
         match read_session_chunk(
-            &mut output,
+            output,
             &mut bytes,
             &mut post_exit_grace,
             &mut post_exit_read_budget,
@@ -675,7 +747,6 @@ async fn pump_session_output(
                 // The timer only runs while an actual pipe read is pending.
                 // It is therefore impossible to mistake queue backpressure
                 // for a descendant holding the write end open.
-                drop(output);
                 if deliver {
                     let _ = output_tx
                         .send(AsyncProcessSessionEvent::StreamAbandoned(stream))

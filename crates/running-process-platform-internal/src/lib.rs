@@ -760,6 +760,7 @@ impl PlatformStdin {
 #[cfg(feature = "async-process")]
 pub struct PlatformOutput {
     reader: OutputReader,
+    read_pending: bool,
 }
 
 #[cfg(feature = "async-process")]
@@ -773,12 +774,14 @@ impl PlatformOutput {
     fn stdout(stdout: ChildStdout) -> Self {
         Self {
             reader: OutputReader::Stdout(stdout),
+            read_pending: false,
         }
     }
 
     fn stderr(stderr: ChildStderr) -> Self {
         Self {
             reader: OutputReader::Stderr(stderr),
+            read_pending: false,
         }
     }
 
@@ -795,10 +798,79 @@ impl PlatformOutput {
     /// The caller owns the buffer and therefore controls the amount of data
     /// retained at each read. EOF is reported as `Ok(0)`.
     pub async fn read_chunk(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match &mut self.reader {
+        self.read_pending = true;
+        let result = match &mut self.reader {
             OutputReader::Stdout(stdout) => stdout.read(buffer).await,
             OutputReader::Stderr(stderr) => stderr.read(buffer).await,
+        };
+        self.read_pending = false;
+        result
+    }
+
+    /// Abandon output and await destruction of this reader's pending I/O.
+    ///
+    /// This is not direct-child reaping or lossless EOF. The owning actor must
+    /// retain this future until completion: dropping it is not an acknowledgement
+    /// that platform I/O storage has been released. Cancellation requests alone
+    /// do not count as completion, and an unresponsive driver may keep it pending.
+    pub async fn shutdown(self) -> io::Result<()> {
+        match self.reader {
+            OutputReader::Stdout(stdout) => {
+                platform_imp::shutdown_output_reader(stdout, self.read_pending).await
+            }
+            OutputReader::Stderr(stderr) => {
+                platform_imp::shutdown_output_reader(stderr, self.read_pending).await
+            }
         }
+    }
+}
+
+#[cfg(all(test, feature = "async-process"))]
+mod output_shutdown_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn silent_output_fixture() {
+        if std::env::var_os("RUNNING_PROCESS_OUTPUT_SHUTDOWN_FIXTURE").is_some() {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_finishes_a_cancelled_pending_read_before_child_exit() {
+        let child = SpawnSpec::new(std::env::current_exe().expect("test executable"))
+            .arg("--exact")
+            .arg("output_shutdown_tests::silent_output_fixture")
+            .env("RUNNING_PROCESS_OUTPUT_SHUTDOWN_FIXTURE", "1")
+            .stdin(StreamMode::Null)
+            .stdout(StreamMode::Piped)
+            .stderr(StreamMode::Null)
+            .spawn()
+            .await
+            .expect("spawn silent fixture");
+        let (mut lifecycle, _, _, stdout, _) = child.into_actor_parts();
+        let mut stdout = stdout.expect("stdout pipe");
+        // Drain the libtest header, then establish a genuinely pending read.
+        let mut bytes = [0; 1024];
+        loop {
+            match tokio::time::timeout(Duration::from_millis(20), stdout.read_chunk(&mut bytes))
+                .await
+            {
+                Ok(Ok(0)) => panic!("fixture exited before pending read"),
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => panic!("fixture read failed: {error}"),
+                Err(_) => break,
+            }
+        }
+        let shutdown = tokio::time::timeout(Duration::from_secs(2), stdout.shutdown()).await;
+        // Reap even if the assertion fails; a passing shutdown cannot depend
+        // on this kill, which occurs only after the acknowledgement deadline.
+        lifecycle.start_kill().expect("kill fixture");
+        lifecycle.wait().await.expect("reap fixture");
+        shutdown
+            .expect("pending read shutdown must finish")
+            .expect("output shutdown");
     }
 }
 

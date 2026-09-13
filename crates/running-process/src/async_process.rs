@@ -11,8 +11,12 @@ use std::time::Duration;
 use running_process_platform_internal::{SpawnSpec, StreamMode};
 
 use crate::blocking_island::dispatch;
-use crate::process_runtime::{block_on, ActorProcess, SessionProcess};
+use crate::process_runtime::{block_on, ActorProcess, SessionOutputShutdown, SessionProcess};
 use crate::{ProcessError, RunOutput, SharedOutputCursor};
+
+#[cfg(test)]
+#[path = "process_output_shutdown_tests.rs"]
+mod output_shutdown_tests;
 
 /// Semantic stdio policy for one asynchronous child stream.
 ///
@@ -659,6 +663,7 @@ pub struct AsyncProcessSessionControl {
 /// remains the terminal owner. It is intentionally not cloneable.
 pub struct AsyncProcessSessionOutput {
     output: tokio::sync::mpsc::Receiver<AsyncProcessSessionEvent>,
+    shutdown_state: SessionOutputShutdown,
 }
 
 impl AsyncProcessSession {
@@ -677,8 +682,12 @@ impl AsyncProcessSession {
             return Err(ProcessError::AlreadyStarted);
         }
         let (process, output) = SessionProcess::start(self.spec.clone(), self.options).await?;
+        let shutdown_state = process.output_shutdown();
         self.control = Some(AsyncProcessSessionControl { process });
-        self.output = Some(AsyncProcessSessionOutput { output });
+        self.output = Some(AsyncProcessSessionOutput {
+            output,
+            shutdown_state,
+        });
         Ok(())
     }
 
@@ -711,11 +720,33 @@ impl AsyncProcessSession {
 
     /// Receive the next lossless output event.
     ///
-    /// `None` follows normal EOF, an explicit post-exit abandonment, or an
-    /// explicitly reported reader error. A slow receiver causes bounded
+    /// `None` follows normal EOF, explicit output shutdown, post-exit abandonment,
+    /// or an explicitly reported reader error. A slow receiver causes bounded
     /// producer backpressure; it never silently evicts compiler output.
     pub async fn next_output(&mut self) -> Option<AsyncProcessSessionEvent> {
         self.output.as_mut()?.next_output().await
+    }
+
+    /// Request output abandonment without waiting for a consumer or child exit.
+    /// This is not a cleanup acknowledgement; await `shutdown_output` for that.
+    pub fn request_output_shutdown(&self) -> Result<(), ProcessError> {
+        self.control
+            .as_ref()
+            .ok_or(ProcessError::NotRunning)?
+            .request_output_shutdown();
+        Ok(())
+    }
+
+    /// Abandon queued output and join both output pumps and their native reads.
+    /// Previously returned events remain caller-owned. This does not kill or
+    /// reap the child. Canceling this await leaves shutdown requested; retrying
+    /// awaits the same retained completion result.
+    pub async fn shutdown_output(&mut self) -> Result<(), ProcessError> {
+        self.output
+            .as_mut()
+            .ok_or(ProcessError::NotRunning)?
+            .shutdown()
+            .await
     }
 
     /// Wait only for the direct child to exit and be reaped.
@@ -795,6 +826,13 @@ impl AsyncProcessSession {
 }
 
 impl AsyncProcessSessionControl {
+    /// Irreversibly request output abandonment, without waiting for its consumer.
+    /// Call before acquiring a lock held by `next_output`. Await the paired
+    /// output lane's `shutdown` to acknowledge pump and queue reclamation.
+    pub fn request_output_shutdown(&self) {
+        self.process.request_output_shutdown();
+    }
+
     /// Return the direct child's launch-time numeric identifier.
     ///
     /// It is diagnostic only. Controls remain bound to the actor's owned
@@ -844,11 +882,24 @@ impl AsyncProcessSessionControl {
 }
 
 impl AsyncProcessSessionOutput {
+    /// Abandon output and acknowledge pump, native-reader, and queue cleanup.
+    /// Events already returned to callers are not included. This leaves child
+    /// lifecycle ownership unchanged. Canceling and retrying this future is safe:
+    /// the request and joined-pump result outlive the observer.
+    pub async fn shutdown(&mut self) -> Result<(), ProcessError> {
+        self.shutdown_state.request();
+        self.output.close();
+        // A sender may hold a reserved queue permit. Await channel exhaustion
+        // rather than treating an instantaneously empty queue as closed.
+        while self.output.recv().await.is_some() {}
+        self.shutdown_state.wait().await
+    }
+
     /// Receive the next lossless output event from this session's only output
     /// consumer lane.
     ///
-    /// `None` follows normal EOF, explicit post-exit abandonment, or a
-    /// reported reader error. A slow receiver causes bounded producer
+    /// `None` follows normal EOF, explicit output shutdown, post-exit abandonment,
+    /// or a reported reader error. A slow receiver causes bounded producer
     /// backpressure; it never silently evicts compiler output.
     pub async fn next_output(&mut self) -> Option<AsyncProcessSessionEvent> {
         self.output.recv().await

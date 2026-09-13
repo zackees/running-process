@@ -410,6 +410,12 @@ pub fn cancel_capture_reader(cancellation: &CaptureCancellation) {
     }
 }
 
+#[cfg(feature = "async-process")]
+#[path = "platform_win_output.rs"]
+mod output_shutdown;
+#[cfg(feature = "async-process")]
+pub(crate) use output_shutdown::shutdown_output_reader;
+
 #[path = "platform_win_file_handles.rs"]
 mod file_handles;
 pub use file_handles::read_process_file_handles;
