@@ -38,7 +38,14 @@ impl Read for Channel {
 }
 impl Write for Channel {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.write(bytes)
+        let count = self.0.write(bytes)?;
+        // PIPE_NOWAIT byte pipes can succeed with zero bytes when their
+        // buffer is full. Retry under the codec deadline, not as WriteZero.
+        if count == 0 && !bytes.is_empty() && crate::INDEPENDENT_ZERO_WRITE_PENDING {
+            Err(io::Error::from(io::ErrorKind::WouldBlock))
+        } else {
+            Ok(count)
+        }
     }
     fn flush(&mut self) -> io::Result<()> {
         self.0.flush()

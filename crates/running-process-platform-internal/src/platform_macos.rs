@@ -8,6 +8,8 @@ pub use independent_spawn::{spawn as independent_spawn, IndependentChild};
 mod independent_io;
 #[cfg(feature = "independent-spawn")]
 pub(crate) use independent_io::open_regular as independent_open_regular;
+#[cfg(feature = "independent-spawn")]
+pub(crate) const INDEPENDENT_ZERO_WRITE_PENDING: bool = false;
 
 #[path = "platform_macos/autostart.rs"]
 pub(crate) mod autostart;
