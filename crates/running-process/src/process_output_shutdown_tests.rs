@@ -3,12 +3,19 @@ use std::io::Write;
 
 const FIXTURE_ENV: &str = "RUNNING_PROCESS_SESSION_SHUTDOWN_FIXTURE";
 const RELEASE_ENV: &str = "RUNNING_PROCESS_SESSION_SHUTDOWN_RELEASE";
+const READY_ENV: &str = "RUNNING_PROCESS_SESSION_SHUTDOWN_READY";
 
 #[test]
 fn helper() {
     let Some(mode) = std::env::var_os(FIXTURE_ENV) else {
         return;
     };
+    if let Some(ready) = std::env::var_os(READY_ENV) {
+        // libtest writes its startup banner before entering this helper. Closing
+        // stdout earlier can make the harness exit with BrokenPipe, even when
+        // the intended helper behavior never writes to stdout.
+        std::fs::write(ready, b"ready").expect("publish helper readiness");
+    }
     if mode == "pipe-holder" {
         let child = crate::process_runtime::runtime()
             .block_on(
@@ -49,10 +56,13 @@ fn helper() {
 }
 
 async fn fixture(mode: &str) -> AsyncProcessSession {
+    let directory = tempfile::tempdir().expect("private readiness directory");
+    let ready = directory.path().join("ready");
     let mut session = AsyncProcessBuilder::new(std::env::current_exe().expect("test executable"))
         .arg("--exact")
         .arg("async_process::output_shutdown_tests::helper")
         .env(FIXTURE_ENV, mode)
+        .env(READY_ENV, ready.as_os_str())
         .session(AsyncProcessSessionOptions {
             max_queued_chunks: 1,
             max_chunk_bytes: 4096,
@@ -60,6 +70,13 @@ async fn fixture(mode: &str) -> AsyncProcessSession {
             kill_on_drop: true,
         });
     session.start().await.expect("start fixture");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !ready.exists() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("helper enters test body before output shutdown");
     session
 }
 
