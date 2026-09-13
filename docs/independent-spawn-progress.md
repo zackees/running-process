@@ -450,3 +450,17 @@ and all four orchestration tests now pass on Python 3.10. The updated runner
 also passed locally on x86-64. ARM64 runtime acceptance is pending the new
 GitHub matrix; choosing a target or compiling it is not equivalent to that
 runtime evidence.
+
+The `independent_spawn` rustdoc now contains a compile-checked canonical
+`spawn_with_options` example and documents persistent lifetime, explicit
+environment/readiness/logging, provisioning, Docker placement, and remaining
+broker-control limits. The README distinguishes this API from the legacy
+lazy-broker detached-launch path. Its development-only release note must be
+updated when the supporting release is actually published.
+
+The first native Linux ARM64 job (103732518841 in run 34760552112) failed before
+the fixture ran: Soldr's selected `aarch64-linux-musl-gcc` returned Exec format
+error while compiling blake3's NEON C source. This is toolchain execution
+evidence, not a broker runtime failure or pass. The next harness change should
+cross-build static fixtures on x86 through Soldr, then execute the ARM binary
+on the native ARM runner; native ARM runtime acceptance remains required.

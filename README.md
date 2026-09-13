@@ -634,7 +634,7 @@ uv run build.py --release
 Releases are cut by the **Auto Release** GitHub Actions workflow. Bump `project.version` in `pyproject.toml` (and match `workspace.package.version` in `Cargo.toml`), push the commit to `main`, and the workflow will:
 
 - Build wheels for linux x86/arm, macOS x86/arm, and Windows x86/arm and publish them to PyPI via trusted publishing.
-- Publish six Rust packages to crates.io in dependency order: `running-process-probe`, `running-process-platform-internal`, `running-process-protocol`, `running-process`, `running-process-probe-daemon`, and `running-process-py` (requires the repo secret `CARGO_REGISTRY_TOKEN`).
+- Publish six Rust packages to crates.io in dependency order: `running-process-probe`, `running-process-protocol`, `running-process-platform-internal`, `running-process`, `running-process-probe-daemon`, and `running-process-py` (requires the repo secret `CARGO_REGISTRY_TOKEN`).
 - Build standalone `runpm` and `running-process-daemon` binaries for each target and attach them — alongside the wheels, `install.sh`, `install.ps1`, and `SHA256SUMS` — to a new GitHub Release.
 
 You can also fire the workflow manually with `gh workflow run auto-release.yml`, or by pushing a `vX.Y.Z` tag.
@@ -715,6 +715,25 @@ is daemon infrastructure, not a prerequisite for the ordinary process APIs.
 Call `running_process.daemon.trampoline_available()` for a non-raising
 capability check before using it. Wheel builds now fail validation unless the
 platform trampoline is present in `running_process/assets/`.
+
+## Independent Resource Placement (Rust)
+
+The opt-in `independent-spawn` feature provides `SpawnMode::Independent` for
+persistent daemons that must live outside a requesting worker's cgroup or
+Windows Job Object. Detached lifetime alone does not provide that guarantee.
+Enclosing user and container limits still apply.
+
+Use `spawn_with_options` with an explicit native scheduler or an already-running
+Linux broker outside the worker subtree. Unlike the legacy `launch_detached`
+API above, this path never lazily starts a broker or silently falls back to
+inherited placement. `SpawnOptions::default()` remains inherited and
+kill-on-drop.
+
+The [independent-spawn module guide](crates/running-process/src/independent_spawn.rs)
+contains a compile-checked persistent-daemon example, helper provisioning,
+Docker setup, readiness, error, logging, and handle-lifetime details. This
+feature is currently under development; use the supporting checkout until its
+release is published.
 
 ## Tracked PID Cleanup
 
