@@ -60,8 +60,10 @@ def selected_feature(manifest: Mapping[str, object]) -> list[str] | None:
 
 def manifest_failures(manifest: Mapping[str, object]) -> list[str]:
     failures: list[str] = []
-    if selected_feature(manifest) != ["async-process"]:
-        failures.append('kernel-substrate must be exactly ["async-process"]')
+    if selected_feature(manifest) != ["async-process", "independent-spawn"]:
+        failures.append(
+            'kernel-substrate must be exactly ["async-process", "independent-spawn"]'
+        )
     elif FORBIDDEN_FEATURES & set(selected_feature(manifest) or []):
         failures.append("kernel-substrate must not compose client, daemon, PTY, or binary features")
 

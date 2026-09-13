@@ -95,7 +95,7 @@ default = ["client", "pty", "conpty-sidecar", "daemon-trampoline", "window-icon"
 window-icon = ["running-process-platform-internal/window-icon"]
 # Stable consumer spelling for kernal-api.  This is deliberately semantic:
 # consumers select the native async substrate without naming its private seams.
-kernel-substrate = ["async-process"]
+kernel-substrate = ["async-process", "independent-spawn"]
 independent-spawn = ["running-process-platform-internal/independent-spawn"]
 # Frozen v1 Frame envelope codec and payload-protocol registration primitives.
 # This is intentionally transport- and identity-free: consumers retain their
