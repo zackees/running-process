@@ -49,3 +49,77 @@ where
         Err(error) => Err(error),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{SpawnSpec, StreamMode};
+
+    struct ReleaseWorker(Option<std::sync::mpsc::Sender<()>>);
+
+    impl Drop for ReleaseWorker {
+        fn drop(&mut self) {
+            if let Some(release) = self.0.take() {
+                let _ = release.send(());
+            }
+        }
+    }
+
+    #[test]
+    fn shutdown_retries_when_pipe_read_is_queued_before_its_syscall() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let child = SpawnSpec::new(std::env::current_exe().expect("test executable"))
+                .arg("--exact")
+                .arg("output_shutdown_tests::silent_output_fixture")
+                .env("RUNNING_PROCESS_OUTPUT_SHUTDOWN_FIXTURE", "1")
+                .stdin(StreamMode::Null)
+                .stdout(StreamMode::Null)
+                .stderr(StreamMode::Piped)
+                .spawn()
+                .await
+                .expect("silent child");
+            let (mut lifecycle, _, _, _, stderr) = child.into_actor_parts();
+            let mut stderr = stderr.expect("silent stderr pipe");
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let release = ReleaseWorker(Some(release_tx));
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = entered_tx.send(());
+                let _ = release_rx.recv();
+            });
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("sole blocking worker occupied");
+            let mut byte = [0];
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), stderr.read_chunk(&mut byte))
+                    .await
+                    .is_err()
+            );
+            let result = {
+                let shutdown = stderr.shutdown();
+                tokio::pin!(shutdown);
+                use std::future::Future as _;
+                // The sole worker is still occupied: the pipe read cannot yet
+                // have entered ReadFile. A first cancellation cannot acknowledge it.
+                assert!(shutdown
+                    .as_mut()
+                    .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                    .is_pending());
+                drop(release);
+                tokio::time::timeout(Duration::from_secs(2), shutdown).await
+            };
+            lifecycle.start_kill().expect("kill fixture");
+            lifecycle.wait().await.expect("reap fixture");
+            blocker.await.expect("join occupied worker");
+            result
+                .expect("queued read cancellation must retry after worker starts")
+                .expect("read cleanup");
+        });
+    }
+}

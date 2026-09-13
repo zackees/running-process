@@ -179,6 +179,12 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
+    # Output-shutdown regressions spawn only their own libtest executable
+    # through the blessed SpawnSpec operation. These call sites are cfg(test):
+    # one deliberately inherits a descendant-held pipe, the other occupies the
+    # Windows blocking worker to prove queued-before-syscall cancellation.
+    Path("crates/running-process/src/process_output_shutdown_tests.rs"),
+    Path("crates/running-process-platform-internal/src/platform_win_output.rs"),
     # #969 liveness handles: the only way to observe a *dead* process is to
     # start one and let it exit, so these three files spawn a fixed shell
     # command (`/bin/sh -c "exit 0"`, `cmd.exe /C "exit 0"`) inside

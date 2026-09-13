@@ -2,8 +2,8 @@
 
 Coordinated with [kernal-api #13](https://github.com/zackees/kernal-api/issues/13)
 and [its draft integration PR](https://github.com/zackees/kernal-api/pull/153).
-This branch is an implementation prerequisite, not a release or completed
-session-shutdown contract.
+This branch is an implementation prerequisite, not a release or a claim of
+completed six-target runtime validation.
 
 ## Platform primitive
 
@@ -28,7 +28,60 @@ requires observing completion separately. The current Tokio 1.52.3 lockfile's
 native error 995 to `TimedOut`, so the implementation recognizes the exact native
 code rather than treating every timeout as expected cancellation.
 
+## Session integration
+
+`AsyncProcessSessionControl::request_output_shutdown` synchronously latches the
+request without acquiring the output consumer. It does not acknowledge cleanup.
+`AsyncProcessSessionOutput::shutdown` also requests shutdown, closes and discards
+the queue, and waits for the persistent result of joining both pumps. The unsplit
+session offers `request_output_shutdown` and `shutdown_output` forwarding methods.
+Already-returned events remain caller-owned and are outside this acknowledgement.
+
+Each pump borrows its reader from an outer cleanup scope. Shutdown interrupts
+pending reads and all event sends; their futures and buffers are dropped before
+the reader shutdown primitive is awaited. An inner pump panic follows that same
+cleanup path and remains an error. The actor retains actual task handles and
+publishes completion only after joining both. Lifecycle errors request output
+cleanup rather than returning early; actor unwind also latches the request, but
+loss of the completion sender is an error, never successful acknowledgement.
+
+Canceling an output-shutdown observer leaves the request, tasks, and completion
+state alive. A retry observes the same result. At a facade mutex boundary, request
+shutdown **before** acquiring the lock held by `next_output`. Ordinary output
+Drop still detaches delivery and drains; direct-child kill/reap remains separate.
+
 ## Local evidence
+
+The initial checks below ran on the shared development base `f062b52`. The scoped
+change was subsequently moved onto main `0e39d9d`. On that isolated base, the
+platform suite passes all 85 tests (zero ignored), and both the sync API snapshot
+and parity manifest gates pass.
+
+Session integration on the isolated base passes six focused Linux tests/helper
+cases: saturated queue, silent pending read, descendant-held pipe after direct
+reaping, canceled/retried observers with concurrent completion watchers, and
+panic cleanup. Per-session test-only barriers retain both readers and prove
+completion stays pending until cleanup is released. The panic regression was
+RED when unwinding bypassed reader cleanup (`20260913T122402Z`) and GREEN after
+restoring the outer cleanup boundary. The earlier API compile-RED is recorded
+in `20260913T121441Z`.
+
+The 15 existing async-session regressions pass unchanged. Strict library-test
+Clippy (`--lib --profile test`, kernel-substrate only), the spawn-path guard,
+and Ruff pass. The complete kernel-substrate library harness passes all 208
+tests with `--test-threads=1`. Its parallel run passed 207 and failed the existing
+global blocking-island permit-count assertion (one available permit rather than
+two); that assertion observes the shared semaphore while other tests dispatch
+work. This is not a claim that the parallel full-suite run passed.
+
+The isolated Windows x86-64 platform test binary also cross-compiles, including
+a new regression that occupies the sole blocking worker, queues a silent pipe
+read, verifies shutdown remains pending, then releases the worker and requires
+read completion. Native execution of this race test remains outstanding.
+The isolated kernel-substrate session library also cross-compiles for Windows
+x86-64; that library build does not compile or execute its unit-test harness.
+
+Initial platform-primitive checks on the shared development base:
 
 - Focused RED: missing shutdown method, Soldr log `20260913T120326Z`.
 - Focused Linux GREEN: two tests/helper cases. The regression establishes a
@@ -36,8 +89,8 @@ code rather than treating every timeout as expected cancellation.
 - Strict Linux platform Clippy passes with `--deny warnings`.
 - Windows x86-64 MSVC library and test cross-builds pass. This is not native execution.
 - The sync API snapshot gate has an existing mismatch: its recorded Rust exports
-  omit `spawn_contract` and `spawn_dispatch` exports already present at the branch
-  base. This change touches neither the snapshot inputs nor those exports; the
+  omit `spawn_contract` and `spawn_dispatch` exports already present at that shared
+  development base. This change touches neither the snapshot inputs nor those exports; the
   unrelated snapshot is left unchanged. This is not a passing snapshot gate.
 - Linux platform suite: 101 passed, three existing systemd-dependent tests
   ignored. The default local linker omitted the GNU build ID required by an
@@ -53,17 +106,10 @@ SOLDR_LINKER=default soldr --no-cache cargo rustc --locked \
 
 Run the resulting native test harness directly after this command.
 
-## Required integration
+## Remaining acceptance
 
-The session actor must retain and join both pump tasks, interrupt blocked sends
-and reads, invoke this primitive on shutdown and post-exit abandonment, and
-discard queued events before publishing output cleanup completion. Store the
-request and result independently of an observer future so cancellation/retry
-cannot lose cleanup ownership. Signal shutdown before acquiring an output
-consumer lock. Keep direct-child kill/reap separate.
-
-Required regressions include a full queue with no consumer, a descendant-held
-silent pipe, queued-before-syscall cancellation, canceled/retried observers, and
-concurrent shutdown callers. Native Windows execution and the full six-target
-acceptance remain outstanding. Until that integration lands, existing session
-Drop, wait, and output exhaustion do not acquire a stronger reclamation promise.
+Native Windows execution (including the queued-before-syscall cancellation
+regression) and the full six-target acceptance remain outstanding. The kernal-api
+facade still needs to consume this acknowledgement before recycling native
+buffer reservations. Neither direct-child `wait` nor ordinary output Drop is
+a replacement for explicit acknowledged shutdown.
