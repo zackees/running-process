@@ -13,6 +13,24 @@ pub(super) struct Placement {
 }
 
 impl Placement {
+    /// Check a live kernel identity on both sides of the procfs reads. If the
+    /// original process exited, its PID might have been reused and the snapshot
+    /// must not be accepted, even if the replacement happens to be outside.
+    pub(super) fn capture_pinned(
+        process: &super::process_inspect::ProcessLiveness,
+    ) -> io::Result<Self> {
+        process.signal_pinned(0)?;
+        let placement = Self::capture(process.pid())?;
+        process.signal_pinned(0)?;
+        if !process.is_alive() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "process exited during placement verification",
+            ));
+        }
+        Ok(placement)
+    }
+
     pub(super) fn capture(pid: u32) -> io::Result<Self> {
         if pid == 0 {
             return Err(io::Error::from(io::ErrorKind::InvalidInput));

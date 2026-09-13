@@ -49,6 +49,40 @@ evidence yet.
 
 ## Implementation constraints and next work
 
+The Linux native tree now also contains `scheduler_launch`: bounded
+`systemd-run --user` service creation (`Type=exec`), bounded manager output,
+typed unavailable-manager/permission/timeout/cancellation failures, a rollback
+guard, explicit stop, and detached lifetime commit. Application data is not
+put into the command: the interface accepts only a helper executable and
+private request-file path. A strict pidfd path was added to the existing
+`ProcessLiveness` implementation, without changing its compatibility open
+behavior. Helper placement capture checks that pinned identity before and
+after procfs reads.
+
+Validation on 2026-09-13:
+
+- Ten scheduler tests passed, including all three opt-in real-manager tests:
+  placement outside the worker, uncommitted-drop rollback, and committed
+  service survival until explicit stop.
+- Two strict pidfd tests passed: no bare-PID fallback and ESRCH after the
+  pinned target exits.
+- The real placement/stop test also passed inside transient unit
+  `rp-1202-green-1789295463.service` with `MemoryMax=96M` and memory accounting.
+- The broader platform suite passed 90 tests, with the three real-manager
+  tests ignored by default (and explicitly executed above). The spawn-path
+  guard passed. The worker unit was collected and no `rp-independent-*`
+  services remained afterward.
+
+This is still an internal component, not a complete Independent launch API.
+The production helper and private payload/commit protocol remain to be
+implemented. In particular, rollback after a manager timeout must account for
+a late registration: a helper needs a bounded uncommitted lease and must never
+start the target after cancellation. The current Drop stop is best effort and
+does not alone prove that guarantee. Actual target argv/environment/cwd/stdio,
+readiness, allocation accounting, requester teardown, and partial-success
+cleanup need end-to-end tests. Windows, external broker, facade, PRs and the
+release cascade remain outstanding.
+
 The Linux native tree now contains the private `resource_placement` verifier.
 Its focused tests first produced five assertion failures with an inert
 implementation, then seven passes after implementation, including live self

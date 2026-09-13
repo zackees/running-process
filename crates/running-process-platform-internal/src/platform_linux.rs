@@ -22,6 +22,7 @@ pub use autostart::{
 #[path = "platform_linux/process_inspect.rs"]
 pub(crate) mod process_inspect;
 mod resource_placement;
+mod scheduler_launch;
 pub use process_inspect::{
     process_executable_path, process_force_kill, process_same_executable_path,
     process_signal_terminate, ProcessLiveness,

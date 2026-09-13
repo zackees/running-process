@@ -32,6 +32,58 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    /// Independent launches require a kernel-pinned identity. Unlike the
+    /// compatibility observer, this path never falls back to a bare PID.
+    pub(crate) fn open_pinned(pid: u32) -> io::Result<Self> {
+        if pid == 0 || pid > libc::pid_t::MAX as u32 {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+        // SAFETY: a validated positive pid and flags zero are passed by value.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0_u32) };
+        if raw < 0 {
+            let error = io::Error::last_os_error();
+            return Err(match error.raw_os_error() {
+                Some(libc::ENOSYS | libc::EINVAL) => io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "kernel-pinned process control is unavailable",
+                ),
+                _ => error,
+            });
+        }
+        // SAFETY: successful pidfd_open returned a newly owned descriptor.
+        let pid_fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
+        Ok(Self {
+            pid,
+            pid_fd: Some(pid_fd),
+        })
+    }
+
+    /// Signal the process named by the held kernel handle, never by PID.
+    pub(crate) fn signal_pinned(&self, signal: i32) -> io::Result<()> {
+        let fd = self.pid_fd.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "process identity is not kernel-pinned",
+            )
+        })?;
+        // SAFETY: a live pidfd is borrowed; null siginfo requests ordinary
+        // signal delivery and flags zero selects the kernel's default policy.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                fd.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0_u32,
+            )
+        };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
     /// Take a reference to `pid`, failing if no such process is running.
     pub fn open(pid: u32) -> Result<Self, ProcessInspectError> {
         validate_pid(pid)?;
@@ -162,6 +214,42 @@ mod tests {
         let error = ProcessLiveness::open(0).expect_err("pid 0");
         assert_eq!(error.kind, ProcessInspectErrorKind::InvalidPid);
         assert!(!process_exists(0));
+    }
+
+    #[test]
+    fn pinned_control_rejects_missing_handle_without_signalling_pid() {
+        let unpinned = ProcessLiveness {
+            pid: std::process::id(),
+            pid_fd: None,
+        };
+        assert_eq!(
+            unpinned.signal_pinned(libc::SIGKILL).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            ProcessLiveness::open_pinned(0).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn pinned_control_keeps_identity_after_exit() {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "exec sleep 60"]);
+        let mut child = crate::spawn_sync(
+            &mut command,
+            crate::platform::process::SpawnStdio::default(),
+            crate::platform::process::SyncEnvironment::Inherit,
+        )
+        .unwrap();
+        let pinned = ProcessLiveness::open_pinned(child.id()).unwrap();
+        pinned.signal_pinned(libc::SIGKILL).unwrap();
+        child.wait().unwrap();
+        assert!(!pinned.is_alive());
+        assert_eq!(
+            pinned.signal_pinned(0).unwrap_err().raw_os_error(),
+            Some(libc::ESRCH)
+        );
     }
 
     /// This process is alive, and knows where it was started from.

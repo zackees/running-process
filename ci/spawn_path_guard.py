@@ -17,6 +17,9 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # #1202: Linux scheduler boundary constructs only systemd-run/systemctl
+    # commands, routed through spawn_sync's sanitized contained-child layer.
+    Path("crates/running-process-platform-internal/src/platform_linux/scheduler_launch.rs"),
     # #969 liveness handles: the only way to observe a *dead* process is to
     # start one and let it exit, so these three files spawn a fixed shell
     # command (`/bin/sh -c "exit 0"`, `cmd.exe /C "exit 0"`) inside
