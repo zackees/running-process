@@ -1177,3 +1177,10 @@ pub fn process_replace_current_image(command: &mut std::process::Command) -> std
 pub const fn process_can_replace_current_image() -> bool {
     true
 }
+
+#[cfg(feature = "async-process")]
+pub(crate) async fn shutdown_output_reader<R>(reader: R, _pending: bool) -> std::io::Result<()> {
+    // Tokio's Unix child pipes use readiness I/O, not detached blocking reads.
+    drop(reader);
+    Ok(())
+}

@@ -1,0 +1,62 @@
+name: Native output shutdown
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/running-process/src/**'
+      - 'crates/running-process-platform-internal/**'
+      - 'crates/running-process/Cargo.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.config/nextest.toml'
+      - 'ci/output_shutdown_native.py'
+      - 'tests/test_output_shutdown_native.py'
+      - 'ci/soldr.py'
+      - '.github/workflows/ci-output-shutdown.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  shutdown:
+    name: output-shutdown (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, label: linux-x86 }
+          - { os: ubuntu-24.04-arm, label: linux-arm }
+          - { os: macos-15-intel, label: macos-x86 }
+          - { os: macos-14, label: macos-arm }
+          - { os: windows-latest, label: windows-x86 }
+          - { os: windows-11-arm, label: windows-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: output-shutdown-${{ matrix.label }}
+      - name: Validate evidence guard
+        run: uv run --no-project --module unittest discover -s tests -p test_output_shutdown_native.py
+      - name: Native shutdown proof
+        run: uv run --no-project --module ci.run_logged logs/output-shutdown.log -- uv run --no-project --module ci.output_shutdown_native
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: output-shutdown-${{ matrix.label }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
