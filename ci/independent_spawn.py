@@ -40,6 +40,15 @@ def main() -> int:
                 "--nocapture",
             ],
         ),
+        (
+            ["-p", "running-process-platform-internal", "--lib"],
+            [
+                "--exact",
+                "platform_win::independent_spawn::job_tests::requester_teardown_preserves_independent_target",
+                "--ignored",
+                "--nocapture",
+            ],
+        ),
     ]
     for package, test_filter in suites:
         command = cargo_command(

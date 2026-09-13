@@ -218,6 +218,21 @@ mod job_tests {
         }
     }
 
+    struct Worker {
+        child: crate::platform::independent_spawn::InheritedChild,
+        abort: std::path::PathBuf,
+    }
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            // Give the worker a chance to clean up after a failed identity handoff.
+            let _ = fs::write(&self.abort, b"abort");
+            let _ = self
+                .child
+                .wait(Duration::from_secs(6), &AtomicBool::new(false));
+            let _ = self.child.stop(Duration::from_secs(5));
+        }
+    }
+
     #[test]
     #[ignore = "target fixture invoked only by restrictive_job_scheduler_separation"]
     fn target_fixture() {
@@ -268,7 +283,13 @@ mod job_tests {
         // alongside unrelated tests in the same process.
         std::mem::forget(job);
 
-        let directory = tempfile::tempdir().unwrap();
+        // Abrupt requester teardown bypasses TempDir::drop. Put its scratch
+        // directory under the controller's directory so the controller owns
+        // cleanup even when the worker is killed.
+        let directory = match std::env::var_os("RP_JOB_REPORT_FILE") {
+            Some(report) => tempfile::tempdir_in(Path::new(&report).parent().unwrap()).unwrap(),
+            None => tempfile::tempdir().unwrap(),
+        };
         let spec = LaunchSpec {
             program: std::env::current_exe().unwrap().into_os_string(),
             args: vec![
@@ -330,6 +351,34 @@ mod job_tests {
             io::Error::last_os_error()
         );
         let alive = child.0.is_alive();
+        if let Some(report) = std::env::var_os("RP_JOB_REPORT_FILE") {
+            assert!(outside.unwrap());
+            assert!(alive);
+            assert_eq!(in_restrictive_job, 0);
+            let identities = [
+                (
+                    child.0.process.pid(),
+                    child.0.process.test_creation_time().unwrap(),
+                ),
+                (
+                    child.0.helper.pid(),
+                    child.0.helper.test_creation_time().unwrap(),
+                ),
+            ];
+            let pending = Path::new(&report).with_extension("pending");
+            fs::write(&pending, serde_json::to_vec(&identities).unwrap()).unwrap();
+            fs::rename(pending, &report).unwrap();
+            // The controller pins both identities before killing this worker's
+            // containing job. Abrupt worker death must not run this Cleanup.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while Instant::now() < deadline {
+                if Path::new(&report).with_extension("abort").is_file() {
+                    return; // Cleanup stops the pair after a failed handoff.
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("controller failed to terminate the requester job");
+        }
         child.0.stop(Duration::from_secs(5)).unwrap();
         assert!(
             outside.unwrap(),
@@ -341,5 +390,83 @@ mod job_tests {
             "target is a member of the exact restrictive job"
         );
         assert!(!child.0.is_alive());
+    }
+
+    #[test]
+    #[ignore = "requires a real Windows scheduler and a separate requester test process"]
+    fn requester_teardown_preserves_independent_target() {
+        use crate::platform::independent_spawn::spawn_inherited;
+        let helper = std::env::var_os("RP_INDEPENDENT_LAUNCHER").expect("launcher path");
+        let directory = tempfile::tempdir().unwrap();
+        let report = directory.path().join("identities.json");
+        let log = directory.path().join("worker.log");
+        let spec = LaunchSpec {
+            program: std::env::current_exe().unwrap().into_os_string(),
+            args: vec![
+                "--exact".into(),
+                "platform_win::independent_spawn::job_tests::restrictive_job_scheduler_separation"
+                    .into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ],
+            cwd: directory.path().as_os_str().to_owned(),
+            environment: vec![
+                ("SystemRoot".into(), std::env::var_os("SystemRoot").unwrap()),
+                ("RP_INDEPENDENT_LAUNCHER".into(), helper),
+                ("RP_JOB_REPORT_FILE".into(), report.as_os_str().to_owned()),
+            ],
+            stdout: Some(log.as_os_str().to_owned()),
+            stderr: Some(log.as_os_str().to_owned()),
+            readiness: Readiness::ProcessStarted,
+        };
+        let cancelled = AtomicBool::new(false);
+        let mut worker = Worker {
+            child: spawn_inherited(&spec, false, Duration::from_secs(5), &cancelled).unwrap(),
+            abort: report.with_extension("abort"),
+        };
+        let deadline = Instant::now() + Duration::from_secs(40);
+        while !report.is_file() {
+            if worker.child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+                panic!(
+                    "worker did not report target identities: {}",
+                    fs::read_to_string(&log).unwrap_or_default()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let identities: [(u32, u64); 2] =
+            serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+        let pin = |(pid, created)| {
+            let process = ProcessLiveness::open_pinned(pid).unwrap();
+            assert_eq!(
+                process.test_creation_time().unwrap(),
+                created,
+                "reported process identity was reused before controller pinning"
+            );
+            assert!(process.is_alive());
+            process
+        };
+        let mut child = Cleanup(IndependentChild {
+            process: pin(identities[0]),
+            helper: pin(identities[1]),
+        });
+        // InheritedChild::stop terminates the owned containing Job Object,
+        // including the requester's nested restrictive job, not only its PID.
+        worker.child.stop(Duration::from_secs(5)).unwrap();
+        assert!(worker.child.try_wait().unwrap().is_some());
+        for _ in 0..20 {
+            assert!(
+                child.0.is_alive(),
+                "independent target died with requester job"
+            );
+            assert!(
+                child.0.helper.is_alive(),
+                "independent helper died with requester job"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        child.0.stop(Duration::from_secs(5)).unwrap();
+        assert!(!child.0.is_alive());
+        assert!(!child.0.helper.is_alive());
     }
 }

@@ -50,6 +50,25 @@ impl std::fmt::Debug for ProcessLiveness {
 }
 
 impl ProcessLiveness {
+    #[cfg(all(test, feature = "independent-spawn"))]
+    pub(crate) fn test_creation_time(&self) -> io::Result<u64> {
+        use windows_sys::Win32::{Foundation::FILETIME, System::Threading::GetProcessTimes};
+        let mut times = [FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        }; 4];
+        // SAFETY: the pinned process handle is live and all four output records
+        // are disjoint writable FILETIMEs for the duration of the call.
+        let result = unsafe {
+            let ptr = times.as_mut_ptr();
+            GetProcessTimes(self.handle, ptr, ptr.add(1), ptr.add(2), ptr.add(3))
+        };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime))
+    }
+
     #[cfg(feature = "independent-spawn")]
     pub(crate) fn open_pinned(pid: u32) -> io::Result<Self> {
         use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
