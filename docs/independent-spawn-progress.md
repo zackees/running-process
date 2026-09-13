@@ -385,5 +385,15 @@ with the static launcher mounted read-only at `/fixture/launcher`, using
 docker_broker_accounting --ignored --nocapture`. Both binary mounts must be
 read-only and the build must finish before starting the container. Privilege
 is for this disposable test's cgroup setup, not a production broker requirement.
-The container exited successfully and was automatically removed. CI automation
-and the remaining failure-matrix/release work are still outstanding.
+The container exited successfully and was automatically removed.
+
+The same build-and-run sequence is now automated by
+`uv run --no-project --module ci.independent_broker_docker`, and wired into the
+independent-spawn workflow's Linux Docker job. The runner selects executable
+paths from this build's Cargo JSON artifacts, uses a UUID container name,
+bounds execution, and attempts forced cleanup of only that container in a
+`finally` block. Three orchestration unit tests cover artifact selection,
+private limits/read-only mounts, and failure cleanup. The complete runner
+passed locally (worker 25935872 -> 26185728 bytes; broker 1748992 -> 26599424),
+including worker survival and outer OOM enforcement. A successful GitHub run
+is still required; the remaining failure-matrix/release work is also pending.

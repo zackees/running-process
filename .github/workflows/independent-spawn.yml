@@ -1,4 +1,4 @@
-name: Independent spawn (Windows)
+name: Independent spawn
 
 on:
   workflow_dispatch:
@@ -9,15 +9,39 @@ on:
       - 'crates/running-process/Cargo.toml'
       - 'crates/running-process-platform-internal/**'
       - 'crates/running-process/src/independent_spawn.rs'
+      - 'crates/running-process/src/spawn_dispatch.rs'
+      - 'crates/running-process/src/lib.rs'
       - 'crates/running-process/src/bin/running-process-launcher.rs'
       - 'crates/running-process/tests/independent_spawn_windows.rs'
+      - 'crates/running-process/tests/spawn_mode_contract.rs'
+      - 'crates/running-process/tests/independent_broker*.rs'
+      - 'crates/running-process/src/spawn_contract.rs'
+      - 'crates/running-process-protocol/**'
       - 'ci/independent_spawn.py'
+      - 'ci/independent_broker_docker.py'
+      - 'tests/test_ci_independent_broker_docker.py'
       - '.github/workflows/independent-spawn.yml'
 
 permissions:
   contents: read
 
 jobs:
+  docker-broker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build orchestrator
+        run: uv tool install soldr
+      - name: Check fixture orchestration safety
+        run: uv run --no-project --module unittest tests.test_ci_independent_broker_docker
+      - name: Verify broker accounting without systemd
+        run: uv run --no-project --module ci.independent_broker_docker
   scheduler:
     runs-on: windows-latest
     timeout-minutes: 20
