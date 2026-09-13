@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 
 use crate::observer::{ObserverEmitter, ProcessWatchEmitter};
 
-pub(crate) use running_process_platform_internal::platform;
 /// Explicit foreground commands preserving caller-controlled native launch state.
 pub use running_process_platform_internal::foreground;
+pub(crate) use running_process_platform_internal::platform;
 
 #[cfg(feature = "async-process")]
 mod async_process;
@@ -66,6 +66,9 @@ pub mod daemon_registration_v2_compat;
 // and owner-private-directory substrate. Keeping it separate from either
 // public module prevents v2 persistence from selecting v1's SHA-256 manifest
 // support, while retaining exact v1 type identity through re-exports.
+/// Canonical semantic v1 frame compatibility contract, retaining raw values.
+#[cfg(feature = "frame-v1-codec")]
+pub mod daemon_frame_v1;
 #[cfg(any(feature = "daemon-registration", feature = "daemon-registration-v2"))]
 pub(crate) mod daemon_registration_common;
 /// Frozen v1 `Frame` envelope codec and consumer-protocol registry.
@@ -75,9 +78,6 @@ pub(crate) mod daemon_registration_common;
 /// re-export these exact items for compatibility.
 #[cfg(feature = "frame-v1-codec")]
 pub mod frame_v1;
-/// Canonical semantic v1 frame compatibility contract, retaining raw values.
-#[cfg(feature = "frame-v1-codec")]
-pub mod daemon_frame_v1;
 // Host facts are shared by the direct identity probe and persisted v1
 // registration. The implementation is deliberately private; registration
 // exposes its stable public host-identity path from `daemon_registration`.
@@ -260,17 +260,6 @@ pub use output_log::{
 pub use running_process_platform_internal::platform::executable as platform_executable;
 #[cfg(target_os = "linux")]
 pub use running_process_platform_internal::platform::process::current_executable_build_id;
-pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
-pub use spawn::{
-    spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
-    spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env,
-    spawn_daemon_with_env_policy, spawn_daemon_with_environment,
-    spawn_daemon_with_explicit_environment, spawn_daemon_with_stdio,
-    spawn_daemon_with_stdio_and_env_policy, spawn_with_env_policy, spawn_with_environment,
-    spawn_with_explicit_environment, DaemonChild, DaemonStdio, DaemonStdioSource, EnvironmentPolicy,
-    SpawnStdio, SpawnedChild, SpawnedChildControl, StdioSource, SyncEnvironment,
-    DAEMON_MARKER_ENV_VAR,
-};
 /// Canonical native process-inspection errors, preserving their host detail.
 pub use running_process_platform_internal::platform::process::{
     ProcessInspectError, ProcessInspectErrorKind,
@@ -281,6 +270,17 @@ pub use running_process_platform_internal::process_executable_path;
 pub use running_process_platform_internal::process_same_executable_path;
 /// Retained native process-liveness observation.
 pub use running_process_platform_internal::ProcessLiveness;
+pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
+pub use spawn::{
+    spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
+    spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env,
+    spawn_daemon_with_env_policy, spawn_daemon_with_environment,
+    spawn_daemon_with_explicit_environment, spawn_daemon_with_stdio,
+    spawn_daemon_with_stdio_and_env_policy, spawn_with_env_policy, spawn_with_environment,
+    spawn_with_explicit_environment, DaemonChild, DaemonStdio, DaemonStdioSource,
+    EnvironmentPolicy, SpawnStdio, SpawnedChild, SpawnedChildControl, StdioSource, SyncEnvironment,
+    DAEMON_MARKER_ENV_VAR,
+};
 #[cfg(feature = "client-async")]
 pub use spawn::{spawn_tokio, TokioSpawnOptions};
 #[cfg(feature = "terminal-graphics")]

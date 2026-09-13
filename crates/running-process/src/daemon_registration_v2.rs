@@ -67,7 +67,9 @@ pub fn read_service_definition_v2(
 ) -> Result<LoadedServiceDefinitionV2, ServiceDefinitionError> {
     let path = service_definition_path_v2(root, service_name)?;
     if !crate::daemon_registration_common::secure_dir::private_dir_permissions_are_private(root)? {
-        return Err(ServiceDefinitionError::InsecureDirectory(root.to_path_buf()));
+        return Err(ServiceDefinitionError::InsecureDirectory(
+            root.to_path_buf(),
+        ));
     }
     let bytes = std::fs::read(path)?;
     let definition = ServiceDefinition::decode(bytes.as_slice())?;
