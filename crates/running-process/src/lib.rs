@@ -200,6 +200,8 @@ pub mod pty;
 mod public_symbols;
 mod rust_debug;
 pub mod spawn;
+#[cfg(feature = "independent-spawn")]
+pub mod independent_spawn;
 pub mod systemd_killmode;
 #[cfg(feature = "terminal-graphics")]
 pub mod terminal_graphics;

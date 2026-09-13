@@ -25,6 +25,8 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 /// The indexes intentionally expose no operations yet: phase 2 establishes
 /// ownership names before later phases move a capability behind them.
 pub mod platform;
+#[cfg(feature = "independent-spawn")]
+pub use platform_imp::{independent_spawn, IndependentChild};
 
 /// Temporary source-compatibility re-export for the pre-boundary PTY API.
 ///

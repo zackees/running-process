@@ -2106,6 +2106,8 @@ dependencies = [
  "libc",
  "png",
  "portable-pty",
+ "serde",
+ "serde_json",
  "sha2",
  "sysinfo",
  "tar",

@@ -24,6 +24,7 @@ fs = ["dep:dirs"]
 # registration records and local IPC roots, but require neither a transport
 # nor endpoint-name hashing.
 private-dir = []
+independent-spawn = ["ipc", "dep:serde", "dep:serde_json", "dep:tempfile"]
 ipc = ["private-dir", "dep:interprocess", "dep:dirs", "dep:blake3"]
 async-process = ["dep:tokio", "process-inspection"]
 ipc-async = ["ipc", "async-process", "interprocess/tokio", "tokio/net"]
@@ -47,6 +48,9 @@ tokio = { version = "1", default-features = false, features = ["io-util", "macro
 sysinfo = { version = "0.30", optional = true }
 interprocess = { version = "2", optional = true }
 thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tempfile = { version = "3", optional = true }
 portable-pty = { version = "0.9", optional = true }
 blake3 = { version = "1.8.7", optional = true }
 # Needed by the `ipc` feature on every host for the per-user runtime

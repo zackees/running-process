@@ -34,6 +34,7 @@ impl std::fmt::Debug for ProcessLiveness {
 impl ProcessLiveness {
     /// Independent launches require a kernel-pinned identity. Unlike the
     /// compatibility observer, this path never falls back to a bare PID.
+    #[cfg(any(feature = "independent-spawn", test))]
     pub(crate) fn open_pinned(pid: u32) -> io::Result<Self> {
         if pid == 0 || pid > libc::pid_t::MAX as u32 {
             return Err(io::Error::from(io::ErrorKind::InvalidInput));
@@ -59,6 +60,7 @@ impl ProcessLiveness {
     }
 
     /// Signal the process named by the held kernel handle, never by PID.
+    #[cfg(any(feature = "independent-spawn", test))]
     pub(crate) fn signal_pinned(&self, signal: i32) -> io::Result<()> {
         let fd = self.pid_fd.as_ref().ok_or_else(|| {
             io::Error::new(

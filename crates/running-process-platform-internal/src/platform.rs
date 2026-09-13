@@ -7,6 +7,8 @@ pub mod autostart;
 pub mod executable;
 pub mod fs;
 pub mod host;
+#[cfg(feature = "independent-spawn")]
+pub mod independent_spawn;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod private_dir;

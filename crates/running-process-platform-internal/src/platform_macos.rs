@@ -1,4 +1,9 @@
 //! macOS implementation root for the process capability.
+#[cfg(feature = "independent-spawn")]
+#[path = "independent_spawn_unsupported.rs"]
+mod independent_spawn;
+#[cfg(feature = "independent-spawn")]
+pub use independent_spawn::{spawn as independent_spawn, IndependentChild};
 
 #[path = "platform_macos/autostart.rs"]
 pub(crate) mod autostart;

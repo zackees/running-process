@@ -85,7 +85,11 @@ impl ScheduledUnit {
     pub(super) fn stop(&mut self, deadline: Instant) -> io::Result<()> {
         let mut command = Command::new("systemctl");
         command.args(["--user", "--no-pager", "stop", &self.name]);
-        run(&mut command, deadline, &AtomicBool::new(false))?;
+        if let Err(error) = run(&mut command, deadline, &AtomicBool::new(false)) {
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(error);
+            }
+        }
         self.cleanup_on_drop = false;
         Ok(())
     }
@@ -215,6 +219,9 @@ fn run(command: &mut Command, deadline: Instant, cancelled: &AtomicBool) -> io::
                 .any(|text| diagnostic.contains(text))
             {
                 io::ErrorKind::Unsupported
+            } else if diagnostic.contains("not loaded") || diagnostic.contains("could not be found")
+            {
+                io::ErrorKind::NotFound
             } else {
                 io::ErrorKind::Other
             };

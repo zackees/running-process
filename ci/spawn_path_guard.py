@@ -17,6 +17,9 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # #1202: the private scheduler helper receives an explicit launch payload
+    # and routes target creation through the existing sanitized spawn_sync.
+    Path("crates/running-process-platform-internal/src/platform/independent_spawn.rs"),
     # #1202: Linux scheduler boundary constructs only systemd-run/systemctl
     # commands, routed through spawn_sync's sanitized contained-child layer.
     Path("crates/running-process-platform-internal/src/platform_linux/scheduler_launch.rs"),

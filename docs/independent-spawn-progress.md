@@ -54,7 +54,7 @@ The Linux native tree now also contains `scheduler_launch`: bounded
 typed unavailable-manager/permission/timeout/cancellation failures, a rollback
 guard, explicit stop, and detached lifetime commit. Application data is not
 put into the command: the interface accepts only a helper executable and
-private request-file path. A strict pidfd path was added to the existing
+private IPC endpoint path. A strict pidfd path was added to the existing
 `ProcessLiveness` implementation, without changing its compatibility open
 behavior. Helper placement capture checks that pinned identity before and
 after procfs reads.
@@ -73,24 +73,44 @@ Validation on 2026-09-13:
   guard passed. The worker unit was collected and no `rp-independent-*`
   services remained afterward.
 
-This is still an internal component, not a complete Independent launch API.
-The production helper and private payload/commit protocol remain to be
-implemented. In particular, rollback after a manager timeout must account for
-a late registration: a helper needs a bounded uncommitted lease and must never
-start the target after cancellation. The current Drop stop is best effort and
-does not alone prove that guarantee. Actual target argv/environment/cwd/stdio,
-readiness, allocation accounting, requester teardown, and partial-success
-cleanup need end-to-end tests. Windows, external broker, facade, PRs and the
-release cascade remain outstanding.
+The opt-in `independent-spawn` feature now builds `running-process-launcher`
+and exposes the Linux scheduler operation. The helper uses the existing
+owner-private IPC layer and same-user peer credentials. Launch payloads are
+bounded to 1 MiB encoded, retain native OS strings, and are never persisted.
+The parent checks the helper's pinned PID, sends the explicit payload, verifies
+the actual target's pinned PID and placement, and commits. The helper retains
+child ownership until commit and supervises the committed target until exit.
+Its uncommitted handshake lease is 30 seconds. Parent cancellation tears down
+the connection and service; a late helper with no live endpoint receives no
+target payload. No public SpawnMode selection or facade adapter exists yet.
+
+Four public-substrate integration tests pass, explicitly including the three
+real-systemd tests: native non-UTF-8 argv and shell-metacharacter fidelity,
+explicit environment/cwd/file output and actual target stop; typed failed exec;
+cancellation during an unresponsive helper handshake; and pre-cancellation.
+The platform suite with the new feature passed 109 tests (three separate
+real-manager primitive tests ignored by default and previously run explicitly).
+Spawn-path and platform-boundary checks passed. The normal kernel-substrate
+dependency tree contains no serde, serde_json, tempfile or IPC dependency from
+this feature. No `rp-independent-*` services or `/tmp/rpil-*` handshake
+directories remained after the tests.
+
+Remaining before any release: application-level readiness policy beyond exec,
+allocation accounting, requester-scope teardown, late-registration failure
+injection, simultaneous launch coverage, log-file type/permission hardening,
+Windows native Task Scheduler/Job Object implementation, external broker,
+SpawnMode contracts, facade, reviews, merged PRs and the release cascade.
+Windows currently selects explicit Unsupported as an intermediate build seam;
+that is not completion of the requested Windows backend and must be replaced.
 
 The Linux native tree now contains the private `resource_placement` verifier.
 Its focused tests first produced five assertion failures with an inert
 implementation, then seven passes after implementation, including live self
 capture. It compares cgroup path components and refuses root worker boundaries,
 different cgroup/mount namespaces, malformed paths, and non-unified/hybrid
-membership. This is not yet connected to a launcher; it does not prove process
-identity, readiness, or survival on teardown. The remaining native launch work
-must retain a reuse-safe process handle around this placement observation.
+membership. It is now connected to the launcher and checks a pinned process
+identity around placement capture. It does not itself prove application
+readiness or survival after requester-scope teardown.
 
 The first broader platform run was 80 passed / 1 failed: the existing
 `current_executable_exposes_a_gnu_build_id` test found no GNU build ID.

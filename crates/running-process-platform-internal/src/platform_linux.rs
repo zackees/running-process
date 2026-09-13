@@ -21,8 +21,14 @@ pub use autostart::{
 
 #[path = "platform_linux/process_inspect.rs"]
 pub(crate) mod process_inspect;
+#[cfg(any(feature = "independent-spawn", test))]
 mod resource_placement;
+#[cfg(any(feature = "independent-spawn", test))]
 mod scheduler_launch;
+#[cfg(feature = "independent-spawn")]
+mod independent_spawn;
+#[cfg(feature = "independent-spawn")]
+pub use independent_spawn::{spawn as independent_spawn, IndependentChild};
 pub use process_inspect::{
     process_executable_path, process_force_kill, process_same_executable_path,
     process_signal_terminate, ProcessLiveness,
