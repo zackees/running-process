@@ -8,6 +8,72 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Serve an explicitly provisioned owner-private endpoint. This function never
+/// changes its own cgroup placement or starts another broker. At most 32 launch
+/// sessions (including committed live targets) are retained at once.
+pub fn run(endpoint: &str, cancelled: &AtomicBool) -> io::Result<()> {
+    use crate::platform::ipc::{Endpoint, Listener, ListenerNonblockingMode};
+    use std::sync::atomic::AtomicUsize;
+    if cancelled.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let endpoint = Endpoint::new(endpoint)?;
+    if !std::path::Path::new(endpoint.display()).is_absolute() {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    let listener = Listener::bind_owner_only(&endpoint)?;
+    listener.set_nonblocking(ListenerNonblockingMode::Both)?;
+    let shutdown = AtomicBool::new(false);
+    let active = AtomicUsize::new(0);
+    struct Active<'a>(&'a AtomicUsize);
+    impl Drop for Active<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+    std::thread::scope(|scope| {
+        let result = loop {
+            if cancelled.load(Ordering::Acquire) {
+                break Ok(());
+            }
+            match listener.accept() {
+                Ok(stream) => {
+                    if active.fetch_add(1, Ordering::AcqRel) >= 32 {
+                        active.fetch_sub(1, Ordering::AcqRel);
+                        drop(stream);
+                        continue;
+                    }
+                    let active = &active;
+                    let shutdown = &shutdown;
+                    if let Err(error) = std::thread::Builder::new()
+                        .name("rp-independent-launch".into())
+                        .spawn_scoped(scope, move || {
+                            let _active = Active(active);
+                            let _ = serve_connection(stream, shutdown);
+                        })
+                    {
+                        active.fetch_sub(1, Ordering::AcqRel);
+                        break Err(error);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => break Err(error),
+            }
+        };
+        // A fatal accept/spawn error must also release idle and committed
+        // sessions before the scope joins them, rather than waiting forever.
+        shutdown.store(true, Ordering::Release);
+        result
+    })
+}
+
 pub(super) fn serve_connection(stream: Stream, cancelled: &AtomicBool) -> io::Result<()> {
     let deadline = Instant::now() + LEASE;
     if stream.peer_identity()?.user_id != crate::platform::ipc::current_user_id()? {
@@ -126,6 +192,30 @@ mod tests {
         };
         std::fs::write(path, b"ready").unwrap();
         std::thread::sleep(Duration::from_secs(30));
+    }
+
+    #[test]
+    fn broker_listener_cancels_idle_clients_and_retires_endpoint() {
+        let directory = tempfile::tempdir().unwrap();
+        crate::platform::private_dir::ensure_owner_private_directory(directory.path()).unwrap();
+        let path = directory.path().join("broker.sock");
+        let endpoint = Endpoint::new(path.to_str().unwrap()).unwrap();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let shutdown = std::sync::Arc::clone(&cancelled);
+        let address = endpoint.display().to_owned();
+        let broker = std::thread::spawn(move || run(&address, &shutdown));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !path.exists() && !broker.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let connected = Stream::connect_bounded(&endpoint, deadline, &AtomicBool::new(false));
+        cancelled.store(true, Ordering::Release);
+        broker.join().unwrap().unwrap();
+        assert!(
+            connected.is_ok(),
+            "broker did not accept an explicit connection"
+        );
+        assert!(!path.exists(), "broker endpoint must retire after shutdown");
     }
 
     #[test]

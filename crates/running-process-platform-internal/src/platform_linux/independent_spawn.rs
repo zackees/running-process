@@ -19,7 +19,15 @@ use std::{
 /// Exit observation does not provide a parent-child numeric exit status.
 pub struct IndependentChild {
     process: ProcessLiveness,
-    unit: ScheduledUnit,
+    control: Control,
+}
+
+enum Control {
+    Scheduler(ScheduledUnit),
+    Broker {
+        channel: Channel,
+        _broker: ProcessLiveness,
+    },
 }
 
 impl IndependentChild {
@@ -33,12 +41,34 @@ impl IndependentChild {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-        if let Err(error) = self.process.signal_pinned(libc::SIGKILL) {
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(error);
+        match &mut self.control {
+            Control::Scheduler(unit) => {
+                if let Err(error) = self.process.signal_pinned(libc::SIGKILL) {
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        return Err(error);
+                    }
+                }
+                unit.stop(deadline)
+            }
+            Control::Broker { channel, .. } => {
+                use super::independent_broker_wire::{receive, send, wire, Body};
+                if !self.process.is_alive() {
+                    return Ok(());
+                }
+                let cancelled = AtomicBool::new(false);
+                let result = (|| {
+                    send(channel, Body::Stop(wire::Empty {}), deadline, &cancelled)?;
+                    if !matches!(receive(channel, deadline, &cancelled)?, Body::Stopped(_)) {
+                        return Err(io::Error::from(io::ErrorKind::InvalidData));
+                    }
+                    Ok(())
+                })();
+                if result.is_err() {
+                    let _ = self.process.signal_pinned(libc::SIGKILL);
+                }
+                result
             }
         }
-        self.unit.stop(deadline)
     }
     pub fn wait(&self, timeout: Duration, cancelled: &AtomicBool) -> io::Result<()> {
         let deadline = Instant::now()
@@ -166,5 +196,130 @@ pub fn spawn(
     }
     check(deadline, cancelled)?;
     unit.retain_on_drop();
-    Ok(IndependentChild { process, unit })
+    Ok(IndependentChild {
+        process,
+        control: Control::Scheduler(unit),
+    })
+}
+
+/// Connect only to an already-running broker verified outside the worker.
+pub fn spawn_broker(
+    spec: &LaunchSpec,
+    address: &str,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> io::Result<IndependentChild> {
+    use super::independent_broker_wire::{encode_spec, failure_into_io, receive, send, wire, Body};
+    use crate::platform::ipc::Stream;
+    if timeout.is_zero() || timeout > LEASE || !Path::new(address).is_absolute() {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    let deadline = Instant::now() + timeout;
+    check(deadline, cancelled)?;
+    spec.validate()?;
+    let worker = Placement::capture(std::process::id())?;
+    let endpoint = Endpoint::new(address)?;
+    let stream = Stream::connect_bounded(&endpoint, deadline, cancelled).map_err(|error| {
+        if matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        ) {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "pre-existing broker unavailable",
+            )
+        } else {
+            error
+        }
+    })?;
+    let peer = stream.peer_identity()?;
+    if peer.pid == 0 || peer.user_id != current_user_id()? {
+        return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+    }
+    let broker = ProcessLiveness::open_pinned(peer.pid)?;
+    if !Placement::capture_pinned(&broker)?.outside_worker(&worker)? {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "broker retained caller containment",
+        ));
+    }
+    let mut channel = Channel::new(stream)?;
+    let mut launch = encode_spec(spec);
+    launch.timeout_millis = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis()
+        .clamp(1, 30000) as u32;
+    send(&mut channel, Body::Launch(launch), deadline, cancelled)?;
+    let pid = match receive(&mut channel, deadline, cancelled)? {
+        Body::Started(pid) => pid,
+        Body::Failed(kind) => return Err(failure_into_io(kind)),
+        _ => return Err(io::Error::from(io::ErrorKind::InvalidData)),
+    };
+    struct Pending(Option<ProcessLiveness>);
+    impl Drop for Pending {
+        fn drop(&mut self) {
+            if let Some(process) = &self.0 {
+                let _ = process.signal_pinned(libc::SIGKILL);
+            }
+        }
+    }
+    let process = ProcessLiveness::open_pinned(pid)?;
+    // Do not arm rollback termination for an arbitrary PID named by a broken
+    // or mismatched broker. This protocol launches a direct broker-owned child.
+    process.signal_pinned(0)?;
+    broker.signal_pinned(0)?;
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let parent = stat
+        .rsplit_once(')')
+        .and_then(|(_, fields)| fields.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u32>().ok());
+    if parent != Some(broker.pid()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "broker does not own reported target",
+        ));
+    }
+    process.signal_pinned(0)?;
+    broker.signal_pinned(0)?;
+    let mut pending = Pending(Some(process));
+    let process = pending
+        .0
+        .as_ref()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    if !Placement::capture_pinned(process)?.outside_worker(&worker)? {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "broker target retained caller containment",
+        ));
+    }
+    if !is_ready(&spec.readiness)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "broker target is not ready",
+        ));
+    }
+    send(
+        &mut channel,
+        Body::Commit(wire::Empty {}),
+        deadline,
+        cancelled,
+    )?;
+    if !matches!(
+        receive(&mut channel, deadline, cancelled)?,
+        Body::Committed(_)
+    ) {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    check(deadline, cancelled)?;
+    let process = pending
+        .0
+        .take()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    Ok(IndependentChild {
+        process,
+        control: Control::Broker {
+            channel,
+            _broker: broker,
+        },
+    })
 }

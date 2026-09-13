@@ -1,7 +1,7 @@
 //! Canonical policy dispatch; OS placement and payload handling stay private.
 use crate::{IndependentBackend, SpawnLifetime, SpawnMode, SpawnOptions};
 use running_process_platform_internal::platform::independent_spawn::{
-    spawn, spawn_inherited, IndependentChild, InheritedChild, LaunchSpec,
+    spawn, spawn_broker, spawn_inherited, IndependentChild, InheritedChild, LaunchSpec,
 };
 use std::{
     io,
@@ -113,11 +113,8 @@ pub fn spawn_with_options(
                 "Independent requires an explicit launch authority",
             ))
         }
-        (SpawnMode::Independent, Some(IndependentBackend::ExternalBroker { .. })) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "external broker launch is not implemented yet",
-            ))
+        (SpawnMode::Independent, Some(IndependentBackend::ExternalBroker { endpoint })) => {
+            Child::Independent(spawn_broker(spec, endpoint, options.timeout, cancelled)?)
         }
     };
     Ok(SpawnHandle {

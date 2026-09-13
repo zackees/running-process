@@ -1,5 +1,10 @@
 //! Windows implementation root for the process capability.
 #[cfg(feature = "independent-spawn")]
+#[path = "independent_broker_unsupported.rs"]
+mod independent_broker;
+#[cfg(feature = "independent-spawn")]
+pub use independent_broker::{run as independent_broker_run, spawn as independent_broker_spawn};
+#[cfg(feature = "independent-spawn")]
 mod independent_spawn;
 #[cfg(feature = "independent-spawn")]
 mod scheduler_launch;

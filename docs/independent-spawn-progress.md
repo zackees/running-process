@@ -313,3 +313,33 @@ requirement. The broker is still unimplemented. Acceptance still requires
 real broker/worker/target identity and placement checks, measured accounting,
 worker teardown survival, absent-broker failure, and a test proving the outer
 container memory limit is enforced rather than merely reading its setting.
+
+## Broker wiring checkpoint (2026-09-13)
+
+The earlier unimplemented-broker notes above describe prior checkpoints. Linux
+now exposes an explicitly pre-started `running-process-launcher --broker
+<absolute-endpoint>` and routes `ExternalBroker` requests through it. The wire
+is protobuf in the canonical protocol crate. The client checks the pinned
+broker's same-user identity and outside-worker placement before transmitting
+payloads, then checks direct broker parentage, pinned target placement and
+readiness before commit. Windows/macOS external-broker operations remain
+explicitly unsupported; their scheduler behavior is unchanged.
+
+The real host integration test pre-provisions the broker through the existing
+Linux scheduler, then verifies the broker path's target cgroup, argv, selected
+environment, cwd, regular-file stdout/stderr and stop acknowledgement. A second
+test rejects absent and in-worker brokers; the in-worker peer receives zero
+payload bytes. This is not the required non-systemd Docker acceptance test.
+
+The listener caps retained launch sessions, including live committed targets,
+at 32. Overload currently closes the excess connection rather than sending a
+typed busy response. If broker control fails, the client attempts termination
+of the pinned target and returns the control error; descendant cleanup still
+depends on the broker remaining responsive. These limitations are not proof
+of the full failure/cleanup matrix and must not be hidden by a release claim.
+
+Windows requester teardown reached GREEN in
+[run 34757297837](https://github.com/zackees/running-process/actions/runs/34757297837).
+The control host uses the existing token-derived login environment, separately
+from the target's explicit environment. All five workflow stages passed,
+including restrictive Job separation and requester-teardown survival/stop.
