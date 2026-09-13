@@ -910,6 +910,7 @@ def test_all_features_args_exclude_only_the_host_sensitive_ui_binary() -> None:
     """
     assert ci_test._rust_all_features_test_args() == [
         "--all-features",
+        "--no-fail-fast",
         "-E",
         "not test(/^brokered_backend_ui::/)",
     ]

@@ -84,7 +84,14 @@ def _rust_all_features_test_args() -> list[str]:
     snapshots were written -- the preflight `client` build on every OS, and
     the Linux coverage lane.
     """
-    return ["--all-features", "-E", "not test(/^brokered_backend_ui::/)"]
+    # Report the entire opt-in matrix even when an existing platform-specific
+    # failure occurs early. Failures still produce a nonzero nextest exit.
+    return [
+        "--all-features",
+        "--no-fail-fast",
+        "-E",
+        "not test(/^brokered_backend_ui::/)",
+    ]
 
 
 def _brokered_backend_ui_test_command() -> list[str]:
