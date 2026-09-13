@@ -105,10 +105,27 @@ Unix log files use mode 0600. Eight integration tests passed, including stale
 marker rejection, successful application readiness, a started target removed
 on readiness timeout, and symlink-log rejection without modifying its target.
 
-Remaining before any release: allocation accounting, requester-scope teardown,
-late-registration failure injection, simultaneous launch coverage,
+Remaining before any release: late-registration failure injection, simultaneous launch coverage,
 Windows native Task Scheduler/Job Object runtime validation, external broker,
 SpawnMode contracts, facade, reviews, merged PRs and the release cascade.
+
+The public `independent_spawn_accounting` integration now runs a requester in
+a real 128 MiB user service. A 24 MiB touched allocation through inherited
+spawn stayed in that service and raised memory.current from 819200 to 26734592
+bytes. The independent allocation was in a sibling service charged 26468352
+bytes; worker usage changed from 1523712 to 1339392 bytes. The parent stopped
+the entire requester unit and checked the daemon's pinned pidfd remained
+alive, then stopped its independent unit and checked the same pidfd reported
+exit. No requester or independent services remained. Reproduce with:
+
+```sh
+soldr cargo test -p running-process --no-default-features --features independent-spawn --test independent_spawn_accounting -- independent_allocation_survives_requester_scope_teardown --ignored --nocapture
+```
+
+Local review added stop-on-drop ownership until cleanup publication and made
+the outer guard stop the worker before reading its final published unit name.
+This test establishes worker accounting and teardown, not Docker outer-limit
+enforcement or the unfinished canonical SpawnMode dispatch API.
 Windows now selects a native Task Scheduler implementation. It registers an
 on-demand, same-user InteractiveToken task with LeastPrivilege, transports
 only the helper path and private endpoint in scheduler metadata, and uses the
