@@ -267,10 +267,21 @@ an ownership check alone. The same reviewer found no remaining high-severity
 finding in this scoped change, not a completion verdict for the whole issue.
 
 Windows x86-64 and macOS ARM cross-compilation passed during this iteration;
-macOS reports an unused failure-conversion method that needs cleanup. Windows
-full-launch runtime still times out after the earlier WriteZero fix. The next
-Windows stage includes a large-frame nonblocking IPC test and sanitized
-phase-specific errors to isolate payload transfer from target acknowledgement.
+macOS reports an unused failure-conversion method that needs cleanup.
+
+Windows transport RED -> GREEN is now verified. The isolated large-frame test
+in [run 34755683115](https://github.com/zackees/running-process/actions/runs/34755683115)
+timed out at payload send after ten seconds, before any scheduler operation.
+Limiting each private-channel write request to 512 bytes made the same test
+pass in 0.11 seconds in
+[run 34755832677](https://github.com/zackees/running-process/actions/runs/34755832677),
+at commit `2c42a21`. This latter workflow completed successfully: the task
+policy and abandoned-registration expiry tests passed in 47.42 seconds, and
+the full scheduled-target readiness/definition-removal/stop test passed in
+1.04 seconds. These results establish the normal Windows launch path, not
+the still-required restrictive requester Job Object and teardown acceptance
+test. The codec retains its existing frame bound, partial-write handling,
+deadline and cancellation checks.
 
 The macOS CI failure also exposed a stale minimal-platform graph assertion:
 origin/main already defaults platform-internal to async-process plus
