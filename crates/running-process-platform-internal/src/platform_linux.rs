@@ -28,6 +28,10 @@ mod scheduler_launch;
 #[cfg(feature = "independent-spawn")]
 mod independent_spawn;
 #[cfg(feature = "independent-spawn")]
+mod independent_broker;
+#[cfg(feature = "independent-spawn")]
+mod independent_broker_wire;
+#[cfg(feature = "independent-spawn")]
 pub use independent_spawn::{spawn as independent_spawn, IndependentChild};
 #[cfg(feature = "independent-spawn")]
 mod independent_io;

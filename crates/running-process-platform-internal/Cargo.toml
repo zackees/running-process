@@ -24,7 +24,7 @@ fs = ["dep:dirs"]
 # registration records and local IPC roots, but require neither a transport
 # nor endpoint-name hashing.
 private-dir = []
-independent-spawn = ["ipc", "dep:serde", "dep:serde_json", "dep:tempfile", "dep:getrandom"]
+independent-spawn = ["ipc", "dep:serde", "dep:serde_json", "dep:tempfile", "dep:getrandom", "dep:prost", "dep:running-process-protocol"]
 ipc = ["private-dir", "dep:interprocess", "dep:dirs", "dep:blake3"]
 async-process = ["dep:tokio", "process-inspection"]
 ipc-async = ["ipc", "async-process", "interprocess/tokio", "tokio/net"]
@@ -44,6 +44,8 @@ conpty-sidecar = [
 ]
 
 [dependencies]
+prost = { version = "0.14", optional = true }
+running-process-protocol = { version = "=4.10.11", path = "../running-process-protocol", optional = true }
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt"], optional = true }
 sysinfo = { version = "0.30", optional = true }
 interprocess = { version = "2", optional = true }

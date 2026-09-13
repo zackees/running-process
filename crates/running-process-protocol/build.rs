@@ -1,4 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=proto/independent_spawn.proto");
     // cargo-llvm-cov sets this cfg while linking LLVM's profiling runtime.
     println!("cargo:rustc-check-cfg=cfg(coverage)");
 
@@ -16,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     let file_descriptors = protox::compile(
         [
+            "proto/independent_spawn.proto",
             "proto/daemon.proto",
             "proto/broker_v1/broker_v1_envelope.proto",
             "proto/broker_v1/broker_v1_admin.proto",

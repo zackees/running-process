@@ -12,7 +12,7 @@ use super::ipc::{current_user_id, Endpoint, Stream};
 use super::process::{SpawnStdio, StdioSource, SyncEnvironment};
 use serde::{Deserialize, Serialize};
 
-const MAX_FRAME: usize = 1024 * 1024;
+pub(crate) const MAX_FRAME: usize = 1024 * 1024;
 pub use crate::{independent_spawn as spawn, IndependentChild};
 pub(crate) const LEASE: Duration = Duration::from_secs(30);
 
@@ -262,7 +262,7 @@ fn retry(deadline: Instant, cancelled: &AtomicBool) -> io::Result<()> {
     Ok(())
 }
 
-fn write_all(
+pub(crate) fn write_all(
     stream: &mut impl Write,
     mut bytes: &[u8],
     deadline: Instant,
@@ -287,7 +287,7 @@ fn write_all(
     Ok(())
 }
 
-fn read_exact(
+pub(crate) fn read_exact(
     stream: &mut impl Read,
     mut bytes: &mut [u8],
     deadline: Instant,
