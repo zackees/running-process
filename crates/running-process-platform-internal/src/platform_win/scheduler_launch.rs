@@ -97,7 +97,18 @@ impl ScheduledTask {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         check(deadline, cancelled)?;
-        let mut command = Command::new("powershell.exe");
+        // Requesters may intentionally have no PATH (including children launched
+        // with an explicit minimal environment). Windows PowerShell is an OS
+        // component, so locate it under SystemRoot instead of searching PATH.
+        let system_root = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .filter(|root| root.is_absolute())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Unsupported, "absolute SystemRoot unavailable")
+            })?;
+        let mut command = Command::new(
+            system_root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
+        );
         let literal = |value: &str| format!("'{}'", value.replace('\'', "''"));
         let script = format!(
             "& {{ {CONTROL} }} -Operation {} -TaskName {} -Definition {}",
