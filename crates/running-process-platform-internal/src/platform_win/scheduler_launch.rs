@@ -99,10 +99,17 @@ impl ScheduledTask {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         check(deadline, cancelled)?;
-        // Requesters may intentionally have no PATH (including children launched
-        // with an explicit minimal environment). Windows PowerShell is an OS
-        // component, so locate it under SystemRoot instead of searching PATH.
-        let system_root = std::env::var_os("SystemRoot")
+        // The control host needs the user's OS login environment even when the
+        // requester has a deliberately minimal environment. Do not pass target
+        // environment entries to PowerShell; those travel only over private IPC.
+        let environment = super::host::login_environment()?;
+        let system_root = environment
+            .iter()
+            .find(|(key, _)| {
+                key.to_str()
+                    .is_some_and(|key| key.eq_ignore_ascii_case("SystemRoot"))
+            })
+            .map(|(_, value)| value)
             .map(std::path::PathBuf::from)
             .filter(|root| root.is_absolute())
             .ok_or_else(|| {
@@ -132,7 +139,7 @@ impl ScheduledTask {
             ..SpawnStdio::default()
         };
         let mut child =
-            crate::spawn_sync(&mut command, stdio, SyncEnvironment::Inherit).map_err(|error| {
+            crate::spawn_sync(&mut command, stdio, SyncEnvironment::Explicit(environment)).map_err(|error| {
                 if error.kind() == io::ErrorKind::NotFound {
                     io::Error::new(
                         io::ErrorKind::Unsupported,
