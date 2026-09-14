@@ -355,8 +355,6 @@ use std::io;
 use std::io::Read;
 use std::os::windows::io::AsRawHandle;
 use std::sync::Mutex;
-#[cfg(feature = "async-process")]
-use std::sync::OnceLock;
 
 #[cfg(feature = "async-process")]
 use tokio::process::{Child, Command};
@@ -789,31 +787,85 @@ pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
     SpawnSpec::new("cmd.exe").arg("/C").arg(command)
 }
 
-// Only the async-process spawn paths place a child in the owner-death job;
+// Only the async-process spawn paths place a child in an owner-death job;
 // without that feature these items have no caller and fail `-D dead-code`.
 #[cfg(feature = "async-process")]
 struct Job(HANDLE);
 #[cfg(feature = "async-process")]
 unsafe impl Send for Job {}
-#[cfg(feature = "async-process")]
-unsafe impl Sync for Job {}
 
 #[cfg(feature = "async-process")]
-static JOB: OnceLock<Option<Job>> = OnceLock::new();
-
-#[cfg(feature = "async-process")]
-fn create() -> Option<Job> {
-    unsafe {
-        let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-        if handle.is_null() { return None; }
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if SetInformationJobObject(handle, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) == 0 { return None; }
-        Some(Job(handle))
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from `CreateJobObjectW` and is owned here.
+        unsafe { CloseHandle(self.0) };
     }
 }
 
-/// Place a freshly spawned child in the owner-death job.
+/// Owner-death jobs that may still contain a live process.
+///
+/// Every contained child gets its own empty job. One process-wide job stops
+/// accepting children once the owner itself joins another job: Windows assigns
+/// a process only to a job that is empty or already in its job chain, so a
+/// populated shared job rejects later children with `ERROR_ACCESS_DENIED`
+/// (#1207). A job is released only after it has no active processes, because
+/// closing a kill-on-close job earlier would terminate what it contains. The
+/// remaining handles close when the owner exits, which is the containment.
+#[cfg(feature = "async-process")]
+static JOBS: Mutex<Vec<Job>> = Mutex::new(Vec::new());
+
+#[cfg(feature = "async-process")]
+fn create() -> io::Result<Job> {
+    // SAFETY: both arguments may be null: default security and an unnamed job.
+    let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let job = Job(handle);
+    // SAFETY: an all-zero extended limit structure is valid; only the
+    // kill-on-close flag is then set.
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // SAFETY: `info` is valid for the length passed, and the class matches it.
+    let set = unsafe {
+        SetInformationJobObject(
+            job.0,
+            JobObjectExtendedLimitInformation,
+            (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if set == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(job)
+}
+
+/// Whether releasing `job` could still terminate a process.
+#[cfg(feature = "async-process")]
+fn job_may_contain_processes(job: &Job) -> bool {
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectBasicAccountingInformation, QueryInformationJobObject,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    };
+
+    // SAFETY: an all-zero accounting structure is valid to overwrite.
+    let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is valid for the length passed, and the class matches it.
+    let queried = unsafe {
+        QueryInformationJobObject(
+            job.0,
+            JobObjectBasicAccountingInformation,
+            (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    // A job that cannot be queried is kept rather than risk killing a child.
+    queried == 0 || info.ActiveProcesses != 0
+}
+
+/// Place a freshly spawned child in its own owner-death job.
 ///
 /// Every step here used to fail silently, which is the wrong shape for this
 /// operation: a caller passes `kill_when_owner_dies: true` precisely because
@@ -828,16 +880,18 @@ fn assign(child: Option<HANDLE>) -> io::Result<()> {
             "cannot contain a child that exposes no process handle",
         ));
     };
-    let Some(job) = JOB.get_or_init(create).as_ref() else {
-        return Err(io::Error::other(
-            "owner-death job object could not be created",
-        ));
-    };
-    // SAFETY: `job.0` is the process-wide job handle and `child` is the
-    // handle Tokio/std owns for the child just spawned.
+    let job = create().map_err(|error| {
+        io::Error::other(format!("owner-death job object could not be created: {error}"))
+    })?;
+    // SAFETY: `job.0` is the live job created above and `child` is the handle
+    // Tokio/std owns for the child just spawned. On failure the job is closed
+    // without containing anything.
     if unsafe { AssignProcessToJobObject(job.0, child) } == 0 {
         return Err(io::Error::last_os_error());
     }
+    let mut jobs = JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    jobs.retain(job_may_contain_processes);
+    jobs.push(job);
     Ok(())
 }
 #[path = "platform_win/sync_spawn.rs"]
