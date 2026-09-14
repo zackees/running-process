@@ -1,0 +1,78 @@
+name: Diagnose Windows Job nesting
+
+# Temporary evidence for #1207: measure how AssignProcessToJobObject behaves
+# under the GitHub-hosted runner's inherited Job before choosing a design.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/diag-job-nesting.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  job-nesting:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe Job assignment rules
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class J {
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr CreateJobObjectW(IntPtr a, IntPtr n);
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr proc);
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern bool IsProcessInJob(IntPtr proc, IntPtr job, out bool result);
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern bool QueryInformationJobObject(IntPtr job, int cls, IntPtr info, int len, IntPtr ret);
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetInformationJobObject(IntPtr job, int cls, IntPtr info, int len);
+            [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
+
+            public static string InJob(IntPtr proc) {
+              bool r; if (!IsProcessInJob(proc, IntPtr.Zero, out r)) return "IsProcessInJob error " + Marshal.GetLastWin32Error();
+              return r.ToString();
+            }
+            public static IntPtr NewKillOnCloseJob() {
+              IntPtr job = CreateJobObjectW(IntPtr.Zero, IntPtr.Zero);
+              IntPtr info = Marshal.AllocHGlobal(144);
+              for (int i = 0; i < 144; i++) Marshal.WriteByte(info, i, 0);
+              Marshal.WriteInt32(info, 16, 0x2000); // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+              if (!SetInformationJobObject(job, 9, info, 144)) throw new Exception("SetInformationJobObject " + Marshal.GetLastWin32Error());
+              return job;
+            }
+            public static string Assign(IntPtr job, IntPtr proc) {
+              if (AssignProcessToJobObject(job, proc)) return "ok";
+              return "FAILED error " + Marshal.GetLastWin32Error();
+            }
+            public static string CallerJobFlags() {
+              IntPtr info = Marshal.AllocHGlobal(144);
+              if (!QueryInformationJobObject(IntPtr.Zero, 9, info, 144, IntPtr.Zero)) return "query error " + Marshal.GetLastWin32Error();
+              return "0x" + Marshal.ReadInt32(info, 16).ToString("X");
+            }
+            public static string CallerUiRestrictions() {
+              IntPtr info = Marshal.AllocHGlobal(4);
+              if (!QueryInformationJobObject(IntPtr.Zero, 4, info, 4, IntPtr.Zero)) return "query error " + Marshal.GetLastWin32Error();
+              return "0x" + Marshal.ReadInt32(info, 0).ToString("X");
+            }
+          }
+          "@
+          function Start-Child { Start-Process -FilePath ping.exe -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru }
+
+          "OS: $([Environment]::OSVersion.VersionString)"
+          "caller in job: $([J]::InJob([J]::GetCurrentProcess()))"
+          "caller job LimitFlags (0x800 BREAKAWAY_OK, 0x1000 SILENT_BREAKAWAY_OK, 0x2000 KILL_ON_CLOSE): $([J]::CallerJobFlags())"
+          "caller job UI restrictions: $([J]::CallerUiRestrictions())"
+
+          $c1 = Start-Child; $c2 = Start-Child; $c3 = Start-Child; $c4 = Start-Child
+          "child in job before assignment: $([J]::InJob($c1.Handle))"
+
+          $shared = [J]::NewKillOnCloseJob()
+          "1. first child -> new shared job: $([J]::Assign($shared, $c1.Handle))"
+          "2. second child -> same shared job (first alive): $([J]::Assign($shared, $c2.Handle))"
+          "3. third child -> its own fresh job: $([J]::Assign([J]::NewKillOnCloseJob(), $c3.Handle))"
+          "4. fourth child -> another fresh job: $([J]::Assign([J]::NewKillOnCloseJob(), $c4.Handle))"
+          "child in job after assignment: $([J]::InJob($c1.Handle))"
+
+          foreach ($c in @($c1, $c2, $c3, $c4)) { try { $c.Kill() } catch {} }
