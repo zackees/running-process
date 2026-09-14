@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2098,7 +2098,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "blake3",
  "dirs",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "blake3",
  "crash-handler",
@@ -2150,7 +2150,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe-daemon"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "axum",
  "blake3",
@@ -2184,21 +2184,21 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe-interposer-linux"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "running-process-probe-interposer-macos"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "running-process-probe-interposer-windows"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "retour",
  "windows-sys 0.61.2",
@@ -2206,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-probe-worker"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "addr2line",
  "lzma-rs",
@@ -2224,7 +2224,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-protocol"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "prost",
  "prost-build",
@@ -2234,7 +2234,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-py"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "libc",
  "prost",
@@ -2250,7 +2250,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-win-gnu-bridge"
-version = "4.10.13"
+version = "4.10.14"
 dependencies = [
  "windows-sys 0.61.2",
 ]
