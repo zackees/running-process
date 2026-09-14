@@ -75,4 +75,11 @@ jobs:
           "4. fourth child -> another fresh job: $([J]::Assign([J]::NewKillOnCloseJob(), $c4.Handle))"
           "child in job after assignment: $([J]::InJob($c1.Handle))"
 
-          foreach ($c in @($c1, $c2, $c3, $c4)) { try { $c.Kill() } catch {} }
+          # Scenario B: the owner itself joins another Job after the shared Job
+          # already holds a child. Later children inherit that extra Job.
+          "5. owner (this pwsh) -> its own new job: $([J]::Assign([J]::NewKillOnCloseJob(), [J]::GetCurrentProcess()))"
+          $c5 = Start-Child; $c6 = Start-Child
+          "6. post-owner-job child -> populated shared job: $([J]::Assign($shared, $c5.Handle))"
+          "7. post-owner-job child -> fresh job: $([J]::Assign([J]::NewKillOnCloseJob(), $c6.Handle))"
+
+          foreach ($c in @($c1, $c2, $c3, $c4, $c5, $c6)) { try { $c.Kill() } catch {} }
