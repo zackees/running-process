@@ -147,3 +147,101 @@ fn a_contained_spawn_reports_whether_it_was_contained() {
         child.wait().await.expect("reap contained child");
     });
 }
+
+/// One owner process must be able to contain more than one live child.
+///
+/// nextest gives every test its own process, so a single contained spawn per
+/// test can never observe state that the owner-death machinery shares across
+/// spawns. Downstream harnesses that run many tests in one process (plain
+/// `cargo test`) do. On GitHub-hosted Windows, whose runner places every
+/// child in an inherited Job, kernal-api saw later contained spawns rejected
+/// with `ERROR_ACCESS_DENIED` (#1207). This keeps two contained children alive
+/// at once, then contains a third after both are reaped.
+#[cfg(feature = "client-async")]
+#[test]
+fn one_owner_contains_concurrent_and_later_children() {
+    use running_process::spawn::{spawn_tokio, TokioSpawnOptions};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let contained = || {
+            let mut command = tokio::process::Command::new(testbin_path("testbin-sleeper"));
+            command.stdin(Stdio::null()).stdout(Stdio::null());
+            spawn_tokio(
+                &mut command,
+                TokioSpawnOptions {
+                    kill_when_owner_dies: true,
+                    ..TokioSpawnOptions::default()
+                },
+            )
+        };
+
+        let mut first = contained().expect("first contained spawn");
+        let mut second = contained().expect("second contained spawn while the first is alive");
+        for child in [&mut first, &mut second] {
+            child.kill().await.expect("kill contained child");
+            child.wait().await.expect("reap contained child");
+        }
+
+        let mut third = contained().expect("contained spawn after earlier children were reaped");
+        third.kill().await.expect("kill contained child");
+        third.wait().await.expect("reap contained child");
+    });
+}
+
+/// The owner joining another Job must not stop it containing later children.
+///
+/// Windows assigns a process only to a Job that is empty or already in its Job
+/// chain. A process-wide owner-death Job that already holds a child therefore
+/// rejects every child spawned after the owner itself joins another Job, with
+/// `ERROR_ACCESS_DENIED`. kernal-api's harness does exactly that when a test
+/// installs owner-death cleanup in-process (#1207). nextest runs this in its
+/// own process, so moving the owner into a Job affects no other test.
+#[cfg(all(windows, feature = "client-async"))]
+#[test]
+fn contained_spawn_succeeds_after_the_owner_joins_another_job() {
+    use running_process::spawn::{spawn_tokio, TokioSpawnOptions};
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let contained = || {
+            let mut command = tokio::process::Command::new(testbin_path("testbin-sleeper"));
+            command.stdin(Stdio::null()).stdout(Stdio::null());
+            spawn_tokio(
+                &mut command,
+                TokioSpawnOptions {
+                    kill_when_owner_dies: true,
+                    ..TokioSpawnOptions::default()
+                },
+            )
+        };
+
+        let mut before = contained().expect("contained spawn before the owner joins a Job");
+
+        // The Job has no limits, and the owner stays in it until this test
+        // process exits, so its handle is intentionally never closed.
+        let owner_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        assert!(!owner_job.is_null(), "create owner Job");
+        assert_ne!(
+            unsafe { AssignProcessToJobObject(owner_job, GetCurrentProcess()) },
+            0,
+            "move the owner into another Job: {}",
+            std::io::Error::last_os_error()
+        );
+
+        let mut after =
+            contained().expect("contained spawn after the owner joined another Job");
+        for child in [&mut before, &mut after] {
+            child.kill().await.expect("kill contained child");
+            child.wait().await.expect("reap contained child");
+        }
+    });
+}

@@ -31,6 +31,7 @@ fn options() -> AsyncProcessSessionOptions {
         max_chunk_bytes: 64,
         post_exit_grace: Some(Duration::from_millis(25)),
         kill_on_drop: true,
+        kill_tree_on_drop: false,
     }
 }
 
@@ -110,6 +111,7 @@ async fn session_waits_for_direct_exit_even_when_a_full_output_queue_blocks_eof(
             max_chunk_bytes: 64,
             post_exit_grace: Some(Duration::from_secs(2)),
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         });
     session.start().await.expect("start session");
 
@@ -134,6 +136,7 @@ async fn session_slow_consumer_preserves_saturated_stdout_and_stderr() {
             max_chunk_bytes: 31,
             post_exit_grace: Some(Duration::from_millis(25)),
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         });
     session.start().await.expect("start saturated session");
     tokio::time::sleep(Duration::from_millis(40)).await;
@@ -174,6 +177,7 @@ async fn session_kill_and_wait_remain_responsive_while_stdin_is_blocked() {
             max_chunk_bytes: 128 * 1024,
             post_exit_grace: Some(Duration::from_millis(25)),
             kill_on_drop: true,
+            kill_tree_on_drop: false,
         });
     session.start().await.expect("start slow stdin child");
 
