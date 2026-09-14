@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.10.14 — Windows owner-death containment under nested Jobs
+
+- Gives each `kill_when_owner_dies` child its own kill-on-close Job. A single
+  process-wide Job rejected later children with `ERROR_ACCESS_DENIED` once the
+  owner itself had joined another Job (#1207, #1210). Jobs are released only
+  after they have no active processes; there is no breakaway fallback.
+- Restores compilation of the `async_api` session tests after
+  `kill_tree_on_drop` was added.
+
 ## 4.10.13 — canonical independent-spawn compatibility
 
 - Publishes the canonical independent-spawn option/result types and retained
