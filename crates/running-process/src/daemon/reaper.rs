@@ -117,9 +117,9 @@ pub fn scan_for_zombies(state: &DaemonState) -> Vec<ZombieInfo> {
     zombies
 }
 
-/// Scan for orphaned conhost.exe processes system-wide.
+/// Scan for orphaned ConPTY console-host processes system-wide.
 ///
-/// These are conhost.exe instances whose parent process has died — typically
+/// These are conhost.exe or OpenConsole.exe instances whose parent has died — typically
 /// leftovers from ConPTY sessions that were not properly cleaned up.
 /// Unlike registry-based zombie scanning, this uses a Toolhelp process snapshot
 /// and does not require prior registration.
@@ -129,8 +129,11 @@ pub fn scan_for_orphan_conhosts() -> Vec<ZombieInfo> {
         .into_iter()
         .map(|c| ZombieInfo {
             pid: c.pid,
-            command: "conhost.exe".to_string(),
-            reason: format!("orphan conhost.exe — parent PID {} is dead", c.parent_pid),
+            command: c.host_name.clone(),
+            reason: format!(
+                "orphan {} — parent PID {} is dead",
+                c.host_name, c.parent_pid
+            ),
         })
         .collect()
 }

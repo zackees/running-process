@@ -165,7 +165,7 @@ pub struct ChildProcessInfo { pub pid: u32, pub name: String }
 
 #[cfg(feature = "pty")]
 #[derive(Debug, Clone)]
-pub struct OrphanConhostInfo { pub pid: u32, pub parent_pid: u32, pub parent_name: String }
+pub struct OrphanConhostInfo { pub pid: u32, pub parent_pid: u32, pub parent_name: String, pub host_name: String }
 
 #[cfg(feature = "pty")]
 pub fn find_child_processes(parent_pid: u32) -> Vec<ChildProcessInfo> {
@@ -192,13 +192,16 @@ pub fn find_child_processes(parent_pid: u32) -> Vec<ChildProcessInfo> {
 
 #[cfg(feature = "pty")]
 fn conhost_children_of_current_process() -> Vec<u32> {
+    use crate::platform::terminal::is_conpty_host_image;
     find_child_processes(std::process::id()).into_iter()
-        .filter(|child| child.name.eq_ignore_ascii_case("conhost.exe"))
+        .filter(|child| is_conpty_host_image(&child.name))
         .map(|child| child.pid).collect()
 }
 
 #[cfg(feature = "pty")]
+#[cfg(feature = "pty")]
 pub fn find_orphan_conhosts() -> Vec<OrphanConhostInfo> {
+    use crate::platform::terminal::is_conpty_host_image;
     use winapi::um::handleapi::CloseHandle;
     use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS};
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -214,13 +217,13 @@ pub fn find_orphan_conhosts() -> Vec<OrphanConhostInfo> {
             let name = String::from_utf8_lossy(&entry.szExeFile[..length].iter().map(|&byte| byte as u8).collect::<Vec<_>>()).into_owned();
             all_pids.insert(entry.th32ProcessID);
             names.insert(entry.th32ProcessID, name.clone());
-            if name.eq_ignore_ascii_case("conhost.exe") { conhosts.push((entry.th32ProcessID, entry.th32ParentProcessID)); }
+            if is_conpty_host_image(&name) { conhosts.push((entry.th32ProcessID, entry.th32ParentProcessID, name)); }
             if unsafe { Process32Next(snapshot, &mut entry) } == 0 { break; }
         }
     }
     unsafe { CloseHandle(snapshot) };
-    conhosts.into_iter().filter(|(_, parent)| !all_pids.contains(parent)).map(|(pid, parent_pid)| OrphanConhostInfo {
-        pid, parent_pid, parent_name: names.get(&parent_pid).cloned().unwrap_or_default(),
+    conhosts.into_iter().filter(|(_, parent, _)| !all_pids.contains(parent)).map(|(pid, parent_pid, host_name)| OrphanConhostInfo {
+        pid, parent_pid, parent_name: names.get(&parent_pid).cloned().unwrap_or_default(), host_name,
     }).collect()
 }
 

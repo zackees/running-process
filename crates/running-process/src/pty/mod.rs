@@ -558,11 +558,11 @@ pub fn find_child_processes(parent_pid: u32) -> Vec<ChildProcessInfo> {
     pty_platform::find_child_processes(parent_pid)
 }
 
-/// A conhost.exe process whose parent is no longer alive — likely an orphan
+/// A ConPTY console host whose parent is no longer alive — likely an orphan
 /// from a dead ConPTY session.
 pub use pty_platform::OrphanConhostInfo;
 
-/// Scan all conhost.exe processes on the system and return those whose parent
+/// Scan conhost.exe and OpenConsole.exe processes and return those whose parent
 /// process is no longer alive. These are likely orphans from dead ConPTY sessions.
 ///
 /// Uses `CreateToolhelp32Snapshot` for a point-in-time snapshot — no sysinfo

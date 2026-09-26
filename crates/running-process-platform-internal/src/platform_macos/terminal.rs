@@ -225,6 +225,7 @@ pub struct OrphanConhostInfo {
     pub pid: u32,
     pub parent_pid: u32,
     pub parent_name: String,
+    pub host_name: String,
 }
 
 #[cfg(feature = "pty")]
