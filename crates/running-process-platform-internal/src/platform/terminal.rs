@@ -1,11 +1,13 @@
 //! Terminal, PTY, console, input, and terminal-I/O primitives.
 
-#[cfg(any(all(windows, feature = "pty"), test))]
+// Shared image classification is pure, but only Windows currently consumes it.
+#[cfg(feature = "pty")]
+#[allow(dead_code)]
 pub(crate) fn is_conpty_host_image(name: &str) -> bool {
     name.eq_ignore_ascii_case("conhost.exe") || name.eq_ignore_ascii_case("OpenConsole.exe")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "pty"))]
 mod console_host_tests {
     use super::is_conpty_host_image;
 
