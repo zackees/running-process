@@ -1,5 +1,13 @@
 //! Linux implementation root for the process capability.
 
+#[path = "platform_linux/foreground.rs"]
+pub(crate) mod foreground;
+
+/// Native niceness for the portable `ProcessPriority::Low` intent.
+pub(crate) const PRIORITY_NICE_LOW: i32 = 10;
+/// Native niceness for the portable `ProcessPriority::High` intent.
+pub(crate) const PRIORITY_NICE_HIGH: i32 = -5;
+
 #[path = "platform_linux/autostart.rs"]
 pub(crate) mod autostart;
 

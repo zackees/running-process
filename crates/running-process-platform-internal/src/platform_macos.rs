@@ -16,6 +16,14 @@ pub(crate) use independent_io::open_regular as independent_open_regular;
 #[cfg(feature = "independent-spawn")]
 pub(crate) const INDEPENDENT_ZERO_WRITE_PENDING: bool = false;
 
+#[path = "platform_macos/foreground.rs"]
+pub(crate) mod foreground;
+
+/// Native niceness for the portable `ProcessPriority::Low` intent.
+pub(crate) const PRIORITY_NICE_LOW: i32 = 10;
+/// Native niceness for the portable `ProcessPriority::High` intent.
+pub(crate) const PRIORITY_NICE_HIGH: i32 = -5;
+
 #[path = "platform_macos/autostart.rs"]
 pub(crate) mod autostart;
 

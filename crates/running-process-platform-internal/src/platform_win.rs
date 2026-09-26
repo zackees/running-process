@@ -19,6 +19,14 @@ pub(crate) use independent_io::open_regular as independent_open_regular;
 #[cfg(feature = "independent-spawn")]
 pub(crate) const INDEPENDENT_ZERO_WRITE_PENDING: bool = true;
 
+#[path = "platform_win/foreground.rs"]
+pub(crate) mod foreground;
+
+/// Native niceness for the portable `ProcessPriority::Low` intent.
+pub(crate) const PRIORITY_NICE_LOW: i32 = 1;
+/// Native niceness for the portable `ProcessPriority::High` intent.
+pub(crate) const PRIORITY_NICE_HIGH: i32 = -15;
+
 #[path = "platform_win/autostart.rs"]
 pub(crate) mod autostart;
 
