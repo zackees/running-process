@@ -1,0 +1,75 @@
+"""Tests for ci.cache_save_guard (#1216)."""
+
+import unittest
+from pathlib import Path
+
+from ci import cache_save_guard as guard
+
+P = Path("wf.yml")
+
+
+def check(text: str) -> list[str]:
+    return [v.message for v in guard.check_text(P, text)]
+
+
+class CacheSaveGuardTests(unittest.TestCase):
+    def test_rust_cache_without_save_if_fails(self) -> None:
+        text = "    steps:\n      - uses: Swatinem/rust-cache@v2\n        with:\n          key: x\n"
+        self.assertEqual(len(check(text)), 1)
+
+    def test_rust_cache_main_gate_passes(self) -> None:
+        text = (
+            "    steps:\n      - name: c\n        uses: Swatinem/rust-cache@v2\n"
+            "        with:\n          save-if: ${{ github.ref == 'refs/heads/main' }}\n"
+        )
+        self.assertEqual(check(text), [])
+
+    def test_rust_cache_save_if_false_passes(self) -> None:
+        text = "      - uses: Swatinem/rust-cache@v2\n        with:\n          save-if: false\n"
+        self.assertEqual(check(text), [])
+
+    def test_rust_cache_save_if_true_fails(self) -> None:
+        text = "      - uses: Swatinem/rust-cache@v2\n        with:\n          save-if: true\n"
+        self.assertEqual(len(check(text)), 1)
+
+    def test_save_if_does_not_leak_from_next_step(self) -> None:
+        text = (
+            "      - uses: Swatinem/rust-cache@v2\n"
+            "      - uses: Swatinem/rust-cache@v2\n        with:\n          save-if: false\n"
+        )
+        self.assertEqual(len(check(text)), 1)
+
+    def test_plain_actions_cache_fails(self) -> None:
+        text = "      - uses: actions/cache@v4\n        with:\n          path: .venv\n"
+        self.assertEqual(len(check(text)), 1)
+
+    def test_restore_only_passes(self) -> None:
+        text = "      - uses: actions/cache/restore@v4\n        with:\n          path: .venv\n"
+        self.assertEqual(check(text), [])
+
+    def test_save_requires_main_gate(self) -> None:
+        bad = "      - uses: actions/cache/save@v4\n        with:\n          path: .venv\n"
+        good = (
+            "      - if: github.ref == 'refs/heads/main'\n"
+            "        uses: actions/cache/save@v4\n"
+        )
+        self.assertEqual(len(check(bad)), 1)
+        self.assertEqual(check(good), [])
+
+    def test_commented_exemption_passes(self) -> None:
+        text = (
+            "      # cache-save-exempt: tiny, PR-local by design\n"
+            "      - uses: actions/cache@v4\n"
+        )
+        self.assertEqual(check(text), [])
+
+    def test_exemption_needs_reason(self) -> None:
+        text = "      # cache-save-exempt:\n      - uses: actions/cache@v4\n"
+        self.assertEqual(len(check(text)), 1)
+
+    def test_repository_workflows_pass(self) -> None:
+        self.assertEqual(guard.main([]), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

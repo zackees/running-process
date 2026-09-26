@@ -57,6 +57,7 @@ jobs:
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: ubuntu-24.04-reproducible
           cache-on-failure: true
 

@@ -79,8 +79,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Cache venv
-        uses: actions/cache@v4
+      - name: Restore venv
+        id: venv-cache
+        uses: actions/cache/restore@v4
         with:
           path: .venv
           key: venv-${{ matrix.os }}-py3.11-${{ hashFiles('uv.lock') }}
@@ -104,11 +105,20 @@ jobs:
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: ${{ matrix.label }}-all-features
           cache-on-failure: true
 
       - name: Sync venv (frozen, no project install)
         run: uv sync --frozen --group dev --no-install-project --python 3.11
+
+      # #1216: save only on main; PR runs restore main's entry.
+      - name: Save venv
+        if: ${{ github.ref == 'refs/heads/main' && steps.venv-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .venv
+          key: ${{ steps.venv-cache.outputs.cache-primary-key }}
 
       # `ci.test` imports `running_process` at runtime, so the dev wheel has
       # to be installed even though this lane asserts nothing about Python.
