@@ -49,6 +49,18 @@ def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> Non
             "-m",
             "ci.wheel_abi_guard",
         ],
+        # #1216: no workflow cache step may save from a pull_request run.
+        [
+            python,
+            "-m",
+            "running_process.cli",
+            "--timeout",
+            timeout,
+            "--",
+            python,
+            "-m",
+            "ci.cache_save_guard",
+        ],
         [
             python,
             "-m",
