@@ -1,6 +1,6 @@
 //! Terminal, PTY, console, input, and terminal-I/O primitives.
 
-#[cfg(any(windows, test))]
+#[cfg(any(all(windows, feature = "pty"), test))]
 pub(crate) fn is_conpty_host_image(name: &str) -> bool {
     name.eq_ignore_ascii_case("conhost.exe") || name.eq_ignore_ascii_case("OpenConsole.exe")
 }
