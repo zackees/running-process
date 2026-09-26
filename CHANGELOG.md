@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.10.15 — ConPTY sidecar console-host tracking
+
+- Tracks `OpenConsole.exe` alongside `conhost.exe` when assigning ConPTY hosts
+  to kill-on-close Jobs and scanning for orphaned hosts. Orphan reports retain
+  the actual host image name (zackees/clud#1367).
+
 ## 4.10.14 — Windows owner-death containment under nested Jobs
 
 - Gives each `kill_when_owner_dies` child its own kill-on-close Job. A single
