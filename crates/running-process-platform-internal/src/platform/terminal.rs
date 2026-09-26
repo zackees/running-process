@@ -1,5 +1,23 @@
 //! Terminal, PTY, console, input, and terminal-I/O primitives.
 
+#[cfg(any(windows, test))]
+pub(crate) fn is_conpty_host_image(name: &str) -> bool {
+    name.eq_ignore_ascii_case("conhost.exe") || name.eq_ignore_ascii_case("OpenConsole.exe")
+}
+
+#[cfg(test)]
+mod console_host_tests {
+    use super::is_conpty_host_image;
+
+    #[test]
+    fn recognizes_system_and_sidecar_console_hosts() {
+        assert!(is_conpty_host_image("conhost.exe"));
+        assert!(is_conpty_host_image("OPENCONSOLE.EXE"));
+        assert!(!is_conpty_host_image("OpenConsole.exe.bak"));
+        assert!(!is_conpty_host_image("console.exe"));
+    }
+}
+
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::Path;

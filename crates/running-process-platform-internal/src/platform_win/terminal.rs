@@ -192,18 +192,16 @@ pub fn find_child_processes(parent_pid: u32) -> Vec<ChildProcessInfo> {
 
 #[cfg(feature = "pty")]
 fn conhost_children_of_current_process() -> Vec<u32> {
+    use crate::platform::terminal::is_conpty_host_image;
     find_child_processes(std::process::id()).into_iter()
         .filter(|child| is_conpty_host_image(&child.name))
         .map(|child| child.pid).collect()
 }
 
 #[cfg(feature = "pty")]
-fn is_conpty_host_image(name: &str) -> bool {
-    name.eq_ignore_ascii_case("conhost.exe") || name.eq_ignore_ascii_case("OpenConsole.exe")
-}
-
 #[cfg(feature = "pty")]
 pub fn find_orphan_conhosts() -> Vec<OrphanConhostInfo> {
+    use crate::platform::terminal::is_conpty_host_image;
     use winapi::um::handleapi::CloseHandle;
     use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS};
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -366,14 +364,6 @@ impl Drop for TerminalInputSession {
 #[cfg(all(test, feature = "pty"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recognizes_both_conpty_host_images() {
-        assert!(is_conpty_host_image("conhost.exe"));
-        assert!(is_conpty_host_image("OPENCONSOLE.EXE"));
-        assert!(!is_conpty_host_image("OpenConsole.exe.bak"));
-        assert!(!is_conpty_host_image("console.exe"));
-    }
 
     #[test]
     fn assign_child_to_job_null_handle_errors() {
