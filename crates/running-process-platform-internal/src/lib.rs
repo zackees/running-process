@@ -75,6 +75,9 @@ cfg_select! {
 // Re-export the selected implementation once from this allowed host-selector
 // root. Neutral capability facades re-export only crate-root names and never
 // name the private `platform_imp` alias themselves.
+pub(crate) use platform_imp::foreground as foreground_imp;
+pub(crate) use platform_imp::{PRIORITY_NICE_HIGH, PRIORITY_NICE_LOW};
+
 pub use platform_imp::{
     assign_child_to_windows_job, cancel_capture_reader, canonical_environment_pairs,
     capture_reader_done, compat_shell_command, configure_exact_trace, configure_process_command,

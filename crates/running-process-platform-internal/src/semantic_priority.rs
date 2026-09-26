@@ -21,8 +21,8 @@ impl ProcessPriority {
         match self {
             Self::Normal => None,
             Self::Idle => Some(19),
-            Self::Low => Some(if cfg!(windows) { 1 } else { 10 }),
-            Self::High => Some(if cfg!(windows) { -15 } else { -5 }),
+            Self::Low => Some(crate::PRIORITY_NICE_LOW),
+            Self::High => Some(crate::PRIORITY_NICE_HIGH),
         }
     }
 }
