@@ -519,9 +519,18 @@ async fn session_post_exit_grace_is_a_cumulative_pipe_read_budget() {
     }
     assert!(abandoned, "drip writer is abandoned after cumulative grace");
     let text = String::from_utf8_lossy(&transcript);
+    // The drip writer shares the pipe and starts writing `.` as soon as it is
+    // spawned, which can be before the holder prints its PID line. The marker
+    // can therefore follow drip bytes with no whitespace in between (e.g.
+    // `.GRANDCHILD_PID=123`), so search for it anywhere rather than as a
+    // whitespace-delimited word prefix.
     let pid = text
-        .split_whitespace()
-        .find_map(|word| word.strip_prefix("GRANDCHILD_PID="))
+        .split_once("GRANDCHILD_PID=")
+        .map(|(_, rest)| {
+            rest.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
         .and_then(|pid| pid.parse::<i32>().ok())
         .expect("fixture reports drip-writer pid");
     let kill_result = unsafe { libc::kill(pid, libc::SIGKILL) };

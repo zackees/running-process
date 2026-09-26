@@ -477,7 +477,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "running-process"
-version = "4.10.12"
+version = "4.10.14"
 dependencies = [
  "libc",
  "prost",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.12"
+version = "4.10.14"
 dependencies = [
  "libc",
  "sysinfo",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "running-process-protocol"
-version = "4.10.12"
+version = "4.10.14"
 dependencies = [
  "prost",
  "prost-build",
