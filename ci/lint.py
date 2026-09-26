@@ -65,6 +65,9 @@ def main() -> int:
         return 1
     if run(supervised_command(python, str(python), "-m", "ci.wheel_abi_guard")) != 0:
         return 1
+    # #1216: no workflow cache step may save from a pull_request run.
+    if run(supervised_command(python, str(python), "-m", "ci.cache_save_guard")) != 0:
+        return 1
     if run(supervised_command(python, str(python), "-m", "ci.spawn_path_guard")) != 0:
         return 1
     if run(

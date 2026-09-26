@@ -74,7 +74,12 @@ jobs:
       - name: Rust build cache (shared across warm + sub-workers)
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ inputs.label }}-shared
+          # shared-key (not key): rust-cache otherwise mixes the job id into
+          # the cache key, so warm/lint/unit-test each got a private entry and
+          # the sub-workers never actually restored warm's target/ (#1216).
+          # Only warm saves, and only on main; PR runs restore main's entry.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: ${{ inputs.label }}-preflight-rust
           cache-on-failure: true
 
       - name: cargo build --target ${{ inputs.target }}
@@ -100,7 +105,9 @@ jobs:
       - name: Rust build cache (restore warm)
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ inputs.label }}-shared
+          # Restore-only: warm-build owns this shared-key entry (#1216).
+          save-if: false
+          shared-key: ${{ inputs.label }}-preflight-rust
           cache-on-failure: true
       - name: cargo clippy --target ${{ inputs.target }}
         run: cargo clippy --workspace --exclude running-process-py --all-targets --features ${{ inputs.features }} --target ${{ inputs.target }} -- -D warnings
@@ -130,7 +137,9 @@ jobs:
       - name: Rust build cache (restore warm)
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ inputs.label }}-shared
+          # Restore-only: warm-build owns this shared-key entry (#1216).
+          save-if: false
+          shared-key: ${{ inputs.label }}-preflight-rust
           cache-on-failure: true
       # musl binaries are statically linked and run on the host-arch
       # glibc runner without QEMU. If a downstream lane introduces a

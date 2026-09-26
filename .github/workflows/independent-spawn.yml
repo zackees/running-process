@@ -51,6 +51,7 @@ jobs:
           toolchain: '1.95.0'
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: independent-fixture-${{ matrix.target }}
       - name: Install build orchestrator
         run: uv tool install soldr
@@ -115,6 +116,8 @@ jobs:
         with:
           toolchain: '1.95.0'
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # The repository cargo_command wrapper uses Soldr when installed and
       # the established CI bootstrap otherwise, avoiding a circular toolchain.
       - name: Exercise Task Scheduler and native target control

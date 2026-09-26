@@ -55,6 +55,7 @@ jobs:
           tool: nextest
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: output-shutdown-${{ matrix.label }}
       - name: Validate evidence guard
         run: uv run --no-project --module unittest discover -s tests -p test_output_shutdown_native.py

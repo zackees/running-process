@@ -78,8 +78,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Cache venv
-        uses: actions/cache@v4
+      - name: Restore venv
+        id: venv-cache
+        uses: actions/cache/restore@v4
         with:
           path: .venv
           key: venv-${{ inputs.os }}-py3.11-${{ hashFiles('uv.lock') }}
@@ -100,6 +101,7 @@ jobs:
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           # Keep cache path discovery scoped to this checkout's workspace
           # target root.  rust-cache's automatic discovery can otherwise
           # register a nested `target/tests/target` path and fail its post-job
@@ -112,6 +114,14 @@ jobs:
 
       - name: Sync venv (frozen, no project install)
         run: uv sync --frozen --group dev --no-install-project --python 3.11
+
+      # #1216: save only on main; PR runs restore main's entry.
+      - name: Save venv
+        if: ${{ github.ref == 'refs/heads/main' && steps.venv-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .venv
+          key: ${{ steps.venv-cache.outputs.cache-primary-key }}
 
       # THE build. Workspace + all targets + downstream features, debug
       # profile, exactly once. Everything below reuses this target/.
@@ -191,10 +201,10 @@ jobs:
           toolchain: "nightly-2026-04-16"
           components: llvm-tools-preview, rustc-dev
 
-      - name: Cache Dylint 6.0.1 tools
+      - name: Restore Dylint 6.0.1 tools
         if: ${{ inputs.dylint }}
         id: dylint-tools
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/bin/cargo-dylint
@@ -207,9 +217,20 @@ jobs:
           CARGO_BIN: cargo
         run: rustup run 1.95.0 "$CARGO_BIN" install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked --force
 
-      - name: Cache Dylint target
+      # #1216: save only on main; PR runs restore main's entry.
+      - name: Save Dylint 6.0.1 tools
+        if: ${{ inputs.dylint && github.ref == 'refs/heads/main' && steps.dylint-tools.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-dylint
+            ~/.cargo/bin/dylint-link
+          key: ${{ steps.dylint-tools.outputs.cache-primary-key }}
+
+      - name: Restore Dylint target
         if: ${{ inputs.dylint }}
-        uses: actions/cache@v4
+        id: dylint-target
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/running-process-dylint-target
           key: dylint-target-v6-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
@@ -236,6 +257,14 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
         run: |
           rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --path lints --pattern running-process-platform-boundary --workspace
+
+      # #1216: save only on main; PR runs restore main's entry.
+      - name: Save Dylint target
+        if: ${{ inputs.dylint && github.ref == 'refs/heads/main' && steps.dylint-target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/running-process-dylint-target
+          key: ${{ steps.dylint-target.outputs.cache-primary-key }}
 
 
       - name: Terminal graphics capability matrix

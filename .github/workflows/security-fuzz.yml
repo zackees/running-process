@@ -76,12 +76,14 @@ jobs:
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: crates/running-process/fuzz -> target
           key: ubuntu-latest-security-fuzz
           cache-on-failure: true
 
       - name: Restore fuzz corpus
-        uses: actions/cache@v4
+        id: fuzz-corpus
+        uses: actions/cache/restore@v4
         with:
           path: crates/running-process/fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'crates/running-process/fuzz/Cargo.toml', 'crates/running-process/fuzz/Cargo.lock') }}
@@ -132,6 +134,15 @@ jobs:
           # built for, which depends on how it was installed rather than on
           # anything this workflow states.
           cargo +nightly fuzz run             --target x86_64-unknown-linux-gnu             "${{ matrix.target }}"             -- -max_total_time="${FUZZ_SECONDS}" -timeout=30
+
+      # #1216: grow the corpus only from main (scheduled) runs; PR runs
+      # restore main's corpus but never write a PR-scoped entry.
+      - name: Save fuzz corpus
+        if: ${{ github.ref == 'refs/heads/main' && steps.fuzz-corpus.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: crates/running-process/fuzz/corpus/${{ matrix.target }}
+          key: ${{ steps.fuzz-corpus.outputs.cache-primary-key }}
 
       - name: Write release evidence manifest
         if: ${{ success() && steps.fuzz-config.outputs.release_evidence == 'true' }}

@@ -539,8 +539,12 @@ jobs:
           toolchain: "1.95.0"
           targets: ${{ matrix.target }}
 
+      # Save only on main pushes (#1216). A cache written on a tag ref is
+      # scoped to that tag and no later release can restore it, while tag and
+      # dispatch runs still restore main's entry for the same key.
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: release-binaries-${{ matrix.target }}
 
       - uses: actions/setup-python@v5
