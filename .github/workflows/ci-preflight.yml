@@ -50,6 +50,14 @@ on:
         description: Run the repository Dylint gate. Enabled only for the native Linux x86 lane.
         type: boolean
         default: false
+      cache-targets:
+        description: Cache Cargo target artifacts. False retains only the Cargo registry.
+        type: boolean
+        default: true
+      cache-key-suffix:
+        description: Stable cache family name for this lane.
+        type: string
+        default: shared
 
 permissions:
   contents: read
@@ -102,6 +110,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-targets: ${{ inputs.cache-targets }}
           # Keep cache path discovery scoped to this checkout's workspace
           # target root.  rust-cache's automatic discovery can otherwise
           # register a nested `target/tests/target` path and fail its post-job
@@ -109,7 +118,7 @@ jobs:
           workspaces: ". -> target"
           # Key kept from the fan-out era so existing warm caches carry
           # over. OS + Cargo.lock hash are included via Swatinem defaults.
-          key: ${{ inputs.label }}-shared
+          key: ${{ inputs.label }}-${{ inputs.cache-key-suffix }}
           cache-on-failure: true
 
       - name: Sync venv (frozen, no project install)
