@@ -74,10 +74,15 @@ RELEASE_BINARY_CACHE_PREFIXES = (
     "v0-rust-release-binaries-x86_64-pc-windows-msvc-build-binaries-",
     "v0-rust-release-binaries-aarch64-pc-windows-msvc-build-binaries-",
 )
+SUPERSEDED_TARGET_CACHE_PREFIXES = (
+    "v0-rust-windows-arm-shared-preflight-",
+    "v0-rust-ubuntu-24.04-coverage-coverage-",
+)
 RETIRED_CACHE_PREFIXES = (
     *ALL_FEATURES_CACHE_PREFIXES,
     *RELEASE_BUILD_CACHE_PREFIXES,
     *RELEASE_BINARY_CACHE_PREFIXES,
+    *SUPERSEDED_TARGET_CACHE_PREFIXES,
 )
 
 

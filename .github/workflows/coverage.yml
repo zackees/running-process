@@ -70,7 +70,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: ubuntu-24.04-coverage
+          # Coverage target artifacts dominate its cache and are rebuilt on
+          # every source/lock change; retain registry downloads under a new key.
+          cache-targets: false
+          key: ubuntu-24.04-coverage-registry
           cache-on-failure: true
 
       - name: Sync
