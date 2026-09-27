@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   enforce-cache-budget:
-    name: Retire disabled all-features caches and check repository budget
+    name: Retire disabled target caches and check repository budget
     runs-on: ubuntu-latest
     timeout-minutes: 240
     permissions:

@@ -93,7 +93,10 @@ jobs:
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # #1216: preserve shared dev-build saves, but keep the infrequent
+          # release-only target cache restore-only. Release builds still run
+          # fully; the next release may compile its target cache cold.
+          save-if: ${{ github.ref == 'refs/heads/main' && inputs['build-mode'] != 'release' }}
           key: ${{ inputs.runs-on }}-${{ inputs.build-mode || 'dev' }}
           cache-on-failure: true
 
