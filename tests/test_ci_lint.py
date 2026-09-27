@@ -3,7 +3,7 @@ from __future__ import annotations
 from ci import lint as ci_lint
 
 
-def test_native_preflights_gate_both_workspace_dylints() -> None:
+def test_one_linux_preflight_gates_both_workspace_dylints() -> None:
     workflows = ci_lint.ROOT / ".github" / "workflows"
     reusable = (workflows / "ci-preflight.yml").read_text(encoding="utf-8")
     assert "dylint --all --workspace" in reusable
@@ -14,7 +14,7 @@ def test_native_preflights_gate_both_workspace_dylints() -> None:
             ("macos-x86", "macos-arm") if name == "ci-macos.yml" else ("windows-x86", "windows-arm")
         ):
             job = source.split(f"label: {label}", 1)[1].split("\n\n", 1)[0]
-            assert "dylint: true" in job, (name, label)
+            assert ("dylint: true" in job) == (label == "linux-x86"), (name, label)
 
 
 def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> None:
