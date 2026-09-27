@@ -107,6 +107,22 @@ class CacheBudgetPolicyTests(unittest.TestCase):
                 "v0-rust-release-binaries-x86_64-pc-windows-msvc-build-binaries-Linux-x64-hash-version",
                 ref="refs/tags/v4.10.15",
             ),
+            entry(
+                21,
+                "v0-rust-windows-arm-shared-preflight-Windows_NT-arm64-hash-version",
+            ),
+            entry(
+                22,
+                "v0-rust-ubuntu-24.04-coverage-coverage-Linux-x64-hash-version",
+            ),
+            entry(
+                23,
+                "v0-rust-windows-arm-registry-preflight-Windows_NT-arm64-hash-version",
+            ),
+            entry(
+                24,
+                "v0-rust-ubuntu-24.04-coverage-registry-coverage-Linux-x64-hash-version",
+            ),
         ]
 
         self.assertEqual(
@@ -115,7 +131,48 @@ class CacheBudgetPolicyTests(unittest.TestCase):
                 for cache in candidates
                 if cache_budget.is_retired_cache(cache)
             ],
-            list(range(1, 4)) + list(range(7, 19)),
+            list(range(1, 4)) + list(range(7, 19)) + [21, 22],
+        )
+
+    def test_high_volume_lanes_keep_registry_only_under_new_namespaces(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        windows = (root / ".github/workflows/ci-windows.yml").read_text(
+            encoding="utf-8"
+        )
+        arm_job = re.search(r"(?ms)^  arm:.*?(?=^  \w+:|\Z)", windows)
+        self.assertIsNotNone(arm_job)
+        self.assertIn("cache-targets: false", arm_job.group())
+        self.assertIn("cache-key-suffix: registry", arm_job.group())
+
+        preflight = (root / ".github/workflows/ci-preflight.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("cache-targets: ${{ inputs.cache-targets }}", preflight)
+        self.assertIn(
+            "key: ${{ inputs.label }}-${{ inputs.cache-key-suffix }}", preflight
+        )
+
+        coverage = (root / ".github/workflows/coverage.yml").read_text(encoding="utf-8")
+        coverage_cache = next(
+            block
+            for block in coverage.split("\n      - ")
+            if "key: ubuntu-24.04-coverage-registry" in block
+        )
+        self.assertIn("cache-targets: false", coverage_cache)
+        self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", coverage_cache)
+        self.assertTrue(
+            {
+                "v0-rust-windows-arm-shared-preflight-",
+                "v0-rust-ubuntu-24.04-coverage-coverage-",
+            }
+            <= set(cache_budget.SUPERSEDED_TARGET_CACHE_PREFIXES)
+        )
+        self.assertFalse(
+            any(
+                prefix.endswith("registry-preflight-")
+                or prefix.endswith("registry-coverage-")
+                for prefix in cache_budget.RETIRED_CACHE_PREFIXES
+            )
         )
 
     def test_release_target_caches_are_restore_only(self) -> None:
@@ -252,6 +309,26 @@ class CacheBudgetPolicyTests(unittest.TestCase):
                 "v0-rust-release-binaries-aarch64-pc-windows-msvc-build-binaries-Linux-x64-hash-version",
                 size=500,
             ),
+            entry(
+                7,
+                "v0-rust-windows-arm-shared-preflight-Windows_NT-arm64-hash-version",
+                size=2100,
+            ),
+            entry(
+                8,
+                "v0-rust-ubuntu-24.04-coverage-coverage-Linux-x64-hash-version",
+                size=900,
+            ),
+            entry(
+                9,
+                "v0-rust-windows-arm-registry-preflight-Windows_NT-arm64-hash-version",
+                size=50,
+            ),
+            entry(
+                10,
+                "v0-rust-ubuntu-24.04-coverage-registry-coverage-Linux-x64-hash-version",
+                size=50,
+            ),
         ]
 
         class FakeAPI:
@@ -276,9 +353,9 @@ class CacheBudgetPolicyTests(unittest.TestCase):
             api, sleep=lambda _seconds: None, attempts=2
         )
 
-        self.assertEqual(api.deleted, [1, 2, 3, 5, 6])
-        self.assertEqual([int(cache["id"]) for cache in api.caches], [4])
-        self.assertEqual(budget, 200)
+        self.assertEqual(api.deleted, [1, 2, 3, 5, 6, 7, 8])
+        self.assertEqual([int(cache["id"]) for cache in api.caches], [4, 9, 10])
+        self.assertEqual(budget, 300)
 
     def test_repeated_retirement_catches_a_cache_recreated_by_an_active_writer(
         self,
