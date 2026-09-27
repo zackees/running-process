@@ -137,6 +137,40 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         self.assertEqual([int(cache["id"]) for cache in api.caches], [4])
         self.assertEqual(budget, 200)
 
+    def test_repeated_retirement_catches_a_cache_recreated_by_an_active_writer(
+        self,
+    ) -> None:
+        class FakeAPI:
+            def __init__(self) -> None:
+                self.caches: list[Mapping[str, Any]] = [
+                    entry(1, "v0-rust-macos-arm-all-features-all-features-old")
+                ]
+                self.deleted: list[int] = []
+
+            def list_caches(self) -> list[Mapping[str, Any]]:
+                return list(self.caches)
+
+            def delete_cache(self, cache_id: int) -> None:
+                self.deleted.append(cache_id)
+                self.caches = [
+                    cache for cache in self.caches if int(cache["id"]) != cache_id
+                ]
+
+        api = FakeAPI()
+        first_phase = cache_budget.retire_disabled_caches(api)
+        self.assertEqual([int(cache["id"]) for cache in first_phase], [1])
+
+        # A scheduled run that started before the barrier can repopulate the
+        # same retired family after the early pass; final enforcement catches it.
+        api.caches.append(
+            entry(2, "v0-rust-macos-arm-all-features-all-features-recreated")
+        )
+        second_phase = cache_budget.retire_disabled_caches(api)
+
+        self.assertEqual([int(cache["id"]) for cache in second_phase], [2])
+        self.assertEqual(api.deleted, [1, 2])
+        self.assertEqual(api.caches, [])
+
     def test_enforcer_fails_when_other_families_keep_budget_over_limit(self) -> None:
         class FakeAPI:
             def __init__(self) -> None:
@@ -413,6 +447,15 @@ class CacheBudgetPolicyTests(unittest.TestCase):
             patch.object(cache_budget, "GitHubCacheAPI", FakeAPI),
             patch.object(
                 cache_budget,
+                "retire_disabled_caches",
+                side_effect=lambda _api, **kwargs: (
+                    calls.append("preclean")
+                    if kwargs == {"expected_sha": "abc123"}
+                    else self.fail(f"unexpected preclean args: {kwargs}")
+                ),
+            ),
+            patch.object(
+                cache_budget,
                 "wait_for_main_writers",
                 side_effect=lambda *_args, **_kwargs: calls.append("barrier"),
             ),
@@ -429,8 +472,7 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         ):
             self.assertEqual(cache_budget.main(), 0)
 
-        self.assertEqual(calls[0], "barrier")
-        self.assertEqual(calls, ["barrier", "enforce"])
+        self.assertEqual(calls, ["preclean", "barrier", "enforce"])
 
     def test_delete_404_is_idempotent_for_overlapping_main_runs(self) -> None:
         def not_found(_request: Any, *, timeout: int) -> Any:

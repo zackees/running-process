@@ -214,14 +214,12 @@ def wait_for_main_writers(
     )
 
 
-def enforce_budget(
+def retire_disabled_caches(
     api: GitHubCacheAPI,
     *,
     expected_sha: str | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-    attempts: int = POLL_ATTEMPTS,
-    interval: int = POLL_INTERVAL_SECONDS,
-) -> int:
+) -> list[Mapping[str, Any]]:
+    """Retire only disabled all-features cache families on main."""
     if expected_sha is not None:
         assert_main_sha(api, expected_sha)
     caches = api.list_caches()
@@ -236,6 +234,18 @@ def enforce_budget(
             f"key={cache['key']}"
         )
         api.delete_cache(cache_id)
+    return candidates
+
+
+def enforce_budget(
+    api: GitHubCacheAPI,
+    *,
+    expected_sha: str | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    attempts: int = POLL_ATTEMPTS,
+    interval: int = POLL_INTERVAL_SECONDS,
+) -> int:
+    candidates = retire_disabled_caches(api, expected_sha=expected_sha)
 
     previous_snapshot: tuple[int, int] | None = None
     for attempt in range(1, attempts + 1):
@@ -295,6 +305,10 @@ def main() -> int:
 
     api = GitHubCacheAPI(repository, token)
     try:
+        # Free this known-dead space before other main workflows reach their
+        # post-job cache uploads. A later writer may recreate a key, so the
+        # post-barrier enforcement below repeats this exact-family cleanup.
+        retire_disabled_caches(api, expected_sha=expected_sha)
         wait_for_main_writers(
             api,
             expected_sha=expected_sha,
