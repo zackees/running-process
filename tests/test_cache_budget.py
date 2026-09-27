@@ -50,6 +50,63 @@ class CacheBudgetPolicyTests(unittest.TestCase):
                 "v0-rust-windows-x86-all-features-all-features-Windows-x64-digest",
                 ref="refs/pull/1216/merge",
             ),
+            entry(
+                7,
+                "v0-rust-windows-11-arm-release-build-Windows_NT-arm64-hash-version",
+            ),
+            entry(
+                8,
+                "v0-rust-macos-15-intel-release-build-Darwin-x64-hash-version",
+            ),
+            entry(
+                9,
+                "v0-rust-windows-2025-release-build-Windows_NT-x64-hash-version",
+            ),
+            entry(
+                10,
+                "v0-rust-ubuntu-24.04-release-build-Linux-x64-hash-version",
+            ),
+            entry(
+                11,
+                "v0-rust-ubuntu-24.04-arm-release-build-Linux-arm64-hash-version",
+            ),
+            entry(
+                12,
+                "v0-rust-macos-15-release-build-Darwin-arm64-hash-version",
+            ),
+            entry(
+                13,
+                "v0-rust-release-binaries-x86_64-unknown-linux-gnu-build-binaries-Linux-x64-hash-version",
+            ),
+            entry(
+                14,
+                "v0-rust-release-binaries-aarch64-unknown-linux-gnu-build-binaries-Linux-x64-hash-version",
+            ),
+            entry(
+                15,
+                "v0-rust-release-binaries-x86_64-apple-darwin-build-binaries-Linux-x64-hash-version",
+            ),
+            entry(
+                16,
+                "v0-rust-release-binaries-aarch64-apple-darwin-build-binaries-Linux-x64-hash-version",
+            ),
+            entry(
+                17,
+                "v0-rust-release-binaries-x86_64-pc-windows-msvc-build-binaries-Linux-x64-hash-version",
+            ),
+            entry(
+                18,
+                "v0-rust-release-binaries-aarch64-pc-windows-msvc-build-binaries-Linux-x64-hash-version",
+            ),
+            entry(
+                19,
+                "v0-rust-windows-11-arm-dev-build-Windows_NT-arm64-hash-version",
+            ),
+            entry(
+                20,
+                "v0-rust-release-binaries-x86_64-pc-windows-msvc-build-binaries-Linux-x64-hash-version",
+                ref="refs/tags/v4.10.15",
+            ),
         ]
 
         self.assertEqual(
@@ -58,8 +115,84 @@ class CacheBudgetPolicyTests(unittest.TestCase):
                 for cache in candidates
                 if cache_budget.is_retired_cache(cache)
             ],
-            [1, 2, 3],
+            list(range(1, 4)) + list(range(7, 19)),
         )
+
+    def test_release_target_caches_are_restore_only(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        build_workflow = (root / ".github/workflows/_build.yml").read_text(
+            encoding="utf-8"
+        )
+        release_cache_step = next(
+            block
+            for block in build_workflow.split("\n      - ")
+            if "uses: Swatinem/rust-cache@v2" in block
+        )
+        self.assertIn(
+            "save-if: ${{ github.ref == 'refs/heads/main' && inputs['build-mode'] != 'release' }}",
+            release_cache_step,
+        )
+        self.assertNotIn("lookup-only: true", release_cache_step)
+
+        release_workflow = (root / ".github/workflows/auto-release.yml").read_text(
+            encoding="utf-8"
+        )
+        binary_cache_step = next(
+            block
+            for block in release_workflow.split("\n      - ")
+            if "key: release-binaries-${{ matrix.target }}" in block
+        )
+        self.assertIn("save-if: false", binary_cache_step)
+        self.assertNotIn("lookup-only: true", binary_cache_step)
+
+    def test_release_cache_tradeoff_is_documented(self) -> None:
+        doc = (
+            Path(__file__).resolve().parents[1] / "docs" / "cache-budget.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("release", doc.lower())
+        self.assertIn("cold", doc.lower())
+        self.assertIn("4,078,226,358", doc)
+
+    def test_release_retention_prefixes_cover_workflow_targets(self) -> None:
+        workflows = Path(__file__).resolve().parents[1] / ".github/workflows"
+        release_workflow = (workflows / "auto-release.yml").read_text(encoding="utf-8")
+
+        release_build_labels: set[str] = set()
+        job_blocks = re.split(r"(?=^  [\w-]+:)", release_workflow, flags=re.MULTILINE)
+        for job in job_blocks:
+            if (
+                "uses: ./.github/workflows/_build.yml" not in job
+                or "build-mode: release" not in job
+            ):
+                continue
+            runner = re.search(r"^\s+runs-on:\s*([^\s]+)", job, re.MULTILINE)
+            self.assertIsNotNone(runner, "release build callsite needs runs-on")
+            release_build_labels.add(runner.group(1))
+
+        retired_release_build_labels = {
+            prefix.removeprefix("v0-rust-").removesuffix("-release-build-")
+            for prefix in cache_budget.RELEASE_BUILD_CACHE_PREFIXES
+        }
+        self.assertEqual(retired_release_build_labels, release_build_labels)
+
+        build_binaries = re.search(
+            r"(?ms)^  build-binaries:.*?(?=^  [\w-]+:|\Z)", release_workflow
+        )
+        self.assertIsNotNone(build_binaries)
+        targets = set(
+            re.findall(
+                r"^\s+- target:\s*([^\s]+)",
+                build_binaries.group(),
+                re.MULTILINE,
+            )
+        )
+        retired_targets = {
+            prefix.removeprefix("v0-rust-release-binaries-").removesuffix(
+                "-build-binaries-"
+            )
+            for prefix in cache_budget.RELEASE_BINARY_CACHE_PREFIXES
+        }
+        self.assertEqual(retired_targets, targets)
 
     def test_budget_uses_max_of_usage_endpoint_and_listing(self) -> None:
         caches = [entry(1, "v0-rust-current", size=200)]
@@ -109,6 +242,16 @@ class CacheBudgetPolicyTests(unittest.TestCase):
                 size=600,
             ),
             entry(4, "v0-rust-windows-x86-shared-preflight-Windows-x64", size=200),
+            entry(
+                5,
+                "v0-rust-windows-11-arm-release-build-Windows_NT-arm64-hash-version",
+                size=400,
+            ),
+            entry(
+                6,
+                "v0-rust-release-binaries-aarch64-pc-windows-msvc-build-binaries-Linux-x64-hash-version",
+                size=500,
+            ),
         ]
 
         class FakeAPI:
@@ -133,7 +276,7 @@ class CacheBudgetPolicyTests(unittest.TestCase):
             api, sleep=lambda _seconds: None, attempts=2
         )
 
-        self.assertEqual(api.deleted, [1, 2, 3])
+        self.assertEqual(api.deleted, [1, 2, 3, 5, 6])
         self.assertEqual([int(cache["id"]) for cache in api.caches], [4])
         self.assertEqual(budget, 200)
 

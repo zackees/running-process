@@ -1,4 +1,4 @@
-"""Retire the disabled all-features Rust target cache and enforce budget."""
+"""Retire low-value Rust target cache families and enforce the live budget."""
 
 from __future__ import annotations
 
@@ -58,16 +58,37 @@ ALL_FEATURES_CACHE_PREFIXES = (
     "v0-rust-macos-x86-all-features-",
     "v0-rust-macos-arm-all-features-",
 )
+RELEASE_BUILD_CACHE_PREFIXES = (
+    "v0-rust-windows-11-arm-release-build-",
+    "v0-rust-macos-15-intel-release-build-",
+    "v0-rust-windows-2025-release-build-",
+    "v0-rust-ubuntu-24.04-release-build-",
+    "v0-rust-ubuntu-24.04-arm-release-build-",
+    "v0-rust-macos-15-release-build-",
+)
+RELEASE_BINARY_CACHE_PREFIXES = (
+    "v0-rust-release-binaries-x86_64-unknown-linux-gnu-build-binaries-",
+    "v0-rust-release-binaries-aarch64-unknown-linux-gnu-build-binaries-",
+    "v0-rust-release-binaries-x86_64-apple-darwin-build-binaries-",
+    "v0-rust-release-binaries-aarch64-apple-darwin-build-binaries-",
+    "v0-rust-release-binaries-x86_64-pc-windows-msvc-build-binaries-",
+    "v0-rust-release-binaries-aarch64-pc-windows-msvc-build-binaries-",
+)
+RETIRED_CACHE_PREFIXES = (
+    *ALL_FEATURES_CACHE_PREFIXES,
+    *RELEASE_BUILD_CACHE_PREFIXES,
+    *RELEASE_BINARY_CACHE_PREFIXES,
+)
 
 
 def is_retired_cache(cache: Mapping[str, Any]) -> bool:
-    """Select only the three disabled cache families on main."""
+    """Select only explicitly disabled cache families on main."""
     ref = cache.get("ref")
     key = cache.get("key")
     return (
         ref == MAIN_REF
         and isinstance(key, str)
-        and key.startswith(ALL_FEATURES_CACHE_PREFIXES)
+        and key.startswith(RETIRED_CACHE_PREFIXES)
     )
 
 
@@ -219,7 +240,7 @@ def retire_disabled_caches(
     *,
     expected_sha: str | None = None,
 ) -> list[Mapping[str, Any]]:
-    """Retire only disabled all-features cache families on main."""
+    """Retire only explicitly disabled cache families on main."""
     if expected_sha is not None:
         assert_main_sha(api, expected_sha)
     caches = api.list_caches()
@@ -229,7 +250,7 @@ def retire_disabled_caches(
             assert_main_sha(api, expected_sha)
         cache_id = int(cache["id"])
         print(
-            "retiring disabled all-features cache "
+            "retiring disabled target cache "
             f"id={cache_id} ref={cache['ref']} size={cache['size_in_bytes']} "
             f"key={cache['key']}"
         )
@@ -262,7 +283,7 @@ def enforce_budget(
             f"{effective_size} bytes; limit={BUDGET_LIMIT_BYTES}; "
             f"retired={len(candidates)} entries/"
             f"{sum(int(c['size_in_bytes']) for c in candidates)} bytes; "
-            f"remaining_disabled={len(remaining)}"
+            f"remaining_retired={len(remaining)}"
         )
 
         snapshot = (endpoint_bytes, listed_size)
@@ -305,8 +326,8 @@ def main() -> int:
 
     api = GitHubCacheAPI(repository, token)
     try:
-        # Free this known-dead space before other main workflows reach their
-        # post-job cache uploads. A later writer may recreate a key, so the
+        # Free disabled cache families before main workflows reach their
+        # post-job cache uploads. A writer may recreate a key, so the
         # post-barrier enforcement below repeats this exact-family cleanup.
         retire_disabled_caches(api, expected_sha=expected_sha)
         wait_for_main_writers(
