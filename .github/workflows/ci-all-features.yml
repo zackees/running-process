@@ -105,9 +105,12 @@ jobs:
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # This optional cross-platform lane adds >2 GB of target archives
+          # across its three OS shapes. Restore remains useful when a cache
+          # exists, but durable writes are disabled so it cannot grow main's
+          # repository cache budget (#1216).
+          save-if: false
           key: ${{ matrix.label }}-all-features
-          cache-on-failure: true
 
       - name: Sync venv (frozen, no project install)
         run: uv sync --frozen --group dev --no-install-project --python 3.11
