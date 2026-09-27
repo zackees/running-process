@@ -28,6 +28,7 @@ jobs:
       label: windows-x86
       rustdoc: false
       integration-test: true
+      dylint: true
 
   arm:
     if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/linux' || startsWith(github.head_ref, 'fix/linux/') || github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/')) }}
@@ -37,5 +38,6 @@ jobs:
       label: windows-arm
       rustdoc: false
       integration-test: true
+      dylint: true
       cache-targets: false
       cache-key-suffix: registry

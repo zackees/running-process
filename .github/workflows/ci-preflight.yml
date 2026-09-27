@@ -47,7 +47,7 @@ on:
         type: boolean
         default: true
       dylint:
-        description: Run the repository Dylint gate. Enabled only for the native Linux x86 lane.
+        description: Run both workspace Dylints on this native platform.
         type: boolean
         default: false
       cache-targets:
@@ -200,7 +200,7 @@ jobs:
           path: logs/kernel-substrate-timing.json
           if-no-files-found: warn
 
-      # Dylint is intentionally a single Linux-x86 step. Its nightly artifacts
+      # Dylint runs on each native host. Its nightly artifacts
       # use a dedicated persistent cache so they cannot mix with the stable
       # workspace build or impose a cold rebuild on every platform lane.
       - name: Install Dylint nightly
@@ -265,6 +265,7 @@ jobs:
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
         run: |
+          rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --all --workspace
           rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --path lints --pattern running-process-platform-boundary --workspace
 
       # #1216: save only on main; PR runs restore main's entry.

@@ -47,6 +47,7 @@ jobs:
       label: linux-arm
       rustdoc: false
       integration-test: true
+      dylint: true
 
   x86-musl:
     if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
