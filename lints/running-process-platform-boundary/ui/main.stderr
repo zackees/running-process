@@ -9,13 +9,13 @@ LL |     use std::os::windows::process::CommandExt as _;
 error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/running-process-platform-internal/src/lib.rs cfg_select!
   --> $DIR/main.rs:2:15
    |
-LL |     #[cfg(any(windows, not(target_os = "linux")))]
+LL |     #[cfg(all(windows, not(target_os = "linux")))]
    |               ^^^^^^^
 
 error: host-platform cfg selection (target_os) is not allowed here; host selection belongs in crates/running-process-platform-internal/src/lib.rs cfg_select!
   --> $DIR/main.rs:2:28
    |
-LL |     #[cfg(any(windows, not(target_os = "linux")))]
+LL |     #[cfg(all(windows, not(target_os = "linux")))]
    |                            ^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 3 previous errors
