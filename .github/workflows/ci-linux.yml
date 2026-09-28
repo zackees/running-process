@@ -1,36 +1,23 @@
 name: CI Preflight (Linux)
 
-# Thin dispatcher — calls ci-preflight.yml twice for native glibc
-# (linux-x86 + linux-arm) and ci-preflight-rust.yml twice for musl
-# cross targets (linux-x86-musl + linux-arm-musl). musl variants are
-# Rust-only because the runner's Python is glibc-linked (see header
-# of ci-preflight-rust.yml).
+# Full Linux suite called by ci.yml on ci-full PRs and nightly. Calls
+# ci-preflight.yml twice for native glibc (linux-x86 + linux-arm) and
+# ci-preflight-rust.yml twice for musl cross targets. musl variants are
+# Rust-only because the runner's Python is glibc-linked.
 #
 # rustdoc is enabled only on linux-x86 (matches the historical sprawl
 # where only linux-x86-rustdoc.yml existed).
 #
-# See zackees/running-process#513 for the consolidation plan.
+# See zackees/running-process#513 for the platform consolidation plan.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
-concurrency:
-  # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
-  # per group, so a ref-only group silently cancels queued main-push SHAs.
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
 jobs:
   x86:
-    # Platform-fix PRs run only their selected native workflow. Keep the
-    # workflow itself subscribed so skipped jobs remain visible to GitHub.
-    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     uses: ./.github/workflows/ci-preflight.yml
     with:
       os: ubuntu-24.04
@@ -40,7 +27,6 @@ jobs:
       dylint: true
 
   arm:
-    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     uses: ./.github/workflows/ci-preflight.yml
     with:
       os: ubuntu-24.04-arm
@@ -49,7 +35,6 @@ jobs:
       integration-test: true
 
   x86-musl:
-    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     uses: ./.github/workflows/ci-preflight-rust.yml
     with:
       os: ubuntu-24.04
@@ -58,7 +43,6 @@ jobs:
       features: daemon
 
   arm-musl:
-    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     uses: ./.github/workflows/ci-preflight-rust.yml
     with:
       os: ubuntu-24.04-arm
@@ -71,7 +55,6 @@ jobs:
   # Moved here from linux-x86-build.yml when that workflow became
   # dispatch-only. See docs/reproducible-builds.md for the recipe.
   reproducible-spot-check:
-    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:

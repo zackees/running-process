@@ -1,23 +1,12 @@
 name: Coverage
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
 
-# Auto-cancel superseded PR runs: pushing again to a feature branch
-# supersedes the in-flight run instead of queueing behind it. Non-PR events
-# key on run_id so each gets its own group -- GitHub keeps only ONE pending
-# run per group, so a shared group silently drops queued main-push SHAs.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
+# Full coverage runs are invoked by ci.yml on ci-full PRs and nightly.
+# This expensive lane stays out of ordinary PR and main-push checks.
 jobs:
   coverage:
-    # Coverage is part of the Linux lane for platform-scoped fix branches.
-    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/') || github.head_ref == 'fix/win' || startsWith(github.head_ref, 'fix/win/')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:

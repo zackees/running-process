@@ -94,12 +94,18 @@ uv run --no-sync python -m ci guard-kernel-substrate  # resolver dependency cont
 uv run --no-sync python -m ci lint            # what `./lint` wraps
 ```
 
-**Feature-gated tests on Windows and macOS** (#1083). The default suite runs
-with default features, and the only `--all-features` lane is Linux coverage —
-so a test behind `daemon`, `probe`, `client-async` or `telemetry` compiles on
-exactly one platform. `.github/workflows/ci-all-features.yml` closes that gap
-nightly, on `workflow_dispatch`, and on any PR carrying the `all-features`
-label. Reproduce it locally with the same module CI invokes:
+**CI tiers.** `.github/workflows/ci.yml` runs one Linux x64 lint, Dylint,
+build, and unit-test lane on every PR and main push. PR labels opt into
+integration tests (`ci-integration`), Windows tests (`ci-windows`), macOS
+tests (`ci-mac`), or the complete matrix (`ci-full`). Nightly runs the full
+matrix, coverage, all-features checks, and cache-budget maintenance. The
+Linux full suite includes x86/ARM glibc and x86/ARM musl; platform suites
+include x64 and ARM.
+
+**Feature-gated tests on Windows and macOS** (#1083). The quick suite uses
+default features. `.github/workflows/ci-all-features.yml` runs nightly, on a
+full manual dispatch, and on PRs carrying the `ci-full` label. Reproduce it
+locally with the same module CI invokes:
 ```bash
 uv run --no-sync --module ci.test --all-features --rust-only
 ```

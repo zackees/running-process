@@ -87,15 +87,17 @@ The v1 broker work is documented as a stable spec alongside the implementation:
 
 </details>
 
-| Platform | CI |
+| Workflow | CI |
 |----------|----|
-| Linux | [![Linux](https://github.com/zackees/running-process/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/ci-linux.yml) |
-| macOS | [![macOS](https://github.com/zackees/running-process/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/ci-macos.yml) |
-| Windows | [![Windows](https://github.com/zackees/running-process/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/ci-windows.yml) |
+| CI | [![CI](https://github.com/zackees/running-process/actions/workflows/ci.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/ci.yml) |
 | Release | [![Auto Release](https://github.com/zackees/running-process/actions/workflows/auto-release.yml/badge.svg)](https://github.com/zackees/running-process/actions/workflows/auto-release.yml) |
 
-Each `ci-*` workflow fans out to that platform's x86 and ARM lanes (and
-musl on Linux), running build, lint, unit and integration stages per lane.
+Every pull request and main push runs the Linux x64 lint, Dylint, build, and
+unit checks. Add `ci-integration` to include Linux integration tests, or add
+`ci-windows` / `ci-mac` to include that platform's x64 and ARM lanes. Add
+`ci-full` to run all platform and Linux musl lanes, coverage, and
+Windows/macOS all-features checks. The full suite also runs nightly; main
+merges do not start the heavy platform or coverage jobs.
 
 ## Process watches
 

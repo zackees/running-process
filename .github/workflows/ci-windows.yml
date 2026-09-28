@@ -3,25 +3,13 @@ name: CI Preflight (Windows)
 # Thin dispatcher — calls ci-preflight.yml twice, once per Windows arch.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
-concurrency:
-  # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
-  # per group, so a ref-only group silently cancels queued main-push SHAs.
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
 jobs:
   x86:
-    # Platform-fix PRs run only their selected native workflow. Keep the
-    # workflow itself subscribed so skipped jobs remain visible to GitHub.
-    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/linux' || startsWith(github.head_ref, 'fix/linux/') || github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/')) }}
     uses: ./.github/workflows/ci-preflight.yml
     with:
       os: windows-latest
@@ -30,7 +18,6 @@ jobs:
       integration-test: true
 
   arm:
-    if: ${{ github.event_name != 'pull_request' || !(github.head_ref == 'fix/linux' || startsWith(github.head_ref, 'fix/linux/') || github.head_ref == 'fix/mac' || startsWith(github.head_ref, 'fix/mac/')) }}
     uses: ./.github/workflows/ci-preflight.yml
     with:
       os: windows-11-arm
