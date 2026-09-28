@@ -31,6 +31,7 @@ CACHE_WRITER_WORKFLOWS = {
     "All-Features Tests (Windows/macOS)",
     "Auto Release",
     "Build Template",
+    "CI",
     "CI Preflight (Linux)",
     "CI Preflight (macOS)",
     "CI Preflight (Windows)",
