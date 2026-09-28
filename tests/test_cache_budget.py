@@ -451,7 +451,7 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         self.assertEqual(result, cache_budget.BUDGET_LIMIT_BYTES - 1)
         self.assertEqual(waits, [10, 10, 10])
 
-    def test_budget_workflow_is_main_push_and_permission_scoped(self) -> None:
+    def test_budget_workflow_is_nightly_only_and_permission_scoped(self) -> None:
         workflow = (
             Path(__file__).resolve().parents[1]
             / ".github"
@@ -459,7 +459,8 @@ class CacheBudgetPolicyTests(unittest.TestCase):
             / "cache-budget.yml"
         )
         text = workflow.read_text(encoding="utf-8")
-        self.assertIn("push:\n    branches: [main]", text)
+        self.assertIn("on:\n  workflow_call", text)
+        self.assertNotIn("push:", text)
         self.assertIn(
             "permissions:\n  contents: read\n\njobs:\n  enforce-cache-budget:",
             text,
@@ -469,14 +470,20 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         self.assertIn("GITHUB_REF: ${{ github.ref }}", text)
         self.assertIn("GITHUB_SHA: ${{ github.sha }}", text)
         self.assertIn("GITHUB_RUN_ID: ${{ github.run_id }}", text)
-        self.assertNotIn("pull_request:", text)
+        ci = (
+            Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("needs: [linux-full, macos, windows, coverage, all-features]", ci)
+        self.assertIn("!cancelled() && github.event_name == 'schedule'", ci)
+        self.assertIn("uses: ./.github/workflows/cache-budget.yml", ci)
+        self.assertNotIn("github.event_name == 'push'", ci)
 
     def test_budget_workflow_knows_the_all_features_writer_name(self) -> None:
         self.assertIn(
             "All-Features Tests (Windows/macOS)",
             cache_budget.CACHE_WRITER_WORKFLOWS,
         )
-        self.assertNotIn("Cache budget (main)", cache_budget.CACHE_WRITER_WORKFLOWS)
+        self.assertNotIn("Cache budget (nightly)", cache_budget.CACHE_WRITER_WORKFLOWS)
 
     def test_writer_barrier_leaves_runner_timeout_headroom(self) -> None:
         workflow = (

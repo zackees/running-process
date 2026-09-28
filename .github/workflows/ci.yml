@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run the full platform, feature, and coverage suite.
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  linux-quick:
+    name: Linux x64 checks
+    if: ${{ github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.full) && !(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
+    uses: ./.github/workflows/ci-preflight.yml
+    with:
+      os: ubuntu-24.04
+      label: linux-x86
+      rustdoc: false
+      integration-test: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-integration') }}
+      dylint: true
+
+  linux-full:
+    name: Linux full matrix
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
+    uses: ./.github/workflows/ci-linux.yml
+
+  macos:
+    name: macOS tests
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci-mac') || contains(github.event.pull_request.labels.*.name, 'ci-full'))) }}
+    uses: ./.github/workflows/ci-macos.yml
+
+  windows:
+    name: Windows tests
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci-windows') || contains(github.event.pull_request.labels.*.name, 'ci-full'))) }}
+    uses: ./.github/workflows/ci-windows.yml
+
+  coverage:
+    name: Linux coverage
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
+    uses: ./.github/workflows/coverage.yml
+
+  all-features:
+    name: Windows and macOS all-features tests
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
+    uses: ./.github/workflows/ci-all-features.yml
+
+  cache-budget:
+    name: Cache budget maintenance
+    needs: [linux-full, macos, windows, coverage, all-features]
+    if: ${{ !cancelled() && github.event_name == 'schedule' }}
+    permissions:
+      actions: write
+      contents: read
+    uses: ./.github/workflows/cache-budget.yml
