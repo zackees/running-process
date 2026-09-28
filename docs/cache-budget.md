@@ -1,9 +1,11 @@
 # GitHub Actions cache budget
 
-The main-only cache-budget workflow keeps repository Actions-cache usage below
-9.5 billion bytes, leaving margin under GitHub's 10 GiB eviction threshold.
-It removes only explicitly retired cache-key families on `refs/heads/main`;
-PR refs and unrelated target/profile caches are never selected.
+The nightly `ci.yml` run invokes cache-budget maintenance after the full Linux,
+macOS, Windows, coverage, and all-features cache-writing jobs have settled.
+It keeps repository Actions-cache usage below 9.5 billion bytes, leaving margin
+under GitHub's 10 GiB eviction threshold. It removes only explicitly retired
+cache-key families on `refs/heads/main`; PR refs and unrelated target/profile
+caches are never selected. Ordinary PRs and main pushes do not run cleanup.
 
 The optional all-features matrix remains enabled, but its Windows/macOS Rust
 target caches are restore-only. This retains platform coverage without growing

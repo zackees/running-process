@@ -61,7 +61,8 @@ jobs:
 
   cache-budget:
     name: Cache budget maintenance
-    if: ${{ github.event_name == 'schedule' }}
+    needs: [linux-full, macos, windows, coverage, all-features]
+    if: ${{ !cancelled() && github.event_name == 'schedule' }}
     permissions:
       actions: write
       contents: read

@@ -473,7 +473,8 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         ci = (
             Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("github.event_name == 'schedule'", ci)
+        self.assertIn("needs: [linux-full, macos, windows, coverage, all-features]", ci)
+        self.assertIn("!cancelled() && github.event_name == 'schedule'", ci)
         self.assertIn("uses: ./.github/workflows/cache-budget.yml", ci)
         self.assertNotIn("github.event_name == 'push'", ci)
 
