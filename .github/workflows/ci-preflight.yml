@@ -290,13 +290,6 @@ jobs:
 
       - name: Unit Tests
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        env:
-          # The Linux x64 quick lane runs a process-heavy suite. Running eight
-          # nextest workers overlaps the child-process waits and cuts wall time
-          # without splitting the suite across additional runners. Other
-          # platforms keep nextest's CPU-count default; Windows also applies
-          # its explicit serial test setting in ci.test.
-          NEXTEST_TEST_THREADS: ${{ inputs.label == 'linux-x86' && '8' || 'num-cpus' }}
         run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test
 
       - name: Broker Hello perf guard
