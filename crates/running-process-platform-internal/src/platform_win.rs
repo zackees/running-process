@@ -622,6 +622,16 @@ fn process_start_key(pid: sysinfo::Pid, _process: &sysinfo::Process) -> io::Resu
 
 #[cfg(feature = "async-process")]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+#[cfg(feature = "async-process")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// A console-less parent (e.g. a daemon) makes Windows give every child its
+/// own visible console unless `CREATE_NO_WINDOW` is set.
+#[cfg(feature = "async-process")]
+fn spawn_creation_flags(group: u32, priority: u32, parent_has_console: bool) -> u32 {
+    let no_window = if parent_has_console { 0 } else { CREATE_NO_WINDOW };
+    group | priority | no_window
+}
 
 #[cfg(feature = "async-process")]
 pub(crate) fn configure_command(
@@ -644,8 +654,9 @@ pub(crate) fn configure_command(
         Some(value) if value <= -1 => 0x0000_8000,
         _ => 0,
     };
-    if (group | priority) != 0 {
-        command.creation_flags(group | priority);
+    let flags = spawn_creation_flags(group, priority, parent_has_console());
+    if flags != 0 {
+        command.creation_flags(flags);
     }
     Ok(())
 }
