@@ -231,6 +231,9 @@ jobs:
 
       - name: Unit Tests
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          # Run the Python suite concurrently with the Rust test passes.
+          RUNNING_PROCESS_OVERLAP_PYTEST: "1"
         run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test
 
       - name: Broker Hello perf guard

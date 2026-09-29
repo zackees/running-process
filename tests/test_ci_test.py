@@ -20,6 +20,9 @@ def _isolate_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
     command-shape assertions in this module no longer match.
     """
     monkeypatch.delenv("RUNNING_PROCESS_TEST_NOCAPTURE", raising=False)
+    # Set on the CI step that runs this suite; would start a real background
+    # pytest from inside main().
+    monkeypatch.delenv("RUNNING_PROCESS_OVERLAP_PYTEST", raising=False)
     monkeypatch.setattr(ci_test, "_ensure_nextest_installed", lambda: True)
 
 

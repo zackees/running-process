@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import platform
@@ -15,6 +16,7 @@ from ci.dev_build import ensure_dev_wheel
 from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
+PYTEST_OVERLAP_LOG = ROOT / "logs" / "pytest-overlap.log"
 IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
 IN_RUNNING_PROCESS_VALUE = "running-process-cli"
 GITHUB_ACTIONS_ENV = "GITHUB_ACTIONS"
@@ -326,6 +328,25 @@ def run(cmd: list[str], extra_env: dict[str, str] | None = None) -> int:
     if extra_env:
         env.update(extra_env)
     return subprocess.run(cmd, cwd=ROOT, env=env).returncode
+
+
+def _start_background(cmd: list[str], log_path: Path) -> subprocess.Popen[bytes]:
+    """Start `cmd` with output to `log_path`; killed at exit if still running."""
+    _, clean_env = load_env_helpers()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log = log_path.open("wb")
+    proc = subprocess.Popen(
+        cmd, cwd=ROOT, env=clean_env(), stdout=log, stderr=subprocess.STDOUT
+    )
+    atexit.register(lambda: proc.poll() is None and proc.kill())
+    return proc
+
+
+def _finish_background(proc: subprocess.Popen[bytes], log_path: Path) -> int:
+    returncode = proc.wait()
+    sys.stdout.write(log_path.read_text(encoding="utf-8", errors="replace"))
+    sys.stdout.flush()
+    return returncode
 
 
 def _find_llvm_profdata() -> Path | None:
@@ -758,6 +779,7 @@ def main(argv: list[str] | None = None) -> int:
     # Compilation can have long gaps (>10s) with no stdout/stderr when
     # linking large crates (tokio, interprocess, clap, etc.) and the
     # 10-second idle-timeout would kill the process mid-compile.
+    background_pytest: subprocess.Popen[bytes] | None = None
     if not live_only:
         if not _ensure_nextest_installed():
             return 1
@@ -867,6 +889,18 @@ def main(argv: list[str] | None = None) -> int:
             # comes from `.config/nextest.toml`; do not wrap it in the CLI's
             # output-idle watchdog. Quiet test compilation is not a hang, and
             # nextest already isolates, names, and terminates an overdue test.
+            # CI opt-in: the Python suite needs only the installed dev wheel,
+            # not the Rust results, so start it now and let it overlap the
+            # Rust passes below instead of running after them.
+            if (
+                not rust_only
+                and not coverage
+                and os.environ.get("RUNNING_PROCESS_OVERLAP_PYTEST") == "1"
+            ):
+                background_pytest = _start_background(
+                    _supervised_pytest_command(python, "-m", "not live", *pytest_args),
+                    PYTEST_OVERLAP_LOG,
+                )
             cargo_test_args = cargo_command("nextest", "run", "--workspace")
             if all_features:
                 cargo_test_args += _rust_all_features_test_args()
@@ -937,7 +971,12 @@ def main(argv: list[str] | None = None) -> int:
         # preflight lane already ran on this same OS, so running it twice
         # buys nothing and costs a full second pass.
         cov_first = list(_COV_PYTEST_FIRST) if coverage else []
-        if not rust_only and not _pytest_exit_is_acceptable(
+        if background_pytest is not None:
+            if not _pytest_exit_is_acceptable(
+                _finish_background(background_pytest, PYTEST_OVERLAP_LOG), pytest_args
+            ):
+                return 1
+        elif not rust_only and not _pytest_exit_is_acceptable(
             run(
                 _supervised_pytest_command(
                     python, "-m", "not live", *cov_first, *pytest_args
