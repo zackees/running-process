@@ -86,6 +86,26 @@ strip = "none"
 [profile.dev.build-override]
 debug = false
 
+# Hash crates run optimized even in dev/test builds. Identity checks hash the
+# running executable, and a debug test binary is ~170 MB: at opt-level 0 each
+# SHA-256/BLAKE3 pass over it took seconds, so ~20 tests sat at 5-20 s apiece
+# doing nothing but hashing. These crates are leaf numerics nobody steps
+# through, so optimizing them costs no debuggability.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.blake3]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.block-buffer]
+opt-level = 3
+[profile.dev.package.generic-array]
+opt-level = 3
+[profile.dev.package.crypto-common]
+opt-level = 3
+[profile.dev.package.cpufeatures]
+opt-level = 3
+
 # The same reasoning for release. #803 already stopped emitting debug info for
 # release dependencies; build scripts were not covered by that, and inherited
 # the profile's `line-tables-only` instead.
