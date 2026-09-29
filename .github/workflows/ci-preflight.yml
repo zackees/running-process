@@ -311,7 +311,7 @@ jobs:
       - name: Unit Tests
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
-          CARGO_LOG: cargo::core::compiler::fingerprint=info
+          CARGO_LOG: cargo::core::compiler::fingerprint=trace
         run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test
 
       - name: Broker Hello perf guard
