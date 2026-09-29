@@ -916,6 +916,12 @@ def main(argv: list[str] | None = None) -> int:
                 "running-process",
                 "--features",
                 "daemon",
+                # The -E filter does not limit compilation: name the two
+                # binaries that hold these tests so the daemon-feature pass
+                # does not rebuild every running-process test target.
+                "--lib",
+                "--test",
+                "daemon_integration",
                 "-E",
                 "test(compile_session) | test(/^daemon_environment_policy_test::/)",
             )
