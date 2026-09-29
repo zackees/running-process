@@ -47,10 +47,7 @@ the only bind mount.
 | `running-process-dev-uv`        | `/uv`               | `UV_PROJECT_ENVIRONMENT` + `UV_CACHE_DIR`  |
 | bind mount                       | `/work`             | Source tree (live, read-write)             |
 
-soldr is intentionally **not** installed in the dev image. The host's
-`force_soldr.py` PreToolUse hook is a host-scope policy — it sees the
-`docker run ...` invocation from the host, not the `cargo` call running
-inside the container. Direct cargo via the `CARGO_TARGET_DIR` volume
+soldr is intentionally **not** installed in the dev image. Direct cargo via the `CARGO_TARGET_DIR` volume
 gives us the mtime-fingerprint caching benefit we actually need without
 soldr's zccache integration breaking on session-start inside fresh
 containers. The repo's Python entrypoints (`ci.install` / `ci.test` /
@@ -160,8 +157,7 @@ first mount).
   every edit on the host is immediately visible inside the container without
   layer-cache invalidation.
 - **soldr is intentionally NOT installed** (see the table above for rationale).
-  The host's PreToolUse hook is a host-scope policy and does not constrain
-  inside-container commands. soldr 0.7.55's zccache integration also fails
+  soldr 0.7.55's zccache integration also fails
   reliably inside fresh containers with a "private daemon cache dir mismatch"
   on session-start; direct cargo via the named volume sidesteps the issue.
 - **No `cargo clean`** is ever invoked by the image or driver — that would
