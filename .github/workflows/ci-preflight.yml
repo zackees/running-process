@@ -247,6 +247,7 @@ jobs:
         if: ${{ inputs.dylint }}
         working-directory: lints/running-process-env-literal
         env:
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
