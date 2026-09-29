@@ -241,21 +241,26 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/running-process-dylint-target
-          key: dylint-target-v6-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
+          key: dylint-target-v7-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
 
+      # The fixture tests and `cargo dylint` build the same dependencies, but
+      # cargo-dylint links with `dylint-link`, and the linker is part of cargo's
+      # fingerprint. Sharing one target dir made each side rebuild ~80 crates
+      # every run (the saved cache held only the gate's state). The fixtures
+      # get their own subdirectory inside the cached path.
       - name: Dylint negative fixture
         if: ${{ inputs.dylint }}
         working-directory: lints/running-process-env-literal
         env:
           CARGO_BIN: cargo
-          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/fixtures
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
 
       - name: Dylint platform-boundary fixture
         if: ${{ inputs.dylint }}
         env:
           CARGO_BIN: cargo
-          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/fixtures
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --manifest-path lints/running-process-platform-boundary/Cargo.toml --locked
 
       - name: Dylint workspace gate
