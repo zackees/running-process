@@ -58,11 +58,6 @@ RUN rustup default 1.94.1 \
 
 # soldr is INTENTIONALLY NOT installed inside this image.
 #
-# The host's .claude/settings.json force_soldr.py PreToolUse hook enforces
-# soldr-wrapping for cargo commands on the HOST. That hook does not run
-# inside the container — it only sees the `docker run ...` invocation from
-# the host. Inside the container, direct cargo is the natural path.
-#
 # soldr 0.7.55's zccache integration also breaks reliably inside fresh
 # containers with a "private daemon cache dir mismatch" on session-start;
 # until that's tracked down upstream, direct cargo via the named

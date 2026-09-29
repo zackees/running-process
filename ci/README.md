@@ -12,6 +12,6 @@ Python CI entry points and helpers, invoked as `uv run --no-sync --module ci.<na
 - `reproducible.py` — double-build reproducibility spot check (#392)
 - `soldr.py` — cargo command indirection (soldr when present, bare cargo otherwise)
 - `linux_docker.py` / `dev_docker.py` / `linux_pytest.py` — Linux container harnesses
-- `claude_hooks.py` / `codex_hooks.py` / `spawn_path_guard.py` / `check_rust_debug_annotations.py` — agent + repo guards
+- `spawn_path_guard.py` / `check_rust_debug_annotations.py` — agent + repo guards
 - `terminal_capability_report.py` — renders the terminal graphics capability matrix artifact
 - `env.py` — shared environment helpers
