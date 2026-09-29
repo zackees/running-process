@@ -51,22 +51,39 @@ fn process_identity(pid: u32) -> Option<ProcessIdentity> {
     })
 }
 
+/// Direct children of `pid`, across every thread of the process.
+///
+/// procfs files a child under the *thread* that forked it, so the main
+/// thread's `children` list alone misses anything a worker thread spawned
+/// (cargo launches build scripts from its job-queue threads).
+fn child_pids(pid: u32) -> Vec<u32> {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    let mut children = Vec::new();
+    for task in tasks.flatten() {
+        let Ok(contents) = std::fs::read_to_string(task.path().join("children")) else {
+            continue;
+        };
+        children.extend(
+            contents
+                .split_ascii_whitespace()
+                .filter_map(|token| token.parse::<u32>().ok()),
+        );
+    }
+    children
+}
+
 /// Map of live descendant pid -> immediate parent pid. The parent is a
-/// free by-product of the `children`-file walk: the pid whose children
-/// file listed the entry.
+/// free by-product of the walk: the process whose tasks listed the entry
+/// (the process pid, never a tid).
 fn descendant_pids(root_pid: u32) -> HashMap<u32, u32> {
     let mut result = HashMap::new();
     let mut stack = vec![root_pid];
     while let Some(pid) = stack.pop() {
-        let path = format!("/proc/{pid}/task/{pid}/children");
-        let Ok(contents) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        for token in contents.split_ascii_whitespace() {
-            if let Ok(child) = token.parse::<u32>() {
-                if result.insert(child, pid).is_none() {
-                    stack.push(child);
-                }
+        for child in child_pids(pid) {
+            if result.insert(child, pid).is_none() {
+                stack.push(child);
             }
         }
     }
@@ -218,6 +235,36 @@ mod tests {
     #[test]
     fn descendant_pids_for_nonexistent_root_returns_empty() {
         assert!(descendant_pids(0x7fff_fffe).is_empty());
+    }
+
+    #[test]
+    fn descendant_pids_sees_child_forked_from_non_main_thread() {
+        let (child_tx, child_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        // The spawning thread must outlive the observation: a child whose
+        // forking thread exits is re-parented to another thread.
+        let spawner = std::thread::spawn(move || {
+            // SAFETY: the child only calls async-signal-safe functions.
+            let pid = unsafe { libc::fork() };
+            if pid == 0 {
+                unsafe {
+                    libc::pause();
+                    libc::_exit(0);
+                }
+            }
+            child_tx.send(pid).unwrap();
+            release_rx.recv().unwrap();
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+            }
+        });
+        let child = child_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(child > 0, "fork failed");
+        let found = descendant_pids(std::process::id());
+        release_tx.send(()).unwrap();
+        spawner.join().unwrap();
+        assert_eq!(found.get(&(child as u32)), Some(&std::process::id()));
     }
 
     #[test]
