@@ -241,7 +241,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/running-process-dylint-target
-          key: dylint-target-v7-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
+          key: dylint-target-v8-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
 
       # The fixture tests and `cargo dylint` build the same dependencies, but
       # cargo-dylint links with `dylint-link`, and the linker is part of cargo's
@@ -258,10 +258,16 @@ jobs:
 
       - name: Dylint platform-boundary fixture
         if: ${{ inputs.dylint }}
+        # Run from the lint crate so its .cargo/config.toml (linker =
+        # dylint-link) applies, exactly as the negative fixture's does. With
+        # --manifest-path from the repo root the default linker was used; the
+        # linker is in cargo's fingerprint, so the two fixtures rebuilt ~99
+        # shared crates every run.
+        working-directory: lints/running-process-platform-boundary
         env:
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/fixtures
-        run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --manifest-path lints/running-process-platform-boundary/Cargo.toml --locked
+        run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
 
       - name: Dylint workspace gate
         if: ${{ inputs.dylint }}
