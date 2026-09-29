@@ -158,6 +158,108 @@ pub fn format_terminal_input_bytes(data: &[u8]) -> String {
     format!("[{}]", parts.join(" "))
 }
 
+// ── UTF-16 surrogate pair assembly ──
+
+/// One output of [`Utf16KeyAssembler::push`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurrogateStep {
+    /// A high surrogate was buffered; wait for its low half.
+    Pending,
+    /// A complete scalar value. Unpaired halves surface as U+FFFD.
+    Char(char),
+}
+
+/// Reassembles UTF-16 code units delivered one per console key record.
+///
+/// Windows delivers a supplementary-plane character (e.g. an emoji) as two
+/// KEY_EVENT records, one per surrogate half. Translating each record on its
+/// own drops both halves, so the worker feeds them through this assembler.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Utf16KeyAssembler {
+    pending_high: Option<u16>,
+}
+
+/// Returns whether `unit` is a UTF-16 surrogate code unit.
+pub fn is_utf16_surrogate(unit: u16) -> bool {
+    (0xD800..=0xDFFF).contains(&unit)
+}
+
+impl Utf16KeyAssembler {
+    /// Creates an assembler with no buffered surrogate.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns whether a high surrogate is buffered.
+    pub fn has_pending(&self) -> bool {
+        self.pending_high.is_some()
+    }
+
+    /// Emits U+FFFD for a buffered high surrogate that will never be paired.
+    pub fn flush(&mut self) -> Option<char> {
+        self.pending_high.take().map(|_| char::REPLACEMENT_CHARACTER)
+    }
+
+    /// Feeds one UTF-16 code unit and returns the resulting steps in order.
+    pub fn push(&mut self, unit: u16) -> Vec<SurrogateStep> {
+        let mut steps = Vec::with_capacity(2);
+        match unit {
+            0xD800..=0xDBFF => {
+                if let Some(stale) = self.flush() {
+                    steps.push(SurrogateStep::Char(stale));
+                }
+                self.pending_high = Some(unit);
+                steps.push(SurrogateStep::Pending);
+            }
+            0xDC00..=0xDFFF => {
+                let character = match self.pending_high.take() {
+                    Some(high) => char::decode_utf16([high, unit])
+                        .next()
+                        .and_then(Result::ok)
+                        .unwrap_or(char::REPLACEMENT_CHARACTER),
+                    None => char::REPLACEMENT_CHARACTER,
+                };
+                steps.push(SurrogateStep::Char(character));
+            }
+            _ => {
+                if let Some(stale) = self.flush() {
+                    steps.push(SurrogateStep::Char(stale));
+                }
+                let character =
+                    char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER);
+                steps.push(SurrogateStep::Char(character));
+            }
+        }
+        steps
+    }
+}
+
+#[cfg(windows)]
+/// Builds a text input event for an assembled character from a key record.
+pub fn assembled_character_event(
+    record: &winapi::um::wincontypes::KEY_EVENT_RECORD,
+    character: char,
+) -> TerminalInputEventRecord {
+    use winapi::um::wincontypes::{
+        LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, RIGHT_ALT_PRESSED, RIGHT_CTRL_PRESSED, SHIFT_PRESSED,
+    };
+
+    let repeat_count = record.wRepeatCount.max(1);
+    let modifiers = record.dwControlKeyState;
+    let mut buffer = [0u8; 4];
+    let encoded = character.encode_utf8(&mut buffer).as_bytes();
+    let event = TerminalInputEventRecord {
+        data: repeat_terminal_input_bytes(encoded, repeat_count),
+        submit: false,
+        shift: modifiers & SHIFT_PRESSED != 0,
+        ctrl: modifiers & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0,
+        alt: modifiers & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED) != 0,
+        virtual_key_code: record.wVirtualKeyCode,
+        repeat_count,
+    };
+    trace_translated_console_key_event(record, event)
+}
+
 // ── Console mode / key translation helpers ──
 
 #[cfg(windows)]
@@ -517,6 +619,8 @@ pub fn native_terminal_input_worker(
 
     let handle = input_handle as HANDLE;
     let mut records: [INPUT_RECORD; 512] = unsafe { std::mem::zeroed() };
+    // Spans batches: a surrogate pair may be split across two reads.
+    let mut assembler = Utf16KeyAssembler::new();
     append_native_terminal_input_trace_line(&format!(
         "[{:.6}] native_terminal_input worker_start handle={input_handle}",
         unix_now_seconds(),
@@ -548,6 +652,25 @@ pub fn native_terminal_input_worker(
                         continue;
                     }
                     let key_event = unsafe { record.Event.KeyEvent() };
+                    let unicode = unsafe { *key_event.uChar.UnicodeChar() };
+                    if is_utf16_surrogate(unicode) {
+                        // Windows interleaves high-down, high-up, low-down,
+                        // low-up; key-up halves must not disturb the buffer.
+                        if key_event.bKeyDown == 0 {
+                            continue;
+                        }
+                        for step in assembler.push(unicode) {
+                            if let SurrogateStep::Char(character) = step {
+                                batch.push(assembled_character_event(key_event, character));
+                            }
+                        }
+                        continue;
+                    }
+                    if key_event.bKeyDown != 0 {
+                        if let Some(stale) = assembler.flush() {
+                            batch.push(assembled_character_event(key_event, stale));
+                        }
+                    }
                     if let Some(event) = translate_console_key_event(key_event) {
                         batch.push(event);
                     }
@@ -889,6 +1012,65 @@ impl Drop for TerminalInputCore {
     }
 }
 
+#[cfg(test)]
+mod surrogate_tests {
+    use super::{SurrogateStep, Utf16KeyAssembler};
+
+    #[test]
+    fn surrogate_pair_assembles_into_one_scalar() {
+        let mut assembler = Utf16KeyAssembler::new();
+        assert_eq!(assembler.push(0xD83D), vec![SurrogateStep::Pending]);
+        let steps = assembler.push(0xDE00);
+        assert_eq!(steps, vec![SurrogateStep::Char('\u{1F600}')]);
+        let SurrogateStep::Char(character) = steps[0] else {
+            unreachable!()
+        };
+        let mut buffer = [0u8; 4];
+        assert_eq!(
+            character.encode_utf8(&mut buffer).as_bytes(),
+            &[0xF0, 0x9F, 0x98, 0x80]
+        );
+        assert!(!assembler.has_pending());
+    }
+
+    #[test]
+    fn lone_low_surrogate_yields_replacement() {
+        let mut assembler = Utf16KeyAssembler::new();
+        assert_eq!(
+            assembler.push(0xDE00),
+            vec![SurrogateStep::Char(char::REPLACEMENT_CHARACTER)]
+        );
+    }
+
+    #[test]
+    fn high_then_high_replaces_stale_and_stays_pending() {
+        let mut assembler = Utf16KeyAssembler::new();
+        assert_eq!(assembler.push(0xD83D), vec![SurrogateStep::Pending]);
+        assert_eq!(
+            assembler.push(0xD83D),
+            vec![
+                SurrogateStep::Char(char::REPLACEMENT_CHARACTER),
+                SurrogateStep::Pending
+            ]
+        );
+        assert_eq!(assembler.push(0xDE00), vec![SurrogateStep::Char('\u{1F600}')]);
+    }
+
+    #[test]
+    fn bmp_character_passes_through() {
+        let mut assembler = Utf16KeyAssembler::new();
+        assert_eq!(assembler.push('a' as u16), vec![SurrogateStep::Char('a')]);
+    }
+
+    #[test]
+    fn flush_reports_unpaired_high_surrogate() {
+        let mut assembler = Utf16KeyAssembler::new();
+        assert_eq!(assembler.flush(), None);
+        assembler.push(0xD83D);
+        assert_eq!(assembler.flush(), Some(char::REPLACEMENT_CHARACTER));
+        assert!(!assembler.has_pending());
+    }
+}
 
 #[cfg(test)]
 mod tests {
