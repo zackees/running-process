@@ -150,7 +150,10 @@ jobs:
       # crate for its tests and maturin builds the wheel; neither could reuse
       # this copy.
       - name: cargo build (workspace + all-targets, debug, --features client)
-        run: cargo build --workspace --all-targets --features client --exclude running-process-py
+        # The extra features mirror what running-process-py requests, so the
+        # unified feature set matches nextest's full-workspace build and the
+        # crates built here are reused instead of rebuilt.
+        run: cargo build --workspace --all-targets --exclude running-process-py --features client,running-process/async-process,running-process/originator-scan,running-process/probe,running-process/pty
 
       # ci.lint and ci.test import `running_process` at runtime, so the
       # dev wheel must be installed in the venv. Cargo compile replays
