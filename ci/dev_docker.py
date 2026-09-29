@@ -122,8 +122,9 @@ def docker_run(argv: list[str], *, interactive: bool = False) -> int:
 def cmd_cargo(args: list[str]) -> int:
     """Forward `cargo <args>` to the container's cargo.
 
-    soldr is intentionally not installed in the dev image. The named CARGO_TARGET_DIR volume already gives
-    the mtime-fingerprint caching we need across container restarts.
+    soldr is intentionally not installed in the dev image. The named
+    CARGO_TARGET_DIR volume already gives the mtime-fingerprint caching we
+    need across container restarts.
     """
     if ensure_image_built() != 0:
         return 1

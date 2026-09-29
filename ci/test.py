@@ -876,8 +876,10 @@ def main(argv: list[str] | None = None) -> int:
                 # are more reliable under serial execution on Windows.
                 cargo_test_args += ["--test-threads", "1"]
             if os.environ.get("RUNNING_PROCESS_TEST_NOCAPTURE"):
-                # CI-only: surface println!/eprintln! from Rust tests so
-                # hangs and panics leave a usable trail in the GH log.
+                # Local debugging only. nextest's --no-capture forces serial
+                # execution (5+ min of the CI critical path when it was on);
+                # failure-output = "immediate-final" already prints a failing
+                # or timed-out test's output.
                 cargo_test_args.append("--no-capture")
             if run(cargo_test_args) != 0:
                 return 1

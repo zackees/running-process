@@ -39,7 +39,6 @@ jobs:
     env:
       RUST_BACKTRACE: "full"
       RUST_LIB_BACKTRACE: "full"
-      RUNNING_PROCESS_TEST_NOCAPTURE: "1"
     steps:
       - uses: actions/checkout@v4
 

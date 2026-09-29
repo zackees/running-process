@@ -14,10 +14,10 @@ from ci import test as ci_test
 def _isolate_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every test in this module hermetic w.r.t. CI diagnostics envs.
 
-    `RUNNING_PROCESS_TEST_NOCAPTURE=1` is set by the GH Actions
-    workflows so nextest forwards println!s through. When this env var
-    leaks into the test process, `ci/test.py` appends `--no-capture`
-    and the static command-shape assertions in this module no longer match.
+    `RUNNING_PROCESS_TEST_NOCAPTURE=1` is a local debugging opt-in that
+    makes nextest forward println!s through. When this env var leaks into
+    the test process, `ci/test.py` appends `--no-capture` and the static
+    command-shape assertions in this module no longer match.
     """
     monkeypatch.delenv("RUNNING_PROCESS_TEST_NOCAPTURE", raising=False)
     monkeypatch.setattr(ci_test, "_ensure_nextest_installed", lambda: True)
