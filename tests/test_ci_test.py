@@ -65,6 +65,9 @@ def _expected_daemon_spawn_cmd() -> list[str]:
         "running-process",
         "--features",
         "daemon",
+        "--lib",
+        "--test",
+        "daemon_integration",
         "-E",
         "test(compile_session) | test(/^daemon_environment_policy_test::/)",
     ]
