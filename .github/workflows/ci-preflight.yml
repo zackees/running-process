@@ -105,6 +105,11 @@ jobs:
         with:
           tool: nextest
 
+      # rust-cache's post-job cleanup fails on a listed target dir that was
+      # never created (#1173); lanes that skip the fixture build still get one.
+      - name: Create tokio fixture target dir
+        run: mkdir -p testbins-tokio/target
+
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -114,7 +119,12 @@ jobs:
           # target root.  rust-cache's automatic discovery can otherwise
           # register a nested `target/tests/target` path and fail its post-job
           # cleanup when that optional directory was never created (#1173).
-          workspaces: ". -> target"
+          # testbins-tokio is a separate workspace built with --cfg
+          # tokio_unstable (#788) into its own target dir; list it so its
+          # dependencies are cached instead of rebuilt (~23 s) every run.
+          workspaces: |
+            . -> target
+            testbins-tokio -> target
           # Key kept from the fan-out era so existing warm caches carry
           # over. OS + Cargo.lock hash are included via Swatinem defaults.
           key: ${{ inputs.label }}-${{ inputs.cache-key-suffix }}
