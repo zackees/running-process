@@ -319,6 +319,10 @@ jobs:
 
       - name: Unit Tests
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          # One pytest worker per core; --dist loadfile keeps each test file on
+          # one worker so module-level fixtures and shared state stay serial.
+          PYTEST_ADDOPTS: -n auto --dist loadfile
         run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test
 
       - name: Broker Hello perf guard

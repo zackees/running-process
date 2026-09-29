@@ -34,6 +34,8 @@ dev = [
     # [tool.pytest.ini_options] below. On fire it dumps every thread's
     # Python stack so the offending test is identifiable in CI logs.
     "pytest-timeout>=2.3.0",
+    # Parallel pytest workers for the CI preflight lane (PYTEST_ADDOPTS there).
+    "pytest-xdist>=3.6.0",
     "ruff>=0.8.0",
 ]
 
