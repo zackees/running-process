@@ -1,0 +1,16 @@
+/home/niteris/dev/running-process2/target/tests/trybuild/x86_64-unknown-linux-gnu/debug/deps/running_process_probe-e7c095e194b4d419.d: /home/niteris/dev/running-process2/crates/running-process-probe/src/lib.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/crash/mod.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/crash/spool.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/mod.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/attribute.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/modules.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/unwind.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/linux.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/stream.rs /home/niteris/dev/running-process2/target/tests/trybuild/x86_64-unknown-linux-gnu/debug/build/running-process-probe-1e2048904d4817d7/out/running_process.probe_diag.v1.rs
+
+/home/niteris/dev/running-process2/target/tests/trybuild/x86_64-unknown-linux-gnu/debug/deps/librunning_process_probe-e7c095e194b4d419.rmeta: /home/niteris/dev/running-process2/crates/running-process-probe/src/lib.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/crash/mod.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/crash/spool.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/mod.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/attribute.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/modules.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/unwind.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/linux.rs /home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/stream.rs /home/niteris/dev/running-process2/target/tests/trybuild/x86_64-unknown-linux-gnu/debug/build/running-process-probe-1e2048904d4817d7/out/running_process.probe_diag.v1.rs
+
+/home/niteris/dev/running-process2/crates/running-process-probe/src/lib.rs:
+/home/niteris/dev/running-process2/crates/running-process-probe/src/crash/mod.rs:
+/home/niteris/dev/running-process2/crates/running-process-probe/src/crash/spool.rs:
+/home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/mod.rs:
+/home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/attribute.rs:
+/home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/modules.rs:
+/home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/unwind.rs:
+/home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/linux.rs:
+/home/niteris/dev/running-process2/crates/running-process-probe/src/snapshot/stream.rs:
+/home/niteris/dev/running-process2/target/tests/trybuild/x86_64-unknown-linux-gnu/debug/build/running-process-probe-1e2048904d4817d7/out/running_process.probe_diag.v1.rs:
+
+# env-dep:OUT_DIR=/home/niteris/dev/running-process2/target/tests/trybuild/x86_64-unknown-linux-gnu/debug/build/running-process-probe-1e2048904d4817d7/out
