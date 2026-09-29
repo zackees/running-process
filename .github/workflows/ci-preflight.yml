@@ -248,6 +248,14 @@ jobs:
       # fingerprint. Sharing one target dir made each side rebuild ~80 crates
       # every run (the saved cache held only the gate's state). The fixtures
       # get their own subdirectory inside the cached path.
+      - name: DIAG fingerprint before
+        if: ${{ inputs.dylint }}
+        run: |
+          D="${{ runner.temp }}/running-process-dylint-target/fixtures/debug/.fingerprint"
+          ls "$D" | head -3 || true
+          for f in "$D"/anstyle-*/lib-anstyle.json "$D"/bitflags-*/lib-bitflags.json; do echo "== $f"; cat "$f"; echo; done || true
+          which dylint-link cargo rustc || true; env | grep -iE 'cargo|rust|link' | sort
+
       - name: Dylint negative fixture
         if: ${{ inputs.dylint }}
         working-directory: lints/running-process-env-literal
@@ -255,6 +263,12 @@ jobs:
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/fixtures
         run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
+
+      - name: DIAG fingerprint after
+        if: ${{ inputs.dylint }}
+        run: |
+          D="${{ runner.temp }}/running-process-dylint-target/fixtures/debug/.fingerprint"
+          for f in "$D"/anstyle-*/lib-anstyle.json "$D"/bitflags-*/lib-bitflags.json; do echo "== $f"; cat "$f"; echo; done || true
 
       - name: Dylint platform-boundary fixture
         if: ${{ inputs.dylint }}
