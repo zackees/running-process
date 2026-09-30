@@ -198,6 +198,22 @@ pub fn capture_all_threads(config: &SnapshotConfig) -> Result<Snapshot, Snapshot
     }
 }
 
+/// Whether [`capture_and_resolve`] can produce frames on this target: a
+/// capture backend exists for the OS and an unwinder for the architecture.
+///
+/// Callers branch on this instead of restating the support matrix, so a new
+/// backend or unwinder changes the answer in exactly one place.
+pub const fn capture_supported() -> bool {
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    {
+        unwind::UNWINDER_AVAILABLE
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
+
 /// Capture every sibling thread and resolve each capture to return addresses.
 ///
 /// The two halves are separate functions because they have opposite

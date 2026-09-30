@@ -33,6 +33,13 @@ use framehop::x86_64::{
     CacheX86_64 as ArchCache, UnwindRegsX86_64 as ArchRegs, UnwinderX86_64 as ArchUnwinder,
 };
 
+/// Whether `framehop` has an unwinder for this target's architecture.
+///
+/// The per-arch imports above are the whole of the unwinder selection; this is
+/// the same answer as a value, so callers can ask instead of repeating it.
+pub(crate) const UNWINDER_AVAILABLE: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
 /// Build the architecture's register set from a captured sample.
 ///
 /// The two constructors take different triples, and the difference is easy to
