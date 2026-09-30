@@ -35,6 +35,15 @@ pub fn user_state_dir_from_environment(product: &str) -> PathBuf {
     state_dir_from_environment_in(crate::env_vars::LOCALAPPDATA.os(), product)
 }
 
+/// The base directory for per-user persistent state, derived from the
+/// environment alone: `LOCALAPPDATA`.
+///
+/// `None` when it is unset; the caller picks its own fallback and its own leaf
+/// beneath the base.
+pub fn state_home_from_environment() -> Option<PathBuf> {
+    crate::env_vars::LOCALAPPDATA.os().map(PathBuf::from)
+}
+
 fn state_dir_from_environment_in(
     local_app_data: Option<std::ffi::OsString>,
     product: &str,
@@ -331,6 +340,15 @@ pub fn is_link_handle(metadata: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod state_dir_from_environment_tests {
     use std::path::PathBuf;
+
+    /// #975: the state base is `LOCALAPPDATA` as given, with no fallback.
+    #[test]
+    fn state_home_is_local_app_data_verbatim() {
+        assert_eq!(
+            crate::env_vars::LOCALAPPDATA.os().map(PathBuf::from),
+            super::state_home_from_environment()
+        );
+    }
 
     #[test]
     fn state_dir_from_environment_prefers_local_app_data_then_program_data() {

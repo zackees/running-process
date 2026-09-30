@@ -96,24 +96,10 @@ pub(crate) fn tracked_process_db_path() -> PyResult<PathBuf> {
         }
     }
 
-    #[cfg(windows)]
-    let base_dir = running_process::env_vars::LOCALAPPDATA
-        .os()
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-
-    #[cfg(not(windows))]
-    let base_dir = running_process::env_vars::platform::XDG_STATE_HOME
-        .os()
-        .map(PathBuf::from)
-        .or_else(|| {
-            running_process::env_vars::platform::HOME.os().map(|home| {
-                let mut path = PathBuf::from(home);
-                path.push(".local");
-                path.push("state");
-                path
-            })
-        })
+    // LOCALAPPDATA on Windows; XDG_STATE_HOME, then $HOME/.local/state
+    // elsewhere. The platform layer owns that choice; the temp-dir fallback
+    // and the leaf below are this registry's own.
+    let base_dir = running_process_platform_internal::platform::fs::state_home_from_environment()
         .unwrap_or_else(std::env::temp_dir);
 
     Ok(base_dir

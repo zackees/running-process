@@ -45,17 +45,34 @@ pub fn user_state_dir_from_environment(product: &str) -> PathBuf {
     )
 }
 
+/// The base directory for per-user persistent state, derived from the
+/// environment alone: `XDG_STATE_HOME`, then `$HOME/.local/state`.
+///
+/// `None` when neither is set; the caller picks its own fallback and its own
+/// leaf beneath the base.
+pub fn state_home_from_environment() -> Option<PathBuf> {
+    state_home_in(
+        crate::env_vars::XDG_STATE_HOME.os(),
+        crate::env_vars::HOME.os(),
+    )
+}
+
+fn state_home_in(
+    xdg_state_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    xdg_state_home.map(PathBuf::from).or_else(|| {
+        home.map(PathBuf::from)
+            .map(|home| home.join(".local").join("state"))
+    })
+}
+
 fn state_dir_from_environment_in(
     xdg_state_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
     product: &str,
 ) -> PathBuf {
-    xdg_state_home
-        .map(PathBuf::from)
-        .or_else(|| {
-            home.map(PathBuf::from)
-                .map(|home| home.join(".local").join("state"))
-        })
+    state_home_in(xdg_state_home, home)
         .map_or_else(
             || PathBuf::from(format!("/tmp/{product}-state")),
             |base| base.join(product),
@@ -278,6 +295,23 @@ mod no_follow_tests {
             PathBuf::from("/home/u/.local/state/rp")
         );
         assert_eq!(dir(None, None, "rp"), PathBuf::from("/tmp/rp-state"));
+    }
+
+    /// #975: the state base without a product leaf or fallback, which the py
+    /// tracked-pid registry joins its own leaf onto (temp dir when `None`).
+    #[test]
+    fn state_home_prefers_xdg_then_home_and_has_no_fallback() {
+        use super::state_home_in as home;
+        use std::path::PathBuf;
+        assert_eq!(
+            home(Some("/xdg".into()), Some("/home/u".into())),
+            Some(PathBuf::from("/xdg"))
+        );
+        assert_eq!(
+            home(None, Some("/home/u".into())),
+            Some(PathBuf::from("/home/u/.local/state"))
+        );
+        assert_eq!(home(None, None), None);
     }
 
     /// #974 PR 2: probe-daemon validates an artifact's name, then opens it;
