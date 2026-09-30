@@ -3,33 +3,12 @@
 use pyo3::prelude::*;
 
 use crate::priority::native_apply_process_nice_impl;
-#[cfg(windows)]
-use crate::priority::{
-    windows_apply_process_priority_impl, windows_generate_console_ctrl_break_impl,
-};
 use crate::process::NativeRunningProcess;
 
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub extern "C" fn rp_native_apply_process_nice_public(pid: u32, nice: i32) -> PyResult<()> {
     native_apply_process_nice_impl(pid, nice)
-}
-
-#[cfg(windows)]
-#[unsafe(no_mangle)]
-#[inline(never)]
-pub extern "C" fn rp_windows_apply_process_priority_public(pid: u32, nice: i32) -> PyResult<()> {
-    windows_apply_process_priority_impl(pid, nice)
-}
-
-#[cfg(windows)]
-#[unsafe(no_mangle)]
-#[inline(never)]
-pub extern "C" fn rp_windows_generate_console_ctrl_break_public(
-    pid: u32,
-    creationflags: Option<u32>,
-) -> PyResult<()> {
-    windows_generate_console_ctrl_break_impl(pid, creationflags)
 }
 
 #[unsafe(no_mangle)]

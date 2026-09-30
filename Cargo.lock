@@ -2249,7 +2249,6 @@ dependencies = [
  "running-process-probe",
  "sysinfo",
  "tokio",
- "winapi",
 ]
 
 [[package]]

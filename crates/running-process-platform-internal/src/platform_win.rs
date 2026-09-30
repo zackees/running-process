@@ -628,6 +628,64 @@ pub fn observer_backend(scope: crate::platform::process::ObserverScope, category
     }
 }
 
+/// Apply a process priority expressed as a Unix nice value by mapping it to
+/// the nearest Windows priority class.
+pub fn apply_process_priority(pid: u32, nice: i32) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS,
+        HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+        PROCESS_QUERY_INFORMATION, PROCESS_SET_INFORMATION,
+    };
+    let priority_class = if nice >= 15 {
+        IDLE_PRIORITY_CLASS
+    } else if nice >= 1 {
+        BELOW_NORMAL_PRIORITY_CLASS
+    } else if nice <= -15 {
+        HIGH_PRIORITY_CLASS
+    } else if nice <= -1 {
+        ABOVE_NORMAL_PRIORITY_CLASS
+    } else {
+        NORMAL_PRIORITY_CLASS
+    };
+    // SAFETY: OpenProcess takes plain values; the returned handle is closed
+    // below on every path that obtains one.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `handle` is a live process handle owned by this function.
+    let set_ok = unsafe { SetPriorityClass(handle, priority_class) };
+    // SAFETY: `handle` is closed exactly once.
+    let close_ok = unsafe { CloseHandle(handle) };
+    if close_ok == 0 || set_ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Windows `CREATE_NEW_PROCESS_GROUP`.
+const CREATE_NEW_PROCESS_GROUP_FLAG: u32 = 0x0000_0200;
+
+/// Deliver Ctrl+Break to the child-owned console process group `pid`.
+///
+/// Windows can only target a process group, so the child must have been
+/// created with `CREATE_NEW_PROCESS_GROUP`; `create_process_group` is a Unix
+/// notion and is ignored here.
+pub fn send_interrupt(pid: u32, creationflags: Option<u32>, _create_process_group: bool) -> io::Result<()> {
+    if creationflags.unwrap_or(0) & CREATE_NEW_PROCESS_GROUP_FLAG == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "send_interrupt on Windows requires CREATE_NEW_PROCESS_GROUP",
+        ));
+    }
+    // SAFETY: the Windows API receives only a numeric process-group id.
+    if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 pub fn unix_set_priority(_pid: u32, _nice: i32) -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "Unix priority is unavailable on Windows")) }
 pub fn unix_signal_process(_pid: u32, _signal: crate::platform::process::UnixSignalKind) -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "Unix signals are unavailable on Windows")) }
 pub fn unix_signal_process_group(_pid: i32, _signal: crate::platform::process::UnixSignalKind) -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "Unix signals are unavailable on Windows")) }
@@ -1363,6 +1421,25 @@ mod endpoint_naming_tests {
 /// either is a visible, reviewed edit rather than a silent behaviour change.
 #[cfg(test)]
 mod host_semantics_tests {
+    const ABSENT_PID: u32 = 0x7fff_fffe;
+
+    #[test]
+    fn priority_on_absent_pid_reports_the_os_error() {
+        assert!(super::apply_process_priority(ABSENT_PID, 0).is_err());
+    }
+
+    #[test]
+    fn interrupt_requires_a_new_process_group() {
+        for flags in [None, Some(0)] {
+            let error = super::send_interrupt(1, flags, true).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(
+                error.to_string(),
+                "send_interrupt on Windows requires CREATE_NEW_PROCESS_GROUP"
+            );
+        }
+    }
+
     #[test]
     fn open_handles_block_removal_matches_this_host() {
         assert!(super::fs_open_handles_block_removal());
