@@ -552,18 +552,10 @@ fn output_tuple(output: RunOutput) -> (i32, Vec<u8>, Vec<u8>) {
     (output.exit_code, output.stdout, output.stderr)
 }
 
+/// A signal-terminated child reports `-signal` on Unix. Windows always has an
+/// exit code, so the host's fallback there is never reached (#974).
 fn exit_code(status: ExitStatus) -> i32 {
-    status.code().unwrap_or({
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::ExitStatusExt;
-            -status.signal().unwrap_or(1)
-        }
-        #[cfg(not(unix))]
-        {
-            -1
-        }
-    })
+    running_process::native_exit_code(status)
 }
 
 /// Python awaitable cursor over the output an actor has retained.
