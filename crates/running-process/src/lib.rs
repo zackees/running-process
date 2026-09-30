@@ -970,6 +970,43 @@ impl NativeProcess {
             self.finish_capture_drain();
             return Ok(code);
         }
+        // A short timed wait must not depend on the lifecycle task's tick. That
+        // task runs on the runtime's timer, whose granularity is coarse on some
+        // hosts (about 15 ms on Windows), so a child that has already exited can
+        // stay unobserved for longer than a caller's grace period -- which made
+        // `stream_iter` emit a second terminal event when its 10 ms grace lapsed
+        // right after EOF. For the first stretch of a timed wait, check the
+        // child directly on the calling thread, where a sleep is precise.
+        let mut timeout = timeout;
+        if let Some(limit) = timeout {
+            let fine = limit.min(SHORT_WAIT_DIRECT_POLL);
+            let deadline = Instant::now() + fine;
+            loop {
+                match observe_child_exit(&self.child, &self.shared) {
+                    ExitObservation::Exited => break,
+                    ExitObservation::Gone => {}
+                    ExitObservation::Running => {}
+                }
+                if let Some(code) = self.returncode() {
+                    self.finish_capture_drain();
+                    return Ok(code);
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                thread::sleep((deadline - now).min(Duration::from_millis(1)));
+            }
+            if let Some(code) = self.returncode() {
+                self.finish_capture_drain();
+                return Ok(code);
+            }
+            let remaining = limit.saturating_sub(fine);
+            if remaining.is_zero() {
+                return Err(ProcessError::Timeout);
+            }
+            timeout = Some(remaining);
+        }
         // #850: the exit is published by the lifecycle task on the actor
         // runtime. `block_on_anywhere` is safe from a Tokio worker too, so a
         // sync caller inside async code keeps working rather than erroring.
@@ -1648,6 +1685,11 @@ impl NativeProcess {
         true
     }
 }
+
+/// How long a timed `wait` checks the child directly before falling back to
+/// the runtime's lifecycle task. Long enough to cover the coarsest timer tick a
+/// host has, short enough that the polling never becomes the steady-state cost.
+const SHORT_WAIT_DIRECT_POLL: Duration = Duration::from_millis(50);
 
 /// Cancel any pending blocking `read()` on the parent-side capture pipes
 /// so the reader threads' `read()` calls return `ERROR_OPERATION_ABORTED`

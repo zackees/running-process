@@ -1844,3 +1844,50 @@ fn returncode_auto_updates_without_poll() {
     );
     assert_eq!(process.returncode(), Some(0));
 }
+
+/// A short timed `wait` must find a child that has already exited, without
+/// depending on the lifecycle task's next timer tick (#850). That tick is coarse
+/// on some hosts (about 15 ms on Windows), and `stream_iter` waits only 10 ms
+/// after EOF before it emits a second terminal event.
+///
+/// Linux can make the window deterministic: read `/proc` until the child is a
+/// zombie (exited, not yet reaped), then wait with a 1 ms budget. Without the
+/// direct check that call usually loses to the lifecycle task's tick and times
+/// out.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_one_millisecond_wait_finds_a_child_that_already_exited() {
+    fn is_zombie(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                let rest = stat.get(stat.rfind(')')? + 2..)?;
+                rest.chars().next()
+            })
+            == Some('Z')
+    }
+
+    for attempt in 0..30 {
+        let process = NativeProcess::new(config(
+            CommandSpec::Argv(vec!["/bin/sh".into(), "-c".into(), "exit 0".into()]),
+            false,
+            StdinMode::Inherit,
+            None,
+        ));
+        process
+            .start()
+            .expect("start a child that exits immediately");
+        let pid = process.pid().expect("child pid");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !is_zombie(pid) && process.returncode().is_none() {
+            assert!(Instant::now() < deadline, "child never exited");
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        let code = process
+            .wait(Some(Duration::from_millis(1)))
+            .unwrap_or_else(|error| {
+                panic!("attempt {attempt}: a child that already exited was not found: {error:?}")
+            });
+        assert_eq!(code, 0);
+    }
+}
