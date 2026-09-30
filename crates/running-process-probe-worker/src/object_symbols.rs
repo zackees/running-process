@@ -474,7 +474,9 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_os = "windows")))]
+// The whole module is non-Windows (see lib.rs), so `test` is the only gate
+// this needs.
+#[cfg(test)]
 mod line_table_tests {
     use super::*;
 

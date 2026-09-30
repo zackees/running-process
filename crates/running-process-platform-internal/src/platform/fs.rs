@@ -45,7 +45,9 @@ pub use crate::{
     fs_sync_directory as sync_directory, fs_try_lock_exclusive as try_lock_exclusive,
     fs_unlock as unlock, fs_user_config_dir as user_config_dir, fs_user_data_dir as user_data_dir,
     fs_user_run_data_root as user_run_data_root, fs_user_runtime_dir as user_runtime_dir,
-    fs_user_state_dir as user_state_dir, FsFileIdentity as FileIdentity,
+    fs_user_state_dir as user_state_dir,
+    fs_user_state_dir_from_environment as user_state_dir_from_environment,
+    FsFileIdentity as FileIdentity,
 };
 
 #[cfg(all(test, feature = "fs"))]

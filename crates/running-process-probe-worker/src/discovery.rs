@@ -438,31 +438,14 @@ fn cache_roots() -> Vec<PathBuf> {
 }
 
 fn default_cache_root() -> PathBuf {
-    #[cfg(windows)]
-    {
-        std::env::var_os("LOCALAPPDATA").map_or_else(
-            || PathBuf::from(r"C:\ProgramData\running-process\probe-symbol-cache"),
-            |base| {
-                PathBuf::from(base)
-                    .join("running-process")
-                    .join("probe-symbol-cache")
-            },
-        )
-    }
-    #[cfg(unix)]
-    {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .map(|home| home.join(".local").join("state"))
-            })
-            .map_or_else(
-                || PathBuf::from("/tmp/running-process-state/probe-symbol-cache"),
-                |base| base.join("running-process").join("probe-symbol-cache"),
-            )
-    }
+    // The per-user state base is host placement, so it comes from the
+    // platform facade (#974). It is the environment-only derivation, because
+    // docs/probe/symbol-discovery.md publishes this location in terms of
+    // XDG_STATE_HOME, HOME and LOCALAPPDATA.
+    running_process_platform_internal::platform::fs::user_state_dir_from_environment(
+        "running-process",
+    )
+    .join("probe-symbol-cache")
 }
 
 fn extend_manifest(
@@ -1220,6 +1203,31 @@ mod tests {
             vec!["app.pdb", "AABB11", "app.pdb"]
         );
         assert!(default_cache_root().ends_with("running-process/probe-symbol-cache"));
+    }
+
+    /// Pins the location docs/probe/symbol-discovery.md publishes, derived
+    /// here straight from the environment, against the facade-backed default
+    /// (#974): moving the host half must not move the cache.
+    #[test]
+    fn default_cache_root_is_the_documented_environment_derivation() {
+        let expected = if std::env::consts::OS == "windows" {
+            std::env::var_os("LOCALAPPDATA")
+                .map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from)
+                .join("running-process")
+                .join("probe-symbol-cache")
+        } else {
+            std::env::var_os("XDG_STATE_HOME")
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|home| PathBuf::from(home).join(".local").join("state"))
+                })
+                .map_or_else(
+                    || PathBuf::from("/tmp/running-process-state/probe-symbol-cache"),
+                    |base| base.join("running-process").join("probe-symbol-cache"),
+                )
+        };
+        assert_eq!(default_cache_root(), expected);
     }
 
     #[test]

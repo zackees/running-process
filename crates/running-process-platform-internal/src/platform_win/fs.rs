@@ -24,6 +24,26 @@ pub fn user_state_dir(product: &str) -> PathBuf {
     user_runtime_dir(product)
 }
 
+/// Directory for `product`'s persistent state, derived from the environment
+/// alone: `LOCALAPPDATA`, then `C:\ProgramData`.
+///
+/// Unlike [`user_state_dir`] this never asks the known-folder API, so the
+/// location is exactly what the environment says. That is the documented
+/// contract of the probe worker's symbol cache (#974), and a caller that
+/// publishes such a contract needs a primitive that keeps it.
+pub fn user_state_dir_from_environment(product: &str) -> PathBuf {
+    state_dir_from_environment_in(crate::env_vars::LOCALAPPDATA.os(), product)
+}
+
+fn state_dir_from_environment_in(
+    local_app_data: Option<std::ffi::OsString>,
+    product: &str,
+) -> PathBuf {
+    local_app_data
+        .map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from)
+        .join(product)
+}
+
 /// Root under which `product` keeps per-run scratch data.
 pub fn user_run_data_root(product: &str) -> PathBuf {
     user_runtime_dir(product)
@@ -306,4 +326,19 @@ pub fn is_link_handle(metadata: &std::fs::Metadata) -> bool {
 
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
     metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(test)]
+mod state_dir_from_environment_tests {
+    use std::path::PathBuf;
+
+    #[test]
+    fn state_dir_from_environment_prefers_local_app_data_then_program_data() {
+        use super::state_dir_from_environment_in as dir;
+        assert_eq!(
+            dir(Some(r"D:\Users\u\AppData\Local".into()), "rp"),
+            PathBuf::from(r"D:\Users\u\AppData\Local\rp")
+        );
+        assert_eq!(dir(None, "rp"), PathBuf::from(r"C:\ProgramData\rp"));
+    }
 }
