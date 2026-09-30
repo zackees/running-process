@@ -87,15 +87,6 @@ crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	windows	4
 crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	windows	5
 crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	windows	6
 crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	windows	7
-crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	0
-crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	1
-crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	2
-crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	3
-crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	4
-crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	5
-crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	6
-crates/running-process-py/src/lib.rs	attr_cfg	windows	0
-crates/running-process-py/src/lib.rs	attr_cfg	windows	1
 crates/running-process-py/src/priority.rs	attr_cfg	unix	0
 crates/running-process-py/src/priority.rs	attr_cfg	unix	1
 crates/running-process-py/src/priority.rs	attr_cfg	windows	0
