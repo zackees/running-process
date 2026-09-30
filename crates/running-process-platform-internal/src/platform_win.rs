@@ -156,7 +156,15 @@ pub use ipc_private_dir::{
 };
 #[cfg(feature = "ipc")]
 pub fn ipc_broker_endpoint_name(bare_name: &str, _path_scoped: bool) -> std::io::Result<String> {
-    Ok(format!(r"\\.\pipe\{bare_name}"))
+    Ok(ipc_component_endpoint_path("broker-v2", bare_name))
+}
+
+/// Named-pipe path for `bare_name`. The kernel pipe namespace is already
+/// per-machine and name-keyed, so `component` needs no directory of its own;
+/// callers keep their services apart with the name prefix (`rpp-probe-...`).
+#[cfg(feature = "ipc")]
+pub fn ipc_component_endpoint_path(_component: &str, bare_name: &str) -> String {
+    format!(r"\\.\pipe\{bare_name}")
 }
 
 /// Windows named-pipe names are capped by `MAX_PATH` while the long-path
@@ -952,6 +960,25 @@ mod tests {
     fn tokio_spawn_owns_console_creation_flags() {
         assert_eq!(compat_tokio_creation_flags(false), 0x0800_0000);
         assert_eq!(compat_tokio_creation_flags(true), 0);
+    }
+
+    #[cfg(feature = "ipc")]
+    #[test]
+    fn component_endpoint_path_is_the_bare_pipe_name_whatever_the_component() {
+        // #974: the pipe namespace is machine-wide and name-keyed, so the
+        // component needs no directory; services stay apart by name prefix.
+        assert_eq!(
+            super::ipc_component_endpoint_path("probe", "rpp-probe-abc-0"),
+            r"\\.\pipe\rpp-probe-abc-0"
+        );
+        assert_eq!(
+            super::ipc_component_endpoint_path("broker-v2", "rpb-v2-x-0"),
+            r"\\.\pipe\rpb-v2-x-0"
+        );
+        assert_eq!(
+            super::ipc_broker_endpoint_name("rpb-v2-x-0", false).unwrap(),
+            super::ipc_component_endpoint_path("broker-v2", "rpb-v2-x-0")
+        );
     }
 
     #[test]

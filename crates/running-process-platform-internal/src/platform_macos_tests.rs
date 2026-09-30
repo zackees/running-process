@@ -166,3 +166,32 @@ fn shell_command_preserves_login_shell_contract_and_ignores_child_path() {
     assert!(output.status.success());
     assert_eq!(output.stdout, b"alpha beta;\"gamma\"");
 }
+
+#[cfg(feature = "ipc")]
+#[test]
+fn component_endpoint_paths_are_byte_exact_for_the_probe_and_the_broker() {
+    // #974. The leaf literals are blake3(bare_name)[..8] computed outside Rust,
+    // so this is not the implementation checking itself.
+    let tmp = Some(OsStr::new("/var/folders/ab/T/").to_os_string());
+    assert_eq!(
+        super::component_endpoint_path_in(tmp.clone(), 501, "probe", "rpp-probe-abc-0"),
+        "/var/folders/ab/T/.rp-501-probe/703ff832a29816f0.sock"
+    );
+    assert_eq!(
+        super::component_endpoint_path_in(None, 501, "probe", "rpp-probe-abc-0"),
+        "/tmp/.rp-501-probe/703ff832a29816f0.sock"
+    );
+    assert_eq!(
+        super::component_endpoint_path_in(tmp, 501, "broker-v2", "rpb-v2-x-0"),
+        "/var/folders/ab/T/.rp-501-broker-v2/7cd372cc3088389d.sock"
+    );
+}
+
+#[cfg(feature = "ipc")]
+#[test]
+fn broker_endpoint_name_is_the_broker_component_path() {
+    assert_eq!(
+        super::ipc_broker_endpoint_name("rpb-v2-x-0", false).unwrap(),
+        super::ipc_component_endpoint_path("broker-v2", "rpb-v2-x-0")
+    );
+}

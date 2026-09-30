@@ -18,64 +18,22 @@ pub fn probe_pipe_name(sid_hash: &str, idx: u32) -> String {
     format!("{PIPE_PREFIX_PROBE}-{sid_hash}-{idx}")
 }
 
+/// The endpoint component the platform facade files probe sockets under.
+///
+/// Keeps probe sockets in their own per-user runtime directory, apart from the
+/// broker's, so the two services can never contend for a path.
+const ENDPOINT_COMPONENT: &str = "probe";
+
 /// Turn a bare endpoint name into the platform's concrete socket path.
 ///
-/// Copied rather than imported: these helpers are private to the broker-v2
-/// binary, not part of the library surface.
+/// The host decides directory placement and the leaf spelling (a pipe path on
+/// Windows, a per-user runtime directory on Unix, a hashed leaf on macOS to fit
+/// `sun_path`); this crate owns only the `probe` component and the name prefix.
 pub fn resolve_socket_path(bare_name: &str) -> String {
-    #[cfg(windows)]
-    {
-        format!(r"\\.\pipe\{bare_name}")
-    }
-    #[cfg(unix)]
-    {
-        let dir = unix_socket_dir();
-        // `#[cfg]`, not `cfg!()`. A runtime `cfg!` still requires the macOS
-        // branch to COMPILE everywhere, which would demand blake3 on Linux
-        // where it is deliberately not a dependency.
-        #[cfg(target_os = "macos")]
-        let leaf = {
-            // macOS caps sun_path at 104 bytes; hash to fit.
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(bare_name.as_bytes());
-            let digest = hasher.finalize();
-            let mut hex = String::with_capacity(16);
-            for b in digest.as_bytes().iter().take(8) {
-                use std::fmt::Write as _;
-                let _ = write!(hex, "{b:02x}");
-            }
-            format!("{hex}.sock")
-        };
-        #[cfg(not(target_os = "macos"))]
-        let leaf = format!("{bare_name}.sock");
-        dir.join(leaf).to_string_lossy().into_owned()
-    }
-}
-
-// `getuid` is an FFI call with no safe wrapper in libc. It reads a
-// process property and cannot fail, so the block is sound; the crate-wide
-// `deny(unsafe_code)` is relaxed here only.
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn unix_socket_dir() -> std::path::PathBuf {
-    use std::path::PathBuf;
-    #[cfg(target_os = "macos")]
-    {
-        let uid = unsafe { libc::getuid() };
-        let tmp = std::env::var_os("TMPDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        tmp.join(format!(".rp-{uid}-probe"))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-            PathBuf::from(dir).join("running-process").join("probe")
-        } else {
-            let uid = unsafe { libc::getuid() };
-            PathBuf::from(format!("/tmp/running-process-{uid}/probe"))
-        }
-    }
+    running_process_platform_internal::platform::ipc::component_endpoint_path(
+        ENDPOINT_COMPONENT,
+        bare_name,
+    )
 }
 
 /// Wrap a resolved path in interprocess's platform-appropriate `Name`.

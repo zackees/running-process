@@ -152,11 +152,42 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::
         for byte in hash.finalize().as_bytes().iter().take(16) { let _ = write!(leaf, "{byte:02x}"); }
         return Ok(PathBuf::from("/tmp").join(format!(".rp-path-{leaf}.sock")).to_string_lossy().into_owned());
     }
+    Ok(ipc_component_endpoint_path("broker-v2", bare_name))
+}
+
+/// Concrete socket path for `bare_name` in the per-user runtime directory of
+/// `component` (`broker-v2`, `probe`, ...). Pure: performs no filesystem write.
+///
+/// `sun_path` is only 104 bytes here, so the leaf is a 16-hex hash of the bare
+/// name rather than the name itself.
+#[cfg(feature = "ipc")]
+pub fn ipc_component_endpoint_path(component: &str, bare_name: &str) -> String {
+    // SAFETY: `getuid` reads a process property and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    component_endpoint_path_in(std::env::var_os("TMPDIR"), uid, component, bare_name)
+}
+
+#[cfg(feature = "ipc")]
+fn component_endpoint_path_in(
+    tmpdir: Option<std::ffi::OsString>,
+    uid: u32,
+    component: &str,
+    bare_name: &str,
+) -> String {
+    use std::fmt::Write as _;
+    use std::path::PathBuf;
+
+    let mut hash = blake3::Hasher::new();
     hash.update(bare_name.as_bytes());
     let mut leaf = String::with_capacity(16);
-    for byte in hash.finalize().as_bytes().iter().take(8) { let _ = write!(leaf, "{byte:02x}"); }
-    let root = std::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
-    Ok(root.join(format!(".rp-{}-broker-v2", unsafe { libc::getuid() })).join(format!("{leaf}.sock")).to_string_lossy().into_owned())
+    for byte in hash.finalize().as_bytes().iter().take(8) {
+        let _ = write!(leaf, "{byte:02x}");
+    }
+    let root = tmpdir.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+    root.join(format!(".rp-{uid}-{component}"))
+        .join(format!("{leaf}.sock"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// macOS `sun_path` is 104 bytes including the NUL terminator.
