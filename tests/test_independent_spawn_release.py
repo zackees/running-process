@@ -20,10 +20,12 @@ class IndependentSpawnReleaseTests(unittest.TestCase):
         self.assertIsNotNone(publish)
         assert preflight is not None
         assert publish is not None
+        # #974 PR 4: the probe depends on the platform facade, so platform
+        # must be on the registry before the probe resolves.
         expected = [
-            "running-process-probe",
             "running-process-protocol",
             "running-process-platform-internal",
+            "running-process-probe",
             "running-process",
             "running-process-probe-daemon",
             "running-process-py",

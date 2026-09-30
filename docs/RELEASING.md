@@ -30,8 +30,8 @@ These need to exist on the repo *before* the first real release runs:
   `environment: pypi`.
 - **Repo secret `CARGO_REGISTRY_TOKEN`** containing a crates.io API
   token authorized to publish all six Rust packages, in their release order:
-  `running-process-probe`, `running-process-protocol`,
-  `running-process-platform-internal`, `running-process`,
+  `running-process-protocol`, `running-process-platform-internal`,
+  `running-process-probe`, `running-process`,
   `running-process-probe-daemon`, and `running-process-py`. Without it the
   `publish-crates` job hard-fails before doing anything destructive.
 
@@ -60,6 +60,8 @@ These need to exist on the repo *before* the first real release runs:
    - `crates/running-process/Cargo.toml` pin on `running-process-probe`
    - `crates/running-process-probe-daemon/Cargo.toml` pins on
      `running-process` and `running-process-probe`
+   - `crates/running-process-probe/Cargo.toml` pin on
+     `running-process-platform-internal` (#974)
 
    Every path dependency of a *published* crate needs a version, including
    optional ones behind a feature. Missing one is not caught until
@@ -115,14 +117,15 @@ build validation, not a simulated upload.
   Published via `pypa/gh-action-pypi-publish@release/v1` with
   `skip-existing: true` (OIDC, no static token).
 - **crates.io**, in dep order (probe crates added per #651):
-  1. `running-process-probe` — the probe protocol types and the
-     all-thread snapshot. `running-process`'s `probe` feature depends on
-     it, so it has to exist on the index first or `running-process`
-     cannot resolve at all.
-  2. `running-process-protocol` — generated broker and daemon protobuf types;
+  1. `running-process-protocol` — generated broker and daemon protobuf types;
      it must exist before the platform's optional independent-spawn dependency
      and the root's optional client dependency can resolve.
-  3. `running-process-platform-internal` — the published native implementation detail.
+  2. `running-process-platform-internal` — the published native implementation
+     detail. The probe asks it which images are loaded (#974), so it must
+     exist before the probe can resolve.
+  3. `running-process-probe` — the probe protocol types and the
+     all-thread snapshot. `running-process`'s `probe` feature depends on
+     it, so it has to exist on the index before `running-process`.
   4. `running-process` (depends on the previous packages)
   5. `running-process-probe-daemon` — `rpprobed` and `rpprobe`. Depends
      on both of the above.

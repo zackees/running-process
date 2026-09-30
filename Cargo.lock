@@ -2142,6 +2142,7 @@ dependencies = [
  "prost-build",
  "protox",
  "running-process",
+ "running-process-platform-internal",
  "tempfile",
  "thiserror 2.0.18",
  "winapi",

@@ -53,6 +53,13 @@ pub use process_inspect::{
     process_fault_code_name, process_signal_terminate, ProcessLiveness,
 };
 
+#[path = "platform_win/loaded_images.rs"]
+mod loaded_images;
+pub use loaded_images::{
+    loaded_images as process_loaded_images,
+    open_loaded_image_file as process_open_loaded_image_file,
+};
+
 #[path = "platform_win/raw_write.rs"]
 pub(crate) mod raw_write;
 pub use raw_write::write_all_to_descriptor as fs_write_all_to_descriptor;
