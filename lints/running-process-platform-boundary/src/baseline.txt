@@ -193,10 +193,6 @@ crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	windows	4
 crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	windows	5
 crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	windows	6
 crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	windows	7
-crates/running-process-py/src/async_process.rs	attr_cfg	unix	0
-crates/running-process-py/src/async_process.rs	attr_cfg	unix	1
-crates/running-process-py/src/async_process.rs	native_import	std::os::unix	0
-crates/running-process-py/src/async_process.rs	native_import	std::os::unix	1
 crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	0
 crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	1
 crates/running-process-py/src/debug_traces.rs	attr_cfg	windows	2
