@@ -50,3 +50,5 @@ crates/running-process/src/probe/mod.rs	cfg_macro	windows	host-test	inside a #[c
 crates/running-process/src/process_runtime.rs	attr_cfg	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
 crates/running-process/src/runpm_config.rs	attr_cfg	unix	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
 crates/running-process/src/runpm_config.rs	attr_cfg	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/broker/adopt.rs	attr_cfg	unix	compat-4x	published 4.x OwnedBackendIo surface (into_owned_fd/AsFd over std OwnedFd, WindowsUnsupported variant); retires in 5.0 when #720 lands a host-neutral owned handle (#975)
+crates/running-process/src/broker/adopt.rs	attr_cfg	windows	compat-4x	published 4.x OwnedBackendIo surface (into_owned_fd/AsFd over std OwnedFd, WindowsUnsupported variant); retires in 5.0 when #720 lands a host-neutral owned handle (#975)
