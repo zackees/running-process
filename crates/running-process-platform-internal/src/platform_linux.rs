@@ -872,7 +872,7 @@ pub(crate) fn configure_command(
     if create_process_group {
         command.process_group(0);
     }
-    if kill_when_owner_dies || nice.is_some() {
+    if kill_when_owner_dies {
         let owner_pid = unsafe { libc::getpid() };
         // SAFETY: the closure invokes only async-signal-safe libc calls.
         unsafe {
@@ -882,9 +882,7 @@ pub(crate) fn configure_command(
                         return Err(io::Error::last_os_error());
                     }
                 }
-                if kill_when_owner_dies {
-                    install_parent_death_signal_with_race_guard(owner_pid)?;
-                }
+                install_parent_death_signal_with_race_guard(owner_pid)?;
                 Ok(())
             });
         }
@@ -892,8 +890,46 @@ pub(crate) fn configure_command(
     Ok(())
 }
 
+/// Niceness that must be applied to the child right after spawn.
+///
+/// A `pre_exec` hook makes std abandon `posix_spawn` for `fork` + `exec`,
+/// whose cost grows with the parent's resident size (~0.5-1 ms per child in
+/// a large daemon, #1248). Owner-death has to run in the child, so it keeps
+/// the hook and applies niceness there. Niceness alone does not: it is set
+/// on the child's pid once `spawn` has returned, before this call returns to
+/// the caller. The only window is the child's first instructions, and a
+/// thread or grandchild it starts inside that window inherits the old value.
 #[cfg(feature = "async-process")]
-pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) -> io::Result<()> {
+fn nice_after_spawn(kill_when_owner_dies: bool, nice: Option<i32>) -> Option<i32> {
+    if kill_when_owner_dies {
+        None
+    } else {
+        nice
+    }
+}
+
+#[cfg(feature = "async-process")]
+pub(crate) fn after_spawn(
+    child: &Child,
+    kill_when_owner_dies: bool,
+    nice: Option<i32>,
+) -> io::Result<()> {
+    let Some(nice) = nice_after_spawn(kill_when_owner_dies, nice) else {
+        return Ok(());
+    };
+    let Some(pid) = child.id() else {
+        return Ok(());
+    };
+    // SAFETY: plain syscall on a pid this process just spawned and has not
+    // yet reaped, so the pid cannot have been recycled.
+    if unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, nice) } == -1 {
+        let error = io::Error::last_os_error();
+        // The caller asked for this priority and the child is already running:
+        // do not leave it running at the wrong one. The caller drops `child`,
+        // which reaps it.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        return Err(error);
+    }
     Ok(())
 }
 

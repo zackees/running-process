@@ -264,12 +264,83 @@ fn tokio_configuration_and_live_signal_helpers_reach_the_os() {
         grouped.arg("30").kill_on_drop(true);
         configure_command(&mut grouped, true, false, None).unwrap();
         let mut child = grouped.spawn().unwrap();
-        after_spawn(&child, false).expect("a no-op must still succeed");
+        after_spawn(&child, false, None).expect("a no-op must still succeed");
         let pid = child.id().unwrap();
         unix_signal_process_group(pid as i32, UnixSignalKind::Terminate).unwrap();
         let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
             .await
             .expect("signalled process group did not exit within cleanup deadline")
+            .unwrap();
+        assert!(!status.success());
+    });
+}
+
+#[cfg(feature = "async-process")]
+#[test]
+fn nice_alone_is_applied_after_spawn_and_owner_death_keeps_pre_exec() {
+    // Owner-death runs in the child, so it keeps `pre_exec` and carries nice
+    // with it; nice alone must not (#1248).
+    assert_eq!(nice_after_spawn(false, Some(7)), Some(7));
+    assert_eq!(nice_after_spawn(false, None), None);
+    assert_eq!(nice_after_spawn(true, Some(7)), None);
+    assert_eq!(nice_after_spawn(true, None), None);
+}
+
+#[cfg(feature = "async-process")]
+#[test]
+fn nice_only_spawn_reports_the_requested_niceness_once_spawn_completes() {
+    // /proc/<pid>/stat field 19 is the niceness of the child's main thread.
+    fn niceness(pid: u32) -> i32 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let tail = &stat[stat.rfind(')').unwrap() + 1..];
+        tail.split_ascii_whitespace().nth(16).unwrap().parse().unwrap()
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        // Raising the value only lowers priority, so no CAP_SYS_NICE is needed.
+        let requested = niceness(std::process::id()).max(0) + 3;
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30").kill_on_drop(true);
+        configure_command(&mut command, false, false, Some(requested)).unwrap();
+        let mut child = command.spawn().unwrap();
+        after_spawn(&child, false, Some(requested)).unwrap();
+        let pid = child.id().unwrap();
+        assert_eq!(niceness(pid), requested);
+        child.kill().await.unwrap();
+    });
+}
+
+#[cfg(feature = "async-process")]
+#[test]
+fn nice_only_spawn_kills_the_child_when_the_priority_cannot_be_applied() {
+    // Lowering niceness below the inherited value needs CAP_SYS_NICE.
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let effective_uid = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|fields| fields.split_ascii_whitespace().nth(1))
+        .and_then(|uid| uid.parse::<u32>().ok())
+        .unwrap();
+    if effective_uid == 0 {
+        return;
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30").kill_on_drop(true);
+        configure_command(&mut command, false, false, Some(-10)).unwrap();
+        let mut child = command.spawn().unwrap();
+        assert!(after_spawn(&child, false, Some(-10)).is_err());
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("a child that missed its priority must not keep running")
             .unwrap();
         assert!(!status.success());
     });

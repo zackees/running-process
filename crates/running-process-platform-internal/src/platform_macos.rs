@@ -814,7 +814,11 @@ fn configure_command_for_owner(
 }
 
 #[cfg(feature = "async-process")]
-pub(crate) fn after_spawn(_child: &Child, _kill_when_owner_dies: bool) -> io::Result<()> {
+pub(crate) fn after_spawn(
+    _child: &Child,
+    _kill_when_owner_dies: bool,
+    _nice: Option<i32>,
+) -> io::Result<()> {
     Ok(())
 }
 

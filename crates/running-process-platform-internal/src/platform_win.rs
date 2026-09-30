@@ -662,7 +662,11 @@ pub(crate) fn configure_command(
 }
 
 #[cfg(feature = "async-process")]
-pub(crate) fn after_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Result<()> {
+pub(crate) fn after_spawn(
+    child: &Child,
+    kill_when_owner_dies: bool,
+    _nice: Option<i32>,
+) -> io::Result<()> {
     if kill_when_owner_dies {
         assign(child.raw_handle())
     } else {

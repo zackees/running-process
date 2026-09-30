@@ -544,7 +544,7 @@ impl SpawnSpec {
             Some(admission) => admission.run(spawn)?,
             None => spawn()?,
         };
-        platform_imp::after_spawn(&child, self.kill_when_owner_dies)?;
+        platform_imp::after_spawn(&child, self.kill_when_owner_dies, self.nice)?;
         Ok(PlatformChild::new(child, self.create_process_group))
     }
 }
