@@ -9,6 +9,13 @@
 //! isolation, so reusing it across captures would let one malformed input take
 //! down an unrelated caller's work.
 
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
+
 use std::io::{Read as _, Write as _};
 
 use running_process_probe_worker::{render_text, symbolize, RawCapture};

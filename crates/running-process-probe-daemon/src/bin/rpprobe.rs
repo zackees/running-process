@@ -4,6 +4,13 @@
 //! so the whole command surface is testable in-process, without spawning a
 //! binary and parsing its stdout to find out whether a selection rule worked.
 
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
+
 use clap::Parser as _;
 use running_process_probe_daemon::cli::{run, Cli};
 

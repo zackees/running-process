@@ -53,10 +53,10 @@ pub use running_process_platform_internal::env_vars as platform;
 /// Every environment variable read by this crate or by the platform layer it
 /// builds on, once each, sorted by name.
 ///
-/// Not yet included: the probe crate's own reads (its crash spool and report
-/// directories, its crash-handler opt-out), which a build with the `probe`
-/// feature also links. They join this list once that crate's declaration
-/// table lands (#1101).
+/// With the `probe` feature this also lists the probe crate's own reads (its
+/// crash spool and report directories, its crash-handler opt-out), because
+/// such a build links that crate. The probe daemon and the symbolization
+/// worker are separate processes that declare their own reads.
 ///
 /// [`DECLARED`] lists what `running-process` itself reads. A process that
 /// links `running-process` also runs `running-process-platform-internal`,
@@ -74,6 +74,10 @@ pub fn all_declared() -> Vec<EnvVar> {
         .chain(platform::DECLARED_PLATFORM)
         .copied()
         .collect();
+    // The probe crate sits below this one only behind its feature; its table
+    // joins the inventory exactly when its code does.
+    #[cfg(feature = "probe")]
+    all.extend_from_slice(running_process_probe::env_vars::DECLARED_PROBE);
     all.sort_by(|left, right| left.name.cmp(right.name));
     all.dedup_by(|left, right| left.name == right.name);
     all
