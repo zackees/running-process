@@ -1034,7 +1034,9 @@ impl NativeProcess {
     /// Wait for the lifecycle task to publish the child's exit, up to
     /// `deadline`. A last direct `try_wait` covers a lifecycle task that has
     /// already stopped (for instance after a transient `try_wait` error).
-    #[cfg(unix)]
+    // Host-neutral: only the Unix kill path waits this way today, so a
+    // Windows build compiles it without using it.
+    #[allow(dead_code)]
     fn await_exit_until(&self, deadline: Instant) -> Option<i32> {
         let mut exit = self.shared.exit_code.subscribe();
         let remaining = deadline.saturating_duration_since(Instant::now());
