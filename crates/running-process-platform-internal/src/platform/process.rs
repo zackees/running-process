@@ -8,9 +8,9 @@ pub use crate::{
     configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
     monitor_console_windows, parent_has_console, prepare_capture_reader, set_process_name,
     shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
-    spawn_sync_daemon_with_inheritance, start_descendant_monitor, start_exact_trace,
-    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
-    CaptureCancellation, TracedChild, WindowsJobHandle,
+    spawn_sync_daemon_with_inheritance, start_attached_descendant_monitor,
+    start_descendant_monitor, start_exact_trace, sync_child_native_handle, trampoline_exit_code,
+    unix_mark_extra_fds_close_on_exec, CaptureCancellation, TracedChild, WindowsJobHandle,
 };
 
 #[cfg(feature = "async-process")]

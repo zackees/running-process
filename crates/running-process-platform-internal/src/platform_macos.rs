@@ -348,6 +348,16 @@ use crate::SpawnSpec;
 mod descendants;
 pub use descendants::start_descendant_monitor;
 
+/// Attach to an already-running root (#1015). On this host the descendant
+/// monitor never depended on the spawn, so attaching is the same monitor.
+pub fn start_attached_descendant_monitor(
+    root_pid: u32,
+    stop: std::sync::Arc<crate::platform::process::DescendantMonitorStop>,
+    emit: Box<dyn Fn(crate::platform::process::DescendantEvent) + Send>,
+) -> std::io::Result<()> {
+    start_descendant_monitor(root_pid, stop, emit)
+}
+
 pub fn exact_trace_capability() -> crate::platform::process::ExactTraceCapability {
     crate::platform::process::ExactTraceCapability {
         available: false,

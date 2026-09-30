@@ -267,6 +267,9 @@ pub use window_icon::{icon_support as window_icon_support_impl, set_icon as set_
 mod descendants;
 pub use descendants::{assign_child_to_windows_job, WindowsJobHandle};
 
+/// Attach to an already-running root by polling the process table (#1015).
+pub use descendants::start_snapshot_descendant_monitor as start_attached_descendant_monitor;
+
 pub fn exact_trace_capability() -> crate::platform::process::ExactTraceCapability {
     crate::platform::process::ExactTraceCapability {
         available: false,
