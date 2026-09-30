@@ -66,15 +66,21 @@ framehop = "0.13"
 # OS write; all allocation and stack capture happens on a sampler thread.
 crash-handler = "0.7"
 getrandom = "0.4"
+# Parse unwind sections only after every captured thread is running again.
+# Keeping parsers out of the signal/suspend window is the safety boundary.
+# Host-neutral since #974: which parser runs is chosen by the object format
+# the loader reports, not by the compile target.
+object = { version = "0.36", default-features = false, features = ["read", "std"] }
+# #974: which images are loaded is host mechanics and comes from the platform
+# facade. Only the dependency-free core is enabled; the object parsers above
+# stay here, never in the facade.
+running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.15", default-features = false }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # #635 cooperative capture uses realtime signals/ucontext on Linux and Mach
 # thread APIs on macOS. This must be a normal dependency: snapshot capture is
 # production code, not only a test seam.
 libc = "0.2"
-# Parse unwind sections only after every captured thread is running again.
-# Keeping parsers out of the signal/suspend window is the safety boundary.
-object = { version = "0.36", default-features = false, features = ["read", "std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # libc exposes thread_info but not the suspend/state/Mach-VM APIs or
@@ -109,7 +115,6 @@ winapi = { version = "0.3", features = [
     "handleapi",
     "memoryapi",
     "processthreadsapi",
-    "psapi",
     "tlhelp32",
     "winnt",
 ] }

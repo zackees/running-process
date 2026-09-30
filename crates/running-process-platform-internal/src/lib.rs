@@ -123,6 +123,8 @@ pub use platform_imp::fs_write_all_to_descriptor;
 
 pub use platform_imp::{process_can_replace_current_image, process_replace_current_image};
 
+pub use platform_imp::{process_loaded_images, process_open_loaded_image_file};
+
 pub use platform_imp::{
     process_executable_path, process_fault_code_name, process_force_kill,
     process_same_executable_path, process_signal_terminate, ProcessLiveness,
