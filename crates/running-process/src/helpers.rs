@@ -1,8 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::Write;
-#[cfg(any(test, unix))]
 use std::sync::Mutex;
-#[cfg(any(test, unix))]
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,7 +20,11 @@ pub(crate) fn kill_drain_deadline() -> Instant {
     Instant::now() + crate::env_vars::KILL_DRAIN_TIMEOUT_MS.millis_or(DEFAULT_KILL_DRAIN_TIMEOUT)
 }
 
-#[cfg(any(test, unix))]
+// Host-neutral: the only callers today are the Unix kill path, so a Windows
+// build compiles these without using them. Allowing that here keeps the
+// helpers free of host `cfg` rather than gating them to the hosts that happen
+// to call them.
+#[allow(dead_code)]
 pub(crate) fn poll_until<T>(
     deadline: Instant,
     interval: Duration,
@@ -40,7 +42,7 @@ pub(crate) fn poll_until<T>(
     }
 }
 
-#[cfg(any(test, unix))]
+#[allow(dead_code)]
 pub(crate) fn poll_mutex_until<S, T>(
     state: &Mutex<S>,
     deadline: Instant,
@@ -61,7 +63,7 @@ pub(crate) fn completed_reap_after_signal<T>(result: std::io::Result<Option<T>>)
     result.ok().flatten()
 }
 
-#[cfg(any(test, unix))]
+#[allow(dead_code)]
 pub(crate) fn child_try_wait_error_is_retryable(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::Interrupted
 }
