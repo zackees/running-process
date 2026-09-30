@@ -569,9 +569,9 @@ pub fn unix_signal_raw(_signal: crate::platform::process::UnixSignalKind) -> i32
 pub fn configure_compat_tokio_command(
     command: &mut Command,
     show_console: bool,
-    _kill_when_owner_dies: bool,
+    kill_when_owner_dies: bool,
 ) -> io::Result<()> {
-    let flags = compat_tokio_creation_flags(show_console);
+    let flags = compat_tokio_creation_flags(show_console, kill_when_owner_dies);
     if flags != 0 {
         command.creation_flags(flags);
     }
@@ -579,18 +579,107 @@ pub fn configure_compat_tokio_command(
 }
 
 #[cfg(feature = "async-process")]
-fn compat_tokio_creation_flags(show_console: bool) -> u32 {
-    if show_console {
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+/// `CREATE_SUSPENDED` when the child must join the owner-death job before it
+/// runs a single instruction (#887). Assigning it after `CreateProcess` returns
+/// leaves a window in which the child can start a grandchild that never joins
+/// the job.
+#[cfg(feature = "async-process")]
+fn compat_tokio_creation_flags(show_console: bool, kill_when_owner_dies: bool) -> u32 {
+    let console = if show_console {
         0
     } else {
         0x0800_0000 // CREATE_NO_WINDOW
+    };
+    let suspended = if kill_when_owner_dies { CREATE_SUSPENDED } else { 0 };
+    console | suspended
+}
+
+/// Put a child spawned `CREATE_SUSPENDED` into the owner-death job, then let it
+/// run.
+///
+/// If containment or the resume fails, the child is terminated: it has not run
+/// a single instruction, so killing it is strictly safer than letting it run
+/// outside the job.
+#[cfg(feature = "async-process")]
+fn contain_and_resume(child: &Child) -> io::Result<()> {
+    let process = child.raw_handle();
+    let outcome = assign(process).and_then(|()| match child.id() {
+        Some(pid) => resume_primary_thread(pid),
+        None => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the child exited before it could be resumed",
+        )),
+    });
+    if outcome.is_err() {
+        if let Some(process) = process {
+            // SAFETY: `process` is the live handle Tokio owns for this child.
+            unsafe { TerminateProcess(process, 1) };
+        }
     }
+    outcome
+}
+
+/// Resume the one thread of a process created `CREATE_SUSPENDED`.
+///
+/// A freshly created suspended process has exactly one thread, so the first
+/// thread owned by `pid` is the primary thread. Uses documented Win32 calls
+/// only; std and Tokio do not expose the primary-thread handle.
+#[cfg(feature = "async-process")]
+fn resume_primary_thread(pid: u32) -> io::Result<()> {
+    use winapi::um::handleapi::{CloseHandle as CloseWinHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::processthreadsapi::{OpenThread, ResumeThread};
+    use winapi::um::tlhelp32::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use winapi::um::winnt::THREAD_SUSPEND_RESUME;
+
+    // SAFETY: a plain snapshot call; the handle is closed on every path below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: THREADENTRY32 is plain data; `dwSize` is set before first use.
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+    let mut outcome = Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no thread found for the suspended child",
+    ));
+    // SAFETY: `snapshot` is live and `entry` is initialised as required.
+    let mut more = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+    while more {
+        if entry.th32OwnerProcessID == pid {
+            // SAFETY: opening a thread by id; the handle is closed right after.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread.is_null() {
+                outcome = Err(io::Error::last_os_error());
+            } else {
+                // SAFETY: `thread` is a live handle with suspend/resume access.
+                let previous = unsafe { ResumeThread(thread) };
+                outcome = if previous == u32::MAX {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                };
+                // SAFETY: closes the handle opened above.
+                unsafe { CloseWinHandle(thread) };
+            }
+            break;
+        }
+        // SAFETY: as for `Thread32First`.
+        more = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: closes the snapshot created above.
+    unsafe { CloseWinHandle(snapshot) };
+    outcome
 }
 
 #[cfg(feature = "async-process")]
 pub fn after_compat_tokio_spawn(child: &Child, kill_when_owner_dies: bool) -> io::Result<()> {
     if kill_when_owner_dies {
-        assign(child.raw_handle())
+        contain_and_resume(child)
     } else {
         Ok(())
     }
@@ -628,16 +717,24 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// A console-less parent (e.g. a daemon) makes Windows give every child its
 /// own visible console unless `CREATE_NO_WINDOW` is set.
 #[cfg(feature = "async-process")]
-fn spawn_creation_flags(group: u32, priority: u32, parent_has_console: bool) -> u32 {
+fn spawn_creation_flags(
+    group: u32,
+    priority: u32,
+    parent_has_console: bool,
+    kill_when_owner_dies: bool,
+) -> u32 {
     let no_window = if parent_has_console { 0 } else { CREATE_NO_WINDOW };
-    group | priority | no_window
+    // Owner-death children start suspended and are resumed once they are in the
+    // job (#887); see `contain_and_resume`.
+    let suspended = if kill_when_owner_dies { CREATE_SUSPENDED } else { 0 };
+    group | priority | no_window | suspended
 }
 
 #[cfg(feature = "async-process")]
 pub(crate) fn configure_command(
     command: &mut Command,
     create_process_group: bool,
-    _kill_when_owner_dies: bool,
+    kill_when_owner_dies: bool,
     nice: Option<i32>,
 ) -> io::Result<()> {
     let group = if create_process_group {
@@ -654,7 +751,7 @@ pub(crate) fn configure_command(
         Some(value) if value <= -1 => 0x0000_8000,
         _ => 0,
     };
-    let flags = spawn_creation_flags(group, priority, parent_has_console());
+    let flags = spawn_creation_flags(group, priority, parent_has_console(), kill_when_owner_dies);
     if flags != 0 {
         command.creation_flags(flags);
     }
@@ -668,7 +765,7 @@ pub(crate) fn after_spawn(
     _nice: Option<i32>,
 ) -> io::Result<()> {
     if kill_when_owner_dies {
-        assign(child.raw_handle())
+        contain_and_resume(child)
     } else {
         Ok(())
     }
@@ -950,8 +1047,98 @@ mod tests {
     #[cfg(feature = "async-process")]
     #[test]
     fn tokio_spawn_owns_console_creation_flags() {
-        assert_eq!(compat_tokio_creation_flags(false), 0x0800_0000);
-        assert_eq!(compat_tokio_creation_flags(true), 0);
+        assert_eq!(compat_tokio_creation_flags(false, false), 0x0800_0000);
+        assert_eq!(compat_tokio_creation_flags(true, false), 0);
+    }
+
+    #[cfg(feature = "async-process")]
+    #[test]
+    fn owner_death_children_start_suspended_so_they_join_the_job_before_running() {
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        assert_eq!(compat_tokio_creation_flags(false, true) & CREATE_SUSPENDED, CREATE_SUSPENDED);
+        assert_eq!(compat_tokio_creation_flags(true, true), CREATE_SUSPENDED);
+        assert_eq!(compat_tokio_creation_flags(false, false) & CREATE_SUSPENDED, 0);
+        assert_eq!(super::spawn_creation_flags(0, 0, true, true), CREATE_SUSPENDED);
+        assert_eq!(super::spawn_creation_flags(0, 0, true, false), 0);
+    }
+
+    #[cfg(feature = "async-process")]
+    #[test]
+    fn console_less_parent_spawns_children_without_a_window() {
+        use super::{spawn_creation_flags, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
+
+        // #1214: a parent with no console (a daemon) must not let Windows give
+        // every child its own visible console.
+        assert_eq!(spawn_creation_flags(0, 0, false, false), CREATE_NO_WINDOW);
+        assert_eq!(
+            spawn_creation_flags(CREATE_NEW_PROCESS_GROUP, 0x0000_0040, false, false),
+            CREATE_NEW_PROCESS_GROUP | 0x0000_0040 | CREATE_NO_WINDOW
+        );
+        assert_eq!(spawn_creation_flags(0, 0, true, false), 0);
+    }
+
+    #[cfg(feature = "async-process")]
+    fn cmd_child(script: &str, kill_when_owner_dies: bool) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("cmd.exe");
+        command.args(["/c", script]).kill_on_drop(true);
+        super::configure_compat_tokio_command(&mut command, false, kill_when_owner_dies).unwrap();
+        command
+    }
+
+    #[cfg(feature = "async-process")]
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    #[cfg(feature = "async-process")]
+    #[test]
+    fn suspended_owner_death_child_is_resumed_and_runs_to_its_own_exit_code() {
+        runtime().block_on(async {
+            let mut child = cmd_child("exit 7", true).spawn().unwrap();
+            super::after_compat_tokio_spawn(&child, true).unwrap();
+            let status = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait())
+                .await
+                .expect("a child left suspended would hang here")
+                .unwrap();
+            assert_eq!(status.code(), Some(7));
+        });
+    }
+
+    #[cfg(feature = "async-process")]
+    #[test]
+    fn owner_death_child_is_in_a_job_by_the_time_spawn_returns() {
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+
+        runtime().block_on(async {
+            let mut child = cmd_child("ping -n 6 127.0.0.1 > nul", true).spawn().unwrap();
+            super::after_compat_tokio_spawn(&child, true).unwrap();
+            let mut in_job = 0;
+            // SAFETY: the handle is the live child handle Tokio owns; a null job
+            // asks whether the process is in any job.
+            let ok = unsafe {
+                IsProcessInJob(child.raw_handle().unwrap(), std::ptr::null_mut(), &mut in_job)
+            };
+            assert_ne!(ok, 0, "IsProcessInJob failed");
+            assert_ne!(in_job, 0, "the child must already be contained");
+            child.kill().await.unwrap();
+        });
+    }
+
+    #[cfg(feature = "async-process")]
+    #[test]
+    fn non_owner_death_child_is_not_suspended_or_contained() {
+        runtime().block_on(async {
+            let mut child = cmd_child("exit 3", false).spawn().unwrap();
+            super::after_compat_tokio_spawn(&child, false).unwrap();
+            let status = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait())
+                .await
+                .expect("an ordinary child must run without being resumed")
+                .unwrap();
+            assert_eq!(status.code(), Some(3));
+        });
     }
 
     #[test]
