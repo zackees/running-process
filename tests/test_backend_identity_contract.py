@@ -31,8 +31,8 @@ def test_client_or_runtime_feature_cannot_sneak_into_direct_identity() -> None:
 
 
 def test_resolver_rejects_meaningful_heavyweight_client_packages() -> None:
-    failures = graph_failures("running-process v1\ntokio v1\nrusqlite v1\n")
-    assert "forbidden package resolved: tokio" in failures
+    failures = graph_failures("running-process v1\nmio v1\nrusqlite v1\n")
+    assert "forbidden package resolved: mio" in failures
     assert "forbidden package resolved: rusqlite" in failures
 
 

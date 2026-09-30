@@ -33,10 +33,10 @@ def test_identity_or_client_feature_cannot_sneak_into_frame_codec() -> None:
 
 
 def test_resolver_rejects_identity_ipc_hash_and_runtime_packages() -> None:
-    failures = graph_failures("running-process v1\nblake3 v1\ninterprocess v2\ntokio v1\n")
+    failures = graph_failures("running-process v1\nblake3 v1\ninterprocess v2\nmio v1\n")
     assert "forbidden package resolved: blake3" in failures
     assert "forbidden package resolved: interprocess" in failures
-    assert "forbidden package resolved: tokio" in failures
+    assert "forbidden package resolved: mio" in failures
 
 
 def test_compile_contract_is_exact_no_default_feature_test_target() -> None:

@@ -240,6 +240,10 @@ ALLOWED_RUST_SPAWN = {
     # typed lifecycle commands; this is the canonical async engine, not a
     # second raw process-spawn layer.
     Path("crates/running-process/src/process_runtime.rs"),
+    # #850 slice 1: `Runtime::spawn` here starts a Tokio task that completes
+    # one sync-adapter future on the process-global runtime. It never starts
+    # a child process; NativeProcess spawning stays in the reviewed path.
+    Path("crates/running-process/src/actor_runtime.rs"),
     # Public async process construction delegates only to the blessed typed
     # operation above and does not own a second platform spawn path.
     Path("crates/running-process/src/async_process.rs"),

@@ -33,10 +33,10 @@ def test_v1_or_client_cannot_sneak_into_v2_writer() -> None:
 
 
 def test_resolver_rejects_ipc_hash_and_runtime_packages() -> None:
-    failures = graph_failures("running-process v1\nsha2 v1\ninterprocess v2\ntokio v1\n")
+    failures = graph_failures("running-process v1\nsha2 v1\ninterprocess v2\nmio v1\n")
     assert "forbidden package resolved: sha2" in failures
     assert "forbidden package resolved: interprocess" in failures
-    assert "forbidden package resolved: tokio" in failures
+    assert "forbidden package resolved: mio" in failures
 
 
 def test_compile_and_clippy_contracts_target_the_minimal_v2_test() -> None:

@@ -28,7 +28,7 @@ here in the same change.
 | `getrandom` | `[dependencies]` | `client` feature | Backend pipe randomness. Security-sensitive entropy boundary. |
 | `running-process-probe` | `[dependencies]` | `probe` feature | Schema-only: supplies the `probe_diag.v1` prost types to the probe client facade (#633). Pulled in with `default-features = false`, so the crate's injection vehicles (gated on its `embed-helper` feature) are never compiled here and the main crate keeps zero injection symbols. No network transport purpose. |
 | `running-process-protocol` | `[dependencies]` | `client` feature | Published implementation detail owning broker and daemon protobuf generation (#1144). Process-only consumers omit its prost build dependencies; callers retain the client-gated `running_process::proto` and broker protocol re-exports. |
-| `tokio` | `[dependencies]` | `async-process`, `client-async`, or `daemon` feature | Canonical actor runtime for async process lifecycle and broker daemon tasks. No public Tokio types escape this crate. |
+| `tokio` | `[dependencies]` | Always, with only `rt`, `rt-multi-thread`, `sync`, and `time` (no I/O driver, so no `mio`); `async-process` adds `process`/`io-util`/`macros`, and `client-async` or `daemon` add networking and `full` | Canonical actor runtime for process lifecycle and broker daemon tasks. Unconditional since #850 amended the #1146 contract: `NativeProcess` observes child exit from a task on the process-global runtime instead of a thread per child. `ci/minimal_async_platform_graph.py` pins the base feature set. No public Tokio types escape this crate. |
 | `running-process-platform-internal` | `[dependencies]` | Always compiled with only its `process-inspection` primitive for preserved `process_tree::kill_tree` containment; other capabilities follow `async-process`, `process-inspection`, `pty`, `conpty-sidecar`, and `client-async` | Blessed platform boundary for process, terminal/PTY/ConPTY, terminal input, and native window-icon mechanics. The root opts out of its published compatibility defaults and forwards only selected capabilities. |
 | `tokio-util` | `[dependencies]` | `daemon` feature | Codec helpers for local IPC framing. Untrusted-input framing boundary. |
 | `bytes` | `[dependencies]` | `daemon` feature | Buffer type used by async framing. Untrusted-input sizing boundary. |
@@ -54,7 +54,8 @@ here in the same change.
 - `tokio` is the only direct runtime dependency with broadly available async
   network APIs through its enabled feature set. The v1 no-network commitment is
   enforced at the broker code and syscall-behavior level, not by pretending
-  those APIs are absent from Tokio.
+  those APIs are absent from Tokio. Its always-on base (#850) enables no
+  network APIs at all; they arrive only with `client-async` or `daemon`.
 - The broker wire format remains prost-only; bincode is not present as a direct
   runtime dependency.
 - `serde` and `serde_json` are opt-in for local sidecar, terminal, client, and

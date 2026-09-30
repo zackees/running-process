@@ -9,14 +9,13 @@ use std::io;
 use std::pin::Pin;
 use std::process::{ExitStatus, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
 use running_process_platform_internal::{
     PlatformChild, PlatformLifecycle, PlatformOutput, PlatformStdin, SpawnSpec,
 };
-use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
@@ -29,24 +28,14 @@ mod output_shutdown;
 use output_shutdown::SessionOutputProducer;
 pub(crate) use output_shutdown::SessionOutputShutdown;
 
-static PROCESS_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 const DEFAULT_OUTPUT_LOG_CAPACITY: usize = 16 * 1024 * 1024;
 // Tokio reserves the low three permit bits for internal bookkeeping. Passing
 // a greater capacity to `mpsc::channel` panics instead of returning an error.
 const MAX_MPSC_CAPACITY: usize = usize::MAX >> 3;
 
-/// Return the library-owned runtime used by process actors.
-pub(crate) fn runtime() -> &'static Runtime {
-    PROCESS_RUNTIME.get_or_init(|| {
-        Builder::new_multi_thread()
-            .worker_threads(runtime_worker_threads())
-            .enable_io()
-            .enable_time()
-            .thread_name("running-process-actor")
-            .build()
-            .expect("process runtime must initialize")
-    })
-}
+pub(crate) use crate::actor_runtime::runtime;
+#[cfg(test)]
+use crate::actor_runtime::runtime_worker_threads;
 
 /// Run one sync compatibility operation on the process-global actor runtime.
 ///
@@ -61,13 +50,6 @@ where
         return Err(ProcessError::RuntimeContext);
     }
     Ok(runtime().block_on(future))
-}
-
-fn runtime_worker_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(2)
-        .clamp(2, 4)
 }
 
 /// Command handle for one actor-owned process.
