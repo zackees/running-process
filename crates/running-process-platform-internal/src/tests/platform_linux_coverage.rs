@@ -346,6 +346,40 @@ fn nice_only_spawn_kills_the_child_when_the_priority_cannot_be_applied() {
     });
 }
 
+#[test]
+fn fault_code_names_are_byte_exact() {
+    // #974 PR 2: moved out of probe-daemon's crash store, spelling unchanged.
+    assert_eq!(process_fault_code_name(11), "SIGSEGV");
+    assert_eq!(process_fault_code_name(7), "SIGBUS");
+    assert_eq!(process_fault_code_name(4), "SIGILL");
+    assert_eq!(process_fault_code_name(8), "SIGFPE");
+    assert_eq!(process_fault_code_name(6), "SIGABRT");
+    assert_eq!(process_fault_code_name(5), "SIGTRAP");
+    assert_eq!(process_fault_code_name(99), "signal-99");
+}
+
+#[cfg(feature = "ipc")]
+#[test]
+fn component_runtime_dirs_are_byte_exact_for_the_probe() {
+    // #974 PR 2: probe-daemon's discovery directory used to be derived in the
+    // daemon. Pin the spelling so a running daemon's discovery file stays
+    // findable across an upgrade, and pin that sockets live inside it.
+    let xdg = Some(std::ffi::OsString::from("/run/user/1000"));
+    assert_eq!(
+        component_runtime_dir_in(xdg.clone(), 1000, "probe"),
+        std::path::PathBuf::from("/run/user/1000/running-process/probe")
+    );
+    assert_eq!(
+        component_runtime_dir_in(None, 1000, "probe"),
+        std::path::PathBuf::from("/tmp/running-process-1000/probe")
+    );
+    let socket = component_endpoint_path_in(xdg.clone(), 1000, "probe", "x");
+    assert_eq!(
+        std::path::Path::new(&socket).parent(),
+        Some(component_runtime_dir_in(xdg, 1000, "probe").as_path())
+    );
+}
+
 #[cfg(feature = "ipc")]
 #[test]
 fn component_endpoint_paths_are_byte_exact_for_the_probe_and_the_broker() {

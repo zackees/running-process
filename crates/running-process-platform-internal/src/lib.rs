@@ -123,8 +123,8 @@ pub use platform_imp::fs_write_all_to_descriptor;
 pub use platform_imp::{process_can_replace_current_image, process_replace_current_image};
 
 pub use platform_imp::{
-    process_executable_path, process_force_kill, process_same_executable_path,
-    process_signal_terminate, ProcessLiveness,
+    process_executable_path, process_fault_code_name, process_force_kill,
+    process_same_executable_path, process_signal_terminate, ProcessLiveness,
 };
 
 pub use platform_imp::{
@@ -139,9 +139,10 @@ pub use platform_imp::{
 #[cfg(feature = "fs")]
 pub use platform_imp::{
     fs_create_private_file, fs_decode_path_bytes, fs_encode_path_bytes, fs_file_identity,
-    fs_is_lock_conflict, fs_open_lock_file, fs_path_identity, fs_replace_file, fs_sync_directory,
-    fs_try_lock_exclusive, fs_unlock, fs_user_config_dir, fs_user_data_dir, fs_user_run_data_root,
-    fs_user_runtime_dir, fs_user_state_dir, FsFileIdentity,
+    fs_is_link_handle, fs_is_lock_conflict, fs_open_lock_file, fs_open_read_no_follow,
+    fs_path_identity, fs_replace_file, fs_sync_directory, fs_try_lock_exclusive, fs_unlock,
+    fs_user_config_dir, fs_user_data_dir, fs_user_run_data_root, fs_user_runtime_dir,
+    fs_user_state_dir, FsFileIdentity,
 };
 
 pub use platform_imp::{
@@ -157,10 +158,10 @@ pub use platform_imp::terminal_input;
 #[cfg(feature = "ipc")]
 pub use platform_imp::{
     ipc_broker_endpoint_name as IpcBrokerEndpointName, ipc_broker_v1_endpoint_path,
-    ipc_broker_v2_runtime_dir, ipc_component_endpoint_path, ipc_current_user_id,
-    ipc_endpoint_is_filesystem_backed, ipc_endpoint_name_limit, ipc_endpoint_scope_bytes,
-    ipc_nonblocking_zero_read_is_pending, ipc_select_endpoint_address, IpcEndpoint,
-    IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
+    ipc_broker_v2_runtime_dir, ipc_component_endpoint_path, ipc_component_runtime_dir,
+    ipc_current_user_id, ipc_endpoint_is_filesystem_backed, ipc_endpoint_name_limit,
+    ipc_endpoint_scope_bytes, ipc_nonblocking_zero_read_is_pending, ipc_select_endpoint_address,
+    IpcEndpoint, IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
     IpcPeerIdentitySource, IpcStream,
 };
 

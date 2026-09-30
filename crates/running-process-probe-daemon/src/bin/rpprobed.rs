@@ -192,8 +192,7 @@ fn run_as_daemon(
     let bare = probe_pipe_name(sid_hash, endpoint_index);
     let socket_path = resolve_socket_path(&bare);
 
-    #[cfg(unix)]
-    {
+    if running_process_platform_internal::platform::ipc::endpoint_is_filesystem_backed() {
         if let Some(parent) = std::path::Path::new(&socket_path).parent() {
             std::fs::create_dir_all(parent)?;
         }

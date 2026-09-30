@@ -201,3 +201,45 @@ pub fn create_private_file(path: &Path) -> io::Result<File> {
         .mode(0o600)
         .open(path)
 }
+
+/// Open `path` for reading without following a link at its final component.
+///
+/// The kernel refuses a symlink there (`ELOOP`), so the handle is always the
+/// named object itself, never a target substituted after the caller
+/// validated the name.
+pub fn open_read_no_follow(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+/// Whether metadata of an [`open_read_no_follow`] handle names a link rather
+/// than the object itself. The open already refused links here, so this
+/// reads the file type the handle reports.
+pub fn is_link_handle(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(test)]
+mod no_follow_tests {
+    /// #974 PR 2: probe-daemon validates an artifact's name, then opens it;
+    /// a symlink swapped in between must not redirect the open.
+    #[test]
+    fn a_no_follow_open_refuses_a_symlink_at_the_final_component() {
+        let dir = std::env::temp_dir().join(format!("rp-nofollow-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target");
+        let link = dir.join("link");
+        std::fs::write(&target, b"secret").unwrap();
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let error = super::open_read_no_follow(&link).expect_err("a symlink must not be followed");
+        assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

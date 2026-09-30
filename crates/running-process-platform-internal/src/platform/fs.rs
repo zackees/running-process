@@ -39,7 +39,8 @@ pub use crate::fs_write_all_to_descriptor as write_all_to_descriptor;
 pub use crate::{
     fs_create_private_file as create_private_file, fs_decode_path_bytes as decode_path_bytes,
     fs_encode_path_bytes as encode_path_bytes, fs_file_identity as file_identity,
-    fs_is_lock_conflict as is_lock_conflict, fs_open_lock_file as open_lock_file,
+    fs_is_link_handle as is_link_handle, fs_is_lock_conflict as is_lock_conflict,
+    fs_open_lock_file as open_lock_file, fs_open_read_no_follow as open_read_no_follow,
     fs_path_identity as path_identity, fs_replace_file as replace_file,
     fs_sync_directory as sync_directory, fs_try_lock_exclusive as try_lock_exclusive,
     fs_unlock as unlock, fs_user_config_dir as user_config_dir, fs_user_data_dir as user_data_dir,
@@ -254,6 +255,27 @@ mod tests {
 
         let second = create_private_file(&path).expect_err("must not open over an existing file");
         assert_eq!(second.kind(), std::io::ErrorKind::AlreadyExists);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A no-follow open of an ordinary file reads it and does not report a
+    /// link. The link half is host-specific and pinned in each host's tests.
+    #[test]
+    fn a_no_follow_open_reads_an_ordinary_file() {
+        let dir = std::env::temp_dir().join(format!("rp-fs-nofollow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join("artifact.json");
+        std::fs::write(&path, b"payload").expect("write");
+
+        let mut file = open_read_no_follow(&path).expect("open ordinary file");
+        let metadata = file.metadata().expect("metadata");
+        assert!(metadata.is_file());
+        assert!(!is_link_handle(&metadata));
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut body).expect("read");
+        assert_eq!(body, b"payload");
+        drop(file);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

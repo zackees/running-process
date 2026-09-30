@@ -283,3 +283,27 @@ pub fn create_private_file(path: &Path) -> io::Result<File> {
         .create_new(true)
         .open(path)
 }
+
+/// Open `path` for reading without following a link at its final component.
+///
+/// `FILE_FLAG_OPEN_REPARSE_POINT` opens a symlink or junction itself rather
+/// than its target, so the handle is always the named object. Windows does
+/// not refuse the open; check the handle with [`is_link_handle`].
+pub fn open_read_no_follow(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+/// Whether metadata of an [`open_read_no_follow`] handle names a reparse
+/// point (symlink, junction) rather than an ordinary object.
+pub fn is_link_handle(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}

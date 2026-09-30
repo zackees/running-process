@@ -50,7 +50,7 @@ pub use autostart::{
 pub(crate) mod process_inspect;
 pub use process_inspect::{
     process_executable_path, process_force_kill, process_same_executable_path,
-    process_signal_terminate, ProcessLiveness,
+    process_fault_code_name, process_signal_terminate, ProcessLiveness,
 };
 
 #[path = "platform_win/raw_write.rs"]
@@ -86,6 +86,7 @@ pub(crate) mod fs;
 #[cfg(feature = "fs")]
 pub use fs::{
     create_private_file as fs_create_private_file,
+    is_link_handle as fs_is_link_handle, open_read_no_follow as fs_open_read_no_follow,
     decode_path_bytes as fs_decode_path_bytes,
     replace_file as fs_replace_file, sync_directory as fs_sync_directory,
     user_config_dir as fs_user_config_dir,
@@ -165,6 +166,31 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, _path_scoped: bool) -> std::io:
 #[cfg(feature = "ipc")]
 pub fn ipc_component_endpoint_path(_component: &str, bare_name: &str) -> String {
     format!(r"\\.\pipe\{bare_name}")
+}
+
+/// Per-user runtime directory of `component`, for runtime files a service
+/// publishes (its pipes need none). `LOCALAPPDATA` is per-user and
+/// non-roaming; the per-user temp directory stands in when it is unset. Pure.
+#[cfg(feature = "ipc")]
+pub fn ipc_component_runtime_dir(component: &str) -> std::path::PathBuf {
+    component_runtime_dir_in(
+        std::env::var_os("LOCALAPPDATA"),
+        std::env::temp_dir(),
+        component,
+    )
+}
+
+#[cfg(feature = "ipc")]
+fn component_runtime_dir_in(
+    local_app_data: Option<std::ffi::OsString>,
+    temp_dir: std::path::PathBuf,
+    component: &str,
+) -> std::path::PathBuf {
+    local_app_data
+        .map(std::path::PathBuf::from)
+        .unwrap_or(temp_dir)
+        .join("running-process")
+        .join(component)
 }
 
 /// Windows named-pipe names are capped by `MAX_PATH` while the long-path
@@ -1150,6 +1176,32 @@ mod tests {
                 .unwrap();
             assert_eq!(status.code(), Some(3));
         });
+    }
+
+    #[test]
+    fn fault_code_names_are_byte_exact() {
+        // #974 PR 2: moved out of probe-daemon's crash store, spelling unchanged.
+        assert_eq!(super::process_fault_code_name(0xC000_0005), "0xC0000005");
+        assert_eq!(super::process_fault_code_name(0x8000_0003), "0x80000003");
+    }
+
+    #[cfg(feature = "ipc")]
+    #[test]
+    fn component_runtime_dir_is_byte_exact_for_the_probe() {
+        // #974 PR 2: probe-daemon's discovery directory, formerly derived in
+        // the daemon from `LOCALAPPDATA` with the temp directory as fallback.
+        assert_eq!(
+            super::component_runtime_dir_in(
+                Some(std::ffi::OsString::from(r"C:\Users\u\AppData\Local")),
+                std::path::PathBuf::from(r"C:\Temp"),
+                "probe",
+            ),
+            std::path::PathBuf::from(r"C:\Users\u\AppData\Local\running-process\probe")
+        );
+        assert_eq!(
+            super::component_runtime_dir_in(None, std::path::PathBuf::from(r"C:\Temp"), "probe"),
+            std::path::PathBuf::from(r"C:\Temp\running-process\probe")
+        );
     }
 
     #[cfg(feature = "ipc")]

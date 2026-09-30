@@ -5,7 +5,7 @@
 //! artifact, and commits its redacted query metadata to SQLite.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -392,15 +392,9 @@ impl CrashStore {
             .artifacts_dir
             .join(format!("crash-{crashed_at_ms}-{suffix}.json"));
         let temporary = self.artifacts_dir.join(format!(".{suffix}.tmp"));
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
         let result = (|| {
-            let mut file = options.open(&temporary)?;
+            let mut file =
+                running_process_platform_internal::platform::fs::create_private_file(&temporary)?;
             file.write_all(bytes)?;
             file.sync_all()?;
             drop(file);
@@ -1262,22 +1256,7 @@ fn symbolize_crash_with_worker(report: &RawCrashReport, worker: &Path) -> Option
 }
 
 fn fault_kind(code: i64) -> String {
-    #[cfg(unix)]
-    {
-        match code as i32 {
-            libc::SIGSEGV => "SIGSEGV".into(),
-            libc::SIGBUS => "SIGBUS".into(),
-            libc::SIGILL => "SIGILL".into(),
-            libc::SIGFPE => "SIGFPE".into(),
-            libc::SIGABRT => "SIGABRT".into(),
-            libc::SIGTRAP => "SIGTRAP".into(),
-            _ => format!("signal-{code}"),
-        }
-    }
-    #[cfg(windows)]
-    {
-        format!("0x{:08X}", code as u32)
-    }
+    running_process_platform_internal::platform::process::fault_code_name(code)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1446,33 +1425,16 @@ fn open_artifact_for_fetch(
     if !is_safe_artifact_path(root, path) {
         return Ok(None);
     }
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        // FILE_FLAG_OPEN_REPARSE_POINT: validate the named object, not its
-        // target, and keep this exact handle for the whole fetch.
-        options.custom_flags(0x0020_0000);
-    }
-    let file = match options.open(path) {
+    // Validate the named object, not its target, and keep this exact handle
+    // for the whole fetch.
+    let file = match running_process_platform_internal::platform::fs::open_read_no_follow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
     let metadata = file.metadata()?;
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt as _;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Ok(None);
-        }
+    if running_process_platform_internal::platform::fs::is_link_handle(&metadata) {
+        return Ok(None);
     }
     if !metadata.is_file() || metadata.len() != expected_bytes {
         return Ok(None);
@@ -1487,14 +1449,8 @@ fn unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(unix)]
 fn sync_directory(path: &Path) -> io::Result<()> {
-    fs::File::open(path)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> io::Result<()> {
-    Ok(())
+    running_process_platform_internal::platform::fs::sync_directory(path)
 }
 
 #[cfg(test)]

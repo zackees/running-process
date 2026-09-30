@@ -346,33 +346,15 @@ fn open_raw_artifact(
     if actual_parent != expected_parent {
         return Err("capture artifact is outside the owner-local temp directory".into());
     }
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        // FILE_FLAG_OPEN_REPARSE_POINT: inspect the named object itself, not
-        // any symlink/junction target selected after validation.
-        options.custom_flags(0x0020_0000);
-    }
-    let file = options
-        .open(&path)
+    // Inspect the named object itself, not any symlink/junction target
+    // selected after validation.
+    let file = running_process_platform_internal::platform::fs::open_read_no_follow(&path)
         .map_err(|error| format!("cannot open capture artifact: {error}"))?;
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect capture artifact: {error}"))?;
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt as _;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err("capture artifact is a reparse point".into());
-        }
+    if running_process_platform_internal::platform::fs::is_link_handle(&metadata) {
+        return Err("capture artifact is a reparse point".into());
     }
     if !metadata.is_file() {
         return Err("capture artifact is not a regular file".into());
@@ -481,14 +463,7 @@ fn classify_worker_failure(
 
 fn write_new(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
     use io::Write as _;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
+    let mut file = running_process_platform_internal::platform::fs::create_private_file(path)?;
     let result = file.write_all(bytes).and_then(|()| file.flush());
     if result.is_err() {
         drop(file);

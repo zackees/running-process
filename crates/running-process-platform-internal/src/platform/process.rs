@@ -605,8 +605,8 @@ impl std::error::Error for ProcessInspectError {
 }
 
 pub use crate::{
-    process_executable_path as executable_path, process_force_kill as force_kill,
-    process_same_executable_path as same_executable_path,
+    process_executable_path as executable_path, process_fault_code_name as fault_code_name,
+    process_force_kill as force_kill, process_same_executable_path as same_executable_path,
     process_signal_terminate as signal_terminate, ProcessLiveness,
 };
 

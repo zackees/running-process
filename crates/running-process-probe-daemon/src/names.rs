@@ -22,7 +22,7 @@ pub fn probe_pipe_name(sid_hash: &str, idx: u32) -> String {
 ///
 /// Keeps probe sockets in their own per-user runtime directory, apart from the
 /// broker's, so the two services can never contend for a path.
-const ENDPOINT_COMPONENT: &str = "probe";
+pub(crate) const ENDPOINT_COMPONENT: &str = "probe";
 
 /// Turn a bare endpoint name into the platform's concrete socket path.
 ///
