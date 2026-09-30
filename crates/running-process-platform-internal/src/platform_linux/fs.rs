@@ -29,6 +29,39 @@ pub fn user_state_dir(product: &str) -> PathBuf {
     }
 }
 
+/// Directory for `product`'s persistent state, derived from the environment
+/// alone: `XDG_STATE_HOME`, then `$HOME/.local/state`, then
+/// `/tmp/{product}-state`.
+///
+/// Unlike [`user_state_dir`] this never consults the account database, so the
+/// location is exactly what the environment says. That is the documented
+/// contract of the probe worker's symbol cache (#974), and a caller that
+/// publishes such a contract needs a primitive that keeps it.
+pub fn user_state_dir_from_environment(product: &str) -> PathBuf {
+    state_dir_from_environment_in(
+        crate::env_vars::XDG_STATE_HOME.os(),
+        crate::env_vars::HOME.os(),
+        product,
+    )
+}
+
+fn state_dir_from_environment_in(
+    xdg_state_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    product: &str,
+) -> PathBuf {
+    xdg_state_home
+        .map(PathBuf::from)
+        .or_else(|| {
+            home.map(PathBuf::from)
+                .map(|home| home.join(".local").join("state"))
+        })
+        .map_or_else(
+            || PathBuf::from(format!("/tmp/{product}-state")),
+            |base| base.join(product),
+        )
+}
+
 /// Root under which `product` keeps per-run scratch data.
 ///
 /// Linux has no separate location for this: run data is as ephemeral as the
@@ -232,6 +265,21 @@ pub fn is_link_handle(metadata: &std::fs::Metadata) -> bool {
 
 #[cfg(test)]
 mod no_follow_tests {
+    #[test]
+    fn state_dir_from_environment_prefers_xdg_then_home_then_tmp() {
+        use super::state_dir_from_environment_in as dir;
+        use std::path::PathBuf;
+        assert_eq!(
+            dir(Some("/xdg".into()), Some("/home/u".into()), "rp"),
+            PathBuf::from("/xdg/rp")
+        );
+        assert_eq!(
+            dir(None, Some("/home/u".into()), "rp"),
+            PathBuf::from("/home/u/.local/state/rp")
+        );
+        assert_eq!(dir(None, None, "rp"), PathBuf::from("/tmp/rp-state"));
+    }
+
     /// #974 PR 2: probe-daemon validates an artifact's name, then opens it;
     /// a symlink swapped in between must not redirect the open.
     #[test]

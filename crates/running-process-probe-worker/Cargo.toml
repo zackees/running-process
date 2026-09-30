@@ -27,6 +27,11 @@ tempfile = "3"
 thiserror = { workspace = true }
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
 url = "2"
+# #974: per-user placement of the symbol cache is host mechanics and comes
+# from the platform facade. Only its `fs` role is enabled. This is the ONLY
+# running-process crate the worker may depend on: never `running-process`
+# itself, and the facade must never gain a symbol parser in return.
+running-process-platform-internal = { path = "../running-process-platform-internal", default-features = false, features = ["fs"] }
 
 # Symbol-file parsers. These live HERE and nowhere else: the crate exists so
 # the daemon never links a parser that can be crashed by malformed input.

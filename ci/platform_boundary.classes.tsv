@@ -54,3 +54,6 @@ crates/running-process/src/broker/adopt.rs	attr_cfg	unix	compat-4x	published 4.x
 crates/running-process/src/broker/adopt.rs	attr_cfg	windows	compat-4x	published 4.x OwnedBackendIo surface (into_owned_fd/AsFd over std OwnedFd, WindowsUnsupported variant); retires in 5.0 when #720 lands a host-neutral owned handle (#975)
 crates/running-process-probe/src/snapshot/modules_host_tests.rs	attr_cfg	target_os	host-test	test-only file; asserts the identity each host's real loader reports (PE CodeView, ELF PT_NOTE, Mach-O LC_UUID)
 crates/running-process-probe/src/snapshot/modules_host_tests.rs	attr_cfg	windows	host-test	test-only file; asserts the identity each host's real loader reports (PE CodeView, ELF PT_NOTE, Mach-O LC_UUID)
+crates/running-process-probe-worker/src/discovery.rs	attr_cfg	unix	host-test	in-crate #[cfg(test)] mod; symlink escape and drive-relative path refusal are host filesystem behaviour under test
+crates/running-process-probe-worker/src/discovery.rs	attr_cfg	windows	host-test	in-crate #[cfg(test)] mod; symlink escape and drive-relative path refusal are host filesystem behaviour under test
+crates/running-process-probe-worker/src/discovery.rs	native_import	std::os::unix	host-test	in-crate #[cfg(test)] mod; symlink escape and drive-relative path refusal are host filesystem behaviour under test

@@ -29,16 +29,11 @@ crates/running-process-probe-daemon/src/names.rs	cfg_macro	target_os	0
 crates/running-process-probe-daemon/src/names.rs	native_import	libc	0
 crates/running-process-probe-daemon/src/names.rs	native_import	libc	1
 crates/running-process-probe-worker/src/discovery.rs	attr_cfg	unix	0
-crates/running-process-probe-worker/src/discovery.rs	attr_cfg	unix	1
 crates/running-process-probe-worker/src/discovery.rs	attr_cfg	windows	0
-crates/running-process-probe-worker/src/discovery.rs	attr_cfg	windows	1
 crates/running-process-probe-worker/src/discovery.rs	native_import	std::os::unix	0
 crates/running-process-probe-worker/src/discovery.rs	native_import	std::os::unix	1
 crates/running-process-probe-worker/src/lib.rs	attr_cfg	target_os	0
 crates/running-process-probe-worker/src/lib.rs	attr_cfg	target_os	1
-crates/running-process-probe-worker/src/object_symbols.rs	attr_cfg	target_os	0
-crates/running-process-probe-worker/src/pdb_symbols.rs	cfg_macro	windows	0
-crates/running-process-probe-worker/src/pdb_symbols.rs	cfg_macro	windows	1
 crates/running-process-probe-worker/src/symbolize.rs	attr_cfg	target_os	0
 crates/running-process-probe-worker/src/symbolize.rs	attr_cfg	target_os	1
 crates/running-process-probe-worker/src/symbolize.rs	attr_cfg	target_os	2

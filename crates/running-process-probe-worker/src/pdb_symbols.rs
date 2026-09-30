@@ -940,7 +940,8 @@ mod tests {
 
     #[test]
     fn empty_entries_are_dropped_rather_than_searching_the_cwd() {
-        let sep = if cfg!(windows) { ";" } else { ":" };
+        // This module compiles only on Windows, whose PATH-style lists use `;`.
+        let sep = ";";
         let raw = format!("{sep}{sep}");
         assert!(
             parse_search_dirs(Some(raw.into())).is_empty(),
@@ -950,7 +951,8 @@ mod tests {
 
     #[test]
     fn directories_are_split_and_ordered() {
-        let sep = if cfg!(windows) { ";" } else { ":" };
+        // This module compiles only on Windows, whose PATH-style lists use `;`.
+        let sep = ";";
         let raw = format!("first{sep}second{sep}third");
         let dirs = parse_search_dirs(Some(raw.into()));
         assert_eq!(

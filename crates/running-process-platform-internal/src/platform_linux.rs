@@ -109,7 +109,9 @@ pub use fs::{
     open_lock_file as fs_open_lock_file, path_identity as fs_path_identity,
     try_lock_exclusive as fs_try_lock_exclusive, unlock as fs_unlock,
     user_run_data_root as fs_user_run_data_root, user_runtime_dir as fs_user_runtime_dir,
-    user_state_dir as fs_user_state_dir, FileIdentity as FsFileIdentity,
+    user_state_dir as fs_user_state_dir,
+    user_state_dir_from_environment as fs_user_state_dir_from_environment,
+    FileIdentity as FsFileIdentity,
 };
 
 #[path = "platform_linux/executable.rs"]

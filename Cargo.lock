@@ -2215,6 +2215,7 @@ dependencies = [
  "object",
  "pdb",
  "pdb-addr2line",
+ "running-process-platform-internal",
  "serde",
  "serde_json",
  "sha2",
