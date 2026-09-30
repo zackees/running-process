@@ -157,6 +157,30 @@ syscalls, or programs that clear their environment. See
 [process watches](docs/process-watches.md) for stack artifacts, capability
 discovery, exact selector semantics, and the full platform model.
 
+### Attaching to an already-running process
+
+Watches above cover a tree this library launched. For a process it did **not**
+launch (an adopted pid), the Rust `observer::observe_launched_tree(root_pid,
+config)` attaches a descendant monitor after the fact:
+
+| Platform | How descendants are found | Grade |
+|---|---|---|
+| Linux | `/proc` children walk over every thread of each process | snapshot-inferred |
+| macOS | process snapshots plus kqueue hints | snapshot-inferred |
+| Windows | polls the process table every 50 ms | snapshot-inferred |
+
+"Snapshot-inferred" means a descendant that starts and exits between two polls
+is not seen, so this is for diagnosis, not an audit trail. On Windows a child
+is matched by parent id and rejected if it predates its parent, so a reused
+parent id is not mistaken for ancestry. A process spawned *with* an observer is
+better served: Linux can trace it exactly, and Windows reports it through its
+Job Object.
+
+Not provided: macOS Endpoint Security (needs Apple's entitlement, root, and a
+signed deployed client), Windows ETW (needs administrator rights), and a
+Windows `DEBUG_PROCESS` exact backend (deferred: it makes this library the
+debugger of the launched tree).
+
 ## PTY Support Matrix
 
 PTY support is a guaranteed part of the package contract on:
