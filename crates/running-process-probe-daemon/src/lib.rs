@@ -26,6 +26,8 @@ pub mod cli;
 pub mod crash_query;
 pub mod crash_store;
 pub mod discovery;
+/// Every environment variable this crate reads, declared in one place (#1101).
+pub mod env_vars;
 pub mod force;
 pub mod http;
 pub mod names;
@@ -44,7 +46,7 @@ pub mod wire_convert;
 /// `running-process-env-literal` dylint requires every `RUNNING_PROCESS_*`
 /// control to come from a canonical constant, so the set of environment
 /// controls stays greppable instead of scattered through string literals.
-pub const BEACON_PORT_ENV: &str = "RUNNING_PROCESS_PROBE_BEACON_PORT";
+pub const BEACON_PORT_ENV: &str = env_vars::PROBE_BEACON_PORT.name;
 
 /// Exit code when another instance already owns the endpoint.
 ///

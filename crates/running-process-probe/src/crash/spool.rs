@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Override for the owner-private directory containing pending records.
-pub const SPOOL_DIR_ENV: &str = "RUNNING_PROCESS_PROBE_SPOOL_DIR";
+pub const SPOOL_DIR_ENV: &str = crate::env_vars::PROBE_SPOOL_DIR.name;
 /// Override for durable JSON crash reports written by `rpprobed`.
-pub const REPORT_DIR_ENV: &str = "RUNNING_PROCESS_PROBE_CRASH_DIR";
+pub const REPORT_DIR_ENV: &str = crate::env_vars::PROBE_CRASH_DIR.name;
 
 pub(crate) const MAGIC: &[u8; 8] = b"RPCRASH1";
 pub(crate) const VERSION: u32 = 2;
@@ -122,21 +122,23 @@ pub struct RawCrashReport {
 
 /// Default owner-private spool directory.
 pub fn spool_dir() -> PathBuf {
-    std::env::var_os(SPOOL_DIR_ENV)
+    crate::env_vars::PROBE_SPOOL_DIR
+        .os()
         .map(PathBuf::from)
         .unwrap_or_else(|| default_owner_root().join("probe-spool"))
 }
 
 /// Default durable report directory.
 pub fn report_dir() -> PathBuf {
-    std::env::var_os(REPORT_DIR_ENV)
+    crate::env_vars::PROBE_CRASH_DIR
+        .os()
         .map(PathBuf::from)
         .unwrap_or_else(|| default_owner_root().join("probe-crashes"))
 }
 
 #[cfg(unix)]
 fn default_owner_root() -> PathBuf {
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+    if let Some(runtime) = running_process_platform_internal::env_vars::XDG_RUNTIME_DIR.os() {
         let runtime = PathBuf::from(runtime);
         if runtime.is_absolute() {
             return runtime.join("running-process");

@@ -56,6 +56,8 @@
 
 /// Default-on crash interception and fixed-size pre-registration spool.
 pub mod crash;
+/// Every environment variable this crate reads, declared in one place (#1101).
+pub mod env_vars;
 pub mod snapshot;
 
 /// The `running_process.probe_diag.v1` wire schema (#630).

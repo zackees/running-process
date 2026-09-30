@@ -24,7 +24,7 @@ use running_process_probe::probe_diag::v1::{probe_envelope::Body, ProbeEnvelope}
 use crate::discovery::{discovery_dir, DiscoveryInfo, DISCOVERY_FILE};
 
 /// Override for the discovery file location, so a test can run its own daemon.
-pub const DISCOVERY_ENV: &str = "RUNNING_PROCESS_PROBE_DISCOVERY";
+pub const DISCOVERY_ENV: &str = crate::env_vars::PROBE_DISCOVERY.name;
 
 /// Cap on one reply frame, matching the daemon's request cap.
 const MAX_REPLY_BYTES: usize = 16 * 1024 * 1024;
@@ -78,7 +78,7 @@ pub fn load_discovery(explicit: Option<&Path>) -> Result<(PathBuf, DiscoveryInfo
     let path = match explicit {
         Some(path) if path.is_dir() => path.join(DISCOVERY_FILE),
         Some(path) => path.to_path_buf(),
-        None => match std::env::var_os(DISCOVERY_ENV) {
+        None => match crate::env_vars::PROBE_DISCOVERY.os() {
             Some(dir) => PathBuf::from(dir).join(DISCOVERY_FILE),
             None => discovery_dir(None).join(DISCOVERY_FILE),
         },

@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use running_process::broker::secure_dir::ensure_private_dir;
-use running_process_probe::crash::spool::{parse, RawCrashReport, RECORD_SIZE, REPORT_DIR_ENV};
+use running_process_probe::crash::spool::{parse, RawCrashReport, RECORD_SIZE};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension as _, TransactionBehavior};
 use serde::Serialize;
 use sysinfo::{Pid, ProcessRefreshKind, System};
@@ -546,7 +546,8 @@ impl Drop for CrashWatcher {
 /// An explicit S7 environment override wins; otherwise crash history lives
 /// under the platform state directory rather than the transient spool root.
 pub fn default_artifacts_dir() -> PathBuf {
-    std::env::var_os(REPORT_DIR_ENV)
+    running_process_probe::env_vars::PROBE_CRASH_DIR
+        .os()
         .map(|root| PathBuf::from(root).join("crashes-v2"))
         .unwrap_or_else(|| {
             running_process::client::paths::data_dir()

@@ -84,7 +84,6 @@ const WAIT_TIMEOUT_LOCAL: u32 = 0x0000_0102;
 /// it, or the process hasn't finished loader init). Override with
 /// `RUNNING_PROCESS_INJECT_WAIT_TIMEOUT_MS` (milliseconds).
 const DEFAULT_INJECT_WAIT_TIMEOUT_MS: u32 = 30_000;
-const INJECT_WAIT_TIMEOUT_ENV: &str = "RUNNING_PROCESS_INJECT_WAIT_TIMEOUT_MS";
 
 fn parse_inject_wait_timeout_ms(raw: Option<&str>) -> u32 {
     raw.and_then(|raw| raw.trim().parse::<u32>().ok())
@@ -93,7 +92,7 @@ fn parse_inject_wait_timeout_ms(raw: Option<&str>) -> u32 {
 }
 
 fn inject_wait_timeout_ms() -> u32 {
-    parse_inject_wait_timeout_ms(std::env::var(INJECT_WAIT_TIMEOUT_ENV).ok().as_deref())
+    parse_inject_wait_timeout_ms(crate::env_vars::INJECT_WAIT_TIMEOUT_MS.string().as_deref())
 }
 
 /// Inject `dll_path` into the process identified by `pid`.

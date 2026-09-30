@@ -36,7 +36,7 @@ pub enum CrashPolicy {
 }
 
 /// Environment opt-out checked before any crash state is created.
-pub const NO_CRASH_HANDLER_ENV: &str = "RUNNING_PROCESS_PROBE_NO_CRASH_HANDLER";
+pub const NO_CRASH_HANDLER_ENV: &str = crate::env_vars::PROBE_NO_CRASH_HANDLER.name;
 
 /// Local failure while arming crash capture.
 #[derive(Debug, thiserror::Error)]
@@ -172,10 +172,12 @@ pub fn install(policy: CrashPolicy, metadata: CrashMetadata) -> Result<CrashGuar
 }
 
 fn env_opted_out() -> bool {
-    std::env::var_os(NO_CRASH_HANDLER_ENV).is_some_and(|value| {
-        let text = value.to_string_lossy();
-        text == "1" || text.eq_ignore_ascii_case("true") || text.eq_ignore_ascii_case("yes")
-    })
+    crate::env_vars::PROBE_NO_CRASH_HANDLER
+        .os()
+        .is_some_and(|value| {
+            let text = value.to_string_lossy();
+            text == "1" || text.eq_ignore_ascii_case("true") || text.eq_ignore_ascii_case("yes")
+        })
 }
 
 struct Runtime {

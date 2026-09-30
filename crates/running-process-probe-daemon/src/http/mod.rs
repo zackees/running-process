@@ -47,7 +47,7 @@ mod tests;
 /// and a stack-capture trigger to the network, protected by one bearer token.
 /// That can be the right call inside a container with no other ingress; it is
 /// never the right default.
-pub const BIND_ALL_ENV: &str = "RUNNING_PROCESS_PROBE_BIND_ALL";
+pub const BIND_ALL_ENV: &str = crate::env_vars::PROBE_BIND_ALL.name;
 
 /// Largest request body accepted.
 ///
@@ -165,7 +165,7 @@ pub fn is_loopback(addr: &SocketAddr) -> bool {
 
 /// Whether the operator opted into publishing this surface.
 fn bind_all_opt_in() -> bool {
-    std::env::var(BIND_ALL_ENV).is_ok_and(|value| value == "1")
+    crate::env_vars::PROBE_BIND_ALL.is_set()
 }
 
 /// Check a bind address against the loopback rule.
