@@ -307,10 +307,10 @@ pub use window_icon::{
     IconSupport, StockIcon,
 };
 
+#[cfg(unix)]
+pub(crate) use helpers::child_try_wait_error_is_retryable;
 #[cfg(test)]
 pub(crate) use helpers::exit_code;
-#[cfg(unix)]
-pub(crate) use helpers::{child_try_wait_error_is_retryable, poll_mutex_until};
 pub(crate) use helpers::{feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 /// Convert a native process exit status to the portable integer convention.
 pub use running_process_platform_internal::exit_code as native_exit_code;
@@ -1047,17 +1047,8 @@ impl NativeProcess {
                 .and_then(|seen| seen.ok().and_then(|code| *code))
         });
         published.or_else(|| {
-            poll_mutex_until(
-                &self.child,
-                Instant::now(),
-                Duration::ZERO,
-                |state| match state.as_mut() {
-                    Some(child) => child.try_wait_code(),
-                    None => Ok(None),
-                },
-            )
-            .ok()
-            .flatten()
+            let mut state = self.child.lock().expect("child mutex poisoned");
+            state.as_mut()?.try_wait_code().ok().flatten()
         })
     }
 
