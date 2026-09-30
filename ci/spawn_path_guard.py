@@ -213,6 +213,13 @@ ALLOWED_RUST_SPAWN = {
     # Phase 0 of #850: the internal platform crate is the canonical async
     # process boundary; its spawn call is the reviewed blessed operation.
     Path("crates/running-process-platform-internal/src/lib.rs"),
+    # #887 owner-death regressions: the three `spawn()` calls in platform_win.rs
+    # are inside `#[cfg(test)]` and start only fixed `cmd.exe /c <literal>`
+    # scripts (`exit 7`, `exit 3`, `ping -n 6 127.0.0.1`) through
+    # configure_compat_tokio_command, to prove a CREATE_SUSPENDED child is
+    # contained and resumed. No caller input reaches them, and the non-test
+    # surface of this file still never starts a process.
+    Path("crates/running-process-platform-internal/src/platform_win.rs"),
     # macOS owner-death regressions deliberately spawn fixed system fixtures
     # through configure_command_for_owner to test the canonical boundary.
     # Production platform_macos.rs remains outside this spawn allowlist.

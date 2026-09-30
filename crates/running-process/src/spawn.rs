@@ -139,7 +139,10 @@ pub struct TokioSpawnOptions {
     /// - **Linux**: installs `PR_SET_PDEATHSIG(SIGTERM)` in the child.
     /// - **Windows**: assigns the child to a process-wide `KILL_ON_JOB_CLOSE`
     ///   Job Object, so the child (and its descendants) die when the spawner's
-    ///   handle to the job closes — i.e. when the spawner process exits.
+    ///   handle to the job closes — i.e. when the spawner process exits. The
+    ///   child is created suspended and resumed only once it is in the job, so
+    ///   it is contained from its first instruction and no descendant it starts
+    ///   can escape. If containment fails the child is terminated, never run.
     /// - **macOS**: forks a kqueue supervisor before exec and waits for its
     ///   owner/child watches to be registered before reporting spawn success.
     ///
