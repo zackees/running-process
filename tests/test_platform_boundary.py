@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import collections
+
 from ci import platform_boundary
 
 
@@ -227,7 +229,8 @@ def test_the_sidecar_zone_does_not_replace_the_sidecar_rule() -> None:
     test, and this asserts that test still exists rather than assuming it.
     """
     guard = (
-        platform_boundary.ROOT / "crates/running-process/tests/core/probe_facade_surface.rs"
+        platform_boundary.ROOT
+        / "crates/running-process/tests/core/probe_facade_surface.rs"
     )
     assert guard.is_file(), (
         "the sidecar zone's reasoning cites this test; without it the zone "
@@ -255,3 +258,60 @@ def test_a_zone_may_permit_no_host_selection_at_all() -> None:
         zone, "fixture.rs", '#[cfg(target_os = "windows")] fn probe() {}'
     )
     assert failures, "a zone permitting no host key must reject every host key"
+
+
+def test_the_real_tree_holds_the_legacy_interprocess_allowance_exactly() -> None:
+    counts = platform_boundary.legacy_ipc_counts()
+
+    assert dict(counts) == platform_boundary.LEGACY_IPC_ALLOWANCE
+    assert not platform_boundary.legacy_ipc_violations()
+
+
+def test_a_new_interprocess_use_outside_the_allowance_is_rejected() -> None:
+    path = "crates/running-process/src/broker/brand_new.rs"
+    counts = platform_boundary.legacy_ipc_counts(
+        {path: "use interprocess::local_socket::Stream;\n"}
+    )
+
+    violations = platform_boundary.legacy_ipc_violations(
+        counts + collections.Counter(platform_boundary.LEGACY_IPC_ALLOWANCE)
+    )
+
+    assert len(violations) == 1
+    assert path in violations[0]
+    assert "platform::ipc" in violations[0]
+
+
+def test_growing_an_allowed_file_is_rejected() -> None:
+    path = "crates/running-process/src/broker/server/handoff_serve.rs"
+    counts = collections.Counter(platform_boundary.LEGACY_IPC_ALLOWANCE)
+    counts[path] += 1
+
+    violations = platform_boundary.legacy_ipc_violations(counts)
+
+    assert len(violations) == 1
+    assert path in violations[0]
+
+
+def test_a_stale_allowance_must_be_lowered() -> None:
+    path = "crates/running-process/src/broker/server/handoff_serve.rs"
+    counts = collections.Counter(platform_boundary.LEGACY_IPC_ALLOWANCE)
+    counts[path] -= 1
+
+    violations = platform_boundary.legacy_ipc_violations(counts)
+
+    assert len(violations) == 1
+    assert "lower LEGACY_IPC_ALLOWANCE" in violations[0]
+
+
+def test_comments_and_strings_do_not_count_as_interprocess_uses() -> None:
+    counts = platform_boundary.legacy_ipc_counts(
+        {
+            "crates/running-process/src/x.rs": (
+                "// use interprocess::local_socket::Stream;\n"
+                '/// see `interprocess::Name`\nconst S: &str = "interprocess::Stream";\n'
+            )
+        }
+    )
+
+    assert not counts

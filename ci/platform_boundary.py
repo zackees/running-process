@@ -733,6 +733,66 @@ def zone_manifest_alignment_violations() -> list[str]:
     return failures
 
 
+# #971: `running-process` still names `interprocess` types in published 4.x
+# signatures (`handoff_serve`, `control_socket`, the wire codecs) and in the two
+# raw-`Name` suppliers that serve them. That surface cannot change inside 4.x,
+# so the manifest row for the dependency waits for 5.0. What this freezes is
+# the *count*: new IPC goes through `platform::ipc`, and the numbers here only
+# go down until the compat surface is deleted.
+LEGACY_IPC_ROOT = "crates/running-process/src/"
+LEGACY_IPC_PATH = re.compile(r"\binterprocess\s*::")
+LEGACY_IPC_ALLOWANCE: dict[str, int] = {
+    "crates/running-process/src/broker/backend_lib/wire.rs": 2,
+    "crates/running-process/src/broker/client_v2.rs": 1,
+    "crates/running-process/src/broker/server/connection.rs": 1,
+    "crates/running-process/src/broker/server/control_socket.rs": 2,
+    "crates/running-process/src/broker/server/deadline_stream.rs": 2,
+    "crates/running-process/src/broker/server/handoff/wire.rs": 4,
+    "crates/running-process/src/broker/server/handoff_serve.rs": 7,
+    "crates/running-process/src/broker/server/singleton_bind.rs": 1,
+}
+
+
+def legacy_ipc_counts(texts: dict[str, str] | None = None) -> collections.Counter[str]:
+    """Count `interprocess::` paths in code (not comments or strings) per file."""
+    if texts is None:
+        texts = {
+            path: (ROOT / path).read_text(encoding="utf-8")
+            for path in sorted(source_files())
+            if path.startswith(LEGACY_IPC_ROOT)
+        }
+    counts: collections.Counter[str] = collections.Counter()
+    for path, text in texts.items():
+        found = len(LEGACY_IPC_PATH.findall(code_only(text)))
+        if found:
+            counts[path] = found
+    return counts
+
+
+def legacy_ipc_violations(
+    counts: collections.Counter[str] | None = None,
+) -> list[str]:
+    """Reject growth of the legacy `interprocess` surface, and stale allowances."""
+    if counts is None:
+        counts = legacy_ipc_counts()
+    violations = []
+    for path in sorted(set(counts) | set(LEGACY_IPC_ALLOWANCE)):
+        found, allowed = counts.get(path, 0), LEGACY_IPC_ALLOWANCE.get(path, 0)
+        if found > allowed:
+            violations.append(
+                f"{path}: {found} `interprocess::` paths, {allowed} allowed. New "
+                "IPC goes through `platform::ipc`; the legacy 4.x surface is "
+                "frozen until 5.0 (#971)"
+            )
+        elif found < allowed:
+            violations.append(
+                f"{path}: only {found} `interprocess::` paths remain but "
+                f"{allowed} are allowed; lower LEGACY_IPC_ALLOWANCE so it only "
+                "goes down (#971)"
+            )
+    return violations
+
+
 def totals(rows: list[Row]) -> str:
     by_kind = collections.Counter(row.kind for row in rows)
     by_crate = collections.Counter(row.path.split("/")[1] for row in rows)
@@ -759,6 +819,7 @@ def main(argv: list[str] | None = None) -> int:
         *zone_manifest_alignment_violations(),
         *zone_dylint_alignment_violations(),
         *zone_premise_violations(),
+        *legacy_ipc_violations(),
     ]
     if args.print_totals:
         print(totals(rows))
