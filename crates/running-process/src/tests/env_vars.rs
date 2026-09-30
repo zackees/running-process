@@ -592,3 +592,31 @@ fn production_code_calls_std_env_only_through_declarations() {
         "read these through a declared `crate::env_vars` constant: {offenders:#?}"
     );
 }
+
+/// `all_declared()` deduplicates by name, which would quietly hide a variable
+/// declared twice with different wording. The probe crate's table is a third,
+/// independent declaration site, so check it shares no name with the other two.
+#[cfg(feature = "probe")]
+#[test]
+fn the_probe_table_shares_no_name_with_the_running_process_or_platform_tables() {
+    let below: Vec<&str> = DECLARED
+        .iter()
+        .chain(platform::DECLARED_PLATFORM)
+        .map(|var| var.name)
+        .collect();
+    for var in running_process_probe::env_vars::DECLARED_PROBE {
+        assert!(
+            !below.contains(&var.name),
+            "{} is declared by both the probe crate and a lower table",
+            var.name
+        );
+    }
+    let all = all_declared();
+    for var in running_process_probe::env_vars::DECLARED_PROBE {
+        assert!(
+            all.iter().any(|listed| listed.name == var.name),
+            "{} is missing from all_declared()",
+            var.name
+        );
+    }
+}

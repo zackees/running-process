@@ -20,6 +20,12 @@
 //! wrong place, and nothing in the output would contradict them.
 
 #![deny(missing_docs)]
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 pub mod discovery;
 /// Every environment variable the worker reads, declared in one place (#1101).

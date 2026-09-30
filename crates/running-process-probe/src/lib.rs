@@ -53,6 +53,12 @@
 // wrapper. The rest of the crate remains unsafe-free.
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 /// Default-on crash interception and fixed-size pre-registration spool.
 pub mod crash;

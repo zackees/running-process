@@ -16,6 +16,13 @@
 //! contract (no injection symbols in the embedded blob) is trivially
 //! upheld.
 
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
+
 fn main() {
     println!(
         "running-process-probe-agent {} — slice 1 of #551 (inert scaffold)",
