@@ -506,6 +506,12 @@ pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or_else(|| -status.signal().unwrap_or(1))
 }
 
+/// The signal that terminated `status`'s process, if it died from one.
+pub fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
 pub fn set_process_name(name: &str) {
     let truncated: String = name.chars().take(15).collect();
     let c_name = std::ffi::CString::new(truncated).unwrap_or_default();
@@ -1158,6 +1164,17 @@ pub(crate) fn shell_spec(command: &OsStr) -> SpawnSpec {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exit_signal_reports_the_signal_that_killed_the_child() {
+        use std::os::unix::process::ExitStatusExt;
+        // A raw wait status whose low bits carry the signal: killed by SIGKILL.
+        let killed = std::process::ExitStatus::from_raw(libc::SIGKILL);
+        assert_eq!(super::exit_signal(&killed), Some(libc::SIGKILL));
+        // Exit code 3 in the high byte: a normal exit, no signal.
+        let exited = std::process::ExitStatus::from_raw(3 << 8);
+        assert_eq!(super::exit_signal(&exited), None);
+    }
+
     #[cfg(feature = "async-process")]
     #[test]
     fn async_identity_mismatch_fails_closed_without_pid_signal() {

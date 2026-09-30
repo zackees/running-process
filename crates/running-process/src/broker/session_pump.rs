@@ -138,22 +138,10 @@ where
 /// Map a finished child's status to a [`SessionExit`]. On Unix a signal death
 /// carries the signal number; on Windows `signal` is always 0.
 fn session_exit_from_status(status: &ExitStatus) -> SessionExit {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        SessionExit {
-            code: status.code().unwrap_or(-1),
-            signal: status.signal().unwrap_or(0),
-            metadata: Default::default(),
-        }
-    }
-    #[cfg(windows)]
-    {
-        SessionExit {
-            code: status.code().unwrap_or(-1),
-            signal: 0,
-            metadata: Default::default(),
-        }
+    SessionExit {
+        code: status.code().unwrap_or(-1),
+        signal: crate::platform::process::exit_signal(status).unwrap_or(0),
+        metadata: Default::default(),
     }
 }
 

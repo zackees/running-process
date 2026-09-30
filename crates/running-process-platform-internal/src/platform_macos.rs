@@ -533,6 +533,12 @@ pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or_else(|| -status.signal().unwrap_or(1))
 }
 
+/// The signal that terminated `status`'s process, if it died from one.
+pub fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
 pub fn set_process_name(name: &str) {
     let c_name = std::ffi::CString::new(name).unwrap_or_default();
     unsafe { libc::pthread_setname_np(c_name.as_ptr()); }
