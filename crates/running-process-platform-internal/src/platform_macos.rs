@@ -846,6 +846,24 @@ pub fn after_compat_tokio_spawn(
     Ok(())
 }
 
+/// Configure a caller-built command for [`crate::SpawnSpec::from_std_command`].
+///
+/// This is the `NativeProcess` launch mapping (`ProcessCommandConfig`), not
+/// the declarative `SpawnSpec` one, so a command handed over by the sync
+/// engine is configured exactly once and by the same code it uses today.
+#[cfg(feature = "async-process")]
+pub(crate) fn configure_override_command(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+    kill_when_owner_dies: bool,
+) -> io::Result<()> {
+    if kill_when_owner_dies {
+        configure_process_command_for_bounded_owner_death(command, config)
+    } else {
+        configure_process_command(command, config)
+    }
+}
+
 #[cfg(feature = "async-process")]
 pub(crate) fn configure_command(
     command: &mut Command,

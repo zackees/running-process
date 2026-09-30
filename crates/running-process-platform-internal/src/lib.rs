@@ -411,7 +411,17 @@ pub struct SpawnSpec {
     kill_when_owner_dies: bool,
     nice: Option<i32>,
     admission: Option<SpawnAdmission>,
+    command_override: Option<CommandOverride>,
+    creation_flags: Option<u32>,
+    address_space_limit_bytes: Option<u64>,
 }
+
+/// One-shot, shareable slot for a caller-built command.
+///
+/// `std::process::Command` is not `Clone`, but `SpawnSpec` is, so clones
+/// share the slot and exactly one of them can spawn it.
+#[cfg(feature = "async-process")]
+type CommandOverride = std::sync::Arc<std::sync::Mutex<Option<std::process::Command>>>;
 
 #[cfg(feature = "async-process")]
 impl SpawnSpec {
@@ -430,7 +440,54 @@ impl SpawnSpec {
             kill_when_owner_dies: false,
             nice: None,
             admission: None,
+            command_override: None,
+            creation_flags: None,
+            address_space_limit_bytes: None,
         }
+    }
+
+    /// Spawn a caller-built [`std::process::Command`] verbatim.
+    ///
+    /// The command keeps everything the declarative builder cannot carry:
+    /// `env_remove` scrubs of inherited variables, `env_clear`, non-Unicode
+    /// argv, its working directory and any hooks the caller installed. The
+    /// spec still governs stdio routing (its stream modes replace whatever
+    /// the command had), process group, niceness, creation flags, the
+    /// address-space limit, owner-death containment and spawn admission.
+    ///
+    /// Those options are applied with the same launch mapping `NativeProcess`
+    /// uses (`configure_process_command`), not the declarative one, so a
+    /// command is configured exactly once. Adding arguments, environment,
+    /// `env_clear` or a working directory to an override spec is rejected at
+    /// spawn, because it would be silently ignored. Owner-death containment
+    /// of an override is refused on Windows until the per-spawn Job Object is
+    /// expressible here.
+    ///
+    /// The command is consumed by the first successful or failed spawn; a
+    /// clone of this spec that spawns afterwards gets an error.
+    pub fn from_std_command(command: std::process::Command) -> Self {
+        let mut spec = Self::new(command.get_program().to_owned());
+        spec.command_override = Some(std::sync::Arc::new(std::sync::Mutex::new(Some(command))));
+        spec
+    }
+
+    /// Set host creation flags (Windows `CREATE_*`; ignored elsewhere).
+    ///
+    /// Only valid with [`Self::from_std_command`]; the declarative spawn
+    /// path rejects it rather than dropping it.
+    pub fn creation_flags(mut self, flags: Option<u32>) -> Self {
+        self.creation_flags = flags;
+        self
+    }
+
+    /// Cap the child's address space (Linux `RLIMIT_AS`; the Windows cap is
+    /// enforced by the owner's Job Object, not here).
+    ///
+    /// Only valid with [`Self::from_std_command`]; the declarative spawn
+    /// path rejects it rather than dropping it.
+    pub fn address_space_limit_bytes(mut self, limit: Option<u64>) -> Self {
+        self.address_space_limit_bytes = limit;
+        self
     }
 
     /// Append one argument without requiring UTF-8.
@@ -533,6 +590,15 @@ impl SpawnSpec {
 
     /// Spawn using the canonical asynchronous platform operation.
     pub async fn spawn(self) -> io::Result<PlatformChild> {
+        if self.command_override.is_some() {
+            return self.spawn_override();
+        }
+        if self.creation_flags.is_some() || self.address_space_limit_bytes.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "creation flags and address-space limits apply only to SpawnSpec::from_std_command",
+            ));
+        }
         let mut command = Command::new(&self.program);
         command.args(&self.args);
         if let Some(current_dir) = self.current_dir.as_deref() {
@@ -561,6 +627,53 @@ impl SpawnSpec {
             None => spawn()?,
         };
         platform_imp::after_spawn(&child, self.kill_when_owner_dies, self.nice)?;
+        Ok(PlatformChild::new(child, self.create_process_group))
+    }
+
+    fn spawn_override(self) -> io::Result<PlatformChild> {
+        if !self.args.is_empty()
+            || !self.env.is_empty()
+            || self.clear_env
+            || self.current_dir.is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "arguments, environment and working directory belong on the caller-built command",
+            ));
+        }
+        let mut std_command = self
+            .command_override
+            .as_ref()
+            .expect("override checked by caller")
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "caller-built command was already spawned by a clone of this spec",
+                )
+            })?;
+        platform_imp::configure_override_command(
+            &mut std_command,
+            platform::process::ProcessCommandConfig {
+                creation_flags: self.creation_flags,
+                create_process_group: self.create_process_group,
+                nice: self.nice,
+                address_space_limit_bytes: self.address_space_limit_bytes,
+            },
+            self.kill_when_owner_dies,
+        )?;
+        let mut command = Command::from(std_command);
+        command
+            .stdin(self.stdin.apply())
+            .stdout(self.stdout.apply())
+            .stderr(self.stderr.apply());
+        let mut spawn = || command.spawn();
+        let child = match self.admission.as_ref() {
+            Some(admission) => admission.run(spawn)?,
+            None => spawn()?,
+        };
         Ok(PlatformChild::new(child, self.create_process_group))
     }
 }
@@ -995,6 +1108,95 @@ mod tests {
         };
         assert_eq!(output.stdout, expected);
         assert!(output.stderr.is_empty());
+    }
+
+    /// Child half of the command-override tests: reports what it inherited.
+    #[test]
+    fn override_env_fixture() {
+        if std::env::var_os("RUNNING_PROCESS_OVERRIDE_FIXTURE").is_none() {
+            return;
+        }
+        let path = if std::env::var_os("PATH").is_some() {
+            "present"
+        } else {
+            "absent"
+        };
+        println!("override-fixture PATH={path}");
+    }
+
+    fn override_fixture_command() -> std::process::Command {
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args(["--exact", "tests::override_env_fixture", "--nocapture"])
+            .env("RUNNING_PROCESS_OVERRIDE_FIXTURE", "1");
+        command
+    }
+
+    async fn override_fixture_stdout(command: std::process::Command) -> String {
+        let output = SpawnSpec::from_std_command(command)
+            .stdin(StreamMode::Null)
+            .stdout(StreamMode::Piped)
+            .stderr(StreamMode::Null)
+            .spawn()
+            .await
+            .expect("spawn override")
+            .wait_with_output()
+            .await
+            .expect("wait override");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    #[tokio::test]
+    async fn command_override_keeps_inherited_environment_by_default() {
+        let stdout = override_fixture_stdout(override_fixture_command()).await;
+        assert!(stdout.contains("override-fixture PATH=present"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn command_override_preserves_env_remove_of_inherited_variable() {
+        let mut command = override_fixture_command();
+        command.env_remove("PATH");
+        let stdout = override_fixture_stdout(command).await;
+        assert!(stdout.contains("override-fixture PATH=absent"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn command_override_rejects_declarative_command_fields() {
+        for spec in [
+            SpawnSpec::from_std_command(override_fixture_command()).arg("extra"),
+            SpawnSpec::from_std_command(override_fixture_command()).env("K", "V"),
+            SpawnSpec::from_std_command(override_fixture_command()).clear_env(true),
+            SpawnSpec::from_std_command(override_fixture_command()).current_dir("."),
+        ] {
+            let error = spec.spawn().await.err().expect("must be rejected");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[tokio::test]
+    async fn command_override_is_spawned_by_exactly_one_clone() {
+        let spec = SpawnSpec::from_std_command(override_fixture_command())
+            .stdin(StreamMode::Null)
+            .stdout(StreamMode::Null)
+            .stderr(StreamMode::Null);
+        let clone = spec.clone();
+        let mut child = spec.spawn().await.expect("first spawn");
+        let error = clone.spawn().await.err().expect("second spawn refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(child.wait().await.expect("reap").success());
+    }
+
+    #[tokio::test]
+    async fn declarative_spawn_rejects_override_only_options() {
+        for spec in [
+            fixture_command().creation_flags(Some(0)),
+            fixture_command().address_space_limit_bytes(Some(1 << 40)),
+        ] {
+            let error = spec.spawn().await.err().expect("must be rejected");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
     }
 
     #[tokio::test]
