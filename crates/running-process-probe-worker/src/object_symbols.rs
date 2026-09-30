@@ -394,11 +394,13 @@ fn native_symbol_name(image: &Path, identity: &str) -> PathBuf {
 }
 
 fn configured_stores() -> Vec<PathBuf> {
-    std::env::var_os(discovery::SYMBOL_PATH_ENV).map_or_else(Vec::new, |value| {
-        std::env::split_paths(&value)
-            .filter(|path| !path.as_os_str().is_empty())
-            .collect()
-    })
+    crate::env_vars::PROBE_SYMBOL_PATH
+        .os()
+        .map_or_else(Vec::new, |value| {
+            std::env::split_paths(&value)
+                .filter(|path| !path.as_os_str().is_empty())
+                .collect()
+        })
 }
 
 fn hex(bytes: &[u8]) -> String {

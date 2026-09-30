@@ -22,11 +22,11 @@ use serde::{Deserialize, Serialize};
 use crate::wire::{DiscoveryConfig, ModuleRef};
 
 /// Environment variable containing build-id cache roots.
-pub const BUILD_ID_CACHE_ENV: &str = "RUNNING_PROCESS_PROBE_BUILD_ID_CACHE";
+pub const BUILD_ID_CACHE_ENV: &str = crate::env_vars::PROBE_BUILD_ID_CACHE.name;
 /// Admin-only, comma-separated HTTP(S) symbol-server base URLs.
-pub const SYMBOL_SERVERS_ENV: &str = "RUNNING_PROCESS_PROBE_SYMBOL_SERVERS";
+pub const SYMBOL_SERVERS_ENV: &str = crate::env_vars::PROBE_SYMBOL_SERVERS.name;
 /// Platform path-list of additional local symbol-store roots.
-pub const SYMBOL_PATH_ENV: &str = "RUNNING_PROCESS_PROBE_SYMBOL_PATH";
+pub const SYMBOL_PATH_ENV: &str = crate::env_vars::PROBE_SYMBOL_PATH.name;
 const MANIFEST_SCHEMA: &str = "running-process-probe-symbol-manifest/v1";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_MANIFEST_MODULES: usize = 1024;
@@ -430,7 +430,7 @@ fn pdb_guid_age_key(debug_id: &str) -> Option<String> {
 }
 
 fn cache_roots() -> Vec<PathBuf> {
-    let mut roots = parse_path_list(std::env::var_os(BUILD_ID_CACHE_ENV));
+    let mut roots = parse_path_list(crate::env_vars::PROBE_BUILD_ID_CACHE.os());
     if roots.is_empty() {
         roots.push(default_cache_root());
     }
@@ -640,8 +640,8 @@ pub fn resolve_configured_server<T>(
     symbol_file_name: &Path,
     verify: impl FnMut(&Path) -> Option<T>,
 ) -> ServerResolve<T> {
-    let servers = std::env::var(SYMBOL_SERVERS_ENV)
-        .ok()
+    let servers = crate::env_vars::PROBE_SYMBOL_SERVERS
+        .string()
         .map(|value| {
             value
                 .split(',')

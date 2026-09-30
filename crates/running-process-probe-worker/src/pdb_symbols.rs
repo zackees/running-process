@@ -414,7 +414,7 @@ pub fn identity_matches(image: DebugId, pdb: DebugId) -> bool {
 
 /// Directories to search beyond the image's own, from the environment.
 pub(crate) fn search_dirs() -> Vec<PathBuf> {
-    parse_search_dirs(std::env::var_os(discovery::SYMBOL_PATH_ENV))
+    parse_search_dirs(crate::env_vars::PROBE_SYMBOL_PATH.os())
 }
 
 /// Split a `PATH`-style value into directories.
