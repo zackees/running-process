@@ -7,6 +7,7 @@
 
 use std::cfg_select;
 /// Explicit caller-owned foreground command execution.
+pub mod env;
 pub mod foreground;
 mod semantic_priority;
 pub use semantic_priority::ProcessPriority;
