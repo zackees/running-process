@@ -244,6 +244,19 @@ pub fn broker_v2_runtime_dir() -> std::path::PathBuf {
     crate::ipc_broker_v2_runtime_dir()
 }
 
+/// Concrete socket path for `bare_name` in `component`'s per-user runtime
+/// directory (#974).
+///
+/// The selected host owns directory placement and the leaf spelling; the
+/// caller owns the component name and the bare endpoint name (including any
+/// service prefix such as `rpp-probe-`). Derivation is pure: it creates
+/// nothing, and it does not check the host's length limit — pair it with
+/// [`endpoint_name_limit`] when the caller needs that.
+#[cfg(feature = "ipc")]
+pub fn component_endpoint_path(component: &str, bare_name: &str) -> String {
+    crate::ipc_component_endpoint_path(component, bare_name)
+}
+
 /// Derive the v1 broker endpoint address for `bare_name`.
 ///
 /// The selected host owns directory placement, the leaf spelling, and the

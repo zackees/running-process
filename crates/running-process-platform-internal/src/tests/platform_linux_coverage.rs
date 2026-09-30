@@ -345,3 +345,49 @@ fn nice_only_spawn_kills_the_child_when_the_priority_cannot_be_applied() {
         assert!(!status.success());
     });
 }
+
+#[cfg(feature = "ipc")]
+#[test]
+fn component_endpoint_paths_are_byte_exact_for_the_probe_and_the_broker() {
+    // #974: probe-daemon used to derive these itself. Pinning the spelling
+    // keeps sockets that a running daemon already published reachable.
+    let xdg = Some(std::ffi::OsString::from("/run/user/1000"));
+    assert_eq!(
+        component_endpoint_path_in(xdg.clone(), 1000, "probe", "rpp-probe-abc-0"),
+        "/run/user/1000/running-process/probe/rpp-probe-abc-0.sock"
+    );
+    assert_eq!(
+        component_endpoint_path_in(None, 1000, "probe", "rpp-probe-abc-0"),
+        "/tmp/running-process-1000/probe/rpp-probe-abc-0.sock"
+    );
+    // The broker now goes through the same primitive; its spelling must not move.
+    assert_eq!(
+        component_endpoint_path_in(xdg, 1000, "broker-v2", "rpb-v2-x-0"),
+        "/run/user/1000/running-process/broker-v2/rpb-v2-x-0.sock"
+    );
+    assert_eq!(
+        component_endpoint_path_in(None, 1000, "broker-v2", "rpb-v2-x-0"),
+        "/tmp/running-process-1000/broker-v2/rpb-v2-x-0.sock"
+    );
+}
+
+#[cfg(feature = "ipc")]
+#[test]
+fn probe_and_broker_never_share_a_socket_directory() {
+    let probe = component_endpoint_path_in(None, 7, "probe", "same-name-0");
+    let broker = component_endpoint_path_in(None, 7, "broker-v2", "same-name-0");
+    assert_ne!(probe, broker);
+    assert_eq!(
+        std::path::Path::new(&probe).file_name(),
+        std::path::Path::new(&broker).file_name()
+    );
+}
+
+#[cfg(feature = "ipc")]
+#[test]
+fn broker_endpoint_name_is_the_broker_component_path() {
+    assert_eq!(
+        ipc_broker_endpoint_name("rpb-v2-x-0", false).unwrap(),
+        ipc_component_endpoint_path("broker-v2", "rpb-v2-x-0")
+    );
+}

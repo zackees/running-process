@@ -48,6 +48,12 @@ SOURCES: list[tuple[str, str]] = [
         "crates/running-process-probe-daemon/Cargo.toml",
         r'^running-process-probe\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"',
     ),
+    # #974: the probe daemon reaches host endpoint naming through the platform
+    # facade, so its pin must move with every release too.
+    (
+        "crates/running-process-probe-daemon/Cargo.toml",
+        r'^running-process-platform-internal\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"',
+    ),
     # #850: the published implementation-detail crate is an optional path
     # dependency of the public crate. Its version must remain lockstep or a
     # release can fail package resolution after the tag is cut.

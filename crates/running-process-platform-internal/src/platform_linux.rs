@@ -156,11 +156,35 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::
         for byte in hash.finalize().as_bytes().iter().take(16) { let _ = write!(leaf, "{byte:02x}"); }
         return Ok(PathBuf::from("/tmp").join(format!(".rp-path-{leaf}.sock")).to_string_lossy().into_owned());
     }
-    let directory = match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(value) => PathBuf::from(value).join("running-process").join("broker-v2"),
-        None => PathBuf::from(format!("/tmp/running-process-{}/broker-v2", unsafe { libc::getuid() })),
+    Ok(ipc_component_endpoint_path("broker-v2", bare_name))
+}
+
+/// Concrete socket path for `bare_name` in the per-user runtime directory of
+/// `component` (`broker-v2`, `probe`, ...). Pure: performs no filesystem write.
+///
+/// The component only picks the directory leaf, so two services never share a
+/// namespace while following one convention (#974).
+#[cfg(feature = "ipc")]
+pub fn ipc_component_endpoint_path(component: &str, bare_name: &str) -> String {
+    // SAFETY: `getuid` reads a process property and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    component_endpoint_path_in(std::env::var_os("XDG_RUNTIME_DIR"), uid, component, bare_name)
+}
+
+#[cfg(feature = "ipc")]
+fn component_endpoint_path_in(
+    xdg_runtime_dir: Option<std::ffi::OsString>,
+    uid: u32,
+    component: &str,
+    bare_name: &str,
+) -> String {
+    use std::path::PathBuf;
+
+    let directory = match xdg_runtime_dir {
+        Some(value) => PathBuf::from(value).join("running-process").join(component),
+        None => PathBuf::from(format!("/tmp/running-process-{uid}/{component}")),
     };
-    Ok(directory.join(format!("{bare_name}.sock")).to_string_lossy().into_owned())
+    directory.join(format!("{bare_name}.sock")).to_string_lossy().into_owned()
 }
 
 /// Linux `sun_path` is 108 bytes including the NUL terminator.
