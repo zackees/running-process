@@ -189,6 +189,27 @@ fn component_endpoint_paths_are_byte_exact_for_the_probe_and_the_broker() {
 
 #[cfg(feature = "ipc")]
 #[test]
+fn component_runtime_dirs_are_byte_exact_for_the_probe() {
+    // #974 PR 2: probe-daemon's discovery directory, formerly derived in the
+    // daemon. Sockets must stay inside it.
+    let tmp = Some(OsStr::new("/var/folders/ab/T/").to_os_string());
+    assert_eq!(
+        super::component_runtime_dir_in(tmp.clone(), 501, "probe"),
+        std::path::PathBuf::from("/var/folders/ab/T/.rp-501-probe")
+    );
+    assert_eq!(
+        super::component_runtime_dir_in(None, 501, "probe"),
+        std::path::PathBuf::from("/tmp/.rp-501-probe")
+    );
+    let socket = super::component_endpoint_path_in(tmp.clone(), 501, "probe", "x");
+    assert_eq!(
+        std::path::Path::new(&socket).parent(),
+        Some(super::component_runtime_dir_in(tmp, 501, "probe").as_path())
+    );
+}
+
+#[cfg(feature = "ipc")]
+#[test]
 fn broker_endpoint_name_is_the_broker_component_path() {
     assert_eq!(
         super::ipc_broker_endpoint_name("rpb-v2-x-0", false).unwrap(),

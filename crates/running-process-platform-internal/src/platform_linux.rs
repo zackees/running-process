@@ -51,7 +51,7 @@ pub(crate) use independent_io::open_regular as independent_open_regular;
 pub(crate) const INDEPENDENT_ZERO_WRITE_PENDING: bool = false;
 pub use process_inspect::{
     process_executable_path, process_force_kill, process_same_executable_path,
-    process_signal_terminate, ProcessLiveness,
+    process_fault_code_name, process_signal_terminate, ProcessLiveness,
 };
 
 #[path = "platform_linux/raw_write.rs"]
@@ -87,6 +87,7 @@ pub(crate) mod fs;
 #[cfg(feature = "fs")]
 pub use fs::{
     create_private_file as fs_create_private_file,
+    is_link_handle as fs_is_link_handle, open_read_no_follow as fs_open_read_no_follow,
     decode_path_bytes as fs_decode_path_bytes,
     replace_file as fs_replace_file, sync_directory as fs_sync_directory,
     user_config_dir as fs_user_config_dir,
@@ -171,6 +172,29 @@ pub fn ipc_component_endpoint_path(component: &str, bare_name: &str) -> String {
     component_endpoint_path_in(std::env::var_os("XDG_RUNTIME_DIR"), uid, component, bare_name)
 }
 
+/// Per-user runtime directory of `component`: the directory that holds its
+/// sockets and any runtime files published beside them. Pure.
+#[cfg(feature = "ipc")]
+pub fn ipc_component_runtime_dir(component: &str) -> std::path::PathBuf {
+    // SAFETY: `getuid` reads a process property and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    component_runtime_dir_in(std::env::var_os("XDG_RUNTIME_DIR"), uid, component)
+}
+
+#[cfg(feature = "ipc")]
+fn component_runtime_dir_in(
+    xdg_runtime_dir: Option<std::ffi::OsString>,
+    uid: u32,
+    component: &str,
+) -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    match xdg_runtime_dir {
+        Some(value) => PathBuf::from(value).join("running-process").join(component),
+        None => PathBuf::from(format!("/tmp/running-process-{uid}/{component}")),
+    }
+}
+
 #[cfg(feature = "ipc")]
 fn component_endpoint_path_in(
     xdg_runtime_dir: Option<std::ffi::OsString>,
@@ -178,13 +202,10 @@ fn component_endpoint_path_in(
     component: &str,
     bare_name: &str,
 ) -> String {
-    use std::path::PathBuf;
-
-    let directory = match xdg_runtime_dir {
-        Some(value) => PathBuf::from(value).join("running-process").join(component),
-        None => PathBuf::from(format!("/tmp/running-process-{uid}/{component}")),
-    };
-    directory.join(format!("{bare_name}.sock")).to_string_lossy().into_owned()
+    component_runtime_dir_in(xdg_runtime_dir, uid, component)
+        .join(format!("{bare_name}.sock"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Linux `sun_path` is 108 bytes including the NUL terminator.

@@ -257,6 +257,18 @@ pub fn component_endpoint_path(component: &str, bare_name: &str) -> String {
     crate::ipc_component_endpoint_path(component, bare_name)
 }
 
+/// Per-user runtime directory of `component` (#974).
+///
+/// On hosts whose endpoints are filesystem-backed this is the directory
+/// [`component_endpoint_path`] places sockets in; elsewhere it is a per-user
+/// location for runtime files the component publishes (discovery records and
+/// the like). The caller owns the component name and everything beneath the
+/// directory. Derivation is pure: nothing is created.
+#[cfg(feature = "ipc")]
+pub fn component_runtime_dir(component: &str) -> std::path::PathBuf {
+    crate::ipc_component_runtime_dir(component)
+}
+
 /// Derive the v1 broker endpoint address for `bare_name`.
 ///
 /// The selected host owns directory placement, the leaf spelling, and the

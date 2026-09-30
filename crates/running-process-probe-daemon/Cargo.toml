@@ -29,9 +29,10 @@ running-process = { path = "../running-process", version = "4.10.15", default-fe
 ] }
 # probe_diag.v1 schema (S1 / #630).
 running-process-probe = { path = "../running-process-probe", version = "4.10.15" }
-# Host endpoint naming (#974). `running-process` already depends on this crate,
-# so this adds no new package to the graph; only the `ipc` feature is enabled.
-running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.15", default-features = false, features = ["ipc"] }
+# Host endpoint naming, runtime directory, private/no-follow file opens and
+# fault-code names (#974). `running-process` already depends on this crate, so
+# this adds no new package to the graph; only `ipc` and `fs` are enabled.
+running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.15", default-features = false, features = ["ipc", "fs"] }
 
 interprocess = "2"
 prost = "0.14"

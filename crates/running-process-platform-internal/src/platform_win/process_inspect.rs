@@ -420,3 +420,11 @@ mod path_tests {
         ));
     }
 }
+
+/// Operator-facing name of a fatal fault code recorded by a crash handler.
+///
+/// On this host the code is an `NTSTATUS` exception code, conventionally
+/// written as eight upper-case hex digits (`0xC0000005`).
+pub fn process_fault_code_name(code: i64) -> String {
+    format!("0x{:08X}", code as u32)
+}

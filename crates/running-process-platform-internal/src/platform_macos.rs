@@ -47,7 +47,7 @@ pub use autostart::{
 pub(crate) mod process_inspect;
 pub use process_inspect::{
     process_executable_path, process_force_kill, process_same_executable_path,
-    process_signal_terminate, ProcessLiveness,
+    process_fault_code_name, process_signal_terminate, ProcessLiveness,
 };
 
 #[path = "platform_macos/raw_write.rs"]
@@ -83,6 +83,7 @@ pub(crate) mod fs;
 #[cfg(feature = "fs")]
 pub use fs::{
     create_private_file as fs_create_private_file,
+    is_link_handle as fs_is_link_handle, open_read_no_follow as fs_open_read_no_follow,
     decode_path_bytes as fs_decode_path_bytes,
     replace_file as fs_replace_file, sync_directory as fs_sync_directory,
     user_config_dir as fs_user_config_dir,
@@ -175,7 +176,6 @@ fn component_endpoint_path_in(
     bare_name: &str,
 ) -> String {
     use std::fmt::Write as _;
-    use std::path::PathBuf;
 
     let mut hash = blake3::Hasher::new();
     hash.update(bare_name.as_bytes());
@@ -183,11 +183,31 @@ fn component_endpoint_path_in(
     for byte in hash.finalize().as_bytes().iter().take(8) {
         let _ = write!(leaf, "{byte:02x}");
     }
-    let root = tmpdir.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
-    root.join(format!(".rp-{uid}-{component}"))
+    component_runtime_dir_in(tmpdir, uid, component)
         .join(format!("{leaf}.sock"))
         .to_string_lossy()
         .into_owned()
+}
+
+/// Per-user runtime directory of `component`: the directory that holds its
+/// sockets and any runtime files published beside them. Pure.
+#[cfg(feature = "ipc")]
+pub fn ipc_component_runtime_dir(component: &str) -> std::path::PathBuf {
+    // SAFETY: `getuid` reads a process property and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    component_runtime_dir_in(std::env::var_os("TMPDIR"), uid, component)
+}
+
+#[cfg(feature = "ipc")]
+fn component_runtime_dir_in(
+    tmpdir: Option<std::ffi::OsString>,
+    uid: u32,
+    component: &str,
+) -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    let root = tmpdir.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+    root.join(format!(".rp-{uid}-{component}"))
 }
 
 /// macOS `sun_path` is 104 bytes including the NUL terminator.

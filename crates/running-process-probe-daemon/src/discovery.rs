@@ -36,36 +36,16 @@ pub const DISCOVERY_FILE: &str = "rpprobed.json";
 /// Per-user runtime directory holding the discovery file and Unix socket.
 ///
 /// `override_dir` (from `--runtime-dir`) wins, which is what lets tests run
-/// concurrently without colliding on a shared machine-wide path.
-#[allow(unsafe_code)] // getuid: FFI with no safe wrapper; see names.rs
+/// concurrently without colliding on a shared machine-wide path. Otherwise the
+/// host facade places it: the same directory that holds the probe's socket
+/// where sockets are files (#974).
 pub fn discovery_dir(override_dir: Option<&Path>) -> PathBuf {
     if let Some(dir) = override_dir {
         return dir.to_path_buf();
     }
-    #[cfg(windows)]
-    {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        base.join("running-process").join("probe")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let uid = unsafe { libc::getuid() };
-        let tmp = std::env::var_os("TMPDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        tmp.join(format!(".rp-{uid}-probe"))
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-            PathBuf::from(dir).join("running-process").join("probe")
-        } else {
-            let uid = unsafe { libc::getuid() };
-            PathBuf::from(format!("/tmp/running-process-{uid}/probe"))
-        }
-    }
+    running_process_platform_internal::platform::ipc::component_runtime_dir(
+        crate::names::ENDPOINT_COMPONENT,
+    )
 }
 
 /// Generate the bearer token: 32 bytes of OS entropy as lowercase hex.
@@ -93,18 +73,28 @@ pub fn write_discovery_file(dir: &Path, info: &DiscoveryInfo) -> io::Result<Path
 
     let body = serde_json::to_vec_pretty(info)
         .map_err(|e| io::Error::other(format!("serialize discovery info: {e}")))?;
-    std::fs::write(&tmp_path, &body)?;
 
-    // Tighten the file itself before publishing. On Windows it inherits the
-    // directory's protected DACL; on Unix the default mode is too permissive
-    // for a file holding a bearer token.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
+    // The file holds the bearer token, so it is created owner-only rather than
+    // tightened afterwards: there is no window in which it exists readable by
+    // anyone else. On Windows it inherits the directory's protected DACL.
+    // Creation refuses an existing file, so clear a temp left by a crashed
+    // daemon that happened to have this pid.
+    match std::fs::remove_file(&tmp_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
     }
-
-    std::fs::rename(&tmp_path, &final_path)?;
+    let written = (|| {
+        let mut file =
+            running_process_platform_internal::platform::fs::create_private_file(&tmp_path)?;
+        io::Write::write_all(&mut file, &body)?;
+        drop(file);
+        std::fs::rename(&tmp_path, &final_path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    written?;
     Ok(final_path)
 }
 
@@ -161,6 +151,34 @@ mod tests {
         let path = write_discovery_file(dir.path(), &sample()).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "mode {mode:o} exposes the bearer token");
+        assert_eq!(mode & 0o777, 0o600, "owner keeps read/write: {mode:o}");
+    }
+
+    /// A temp left under this pid's name by a crashed daemon must not block
+    /// publication, and must not lend its permissions to the new file.
+    #[test]
+    fn a_stale_temp_file_does_not_block_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir
+            .path()
+            .join(format!("{DISCOVERY_FILE}.{}.tmp", std::process::id()));
+        std::fs::write(&stale, b"stale").unwrap();
+        write_discovery_file(dir.path(), &sample()).unwrap();
+        assert_eq!(read_discovery_file(dir.path()).unwrap(), sample());
+        assert!(!stale.exists());
+    }
+
+    /// The discovery file sits beside the control socket wherever sockets
+    /// are files, so one directory is hardened and cleaned for both.
+    #[test]
+    fn default_discovery_dir_holds_the_control_socket() {
+        let socket = crate::names::resolve_socket_path("rpp-probe-deadbeef-0");
+        let dir = discovery_dir(None);
+        if running_process_platform_internal::platform::ipc::endpoint_is_filesystem_backed() {
+            assert_eq!(std::path::Path::new(&socket).parent(), Some(dir.as_path()));
+        } else {
+            assert!(dir.ends_with(std::path::Path::new("running-process").join("probe")));
+        }
     }
 
     #[test]

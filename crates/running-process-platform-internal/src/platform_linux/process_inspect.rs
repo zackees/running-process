@@ -356,3 +356,20 @@ mod path_tests {
         assert!(process_same_executable_path(&me, &me));
     }
 }
+
+/// Operator-facing name of a fatal fault code recorded by a crash handler.
+///
+/// On this host the code is the signal that killed the process; the six
+/// fault signals a crash handler arms for are named, anything else is
+/// spelled `signal-<n>` so the number is never lost.
+pub fn process_fault_code_name(code: i64) -> String {
+    match code as i32 {
+        libc::SIGSEGV => "SIGSEGV".into(),
+        libc::SIGBUS => "SIGBUS".into(),
+        libc::SIGILL => "SIGILL".into(),
+        libc::SIGFPE => "SIGFPE".into(),
+        libc::SIGABRT => "SIGABRT".into(),
+        libc::SIGTRAP => "SIGTRAP".into(),
+        _ => format!("signal-{code}"),
+    }
+}
