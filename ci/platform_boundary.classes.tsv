@@ -1,0 +1,26 @@
+# Row classifications for the platform-boundary ledger (#975, phase 9).
+#
+# "Zero baseline" means zero UNCLASSIFIED rows, not a literal zero: every row
+# that survives consolidation must say why it stays. One line per ledger
+# identity (all ordinals of that path/kind/construct share the class).
+#
+# Schema: path<TAB>kind<TAB>normalized_construct<TAB>class<TAB>note
+#   host-test  a test or fixture that asserts real host behaviour
+#   compat-4x  published 4.x surface; the note must name its 5.0 retirement
+#
+# Kept beside the ledger, not in it: the Dylint lint include_str!s the ledger
+# and skips any row that does not have exactly four fields.
+crates/running-process/src/daemon/pipe_sessions.rs	attr_cfg	unix	compat-4x	tee API pair kept for 4.x (option B, #1136); retires in 5.0 with the RawDescriptor tee (#975)
+crates/running-process/src/daemon/pipe_sessions.rs	attr_cfg	windows	compat-4x	tee API pair kept for 4.x (option B, #1136); retires in 5.0 with the RawDescriptor tee (#975)
+crates/running-process/src/daemon/pipe_sessions.rs	native_import	std::os::windows	compat-4x	tee API pair kept for 4.x (option B, #1136); retires in 5.0 with the RawDescriptor tee (#975)
+crates/running-process/src/daemon/pty_sessions.rs	attr_cfg	unix	compat-4x	tee API pair kept for 4.x (option B, #1136); retires in 5.0 with the RawDescriptor tee (#975)
+crates/running-process/src/daemon/pty_sessions.rs	attr_cfg	windows	compat-4x	tee API pair kept for 4.x (option B, #1136); retires in 5.0 with the RawDescriptor tee (#975)
+crates/running-process/src/daemon/pty_sessions.rs	native_import	std::os::windows	compat-4x	tee API pair kept for 4.x (option B, #1136); retires in 5.0 with the RawDescriptor tee (#975)
+crates/running-process/src/daemon/telemetry.rs	attr_cfg	unix	compat-4x	tee API pair kept for 4.x (option B, #1136); retires in 5.0 with the RawDescriptor tee (#975)
+crates/running-process/src/daemon/telemetry.rs	attr_cfg	windows	compat-4x	tee API pair kept for 4.x (option B, #1136); retires in 5.0 with the RawDescriptor tee (#975)
+crates/running-process/src/daemon/telemetry.rs	native_import	std::os::windows	compat-4x	tee API pair kept for 4.x (option B, #1136); retires in 5.0 with the RawDescriptor tee (#975)
+crates/running-process/src/environment.rs	attr_cfg	windows	compat-4x	public user_baseline_environment_block is 4.x API; retires in 5.0 (#975)
+crates/running-process/src/tests.rs	attr_cfg	unix	host-test	in-crate test asserting real host behaviour (signals, handles, job objects)
+crates/running-process/src/tests.rs	attr_cfg	windows	host-test	in-crate test asserting real host behaviour (signals, handles, job objects)
+crates/running-process/src/tests.rs	native_import	libc	host-test	in-crate test asserting real host behaviour (signals, handles, job objects)
+crates/running-process/src/tests.rs	native_import	std::os::windows	host-test	in-crate test asserting real host behaviour (signals, handles, job objects)

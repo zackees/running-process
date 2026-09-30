@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LEDGER = ROOT / "lints/running-process-platform-boundary/src/baseline.txt"
 MANIFEST_LEDGER = ROOT / "ci/platform_boundary.manifest.tsv"
+CLASSES = ROOT / "ci/platform_boundary.classes.tsv"
 PLATFORM_CRATE = "crates/running-process-platform-internal"
 CONCRETE_PREFIXES = (
     f"{PLATFORM_CRATE}/src/platform_win",
@@ -793,12 +794,77 @@ def legacy_ipc_violations(
     return violations
 
 
+# #975: what "zero baseline" means. Every row that survives consolidation must
+# say why it stays; the classes live beside the ledger because the Dylint lint
+# include_str!s the ledger and skips any row without exactly four fields.
+ROW_CLASSES = {"host-test", "compat-4x"}
+
+
+def parse_classes(
+    path: Path = CLASSES,
+) -> tuple[dict[tuple[str, str, str], tuple[str, str]], list[str]]:
+    """Return ``{(path, kind, normalized): (class, note)}`` and parse problems."""
+    classes: dict[tuple[str, str, str], tuple[str, str]] = {}
+    problems: list[str] = []
+    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not raw or raw.startswith("#"):
+            continue
+        where = f"{path.relative_to(ROOT)}:{line_number}"
+        fields = raw.split("\t")
+        if len(fields) != 5:
+            problems.append(f"{where}: expected five tab-separated fields")
+            continue
+        source, kind, normalized, row_class, note = fields
+        key = (source, kind, normalized)
+        if key in classes:
+            problems.append(
+                f"{where}: {source} {kind} {normalized} is classified twice"
+            )
+        if row_class not in ROW_CLASSES:
+            problems.append(f"{where}: unknown class {row_class!r}")
+        if not note.strip():
+            problems.append(f"{where}: a classification needs a note saying why")
+        if row_class == "compat-4x" and "5.0" not in note:
+            problems.append(f"{where}: a compat-4x note must name its 5.0 retirement")
+        classes[key] = (row_class, note)
+    return classes, problems
+
+
+def classification_violations(
+    rows: list[Row],
+    classes: dict[tuple[str, str, str], tuple[str, str]] | None = None,
+    problems: list[str] | None = None,
+) -> list[str]:
+    """Reject malformed classifications and ones that name no ledger row."""
+    if classes is None:
+        classes, problems = parse_classes()
+    violations = list(problems or [])
+    identities = {(row.path, row.kind, row.normalized) for row in rows}
+    for key in sorted(set(classes) - identities):
+        violations.append(
+            f"stale classification: {key[0]} {key[1]} {key[2]} is not in the ledger"
+        )
+    return violations
+
+
+def unclassified_rows(
+    rows: list[Row], classes: dict[tuple[str, str, str], tuple[str, str]]
+) -> list[Row]:
+    """Rows that do not yet say why they stay (the count phase 9 drives to zero)."""
+    return [row for row in rows if (row.path, row.kind, row.normalized) not in classes]
+
+
 def totals(rows: list[Row]) -> str:
     by_kind = collections.Counter(row.kind for row in rows)
     by_crate = collections.Counter(row.path.split("/")[1] for row in rows)
     kinds = ", ".join(f"{kind}={by_kind[kind]}" for kind in sorted(by_kind))
     crates = ", ".join(f"{crate}={by_crate[crate]}" for crate in sorted(by_crate))
-    return f"rows={len(rows)}; kinds: {kinds}; crates: {crates}"
+    classes, _ = parse_classes()
+    unclassified = len(unclassified_rows(rows, classes))
+    return (
+        f"rows={len(rows)}; classified={len(rows) - unclassified}; "
+        f"unclassified={unclassified}; kinds: {kinds}; crates: {crates}"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -820,6 +886,7 @@ def main(argv: list[str] | None = None) -> int:
         *zone_dylint_alignment_violations(),
         *zone_premise_violations(),
         *legacy_ipc_violations(),
+        *classification_violations(rows),
     ]
     if args.print_totals:
         print(totals(rows))

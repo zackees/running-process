@@ -315,3 +315,67 @@ def test_comments_and_strings_do_not_count_as_interprocess_uses() -> None:
     )
 
     assert not counts
+
+
+def test_the_real_classifications_are_valid_and_cover_the_argued_rows() -> None:
+    rows = platform_boundary.parse_ledger()
+    classes, problems = platform_boundary.parse_classes()
+
+    assert not problems
+    assert not platform_boundary.classification_violations(rows, classes, problems)
+    classified = len(rows) - len(platform_boundary.unclassified_rows(rows, classes))
+    # 24 tee-API rows + 1 environment.rs row (compat-4x) + 27 tests.rs rows
+    # (host-test): exactly the rows #975 has argued so far.
+    assert classified == 52
+
+
+def test_a_classification_naming_no_ledger_row_is_stale() -> None:
+    rows = platform_boundary.parse_ledger()
+    ghost = ("crates/running-process/src/gone.rs", "attr_cfg", "unix")
+
+    violations = platform_boundary.classification_violations(
+        rows, {ghost: ("host-test", "why")}, []
+    )
+
+    assert len(violations) == 1
+    assert "stale classification" in violations[0]
+
+
+def test_bad_classifications_are_rejected(tmp_path) -> None:
+    path = tmp_path / "classes.tsv"
+    path.write_text(
+        "\n".join(
+            [
+                "a.rs\tattr_cfg\tunix\tmaybe\twhy",  # unknown class
+                "b.rs\tattr_cfg\tunix\thost-test\t ",  # blank note
+                "c.rs\tattr_cfg\tunix\tcompat-4x\tkept for now",  # no 5.0 retirement
+                "d.rs\tattr_cfg\tunix\thost-test",  # wrong field count
+                "e.rs\tattr_cfg\tunix\thost-test\tfine",
+                "e.rs\tattr_cfg\tunix\thost-test\tfine again",  # duplicate
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # parse_classes reports paths relative to the repo; point it at a tmp file.
+    original_root = platform_boundary.ROOT
+    platform_boundary.ROOT = tmp_path
+    try:
+        _, problems = platform_boundary.parse_classes(path)
+    finally:
+        platform_boundary.ROOT = original_root
+
+    text = "\n".join(problems)
+    assert "unknown class" in text
+    assert "needs a note" in text
+    assert "must name its 5.0 retirement" in text
+    assert "five tab-separated fields" in text
+    assert "classified twice" in text
+
+
+def test_unclassified_rows_are_counted_not_failed_yet() -> None:
+    rows = platform_boundary.parse_ledger()
+    classes, _ = platform_boundary.parse_classes()
+
+    assert platform_boundary.unclassified_rows(rows, classes)
+    assert "unclassified=" in platform_boundary.totals(rows)
