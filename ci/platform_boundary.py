@@ -683,7 +683,8 @@ def zone_dylint_alignment_violations() -> list[str]:
     they did not, deleting a zone's ledger rows here left Dylint still
     reporting them, and the workspace gate failed with the boundary otherwise
     green. Catching that locally is cheaper than a CI round trip, because the
-    Dylint lane needs a nightly toolchain and does not run in `./lint`.
+    Dylint lane needs a nightly toolchain; `./lint` runs it through
+    `ci.dylint_gate` when that toolchain is installed.
     """
     try:
         text = DYLINT_LINT_SOURCE.read_text(encoding="utf-8")

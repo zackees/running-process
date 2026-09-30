@@ -47,7 +47,7 @@ on:
         type: boolean
         default: true
       dylint:
-        description: Run both workspace Dylints on the single Linux x86 lane.
+        description: Run both workspace Dylints (Linux x86 on every PR; macOS/Windows x86 on their opt-in tiers).
         type: boolean
         default: false
       cache-targets:
@@ -354,6 +354,11 @@ jobs:
     if: ${{ inputs.dylint }}
     runs-on: ${{ inputs.os }}
     timeout-minutes: 30
+    # The steps below use POSIX quoting (`"$CARGO_BIN"`), which PowerShell -- the
+    # default shell on Windows runners -- would treat as a string, not a command.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -361,8 +366,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
 
-      # Dylint runs once on Linux x86. Its nightly artifacts
-      # use a dedicated persistent cache so they cannot mix with the stable
+      # Dylint runs on Linux x86 for every PR, and on macOS/Windows x86 only
+      # in their opt-in tiers (the env-literal lint is a late lint, so it
+      # needs each host's own module graph; the platform-boundary lint is
+      # pre-expansion and already sees every OS branch from Linux). Its
+      # nightly artifacts use a dedicated persistent cache so they cannot mix with the stable
       # workspace build or impose a cold rebuild on every platform lane.
       - name: Install Dylint nightly
         if: ${{ inputs.dylint }}
@@ -377,8 +385,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            ~/.cargo/bin/cargo-dylint
-            ~/.cargo/bin/dylint-link
+            ~/.cargo/bin/cargo-dylint*
+            ~/.cargo/bin/dylint-link*
           key: dylint-tools-${{ runner.os }}-${{ runner.arch }}-6.0.1
 
       - name: Install Dylint 6.0.1 tools
@@ -393,8 +401,8 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            ~/.cargo/bin/cargo-dylint
-            ~/.cargo/bin/dylint-link
+            ~/.cargo/bin/cargo-dylint*
+            ~/.cargo/bin/dylint-link*
           key: ${{ steps.dylint-tools.outputs.cache-primary-key }}
 
       - name: Restore Dylint target
@@ -447,3 +455,26 @@ jobs:
         with:
           path: ${{ runner.temp }}/running-process-dylint-target
           key: ${{ steps.dylint-target.outputs.cache-primary-key }}
+
+  # One required check for the lint lanes. `dylint` is skipped when a caller
+  # does not request it, which is fine; but if it was requested it must have
+  # run and passed, and a failed or cancelled preflight must never read green
+  # just because a sibling job was skipped.
+  lint-gates:
+    name: lint gates (${{ inputs.label }})
+    if: ${{ always() }}
+    needs: [preflight, dylint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require preflight and requested Dylint to have passed
+        env:
+          PREFLIGHT: ${{ needs.preflight.result }}
+          DYLINT: ${{ needs.dylint.result }}
+          DYLINT_REQUESTED: ${{ inputs.dylint }}
+        run: |
+          echo "preflight=$PREFLIGHT dylint=$DYLINT requested=$DYLINT_REQUESTED"
+          [ "$PREFLIGHT" = success ] || exit 1
+          if [ "$DYLINT_REQUESTED" = true ]; then
+            [ "$DYLINT" = success ] || exit 1
+          fi
