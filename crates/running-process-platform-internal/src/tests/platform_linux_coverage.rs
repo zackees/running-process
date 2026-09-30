@@ -425,3 +425,30 @@ fn broker_endpoint_name_is_the_broker_component_path() {
         ipc_component_endpoint_path("broker-v2", "rpb-v2-x-0")
     );
 }
+
+#[cfg(feature = "async-process")]
+#[tokio::test]
+async fn command_override_keeps_argv_and_applies_the_native_limit_mapping() {
+    let raw = OsStr::new("arg with 'quotes' and spaces");
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg("printf '%s|' \"$1\"; ulimit -v")
+        .arg("sh")
+        .arg(raw);
+    let output = crate::SpawnSpec::from_std_command(command)
+        .address_space_limit_bytes(Some(1 << 40))
+        .stdin(crate::StreamMode::Null)
+        .stdout(crate::StreamMode::Piped)
+        .stderr(crate::StreamMode::Piped)
+        .spawn()
+        .await
+        .expect("spawn override")
+        .wait_with_output()
+        .await
+        .expect("wait override");
+    assert!(output.status.success(), "{output:?}");
+    let mut expected = b"arg with 'quotes' and spaces|".to_vec();
+    expected.extend_from_slice(format!("{}\n", (1u64 << 40) / 1024).as_bytes());
+    assert_eq!(output.stdout, expected);
+}

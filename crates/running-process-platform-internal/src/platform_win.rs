@@ -787,6 +787,29 @@ fn spawn_creation_flags(
     group | priority | no_window | suspended
 }
 
+/// Configure a caller-built command for [`crate::SpawnSpec::from_std_command`].
+///
+/// Windows owner-death containment for these commands is the per-spawn
+/// kill-on-close Job Object (with its descendant observer and memory limit)
+/// that `NativeProcess` assigns after spawn. `SpawnSpec` cannot express that
+/// job yet (#850), so the combination is refused rather than launched
+/// uncontained.
+#[cfg(feature = "async-process")]
+pub(crate) fn configure_override_command(
+    command: &mut std::process::Command,
+    config: crate::platform::process::ProcessCommandConfig,
+    kill_when_owner_dies: bool,
+) -> io::Result<()> {
+    if kill_when_owner_dies {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "owner-death containment of a caller-built command needs the per-spawn Job Object, \
+             which SpawnSpec cannot express yet",
+        ));
+    }
+    configure_process_command(command, config)
+}
+
 #[cfg(feature = "async-process")]
 pub(crate) fn configure_command(
     command: &mut Command,
