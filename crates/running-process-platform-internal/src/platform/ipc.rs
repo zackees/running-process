@@ -114,6 +114,12 @@ pub fn endpoint_is_filesystem_backed() -> bool {
     crate::ipc_endpoint_is_filesystem_backed()
 }
 
+/// Whether this host can hand a live connection to another process.
+#[cfg(feature = "ipc")]
+pub const fn handoff_transport_available() -> bool {
+    crate::ipc_handoff_transport_available()
+}
+
 /// Host-neutral classification of a failed connection-transfer primitive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HandoffTransferErrorKind {

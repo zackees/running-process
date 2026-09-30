@@ -64,6 +64,15 @@ pub use loaded_images::{
 pub(crate) mod raw_write;
 pub use raw_write::write_all_to_descriptor as fs_write_all_to_descriptor;
 
+/// Whether a handle another process holds open keeps a file from being removed.
+///
+/// Windows refuses to remove a file another process holds open, so
+/// callers use the answer to decide whether releasing handles before a
+/// recursive delete means anything here.
+pub const fn fs_open_handles_block_removal() -> bool {
+    true
+}
+
 #[path = "platform_win/shutdown_request.rs"]
 pub(crate) mod shutdown_request;
 pub use shutdown_request::install_shutdown_request_handler as process_install_shutdown_request_handler;
@@ -130,6 +139,7 @@ mod ipc_private_dir;
 pub use ipc::{
     current_user_id as ipc_current_user_id, Endpoint as IpcEndpoint,
     endpoint_is_filesystem_backed as ipc_endpoint_is_filesystem_backed,
+    handoff_transport_available as ipc_handoff_transport_available,
     nonblocking_zero_read_is_pending as ipc_nonblocking_zero_read_is_pending,
     select_endpoint_address as ipc_select_endpoint_address,
     InheritedListener as IpcInheritedListener, Listener as IpcListener,
@@ -1346,4 +1356,20 @@ mod endpoint_naming_tests {
         assert_eq!(mixed, other);
     }
 
+}
+
+/// Pins the per-host answers that facade callers branch on, so a change to
+/// either is a visible, reviewed edit rather than a silent behaviour change.
+#[cfg(test)]
+mod host_semantics_tests {
+    #[test]
+    fn open_handles_block_removal_matches_this_host() {
+        assert!(super::fs_open_handles_block_removal());
+    }
+
+    #[cfg(feature = "ipc")]
+    #[test]
+    fn handoff_transport_is_available() {
+        assert!(super::ipc_handoff_transport_available());
+    }
 }

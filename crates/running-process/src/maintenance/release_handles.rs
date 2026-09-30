@@ -144,9 +144,18 @@ pub fn run_release_handles(path: &Path) -> Result<ReleaseHandlesOutcome, Release
         return Err(ReleaseHandlesError::EmptyPath);
     }
 
-    #[cfg(unix)]
-    {
-        Ok(ReleaseHandlesOutcome {
+    Ok(outcome_for(
+        path,
+        crate::platform::fs::open_handles_block_removal(),
+    ))
+}
+
+/// The outcome for `path` on a host where open handles do (Windows) or do
+/// not (POSIX delete-on-close) keep a file from being removed.
+fn outcome_for(path: &Path, open_handles_block_removal: bool) -> ReleaseHandlesOutcome {
+    let path_str = path.to_string_lossy();
+    if !open_handles_block_removal {
+        ReleaseHandlesOutcome {
             path: path.to_path_buf(),
             message: format!(
                 "POSIX delete-on-close semantics make this a no-op; proceed with `rm -rf {path_str}`"
@@ -154,11 +163,8 @@ pub fn run_release_handles(path: &Path) -> Result<ReleaseHandlesOutcome, Release
             manifests_scanned: 0,
             handles_released: 0,
             already_clean: true,
-        })
-    }
-
-    #[cfg(windows)]
-    {
+        }
+    } else {
         // Phase 1 stub. Phase 2 (#231) ships the manifest registry
         // under `%LOCALAPPDATA%\running-process\manifests\` and the
         // full handler will enumerate that directory + send
@@ -166,7 +172,7 @@ pub fn run_release_handles(path: &Path) -> Result<ReleaseHandlesOutcome, Release
         // each live daemon's pipe. For now we return a successful
         // "nothing to do" result so callers can wire the integration
         // unconditionally.
-        Ok(ReleaseHandlesOutcome {
+        ReleaseHandlesOutcome {
             path: path.to_path_buf(),
             message: format!(
                 "Phase 2 manifest registry not yet shipped; no daemons to query for handles under \
@@ -175,7 +181,7 @@ pub fn run_release_handles(path: &Path) -> Result<ReleaseHandlesOutcome, Release
             manifests_scanned: 0,
             handles_released: 0,
             already_clean: true,
-        })
+        }
     }
 }
 
@@ -214,6 +220,29 @@ mod tests {
         assert!(outcome.already_clean);
         assert_eq!(outcome.manifests_scanned, 0);
         assert_eq!(outcome.handles_released, 0);
+    }
+
+    /// Both host messages are pinned byte-for-byte on every host.
+    #[test]
+    fn outcome_messages_are_pinned_for_both_host_semantics() {
+        let path = Path::new("/w/tree");
+        let posix = outcome_for(path, false);
+        assert_eq!(
+            posix.message,
+            "POSIX delete-on-close semantics make this a no-op; proceed with `rm -rf /w/tree`"
+        );
+        let windows = outcome_for(path, true);
+        assert_eq!(
+            windows.message,
+            "Phase 2 manifest registry not yet shipped; no daemons to query for handles under \
+             /w/tree. Proceed with rm -rf and report soldr#710 reproductions if encountered."
+        );
+        for outcome in [posix, windows] {
+            assert_eq!(outcome.path, PathBuf::from("/w/tree"));
+            assert_eq!(outcome.manifests_scanned, 0);
+            assert_eq!(outcome.handles_released, 0);
+            assert!(outcome.already_clean);
+        }
     }
 
     #[test]

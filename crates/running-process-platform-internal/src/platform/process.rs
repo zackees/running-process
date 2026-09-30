@@ -467,10 +467,11 @@ pub struct ObserverBackend {
     pub backend: &'static str,
     pub reason: &'static str,
 }
-pub use crate::platform_imp::observer_backend;
-pub use crate::platform_imp::read_process_argv;
-pub use crate::platform_imp::read_process_cmdline;
-pub use crate::platform_imp::read_process_file_handles;
+pub use crate::{
+    process_observer_backend as observer_backend, process_read_argv as read_process_argv,
+    process_read_cmdline as read_process_cmdline,
+    process_read_file_handles as read_process_file_handles,
+};
 
 /// Platform-neutral Unix signal selectors used by the compatibility facade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
