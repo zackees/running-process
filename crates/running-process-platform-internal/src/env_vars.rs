@@ -119,16 +119,25 @@ mod tests {
         }
     }
 
-    /// Every production source file must reach a declared name through this
-    /// table: a `std::env` read of a string literal outside test code is drift.
+    /// Reads keyed by a caller-supplied name: the key is data, so there is
+    /// nothing to declare. Matched on the argument text after `var_os(`.
+    const DYNAMIC_KEYS: &[&str] = &["env_key)"];
+
+    /// Production code reaches the environment only through [`crate::env`]:
+    /// any direct `std::env` variable call outside test code is drift, except
+    /// the dynamic-key reads in [`DYNAMIC_KEYS`].
+    ///
+    /// Test code is recognised by layout: a `#[cfg(test)]` (or
+    /// `#[cfg(all(test, ..))]`) inline `mod name {` runs to the end of its file
+    /// in this crate, as do `*_tests.rs` files and `tests/` directories.
     #[test]
-    fn production_code_reads_no_literal_variable_names() {
+    fn production_code_calls_std_env_only_for_dynamic_keys() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut offenders = Vec::new();
         visit(&root, &mut offenders);
         assert!(
             offenders.is_empty(),
-            "undeclared literal reads: {offenders:#?}"
+            "undeclared environment reads: {offenders:#?}"
         );
     }
 
@@ -151,8 +160,6 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).expect("read source");
-            // A `#[cfg(test)]`-gated `mod` runs to the end of the file in this
-            // crate's layout, so everything from the first one on is test code.
             let lines: Vec<&str> = text.lines().collect();
             let cut = lines
                 .iter()
@@ -162,24 +169,23 @@ mod tests {
                     (line.starts_with("#[cfg(test)]") || line.starts_with("#[cfg(all(test"))
                         && lines[index + 1..]
                             .iter()
-                            .map(|next| next.trim_start())
+                            .map(|next| next.trim())
                             .find(|next| !next.is_empty() && !next.starts_with("#["))
-                            .is_some_and(|next| next.starts_with("mod "))
+                            .is_some_and(|next| next.starts_with("mod ") && next.ends_with('{'))
                 })
                 .unwrap_or(lines.len());
-            let production = lines[..cut].join("\n");
-            for (index, line) in production.lines().enumerate() {
-                for call in ["env::var(\"", "env::var_os(\"", "env::var(", "env::var_os("] {
-                    if let Some(at) = line.find(call) {
-                        let arg = &line[at + call.len()..];
-                        let literal = call.ends_with('"');
-                        let const_name = !literal
-                            && arg.starts_with(|c: char| c.is_ascii_uppercase())
-                            && arg.contains("_ENV");
-                        if literal || const_name {
-                            offenders.push(format!("{}:{}", path.display(), index + 1));
-                            break;
-                        }
+            for (index, line) in lines[..cut].iter().enumerate() {
+                let direct = [
+                    "env::var(",
+                    "env::var_os(",
+                    "env::set_var(",
+                    "env::remove_var(",
+                ]
+                .iter()
+                .find_map(|call| line.find(call).map(|at| &line[at + call.len()..]));
+                if let Some(arg) = direct {
+                    if !DYNAMIC_KEYS.iter().any(|key| arg.starts_with(key)) {
+                        offenders.push(format!("{}:{}", path.display(), index + 1));
                     }
                 }
             }
