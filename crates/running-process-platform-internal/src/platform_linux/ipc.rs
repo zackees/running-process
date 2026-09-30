@@ -106,6 +106,12 @@ pub const fn endpoint_is_filesystem_backed() -> bool {
     true
 }
 
+/// Whether this host has a transport for handing a live connection to another
+/// process (descriptor passing on Unix, handle duplication on Windows).
+pub const fn handoff_transport_available() -> bool {
+    true
+}
+
 fn prepare_owner_private_parent(path: &str) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
 

@@ -19,7 +19,8 @@ pub const CAP_HANDLE_PASSING: u64 = 1 << 0;
 /// Currently `true` on both Windows (`DuplicateHandle`) and Unix
 /// (`SCM_RIGHTS`), so this is effectively always `true`, but the check is
 /// kept explicit so a future target without a transport degrades to the
-/// reconnect path instead of advertising a capability it cannot honor.
+/// reconnect path instead of advertising a capability it cannot honor. The
+/// platform layer answers it, because it is the one that owns the transport.
 pub const fn handoff_transport_available() -> bool {
-    cfg!(any(windows, unix))
+    crate::platform::ipc::handoff_transport_available()
 }

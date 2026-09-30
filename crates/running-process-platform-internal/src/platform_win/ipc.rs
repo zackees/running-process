@@ -90,6 +90,12 @@ pub const fn endpoint_is_filesystem_backed() -> bool {
     false
 }
 
+/// Whether this host has a transport for handing a live connection to another
+/// process (descriptor passing on Unix, handle duplication on Windows).
+pub const fn handoff_transport_available() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerIdentity {
     pub pid: u32,

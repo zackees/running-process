@@ -122,8 +122,8 @@ pub fn scan_for_zombies(state: &DaemonState) -> Vec<ZombieInfo> {
 /// These are conhost.exe or OpenConsole.exe instances whose parent has died — typically
 /// leftovers from ConPTY sessions that were not properly cleaned up.
 /// Unlike registry-based zombie scanning, this uses a Toolhelp process snapshot
-/// and does not require prior registration.
-#[cfg(windows)]
+/// and does not require prior registration. Hosts without ConPTY report no
+/// console hosts at all, so this is empty there.
 pub fn scan_for_orphan_conhosts() -> Vec<ZombieInfo> {
     crate::pty::find_orphan_conhosts()
         .into_iter()
@@ -136,12 +136,6 @@ pub fn scan_for_orphan_conhosts() -> Vec<ZombieInfo> {
             ),
         })
         .collect()
-}
-
-/// No-op on non-Windows platforms.
-#[cfg(not(windows))]
-pub fn scan_for_orphan_conhosts() -> Vec<ZombieInfo> {
-    Vec::new()
 }
 
 /// Kill the given zombie processes and unregister them from the registry.

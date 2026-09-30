@@ -35,6 +35,10 @@ impl RawDescriptor {
 
 pub use crate::fs_write_all_to_descriptor as write_all_to_descriptor;
 
+/// Whether a handle another process holds open keeps a file from being removed
+/// on this host; `false` where a name unlinks while descriptors stay open.
+pub use crate::fs_open_handles_block_removal as open_handles_block_removal;
+
 #[cfg(feature = "fs")]
 pub use crate::{
     fs_create_private_file as create_private_file, fs_decode_path_bytes as decode_path_bytes,

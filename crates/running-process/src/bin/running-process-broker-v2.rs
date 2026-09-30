@@ -60,6 +60,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use prost::Message;
+use running_process_platform_internal::platform::ipc::endpoint_is_filesystem_backed;
 use running_process_platform_internal::platform::process::{
     install_shutdown_request_handler, ShutdownRequest,
 };
@@ -130,7 +131,7 @@ const HANDLER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(coverage)]
 unsafe extern "C" {
-    fn __llvm_profile_write_file() -> libc::c_int;
+    fn __llvm_profile_write_file() -> std::ffi::c_int;
 }
 
 fn flush_coverage_profile() -> Result<(), String> {
@@ -384,8 +385,9 @@ fn main() -> ExitCode {
         )
     };
 
-    #[cfg(unix)]
-    {
+    // A filesystem-backed endpoint leaves its socket file behind; a named
+    // pipe vanishes with its last handle and has no path to remove.
+    if endpoint_is_filesystem_backed() {
         let _ = std::fs::remove_file(&socket_path);
     }
 

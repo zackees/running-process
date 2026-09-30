@@ -127,11 +127,17 @@ pub use platform_imp::{process_install_owner_death_cleanup, process_owner_death_
 
 pub use platform_imp::process_install_shutdown_request_handler;
 
-pub use platform_imp::fs_write_all_to_descriptor;
+pub use platform_imp::{fs_open_handles_block_removal, fs_write_all_to_descriptor};
 
 pub use platform_imp::{process_can_replace_current_image, process_replace_current_image};
 
 pub use platform_imp::{process_loaded_images, process_open_loaded_image_file};
+
+pub use platform_imp::{
+    observer_backend as process_observer_backend, read_process_argv as process_read_argv,
+    read_process_cmdline as process_read_cmdline,
+    read_process_file_handles as process_read_file_handles,
+};
 
 pub use platform_imp::{
     process_executable_path, process_fault_code_name, process_force_kill,
@@ -171,8 +177,9 @@ pub use platform_imp::{
     ipc_broker_endpoint_name as IpcBrokerEndpointName, ipc_broker_v1_endpoint_path,
     ipc_broker_v2_runtime_dir, ipc_component_endpoint_path, ipc_component_runtime_dir,
     ipc_current_user_id, ipc_endpoint_is_filesystem_backed, ipc_endpoint_name_limit,
-    ipc_endpoint_scope_bytes, ipc_nonblocking_zero_read_is_pending, ipc_select_endpoint_address,
-    IpcEndpoint, IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
+    ipc_endpoint_scope_bytes, ipc_handoff_transport_available,
+    ipc_nonblocking_zero_read_is_pending, ipc_select_endpoint_address, IpcEndpoint,
+    IpcInheritedListener, IpcListener, IpcListenerNonblockingMode, IpcPeerIdentity,
     IpcPeerIdentitySource, IpcStream,
 };
 
