@@ -11,25 +11,61 @@
 //! `default-features = false` build does not pull in `mio`.
 
 use std::future::Future;
-use std::sync::mpsc;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::{mpsc, Mutex};
 
 use tokio::runtime::{Builder, Handle, Runtime};
 
-static ACTOR_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+/// The current runtime, leaked so `&'static` borrows stay valid forever.
+static ACTOR_RUNTIME: AtomicPtr<Runtime> = AtomicPtr::new(std::ptr::null_mut());
+/// The process id that built `ACTOR_RUNTIME`.
+static ACTOR_RUNTIME_PID: AtomicU32 = AtomicU32::new(0);
+static ACTOR_RUNTIME_INIT: Mutex<()> = Mutex::new(());
 
 /// Return the library-owned runtime used by process actors.
+///
+/// Fork safety: a forked child inherits this process-global runtime without
+/// any of its worker threads, so nothing spawned on it would ever run and a
+/// sync `wait` would hang (Python's `multiprocessing` forks by default on
+/// Linux before 3.14). The runtime is therefore keyed by process id: a child
+/// that finds its parent's runtime leaks it -- dropping it would try to join
+/// workers that do not exist -- and builds its own on first use.
 pub(crate) fn runtime() -> &'static Runtime {
-    ACTOR_RUNTIME.get_or_init(|| {
-        let mut builder = Builder::new_multi_thread();
-        builder
-            .worker_threads(runtime_worker_threads())
-            .enable_time()
-            .thread_name("running-process-actor");
-        #[cfg(feature = "async-process")]
-        builder.enable_io();
-        builder.build().expect("process runtime must initialize")
-    })
+    let pid = std::process::id();
+    if let Some(runtime) = current_for(pid) {
+        return runtime;
+    }
+    let _init = ACTOR_RUNTIME_INIT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(runtime) = current_for(pid) {
+        return runtime;
+    }
+    let runtime: &'static Runtime = Box::leak(Box::new(build_runtime()));
+    ACTOR_RUNTIME.store(std::ptr::from_ref(runtime).cast_mut(), Ordering::Release);
+    ACTOR_RUNTIME_PID.store(pid, Ordering::Release);
+    runtime
+}
+
+fn current_for(pid: u32) -> Option<&'static Runtime> {
+    if ACTOR_RUNTIME_PID.load(Ordering::Acquire) != pid {
+        return None;
+    }
+    let pointer = ACTOR_RUNTIME.load(Ordering::Acquire);
+    // SAFETY: non-null values are only ever `Box::leak`ed runtimes, which
+    // are never freed.
+    unsafe { pointer.as_ref() }
+}
+
+fn build_runtime() -> Runtime {
+    let mut builder = Builder::new_multi_thread();
+    builder
+        .worker_threads(runtime_worker_threads())
+        .enable_time()
+        .thread_name("running-process-actor");
+    #[cfg(feature = "async-process")]
+    builder.enable_io();
+    builder.build().expect("process runtime must initialize")
 }
 
 pub(crate) fn runtime_worker_threads() -> usize {
