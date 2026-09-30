@@ -64,6 +64,18 @@ TINY_PDB_SYMBOLS: tuple[TinyPdbSymbolSpec, ...] = (
         "api",
     ),
     TinyPdbSymbolSpec(
+        "rp_windows_apply_process_priority_public",
+        "crates/running-process-py/src/public_symbols.rs",
+        "pub extern \"C\" fn rp_windows_apply_process_priority_public(",
+        "win32",
+    ),
+    TinyPdbSymbolSpec(
+        "rp_windows_generate_console_ctrl_break_public",
+        "crates/running-process-py/src/public_symbols.rs",
+        "pub extern \"C\" fn rp_windows_generate_console_ctrl_break_public(",
+        "win32",
+    ),
+    TinyPdbSymbolSpec(
         "rp_native_running_process_start_public",
         "crates/running-process-py/src/public_symbols.rs",
         "pub extern \"C\" fn rp_native_running_process_start_public(",

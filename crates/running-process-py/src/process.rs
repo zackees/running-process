@@ -13,7 +13,7 @@ use running_process::{
     StackCapture, StackDump, StreamEvent, StreamKind,
 };
 use running_process_platform_internal::platform::process::{
-    send_interrupt, unix_signal_process_group, UnixSignalKind,
+    unix_signal_process_group, UnixSignalKind,
 };
 
 use crate::helpers::{
@@ -744,7 +744,11 @@ impl NativeRunningProcess {
             .inner
             .pid()
             .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
-        send_interrupt(pid, self.creationflags, self.create_process_group).map_err(to_py_err)
+        public_symbols::rp_windows_generate_console_ctrl_break_public(
+            pid,
+            self.creationflags,
+            self.create_process_group,
+        )
     }
 
     pub(crate) fn decode_line_to_string(&self, py: Python<'_>, line: &[u8]) -> PyResult<String> {
