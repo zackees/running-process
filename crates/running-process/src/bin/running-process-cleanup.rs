@@ -2,6 +2,12 @@
 //!
 //! Phase 2 of #228 (#231). This binary does not require the broker or
 //! originating daemons to be running.
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 use std::process::ExitCode;
 

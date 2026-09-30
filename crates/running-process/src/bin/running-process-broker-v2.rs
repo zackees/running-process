@@ -44,6 +44,12 @@
 //! The single-instance lock and the refuse-privileged-run guard were also
 //! listed here as future work; both have since landed (`is_already_bound_error`
 //! and `refuse_privileged_run` respectively).
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 use std::env;
 use std::io::Write;

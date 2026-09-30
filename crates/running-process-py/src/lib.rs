@@ -1,3 +1,9 @@
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 use pyo3::prelude::*;
 use pyo3::types::PyString;
 
@@ -7,6 +13,7 @@ mod public_symbols;
 
 mod containment;
 mod debug_traces;
+mod env_vars;
 mod helpers;
 mod idle_detector;
 mod metrics;

@@ -6,6 +6,12 @@
 //! private payload protocol carrying its PID. Keeping the fixture generic
 //! lets lifecycle tests prove process replacement and route isolation without
 //! embedding any consumer-specific policy.
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
@@ -18,10 +24,8 @@ use running_process::broker::broker_owned_bind;
 use running_process::broker::lifecycle::names_v2::{broker_v2_runtime_dir, daemon_identity_path};
 use running_process::broker::protocol::{encode_framed, Endpoint, Frame};
 use running_process::broker::secure_dir::ensure_private_dir;
-use running_process::broker::server::{
-    BACKEND_ENV_ENDPOINT_NAMESPACE, BACKEND_ENV_ENDPOINT_PATH, BACKEND_ENV_SERVICE_NAME,
-};
 use running_process::client::{IpcEndpoint, IpcListener, IpcStream};
+use running_process::env_vars;
 
 const LIFECYCLE_TEST_PAYLOAD_PROTOCOL: u32 = 0xF824;
 
@@ -36,9 +40,11 @@ fn main() -> ExitCode {
 }
 
 fn run() -> io::Result<()> {
-    let service_name = required_env(BACKEND_ENV_SERVICE_NAME)?;
-    let endpoint_path = required_env(BACKEND_ENV_ENDPOINT_PATH)?;
-    let namespace_id = std::env::var(BACKEND_ENV_ENDPOINT_NAMESPACE).unwrap_or_default();
+    let service_name = required_env(env_vars::BROKER_V1_SERVICE_NAME)?;
+    let endpoint_path = required_env(env_vars::BROKER_V1_BACKEND_PIPE)?;
+    let namespace_id = env_vars::BROKER_V1_BACKEND_NAMESPACE
+        .string()
+        .unwrap_or_default();
     let endpoint = Endpoint {
         namespace_id,
         path: endpoint_path.clone(),
@@ -67,11 +73,11 @@ fn run() -> io::Result<()> {
     }
 }
 
-fn required_env(name: &str) -> io::Result<String> {
-    std::env::var(name).map_err(|_| {
+fn required_env(var: env_vars::EnvVar) -> io::Result<String> {
+    var.string().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("required environment variable {name} is missing"),
+            format!("required environment variable {} is missing", var.name),
         )
     })
 }

@@ -36,31 +36,92 @@
 //! `an_unset_flag_matches_its_declared_default` now checks the two against
 //! each other for every declared flag.
 
+/// Declare a crate's own variables with the shared mechanism; see
+/// `running_process_platform_internal::declare_env_vars`. Re-exported so a
+/// crate built on `running-process` can keep its own table without depending
+/// on the platform layer directly.
+pub use running_process_platform_internal::declare_env_vars;
 pub use running_process_platform_internal::env::{
-    flag_foreign, flag_opt_out, flag_owned, value_is_affirmative_foreign, EnvKind, EnvVar, Owner,
+    flag_foreign, flag_opt_out, flag_owned, os_named, string_named, value_is_affirmative_foreign,
+    EnvKind, EnvVar, Owner,
 };
+/// The variables `running-process-platform-internal` declares and reads,
+/// including the ones this crate reads too. See [`all_declared`] for the
+/// combined inventory.
+pub use running_process_platform_internal::env_vars as platform;
 
+/// Every environment variable read by this crate or by the platform layer it
+/// builds on, once each, sorted by name.
+///
+/// Not yet included: the probe crate's own reads (its crash spool and report
+/// directories, its crash-handler opt-out), which a build with the `probe`
+/// feature also links. They join this list once that crate's declaration
+/// table lands (#1101).
+///
+/// [`DECLARED`] lists what `running-process` itself reads. A process that
+/// links `running-process` also runs `running-process-platform-internal`,
+/// whose reads ([`platform::DECLARED_PLATFORM`]) include variables this crate
+/// never touches directly -- `HOME`, `DISPLAY`, the ConPTY switches. An
+/// embedder scrubbing a child's environment needs both, so this is the one
+/// list to check.
+///
+/// A name read by both crates has one declaration, owned by the lower crate
+/// and referred to from [`DECLARED`], so it appears here once;
+/// `the_combined_inventory_is_sorted_unique_and_documented` holds that.
+pub fn all_declared() -> Vec<EnvVar> {
+    let mut all: Vec<EnvVar> = DECLARED
+        .iter()
+        .chain(platform::DECLARED_PLATFORM)
+        .copied()
+        .collect();
+    all.sort_by(|left, right| left.name.cmp(right.name));
+    all.dedup_by(|left, right| left.name == right.name);
+    all
+}
+
+/// Declares this crate's variables and builds [`DECLARED`] from them.
+///
+/// An entry is either a full declaration, or `IDENT => use PATH;` for a
+/// variable owned by a crate below this one: the constant is re-exported
+/// under the same name and listed in [`DECLARED`] where it sorts, so each name
+/// has exactly one declaration however many crates read it.
 macro_rules! declare {
-    ($($ident:ident => $name:literal, $kind:expr, $owner:expr, $default:literal, $summary:literal;)*) => {
-        $(
-            #[doc = $summary]
-            ///
-            #[doc = concat!("Environment variable `", $name, "`. Unset: ", $default, ".")]
-            pub const $ident: EnvVar = EnvVar {
-                name: $name,
-                kind: $kind,
-                owner: $owner,
-                default: $default,
-                summary: $summary,
-            };
-        )*
-
+    (@collect [$($all:ident)*]) => {
         /// Every environment variable this crate reads.
         ///
         /// Kept in the same order as the declarations above, which
         /// `declarations_are_sorted_and_unique` holds to alphabetical so a
-        /// reader can find a name without searching.
-        pub const DECLARED: &[EnvVar] = &[$($ident),*];
+        /// reader can find a name without searching. [`all_declared`] adds the
+        /// variables only the platform layer reads.
+        pub const DECLARED: &[EnvVar] = &[$($all),*];
+    };
+    (@collect [$($all:ident)*] $ident:ident => use $($path:ident)::+; $($rest:tt)*) => {
+        #[doc = concat!(
+            "Declared by the platform layer, which reads it too: [`",
+            stringify!($($path)::+),
+            "`]."
+        )]
+        pub const $ident: EnvVar = $($path)::+;
+        declare!(@collect [$($all)* $ident] $($rest)*);
+    };
+    (@collect [$($all:ident)*]
+        $ident:ident => $name:literal, $kind:expr, $owner:expr, $default:literal, $summary:literal;
+        $($rest:tt)*
+    ) => {
+        #[doc = $summary]
+        ///
+        #[doc = concat!("Environment variable `", $name, "`. Unset: ", $default, ".")]
+        pub const $ident: EnvVar = EnvVar {
+            name: $name,
+            kind: $kind,
+            owner: $owner,
+            default: $default,
+            summary: $summary,
+        };
+        declare!(@collect [$($all)* $ident] $($rest)*);
+    };
+    ($($rest:tt)*) => {
+        declare!(@collect [] $($rest)*);
     };
 }
 
@@ -71,9 +132,7 @@ declare! {
     INVOCATION_ID => "INVOCATION_ID",
         EnvKind::Text, Owner::Foreign, "not started by systemd",
         "Set by systemd for a unit invocation; identifies the launching unit.";
-    LOCALAPPDATA => "LOCALAPPDATA",
-        EnvKind::Path, Owner::Foreign, "the platform default is derived",
-        "Windows per-user application data root.";
+    LOCALAPPDATA => use running_process_platform_internal::env_vars::LOCALAPPDATA;
     PATH => "PATH",
         EnvKind::Text, Owner::Foreign, "the child inherits no explicit PATH",
         "Executable search path, forwarded to the symbolization worker.";
@@ -164,9 +223,7 @@ declare! {
     IS_DAEMON => "RUNNING_PROCESS_IS_DAEMON",
         EnvKind::ForeignFlag, Owner::Crate, "the process is not a daemon",
         "Marks a process spawned as a daemon, for originator reaping.";
-    KILL_DRAIN_TIMEOUT_MS => "RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS",
-        EnvKind::Number { zero_selects_default: false }, Owner::Crate, "two seconds",
-        "How long `kill()` waits for output capture to drain, in milliseconds.";
+    KILL_DRAIN_TIMEOUT_MS => use running_process_platform_internal::env_vars::KILL_DRAIN_TIMEOUT_MS;
     MANIFEST_DIR => "RUNNING_PROCESS_MANIFEST_DIR",
         EnvKind::Path, Owner::Foreign, "the standard manifest location",
         "Where broker cache manifests are read and written.";
@@ -179,21 +236,13 @@ declare! {
     SERVICE_DEF_DIR => "RUNNING_PROCESS_SERVICE_DEF_DIR",
         EnvKind::Path, Owner::Foreign, "the standard service-definition location",
         "Where service definitions are read from.";
-    TMPDIR => "TMPDIR",
-        EnvKind::Path, Owner::Foreign, "the platform temporary directory",
-        "macOS per-session temporary directory; a broker endpoint root.";
+    TMPDIR => use running_process_platform_internal::env_vars::TMPDIR;
     USERNAME => "USERNAME",
         EnvKind::Text, Owner::Foreign, "the endpoint is named `unknown`",
         "Windows account name, mixed into the daemon pipe name.";
-    XDG_CONFIG_HOME => "XDG_CONFIG_HOME",
-        EnvKind::Path, Owner::Foreign, "`~/.config` is used",
-        "XDG per-user configuration root; where service definitions are read.";
-    XDG_DATA_HOME => "XDG_DATA_HOME",
-        EnvKind::Path, Owner::Foreign, "the platform default is derived",
-        "XDG per-user data root, used by the daemon runtime collector.";
-    XDG_RUNTIME_DIR => "XDG_RUNTIME_DIR",
-        EnvKind::Path, Owner::Foreign, "a per-user directory under /tmp",
-        "XDG per-user runtime root; where broker sockets are placed.";
+    XDG_CONFIG_HOME => use running_process_platform_internal::env_vars::XDG_CONFIG_HOME;
+    XDG_DATA_HOME => use running_process_platform_internal::env_vars::XDG_DATA_HOME;
+    XDG_RUNTIME_DIR => use running_process_platform_internal::env_vars::XDG_RUNTIME_DIR;
 }
 
 #[cfg(test)]

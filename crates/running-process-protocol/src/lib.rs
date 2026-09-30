@@ -3,6 +3,12 @@
 //! This is an implementation-detail package.  Consumers should use the
 //! client-gated compatibility paths re-exported by `running-process` rather
 //! than depending on this crate directly.
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 /// Explicit pre-existing broker launch and lifetime-control protocol.
 #[allow(missing_docs)]

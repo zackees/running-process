@@ -44,7 +44,7 @@ pub const RUNNING_PROCESS_FAKE_BACKEND_ENV: &str = "RUNNING_PROCESS_FAKE_BACKEND
 /// This helper only parses the shared environment contract. Consumers still
 /// own the direct fallback path they should use when this returns `true`.
 pub fn broker_disabled_by_env() -> Result<bool, BrokerDisableEnvError> {
-    let Some(value) = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV) else {
+    let Some(value) = crate::env_vars::DISABLE.os() else {
         return Ok(false);
     };
     let value = value.to_string_lossy();
@@ -316,7 +316,7 @@ pub fn connect_to_backend(
 /// `features = ["client", ...]`; `test-seams` is never in that set.
 #[cfg(feature = "test-seams")]
 fn fake_backend_endpoint_from_env() -> Option<String> {
-    let value = std::env::var_os(RUNNING_PROCESS_FAKE_BACKEND_ENV)?;
+    let value = crate::env_vars::FAKE_BACKEND.os()?;
     let value = value.to_string_lossy();
     if value.is_empty() {
         return None;

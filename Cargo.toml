@@ -43,7 +43,9 @@ disallowed_methods = "deny"
 # Coverage builds select these repository-owned branches in binaries and
 # integration tests. Register the cfg once so all-targets Clippy validates
 # the same intentional surface rather than rejecting it as a typo.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+# `dylint_lib` is set by `cargo dylint` for the library it is running, and
+# gates each crate's opt-in to `running_process_env_direct` (#1101).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(dylint_lib, values(any()))'] }
 
 [profile.release]
 # Line tables for OUR crates, so a release-mode stack can be resolved to

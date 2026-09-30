@@ -35,7 +35,12 @@
 //! `rename`, `renameat` — full port of the Linux file-mutation
 //! surface. Same line shapes and behavior as the Linux interposer
 //! so the downstream consumer parses a single format.
-
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 #![cfg(target_os = "macos")]
 
 use std::cell::Cell;

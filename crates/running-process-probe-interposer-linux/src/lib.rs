@@ -57,7 +57,12 @@
 //!   The shadow can be called from signal handlers in theory; in
 //!   practice POSIX warns against this. Slice 4b uses `write(2)`
 //!   directly to a fixed fd.
-
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 // A statically linked musl process has no dynamic loader namespace for
 // LD_PRELOAD or RTLD_NEXT. The Cargo target still builds this crate as an
 // inert rlib so workspace-wide musl builds remain supported.

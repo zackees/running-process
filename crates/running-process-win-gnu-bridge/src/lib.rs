@@ -32,7 +32,12 @@
 //! to a thin, side-effect-free library. It changes nothing about the
 //! existing build; it exists so the GNU path has a single, testable place
 //! that proves the surface links.
-
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(target_os = "windows")]

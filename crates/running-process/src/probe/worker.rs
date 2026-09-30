@@ -54,7 +54,7 @@ pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
         .disclosure
         .env_allowlist
         .iter()
-        .filter_map(|name| std::env::var(name).ok().map(|value| (name.clone(), value)))
+        .filter_map(|name| crate::env_vars::string_named(name).map(|value| (name.clone(), value)))
         .collect();
     let manifest_path = config
         .symbol_manifest_path

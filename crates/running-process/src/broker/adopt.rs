@@ -402,7 +402,8 @@ fn adopt_async_blocking(request: OwnedConnectRequest) -> Result<AdoptedAsync, Ad
     }
 
     #[cfg(feature = "test-seams")]
-    if std::env::var_os(crate::broker::client::RUNNING_PROCESS_FAKE_BACKEND_ENV)
+    if crate::env_vars::FAKE_BACKEND
+        .os()
         .is_some_and(|value| !value.is_empty())
     {
         return BrokerSession::adopt(request.as_request()).map(|session| {

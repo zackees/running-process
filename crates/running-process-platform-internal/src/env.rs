@@ -231,6 +231,25 @@ pub fn flag_opt_out(name: &str) -> bool {
     }
 }
 
+/// Read a variable whose *name* is caller-supplied data, exactly as the host
+/// wrote it.
+///
+/// For the few readers that are handed a name rather than choosing one -- a
+/// descriptor-passing key agreed with a parent, an embedder's disclosure
+/// allowlist. There is nothing to declare for those: the variable belongs to
+/// whoever supplied the name. Every other read goes through a declared
+/// [`EnvVar`]; the `running_process_env_direct` Dylint lint rejects a string
+/// literal passed here, so this cannot become a way around declaring one.
+pub fn os_named(name: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(name)
+}
+
+/// [`os_named`] as Unicode: `None` when unset *or* not valid Unicode,
+/// matching `std::env::var`.
+pub fn string_named(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
 /// Whether a *value already in hand* reads as a foreign switch being on.
 ///
 /// Callers that scan another process's environment block have the value

@@ -11,10 +11,20 @@
 //! treated `VAR=` (empty) as set, and moving them onto a table is not a reason
 //! to change what they do.
 //!
+//! # One owner per name
+//!
+//! Some of these are also read by `running-process`. Each name is declared
+//! once, here, by the lowest crate that reads it; `running_process::env_vars`
+//! refers to the same constant rather than repeating it, and its
+//! `all_declared()` is the one combined inventory. The shared declarations
+//! keep the wording `running_process::env_vars::DECLARED` has always
+//! published, so that table did not change when they moved.
+//!
 //! Not covered, deliberately:
-//! - Reads keyed by a caller-supplied name (`ipc` endpoint overrides on Linux
-//!   and macOS, the Windows spawn tests' `EnvGuard`). The name is data there,
-//!   not a variable this crate chooses, so there is nothing to declare.
+//! - Reads keyed by a caller-supplied name (`ipc` descriptor keys on Linux and
+//!   macOS). The name is data there, not a variable this crate chooses, so
+//!   there is nothing to declare; they go through
+//!   [`os_named`](crate::env::os_named).
 //! - Save/restore and fixture plumbing inside `#[cfg(test)]` code.
 
 use crate::env::{EnvKind, Owner};
@@ -33,8 +43,8 @@ crate::declare_env_vars! {
         EnvKind::Path, Owner::Foreign, "autostart paths cannot be resolved",
         "Home directory; roots the Linux and macOS autostart entries.";
     LOCALAPPDATA => "LOCALAPPDATA",
-        EnvKind::Path, Owner::Foreign, "the per-user temp directory stands in",
-        "Windows per-user, non-roaming application data root; holds component runtime files.";
+        EnvKind::Path, Owner::Foreign, "the platform default is derived",
+        "Windows per-user application data root.";
     CONPTY_CACHE => "RUNNING_PROCESS_CONPTY_CACHE",
         EnvKind::Path, Owner::Crate, "the platform cache directory",
         "Root under which the ConPTY sidecar is cached on Windows.";
@@ -57,8 +67,8 @@ crate::declare_env_vars! {
         EnvKind::Text, Owner::Crate, "the bundled ConPTY sidecar is preferred",
         "Use the system ConPTY instead of the bundled sidecar on Windows.";
     TMPDIR => "TMPDIR",
-        EnvKind::Path, Owner::Foreign, "/tmp or a per-user fallback",
-        "macOS per-user temporary directory; roots IPC endpoints.";
+        EnvKind::Path, Owner::Foreign, "the platform temporary directory",
+        "macOS per-session temporary directory; a broker endpoint root.";
     WAYLAND_DISPLAY => "WAYLAND_DISPLAY",
         EnvKind::Text, Owner::Foreign, "not a Wayland session",
         "Wayland session marker; window icons are unsupported under Wayland.";
@@ -69,14 +79,14 @@ crate::declare_env_vars! {
         EnvKind::Text, Owner::Foreign, "not inside Windows Terminal",
         "Windows Terminal session marker; runtime window icons are degraded there.";
     XDG_CONFIG_HOME => "XDG_CONFIG_HOME",
-        EnvKind::Path, Owner::Foreign, "~/.config",
-        "XDG configuration root.";
+        EnvKind::Path, Owner::Foreign, "`~/.config` is used",
+        "XDG per-user configuration root; where service definitions are read.";
     XDG_DATA_HOME => "XDG_DATA_HOME",
-        EnvKind::Path, Owner::Foreign, "~/.local/share",
-        "XDG data root.";
+        EnvKind::Path, Owner::Foreign, "the platform default is derived",
+        "XDG per-user data root, used by the daemon runtime collector.";
     XDG_RUNTIME_DIR => "XDG_RUNTIME_DIR",
-        EnvKind::Path, Owner::Foreign, "a per-uid directory under /tmp",
-        "XDG per-user runtime directory; roots IPC endpoints and runtime state.";
+        EnvKind::Path, Owner::Foreign, "a per-user directory under /tmp",
+        "XDG per-user runtime root; where broker sockets are placed.";
     XDG_STATE_HOME => "XDG_STATE_HOME",
         EnvKind::Path, Owner::Foreign, "~/.local/state",
         "XDG state root.";
@@ -122,13 +132,15 @@ mod tests {
         }
     }
 
-    /// Reads keyed by a caller-supplied name: the key is data, so there is
-    /// nothing to declare. Matched on the argument text after `var_os(`.
-    const DYNAMIC_KEYS: &[&str] = &["env_key)"];
+    /// Direct calls exempted by their argument text. None remain: reads keyed
+    /// by a caller-supplied name go through [`crate::env::os_named`] instead,
+    /// which keeps the exemption out of this list and inside the mechanism.
+    const DYNAMIC_KEYS: &[&str] = &[];
 
     /// Production code reaches the environment only through [`crate::env`]:
-    /// any direct `std::env` variable call outside test code is drift, except
-    /// the dynamic-key reads in [`DYNAMIC_KEYS`].
+    /// any direct `std::env` variable call outside test code is drift. The
+    /// name keeps its history; there are no dynamic-key exemptions left (see
+    /// [`DYNAMIC_KEYS`]).
     ///
     /// Test code is recognised by layout: a `#[cfg(test)]` (or
     /// `#[cfg(all(test, ..))]`) inline `mod name {` runs to the end of its file

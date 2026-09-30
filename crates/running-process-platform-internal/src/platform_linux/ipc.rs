@@ -583,7 +583,7 @@ impl InheritedListener {
     }
 
     pub fn recover_from_env(env_key: &str) -> io::Result<Option<Listener>> {
-        let Some(raw) = std::env::var_os(env_key) else {
+        let Some(raw) = crate::env::os_named(env_key) else {
             return Ok(None);
         };
         let raw = raw.to_string_lossy();
