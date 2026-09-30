@@ -118,6 +118,7 @@ pub use fs::{
     user_run_data_root as fs_user_run_data_root, user_runtime_dir as fs_user_runtime_dir,
     user_state_dir as fs_user_state_dir,
     user_state_dir_from_environment as fs_user_state_dir_from_environment,
+    state_home_from_environment as fs_state_home_from_environment,
     FileIdentity as FsFileIdentity,
 };
 

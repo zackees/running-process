@@ -107,8 +107,6 @@ crates/running-process-py/src/process.rs	attr_cfg	windows	2
 crates/running-process-py/src/public_symbols.rs	attr_cfg	windows	0
 crates/running-process-py/src/public_symbols.rs	attr_cfg	windows	1
 crates/running-process-py/src/public_symbols.rs	attr_cfg	windows	2
-crates/running-process-py/src/registry.rs	attr_cfg	windows	0
-crates/running-process-py/src/registry.rs	attr_cfg	windows	1
 crates/running-process-py/src/tests/control_churn.rs	attr_cfg	windows	0
 crates/running-process-py/src/tests/control_churn.rs	attr_cfg	windows	1
 crates/running-process-py/src/tests/control_churn.rs	attr_cfg	windows	2

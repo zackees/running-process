@@ -46,6 +46,7 @@ pub use crate::{
     fs_is_link_handle as is_link_handle, fs_is_lock_conflict as is_lock_conflict,
     fs_open_lock_file as open_lock_file, fs_open_read_no_follow as open_read_no_follow,
     fs_path_identity as path_identity, fs_replace_file as replace_file,
+    fs_state_home_from_environment as state_home_from_environment,
     fs_sync_directory as sync_directory, fs_try_lock_exclusive as try_lock_exclusive,
     fs_unlock as unlock, fs_user_config_dir as user_config_dir, fs_user_data_dir as user_data_dir,
     fs_user_run_data_root as user_run_data_root, fs_user_runtime_dir as user_runtime_dir,

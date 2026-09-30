@@ -30,3 +30,6 @@ prost = "0.14"
 # default-features = false keeps the crate's injection vehicles (gated on its
 # embed-helper feature) out of the extension module entirely.
 running-process-probe = { path = "../running-process-probe", version = "4.10.15", default-features = false }
+# #975: the tracked-pid registry asks the platform facade for the state base
+# directory instead of selecting the host itself.
+running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.15", features = ["fs"] }
