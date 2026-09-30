@@ -318,7 +318,14 @@ fn nice_only_spawn_reports_the_requested_niceness_once_spawn_completes() {
 #[test]
 fn nice_only_spawn_kills_the_child_when_the_priority_cannot_be_applied() {
     // Lowering niceness below the inherited value needs CAP_SYS_NICE.
-    if unsafe { libc::geteuid() } == 0 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let effective_uid = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|fields| fields.split_ascii_whitespace().nth(1))
+        .and_then(|uid| uid.parse::<u32>().ok())
+        .unwrap();
+    if effective_uid == 0 {
         return;
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
