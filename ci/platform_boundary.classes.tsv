@@ -7,6 +7,8 @@
 # Schema: path<TAB>kind<TAB>normalized_construct<TAB>class<TAB>note
 #   host-test  a test or fixture that asserts real host behaviour
 #   compat-4x  published 4.x surface; the note must name its 5.0 retirement
+#   artifact-format  host selection by artifact format (PDB vs object/DWARF reader,
+#              unwinder per arch); only valid in the probe artifact crates
 #
 # Kept beside the ledger, not in it: the Dylint lint include_str!s the ledger
 # and skips any row that does not have exactly four fields.
@@ -56,3 +58,8 @@ crates/running-process-probe/src/snapshot/modules_host_tests.rs	attr_cfg	windows
 crates/running-process-probe-worker/src/discovery.rs	attr_cfg	unix	host-test	in-crate #[cfg(test)] mod; symlink escape and drive-relative path refusal are host filesystem behaviour under test
 crates/running-process-probe-worker/src/discovery.rs	attr_cfg	windows	host-test	in-crate #[cfg(test)] mod; symlink escape and drive-relative path refusal are host filesystem behaviour under test
 crates/running-process-probe-worker/src/discovery.rs	native_import	std::os::unix	host-test	in-crate #[cfg(test)] mod; symlink escape and drive-relative path refusal are host filesystem behaviour under test
+crates/running-process-probe-worker/src/lib.rs	attr_cfg	target_os	artifact-format	gates the PDB reader module to Windows; symbol parsers must stay in this crate
+crates/running-process-probe-worker/src/symbolize.rs	attr_cfg	target_os	artifact-format	selects the symbol-file reader per target (PDB on Windows, object/DWARF elsewhere); symbol parsers must stay in this crate
+crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	target_arch	artifact-format	selects the framehop unwinder and register mapping per target arch/format (aarch64 uses LR, x86_64 the PC; PE unwind data on Windows, ELF/Mach-O sections elsewhere); format handling, not host mechanics
+crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	target_os	artifact-format	selects the framehop unwinder and register mapping per target arch/format (aarch64 uses LR, x86_64 the PC; PE unwind data on Windows, ELF/Mach-O sections elsewhere); format handling, not host mechanics
+crates/running-process-probe/src/snapshot/unwind.rs	attr_cfg	windows	artifact-format	selects the framehop unwinder and register mapping per target arch/format (aarch64 uses LR, x86_64 the PC; PE unwind data on Windows, ELF/Mach-O sections elsewhere); format handling, not host mechanics

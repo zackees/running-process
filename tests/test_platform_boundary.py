@@ -452,3 +452,47 @@ def test_braces_in_strings_do_not_unbalance_the_test_module_span() -> None:
     spans = platform_boundary.test_module_spans(code)
 
     assert spans == [(0, code.rindex("}") + 1)]
+
+
+def _parse(tmp_path, text):
+    path = tmp_path / "classes.tsv"
+    path.write_text(text, encoding="utf-8")
+    original_root = platform_boundary.ROOT
+    platform_boundary.ROOT = tmp_path
+    try:
+        return platform_boundary.parse_classes(path)
+    finally:
+        platform_boundary.ROOT = original_root
+
+
+def test_artifact_format_is_accepted_in_the_probe_artifact_crates(tmp_path) -> None:
+    _, problems = _parse(
+        tmp_path,
+        "crates/running-process-probe/src/snapshot/unwind.rs\tattr_cfg\ttarget_arch"
+        "\tartifact-format\tunwinder per arch\n"
+        "crates/running-process-probe-worker/src/symbolize.rs\tattr_cfg\ttarget_os"
+        "\tartifact-format\tPDB vs DWARF reader\n",
+    )
+
+    assert not problems
+
+
+def test_artifact_format_is_rejected_outside_the_artifact_crates(tmp_path) -> None:
+    _, problems = _parse(
+        tmp_path,
+        "crates/running-process/src/lib.rs\tattr_cfg\tunix"
+        "\tartifact-format\tnot an artifact crate\n",
+    )
+
+    assert len(problems) == 1
+    assert "only valid in the probe artifact crates" in problems[0]
+
+
+def test_the_probe_format_selectors_are_classified_as_artifact_format() -> None:
+    classes, problems = platform_boundary.parse_classes()
+    unwind = "crates/running-process-probe/src/snapshot/unwind.rs"
+    symbolize = "crates/running-process-probe-worker/src/symbolize.rs"
+
+    assert not problems
+    assert classes[(unwind, "attr_cfg", "target_arch")][0] == "artifact-format"
+    assert classes[(symbolize, "attr_cfg", "target_os")][0] == "artifact-format"
