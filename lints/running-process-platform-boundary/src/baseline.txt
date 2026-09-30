@@ -213,8 +213,6 @@ crates/running-process/src/broker/capabilities.rs	cfg_macro	unix	0
 crates/running-process/src/broker/capabilities.rs	cfg_macro	windows	0
 crates/running-process/src/broker/client.rs	cfg_macro	windows	0
 crates/running-process/src/broker/client_v2.rs	cfg_macro	windows	0
-crates/running-process/src/broker/doctor.rs	cfg_macro	target_os	0
-crates/running-process/src/broker/doctor.rs	cfg_macro	windows	0
 crates/running-process/src/broker/server/combined_service_def_loader/tests.rs	attr_cfg	windows	0
 crates/running-process/src/broker/server/combined_service_def_loader/tests.rs	attr_cfg	windows	1
 crates/running-process/src/broker/server/session_serve_async/tests.rs	attr_cfg	unix	0
@@ -336,11 +334,6 @@ crates/running-process/src/public_symbols.rs	attr_cfg	windows	0
 crates/running-process/src/public_symbols.rs	attr_cfg	windows	1
 crates/running-process/src/runpm_config.rs	attr_cfg	unix	0
 crates/running-process/src/runpm_config.rs	attr_cfg	windows	0
-crates/running-process/src/systemd_killmode.rs	attr_cfg	target_os	0
-crates/running-process/src/systemd_killmode.rs	attr_cfg	target_os	1
-crates/running-process/src/systemd_killmode.rs	attr_cfg	target_os	2
-crates/running-process/src/systemd_killmode.rs	attr_cfg	target_os	3
-crates/running-process/src/systemd_killmode.rs	attr_cfg	target_os	4
 crates/running-process/src/tests.rs	attr_cfg	unix	0
 crates/running-process/src/tests.rs	attr_cfg	unix	1
 crates/running-process/src/tests.rs	attr_cfg	unix	2

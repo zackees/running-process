@@ -743,11 +743,7 @@ pub fn inode_pressure_check() -> DoctorCheck {
         }
         Ok(None) => DoctorCheck::pass(
             NAME,
-            if cfg!(windows) {
-                format!("not applicable on Windows ({display} has no fixed inode table)")
-            } else {
-                format!("{display}: filesystem reports no fixed inode table (not applicable)")
-            },
+            format!("{display}: filesystem has no fixed inode table (not applicable)"),
         ),
         Err(err) => DoctorCheck::warn(
             NAME,
@@ -823,7 +819,7 @@ pub fn systemd_killmode_check() -> DoctorCheck {
             ),
             _ => DoctorCheck::pass(
                 NAME,
-                if cfg!(target_os = "linux") {
+                if crate::platform::host::process_cgroup().is_some() {
                     "not running under systemd"
                 } else {
                     "not applicable on this platform"

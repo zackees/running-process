@@ -81,6 +81,12 @@ pub use host::{
 };
 pub use host::login_environment_block as host_login_environment_block;
 
+/// This process's control-group membership (`/proc/self/cgroup`). Linux has
+/// cgroups, so the answer is always `Some`; the inner error is a read failure.
+pub fn host_process_cgroup() -> Option<io::Result<String>> {
+    Some(std::fs::read_to_string("/proc/self/cgroup"))
+}
+
 #[cfg(feature = "fs")]
 #[path = "platform_linux/fs.rs"]
 pub(crate) mod fs;
@@ -1173,6 +1179,11 @@ mod tests {
         // Exit code 3 in the high byte: a normal exit, no signal.
         let exited = std::process::ExitStatus::from_raw(3 << 8);
         assert_eq!(super::exit_signal(&exited), None);
+    }
+
+    #[test]
+    fn linux_always_reports_a_cgroup_membership() {
+        assert!(super::host_process_cgroup().is_some());
     }
 
     #[cfg(feature = "async-process")]

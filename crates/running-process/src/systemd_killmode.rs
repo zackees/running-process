@@ -155,32 +155,27 @@ pub fn parse_kill_mode(output: &str) -> Option<String> {
     None
 }
 
-/// Probe the live environment. Linux-only gathering; other platforms
-/// always report [`KillModeAssessment::NotSystemd`].
+/// Probe the live environment. A host without control groups cannot be
+/// running under systemd, so it always reports
+/// [`KillModeAssessment::NotSystemd`].
 pub fn probe() -> KillModeAssessment {
-    #[cfg(target_os = "linux")]
-    {
-        assess(&gather_inputs_linux())
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        KillModeAssessment::NotSystemd
+    match crate::platform::host::process_cgroup() {
+        None => KillModeAssessment::NotSystemd,
+        Some(cgroup) => assess(&gather_inputs(cgroup.ok())),
     }
 }
 
-#[cfg(target_os = "linux")]
-fn gather_inputs_linux() -> SystemdProbeInputs {
+fn gather_inputs(cgroup: Option<String>) -> SystemdProbeInputs {
     let invocation_id = crate::env_vars::INVOCATION_ID.text();
     let systemd_managed = invocation_id
         .as_deref()
         .map(|id| !id.trim().is_empty())
         .unwrap_or(false);
-    let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok();
     let kill_mode_query = if systemd_managed {
         cgroup
             .as_deref()
             .and_then(unit_from_cgroup)
-            .map(|unit| query_kill_mode_linux(&unit))
+            .map(|unit| query_kill_mode(&unit))
     } else {
         None
     };
@@ -191,8 +186,7 @@ fn gather_inputs_linux() -> SystemdProbeInputs {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn query_kill_mode_linux(unit: &str) -> Result<String, String> {
+fn query_kill_mode(unit: &str) -> Result<String, String> {
     let output = std::process::Command::new("systemctl")
         .args(["show", "-p", "KillMode", unit])
         .output()
@@ -334,9 +328,10 @@ mod tests {
         assert_eq!(parse_kill_mode("Failed to get properties"), None);
     }
 
-    #[cfg(not(target_os = "linux"))]
     #[test]
-    fn probe_is_not_systemd_off_linux() {
-        assert_eq!(probe(), KillModeAssessment::NotSystemd);
+    fn probe_is_not_systemd_on_a_host_without_cgroups() {
+        if crate::platform::host::process_cgroup().is_none() {
+            assert_eq!(probe(), KillModeAssessment::NotSystemd);
+        }
     }
 }

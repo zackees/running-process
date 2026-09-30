@@ -149,7 +149,7 @@ pub use platform_imp::{
 pub use platform_imp::{
     host_boot_id, host_current_process_privilege, host_environment_keys_are_case_insensitive,
     host_filesystem_device_id, host_hostname, host_login_environment, host_machine_id,
-    host_namespace_id, host_user_machine_identity, HostPrivilegedIdentity,
+    host_namespace_id, host_process_cgroup, host_user_machine_identity, HostPrivilegedIdentity,
 };
 
 pub use platform_imp::host_login_environment_block;

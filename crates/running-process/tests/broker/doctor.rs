@@ -200,7 +200,9 @@ fn inode_pressure_check_reports_per_platform() {
     #[cfg(windows)]
     {
         assert_eq!(check.status, DoctorStatus::Pass);
-        assert!(check.detail.contains("not applicable on Windows"));
+        assert!(check
+            .detail
+            .contains("no fixed inode table (not applicable)"));
         assert!(
             !check.detail.contains("inodes free"),
             "windows must not fake inode numbers: {}",
