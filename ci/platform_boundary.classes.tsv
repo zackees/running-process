@@ -31,7 +31,6 @@ crates/running-process-probe-daemon/src/crash_store/tests.rs	native_import	libc	
 crates/running-process-probe-daemon/src/crash_store/tests.rs	native_import	std::os::unix	host-test	test-only file; cfg/native use is the host-specific behaviour under test
 crates/running-process-probe/src/snapshot/attribute.rs	attr_cfg	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
 crates/running-process-py/src/tests/control_churn.rs	attr_cfg	windows	host-test	test-only file; cfg/native use is the host-specific behaviour under test
-crates/running-process/src/bin/running-process-broker-v2/tests.rs	attr_cfg	windows	host-test	test-only file; cfg/native use is the host-specific behaviour under test
 crates/running-process/src/broker/client.rs	cfg_macro	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
 crates/running-process/src/broker/client_v2.rs	cfg_macro	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
 crates/running-process/src/broker/server/combined_service_def_loader/tests.rs	attr_cfg	windows	host-test	test-only file; cfg/native use is the host-specific behaviour under test
