@@ -184,6 +184,10 @@ ALLOWED_RUST_COMMAND_NEW = {
     # children prove pre-exec process-group, owner-death, and signal behavior;
     # no caller input reaches either command.
     Path("crates/running-process-platform-internal/src/tests/platform_linux_coverage.rs"),
+    # #850 non-Tokio child backend: its unit tests re-execute only the test
+    # binary itself as a fixed fixture to observe exit, kill and capture.
+    # The production surface adopts children and never constructs one.
+    Path("crates/running-process-platform-internal/src/std_child.rs"),
     # Fixed shell fixtures exercise the Python binding's real descendant-tree
     # discovery and bounded termination paths. No caller input reaches them.
     Path("crates/running-process-py/src/tests/process_tree.rs"),
@@ -235,6 +239,10 @@ ALLOWED_RUST_SPAWN = {
     # fixtures after applying the reviewed pre-exec and signal configuration.
     # No caller input reaches either command.
     Path("crates/running-process-platform-internal/src/tests/platform_linux_coverage.rs"),
+    # #850 non-Tokio child backend: its unit tests re-execute only the test
+    # binary itself as a fixed fixture to observe exit, kill and capture.
+    # The production surface adopts children and never constructs one.
+    Path("crates/running-process-platform-internal/src/std_child.rs"),
     # #850 Phase 2: the process-global runtime starts one Tokio actor task
     # per child. The actor owns the blessed PlatformChild and exposes only
     # typed lifecycle commands; this is the canonical async engine, not a

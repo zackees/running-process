@@ -14,7 +14,7 @@
 
 use std::collections::VecDeque;
 use std::io::Read;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -307,9 +307,11 @@ pub use window_icon::{
     IconSupport, StockIcon,
 };
 
+#[cfg(test)]
+pub(crate) use helpers::exit_code;
 #[cfg(unix)]
 pub(crate) use helpers::{child_try_wait_error_is_retryable, poll_mutex_until};
-pub(crate) use helpers::{exit_code, feed_chunk, kill_drain_deadline, log_spawned_child_pid};
+pub(crate) use helpers::{feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 /// Convert a native process exit status to the portable integer convention.
 pub use running_process_platform_internal::exit_code as native_exit_code;
 pub use running_process_platform_internal::ProcessPriority;
@@ -376,68 +378,11 @@ struct SharedState {
     exit_code: tokio::sync::watch::Sender<Option<i32>>,
 }
 
-struct ChildState {
-    child: ChildHandle,
-    #[cfg(windows)]
-    _job: WindowsJobHandle,
-}
-
-enum ChildHandle {
-    Standard(Child),
-    ExactTrace(running_process_platform_internal::platform::process::TracedChild),
-}
-
-impl ChildHandle {
-    fn id(&self) -> u32 {
-        match self {
-            Self::Standard(child) => child.id(),
-            Self::ExactTrace(child) => child.id(),
-        }
-    }
-
-    fn try_wait_code(&mut self) -> std::io::Result<Option<i32>> {
-        match self {
-            Self::Standard(child) => child.try_wait().map(|status| status.map(exit_code)),
-            Self::ExactTrace(child) => child.try_wait_code(),
-        }
-    }
-
-    fn kill(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Standard(child) => child.kill(),
-            Self::ExactTrace(child) => child.kill(),
-        }
-    }
-
-    fn take_stdin(&mut self) -> Option<ChildStdin> {
-        match self {
-            Self::Standard(child) => child.stdin.take(),
-            Self::ExactTrace(child) => child.take_stdin(),
-        }
-    }
-
-    fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
-        match self {
-            Self::Standard(child) => child.stdout.take(),
-            Self::ExactTrace(child) => child.take_stdout(),
-        }
-    }
-
-    fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
-        match self {
-            Self::Standard(child) => child.stderr.take(),
-            Self::ExactTrace(child) => child.take_stderr(),
-        }
-    }
-
-    #[cfg(windows)]
-    fn wait_code(&mut self) -> std::io::Result<i32> {
-        match self {
-            Self::Standard(child) => child.wait().map(exit_code),
-            Self::ExactTrace(child) => child.wait_code(),
-        }
-    }
-}
+/// The child owned by a started [`NativeProcess`]: the platform's non-Tokio
+/// backend (a std or exact-trace child, observed by `try_wait` polling from
+/// the actor runtime), which also owns the Windows per-spawn Job Object and
+/// the capture cancellation for its pipes (#850).
+type ChildState = running_process_platform_internal::platform::process::PlatformStdChild;
 
 #[cfg(test)]
 #[derive(Debug, Eq, PartialEq)]
@@ -458,21 +403,8 @@ fn capture_poll_action(capture_revents: i16, wake_revents: i16) -> CapturePollAc
     }
 }
 
-fn cleanup_child_after_start_error(child: ChildHandle) {
-    match child {
-        ChildHandle::Standard(mut child) => {
-            let _ = child.kill();
-            // Keep start bounded while retaining ownership until the child is
-            // eventually reaped, even if SIGKILL delivery takes time.
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
-        ChildHandle::ExactTrace(mut child) => {
-            // The dedicated tracer remains the sole waiter and will reap it.
-            let _ = child.kill();
-        }
-    }
+fn cleanup_child_after_start_error(child: ChildState) {
+    child.discard_after_start_error();
 }
 
 impl SharedState {
@@ -705,7 +637,7 @@ impl NativeProcess {
                 Box::new(move |event| event_watch.emit_exact(event)),
                 Box::new(move || completion_watch.close()),
             ) {
-                Ok(child) => ChildHandle::ExactTrace(child),
+                Ok(child) => ChildState::from_exact_trace(child, self.config.create_process_group),
                 Err(error) => {
                     if let Some(watch) = self.process_watch.as_ref() {
                         watch.close();
@@ -714,7 +646,10 @@ impl NativeProcess {
                 }
             }
         } else {
-            ChildHandle::Standard(command.spawn().map_err(ProcessError::Spawn)?)
+            ChildState::from_std(
+                command.spawn().map_err(ProcessError::Spawn)?,
+                self.config.create_process_group,
+            )
         };
         log_spawned_child_pid(child.id()).map_err(ProcessError::Spawn)?;
         // Phase 1 of #221: emit the lifecycle `started` event. No-op when
@@ -727,27 +662,25 @@ impl NativeProcess {
         // can forward descendant lifecycle events. The Lifecycle category
         // is still served by emit_started / emit_exited above and below.
         #[cfg(windows)]
-        let job = {
+        {
             let descendant_sink = self
                 .shared
                 .observer
                 .as_ref()
                 .and_then(|e| e.descendant_sink());
-            let job_result = match &child {
-                ChildHandle::Standard(standard_child) => {
-                    let direct_pid = standard_child.id();
-                    public_symbols::rp_assign_child_to_windows_kill_on_close_job_with_observer_public(
-                        standard_child,
-                        descendant_sink,
-                        self.process_watch.clone(),
-                        direct_pid,
-                        self.config.address_space_limit_bytes,
-                    )
-                }
-                ChildHandle::ExactTrace(_) => unreachable!("Windows exact tracing is unavailable"),
-            };
+            let standard_child = child
+                .std_child()
+                .expect("Windows exact tracing is unavailable");
+            let job_result =
+                public_symbols::rp_assign_child_to_windows_kill_on_close_job_with_observer_public(
+                    standard_child,
+                    descendant_sink,
+                    self.process_watch.clone(),
+                    standard_child.id(),
+                    self.config.address_space_limit_bytes,
+                );
             match job_result {
-                Ok(job) => job,
+                Ok(job) => child.attach_job(job),
                 Err(error) => {
                     if let Some(watch) = self.process_watch.as_ref() {
                         watch.close();
@@ -756,7 +689,7 @@ impl NativeProcess {
                     return Err(ProcessError::Spawn(error));
                 }
             }
-        };
+        }
         if !exact_trace {
             descendant_monitor::start(
                 child.id(),
@@ -765,36 +698,14 @@ impl NativeProcess {
             );
         }
         if self.config.capture {
-            let stdout = child.take_stdout().expect("stdout pipe missing");
-            let stderr = child.take_stderr().expect("stderr pipe missing");
-            let stdout =
-                match running_process_platform_internal::platform::process::prepare_capture_reader(
-                    stdout,
-                    &self.capture_cancellation,
-                    running_process_platform_internal::platform::process::CaptureStream::Stdout,
-                ) {
-                    Ok(stdout) => stdout,
-                    Err(error) => {
-                        cleanup_child_after_start_error(child);
-                        return Err(ProcessError::Spawn(error));
-                    }
-                };
-            let stderr =
-                match running_process_platform_internal::platform::process::prepare_capture_reader(
-                    stderr,
-                    &self.capture_cancellation,
-                    running_process_platform_internal::platform::process::CaptureStream::Stderr,
-                ) {
-                    Ok(stderr) => stderr,
-                    Err(error) => {
-                        running_process_platform_internal::platform::process::capture_reader_done(
-                        &self.capture_cancellation,
-                        running_process_platform_internal::platform::process::CaptureStream::Stdout,
-                    );
-                        cleanup_child_after_start_error(child);
-                        return Err(ProcessError::Spawn(error));
-                    }
-                };
+            let readers = match child.prepare_capture(&self.capture_cancellation) {
+                Ok(readers) => readers,
+                Err(error) => {
+                    cleanup_child_after_start_error(child);
+                    return Err(ProcessError::Spawn(error));
+                }
+            };
+            let (stdout, stderr) = (readers.stdout, readers.stderr);
             self.spawn_reader(
                 stdout,
                 StreamKind::Stdout,
@@ -812,11 +723,7 @@ impl NativeProcess {
             );
         }
         *self.stdin.lock().expect("stdin mutex poisoned") = child.take_stdin();
-        *guard = Some(ChildState {
-            child,
-            #[cfg(windows)]
-            _job: job,
-        });
+        *guard = Some(child);
         drop(guard);
         self.spawn_exit_waiter();
         Ok(())
@@ -945,8 +852,8 @@ impl NativeProcess {
         let Some(child_state) = guard.as_mut() else {
             return Ok(self.returncode());
         };
-        let pid = child_state.child.id();
-        let child = &mut child_state.child;
+        let pid = child_state.id();
+        let child = child_state;
         let status = child.try_wait_code().map_err(ProcessError::Io)?;
         if let Some(code) = status {
             self.set_returncode(code);
@@ -1053,7 +960,7 @@ impl NativeProcess {
         #[cfg(windows)]
         {
             let mut guard = self.child.lock().expect("child mutex poisoned");
-            let child = &mut guard.as_mut().ok_or(ProcessError::NotRunning)?.child;
+            let child = guard.as_mut().ok_or(ProcessError::NotRunning)?;
             let pid = child.id();
             child.kill().map_err(ProcessError::Io)?;
             let code = child.wait_code().map_err(ProcessError::Io)?;
@@ -1067,16 +974,14 @@ impl NativeProcess {
             let deadline = kill_drain_deadline();
             let (pid, already_reaped) = {
                 let mut state = self.child.lock().expect("child mutex poisoned");
-                let child = &mut state.as_mut().ok_or(ProcessError::NotRunning)?.child;
+                let child = state.as_mut().ok_or(ProcessError::NotRunning)?;
                 let pid = child.id();
                 if let Some(code) = child.try_wait_code().map_err(ProcessError::Io)? {
                     (pid, Some(code))
                 } else {
-                    let group_signaled = self.config.create_process_group
-                        && unix_signal_process_group(pid as i32, UnixSignal::Kill).is_ok();
-                    if !group_signaled {
-                        child.kill().map_err(ProcessError::Io)?;
-                    }
+                    // Group-wide when the child leads its own group
+                    // (`create_process_group`), otherwise the direct child.
+                    child.kill_group_or_child().map_err(ProcessError::Io)?;
                     (pid, None)
                 }
             };
@@ -1089,7 +994,7 @@ impl NativeProcess {
                 let reap_result =
                     poll_mutex_until(&self.child, deadline, Duration::from_millis(10), |state| {
                         match state.as_mut() {
-                            Some(child) => child.child.try_wait_code(),
+                            Some(child) => child.try_wait_code(),
                             None => Ok(None),
                         }
                     });
@@ -1192,7 +1097,7 @@ impl NativeProcess {
             .lock()
             .expect("child mutex poisoned")
             .as_ref()
-            .map(|state| state.child.id())
+            .map(ChildState::id)
     }
 
     /// Return the cached exit code when the child has exited.
@@ -1725,8 +1630,8 @@ fn observe_child_exit(child: &Mutex<Option<ChildState>>, shared: &SharedState) -
     let Some(child_state) = guard.as_mut() else {
         return ExitObservation::Gone;
     };
-    let pid = child_state.child.id();
-    match child_state.child.try_wait_code() {
+    let pid = child_state.id();
+    match child_state.try_wait_code() {
         Ok(Some(code)) => {
             shared.record_exit(code);
             // Phase 1 of #221: lifecycle `exited`, guarded so only the

@@ -10,7 +10,8 @@ pub use crate::{
     set_process_name, shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
     spawn_sync_daemon_with_inheritance, start_attached_descendant_monitor,
     start_descendant_monitor, start_exact_trace, sync_child_native_handle, trampoline_exit_code,
-    unix_mark_extra_fds_close_on_exec, CaptureCancellation, TracedChild, WindowsJobHandle,
+    unix_mark_extra_fds_close_on_exec, CaptureCancellation, PlatformCaptureReaders,
+    PlatformStdChild, TracedChild, WindowsJobHandle,
 };
 
 #[cfg(feature = "async-process")]
