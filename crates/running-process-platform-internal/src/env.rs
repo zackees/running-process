@@ -54,11 +54,6 @@ pub enum EnvKind {
     /// honoured. Leaving this unstated is how the two ended up parsed
     /// differently by accident.
     Number { zero_selects_default: bool },
-    /// A switch that is on whenever the variable is present, whatever its
-    /// value -- including empty. Older switches were read this way, and
-    /// narrowing them to recognised spellings would turn `=0` from "on" into
-    /// "off" for anyone who already relies on it.
-    Presence,
 }
 
 /// Who decides what values a variable may take.
@@ -100,7 +95,6 @@ impl EnvVar {
             EnvKind::ExactValue(expected) => {
                 std::env::var_os(self.name).is_some_and(|value| value == OsStr::new(expected))
             }
-            EnvKind::Presence => std::env::var_os(self.name).is_some(),
             other => panic!("{} is declared as {other:?}, not a flag", self.name),
         }
     }
@@ -125,6 +119,18 @@ impl EnvVar {
     /// Read this variable as a port number, if it names one.
     pub fn port(&self) -> Option<u16> {
         self.parsed::<u16>()
+    }
+
+    /// Whether the variable is present at all, whatever its value -- including
+    /// empty or `0`.
+    ///
+    /// Several older switches are read this way, and narrowing them to
+    /// recognised spellings would turn `=0` from "on" into "off" for anyone who
+    /// already relies on it. It is a method rather than an [`EnvKind`] variant
+    /// because `EnvKind` is public and exhaustive: adding a variant would break
+    /// a downstream `match` in a 4.x release.
+    pub fn is_present(&self) -> bool {
+        std::env::var_os(self.name).is_some()
     }
 
     /// Read this variable as text, if it is set to anything.
@@ -403,14 +409,14 @@ mod tests {
 
     #[test]
     fn a_presence_switch_is_on_for_any_value_even_empty_or_zero() {
-        let presence = var(EnvKind::Presence);
+        let presence = var(EnvKind::Text);
         for value in ["", "0", "off", "1"] {
             assert!(
-                with_var(PROBE, Some(value), || presence.is_set()),
+                with_var(PROBE, Some(value), || presence.is_present()),
                 "{value:?}"
             );
         }
-        assert!(!with_var(PROBE, None, || presence.is_set()));
+        assert!(!with_var(PROBE, None, || presence.is_present()));
     }
 
     #[test]

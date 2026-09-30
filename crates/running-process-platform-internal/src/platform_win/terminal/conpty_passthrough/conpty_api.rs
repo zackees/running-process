@@ -130,8 +130,8 @@ static API: OnceLock<(ConPtyApi, ConPtySource)> = OnceLock::new();
 /// build. The crate has never supported such hosts.
 pub(super) fn get() -> &'static (ConPtyApi, ConPtySource) {
     API.get_or_init(|| {
-        let force_system = crate::env_vars::USE_SYSTEM_CONPTY.is_set();
-        let diagnostics = crate::env_vars::CONPTY_DIAGNOSTICS.is_set();
+        let force_system = crate::env_vars::USE_SYSTEM_CONPTY.is_present();
+        let diagnostics = crate::env_vars::CONPTY_DIAGNOSTICS.is_present();
 
         let resolved = resolve_production(force_system);
 

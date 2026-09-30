@@ -120,7 +120,7 @@ pub(super) fn ensure_in_dir(cache_dir: &Path) -> io::Result<()> {
         return Ok(());
     }
 
-    if crate::env_vars::CONPTY_OFFLINE.is_set() {
+    if crate::env_vars::CONPTY_OFFLINE.is_present() {
         diag(|| "ConPTY sidecar fetch suppressed (RUNNING_PROCESS_CONPTY_OFFLINE)".to_string());
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -313,7 +313,7 @@ fn extract_tar_zst(bytes: &[u8], dest: &Path) -> Result<(), String> {
 }
 
 fn diag(f: impl FnOnce() -> String) {
-    if crate::env_vars::CONPTY_DIAGNOSTICS.is_set() {
+    if crate::env_vars::CONPTY_DIAGNOSTICS.is_present() {
         eprintln!("running-process: {}", f());
     }
 }

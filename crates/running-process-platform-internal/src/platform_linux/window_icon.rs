@@ -92,10 +92,10 @@ pub fn icon_support(scope: IconScope) -> IconSupport {
     if matches!(scope, IconScope::Child { .. }) {
         return IconSupport::Unsupported(IconUnsupportedReason::LinuxChildScope);
     }
-    if crate::env_vars::WAYLAND_DISPLAY.is_set() {
+    if crate::env_vars::WAYLAND_DISPLAY.is_present() {
         return IconSupport::Unsupported(IconUnsupportedReason::Wayland);
     }
-    if !crate::env_vars::DISPLAY.is_set() {
+    if !crate::env_vars::DISPLAY.is_present() {
         return IconSupport::Unsupported(IconUnsupportedReason::LinuxNoDisplay);
     }
     if window_id().is_none() {

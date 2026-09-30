@@ -27,7 +27,7 @@ crate::declare_env_vars! {
         EnvKind::Text, Owner::Foreign, "hostname is unknown",
         "Windows machine name, reported as the host name.";
     DISPLAY => "DISPLAY",
-        EnvKind::Presence, Owner::Foreign, "no X11 display; window icons unsupported",
+        EnvKind::Text, Owner::Foreign, "no X11 display; window icons unsupported",
         "X11 display; its presence is what makes a Linux window icon possible.";
     HOME => "HOME",
         EnvKind::Path, Owner::Foreign, "autostart paths cannot be resolved",
@@ -36,10 +36,10 @@ crate::declare_env_vars! {
         EnvKind::Path, Owner::Crate, "the platform cache directory",
         "Root under which the ConPTY sidecar is cached on Windows.";
     CONPTY_DIAGNOSTICS => "RUNNING_PROCESS_CONPTY_DIAGNOSTICS",
-        EnvKind::Presence, Owner::Crate, "ConPTY resolution is silent",
+        EnvKind::Text, Owner::Crate, "ConPTY resolution is silent",
         "Print how the ConPTY implementation was chosen and fetched, to stderr.";
     CONPTY_OFFLINE => "RUNNING_PROCESS_CONPTY_OFFLINE",
-        EnvKind::Presence, Owner::Crate, "the ConPTY sidecar may be fetched",
+        EnvKind::Text, Owner::Crate, "the ConPTY sidecar may be fetched",
         "Forbid fetching the ConPTY sidecar over the network.";
     CONPTY_SIDECAR_FETCH_TIMEOUT_MS => "RUNNING_PROCESS_CONPTY_SIDECAR_FETCH_TIMEOUT_MS",
         EnvKind::Number { zero_selects_default: true }, Owner::Crate, "the built-in fetch timeout",
@@ -51,19 +51,19 @@ crate::declare_env_vars! {
         EnvKind::Text, Owner::Crate, "terminal input is not traced",
         "Where Windows native terminal input events are traced.";
     USE_SYSTEM_CONPTY => "RUNNING_PROCESS_USE_SYSTEM_CONPTY",
-        EnvKind::Presence, Owner::Crate, "the bundled ConPTY sidecar is preferred",
+        EnvKind::Text, Owner::Crate, "the bundled ConPTY sidecar is preferred",
         "Use the system ConPTY instead of the bundled sidecar on Windows.";
     TMPDIR => "TMPDIR",
         EnvKind::Path, Owner::Foreign, "/tmp or a per-user fallback",
         "macOS per-user temporary directory; roots IPC endpoints.";
     WAYLAND_DISPLAY => "WAYLAND_DISPLAY",
-        EnvKind::Presence, Owner::Foreign, "not a Wayland session",
+        EnvKind::Text, Owner::Foreign, "not a Wayland session",
         "Wayland session marker; window icons are unsupported under Wayland.";
     WINDOWID => "WINDOWID",
         EnvKind::Text, Owner::Foreign, "the X11 window is unknown",
         "X11 window id exported by the terminal emulator.";
     WT_SESSION => "WT_SESSION",
-        EnvKind::Presence, Owner::Foreign, "not inside Windows Terminal",
+        EnvKind::Text, Owner::Foreign, "not inside Windows Terminal",
         "Windows Terminal session marker; runtime window icons are degraded there.";
     XDG_CONFIG_HOME => "XDG_CONFIG_HOME",
         EnvKind::Path, Owner::Foreign, "~/.config",
