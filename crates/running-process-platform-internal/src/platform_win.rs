@@ -174,7 +174,7 @@ pub fn ipc_component_endpoint_path(_component: &str, bare_name: &str) -> String 
 #[cfg(feature = "ipc")]
 pub fn ipc_component_runtime_dir(component: &str) -> std::path::PathBuf {
     component_runtime_dir_in(
-        std::env::var_os("LOCALAPPDATA"),
+        crate::env_vars::LOCALAPPDATA.os(),
         std::env::temp_dir(),
         component,
     )

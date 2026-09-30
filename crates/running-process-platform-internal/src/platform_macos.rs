@@ -195,7 +195,7 @@ fn component_endpoint_path_in(
 pub fn ipc_component_runtime_dir(component: &str) -> std::path::PathBuf {
     // SAFETY: `getuid` reads a process property and cannot fail.
     let uid = unsafe { libc::getuid() };
-    component_runtime_dir_in(std::env::var_os("TMPDIR"), uid, component)
+    component_runtime_dir_in(crate::env_vars::TMPDIR.os(), uid, component)
 }
 
 #[cfg(feature = "ipc")]

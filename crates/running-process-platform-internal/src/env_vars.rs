@@ -32,6 +32,9 @@ crate::declare_env_vars! {
     HOME => "HOME",
         EnvKind::Path, Owner::Foreign, "autostart paths cannot be resolved",
         "Home directory; roots the Linux and macOS autostart entries.";
+    LOCALAPPDATA => "LOCALAPPDATA",
+        EnvKind::Path, Owner::Foreign, "the per-user temp directory stands in",
+        "Windows per-user, non-roaming application data root; holds component runtime files.";
     CONPTY_CACHE => "RUNNING_PROCESS_CONPTY_CACHE",
         EnvKind::Path, Owner::Crate, "the platform cache directory",
         "Root under which the ConPTY sidecar is cached on Windows.";
