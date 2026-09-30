@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 /// environment sets one. The fallback qualifies `/tmp` with the caller's uid,
 /// because `/tmp` is shared and two accounts must not land on one directory.
 pub fn user_runtime_dir(product: &str) -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+    if let Some(dir) = crate::env_vars::XDG_RUNTIME_DIR.os() {
         return PathBuf::from(dir).join(product);
     }
     let uid = unsafe { libc::getuid() };
@@ -19,7 +19,7 @@ pub fn user_runtime_dir(product: &str) -> PathBuf {
 
 /// Directory for `product`'s persistent state (databases that outlive a boot).
 pub fn user_state_dir(product: &str) -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(dir) = crate::env_vars::XDG_STATE_HOME.os() {
         PathBuf::from(dir).join(product)
     } else if let Some(home) = dirs::home_dir() {
         home.join(".local/state").join(product)

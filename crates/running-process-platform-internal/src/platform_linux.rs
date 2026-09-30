@@ -168,7 +168,7 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::
 pub fn ipc_component_endpoint_path(component: &str, bare_name: &str) -> String {
     // SAFETY: `getuid` reads a process property and cannot fail.
     let uid = unsafe { libc::getuid() };
-    component_endpoint_path_in(std::env::var_os("XDG_RUNTIME_DIR"), uid, component, bare_name)
+    component_endpoint_path_in(crate::env_vars::XDG_RUNTIME_DIR.os(), uid, component, bare_name)
 }
 
 #[cfg(feature = "ipc")]
@@ -208,7 +208,7 @@ pub fn ipc_endpoint_name_limit() -> crate::platform::ipc::EndpointNameLimit {
 fn broker_v1_socket_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
 
-    match std::env::var_os("XDG_RUNTIME_DIR") {
+    match crate::env_vars::XDG_RUNTIME_DIR.os() {
         Some(dir) => PathBuf::from(dir).join("running-process").join("broker"),
         None => PathBuf::from(format!(
             "/tmp/running-process-{}/broker",
@@ -248,7 +248,7 @@ pub fn ipc_endpoint_scope_bytes(path: &std::path::Path) -> Vec<u8> {
 
 #[cfg(feature = "ipc")]
 pub fn ipc_broker_v2_runtime_dir() -> std::path::PathBuf {
-    match std::env::var_os("XDG_RUNTIME_DIR") {
+    match crate::env_vars::XDG_RUNTIME_DIR.os() {
         Some(dir) => std::path::PathBuf::from(dir)
             .join("running-process")
             .join("broker-v2"),

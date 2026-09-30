@@ -80,7 +80,7 @@ pub fn unregister(program: &AutostartProgram<'_>) -> Result<(), AutostartError> 
 
 /// `$HOME/Library/LaunchAgents/<label>.plist`.
 fn plist_path(program: &AutostartProgram<'_>) -> Result<PathBuf, AutostartError> {
-    let home = std::env::var_os("HOME")
+    let home = crate::env_vars::HOME.os()
         .ok_or_else(|| AutostartError::Resolve("HOME is not set".into()))?;
     Ok(PathBuf::from(home)
         .join("Library")

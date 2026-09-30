@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 pub const NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV: &str =
-    "RUNNING_PROCESS_NATIVE_TERMINAL_INPUT_TRACE_PATH";
+    crate::env_vars::NATIVE_TERMINAL_INPUT_TRACE_PATH.name;
 
 #[derive(Debug, Error)]
 pub enum TerminalInputError {
