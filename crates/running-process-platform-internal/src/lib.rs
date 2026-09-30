@@ -21,7 +21,9 @@ pub mod foreground;
 #[cfg(any(windows, test))]
 mod descendant_snapshot;
 mod semantic_priority;
+mod std_child;
 pub use semantic_priority::ProcessPriority;
+pub use std_child::{PlatformCaptureReaders, PlatformStdChild};
 #[cfg(feature = "async-process")]
 mod spawn_admission;
 #[cfg(feature = "async-process")]

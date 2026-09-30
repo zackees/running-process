@@ -135,6 +135,7 @@ pub(crate) fn feed_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
 /// no signals and always has a code. Both spellings already live in
 /// `platform::process`, which is where the difference belongs -- this used
 /// to be a second copy of them.
+#[cfg(test)]
 pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
     crate::platform::process::exit_code(status)
 }
