@@ -54,6 +54,111 @@ pub fn blake3_file(path: &Path) -> io::Result<Hash> {
     Ok(hasher.finalize())
 }
 
+/// Longest stamp accepted from the environment. The stamp is spelled into
+/// pipe and pid-file names, which have their own length limits.
+#[cfg(feature = "client")]
+const MAX_STAMP_LEN: usize = 64;
+
+/// Whether an inherited stamp is safe to spell into a pipe or pid-file name.
+///
+/// Rejects path separators, NUL and anything else outside the characters a
+/// `<version>-<hex>` stamp uses, because a hostile or mangled value would
+/// otherwise reach the filesystem namespace.
+#[cfg(feature = "client")]
+fn is_safe_stamp(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_STAMP_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
+}
+
+/// First 16 hex characters of `blake3_file(path)`.
+#[cfg(feature = "client")]
+fn file_hex16(path: &Path) -> io::Result<String> {
+    Ok(blake3_file(path)?.to_hex()[..16].to_owned())
+}
+
+/// `<version>-<hex16>`.
+#[cfg(feature = "client")]
+fn stamp_from_hex(version: &str, hex16: &str) -> String {
+    format!("{version}-{hex16}")
+}
+
+/// The stamp decision, with every input passed in so it is testable without
+/// touching the process environment.
+///
+/// Outside dev scope there is no stamp, whatever `inherited` holds: release
+/// scope keeps its bare identity and single-daemon upgrade semantics. In dev
+/// scope a safe inherited value is used verbatim (no re-hash); an unsafe one is
+/// recomputed rather than trusted.
+#[cfg(feature = "client")]
+fn resolve_stamp(
+    dev_scope: bool,
+    inherited: Option<String>,
+    compute: impl FnOnce() -> io::Result<String>,
+) -> io::Result<Option<String>> {
+    if !dev_scope {
+        return Ok(None);
+    }
+    match inherited {
+        Some(value) if is_safe_stamp(&value) => Ok(Some(value)),
+        _ => compute().map(Some),
+    }
+}
+
+/// The dev-scope daemon identity stamp for the calling tool (#1252), or `None`
+/// outside dev scope.
+///
+/// `version` is the *calling tool's* version, not running-process's: the stamp
+/// identifies the consumer binary (soldr, zccache, ...). When
+/// `RUNNING_PROCESS_DAEMON_IDENTITY_STAMP` is already set to a safe value it is
+/// returned as-is, so a 200-process build hashes once, not 200 times. Otherwise
+/// the stamp is computed from the running executable's bytes and cached for
+/// the life of the process.
+///
+/// This only *computes* the value. Putting it on child processes is the
+/// caller's job (see [`daemon_identity_stamp_env`]); a library mutating the
+/// process environment is unsound in a multithreaded host.
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] if the executable cannot be located or
+/// hashed.
+#[cfg(feature = "client")]
+pub fn daemon_identity_stamp(version: &str) -> io::Result<Option<String>> {
+    static EXE_HEX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let dev_scope = crate::env_vars::DAEMON_SCOPE
+        .text()
+        .is_some_and(|scope| scope.eq_ignore_ascii_case("dev"));
+    resolve_stamp(
+        dev_scope,
+        crate::env_vars::DAEMON_IDENTITY_STAMP.text(),
+        || {
+            let hex = match EXE_HEX.get() {
+                Some(hex) => hex.clone(),
+                None => {
+                    let hex = file_hex16(&std::env::current_exe()?)?;
+                    EXE_HEX.get_or_init(|| hex).clone()
+                }
+            };
+            Ok(stamp_from_hex(version, &hex))
+        },
+    )
+}
+
+/// [`daemon_identity_stamp`] as the `(name, value)` pair to put on a child
+/// [`std::process::Command`] with `.env(name, value)`.
+///
+/// # Errors
+///
+/// As [`daemon_identity_stamp`].
+#[cfg(feature = "client")]
+pub fn daemon_identity_stamp_env(version: &str) -> io::Result<Option<(&'static str, String)>> {
+    Ok(daemon_identity_stamp(version)?
+        .map(|value| (crate::env_vars::DAEMON_IDENTITY_STAMP.name, value)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +247,73 @@ mod tests {
         ));
         let err = blake3_file(&path).expect_err("missing file must error");
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[cfg(feature = "client")]
+    mod stamp {
+        use super::super::*;
+        use super::write_temp;
+
+        fn never_computed() -> io::Result<String> {
+            panic!("an inherited stamp must not be re-hashed")
+        }
+
+        #[test]
+        fn stamp_is_none_outside_dev_scope_even_when_inherited() {
+            let inherited = Some("4.1.0-deadbeefdeadbeef".to_owned());
+            assert_eq!(
+                resolve_stamp(false, inherited, never_computed).unwrap(),
+                None
+            );
+            assert_eq!(resolve_stamp(false, None, never_computed).unwrap(), None);
+        }
+
+        #[test]
+        fn stamp_uses_inherited_value_verbatim_without_hashing() {
+            let inherited = Some("4.1.0-deadbeefdeadbeef".to_owned());
+            assert_eq!(
+                resolve_stamp(true, inherited, never_computed).unwrap(),
+                Some("4.1.0-deadbeefdeadbeef".to_owned())
+            );
+        }
+
+        #[test]
+        fn stamp_is_computed_when_dev_scope_has_nothing_inherited() {
+            let got = resolve_stamp(true, None, || Ok("1.2.3-0123456789abcdef".into())).unwrap();
+            assert_eq!(got, Some("1.2.3-0123456789abcdef".to_owned()));
+        }
+
+        #[test]
+        fn unsafe_inherited_value_is_recomputed_not_trusted() {
+            for bad in ["", "a/b", "a\\b", "nul\0byte", "has space", &"x".repeat(65)] {
+                let got =
+                    resolve_stamp(true, Some(bad.to_owned()), || Ok("1.0.0-cafe".into())).unwrap();
+                assert_eq!(got, Some("1.0.0-cafe".to_owned()), "{bad:?}");
+            }
+        }
+
+        #[test]
+        fn computed_stamp_is_version_dash_sixteen_hex_of_the_file_bytes() {
+            let path = write_temp("stamp-shape", b"some binary");
+            let stamp = stamp_from_hex("4.1.0", &file_hex16(&path).unwrap());
+            std::fs::remove_file(&path).ok();
+            let expected = blake3::hash(b"some binary").to_hex();
+            assert_eq!(stamp, format!("4.1.0-{}", &expected[..16]));
+            assert!(is_safe_stamp(&stamp));
+        }
+
+        #[test]
+        fn different_bytes_give_different_stamps_and_same_bytes_the_same() {
+            let a = write_temp("stamp-a", b"build one");
+            let b = write_temp("stamp-b", b"build two");
+            let c = write_temp("stamp-c", b"build one");
+            let stamp = |path| stamp_from_hex("4.1.0", &file_hex16(path).unwrap());
+            let (sa, sb, sc) = (stamp(&a), stamp(&b), stamp(&c));
+            for path in [&a, &b, &c] {
+                std::fs::remove_file(path).ok();
+            }
+            assert_ne!(sa, sb, "same version, different bytes must not collide");
+            assert_eq!(sa, sc, "the path must not matter");
+        }
     }
 }
