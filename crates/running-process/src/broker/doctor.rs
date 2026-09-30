@@ -48,18 +48,11 @@ use crate::broker::protocol::{
     Hello, HelloReply, PayloadEncoding, CONTROL_PAYLOAD_PROTOCOL, PROTOCOL_VERSION,
 };
 use crate::broker::server::service_def_loader::{
-    service_definition_dir, ServiceDefinitionLoader, SERVICE_DEF_DIR_ENV, SERVICE_DEF_EXTENSION,
+    service_definition_dir, ServiceDefinitionLoader, SERVICE_DEF_EXTENSION,
 };
 use crate::broker::{secure_dir, FRAMING_VERSION_V1};
 
-/// Daemon-IPC tracking kill switch read by the Python layer and daemon
-/// client. Defined here as a literal because the canonical constant lives
-/// behind the `daemon` feature and doctor must stay `client`-only.
-const NO_TRACKING_ENV: &str = "RUNNING_PROCESS_NO_TRACKING";
-/// CWD-scoped daemon override used for test isolation.
-const DAEMON_SCOPE_ENV: &str = "RUNNING_PROCESS_DAEMON_SCOPE";
-/// Admin-socket override consumed by the `running-process-broker-v1` CLI.
-const BROKER_SOCKET_ENV: &str = "RUNNING_PROCESS_BROKER_V1_SOCKET";
+use crate::env_vars::EnvVar;
 
 /// Wall-clock bound on the Hello probe so doctor can never hang on a
 /// listener that accepts but never replies.
@@ -298,22 +291,22 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 pub fn env_var_checks() -> Vec<DoctorCheck> {
     let mut checks = vec![disable_env_check(), fake_backend_env_check()];
     checks.push(informational_env_check(
-        NO_TRACKING_ENV,
+        crate::env_vars::NO_TRACKING,
         "unset (daemon IPC tracking enabled)",
         "daemon IPC tracking disabled",
     ));
     checks.push(informational_env_check(
-        DAEMON_SCOPE_ENV,
+        crate::env_vars::DAEMON_SCOPE,
         "unset (user-scoped daemon)",
         "CWD-scoped daemon (test-isolation mode)",
     ));
     checks.push(informational_env_check(
-        SERVICE_DEF_DIR_ENV,
+        crate::env_vars::SERVICE_DEF_DIR,
         "unset (platform default service-definition dir)",
         "service-definition dir overridden",
     ));
     checks.push(informational_env_check(
-        BROKER_SOCKET_ENV,
+        crate::env_vars::BROKER_V1_SOCKET,
         "unset (derived broker endpoint)",
         "broker admin endpoint overridden",
     ));
@@ -334,7 +327,7 @@ fn disable_env_check() -> DoctorCheck {
 
 fn fake_backend_env_check() -> DoctorCheck {
     let name = format!("env:{RUNNING_PROCESS_FAKE_BACKEND_ENV}");
-    match std::env::var_os(RUNNING_PROCESS_FAKE_BACKEND_ENV) {
+    match crate::env_vars::FAKE_BACKEND.os() {
         None => DoctorCheck::pass(name, "unset"),
         Some(value) if value.is_empty() => {
             DoctorCheck::warn(name, "set but empty (seam ignored) — unset it")
@@ -350,9 +343,9 @@ fn fake_backend_env_check() -> DoctorCheck {
     }
 }
 
-fn informational_env_check(env: &str, unset_detail: &str, set_description: &str) -> DoctorCheck {
-    let name = format!("env:{env}");
-    match std::env::var_os(env) {
+fn informational_env_check(env: EnvVar, unset_detail: &str, set_description: &str) -> DoctorCheck {
+    let name = format!("env:{}", env.name);
+    match env.os() {
         None => DoctorCheck::pass(name, unset_detail),
         Some(value) => DoctorCheck::warn(
             name,

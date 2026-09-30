@@ -3,6 +3,12 @@
 //! Phase 4 lands this binary incrementally. It supports local admin renderers,
 //! single-connection Hello tests, and long-lived serve modes for registered or
 //! launch-backed backend endpoints.
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 use running_process::broker::server::admin::{
     render_backend_health_json, render_config_json, render_diagnose_json, render_dump_json,
@@ -23,7 +29,7 @@ use running_process::broker::{
     protocol::{AdminReply, AdminRequest, AdminVerb, BrokerIsolation, ServiceDefinition},
 };
 
-const ADMIN_SOCKET_ENV: &str = "RUNNING_PROCESS_BROKER_V1_SOCKET";
+const ADMIN_SOCKET_ENV: &str = running_process::env_vars::BROKER_V1_SOCKET.name;
 
 fn main() {
     if let Err(err) = refuse_privileged_run() {
@@ -50,8 +56,8 @@ fn main() {
             std::process::exit(2);
         });
     let admin_socket = cli_admin_socket.or_else(|| {
-        std::env::var(ADMIN_SOCKET_ENV)
-            .ok()
+        running_process::env_vars::BROKER_V1_SOCKET
+            .string()
             .filter(|value| !value.is_empty())
     });
     match rest.first().map(String::as_str) {

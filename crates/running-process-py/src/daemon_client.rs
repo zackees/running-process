@@ -21,7 +21,6 @@ use running_process::proto::daemon::{
 /// Cached once from the `RUNNING_PROCESS_NO_TRACKING` environment variable.
 static TRACKING_CHECKED: AtomicBool = AtomicBool::new(false);
 static TRACKING_DISABLED: AtomicBool = AtomicBool::new(false);
-const NO_TRACKING_ENV: &str = "RUNNING_PROCESS_NO_TRACKING";
 
 /// Monotonically increasing request id.
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -36,9 +35,9 @@ static CONNECTION: Mutex<Option<running_process::client::IpcStream>> = Mutex::ne
 
 fn is_tracking_enabled() -> bool {
     if !TRACKING_CHECKED.load(Ordering::Relaxed) {
-        let disabled = std::env::var(NO_TRACKING_ENV)
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let disabled = running_process::env_vars::NO_TRACKING
+            .string()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         TRACKING_DISABLED.store(disabled, Ordering::Relaxed);
         TRACKING_CHECKED.store(true, Ordering::Release);
     }

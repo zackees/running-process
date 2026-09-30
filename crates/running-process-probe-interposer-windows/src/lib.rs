@@ -57,7 +57,12 @@
 //! Slice 6d adds the sidecar-side injection vehicle that drives
 //! `CreateRemoteThread(LoadLibraryW, dll_path)` into freshly
 //! spawned children of the running-process daemon.
-
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 // Gated on Windows x86_64 only: `retour` 0.4.0-alpha.4 uses
 // `iced-x86` for prologue disassembly, which doesn't support
 // ARM64. On Windows ARM64 the crate falls through to an empty

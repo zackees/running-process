@@ -5,6 +5,12 @@
 //! contained process-group helper through [`ContainedProcessGroup`], low-level
 //! spawn helpers through [`spawn()`] and [`spawn_daemon`], and optional
 //! daemon/broker modules behind feature flags.
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 use std::collections::VecDeque;
 use std::io::Read;

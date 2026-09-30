@@ -1,3 +1,9 @@
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 // runpm — PM2-style process supervisor CLI (Phase 1: skeleton).
 // Daemon stubs respond OK; real lifecycle lands in Phase 2. See issue #106.
 

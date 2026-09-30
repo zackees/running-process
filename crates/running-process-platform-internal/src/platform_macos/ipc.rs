@@ -527,7 +527,7 @@ impl InheritedListener {
     }
 
     pub fn recover_from_env(env_key: &str) -> io::Result<Option<Listener>> {
-        let Some(raw) = std::env::var_os(env_key) else { return Ok(None); };
+        let Some(raw) = crate::env::os_named(env_key) else { return Ok(None); };
         let raw = raw.to_string_lossy();
         let fd = parse_descriptor(env_key, &raw)?;
         if !is_listening_socket(fd)? {

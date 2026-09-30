@@ -58,30 +58,7 @@ pub(crate) fn test_env_lock() -> &'static Mutex<()> {
 }
 
 #[cfg(test)]
-pub(crate) fn with_locked_env_var<T>(
-    key: &'static str,
-    value: Option<&str>,
-    f: impl FnOnce() -> T + std::panic::UnwindSafe,
-) -> T {
-    let _guard = test_env_lock().lock().unwrap();
-    let previous = std::env::var_os(key);
-    match value {
-        Some(value) => std::env::set_var(key, value),
-        None => std::env::remove_var(key),
-    }
-
-    let result = std::panic::catch_unwind(f);
-
-    match previous {
-        Some(previous) => std::env::set_var(key, previous),
-        None => std::env::remove_var(key),
-    }
-
-    match result {
-        Ok(value) => value,
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
-}
+pub(crate) use crate::env_vars::with_locked_env_var;
 
 pub(crate) fn parse_command(command: &Bound<'_, PyAny>, shell: bool) -> PyResult<CommandSpec> {
     if let Ok(command) = command.extract::<String>() {

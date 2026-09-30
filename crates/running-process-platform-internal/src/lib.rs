@@ -4,6 +4,12 @@
 //! the only production owner of the Tokio process primitives used by the
 //! async process API. Higher layers receive typed operations and never name
 //! `tokio::process::Command` directly.
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 use std::cfg_select;
 /// Explicit caller-owned foreground command execution.

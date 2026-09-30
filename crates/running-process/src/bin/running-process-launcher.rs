@@ -1,4 +1,10 @@
 //! Scheduler-owned helper. Only the IPC endpoint appears in command metadata.
+// #1101: environment reads go through declared variables; see the
+// `running_process_env_direct` Dylint lint.
+#![cfg_attr(
+    dylint_lib = "running_process_env_literal",
+    deny(running_process_env_direct)
+)]
 
 fn main() {
     let mut args = std::env::args_os().skip(1);

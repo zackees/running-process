@@ -470,3 +470,125 @@ fn no_literal_environment_read_lives_outside_this_module() {
         offenders.join("\n  ")
     );
 }
+
+/// The combined inventory is the one list an embedder checks, so it must be
+/// findable, say each name once, and document every entry -- including the
+/// platform layer's variables that `DECLARED` never listed.
+#[test]
+fn the_combined_inventory_is_sorted_unique_and_documented() {
+    let all = all_declared();
+    let names: Vec<&str> = all.iter().map(|var| var.name).collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(names, sorted, "all_declared() must be sorted and unique");
+    for var in &all {
+        assert!(
+            !var.summary.trim().is_empty(),
+            "{} has no summary",
+            var.name
+        );
+        assert!(
+            !var.default.trim().is_empty(),
+            "{} has no default",
+            var.name
+        );
+    }
+    for var in DECLARED.iter().chain(platform::DECLARED_PLATFORM) {
+        assert!(
+            names.contains(&var.name),
+            "{} is declared but missing from all_declared()",
+            var.name
+        );
+    }
+}
+
+/// A name read by both crates has one declaration, owned by the platform
+/// layer and referred to from `DECLARED` with `use`. Two separate
+/// declarations would be two places to edit, and the day they disagreed
+/// `all_declared()` would silently keep whichever it saw first. The `use`
+/// arm is what makes it one declaration; this holds the observable half:
+/// what `DECLARED` publishes for a shared name is exactly the platform's.
+#[test]
+fn a_name_in_both_tables_is_one_declaration() {
+    let mut shared = 0;
+    for ours in DECLARED {
+        let Some(theirs) = platform::DECLARED_PLATFORM
+            .iter()
+            .find(|theirs| theirs.name == ours.name)
+        else {
+            continue;
+        };
+        shared += 1;
+        assert!(
+            ours.summary == theirs.summary
+                && ours.default == theirs.default
+                && ours.kind == theirs.kind
+                && ours.owner == theirs.owner,
+            "{} is declared twice; refer to the platform declaration with `use` instead",
+            ours.name
+        );
+    }
+    assert!(shared > 0, "expected variables read by both crates");
+}
+
+/// Production code reaches the environment only through a declared
+/// [`EnvVar`], or [`string_named`]/[`os_named`] for a name that is
+/// caller-supplied data. This is the textual counterpart of the
+/// `running_process_env_direct` Dylint lint: the lint sees only the host's
+/// module graph and default features, this sees every `cfg` branch and every
+/// feature-gated file, binaries included.
+///
+/// Test code is recognised by layout: a `#[cfg(test)]` (or
+/// `#[cfg(all(test, ..))]`) inline `mod name {` runs to the end of its file,
+/// as do `tests.rs`/`*_tests.rs` files and `tests/` directories.
+#[test]
+fn production_code_calls_std_env_only_through_declarations() {
+    let mut offenders = Vec::new();
+    for path in source_files() {
+        let in_test_tree = path.components().any(|part| part.as_os_str() == "tests");
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if in_test_tree
+            || name == "env_vars.rs"
+            || name == "tests.rs"
+            || name.ends_with("_tests.rs")
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read source file");
+        let lines: Vec<&str> = text.lines().collect();
+        let cut = lines
+            .iter()
+            .enumerate()
+            .position(|(index, line)| {
+                let line = line.trim_start();
+                (line.starts_with("#[cfg(test)]") || line.starts_with("#[cfg(all(test"))
+                    && lines[index + 1..]
+                        .iter()
+                        .map(|next| next.trim())
+                        .find(|next| !next.is_empty() && !next.starts_with("#["))
+                        .is_some_and(|next| next.starts_with("mod ") && next.ends_with('{'))
+            })
+            .unwrap_or(lines.len());
+        for (index, line) in lines[..cut].iter().enumerate() {
+            let direct = [
+                "env::var(",
+                "env::var_os(",
+                "env::set_var(",
+                "env::remove_var(",
+            ]
+            .iter()
+            .any(|call| line.contains(call));
+            if direct && !line.trim_start().starts_with("//") {
+                offenders.push(format!("{}:{}", path.display(), index + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "read these through a declared `crate::env_vars` constant: {offenders:#?}"
+    );
+}
