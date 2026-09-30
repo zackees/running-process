@@ -29,7 +29,7 @@ use running_process::spawn::{SpawnStdio, StdioSource};
 ///
 /// Tests point this at a build artifact; deployments rely on the sibling
 /// lookup, since the daemon and worker ship together.
-pub const WORKER_PATH_ENV: &str = "RUNNING_PROCESS_PROBE_WORKER";
+pub const WORKER_PATH_ENV: &str = crate::env_vars::PROBE_WORKER.name;
 
 /// How long a worker may run before it is killed.
 pub const DEFAULT_WORKER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -75,7 +75,7 @@ pub enum WorkerError {
 /// The override wins; otherwise it is looked for beside the running
 /// executable, because the daemon and worker are built and shipped together.
 pub fn worker_path() -> Option<PathBuf> {
-    resolve_worker_path(std::env::var_os(WORKER_PATH_ENV))
+    resolve_worker_path(crate::env_vars::PROBE_WORKER.os())
 }
 
 /// Resolution logic for [`worker_path`], with the override supplied directly.

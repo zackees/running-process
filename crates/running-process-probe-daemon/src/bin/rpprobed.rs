@@ -16,7 +16,7 @@ use running_process_probe_daemon::discovery::{
 use running_process_probe_daemon::names::{
     is_already_bound_error, probe_pipe_name, resolve_socket_path, wrap_socket_name,
 };
-use running_process_probe_daemon::{BEACON_PORT_ENV, EXIT_ALREADY_BOUND, EXIT_PRIVILEGED};
+use running_process_probe_daemon::{EXIT_ALREADY_BOUND, EXIT_PRIVILEGED};
 
 const USAGE: &str = "\
 rpprobed — probe daemon (#631 skeleton)
@@ -52,8 +52,8 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
-        beacon_port: std::env::var(BEACON_PORT_ENV)
-            .ok()
+        beacon_port: running_process_probe_daemon::env_vars::PROBE_BEACON_PORT
+            .string()
             .and_then(|v| v.parse().ok()),
         runtime_dir: None,
         elect_then_exit: false,
