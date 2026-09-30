@@ -1,4 +1,5 @@
 mod control_churn;
+mod debug_hang;
 mod expect_match;
 mod idle_detector;
 mod parse_command;
