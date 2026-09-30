@@ -78,7 +78,7 @@ static CACHED_SIDECAR_DIR: OnceLock<io::Result<PathBuf>> = OnceLock::new();
 /// request per ConPTY open.
 pub(super) fn ensure_cached_sidecar() -> io::Result<PathBuf> {
     let cached = CACHED_SIDECAR_DIR.get_or_init(|| {
-        let cache_root = resolve_cache_root(std::env::var_os("RUNNING_PROCESS_CONPTY_CACHE"))?;
+        let cache_root = resolve_cache_root(std::env::var_os(CONPTY_CACHE_ENV))?;
         let dir = cache_root
             .join("running-process")
             .join("conpty")
@@ -120,7 +120,7 @@ pub(super) fn ensure_in_dir(cache_dir: &Path) -> io::Result<()> {
         return Ok(());
     }
 
-    if std::env::var_os("RUNNING_PROCESS_CONPTY_OFFLINE").is_some() {
+    if std::env::var_os(CONPTY_OFFLINE_ENV).is_some() {
         diag(|| "ConPTY sidecar fetch suppressed (RUNNING_PROCESS_CONPTY_OFFLINE)".to_string());
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -253,6 +253,12 @@ fn asset_url() -> String {
 /// wedge PTY creation.
 const DEFAULT_SIDECAR_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const SIDECAR_FETCH_TIMEOUT_ENV: &str = "RUNNING_PROCESS_CONPTY_SIDECAR_FETCH_TIMEOUT_MS";
+/// Overrides the directory the ConPTY sidecar pair is cached in.
+const CONPTY_CACHE_ENV: &str = "RUNNING_PROCESS_CONPTY_CACHE";
+/// Forbids fetching the ConPTY sidecar; a cache miss falls back to kernel32.
+const CONPTY_OFFLINE_ENV: &str = "RUNNING_PROCESS_CONPTY_OFFLINE";
+/// Enables ConPTY acquisition/loader diagnostics on stderr.
+pub(super) const CONPTY_DIAGNOSTICS_ENV: &str = "RUNNING_PROCESS_CONPTY_DIAGNOSTICS";
 
 fn parse_sidecar_fetch_timeout(raw: Option<&str>) -> std::time::Duration {
     raw.and_then(|raw| raw.trim().parse::<u64>().ok())
@@ -311,7 +317,7 @@ fn extract_tar_zst(bytes: &[u8], dest: &Path) -> Result<(), String> {
 }
 
 fn diag(f: impl FnOnce() -> String) {
-    if std::env::var_os("RUNNING_PROCESS_CONPTY_DIAGNOSTICS").is_some() {
+    if std::env::var_os(CONPTY_DIAGNOSTICS_ENV).is_some() {
         eprintln!("running-process: {}", f());
     }
 }
@@ -415,9 +421,9 @@ mod tests {
         // SAFETY: env var mutation is process-global, but this test
         // sets+removes synchronously and we don't depend on parallel
         // ordering with other tests for this env var.
-        std::env::set_var("RUNNING_PROCESS_CONPTY_OFFLINE", "1");
+        std::env::set_var(CONPTY_OFFLINE_ENV, "1");
         let result = ensure_in_dir(tmp.path());
-        std::env::remove_var("RUNNING_PROCESS_CONPTY_OFFLINE");
+        std::env::remove_var(CONPTY_OFFLINE_ENV);
         let err = result.expect_err("offline + empty cache must error");
         assert_eq!(err.kind(), io::ErrorKind::NotFound, "got {err}");
     }

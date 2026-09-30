@@ -7,3 +7,9 @@
 # `--filter=blob:none` partial-clone support.
 vendor/win32/**/*.dll  filter=lfs diff=lfs merge=lfs -text
 vendor/win32/**/*.exe  filter=lfs diff=lfs merge=lfs -text
+
+# Dylint UI fixtures compare the compiler's LF output byte-for-byte. A Windows
+# checkout with core.autocrlf would rewrite `*.stderr` to CRLF and fail the
+# fixture with an empty-looking diff.
+lints/**/ui/*.stderr text eol=lf
+lints/**/ui/*.rs     text eol=lf

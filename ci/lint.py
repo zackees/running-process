@@ -228,6 +228,12 @@ def main() -> int:
             flush=True,
         )
         return 1
+    # Both custom Dylint libraries over the workspace (#1224). Unsupervised:
+    # a cold build of the nightly lint dependencies outlasts the per-command
+    # timeout, and the module skips (or, with RUNNING_PROCESS_REQUIRE_DYLINT=1,
+    # fails) by itself when the pinned toolchain is absent.
+    if run([str(python), "-m", "ci.dylint_gate"]) != 0:
+        return 1
     return 0
 
 
