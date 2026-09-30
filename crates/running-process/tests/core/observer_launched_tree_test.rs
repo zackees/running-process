@@ -472,12 +472,9 @@ fn an_observed_configured_command_spawns_verbatim_and_reports_lifecycle() {
 
 #[test]
 fn an_adopted_pid_reports_descendants_with_parents() {
-    // The post-hoc attach (observe_launched_tree) rides the same polling
-    // monitors as the spawn path, which are spawn-independent only on
-    // Unix — Windows discovery lives in the Job Object wired at spawn.
-    if cfg!(windows) {
-        return;
-    }
+    // The post-hoc attach (observe_launched_tree) is spawn-independent on
+    // every OS: Unix polls /proc or process snapshots, Windows polls the
+    // process table (#1015).
     // Spawn WITHOUT an observer: the tree owner here manages its own
     // child, which is exactly the caller observe_launched_tree exists for.
     let mut tree = OwnedTree::start(NativeProcess::new(spawn_tree_config(3)), 3);
@@ -506,7 +503,7 @@ fn an_adopted_pid_reports_descendants_with_parents() {
 
     let event = descendant_with_parent
         .expect("no DescendantStarted observed on an adopted pid with three grandchildren alive");
-    // running-process#1025: the Unix monitors know each descendant's
+    // running-process#1025: the monitors know each descendant's
     // immediate parent. For spawner's own children that parent is the
     // observed root itself.
     assert_eq!(

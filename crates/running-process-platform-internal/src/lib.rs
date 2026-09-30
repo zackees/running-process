@@ -8,6 +8,10 @@
 use std::cfg_select;
 /// Explicit caller-owned foreground command execution.
 pub mod foreground;
+// #1015: host-independent core of the snapshot descendant monitor. Compiled on
+// Windows (its user) and under test everywhere, so its logic is checked on every host.
+#[cfg(any(windows, test))]
+mod descendant_snapshot;
 mod semantic_priority;
 pub use semantic_priority::ProcessPriority;
 #[cfg(feature = "async-process")]
@@ -86,10 +90,10 @@ pub use platform_imp::{
     configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
     monitor_console_windows, parent_has_console, prepare_capture_reader, set_process_name,
     shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
-    spawn_sync_daemon_with_inheritance, start_descendant_monitor, start_exact_trace,
-    sync_child_native_handle, trampoline_exit_code, unix_mark_extra_fds_close_on_exec,
-    unix_set_priority, unix_signal_process, unix_signal_process_group, unix_signal_raw,
-    CaptureCancellation, TracedChild, WindowsJobHandle,
+    spawn_sync_daemon_with_inheritance, start_attached_descendant_monitor,
+    start_descendant_monitor, start_exact_trace, sync_child_native_handle, trampoline_exit_code,
+    unix_mark_extra_fds_close_on_exec, unix_set_priority, unix_signal_process,
+    unix_signal_process_group, unix_signal_raw, CaptureCancellation, TracedChild, WindowsJobHandle,
 };
 
 #[cfg(feature = "terminal-graphics")]

@@ -654,13 +654,16 @@ impl ObserverConfig {
 /// flow; direct-child `Started`/`Exited` lifecycle events are the spawn
 /// owner's to report and are never synthesized here.
 ///
-/// Platform note: Windows discovers descendants through the Job Object
-/// IOCP attached at spawn, so this post-hoc attach observes nothing there
-/// today; Linux (subreaper + `/proc` children walk) and macOS (process
-/// snapshots + kqueue hints) work for any live pid.
+/// Platform note: this post-hoc attach is snapshot-graded on every OS, so a
+/// process that starts and exits between two polls is not seen. Linux uses a
+/// subreaper plus a `/proc` children walk over every thread, macOS process
+/// snapshots plus kqueue hints, and Windows polls the process table (matching
+/// children by parent id and rejecting one that predates its parent, so a
+/// reused id is not mistaken for ancestry). A process spawned *with* an
+/// observer on Windows is instead reported exactly, through its Job Object.
 pub fn observe_launched_tree(root_pid: u32, config: ObserverConfig) -> ObserverSubscriber {
     let (emitter, subscriber) = ObserverEmitter::new(config);
-    crate::descendant_monitor::start(root_pid, Some(&emitter), None);
+    crate::descendant_monitor::start_attached(root_pid, Some(&emitter));
     subscriber
 }
 

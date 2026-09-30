@@ -196,3 +196,112 @@ fn iocp_pump_loop(
         }
     }
 }
+
+/// How often the snapshot monitor re-reads the process table.
+const SNAPSHOT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Creation time of `pid` as a `FILETIME` value, or `None` if it cannot be read
+/// (gone, or a process this caller may not query).
+fn process_creation_time(pid: u32) -> Option<u64> {
+    use winapi::shared::minwindef::FILETIME;
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::processthreadsapi::{GetProcessTimes, OpenProcess};
+    use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
+
+    // SAFETY: opens a query-only handle; it is closed on every path below.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: FILETIME is plain data, and `handle` is live.
+    let (created, ok) = unsafe {
+        let mut creation: FILETIME = std::mem::zeroed();
+        let mut exit: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        (
+            (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime),
+            ok != 0,
+        )
+    };
+    // SAFETY: closes the handle opened above.
+    unsafe { CloseHandle(handle) };
+    ok.then_some(created)
+}
+
+/// `(pid, parent_pid)` for every process on the machine, or `None` if the
+/// snapshot could not be taken.
+fn process_table() -> Option<Vec<(u32, u32)>> {
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::tlhelp32::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: a plain snapshot call; the handle is closed before returning.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    // SAFETY: PROCESSENTRY32 is plain data; `dwSize` is set before first use.
+    let mut entry: PROCESSENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
+    let mut table = Vec::new();
+    // SAFETY: `snapshot` is live and `entry` is initialised as required.
+    let mut more = unsafe { Process32First(snapshot, &mut entry) } != 0;
+    while more {
+        table.push((entry.th32ProcessID, entry.th32ParentProcessID));
+        // SAFETY: as above.
+        more = unsafe { Process32Next(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: closes the snapshot created above.
+    unsafe { CloseHandle(snapshot) };
+    Some(table)
+}
+
+/// Watch the descendants of an *already-running* `root_pid` by polling the
+/// process table (#1015).
+///
+/// This is the post-hoc counterpart of the Job Object completion port wired at
+/// spawn, which a caller who did not spawn the root does not have. It needs no
+/// privilege and no dependency, and its grade is inferred from snapshots: a
+/// process that starts and exits between two polls is not seen.
+pub fn start_snapshot_descendant_monitor(
+    root_pid: u32,
+    stop: std::sync::Arc<crate::platform::process::DescendantMonitorStop>,
+    emit: Box<dyn Fn(DescendantEvent) + Send>,
+) -> std::io::Result<()> {
+    let Some(root_created) = process_creation_time(root_pid) else {
+        emit(DescendantEvent::Completed);
+        return Ok(());
+    };
+    std::thread::Builder::new()
+        .name("rp-win-descsnap".to_string())
+        .spawn(move || {
+            let mut last = std::collections::HashMap::new();
+            crate::descendant_snapshot::pump(
+                || stop.is_stopped(),
+                || {
+                    // The root is gone, or its pid now names a different process.
+                    if process_creation_time(root_pid) != Some(root_created) {
+                        return None;
+                    }
+                    // A failed snapshot keeps the previous view: a transient
+                    // error must not read as "everything exited".
+                    if let Some(table) = process_table() {
+                        last = crate::descendant_snapshot::descendants(
+                            root_pid,
+                            root_created,
+                            &table,
+                            &mut process_creation_time,
+                        );
+                    }
+                    Some(last.clone())
+                },
+                emit.as_ref(),
+                || stop.wait_timeout(SNAPSHOT_POLL_INTERVAL),
+            );
+        })
+        .map(|_| ())
+        .map_err(|error| std::io::Error::other(format!("spawn snapshot monitor: {error}")))
+}
