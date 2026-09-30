@@ -142,6 +142,11 @@ backend-identity = [
 async-process = [
     "tokio/io-util",
     "tokio/macros",
+    # `Builder::enable_io` exists on Windows only with `net`: tokio's `process`
+    # feature turns the I/O driver on for Unix alone. The pipe-owning actors
+    # need the driver on every host, and this feature already pulled it in
+    # before the always-on base set (which deliberately has no I/O) existed.
+    "tokio/net",
     "tokio/process",
     "process-inspection",
     "running-process-platform-internal/async-process",
