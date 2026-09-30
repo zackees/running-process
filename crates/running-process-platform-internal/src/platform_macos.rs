@@ -165,7 +165,7 @@ pub fn ipc_broker_endpoint_name(bare_name: &str, path_scoped: bool) -> std::io::
 pub fn ipc_component_endpoint_path(component: &str, bare_name: &str) -> String {
     // SAFETY: `getuid` reads a process property and cannot fail.
     let uid = unsafe { libc::getuid() };
-    component_endpoint_path_in(std::env::var_os("TMPDIR"), uid, component, bare_name)
+    component_endpoint_path_in(crate::env_vars::TMPDIR.os(), uid, component, bare_name)
 }
 
 #[cfg(feature = "ipc")]
@@ -235,7 +235,7 @@ pub fn ipc_endpoint_name_limit() -> crate::platform::ipc::EndpointNameLimit {
 fn broker_v1_socket_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
 
-    let root = std::env::var_os("TMPDIR")
+    let root = crate::env_vars::TMPDIR.os()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
     root.join(format!(".rp-{}", unsafe { libc::getuid() }))
@@ -282,7 +282,7 @@ pub fn ipc_broker_v2_runtime_dir() -> std::path::PathBuf {
     // macOS hands each user a private `TMPDIR` (`/var/folders/...`), so it is
     // already per-user. The short leaf matters here: the broker's sockets
     // share this root and `sun_path` is only 104 bytes.
-    match std::env::var_os("TMPDIR") {
+    match crate::env_vars::TMPDIR.os() {
         Some(tmp) => std::path::PathBuf::from(tmp).join("rp-broker-v2"),
         None => crate::platform::ipc::per_user_runtime_fallback(),
     }

@@ -5,14 +5,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const DEFAULT_KILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
-const KILL_DRAIN_TIMEOUT_ENV: &str = "RUNNING_PROCESS_KILL_DRAIN_TIMEOUT_MS";
 
 fn kill_drain_deadline() -> Instant {
-    let timeout = std::env::var(KILL_DRAIN_TIMEOUT_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_KILL_DRAIN_TIMEOUT);
+    let timeout = crate::env_vars::KILL_DRAIN_TIMEOUT_MS.millis_or(DEFAULT_KILL_DRAIN_TIMEOUT);
     Instant::now() + timeout
 }
 

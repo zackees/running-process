@@ -60,7 +60,7 @@ const MAX_SIDE: u32 = 512;
 
 /// The window this process should set an icon on, if it can be known.
 pub(super) fn window_id() -> Option<Window> {
-    parse_window_id(&std::env::var("WINDOWID").ok()?)
+    parse_window_id(&crate::env_vars::WINDOWID.string()?)
 }
 
 /// Parse a `WINDOWID` value.
@@ -92,10 +92,10 @@ pub fn icon_support(scope: IconScope) -> IconSupport {
     if matches!(scope, IconScope::Child { .. }) {
         return IconSupport::Unsupported(IconUnsupportedReason::LinuxChildScope);
     }
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+    if crate::env_vars::WAYLAND_DISPLAY.is_present() {
         return IconSupport::Unsupported(IconUnsupportedReason::Wayland);
     }
-    if std::env::var_os("DISPLAY").is_none() {
+    if !crate::env_vars::DISPLAY.is_present() {
         return IconSupport::Unsupported(IconUnsupportedReason::LinuxNoDisplay);
     }
     if window_id().is_none() {

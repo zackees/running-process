@@ -84,10 +84,10 @@ fn unit_filename(program: &AutostartProgram<'_>) -> String {
 /// `$XDG_CONFIG_HOME/systemd/user/<identifier>.service`, falling back to
 /// `~/.config/` when `XDG_CONFIG_HOME` is unset.
 fn unit_path(program: &AutostartProgram<'_>) -> Result<PathBuf, AutostartError> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+    let base = match crate::env_vars::XDG_CONFIG_HOME.os() {
         Some(value) if !value.is_empty() => PathBuf::from(value),
         _ => {
-            let home = std::env::var_os("HOME").ok_or_else(|| {
+            let home = crate::env_vars::HOME.os().ok_or_else(|| {
                 AutostartError::Resolve("neither XDG_CONFIG_HOME nor HOME is set".into())
             })?;
             PathBuf::from(home).join(".config")

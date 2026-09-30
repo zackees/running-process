@@ -12,7 +12,7 @@ use thiserror::Error;
 
 /// Environment variable name for the trace file path.
 pub const NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV: &str =
-    "RUNNING_PROCESS_NATIVE_TERMINAL_INPUT_TRACE_PATH";
+    crate::env_vars::NATIVE_TERMINAL_INPUT_TRACE_PATH.name;
 
 // ── Error type ──
 
@@ -126,8 +126,8 @@ pub fn unix_now_seconds() -> f64 {
 #[cfg(windows)]
 /// Returns the configured native input trace target, if tracing is enabled.
 pub fn native_terminal_input_trace_target() -> Option<String> {
-    std::env::var(NATIVE_TERMINAL_INPUT_TRACE_PATH_ENV)
-        .ok()
+    crate::env_vars::NATIVE_TERMINAL_INPUT_TRACE_PATH
+        .string()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }

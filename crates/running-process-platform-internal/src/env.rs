@@ -121,11 +121,38 @@ impl EnvVar {
         self.parsed::<u16>()
     }
 
+    /// Whether the variable is present at all, whatever its value -- including
+    /// empty or `0`.
+    ///
+    /// Several older switches are read this way, and narrowing them to
+    /// recognised spellings would turn `=0` from "on" into "off" for anyone who
+    /// already relies on it. It is a method rather than an [`EnvKind`] variant
+    /// because `EnvKind` is public and exhaustive: adding a variant would break
+    /// a downstream `match` in a 4.x release.
+    pub fn is_present(&self) -> bool {
+        std::env::var_os(self.name).is_some()
+    }
+
     /// Read this variable as text, if it is set to anything.
     pub fn text(&self) -> Option<String> {
         std::env::var(self.name)
             .ok()
             .filter(|value| !value.is_empty())
+    }
+
+    /// Read this variable exactly as the host wrote it.
+    ///
+    /// Unlike [`EnvVar::path`] an empty value is still `Some`: some readers
+    /// have always treated `VAR=` as set, and this keeps them doing so.
+    pub fn os(&self) -> Option<std::ffi::OsString> {
+        std::env::var_os(self.name)
+    }
+
+    /// Read this variable as Unicode exactly as written, empty included.
+    ///
+    /// `None` when unset *or* not valid Unicode, matching `std::env::var`.
+    pub fn string(&self) -> Option<String> {
+        std::env::var(self.name).ok()
     }
 
     /// Read this variable as a path, if it is set to anything.
@@ -210,6 +237,41 @@ pub fn flag_opt_out(name: &str) -> bool {
 /// without being able to read it from their own environment.
 pub fn value_is_affirmative_foreign(value: &str) -> bool {
     !NEGATIVE.contains(&value.trim().to_ascii_lowercase().as_str())
+}
+
+/// Declare environment variables as `EnvVar` constants plus a table of all of
+/// them, so a crate's inventory is one list rather than scattered literals.
+///
+/// ```ignore
+/// declare_env_vars! {
+///     /// The table's doc.
+///     pub const TABLE;
+///     HOME => "HOME", EnvKind::Path, Owner::Foreign, "unset", "Home dir.";
+/// }
+/// ```
+#[macro_export]
+macro_rules! declare_env_vars {
+    (
+        $(#[$table_meta:meta])*
+        pub const $table:ident;
+        $($ident:ident => $name:literal, $kind:expr, $owner:expr, $default:literal, $summary:literal;)*
+    ) => {
+        $(
+            #[doc = $summary]
+            ///
+            #[doc = concat!("Environment variable `", $name, "`. Unset: ", $default, ".")]
+            pub const $ident: $crate::env::EnvVar = $crate::env::EnvVar {
+                name: $name,
+                kind: $kind,
+                owner: $owner,
+                default: $default,
+                summary: $summary,
+            };
+        )*
+
+        $(#[$table_meta])*
+        pub const $table: &[$crate::env::EnvVar] = &[$($ident),*];
+    };
 }
 
 fn normalize(value: &OsStr) -> String {
@@ -328,6 +390,33 @@ mod tests {
             with_var(PROBE, Some("/x/y"), || text.path()),
             Some(std::path::PathBuf::from("/x/y"))
         );
+    }
+
+    #[test]
+    fn os_and_string_keep_an_empty_value_as_set() {
+        let text = var(EnvKind::Text);
+        assert_eq!(
+            with_var(PROBE, Some(""), || text.os()),
+            Some(std::ffi::OsString::new())
+        );
+        assert_eq!(
+            with_var(PROBE, Some(""), || text.string()),
+            Some(String::new())
+        );
+        assert_eq!(with_var(PROBE, None, || text.os()), None);
+        assert_eq!(with_var(PROBE, None, || text.string()), None);
+    }
+
+    #[test]
+    fn a_presence_switch_is_on_for_any_value_even_empty_or_zero() {
+        let presence = var(EnvKind::Text);
+        for value in ["", "0", "off", "1"] {
+            assert!(
+                with_var(PROBE, Some(value), || presence.is_present()),
+                "{value:?}"
+            );
+        }
+        assert!(!with_var(PROBE, None, || presence.is_present()));
     }
 
     #[test]

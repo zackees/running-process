@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 /// name with the caller's uid, because `/tmp` is shared and two accounts must
 /// not land on one directory.
 pub fn user_runtime_dir(product: &str) -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+    if let Some(dir) = crate::env_vars::XDG_RUNTIME_DIR.os() {
         return PathBuf::from(dir).join(product);
     }
     let uid = unsafe { libc::getuid() };
@@ -20,7 +20,7 @@ pub fn user_runtime_dir(product: &str) -> PathBuf {
 
 /// Directory for `product`'s persistent state (databases that outlive a boot).
 pub fn user_state_dir(product: &str) -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(dir) = crate::env_vars::XDG_STATE_HOME.os() {
         PathBuf::from(dir).join(product)
     } else if let Some(home) = dirs::home_dir() {
         home.join(".local/state").join(product)
@@ -154,7 +154,7 @@ pub fn decode_path_bytes(bytes: &[u8]) -> io::Result<PathBuf> {
 /// bookkeeping, while this is the data a user expects to follow their account.
 /// On hosts that distinguish the two, this is the one that roams.
 pub fn user_data_dir(product: &str) -> PathBuf {
-    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+    if let Some(data_home) = crate::env_vars::XDG_DATA_HOME.os() {
         return PathBuf::from(data_home).join(product);
     }
     dirs::home_dir()
@@ -170,7 +170,7 @@ pub fn user_data_dir(product: &str) -> PathBuf {
 /// configuration its own root, and a user who sets `XDG_CONFIG_HOME` expects
 /// it honoured rather than folded into the data root.
 pub fn user_config_dir(product: &str) -> PathBuf {
-    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+    if let Some(config_home) = crate::env_vars::XDG_CONFIG_HOME.os() {
         return PathBuf::from(config_home).join(product);
     }
     dirs::home_dir()

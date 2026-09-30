@@ -93,7 +93,7 @@ use crate::platform::window_icon::{
         // class check cannot: Windows Terminal *does* support a per-profile
         // icon, just not one set at runtime. "Set the profile's icon field"
         // is actionable; "your host owns its decoration" is not.
-        if std::env::var_os("WT_SESSION").is_some() {
+        if crate::env_vars::WT_SESSION.is_present() {
             return IconSupport::Degraded(IconDegradedReason::WindowsTerminal);
         }
         let Some(hwnd) = console_window() else {

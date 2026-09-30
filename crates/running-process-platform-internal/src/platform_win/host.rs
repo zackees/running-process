@@ -242,7 +242,7 @@ fn nibble_to_hex(n: u8) -> char {
 
 /// This machine's name as the host reports it.
 pub fn hostname() -> Option<String> {
-    std::env::var("COMPUTERNAME").ok().filter(|n| !n.is_empty())
+    crate::env_vars::COMPUTERNAME.text()
 }
 
 /// A durable per-machine identifier that survives reboots.

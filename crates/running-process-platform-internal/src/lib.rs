@@ -8,6 +8,7 @@
 use std::cfg_select;
 /// Explicit caller-owned foreground command execution.
 pub mod env;
+pub mod env_vars;
 pub mod foreground;
 // #1015: host-independent core of the snapshot descendant monitor. Compiled on
 // Windows (its user) and under test everywhere, so its logic is checked on every host.
