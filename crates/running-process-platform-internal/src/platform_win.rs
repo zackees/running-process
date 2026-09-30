@@ -479,6 +479,12 @@ pub fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
+/// The signal that terminated `status`'s process. Windows processes do not
+/// die from signals, so there is never one to report.
+pub fn exit_signal(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
 pub fn set_process_name(_name: &str) {}
 
 pub fn configure_trampoline_command(command: &mut std::process::Command) {
