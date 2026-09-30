@@ -307,10 +307,10 @@ pub use window_icon::{
     IconSupport, StockIcon,
 };
 
+#[cfg(unix)]
+pub(crate) use helpers::child_try_wait_error_is_retryable;
 #[cfg(test)]
 pub(crate) use helpers::exit_code;
-#[cfg(unix)]
-pub(crate) use helpers::{child_try_wait_error_is_retryable, poll_mutex_until};
 pub(crate) use helpers::{feed_chunk, kill_drain_deadline, log_spawned_child_pid};
 /// Convert a native process exit status to the portable integer convention.
 pub use running_process_platform_internal::exit_code as native_exit_code;
@@ -990,19 +990,10 @@ impl NativeProcess {
             // particular, this prevents a surviving pipe-owning descendant
             // from extending the bounded reap window.
             self.cancel_capture_io();
-            let reaped = already_reaped.or_else(|| {
-                let reap_result =
-                    poll_mutex_until(&self.child, deadline, Duration::from_millis(10), |state| {
-                        match state.as_mut() {
-                            Some(child) => child.try_wait_code(),
-                            None => Ok(None),
-                        }
-                    });
-                match reap_result {
-                    Ok(Some(code)) => Some(code),
-                    _ => None,
-                }
-            });
+            // #850: the lifecycle task on the actor runtime is the reaper, and
+            // it publishes the exit on the watch channel. Wait there rather than
+            // running a second 10 ms `try_wait` loop of our own.
+            let reaped = already_reaped.or_else(|| self.await_exit_until(deadline));
             if let Some(code) = reaped {
                 self.set_returncode(code);
                 self.shared.emit_exited(pid, code);
@@ -1038,6 +1029,27 @@ impl NativeProcess {
             );
             Ok(())
         }
+    }
+
+    /// Wait for the lifecycle task to publish the child's exit, up to
+    /// `deadline`. A last direct `try_wait` covers a lifecycle task that has
+    /// already stopped (for instance after a transient `try_wait` error).
+    // Host-neutral: only the Unix kill path waits this way today, so a
+    // Windows build compiles it without using it.
+    #[allow(dead_code)]
+    fn await_exit_until(&self, deadline: Instant) -> Option<i32> {
+        let mut exit = self.shared.exit_code.subscribe();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let published = actor_runtime::block_on_anywhere(async move {
+            tokio::time::timeout(remaining, exit.wait_for(Option::is_some))
+                .await
+                .ok()
+                .and_then(|seen| seen.ok().and_then(|code| *code))
+        });
+        published.or_else(|| {
+            let mut state = self.child.lock().expect("child mutex poisoned");
+            state.as_mut()?.try_wait_code().ok().flatten()
+        })
     }
 
     /// Terminate the child process.
